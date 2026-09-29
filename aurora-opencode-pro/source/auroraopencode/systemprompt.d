@@ -334,9 +334,11 @@ private string toolPolicySection(in SystemPromptContext ctx)
     // experimental: computer use - delete with source/auroraopencode/computeruse.d
     if (experimentalComputerUseEnabled())
         text ~= "Computer use is enabled: drive the desktop with the " ~
-            "`computer` tool one action at a time (screen, click, type, " ~
-            "key, scroll), acting immediately on each screenshot and keeping " ~
-            "reasoning minimal. Escalate to planning only when stuck.\n";
+            "`computer` tool (screen, click, type, key, scroll). Each call " ~
+            "costs a full model turn, so batch a short sequence with `steps` " ~
+            "and take one screenshot at the end instead of a screen -> act -> " ~
+            "screen round trip, and keep reasoning minimal. Escalate to " ~
+            "planning only when stuck.\n";
     text ~= "Use background execution for a command that may run longer " ~
         "than an ordinary interactive check. Inspect its elapsed time, status, " ~
         "and partial output with `process`; decide from observed progress " ~

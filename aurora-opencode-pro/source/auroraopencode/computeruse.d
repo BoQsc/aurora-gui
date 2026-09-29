@@ -65,6 +65,29 @@ public void setComputerUseSetting(bool value)
     computerUseEnabledBySetting = value;
 }
 
+/// How many of the newest image-carrying messages keep their pixels in a model
+/// request. A computer-use loop adds a screenshot per step, and every request
+/// resends the whole conversation, so an unbounded history paid for every
+/// earlier frame on every turn. Older images stay in the transcript (and are
+/// still rendered there); only the wire payload is bounded. 0 disables the
+/// limit; override with AURORA_IMAGE_HISTORY.
+public size_t experimentalImageHistoryLimit()
+{
+    const raw = strip(environment.get("AURORA_IMAGE_HISTORY", ""));
+    if (raw.length == 0) return imageHistoryLimit;
+    try
+    {
+        const parsed = to!long(raw);
+        if (parsed >= 0 && parsed <= 32) return cast(size_t) parsed;
+    }
+    catch (Exception) {}
+    return imageHistoryLimit;
+}
+
+/// Two frames is enough for "act on the result of the last step" while keeping
+/// a multi-step loop's payload flat instead of growing with every screenshot.
+private enum size_t imageHistoryLimit = 2;
+
 /// Tool definition to append to a toolset. Returns an empty array when the
 /// experiment is disabled, so registration needs no conditional in the caller.
 public OpenCodeToolDef[] experimentalComputerUseTools()
@@ -73,16 +96,19 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
     return [
         OpenCodeToolDef(
             "computer",
-            "Drive the local desktop one action at a time, like a person at " ~
-            "the keyboard: `screen` returns a screenshot, then `click`, " ~
-            "`double_click`, `type`, `key`, `scroll`, and `wait_for_change` " ~
-            "act on it. Meant for a tight see -> act -> see loop: take one " ~
-            "action per call, look at the screenshot, and act again " ~
-            "immediately. Keep reasoning minimal; only stop to plan when you " ~
-            "are genuinely stuck (an unexpected dialog, a choice that needs " ~
-            "judgement). Coordinates are screen pixels (x right, y down), " ~
-            "matching the screenshot's own coordinate space. Windows only.",
-            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","type","key","scroll","wait_for_change"],"description":"Action to perform"},"x":{"type":"integer","description":"Screen x in pixels (click/double_click)"},"y":{"type":"integer","description":"Screen y in pixels (click/double_click)"},"text":{"type":"string","description":"Text to type (type)"},"name":{"type":"string","description":"Key for the key action, e.g. \"enter\", \"tab\", \"esc\", \"ctrl+s\", \"alt+f4\""},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"}},"required":["action"]}`
+            "Drive the local desktop like a person at the keyboard: `screen` " ~
+            "returns a screenshot, and `click`, `double_click`, `type`, " ~
+            "`key`, `scroll` and `wait_for_change` act on it. Coordinates are " ~
+            "in the screenshot's own pixel space (x right, y down): pass the " ~
+            "x,y you read off the latest `screen` image and they are scaled to " ~
+            "the real desktop automatically. Every call costs a full model turn, so prefer " ~
+            "one `steps` batch (click a field, type a line, press enter) over " ~
+            "a see -> act -> see round trip per action; `screenshot` decides " ~
+            "whether a fresh capture comes back (default: yes for `steps`, no " ~
+            "for one action, always for `screen`). Keep reasoning minimal; " ~
+            "only stop to plan when genuinely stuck (an unexpected dialog, a " ~
+            "choice that needs judgement). Windows only.",
+            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","type","key","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click)"},"y":{"type":"integer","description":"Screenshot y (click/double_click)"},"text":{"type":"string","description":"Text to type (type)"},"name":{"type":"string","description":"Key for the key action, e.g. \"enter\", \"tab\", \"esc\", \"ctrl+s\", \"alt+f4\""},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","type","key","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -105,6 +131,8 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
     long amount = -120;
     long timeoutMs = 5000;
     long intervalMs = 250;
+    int screenshotFlag = -1; // -1 absent, 0 false, 1 true
+    JSONValue[] steps;
     if (value.type == JSONType.object)
     {
         action = jsonString(value, "action");
@@ -115,16 +143,27 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
         amount = jsonInt(value, "amount", -120);
         timeoutMs = jsonInt(value, "timeout_ms", 5000);
         intervalMs = jsonInt(value, "interval_ms", 250);
+        screenshotFlag = jsonBoolFlag(value, "screenshot");
+        if (auto field = "steps" in value.object)
+            if (field.type == JSONType.array) steps = field.array;
     }
     action = strip(toLower(action));
-    if (action.length == 0)
+    if (action.length == 0 && steps.length == 0)
         return failedResult("Error: computer requires an `action` " ~
             "(screen, click, double_click, type, key, scroll, " ~
-            "wait_for_change).");
+            "wait_for_change) or a `steps` batch.");
 
     version (Windows)
+    {
+        // A batch screenshots by default: the caller's next move depends on the
+        // result, and asking for it in the same call saves a whole model turn.
+        if (steps.length > 0)
+            return runWindowsSteps(steps,
+                screenshotFlag < 0 ? true : screenshotFlag == 1);
         return runWindowsAction(action, cast(int) x, cast(int) y, text,
-            keyName, cast(int) amount, timeoutMs, intervalMs);
+            keyName, cast(int) amount, timeoutMs, intervalMs,
+            screenshotFlag == 1);
+    }
     else
         return failedResult("Error: computer use is only implemented on " ~
             "Windows in this build.");
@@ -165,14 +204,28 @@ private long jsonInt(in JSONValue value, string key, long fallback)
     return fallback;
 }
 
+/// Tri-state boolean read: -1 when absent (the caller applies its own default),
+/// 0 for false, 1 for true.
+private int jsonBoolFlag(in JSONValue value, string key)
+{
+    if (auto field = key in value.object)
+    {
+        if (field.type == JSONType.true_) return 1;
+        if (field.type == JSONType.false_) return 0;
+    }
+    return -1;
+}
+
 // ---------------------------------------------------------------------------
-// PNG encoding (truecolor, 8-bit) using zlib "stored" deflate blocks only.
+// PNG encoding (truecolor, 8-bit) with real deflate compression.
 //
 // A screenshot must reach the model as PNG/JPEG/WebP/GIF (see the attachment
 // magic-byte sniffing), and Aurora has no image encoder, so this module carries
-// a small, dependency-free writer. Stored blocks keep it trivial and correct:
-// the image is downscaled first, so the uncompressed size stays well under the
-// attachment cap.
+// a small, dependency-free writer: per-row PNG filtering, then LZ77 with
+// fixed-Huffman deflate. The earlier stored-block writer was trivial but shipped
+// the frame uncompressed - ~1.5 MB for a 960x540 desktop - and the conversation
+// resends every image on later requests, so each step got slower than the last.
+// Stored blocks remain as a size fallback for incompressible frames.
 // ---------------------------------------------------------------------------
 
 /// Encode tightly packed RGB bytes (`w * h * 3`) as a PNG. Public so the tests
@@ -189,35 +242,299 @@ public ubyte[] computerUseEncodePng(int w, int h, in ubyte[] rgb)
     ihdr ~= [8, 2, 0, 0, 0]; // 8-bit, truecolor, deflate, adaptive, no interlace
     appendChunk(out_, "IHDR", ihdr);
 
-    const stride = cast(size_t) w * 3;
-    auto raw = new ubyte[](cast(size_t) h * (stride + 1));
-    size_t cursor;
-    foreach (row; 0 .. cast(size_t) h)
-    {
-        raw[cursor++] = 0; // filter type 0 (None)
-        raw[cursor .. cursor + stride] = rgb[row * stride .. row * stride + stride];
-        cursor += stride;
-    }
-
-    ubyte[] z;
-    z ~= [0x78, 0x01]; // zlib header: deflate, default window
-    size_t pos;
-    while (pos < raw.length)
-    {
-        const chunk = min(raw.length - pos, cast(size_t) 65535);
-        const last = (pos + chunk >= raw.length) ? 1 : 0;
-        z ~= cast(ubyte) last;
-        z ~= cast(ubyte) (chunk & 0xFF);
-        z ~= cast(ubyte) ((chunk >> 8) & 0xFF);
-        z ~= cast(ubyte) (~chunk & 0xFF);
-        z ~= cast(ubyte) ((~chunk >> 8) & 0xFF);
-        z ~= raw[pos .. pos + chunk];
-        pos += chunk;
-    }
-    putBigEndian(z, adler32(raw));
-    appendChunk(out_, "IDAT", z);
+    const raw = pngFilteredRows(w, h, rgb);
+    appendChunk(out_, "IDAT", zlibCompress(raw));
     appendChunk(out_, "IEND", null);
     return out_;
+}
+
+/// PNG scanlines with the per-row filter that minimizes the sum of the absolute
+/// (signed) byte values, which is what makes the following deflate shrink a
+/// screenshot instead of storing it. Bytes per pixel for truecolor 8-bit.
+private enum size_t pngBytesPerPixel = 3;
+
+private ubyte[] pngFilteredRows(int w, int h, in ubyte[] rgb)
+{
+    const stride = cast(size_t) w * 3;
+    auto filtered = new ubyte[](cast(size_t) h * (stride + 1));
+    auto previous = new ubyte[](stride); // the raw row above; zeros on row 0
+    auto candidate0 = new ubyte[](stride);
+    auto candidate1 = new ubyte[](stride);
+    auto candidate2 = new ubyte[](stride);
+    auto candidate3 = new ubyte[](stride);
+    auto candidate4 = new ubyte[](stride);
+    const candidates = [candidate0, candidate1, candidate2, candidate3,
+        candidate4];
+    foreach (row; 0 .. cast(size_t) h)
+    {
+        const current = rgb[row * stride .. row * stride + stride];
+        size_t[5] penalty;
+        foreach (index; 0 .. stride)
+        {
+            const left = index >= pngBytesPerPixel ? current[index -
+                pngBytesPerPixel] : 0;
+            const above = previous[index];
+            const upperLeft = index >= pngBytesPerPixel ? previous[index -
+                pngBytesPerPixel] : 0;
+            candidate0[index] = current[index];
+            candidate1[index] = cast(ubyte) (current[index] - left);
+            candidate2[index] = cast(ubyte) (current[index] - above);
+            candidate3[index] = cast(ubyte) (current[index] -
+                ((cast(int) left + above) >> 1));
+            candidate4[index] = cast(ubyte) (current[index] -
+                paethPredictor(left, above, upperLeft));
+            penalty[0] += filteredPenalty(candidate0[index]);
+            penalty[1] += filteredPenalty(candidate1[index]);
+            penalty[2] += filteredPenalty(candidate2[index]);
+            penalty[3] += filteredPenalty(candidate3[index]);
+            penalty[4] += filteredPenalty(candidate4[index]);
+        }
+        size_t best;
+        foreach (index; 1 .. 5)
+            if (penalty[index] < penalty[best]) best = index;
+        const offset = row * (stride + 1);
+        filtered[offset] = cast(ubyte) best;
+        filtered[offset + 1 .. offset + 1 + stride] = candidates[best];
+        previous[] = current;
+    }
+    return filtered;
+}
+
+/// Cost of one filtered byte: its magnitude read as a signed value.
+private size_t filteredPenalty(ubyte value)
+{
+    const signed = cast(int) cast(byte) value;
+    return cast(size_t) (signed < 0 ? -signed : signed);
+}
+
+/// The PNG Paeth predictor for bytes to the left, above and above-left.
+private ubyte paethPredictor(int left, int above, int upperLeft)
+{
+    const estimate = left + above - upperLeft;
+    const leftDistance = absolute(estimate - left);
+    const aboveDistance = absolute(estimate - above);
+    const upperLeftDistance = absolute(estimate - upperLeft);
+    if (leftDistance <= aboveDistance && leftDistance <= upperLeftDistance)
+        return cast(ubyte) left;
+    if (aboveDistance <= upperLeftDistance) return cast(ubyte) above;
+    return cast(ubyte) upperLeft;
+}
+
+private int absolute(int value)
+{
+    return value < 0 ? -value : value;
+}
+
+// ---------------------------------------------------------------------------
+// zlib / deflate. Fixed-Huffman blocks with a greedy LZ77 matcher: no dynamic
+// Huffman tables (a few percent smaller) but the container stays simple and the
+// win over storing the frame is the whole 4-10x.
+// ---------------------------------------------------------------------------
+
+/// Deflate `data` into a zlib stream (`78 01` header + adler32 trailer).
+private ubyte[] zlibCompress(in ubyte[] data)
+{
+    auto compressed = deflateFixed(data);
+    // An incompressible frame can grow a little under fixed Huffman; storing it
+    // is never worse than a few bytes of block headers.
+    ubyte[] deflated = compressed.length >= data.length + 5 ?
+        deflateStored(data) : compressed;
+    ubyte[] out_;
+    out_ ~= [0x78, 0x01]; // deflate, 32 KiB window, no dictionary, fastest flag
+    out_ ~= deflated;
+    putBigEndian(out_, adler32(data));
+    return out_;
+}
+
+/// A single deflate block holding the bytes verbatim, split at the 65535-byte
+/// stored-block limit.
+private ubyte[] deflateStored(in ubyte[] data)
+{
+    ubyte[] out_;
+    size_t position;
+    do
+    {
+        const chunk = min(data.length - position, cast(size_t) 65535);
+        const last = (position + chunk >= data.length) ? 1 : 0;
+        out_ ~= cast(ubyte) last; // BFINAL, BTYPE = 00 (stored)
+        out_ ~= cast(ubyte) (chunk & 0xFF);
+        out_ ~= cast(ubyte) ((chunk >> 8) & 0xFF);
+        out_ ~= cast(ubyte) (~chunk & 0xFF);
+        out_ ~= cast(ubyte) ((~chunk >> 8) & 0xFF);
+        out_ ~= data[position .. position + chunk];
+        position += chunk;
+    }
+    while (position < data.length);
+    return out_;
+}
+
+/// LSB-first bit writer. Deflate packs everything this way except Huffman
+/// codes, which are written most-significant bit first (see `writeCode`).
+private struct BitWriter
+{
+    private ubyte[] _bytes;
+    private uint _accumulator;
+    private uint _bitCount;
+
+    private void putBit(uint bit)
+    {
+        _accumulator |= (bit & 1) << _bitCount;
+        if (++_bitCount == 8)
+        {
+            _bytes ~= cast(ubyte) _accumulator;
+            _accumulator = 0;
+            _bitCount = 0;
+        }
+    }
+
+    private void writeBits(uint value, uint count)
+    {
+        foreach (index; 0 .. count)
+            putBit((value >> index) & 1);
+    }
+
+    private void writeCode(uint value, uint count)
+    {
+        foreach_reverse (index; 0 .. count)
+            putBit((value >> index) & 1);
+    }
+
+    private ubyte[] finish()
+    {
+        if (_bitCount > 0)
+        {
+            _bytes ~= cast(ubyte) _accumulator;
+            _accumulator = 0;
+            _bitCount = 0;
+        }
+        return _bytes;
+    }
+}
+
+/// Length codes 257-285: base length plus extra bits (RFC 1951 section 3.2.5).
+private immutable int[] lengthBase = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17,
+    19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+private immutable int[] lengthExtraBits = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1,
+    1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+
+/// Distance codes 0-29: base distance plus extra bits.
+private immutable int[] distanceBase = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33,
+    49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097,
+    6145, 8193, 12289, 16385, 24577];
+private immutable int[] distanceExtraBits = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4,
+    4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+
+private enum size_t deflateHashSlots = 1 << 15;
+private enum size_t deflateMaxMatch = 258;
+private enum size_t deflateWindow = 1 << 15;
+private enum int deflateMaxChain = 96;
+
+/// Fixed-Huffman literal/length code (RFC 1951 section 3.2.6).
+private void writeFixedSymbol(ref BitWriter writer, uint symbol)
+{
+    if (symbol <= 143) writer.writeCode(0x30 + symbol, 8);
+    else if (symbol <= 255) writer.writeCode(0x190 + symbol - 144, 9);
+    else if (symbol <= 279) writer.writeCode(symbol - 256, 7);
+    else writer.writeCode(0xC0 + symbol - 280, 8);
+}
+
+private void writeLengthDistance(ref BitWriter writer, int length,
+    int distance)
+{
+    size_t code;
+    while (code + 1 < lengthBase.length && lengthBase[code + 1] <= length)
+        ++code;
+    writeFixedSymbol(writer, 257 + cast(uint) code);
+    writer.writeBits(cast(uint) (length - lengthBase[code]),
+        cast(uint) lengthExtraBits[code]);
+
+    size_t distanceCode;
+    while (distanceCode + 1 < distanceBase.length &&
+        distanceBase[distanceCode + 1] <= distance)
+        ++distanceCode;
+    writer.writeCode(cast(uint) distanceCode, 5); // fixed 5-bit distance code
+    writer.writeBits(cast(uint) (distance - distanceBase[distanceCode]),
+        cast(uint) distanceExtraBits[distanceCode]);
+}
+
+private uint deflateHash(in ubyte[] data, size_t position)
+{
+    return ((cast(uint) data[position] << 10) ^
+        (cast(uint) data[position + 1] << 5) ^ data[position + 2]) &
+        (cast(uint) deflateHashSlots - 1);
+}
+
+/// One fixed-Huffman deflate block over `data`, with a greedy hash-chain match
+/// search limited to a 32 KiB window.
+private ubyte[] deflateFixed(in ubyte[] data)
+{
+    auto writer = BitWriter();
+    writer.writeBits(1, 1); // BFINAL: single block
+    writer.writeBits(1, 2); // BTYPE = 01 (fixed Huffman)
+
+    if (data.length < 3)
+    {
+        foreach (byte_; data) writeFixedSymbol(writer, byte_);
+        writeFixedSymbol(writer, 256); // end of block
+        return writer.finish();
+    }
+
+    auto chain = new int[data.length];
+    chain[] = -1;
+    auto head = new int[deflateHashSlots];
+    head[] = -1;
+    foreach (position; 0 .. data.length - 2)
+    {
+        const hash = deflateHash(data, position);
+        chain[position] = head[hash];
+        head[hash] = cast(int) position;
+    }
+
+    size_t position;
+    while (position < data.length)
+    {
+        size_t bestLength;
+        size_t bestDistance;
+        const longest = min(deflateMaxMatch, data.length - position);
+        if (longest >= 3)
+        {
+            int steps = deflateMaxChain;
+            int candidate = chain[position];
+            while (candidate >= 0 && steps-- > 0)
+            {
+                const distance = position - cast(size_t) candidate;
+                if (distance > deflateWindow) break;
+                if (bestLength < longest)
+                {
+                    size_t length;
+                    while (length < longest &&
+                        data[cast(size_t) candidate + length] ==
+                            data[position + length])
+                        ++length;
+                    if (length > bestLength)
+                    {
+                        bestLength = length;
+                        bestDistance = distance;
+                        if (length == longest) break;
+                    }
+                }
+                candidate = chain[cast(size_t) candidate];
+            }
+        }
+        if (bestLength >= 3)
+        {
+            writeLengthDistance(writer, cast(int) bestLength,
+                cast(int) bestDistance);
+            position += bestLength;
+        }
+        else
+        {
+            writeFixedSymbol(writer, data[position]);
+            ++position;
+        }
+    }
+    writeFixedSymbol(writer, 256); // end of block
+    return writer.finish();
 }
 
 private void putBigEndian(ref ubyte[] buffer, uint value)
@@ -401,6 +718,19 @@ version (Windows)
     /// the attachment size cap without compressing.
     private enum int captureMaxEdge = 1280;
 
+    /// Integer downscale factor applied to screenshots (1 = native pixels).
+    /// Input coordinates arrive in the downscaled screenshot's pixel space, so
+    /// input handlers multiply by this to reach real screen pixels. Computed the
+    /// same way as `captureScreen` so the two can never disagree.
+    private int screenDownscale()
+    {
+        const width = GetSystemMetrics(SM_CXSCREEN);
+        const height = GetSystemMetrics(SM_CYSCREEN);
+        const maxEdge = width > height ? width : height;
+        if (maxEdge <= captureMaxEdge) return 1;
+        return (maxEdge + captureMaxEdge - 1) / captureMaxEdge;
+    }
+
     private Capture captureScreen()
     {
         Capture capture;
@@ -458,10 +788,7 @@ version (Windows)
             return capture;
         }
 
-        const maxEdge = width > height ? width : height;
-        int step = 1;
-        if (maxEdge > captureMaxEdge)
-            step = (maxEdge + captureMaxEdge - 1) / captureMaxEdge;
+        const step = screenDownscale();
         const outWidth = (width + step - 1) / step;
         const outHeight = (height + step - 1) / step;
         auto rgb = new ubyte[cast(size_t) outWidth * outHeight * 3];
@@ -524,7 +851,10 @@ version (Windows)
 
     private void clickAt(int x, int y, int count)
     {
-        SetCursorPos(x, y);
+        // Coordinates arrive in the (possibly downscaled) screenshot's pixel
+        // space; map them onto real screen pixels before moving the pointer.
+        const step = screenDownscale();
+        SetCursorPos(x * step, y * step);
         Thread.sleep(msecs(30)); // let the pointer settle before the press
         foreach (i; 0 .. count)
         {
@@ -608,6 +938,8 @@ version (Windows)
             case "f10": return 0x79;
             case "f11": return 0x7A;
             case "f12": return 0x7B;
+            case "win": case "meta": case "super": case "lwin": return 0x5B;
+            case "rwin": return 0x5C;
             default: return 0;
         }
     }
@@ -651,7 +983,7 @@ version (Windows)
 
     private ComputerUseResult runWindowsAction(string action, int x, int y,
         string text, string keyName, int amount, long timeoutMs,
-        long intervalMs)
+        long intervalMs, bool screenshot = false)
     {
         switch (action)
         {
@@ -659,30 +991,106 @@ version (Windows)
                 return screenshotResult("Captured the screen");
             case "click":
                 clickAt(x, y, 1);
-                return succeededResult("Clicked at " ~ to!string(x) ~ "," ~
-                    to!string(y) ~ ".");
+                return withOptionalScreenshot("Clicked at " ~ to!string(x) ~
+                    "," ~ to!string(y) ~ ".", screenshot);
             case "double_click":
                 clickAt(x, y, 2);
-                return succeededResult("Double-clicked at " ~ to!string(x) ~
-                    "," ~ to!string(y) ~ ".");
+                return withOptionalScreenshot("Double-clicked at " ~
+                    to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
             case "type":
                 if (text.length == 0)
                     return failedResult("Error: type requires `text`.");
                 typeText(text);
-                return succeededResult("Typed " ~ to!string(text.length) ~
-                    " characters.");
+                return withOptionalScreenshot("Typed " ~
+                    to!string(text.length) ~ " characters.", screenshot);
             case "key":
-                return runKey(keyName);
+            {
+                auto result = runKey(keyName);
+                if (!screenshot || result.failed) return result;
+                return withOptionalScreenshot(result.output, true);
+            }
             case "scroll":
                 sendMouse(MOUSEEVENTF_WHEEL, amount);
-                return succeededResult("Scrolled by " ~ to!string(amount) ~
-                    ".");
+                return withOptionalScreenshot("Scrolled by " ~
+                    to!string(amount) ~ ".", screenshot);
             case "wait_for_change":
                 return waitForChange(timeoutMs, intervalMs);
             default:
                 return failedResult("Error: unknown computer action '" ~
                     action ~ "'.");
         }
+    }
+
+    /// The action's text, plus a fresh screenshot when the caller asked for one.
+    private ComputerUseResult withOptionalScreenshot(string text,
+        bool screenshot)
+    {
+        if (!screenshot) return succeededResult(text);
+        auto shot = screenshotResult(text ~ " Screen after the action");
+        if (shot.failed) return shot;
+        return shot;
+    }
+
+    /// A batch of actions in one call, followed by a single screenshot: the
+    /// point is that one model turn can do a short sequence of work instead of
+    /// paying a round trip (and a screenshot) per keystroke.
+    private ComputerUseResult runWindowsSteps(JSONValue[] steps,
+        bool screenshot)
+    {
+        enum size_t maxSteps = 32;
+        if (steps.length > maxSteps)
+            return failedResult("Error: too many computer steps (limit " ~
+                to!string(maxSteps) ~ ").");
+
+        auto builder = appender!string();
+        ComputerUseResult lastStep;
+        bool failed;
+        foreach (index, step; steps)
+        {
+            const label = "step " ~ to!string(index + 1);
+            if (step.type != JSONType.object)
+            {
+                builder.put(label ~ ": Error: each step must be an object.\n");
+                failed = true;
+                break;
+            }
+            const action = strip(toLower(jsonString(step, "action")));
+            auto one = runWindowsAction(action, cast(int) jsonInt(step, "x", 0),
+                cast(int) jsonInt(step, "y", 0), jsonString(step, "text"),
+                jsonString(step, "name"), cast(int) jsonInt(step, "amount",
+                -120), jsonInt(step, "timeout_ms", 5000),
+                jsonInt(step, "interval_ms", 250), false);
+            builder.put(label ~ " (" ~ (action.length > 0 ? action : "?") ~
+                "): " ~ one.output);
+            if (builder.data.length > 0 && builder.data[$ - 1] != '\n')
+                builder.put("\n");
+            if (one.images.length > 0) lastStep = one;
+            if (one.failed)
+            {
+                failed = true;
+                break;
+            }
+            if (index + 1 < steps.length) Thread.sleep(msecs(60));
+        }
+
+        ComputerUseResult result;
+        result.output = builder.data;
+        result.failed = failed;
+        if (screenshot)
+        {
+            auto shot = screenshotResult("Screen after the batch");
+            if (shot.failed)
+            {
+                result.output ~= shot.output;
+                result.failed = true;
+                return result;
+            }
+            result.output ~= shot.output;
+            result.images = shot.images;
+        }
+        else
+            result.images = lastStep.images;
+        return result;
     }
 
     private ComputerUseResult waitForChange(long timeoutMs, long intervalMs)

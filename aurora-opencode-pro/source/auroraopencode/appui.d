@@ -28,7 +28,8 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
     promptVerbosityLabel, promptVerbosityNames, rebuildModule,
     setSystemPromptModules;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
-import auroraopencode.computeruse : setComputerUseSetting;
+import auroraopencode.computeruse :
+    experimentalImageHistoryLimit, setComputerUseSetting;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -14835,6 +14836,25 @@ public final class OpenCodeRoot : VBox
                     slot = i + 1;
                     break;
                 }
+        // experimental: computer use - delete with
+        // source/auroraopencode/computeruse.d. Only the newest few images travel
+        // on the wire: a computer-use loop adds a screenshot per step and every
+        // request resends the conversation, so an unbounded history re-uploaded
+        // every earlier frame each turn. The transcript keeps them all.
+        bool[] keepImage;
+        const imageLimit = experimentalImageHistoryLimit();
+        if (imageLimit > 0)
+        {
+            keepImage.length = path.length;
+            size_t kept;
+            foreach_reverse (index; slot .. path.length)
+            {
+                if (session.messages[path[index]].images.length == 0) continue;
+                if (kept >= imageLimit) continue;
+                keepImage[index] = true;
+                ++kept;
+            }
+        }
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
@@ -14910,7 +14930,11 @@ public final class OpenCodeRoot : VBox
             // screenshot vanished from the conversation as soon as one more
             // message followed it, which made every later "what is in this
             // image" turn a text-only request.
-            if (message.images.length > 0) request.images = message.images.dup;
+            // experimental: computer use - older frames are dropped from the
+            // wire (see keepImage above) so a long loop does not resend them.
+            if (message.images.length > 0 &&
+                (keepImage.length == 0 || keepImage[slot]))
+                request.images = message.images.dup;
             messages ~= request;
             ++slot;
         }
