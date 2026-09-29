@@ -2143,7 +2143,7 @@ private final class MessageBubble : Widget
                 clipped.fillRect(Rect(segment.x + cast(int) rect.x,
                     segment.y + cast(int) rect.y,
                     maxInt(1, cast(int) rect.width),
-                    maxInt(1, cast(int) rect.height)), opencodeSelection);
+                    maxInt(1, cast(int) rect.height)), opencodeTextSelection);
         }
     }
 

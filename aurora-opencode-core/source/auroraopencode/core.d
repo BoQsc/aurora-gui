@@ -440,6 +440,12 @@ public immutable Color opencodeText = Color.fromHex(0xe8e8ec);
 public immutable Color opencodeMuted = Color.fromHex(0x9a9aa5);
 public immutable Color opencodeAccent = Color.fromHex(0x8b7cf6);
 public immutable Color opencodeSelection = Color.fromHex(0x2b2b36);
+// Text selection over a message: the list-row `opencodeSelection` sits almost
+// on top of the dark transcript backgrounds and is easy to miss, so the
+// transcript uses a translucent accent wash instead. It is painted behind the
+// glyphs (the text stays crisp) yet reads clearly over prose, code panels and
+// diff bands alike. 120/255 keeps the light code text legible on top.
+public immutable Color opencodeTextSelection = Color.fromHex(0x8b7cf6, 120);
 public immutable Color opencodePressed = Color.fromHex(0x2f2f3b);
 public immutable Color opencodeUserBubble = Color.fromHex(0x2a2f45);
 public immutable Color opencodeAssistantBubble = Color.fromHex(0x1f1f27);
