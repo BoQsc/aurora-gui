@@ -8756,6 +8756,17 @@ public final class OpenCodeRoot : VBox
         _messagesScroll = new ChatScrollView(messageCenter);
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
+        // Retain the transcript as its own composited layer. Without this the
+        // column is part of the single base draw list, so anything that
+        // invalidates only the chrome - the composer caret blink, a keystroke
+        // in the prompt field, a hover state, an activity spinner, a sidebar
+        // update - re-runs glyph paint over every visible message. On a long
+        // conversation (the visible page is up to 120 messages) that is tens of
+        // milliseconds several times a second, which reads as the frame
+        // freezing while typing. As a layer its content is painted once and
+        // reused, and an invalidation from a message inside it marks only this
+        // layer dirty (see GuiWindow.invalidateWidget).
+        _messagesScroll.setComposited(true);
 
         // Auto-load: scrolling up to the top of the transcript (where the
         // collapsed older-message page begins) pulls in the next page instead
@@ -8899,6 +8910,13 @@ public final class OpenCodeRoot : VBox
         _snapPreview.layoutHints().excludeFromLayout = true;
         _snapPreview.layoutHints().overlayFillParent = true;
         _snapPreview.layoutHints().allowOverflow = true;
+        // The transcript is a composited layer (see `_messagesScroll` above),
+        // and layers are composited over the base draw list: a root-level
+        // overlay that only lives in the base would be covered by the
+        // transcript wherever they overlap. Keep the full-window overlays in
+        // the same channel as the transcript; being later root children, they
+        // are composited above it.
+        _snapPreview.setComposited(true);
         _titleBar.setSnapPreview(_snapPreview);
 
         // Cursor-following drag ghost: a window-local overlay added last, so it
@@ -8911,6 +8929,10 @@ public final class OpenCodeRoot : VBox
         _dragGhost.layoutHints().excludeFromLayout = true;
         _dragGhost.layoutHints().overlayFillParent = true;
         _dragGhost.layoutHints().allowOverflow = true;
+        // Same reason as `_snapPreview`: this overlay travels over the
+        // transcript while a conversation row is dragged, so it must composite
+        // above the transcript layer instead of being hidden behind it.
+        _dragGhost.setComposited(true);
         _sessionList.onDragGhost = delegate(bool active, string title,
             string action, Point position)
         {
