@@ -1302,17 +1302,11 @@ private final class MessageBubble : Widget
             }
         }
 
-        // Detach last frame's selectable geometry. The selection highlight is
-        // painted under this frame's glyphs but over the content's own opaque
-        // backgrounds (code-block panels, tool-card bands), so each content
-        // path below draws it between its background and glyph passes.
-        auto prevSegments = _selSegments;
-        _selSegments = null;
-
         _copyRects.length = 0;
         _copyLabels.length = 0;
         _linkRects.length = 0;
         _linkUrls.length = 0;
+        _selSegments.length = 0;
 
         if (_thinking.length > 0 && _content.length > 0)
             y += thinkingContentGap;
@@ -1333,7 +1327,7 @@ private final class MessageBubble : Widget
                 diffCardBorder);
             y += headerH;
             if (!_collapsed)
-                y += drawToolBody(canvas, innerWidth, y, prevSegments) + gap;
+                y += drawToolBody(canvas, innerWidth, y) + gap;
         }
         else if (_content.length > 0 || _streaming)
         {
@@ -1345,12 +1339,15 @@ private final class MessageBubble : Widget
                     noteActivity("paintMarkdown index=" ~ to!string(_messageIndex) ~
                         " items=" ~ to!string(composition.items.length) ~
                         " width=" ~ to!string(innerWidth));
-                    // Backgrounds, selection, then glyphs: the highlight sits
-                    // over the opaque code-block panel but under the code.
-                    paintMarkdownBackgrounds(canvas, composition, padH, contentY);
-                    drawSelection(canvas, prevSegments);
-                    paintMarkdownGlyphs(canvas, composition, padH, contentY);
+                    // Register selectable runs first, then paint backgrounds,
+                    // then the highlight (over the opaque code-block panel,
+                    // under the code) and finally the glyphs. Building the runs
+                    // and drawing them in the same frame keeps the highlight
+                    // locked to the text instead of lagging a frame behind.
                     collectMarkdownTargets(composition, contentY);
+                    paintMarkdownBackgrounds(canvas, composition, padH, contentY);
+                    drawSelection(canvas);
+                    paintMarkdownGlyphs(canvas, composition, padH, contentY);
                 }
             }
             else
@@ -1358,13 +1355,13 @@ private final class MessageBubble : Widget
                 const textX = _role == "user" ? userX + padH : padH;
                 const textWidth = _role == "user" ? userInnerWidth : innerWidth;
                 auto layout = shapedContent(textWidth);
-                drawSelection(canvas, prevSegments);
                 canvas.drawLayout(Point(textX, contentY), layout,
                     _queued ? opencodeMuted : opencodeText);
                 if (layout.lines.length > 0)
                     _selSegments ~= SelectSegment(layout, textX, contentY,
                         maxInt(1, textWidth),
                         layout.measuredSize().height);
+                drawSelection(canvas);
             }
         }
 
@@ -1769,8 +1766,7 @@ private final class MessageBubble : Widget
 
     /// Paint the expanded tool body (diff or numbered plain text) and register
     /// each row as a selectable segment. Returns the height consumed.
-    private int drawToolBody(ref Canvas canvas, int innerWidth, int top,
-        const SelectSegment[] prevSegments)
+    private int drawToolBody(ref Canvas canvas, int innerWidth, int top)
     {
         ensureToolLines(innerWidth);
         const count = cast(int) _toolLines.length;
@@ -1820,8 +1816,9 @@ private final class MessageBubble : Widget
         const diffBodyX = signX + _monoAdvance + 6;
         const plainBodyX = gutterX + gutterW + 10;
 
-        // Change-kind bands are painted first so the selection highlight can
-        // sit over them (and under the code) instead of being covered.
+        // Pass 1: change-kind bands plus the selectable run of each row. The
+        // bands are painted first and the runs registered here so the highlight
+        // can be drawn from this frame's own geometry.
         foreach (i; firstRow .. lastRow)
         {
             auto line = &_toolLines[cast(size_t) i];
@@ -1839,19 +1836,35 @@ private final class MessageBubble : Widget
                 canvas.fillRect(Rect(padH, y, accentW, rowH), opencodeDiffAdd);
             else if (line.kind == ToolLineKind.del)
                 canvas.fillRect(Rect(padH, y, accentW, rowH), opencodeDiffDelete);
-        }
-
-        drawSelection(canvas, prevSegments);
-
-        // Glyphs on top of the bands and the selection wash.
-        foreach (i; firstRow .. lastRow)
-        {
-            auto line = &_toolLines[cast(size_t) i];
-            const y = top + i * rowH;
 
             if (line.bodyLayout is null)
                 line.bodyLayout = shapeMonoLine(toUTF32(
                     line.body.length > 0 ? line.body : " "));
+            if (line.bodyLayout.lines.length == 0) continue;
+            if (line.kind == ToolLineKind.hunk)
+            {
+                const hunkX = padH + padX + accentW + 4;
+                const hunkW = maxInt(1, padH + fullW - padX - hunkX);
+                _selSegments ~= SelectSegment(line.bodyLayout, hunkX, y, hunkW,
+                    rowH);
+            }
+            else
+            {
+                const bodyX = line.kind == ToolLineKind.plain ? plainBodyX : diffBodyX;
+                const bodyW = maxInt(1, padH + fullW - padX - bodyX);
+                _selSegments ~= SelectSegment(line.bodyLayout, bodyX, y, bodyW,
+                    rowH);
+            }
+        }
+
+        drawSelection(canvas);
+
+        // Pass 2: glyphs on top of the bands and the selection wash. Runs were
+        // registered above, so this pass only draws.
+        foreach (i; firstRow .. lastRow)
+        {
+            auto line = &_toolLines[cast(size_t) i];
+            const y = top + i * rowH;
 
             if (line.kind == ToolLineKind.hunk)
             {
@@ -1860,9 +1873,6 @@ private final class MessageBubble : Widget
                 auto clipped = canvas.clipped(Rect(hunkX, y, hunkW, rowH));
                 clipped.drawLayout(Point(hunkX, y), line.bodyLayout,
                     opencodeAccent);
-                if (line.bodyLayout.lines.length > 0)
-                    _selSegments ~= SelectSegment(line.bodyLayout, hunkX, y,
-                        hunkW, rowH);
                 continue;
             }
 
@@ -1885,9 +1895,6 @@ private final class MessageBubble : Widget
             const bodyW = maxInt(1, padH + fullW - padX - bodyX);
             auto clipped = canvas.clipped(Rect(bodyX, y, bodyW, rowH));
             clipped.drawLayout(Point(bodyX, y), line.bodyLayout, opencodeText);
-            if (line.bodyLayout.lines.length > 0)
-                _selSegments ~= SelectSegment(line.bodyLayout, bodyX, y, bodyW,
-                    rowH);
         }
         return bodyH;
     }
@@ -2117,15 +2124,30 @@ private final class MessageBubble : Widget
         lastSeg = backwards ? _selAnchorSeg : _selFocusSeg;
         firstChar = backwards ? _selFocusChar : _selAnchorChar;
         lastChar = backwards ? _selAnchorChar : _selFocusChar;
+        // A re-layout can change the run count between the mouse event that set
+        // the anchors and this paint. Clamp the indices onto the current list
+        // (and drop the range entirely when there is nothing selectable) so a
+        // shrinking list cannot make the highlight blink out mid-drag.
+        const count = cast(int) _selSegments.length;
+        if (count == 0)
+        {
+            firstSeg = -1;
+            lastSeg = -1;
+            return;
+        }
+        if (firstSeg < 0) firstSeg = 0;
+        if (lastSeg < 0) lastSeg = 0;
+        if (firstSeg > count - 1) firstSeg = count - 1;
+        if (lastSeg > count - 1) lastSeg = count - 1;
     }
 
-    private void drawSelection(ref Canvas canvas, const SelectSegment[] segments)
+    private void drawSelection(ref Canvas canvas)
     {
         if (!hasSelection()) return;
         int firstSeg, lastSeg;
         size_t firstChar, lastChar;
         orderedSelection(firstSeg, firstChar, lastSeg, lastChar);
-        foreach (segIndex, segment; segments)
+        foreach (segIndex, segment; _selSegments)
         {
             const index = cast(int) segIndex;
             if (index < firstSeg || index > lastSeg) continue;
@@ -9390,6 +9412,7 @@ public final class OpenCodeRoot : VBox
         session.model = _settings.model;
         session.thinking = _settings.thinking;
         session.projectId = activeProjectId();
+        session.updatedAt = Clock.currTime.toUnixTime();
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
         loadRuntime(_current);
@@ -9418,6 +9441,8 @@ public final class OpenCodeRoot : VBox
         // conversation it belongs to.
         syncComposerDraft();
         _current = index;
+        // Opening a conversation is NOT activity: merely looking at a chat must
+        // not move it in a recency-ordered list. Only real turn activity does.
         loadRuntime(index);
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
@@ -9463,6 +9488,8 @@ public final class OpenCodeRoot : VBox
         updateStatus("");
         refreshUsageBadge();
         refreshTimerBadge(true);
+        // Re-list only when the unread dot cleared; opening a conversation does
+        // not reorder a recency list.
         if (clearedUnread) updateSessionList();
     }
 
@@ -9727,6 +9754,9 @@ public final class OpenCodeRoot : VBox
         ChatMessage message)
     {
         if (session.id.length == 0) session.id = newSessionId();
+        // Any new message is fresh interaction, so the conversation moves to
+        // the top of a recency-ordered sidebar.
+        session.updatedAt = Clock.currTime.toUnixTime();
         message.id = newMessageId();
         message.parentId = session.activeLeafId;
         session.messages ~= message;
@@ -16334,6 +16364,22 @@ public final class OpenCodeRoot : VBox
         titleRow.add(titleCheck);
         optionsBody.add(titleRow);
 
+        // Conversation order: list by most recent activity (message or turn)
+        // instead of creation order. On by default.
+        auto recencyRow = new HBox(8);
+        recencyRow.layoutHints().preferredHeight = 32;
+        auto recencyCheck = new CheckBox("Sort conversations by recent activity");
+        recencyCheck.setId("oc-sortrecency");
+        recencyCheck.setChecked(_settings.sortSessionsByRecency, false);
+        recencyCheck.onChanged = delegate(bool value)
+        {
+            _settings.sortSessionsByRecency = value;
+            saveSettingsNow();
+            updateSessionList();
+        };
+        recencyRow.add(recencyCheck);
+        optionsBody.add(recencyRow);
+
         // Verbosity: an optional response-style selector for the agent's prose.
         // "Default" keeps the stock prompt; the smaller levels append a short
         // directive that trims preamble, repetition, and explanation. Applied on
@@ -17589,11 +17635,17 @@ public final class OpenCodeRoot : VBox
         int[] indices;
         int pinnedCount = 0;
         const projectId = activeProjectId();
-        // Newest conversation first: sessions are appended on creation, so walk
-        // the array backwards and keep the real indices for row -> session.
-        // Pinned conversations are listed first; each group stays newest-first.
+        // Within a group the order is by most recent activity (a message or a
+        // turn) when that listing is on, otherwise newest-created first.
+        // Sessions with no recorded activity - an upgrade, or a snapshot that
+        // predates the stamp - keep their creation order, so an existing list
+        // is not shuffled until it is actually used. Pinned conversations are
+        // listed first; each group is ordered the same way.
+        const byRecency = _settings.sortSessionsByRecency;
         foreach (bool pinnedPass; [true, false])
         {
+            int[] group;    // session indices, newest-created first
+            long[] groupAt; // activity stamp per entry (0 = unknown)
             foreach_reverse (index, session; _sessions)
             {
                 // Sessions restored from an older build have no project; they
@@ -17606,12 +17658,39 @@ public final class OpenCodeRoot : VBox
                 if (_filterText.length > 0 &&
                     !canFind(title.toLower(), _filterText.toLower()))
                     continue;
-                indices ~= cast(int) index;
+                group ~= cast(int) index;
+                groupAt ~= session.updatedAt;
+            }
+            if (byRecency)
+            {
+                // Stable insertion sort, most recent first; equal stamps keep
+                // the newest-created-first order they arrived in.
+                foreach (i; 1 .. group.length)
+                {
+                    const key = groupAt[i];
+                    const value = group[i];
+                    size_t j = i;
+                    while (j > 0 && groupAt[j - 1] < key)
+                    {
+                        groupAt[j] = groupAt[j - 1];
+                        group[j] = group[j - 1];
+                        --j;
+                    }
+                    groupAt[j] = key;
+                    group[j] = value;
+                }
+            }
+            foreach (index; group)
+            {
+                const session = _sessions[index];
+                const title = session.title.length > 0 ? session.title
+                    : "New chat";
+                indices ~= index;
                 string secondary;
                 const path = activeMessagePath(session);
                 if (path.length > 0)
                     secondary = session.messages[path[$ - 1]].time;
-                items ~= ListItem(pinned ? "★ " ~ title : title,
+                items ~= ListItem(pinnedPass ? "★ " ~ title : title,
                     IconKind.none, secondary);
                 if (pinnedPass) ++pinnedCount;
             }
@@ -17711,6 +17790,7 @@ public final class OpenCodeRoot : VBox
         copy.queuedFollowUps = source.queuedFollowUps;
         // A copy is new work the reader has not seen yet; it starts read.
         copy.unread = false;
+        copy.updatedAt = Clock.currTime.toUnixTime();
         // Re-key the whole message graph in one pass, then remap parents. A
         // parent may appear before or after its child in `messages`, so the id
         // map has to be complete before any parent is rewritten.
@@ -18391,6 +18471,10 @@ public final class OpenCodeRoot : VBox
         // the text the user was typing is lost with the process.
         if (session.draft.length > 0)
             root["draft"] = session.draft;
+        // Last-activity stamp, so the sidebar can list conversations by
+        // recency across a restart instead of falling back to creation order.
+        if (session.updatedAt > 0)
+            root["updatedAt"] = session.updatedAt;
         if (session.compactionSummary.length > 0 &&
             session.compactedThroughMessageId.length > 0)
         {
@@ -18679,6 +18763,10 @@ public final class OpenCodeRoot : VBox
                         if (auto field = "draft" in sessionValue.object)
                             if (field.type == JSONType.string)
                                 session.draft = field.str;
+                        if (auto field = "updatedAt" in sessionValue.object)
+                            if (field.type == JSONType.integer &&
+                                field.integer > 0)
+                                session.updatedAt = field.integer;
                         if (auto field = "compactionSummary" in
                             sessionValue.object)
                             if (field.type == JSONType.string)
@@ -18972,12 +19060,18 @@ public final class OpenCodeRoot : VBox
             // Keep a draft too, from whichever copy has one, so merging a
             // snapshot that predates the composer text cannot drop it.
             const oldDraft = existing.draft;
+            const oldUpdatedAt = existing.updatedAt;
             const replace = session.messages.length > existing.messages.length;
             if (replace)
                 existing = session;
             existing.unread = unread;
             if (existing.draft.length == 0)
                 existing.draft = replace ? oldDraft : session.draft;
+            // Keep the most recent activity stamp across merged snapshots, so a
+            // more complete copy saved earlier does not pull the conversation
+            // back down the recency list.
+            if (oldUpdatedAt > existing.updatedAt)
+                existing.updatedAt = oldUpdatedAt;
             return;
         }
         _sessions ~= session;
@@ -19042,6 +19136,8 @@ public final class OpenCodeRoot : VBox
             }
             if (recovered.activeLeafId.length > 0)
                 existing.activeLeafId = recovered.activeLeafId;
+            if (recovered.updatedAt > existing.updatedAt)
+                existing.updatedAt = recovered.updatedAt;
             return;
         }
         _sessions ~= recovered;

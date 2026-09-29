@@ -1109,6 +1109,10 @@ class TextEditor : Widget
     protected override void onTick(double deltaSeconds)
     {
         if (!focused()) return;
+        // A live selection shows no insertion caret, so its blink timer must
+        // not repaint the field either: otherwise a caret flashes inside the
+        // highlight while the user keeps dragging the selection.
+        if (hasSelection()) return;
         _caretClock += deltaSeconds;
         if (_caretClock >= 0.5)
         {
@@ -1189,7 +1193,9 @@ class TextEditor : Widget
             paintTitleForeground(content, layout, titleOrigin, titleStyle);
         }
 
-        if (_caretEnabled && focused() && _caretVisible)
+        // Suppress the caret whenever a selection is active: a blinking bar
+        // riding the selection end reads as the highlight flickering.
+        if (_caretEnabled && focused() && _caretVisible && !hasSelection())
         {
             const caret = layout.caretPosition(_cursor, _caretAffinity);
             const x = originX + cast(int) floor(caret.x + 0.5);

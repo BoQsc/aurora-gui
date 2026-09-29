@@ -732,6 +732,11 @@ public struct ChatSession
     // prompt survives a restart or a rebuild-and-relaunch instead of vanishing
     // with the process. Empty once the prompt is sent.
     string draft;
+    // Wall-clock seconds (Unix time) of the conversation's last activity - a
+    // message or turn change. Lets the sidebar be listed by most recent
+    // activity instead of creation order. Zero means "unknown" (a snapshot
+    // written before this field existed) and sorts as the oldest.
+    long updatedAt;
 }
 
 // ---------------------------------------------------------------------------
@@ -961,6 +966,10 @@ public struct Settings
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
     bool quickTitle = true;
+    // List conversations by most recent activity (message or turn) instead of
+    // creation order. On by default; set false to keep the original
+    // newest-created-first listing.
+    bool sortSessionsByRecency = true;
     // Optional request targets scoped to the exact endpoint and model.
     ModelContextBudget[] contextBudgets;
     // Automatic request compaction is opt-in for each endpoint and model.
@@ -1262,6 +1271,10 @@ public Settings loadSettings()
                 if (auto found = "quickTitle" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.quickTitle = found.type == JSONType.true_;
+                if (auto found = "sortSessionsByRecency" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.sortSessionsByRecency =
+                            found.type == JSONType.true_;
                 if (auto found = "detachedPlan" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.detachedPlan = found.type == JSONType.true_;
@@ -1529,6 +1542,7 @@ public void saveSettings(const ref Settings settings)
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
     root["quickTitle"] = settings.quickTitle;
+    root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     JSONValue contextBudgets = JSONValue(string[].init);
