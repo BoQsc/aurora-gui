@@ -6,7 +6,8 @@ import auroraopencode.core : OpenCodeToolCall,
 import auroraopencode.attachments : attachmentImageKindForBytes;
 import auroraopencode.computeruse : computerUseEncodePng, setComputerUseSetting,
     computerUseScaledArgsForTesting, computerUseFramesDifferForTesting,
-    computerUseArgsWithinFrameForTesting, computerUseFrameFactorForTesting;
+    computerUseArgsWithinFrameForTesting, computerUseFrameFactorForTesting,
+    computerUseStripNestedScreensForTesting;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
@@ -1044,6 +1045,18 @@ int main()
             "frame=full must use factor 1");
         assert(computerUseFrameFactorForTesting("nonsense") == 4,
             "an unknown frame must fall back to quarter");
+    }
+    // A full-screen `screen` nested in a `steps` batch is redundant (a frame is
+    // attached every step); it must be stripped, while a region crop stays.
+    {
+        int strippedNested;
+        auto filtered = computerUseStripNestedScreensForTesting(
+            `{"steps":[{"action":"click","x":1,"y":1},{"action":"screen"},` ~
+            `{"action":"screen","region":{"x":0,"y":0,"w":10,"h":10}}]}`, strippedNested);
+        assert(strippedNested == 1, "one nested full-screen capture must be stripped");
+        auto f = parseJSON(filtered);
+        assert(f["steps"].array.length == 2,
+            "the click and the region crop must remain: " ~ filtered);
     }
     writeln("experimental computer use is opt-in, validated and switchable");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,

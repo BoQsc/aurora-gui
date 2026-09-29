@@ -1020,6 +1020,11 @@ else version (Windows)
             if (options.nativeVerticalScrollHost)
                 style |= WS_VSCROLL;
             DWORD exStyle = options.alwaysOnTop ? WS_EX_TOPMOST : 0;
+            // A no-activate overlay must not steal the foreground from a
+            // fullscreen game on any click, so the style is set for the whole
+            // window lifetime, not just the initial show.
+            if (options.noActivate)
+                exStyle |= WS_EX_NOACTIVATE;
 
             const requestedClient = _displayScale.logicalToPhysical(
                 Size(maxIntLocal(1, options.width), maxIntLocal(1, options.height)));
@@ -1145,7 +1150,8 @@ else version (Windows)
             // application theme color instead of the system's white default.
             seedStartupBackground();
             _shown = true;
-            const command = options.startNoActivate ? SW_SHOWNOACTIVATE :
+            const command = (options.startNoActivate || options.noActivate) ?
+                SW_SHOWNOACTIVATE :
                 (_fullscreen ? SW_SHOWNORMAL :
                     (options.startMaximized ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL));
             ShowWindow(_hwnd, command);

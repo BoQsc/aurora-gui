@@ -39,6 +39,11 @@ struct WindowOptions
     /** Show the initial Win32 window without activating it. Intended for
         background integration tests and passive utility windows. */
     bool startNoActivate;
+    /** Never let a click activate this window for its whole lifetime
+        (WS_EX_NOACTIVATE on Win32). For always-on-top overlays that must not
+        pull the foreground away from a fullscreen game. Note: a no-activate
+        window does not receive keyboard input while another app is in front. */
+    bool noActivate;
     /** Request a dark native titlebar where the host OS supports it. */
     bool darkTitleBar;
     /** Start in native monitor fullscreen. Takes precedence over maximized. */

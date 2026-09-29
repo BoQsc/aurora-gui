@@ -966,6 +966,15 @@ public struct Settings
     // local desktop (screen/click/type/key/scroll). Off by default; the Settings
     // dialog owns this switch.
     bool experimentalComputerUse;
+    // Optional always-on-top mini chat overlay: a small frameless window that
+    // floats above other apps and shows the last few messages of the current
+    // conversation plus a one-line input, so the user can read and steer while
+    // a game (or any fullscreen app) keeps focus. Off by default; the Settings
+    // dialog owns the switch.
+    bool floatingMiniChat;
+    // How many recent user/assistant messages the mini chat shows (clamped
+    // 1..10 when read).
+    int floatingMiniChatLines = 3;
     // On a brand-new chat, rewrite the name once with a tiny no-thinking
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
@@ -1290,6 +1299,13 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalComputerUse =
                             found.type == JSONType.true_;
+                if (auto found = "floatingMiniChat" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.floatingMiniChat = found.type == JSONType.true_;
+                if (auto found = "floatingMiniChatLines" in value.object)
+                    if (found.type == JSONType.integer &&
+                        found.integer >= 1 && found.integer <= 10)
+                        settings.floatingMiniChatLines = cast(int) found.integer;
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
@@ -1554,6 +1570,8 @@ public void saveSettings(const ref Settings settings)
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     root["experimentalComputerUse"] = settings.experimentalComputerUse;
+    root["floatingMiniChat"] = settings.floatingMiniChat;
+    root["floatingMiniChatLines"] = settings.floatingMiniChatLines;
     JSONValue contextBudgets = JSONValue(string[].init);
     foreach (budget; settings.contextBudgets)
     {

@@ -40,6 +40,9 @@ import auroraopencode.attachments :
     attachmentStripHeight, attachmentVisibleSummary,
     attachmentsContainImage, experimentalAttachmentsEnabled;
 import auroraopencode.clipboardimage : clipboardImagePng;
+// Optional floating mini chat overlay (always-on-top recent messages + input);
+// off by default. See source/auroraopencode/minichat.d.
+import auroraopencode.minichat : MiniChatHost, MiniChatLine, miniChatOneLine;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
@@ -7707,6 +7710,13 @@ public final class OpenCodeRoot : VBox
     private Attachment[] _pendingAttachments;
     private AttachmentStrip _attachmentStrip;
     private CenteredColumn _composerCenter;
+    // Optional floating mini chat overlay (see source/auroraopencode/minichat.d).
+    // Null while the feature is off. The host owns the second window/thread; the
+    // root only publishes snapshots to it and drains prompts from it.
+    private MiniChatHost _miniChat;
+    // Throttles the snapshot publish so the overlay is refreshed a few times a
+    // second instead of on every frame.
+    private double _miniChatAccum;
     private Button _modelButton;
     private CheckBox _thinkingBox;
     private CheckBox _toolsBox;
@@ -8268,6 +8278,8 @@ public final class OpenCodeRoot : VBox
         // Let the agent rebuild this app through the `rebuild` tool. The
         // handler only records the request; onTick performs it.
         rebuildRequestHandler = &onAgentRebuildRequested;
+        // Optional floating mini chat overlay, off by default.
+        setMiniChatEnabled(_settings.floatingMiniChat);
     }
 
     // -- resume after an unexpected shutdown ------------------------------
@@ -8549,12 +8561,93 @@ public final class OpenCodeRoot : VBox
             "again.";
     }
 
+    // -- optional floating mini chat ----------------------------------------
+
+    /// Whether the mini chat overlay is currently running.
+    public bool miniChatEnabled() const
+    {
+        return _miniChat !is null;
+    }
+
+    /// Start or stop the overlay. Called on load and whenever the Settings
+    /// checkbox changes; both run on the UI thread. The overlay's own window
+    /// and thread are owned by the host.
+    public void setMiniChatEnabled(bool enabled)
+    {
+        if (enabled)
+        {
+            if (_miniChat !is null) return;
+            _miniChat = new MiniChatHost();
+            _miniChat.start();
+            syncMiniChat();
+        }
+        else
+        {
+            if (_miniChat is null) return;
+            _miniChat.stop();
+            _miniChat = null;
+        }
+    }
+
+    /// Push the current conversation's recent messages to the overlay. Safe to
+    /// call often; the host snapshots the slice under its mutex.
+    private void syncMiniChat()
+    {
+        if (_miniChat is null) return;
+        _miniChat.publishMessages(recentMessagesForOverlay(
+            _settings.floatingMiniChatLines));
+    }
+
+    /// The last `count` non-internal user/assistant messages of the currently
+    /// viewed conversation, chronological, each flattened to one display line.
+    public MiniChatLine[] recentMessagesForOverlay(int count)
+    {
+        MiniChatLine[] result;
+        if (count <= 0 || _current < 0 || _current >= cast(int) _sessions.length)
+            return result;
+        const session = &_sessions[_current];
+        MiniChatLine[] newestFirst;
+        foreach_reverse (index; activeMessagePath(*session))
+        {
+            if (newestFirst.length >= count) break;
+            const message = session.messages[index];
+            if (message.internal) continue;
+            if (message.role != "user" && message.role != "assistant") continue;
+            const text = miniChatOneLine(message.content);
+            if (text.length == 0) continue;
+            newestFirst ~= MiniChatLine(message.role, text);
+        }
+        // newestFirst is newest-first; the overlay renders oldest-first.
+        result.length = newestFirst.length;
+        foreach (i, line; newestFirst)
+            result[newestFirst.length - 1 - i] = line;
+        return result;
+    }
+
+    /// Submit a prompt typed in the overlay exactly like the main composer:
+    /// the text goes through `sendMessage`, so queued follow-ups, steering,
+    /// attachments and the busy-stop rules all match the primary input.
+    public void submitOverlayPrompt(string text)
+    {
+        const prompt = text.strip();
+        if (prompt.length == 0) return;
+        _input.setText(prompt);
+        sendMessage();
+    }
+
     /// Test-only / shutdown hook: release the shared network session.
     public void shutdownClient()
     {
         // Persist on the way out regardless of the debounce flag: a reply that
         // arrived moments before the window closed is otherwise lost, which is
         // why the last message could vanish across a restart.
+        // The overlay is a daemon thread, but ask it to close so its window does
+        // not linger for the last instant of shutdown.
+        if (_miniChat !is null)
+        {
+            _miniChat.stop();
+            _miniChat = null;
+        }
         persistState();
         closeRuntimeClients();
     }
@@ -17043,6 +17136,23 @@ public final class OpenCodeRoot : VBox
         computerRow.add(computerCheck);
         optionsBody.add(computerRow);
 
+        // Optional: a small always-on-top mini chat that shows the last few
+        // messages of the current conversation and a one-line input, so the
+        // user can read/steer while a game has focus. Off by default.
+        auto miniChatRow = new HBox(8);
+        miniChatRow.layoutHints().preferredHeight = 32;
+        auto miniChatCheck = new CheckBox("Floating mini chat (computer use)");
+        miniChatCheck.setId("oc-minichat");
+        miniChatCheck.setChecked(_settings.floatingMiniChat, false);
+        miniChatCheck.onChanged = delegate(bool value)
+        {
+            _settings.floatingMiniChat = value;
+            setMiniChatEnabled(value);
+            saveSettingsNow();
+        };
+        miniChatRow.add(miniChatCheck);
+        optionsBody.add(miniChatRow);
+
         // Optional: rewrite a brand-new chat's name once with a tiny,
         // no-thinking request instead of the raw first message. Off by default.
         auto titleRow = new HBox(8);
@@ -20249,6 +20359,24 @@ public final class OpenCodeRoot : VBox
         // experimental: computer use - retry a deferred auto-continue when the
         // client was still busy as the turn settled (see maybeAutoContinue).
         pumpAutoContinue();
+
+        // Optional floating mini chat: drain a prompt typed in the overlay and
+        // refresh its recent-message snapshot. Both touch UI-thread state (plus
+        // the host's mutex), so this must run here on the UI thread. The
+        // snapshot publish is throttled so a streaming reply does not rebuild
+        // the overlay rows on every frame.
+        if (_miniChat !is null)
+        {
+            string overlayPrompt;
+            if (_miniChat.takePrompt(overlayPrompt))
+                submitOverlayPrompt(overlayPrompt);
+            _miniChatAccum += deltaSeconds;
+            if (_miniChatAccum >= 0.2)
+            {
+                _miniChatAccum = 0;
+                syncMiniChat();
+            }
+        }
 
         updateSendButton();
     }
