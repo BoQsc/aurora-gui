@@ -4,7 +4,7 @@ import auroraopencode.core : OpenCodeToolCall,
     setOpencodeStateDirectoryForTesting;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.attachments : attachmentImageKindForBytes;
-import auroraopencode.computeruse : computerUseEncodePng;
+import auroraopencode.computeruse : computerUseEncodePng, setComputerUseSetting;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
@@ -959,6 +959,20 @@ int main()
         else environment["AURORA_COMPUTER_USE"] = previousComputer;
         assert(toolSteeringPrompt(true).indexOf("`computer`") < 0,
             "computer use must return to off once the switch is cleared");
+
+        // The persisted Settings checkbox is the primary gate.
+        setComputerUseSetting(true);
+        bool settingEnabled;
+        foreach (tool; builtinToolDefinitions())
+            if (tool.name == "computer") settingEnabled = true;
+        assert(settingEnabled,
+            "the Settings checkbox must be able to enable computer use");
+        setComputerUseSetting(false);
+        bool settingDisabled;
+        foreach (tool; builtinToolDefinitions())
+            if (tool.name == "computer") settingDisabled = true;
+        assert(!settingDisabled,
+            "clearing the Settings checkbox must disable computer use");
     }
     // The dependency-free screenshot encoder emits a valid PNG container.
     {

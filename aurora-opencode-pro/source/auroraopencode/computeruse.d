@@ -48,9 +48,21 @@ private enum enableValues = ["1", "on", "true", "yes", "y", "enabled",
 /// tests (and a relaunch with a different environment) see the current value.
 public bool experimentalComputerUseEnabled()
 {
+    if (computerUseEnabledBySetting) return true;
     const raw = strip(toLower(environment.get("AURORA_COMPUTER_USE", "")));
     if (raw.length == 0) return false;
     return enableValues.canFind(raw);
+}
+
+/// Set by the host app from the persisted Settings checkbox. `__gshared` is
+/// required: the app writes it on the UI thread while tool workers read it.
+public __gshared bool computerUseEnabledBySetting = false;
+
+/// Apply the Settings choice. Called on load and whenever the checkbox changes,
+/// so the next toolset/prompt build reflects the new value.
+public void setComputerUseSetting(bool value)
+{
+    computerUseEnabledBySetting = value;
 }
 
 /// Tool definition to append to a toolset. Returns an empty array when the

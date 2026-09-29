@@ -962,6 +962,10 @@ public struct Settings
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
     bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
+    // Highly experimental opt-in: expose the `computer` tool that drives the
+    // local desktop (screen/click/type/key/scroll). Off by default; the Settings
+    // dialog owns this switch.
+    bool experimentalComputerUse;
     // On a brand-new chat, rewrite the name once with a tiny no-thinking
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
@@ -1282,6 +1286,10 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalNestedPlans =
                             found.type == JSONType.true_;
+                if (auto found = "experimentalComputerUse" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalComputerUse =
+                            found.type == JSONType.true_;
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
@@ -1545,6 +1553,7 @@ public void saveSettings(const ref Settings settings)
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
+    root["experimentalComputerUse"] = settings.experimentalComputerUse;
     JSONValue contextBudgets = JSONValue(string[].init);
     foreach (budget; settings.contextBudgets)
     {

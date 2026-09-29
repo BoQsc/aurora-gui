@@ -27,6 +27,8 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
 import auroraopencode.systemprompt : promptVerbosityDirective,
     promptVerbosityLabel, promptVerbosityNames, rebuildModule,
     setSystemPromptModules;
+// experimental: computer use - delete with source/auroraopencode/computeruse.d
+import auroraopencode.computeruse : setComputerUseSetting;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -8161,6 +8163,9 @@ public final class OpenCodeRoot : VBox
             "runtime-events.jsonl"));
         phase("journal runtime");
         _settings = loadSettings();
+        // experimental: computer use - mirror the persisted switch into the
+        // toolset/prompt gate before any request or toolset build.
+        setComputerUseSetting(_settings.experimentalComputerUse);
         _projectState = loadProjects();
         migrateWorkspaceIntoProjects();
         migrateLegacySandboxIntoNumberedFolder();
@@ -16805,6 +16810,23 @@ public final class OpenCodeRoot : VBox
         };
         nestedRow.add(nestedCheck);
         optionsBody.add(nestedRow);
+
+        // experimental: computer use - delete with
+        // source/auroraopencode/computeruse.d. Highly experimental and off by
+        // default: exposes a `computer` tool that drives the local desktop.
+        auto computerRow = new HBox(8);
+        computerRow.layoutHints().preferredHeight = 32;
+        auto computerCheck = new CheckBox("Experimental computer use");
+        computerCheck.setId("oc-computeruse");
+        computerCheck.setChecked(_settings.experimentalComputerUse, false);
+        computerCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalComputerUse = value;
+            setComputerUseSetting(value);
+            saveSettingsNow();
+        };
+        computerRow.add(computerCheck);
+        optionsBody.add(computerRow);
 
         // Optional: rewrite a brand-new chat's name once with a tiny,
         // no-thinking request instead of the raw first message. Off by default.
