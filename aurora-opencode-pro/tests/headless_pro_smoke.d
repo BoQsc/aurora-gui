@@ -5245,6 +5245,52 @@ int main(string[] args)
         writeln("Detached plan panel shows by default and returns inline when off");
     }
 
+    // The detached plan card's small bent-arrow button (bottom-right corner)
+    // reuses the left border's minimize: it slides the card off toward the
+    // right edge into the same slim tab, which restores it on click.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Minimize the plan"]);
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.rebuildForTesting();
+        driver.moveTo(Point(4, 700));
+        assert(driver.paint(), "the minimize-button plan did not paint");
+        assert(root.detachedPlanVisibleForTesting(),
+            "the detached plan panel did not show for the arrow check");
+        const panel = requireWidget!Widget(root, "oc-plan-panel");
+        const hideRect = root.detachedPlanHideIconRectForTesting();
+        assert(hideRect.width > 0 && hideRect.height > 0,
+            "the plan card had no bent-arrow button: " ~ to!string(hideRect));
+        const cardRect = root.detachedPlanRectForTesting();
+        assert(hideRect.x + hideRect.width > cardRect.x + cardRect.width / 2 &&
+            hideRect.y + hideRect.height > cardRect.y + cardRect.height / 2,
+            "the bent-arrow button was not in the card's bottom-right corner: " ~
+            to!string(hideRect));
+        driver.click(panel.localToGlobal(Point(hideRect.x + hideRect.width / 2,
+            hideRect.y + hideRect.height / 2)));
+        assert(driver.paint(), "minimizing the plan did not repaint");
+        assert(root.detachedPlanCollapsedForTesting(),
+            "clicking the bent arrow did not minimize the plan");
+        const collapsedRect = root.detachedPlanRectForTesting();
+        const viewportWidth = root.messageCenterWidthForTesting();
+        assert(collapsedRect.width > 0 && collapsedRect.width <= 32,
+            "the minimized plan is not a slim tab: " ~ to!string(collapsedRect));
+        assert(collapsedRect.x + collapsedRect.width >= viewportWidth - 60,
+            "the minimized plan is not against the right edge: " ~
+            to!string(collapsedRect));
+        // The same slim tab restores the card, exactly like the left border.
+        driver.click(panel.localToGlobal(Point(
+            collapsedRect.x + collapsedRect.width / 2,
+            collapsedRect.y + collapsedRect.height / 2)));
+        assert(driver.paint(), "restoring the plan did not repaint");
+        assert(!root.detachedPlanCollapsedForTesting() &&
+            root.detachedPlanRectForTesting().width > 32,
+            "clicking the minimized tab did not restore the plan");
+        writeln("Plan minimizes to the right edge from a bent-arrow corner button");
+    }
+
     // Experimental substeps keep the parent checklist intact and can be
     // collapsed or hidden without losing their durable state.
     {

@@ -3573,6 +3573,29 @@ private final class TurnCompletionSeparator : Widget
 /// The model owns this state through `update_plan`. The checklist is advisory
 /// progress state rather than an automatic continuation trigger, and this card
 /// keeps that state visible without expanding the tool group that updated it.
+/// A small bent arrow in the card's bottom-right corner asks the detached
+/// panel to hide the plan out of the way.
+private void drawBentArrowIcon(ref Canvas canvas, Rect box, Color color,
+    int thickness = 2)
+{
+    // The "↳" bent arrow: a stem drops from the top and bends right into an
+    // arrowhead near the bottom-right corner, reading as "tuck this away".
+    const double left = box.x + box.width * 0.30;
+    const double bendY = box.y + box.height * 0.68;
+    const double tipX = box.x + box.width * 0.72;
+    canvas.drawLine(
+        Point(cast(int) left, cast(int) (box.y + box.height * 0.24)),
+        Point(cast(int) left, cast(int) bendY), color, thickness);
+    canvas.drawLine(Point(cast(int) left, cast(int) bendY),
+        Point(cast(int) tipX, cast(int) bendY), color, thickness);
+    canvas.drawLine(Point(cast(int) tipX, cast(int) bendY),
+        Point(cast(int) (tipX - box.width * 0.20),
+            cast(int) (bendY - box.height * 0.18)), color, thickness);
+    canvas.drawLine(Point(cast(int) tipX, cast(int) bendY),
+        Point(cast(int) (tipX - box.width * 0.20),
+            cast(int) (bendY + box.height * 0.18)), color, thickness);
+}
+
 private final class PlanCard : Widget
 {
     private static immutable int padH = 12;
@@ -3585,6 +3608,11 @@ private final class PlanCard : Widget
     private static immutable int progressH = 6;
     private static immutable int progressTopGap = 4;
     private static immutable int progressBottomGap = 6;
+    // The bent-arrow hide button parked in the card's bottom-right corner.
+    // `hideIconReserve` keeps the step text clear of it on the last rows.
+    private static immutable int hideIconSize = 14;
+    private static immutable int hideIconInset = 5;
+    private static immutable int hideIconReserve = hideIconSize + 6;
 
     private string _objective;
     private string _status;
@@ -3599,6 +3627,7 @@ private final class PlanCard : Widget
     private static immutable int handleWidth = 10;
     private bool _railOnly;
     private bool _handleHot;
+    private bool _hideHot;
     // Whether the pointer is asking for the hover expansion. The left border
     // freezes this while the pointer is on it: growing the card there would
     // slide the border out from under the pointer that is trying to click it.
@@ -3609,6 +3638,8 @@ private final class PlanCard : Widget
     void delegate() onHoverChanged;
     /// Notified when the left-border handle is clicked.
     void delegate() onHandleActivated;
+    /// Notified when the bottom-right bent-arrow hide button is clicked.
+    void delegate() onHideRequested;
     void delegate(size_t) onToggleNested;
 
     /// Whether hovering should expand the card; only meaningful while hovered.
@@ -3798,7 +3829,8 @@ private final class PlanCard : Widget
             const plan = nestedFor(index);
             const summaryWidth = plan is null ? 0 : 64;
             canvas.drawTextInRect(Rect(textX, y,
-                maxInt(0, textWidth - glyphSize - glyphGap - summaryWidth), lineH),
+                maxInt(0, textWidth - glyphSize - glyphGap - summaryWidth -
+                    hideIconReserve), lineH),
                 toUTF32(text), statusColor(status), 1,
                 HorizontalAlign.left, VerticalAlign.middle, true);
             if (plan !is null)
@@ -3820,12 +3852,14 @@ private final class PlanCard : Widget
                     drawStepGlyph(canvas, y, child.status, childIndent);
                     const childTextX = textX + childIndent;
                     canvas.drawTextInRect(Rect(childTextX, y,
-                        maxInt(0, width - padH - childTextX), lineH),
+                        maxInt(0, width - padH - childTextX - hideIconReserve),
+                        lineH),
                         toUTF32(child.text), statusColor(child.status), 1,
                         HorizontalAlign.left, VerticalAlign.middle, true);
                     y += lineH;
                 }
         }
+        drawHideIcon(canvas);
     }
 
     /// The left border: an accent rail that doubles as the collapse handle.
@@ -3868,6 +3902,33 @@ private final class PlanCard : Widget
             color, 2);
     }
 
+    /// The bottom-right corner of the hide button within the card.
+    private Rect hideIconRect()
+    {
+        return Rect(
+            maxInt(padH, bounds().width - hideIconInset - hideIconSize),
+            maxInt(padV, bounds().height - hideIconInset - hideIconSize),
+            hideIconSize, hideIconSize);
+    }
+
+    /// Draw the small bent-arrow hide button in the card's bottom-right
+    /// corner. A field-coloured chip lifts it clear of any step text beneath.
+    private void drawHideIcon(ref Canvas canvas)
+    {
+        const box = hideIconRect();
+        canvas.fillRoundedRect(Rect(box.x - 1, box.y - 1, box.width + 2,
+            box.height + 2), 5, opencodeField);
+        drawBentArrowIcon(canvas, box,
+            _hideHot ? opencodeAccent : opencodeMuted);
+    }
+
+    /// Test-only: the hide button's rect within the card (empty when the card
+    /// is collapsed to its left-border tab and the button is not shown).
+    Rect hideIconRectForTesting()
+    {
+        return _railOnly ? Rect.init : hideIconRect();
+    }
+
     protected override void onMouseEnter()
     {
         if (onHoverChanged !is null) onHoverChanged();
@@ -3875,9 +3936,10 @@ private final class PlanCard : Widget
 
     protected override void onMouseLeave()
     {
-        const changed = _handleHot || _expandWanted;
+        const changed = _handleHot || _expandWanted || _hideHot;
         _handleHot = false;
         _expandWanted = false;
+        _hideHot = false;
         if (changed)
         {
             invalidate();
@@ -3896,12 +3958,20 @@ private final class PlanCard : Widget
             _handleHot = hot;
             invalidate();
         }
-        setCursor(onHandle || nestedParentAt(event.position.y) != size_t.max
+        const overIcon = !_railOnly && hideIconRect().contains(event.position);
+        if (overIcon != _hideHot)
+        {
+            _hideHot = overIcon;
+            invalidate();
+        }
+        setCursor(onHandle || overIcon ||
+            nestedParentAt(event.position.y) != size_t.max
             ? CursorKind.hand : CursorKind.arrow);
         // On the border the layout is frozen (the flag keeps its value), so the
         // border stays under the pointer and can be clicked; anywhere else in
-        // the card the pointer asks for the expansion.
-        if (!onHandle && !_expandWanted)
+        // the card the pointer asks for the expansion. The hide button is
+        // excluded too: growing the card there would repaint it mid-click.
+        if (!onHandle && !overIcon && !_expandWanted)
         {
             _expandWanted = true;
             if (onHoverChanged !is null) onHoverChanged();
@@ -3912,6 +3982,12 @@ private final class PlanCard : Widget
     override bool onMouseDown(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
+        // The bent arrow in the bottom-right corner hides the whole panel.
+        if (!_railOnly && hideIconRect().contains(event.position))
+        {
+            if (onHideRequested !is null) onHideRequested();
+            return true;
+        }
         // The whole collapsed tab is the handle; expanded, only the rail is.
         if (!_railOnly &&
             (event.position.x < 0 || event.position.x >= handleWidth))
@@ -3976,10 +4052,11 @@ private final class PlanCard : Widget
 /// pointer input only inside its card (`hoverTransparentAt`), so the transcript
 /// underneath stays fully interactive.
 /// Hovering the card expands it (wider, so long steps have room to read) and
-/// clicking its left border collapses it toward the right edge into a slim
-/// tab; clicking that tab restores the card. Hovering the border itself never
-/// expands: the card would grow leftward and slide the border out from under
-/// the pointer, so the layout is frozen while the pointer is on it.
+/// clicking its left border — or the small bent arrow in its bottom-right
+/// corner — collapses it toward the right edge into a slim tab; clicking that
+/// tab restores the card. Hovering the border itself never expands: the card
+/// would grow leftward and slide the border out from under the pointer, so the
+/// layout is frozen while the pointer is on it.
 private final class DetachedPlanPanel : Widget
 {
     private static immutable int cardWidth = 300;
@@ -4018,6 +4095,9 @@ private final class DetachedPlanPanel : Widget
             layoutCard();
         };
         _card.onHandleActivated = delegate() { setCollapsed(!_collapsed); };
+        // The bent arrow reuses the left border's minimize: slide the card off
+        // to the right edge as the same slim tab.
+        _card.onHideRequested = delegate() { setCollapsed(true); };
         _card.onToggleNested = delegate(size_t parent)
         {
             if (onToggleNested !is null) onToggleNested(parent);
@@ -4032,6 +4112,14 @@ private final class DetachedPlanPanel : Widget
         _card.update(objective, steps, status, nestedPlans, showNested);
         setVisible(steps.length > 0);
         invalidate();
+    }
+
+    /// Test-only: the bent-arrow hide button's rect in overlay coordinates.
+    Rect hideIconRectForTesting()
+    {
+        const icon = _card.hideIconRectForTesting();
+        return Rect(_cardRect.x + icon.x, _cardRect.y + icon.y,
+            icon.width, icon.height);
     }
 
     /// Collapse the card toward the right edge into a slim tab, or restore it.
@@ -21413,6 +21501,14 @@ public final class OpenCodeRoot : VBox
     {
         if (_planPanel is null) return;
         _planPanel.setCollapsed(!_planPanel.collapsedForTesting());
+    }
+
+    /// Test-only: the bent-arrow hide button's rect within the transcript
+    /// (empty when the panel is not shown).
+    public Rect detachedPlanHideIconRectForTesting()
+    {
+        if (_planPanel is null || !_planPanel.visible()) return Rect.init;
+        return _planPanel.hideIconRectForTesting();
     }
 
 
