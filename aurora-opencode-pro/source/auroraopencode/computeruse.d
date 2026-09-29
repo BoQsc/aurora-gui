@@ -2346,7 +2346,11 @@ version (Windows)
             "small and reversible, and plan the WHOLE burst up front: put every " ~
             "action you can foresee into ONE `steps` batch (e.g. press win, type " ~
             "'notepad', press enter, wait, then type the text) - one round per " ~
-            "keystroke is far too slow. When " ~
+            "keystroke is far too slow. Unless the goal is already achieved, " ~
+            "EVERY step must contain at least one input action (click, " ~
+            "double_click, right_click, drag, type, key or scroll); never end a " ~
+            "step having only inspected the screen, and do not burn a step on a " ~
+            "`screen` region read when you can already act on what you see. When " ~
             "the goal is reached or you are stuck, reply with a short plain-text " ~
             "summary and no tool call.";
         // The loop has no memory of its own: carry the project's playbook into
@@ -2375,6 +2379,7 @@ version (Windows)
         ulong previousSignature;
         bool havePreviousFrame;
         bool previousRoundHadAction;
+        bool previousStepOnlyInspected;
         // Latency accounting for the "how many seconds per reaction" goal.
         // Awareness = settle + capture + model round; response = running the
         // actions the model returned. Measured, never guessed.
@@ -2420,6 +2425,16 @@ version (Windows)
                 }
                 previousSignature = currentSignature;
                 havePreviousFrame = true;
+            }
+            // Break the "analysis paralysis" pattern: if the last step only
+            // looked at the screen and issued no input action, push it to act.
+            if (previousStepOnlyInspected)
+            {
+                correctionPart ~= textPart("Note: your previous step only " ~
+                    "inspected the screen and changed nothing. Issue the next " ~
+                    "input action now (click/drag/type/key) instead of reading " ~
+                    "again.");
+                log_.put("note: injected act-now nudge\n");
             }
             if (shot.ok)
             {
@@ -2654,6 +2669,7 @@ version (Windows)
             // already carries a fresh frame, and forwarding these made full
             // frames accumulate in the history, slowing each later round.
             previousRoundHadAction = roundHadAction;
+            previousStepOnlyInspected = !roundHadAction;
             actionTotalMs += (MonoTime.currTime - actionStarted).total!"msecs";
             roundTotalMs += (MonoTime.currTime - roundStarted).total!"msecs";
         }
