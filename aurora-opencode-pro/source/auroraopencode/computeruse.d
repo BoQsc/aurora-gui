@@ -35,7 +35,7 @@ import std.array : appender;
 import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.process : environment;
-import std.string : split, strip, toLower;
+import std.string : indexOf, split, strip, toLower;
 import core.thread : Thread;
 import core.time : msecs, MonoTime;
 
@@ -148,7 +148,10 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "real desktop automatically. Use `mouse_move` to hover without " ~
             "clicking (e.g. edge-pan), `drag` for box-select, order and camera " ~
             "drags, and `key_down`/`key_up` to hold a key down (camera pan, " ~
-            "shift-queue). `type` text may contain a literal newline for Enter " ~
+            "shift-queue). `focus` brings a window to the front by title " ~
+            "substring, and every action reports the active window so you can " ~
+            "tell where input actually went. `type` text may contain a literal " ~
+            "newline for Enter " ~
             "and a tab character. `screen` accepts a `region` {x,y,w,h} for a " ~
             "zoomed-in crop of one area. Every call costs a full model turn, so " ~
             "prefer one `steps` batch (click a field, type a line, press enter) " ~
@@ -160,7 +163,7 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             computerUseKillSwitchChord ~ ". Keep reasoning minimal; only stop " ~
             "to plan when genuinely stuck (an unexpected dialog, a choice that " ~
             "needs judgement). Windows only.",
-            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up, e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\" (key_down/key_up hold it until the matching key_up)"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up, e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\" (key_down/key_up hold it until the matching key_up)"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -795,6 +798,13 @@ version (Windows)
             void* bits, BITMAPINFO* info, UINT usage);
         int DeleteObject(void* object);
         int DeleteDC(void* hdc);
+        void* GetForegroundWindow();
+        int GetWindowTextW(void* hwnd, wchar* buffer, int maxCount);
+        int IsWindowVisible(void* hwnd);
+        int IsIconic(void* hwnd);
+        int ShowWindow(void* hwnd, int command);
+        int SetForegroundWindow(void* hwnd);
+        int EnumWindows(void* enumProc, LPARAM lParam);
         int RegisterHotKey(void* hwnd, int id, uint modifiers, uint vk);
         int UnregisterHotKey(void* hwnd, int id);
         void* SetWindowsHookExW(int hookId, void* hookProc, void* hModule,
@@ -1140,11 +1150,14 @@ version (Windows)
         else if (step > 1)
             note = "1/" ~ to!string(step) ~ " of the " ~ to!string(screenW) ~
                 "x" ~ to!string(screenH) ~ " screen";
+        const active = foregroundWindowTitle();
         ComputerUseResult result;
         result.output = prefix ~ " (" ~ to!string(capture.width) ~ "x" ~
             to!string(capture.height) ~ ", " ~ to!string(png.length) ~
             " bytes" ~ (note.length ? ", " ~ note : "") ~
-            "; click in these image pixels).";
+            "; click in these image pixels" ~
+            (active.length ? ", active window \"" ~ active ~ "\"" : "") ~
+            ").";
         result.images = [attachmentImageForData("image/png", "screen.png",
             png)];
         return result;
@@ -1305,6 +1318,75 @@ version (Windows)
         else heldMiddleButton = false;
     }
 
+    // -----------------------------------------------------------------------
+    // Window awareness. Input (type/key/click) goes to whatever window holds
+    // focus, and a wrong guess is otherwise invisible - so every action reports
+    // the active window, and `focus` brings a window forward by title. This is
+    // what makes "typed, but nothing appeared" diagnosable instead of silent.
+    // -----------------------------------------------------------------------
+
+    private enum int SW_RESTORE = 9;
+    private __gshared string findNeedle;
+    private __gshared void* findResult;
+
+    private string windowTitleOf(void* hwnd)
+    {
+        if (hwnd is null) return "";
+        wchar[256] buffer;
+        const length = GetWindowTextW(hwnd, buffer.ptr,
+            cast(int) buffer.length);
+        if (length <= 0) return "";
+        return to!string(buffer[0 .. length]);
+    }
+
+    private string foregroundWindowTitle()
+    {
+        return windowTitleOf(GetForegroundWindow());
+    }
+
+    private extern (Windows) int enumWindowsProc(void* hwnd, LPARAM)
+    {
+        if (findResult !is null) return 0;
+        try
+        {
+            if (IsWindowVisible(hwnd))
+            {
+                const title = strip(toLower(windowTitleOf(hwnd)));
+                if (title.length > 0 && findNeedle.length > 0 &&
+                    indexOf(title, findNeedle) >= 0)
+                {
+                    findResult = hwnd;
+                    return 0; // stop enumeration
+                }
+            }
+        }
+        catch (Throwable) {}
+        return 1;
+    }
+
+    /// First visible top-level window whose title contains `needle`
+    /// (case-insensitive). null when nothing matches.
+    private void* findTopWindow(string needle)
+    {
+        findNeedle = strip(toLower(needle));
+        findResult = null;
+        if (findNeedle.length == 0) return null;
+        EnumWindows(cast(void*) &enumWindowsProc, 0);
+        auto result = findResult;
+        findNeedle = null;
+        findResult = null;
+        return result;
+    }
+
+    /// Append the currently focused window, so a caller can tell where input
+    /// landed (or that it landed somewhere unexpected).
+    private string withActiveWindow(string text)
+    {
+        const title = foregroundWindowTitle();
+        if (title.length == 0) return text;
+        return text ~ " (active window: \"" ~ title ~ "\")";
+    }
+
     private ushort[] utf16Units(dchar c)
     {
         if (c <= 0xFFFF) return [cast(ushort) c];
@@ -1457,52 +1539,57 @@ version (Windows)
                             cast(int) jsonInt(*region, "w", 0),
                             cast(int) jsonInt(*region, "h", 0));
                 return screenshotResult("Captured the screen");
+            case "focus":
+            {
+                const title = jsonString(value, "title");
+                if (title.length == 0)
+                    return failedResult("Error: focus requires `title`.");
+                auto hwnd = findTopWindow(title);
+                if (hwnd is null)
+                    return failedResult("Error: no visible window matches \"" ~
+                        title ~ "\".");
+                if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+                SetForegroundWindow(hwnd);
+                Thread.sleep(msecs(150));
+                return withOptionalScreenshot("Focused window \"" ~
+                    foregroundWindowTitle() ~ "\".", screenshot);
+            }
             case "click":
                 clickAt(x, y, 1);
-                return withOptionalScreenshot("Clicked at " ~ to!string(x) ~
-                    "," ~ to!string(y) ~ ".", screenshot);
+                return withOptionalScreenshot(withActiveWindow("Clicked at " ~
+                    to!string(x) ~ "," ~ to!string(y) ~ "."), screenshot);
             case "double_click":
                 clickAt(x, y, 2);
-                return withOptionalScreenshot("Double-clicked at " ~
-                    to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
+                return withOptionalScreenshot(withActiveWindow("Double-clicked " ~
+                    "at " ~ to!string(x) ~ "," ~ to!string(y) ~ "."),
+                    screenshot);
             case "right_click":
                 clickAt(x, y, 1, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP);
-                return withOptionalScreenshot("Right-clicked at " ~
-                    to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
+                return withOptionalScreenshot(withActiveWindow("Right-clicked " ~
+                    "at " ~ to!string(x) ~ "," ~ to!string(y) ~ "."),
+                    screenshot);
             case "mouse_move":
                 moveCursor(x, y);
                 return withOptionalScreenshot("Moved the pointer to " ~
                     to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
             case "drag":
                 dragMouse(x, y, x2, y2, durationMs, button);
-                return withOptionalScreenshot("Dragged " ~
+                return withOptionalScreenshot(withActiveWindow("Dragged " ~
                     (button.length > 0 ? button : "left") ~ " from " ~
                     to!string(x) ~ "," ~ to!string(y) ~ " to " ~
-                    to!string(x2) ~ "," ~ to!string(y2) ~ ".", screenshot);
+                    to!string(x2) ~ "," ~ to!string(y2) ~ "."), screenshot);
             case "type":
                 if (text.length == 0)
                     return failedResult("Error: type requires `text`.");
                 typeText(text);
-                return withOptionalScreenshot("Typed " ~
-                    to!string(text.length) ~ " characters.", screenshot);
+                return withOptionalScreenshot(withActiveWindow("Typed " ~
+                    to!string(text.length) ~ " characters."), screenshot);
             case "key":
-            {
-                auto result = runKey(keyName);
-                if (!screenshot || result.failed) return result;
-                return withOptionalScreenshot(result.output, true);
-            }
+                return keyResultAction(runKey(keyName), screenshot);
             case "key_down":
-            {
-                auto result = runHoldKey(keyName, false);
-                if (!screenshot || result.failed) return result;
-                return withOptionalScreenshot(result.output, true);
-            }
+                return keyResultAction(runHoldKey(keyName, false), screenshot);
             case "key_up":
-            {
-                auto result = runHoldKey(keyName, true);
-                if (!screenshot || result.failed) return result;
-                return withOptionalScreenshot(result.output, true);
-            }
+                return keyResultAction(runHoldKey(keyName, true), screenshot);
             case "scroll":
                 // Optional x,y put the wheel over the pane to scroll instead
                 // of wherever the pointer happened to be left.
@@ -1526,6 +1613,16 @@ version (Windows)
         auto shot = screenshotResult(text ~ " Screen after the action");
         if (shot.failed) return shot;
         return shot;
+    }
+
+    /// Shared by key/key_down/key_up: keep a failure as-is, otherwise report the
+    /// key plus the active window, so a mis-focused keypress is visible.
+    private ComputerUseResult keyResultAction(ComputerUseResult result,
+        bool screenshot)
+    {
+        if (result.failed) return result;
+        return withOptionalScreenshot(withActiveWindow(result.output),
+            screenshot);
     }
 
     /// A batch of actions in one call, followed by a single screenshot: the
