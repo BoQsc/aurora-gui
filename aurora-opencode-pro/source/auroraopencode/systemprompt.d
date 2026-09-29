@@ -3,6 +3,8 @@ module auroraopencode.systemprompt;
 import std.array : appender;
 // experimental: websearch - delete with source/auroraopencode/websearch.d
 import auroraopencode.websearch : experimentalWebSearchEnabled;
+// experimental: computer use - delete with source/auroraopencode/computeruse.d
+import auroraopencode.computeruse : experimentalComputerUseEnabled;
 
 /// Everything a module may need when rendering its own section. Values are
 /// resolved once, before any module runs, so modules stay pure and cheap.
@@ -329,6 +331,12 @@ private string toolPolicySection(in SystemPromptContext ctx)
     if (experimentalWebSearchEnabled())
         text ~= "Use `websearch` to discover pages from a search query, " ~
             "then `webfetch` to read a chosen result URL.\n";
+    // experimental: computer use - delete with source/auroraopencode/computeruse.d
+    if (experimentalComputerUseEnabled())
+        text ~= "Computer use is enabled: drive the desktop with the " ~
+            "`computer` tool one action at a time (screen, click, type, " ~
+            "key, scroll), acting immediately on each screenshot and keeping " ~
+            "reasoning minimal. Escalate to planning only when stuck.\n";
     text ~= "Use background execution for a command that may run longer " ~
         "than an ordinary interactive check. Inspect its elapsed time, status, " ~
         "and partial output with `process`; decide from observed progress " ~

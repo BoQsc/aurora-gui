@@ -671,6 +671,24 @@ int main(string[] args)
     const selEnd = root.messageTextEndForTesting(selIndex);
     assert(selOrigin.x >= 0 && selEnd.x > selOrigin.x,
         "Message text selection anchors were not found");
+
+    // Double-clicking a word selects it, and a third click inside the
+    // double-click window widens the selection to the whole run. Regression:
+    // the bubble ignored clickCount, so a double-click only re-armed a
+    // zero-width caret and nothing looked selected.
+    driver.doubleClick(selOrigin);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Double-click selection did not repaint");
+    assert(root.selectedMessageTextForTesting(selIndex) == "select",
+        "Double-click did not select the word under the pointer: '" ~
+        root.selectedMessageTextForTesting(selIndex) ~ "'");
+    driver.click(selOrigin);
+    root.tickTree(0.02);
+    assert(root.selectedMessageTextForTesting(selIndex) == "select this text",
+        "Triple-click did not select the whole run: '" ~
+        root.selectedMessageTextForTesting(selIndex) ~ "'");
+    writeln("Double-click selects a word, triple-click selects the run");
+
     driver.drag(selOrigin, selEnd);
     root.tickTree(0.02);
     assert(driver.paint(), "Drag selection did not repaint");
@@ -1146,6 +1164,44 @@ int main(string[] args)
         "Stopping conversation B also stopped conversation A");
     root.finishStreamInSessionForTesting(concurrentA);
     writeln("Two conversations run concurrently with isolated Stop/output");
+
+    // A rebuild must resume the conversation whose `rebuild` tool call triggered
+    // it - never the chat that merely happens to be selected. The requesting
+    // conversation works in the background (the user opened another chat while
+    // it ran), so the relaunched app has to pick the owner, not the view. Before
+    // this the relaunched app fell back to the saved selection and continued the
+    // wrong chat: the rebuild "selected a random conversation".
+    {
+        root.newChatForTesting();
+        const resumeOwner = root.currentSessionForTesting();
+        root.addConversationForTesting(["user"],
+            ["rebuild this app when you are done"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        // The user opens and works in a different chat while the owner runs.
+        root.newChatForTesting();
+        const resumeViewer = root.currentSessionForTesting();
+        root.addConversationForTesting(["user"], ["unrelated chat"]);
+        assert(resumeViewer != resumeOwner,
+            "the viewer chat is not distinct from the rebuild owner");
+        assert(root.resumeOwnerForTesting() ==
+            root.sessionIdForTesting(resumeOwner),
+            "the running conversation was not recognized as the rebuild owner");
+        root.finishStreamInSessionForTesting(resumeOwner);
+
+        // The rebuild records the owner in the resume note. Simulate the next
+        // launch consuming it while the saved selection is still the viewer.
+        const note = `{"cause":"rebuild","reason":"apply the fix","session":"` ~
+            root.sessionIdForTesting(resumeOwner) ~ `"}`;
+        write(buildPath(stateDir, "restart-resume.json"), note);
+        root.prepareResumeForTesting();
+        assert(root.currentSessionForTesting() == resumeOwner,
+            "the rebuild resumed a chat other than the requesting conversation");
+        // Consume the queued follow-up request so it cannot fire during a later
+        // test and disturb the turn ownership those tests rely on.
+        root.clearPendingResumeForTesting();
+        writeln("A rebuild resumes the conversation that requested it");
+    }
 
     // A turn that finishes while the user is viewing another conversation is
     // flagged "done, unread" in the sidebar, and opening that conversation

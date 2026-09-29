@@ -168,3 +168,18 @@ jobs:
             aurora-opencode-pro-v*.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+      - name: Publish Aurora OpenCode Pro to its Forge update channel
+        # The update channel is fed by releases only. It cannot be fed locally:
+        # a local "dub build" has no MSVC static CRT on a developer machine, so
+        # its EXE imports the dynamic C runtime and tools/publish-forge.py
+        # refuses to ship it. This runner already has the toolchain, so the
+        # portable EXE built above is what the in-app "Check update" hands to
+        # users. Needs the FORGE_PUBLISHER_KEY repository secret; when it is
+        # absent the script prints a skip and succeeds, so forks and untagged
+        # runs are unaffected.
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          FORGE_PUBLISHER_ID: fg_9fdcaacf6d3ae23e
+          FORGE_PUBLISHER_KEY: ${{ secrets.FORGE_PUBLISHER_KEY }}
+        run: python -X utf8 aurora-opencode-pro/tools/publish-forge.py

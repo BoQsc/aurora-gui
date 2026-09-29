@@ -2,6 +2,9 @@ module auroraopencode_pro_tools_test;
 
 import auroraopencode.core : OpenCodeToolCall,
     setOpencodeStateDirectoryForTesting;
+// experimental: computer use - delete with source/auroraopencode/computeruse.d
+import auroraopencode.attachments : attachmentImageKindForBytes;
+import auroraopencode.computeruse : computerUseEncodePng;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
@@ -918,6 +921,56 @@ int main()
     assert(toolSteeringPrompt(true).indexOf("websearch") >= 0,
         "websearch must return once the switch is restored");
     writeln("experimental websearch is advertised, validated and switchable");
+    // experimental: computer use - delete with
+    // source/auroraopencode/computeruse.d
+    {
+        // Opt-in: hidden until AURORA_COMPUTER_USE enables it.
+        bool defaultHasComputer;
+        foreach (tool; builtinToolDefinitions())
+            if (tool.name == "computer") defaultHasComputer = true;
+        assert(!defaultHasComputer,
+            "computer use must stay off unless AURORA_COMPUTER_USE is set");
+        assert(toolSteeringPrompt(true).indexOf("`computer`") < 0,
+            "disabled computer use must not appear in the steering prompt");
+
+        const previousComputer = environment.get("AURORA_COMPUTER_USE", null);
+        environment["AURORA_COMPUTER_USE"] = "on";
+        bool enabledInDefault;
+        foreach (tool; builtinToolDefinitions())
+            if (tool.name == "computer") enabledInDefault = true;
+        bool enabledInNative;
+        foreach (tool; nativeOnlyToolDefinitions())
+            if (tool.name == "computer") enabledInNative = true;
+        assert(enabledInDefault, "AURORA_COMPUTER_USE=on must expose computer");
+        assert(enabledInNative, "native toolset must expose computer");
+        assert(toolSteeringPrompt(true).indexOf("`computer`") >= 0,
+            "enabled computer use must appear in the steering prompt");
+
+        // A call with no action fails deterministically before any desktop use.
+        auto noAction = executeTool(makeCall("computer", `{}`), dir);
+        assert(noAction.failed, "computer must require an action");
+        assert(noAction.output.indexOf("action") >= 0,
+            "computer error must mention the action: " ~ noAction.output);
+        auto badAction = executeTool(makeCall("computer",
+            `{"action":"nonsense"}`), dir);
+        assert(badAction.failed, "unknown computer action must fail");
+
+        if (previousComputer is null) environment.remove("AURORA_COMPUTER_USE");
+        else environment["AURORA_COMPUTER_USE"] = previousComputer;
+        assert(toolSteeringPrompt(true).indexOf("`computer`") < 0,
+            "computer use must return to off once the switch is cleared");
+    }
+    // The dependency-free screenshot encoder emits a valid PNG container.
+    {
+        ubyte[] rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        auto png = computerUseEncodePng(2, 2, rgb);
+        assert(png.length > 8 && png[0] == 0x89 && png[1] == 'P' &&
+            png[2] == 'N' && png[3] == 'G',
+            "computer PNG must start with the PNG signature");
+        assert(attachmentImageKindForBytes(png) == "image/png",
+            "computer PNG must be recognised as an image");
+    }
+    writeln("experimental computer use is opt-in, validated and switchable");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,
         "Native steering prompt must say there is no shell");
     assert(toolSteeringPrompt(false).indexOf("dshell") >= 0 &&

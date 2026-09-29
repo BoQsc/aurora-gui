@@ -7,7 +7,7 @@ import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 import std.file : copy, exists, getSize, mkdirRecurse, read, remove, rename,
     write;
-import std.json : parseJSON;
+import std.json : JSONType, parseJSON;
 import std.path : buildPath;
 import std.process : Config, execute, spawnProcess, thisProcessID;
 import std.stdio : stderr, stdin, stdout;
@@ -20,9 +20,15 @@ version (Windows)
 }
 
 private enum string releaseFile = "aurora-opencode-pro.exe";
+private enum string releaseMetadataFile = "release.json";
 private enum string projectId = "fg_9fdcaacf6d3ae23e";
 private enum string releaseApi = "https://forge.boqsc.eu/api/release?project=" ~
     projectId;
+// The project's hosted site, where `tools/publish-forge.py` uploads both the
+// EXE and the small `release.json` that describes it.
+private enum string hostedBase = "https://forge.boqsc.eu/~/" ~ projectId ~ "/";
+private enum string releaseUrl = hostedBase ~ releaseFile;
+private enum string releaseMetadataUrl = hostedBase ~ releaseMetadataFile;
 private enum size_t maxReleaseBytes = 25 * 1024 * 1024;
 
 struct UpdateCheck
@@ -44,16 +50,12 @@ UpdateCheck checkForUpdate(string exePath, string stateDir)
     UpdateCheck result;
     try
     {
-        auto metadata = execute(["curl.exe", "--fail", "--silent",
-            "--show-error", "--location", "--max-time", "20", releaseApi]);
-        if (metadata.status != 0)
-            throw new Exception("Could not reach the release channel.");
-        auto release = parseJSON(metadata.output);
+        auto release = parseJSON(fetchReleaseMetadata());
         const hash = toLower(release["sha256"].str);
         const size = release["size"].integer;
         const url = release["url"].str;
         if (hash.length != 64 || size <= 0 || size > maxReleaseBytes ||
-            url != "https://forge.boqsc.eu/~/" ~ projectId ~ "/" ~ releaseFile)
+            url != releaseUrl)
             throw new Exception("Release information is invalid.");
         if (hash == fileHash(exePath)) return result;
 
@@ -75,6 +77,48 @@ UpdateCheck checkForUpdate(string exePath, string stateDir)
     }
     catch (Exception error) result.error = error.msg;
     return result;
+}
+
+/// The published release description (`sha256`, `size`, `url`).
+///
+/// The channel's API is tried first; when the host does not implement it - it
+/// answers 404 for any project - the small `release.json` published beside the
+/// EXE is used instead. That keeps checking independent of a server feature
+/// that may not exist, and both come from the same upload in
+/// `tools/publish-forge.py`.
+private string fetchReleaseMetadata()
+{
+    try
+    {
+        auto api = execute(["curl.exe", "--fail", "--silent", "--show-error",
+            "--location", "--max-time", "20", releaseApi]);
+        if (api.status == 0 && looksLikeRelease(api.output)) return api.output;
+    }
+    catch (Exception)
+    {
+        // A missing curl or an unreachable API still leaves the hosted file.
+    }
+    auto hosted = execute(["curl.exe", "--fail", "--silent", "--show-error",
+        "--location", "--max-time", "20", releaseMetadataUrl]);
+    if (hosted.status != 0)
+        throw new Exception("Could not reach the release channel.");
+    if (!looksLikeRelease(hosted.output))
+        throw new Exception("Release information is invalid.");
+    return hosted.output;
+}
+
+/// True when the text is the release object the check needs.
+private bool looksLikeRelease(string text)
+{
+    try
+    {
+        auto value = parseJSON(text);
+        if (value.type != JSONType.object) return false;
+        return ("sha256" in value.object) !is null &&
+            ("size" in value.object) !is null &&
+            ("url" in value.object) !is null;
+    }
+    catch (Exception) return false;
 }
 
 /// Copy the current EXE to a temporary helper before the app closes.

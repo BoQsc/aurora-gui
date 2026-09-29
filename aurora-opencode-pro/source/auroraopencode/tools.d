@@ -7,6 +7,9 @@ import auroraopencode.attachments : attachmentImageForData,
 // experimental: websearch - delete with source/auroraopencode/websearch.d
 import auroraopencode.websearch : experimentalWebSearchExecute,
     experimentalWebSearchTools;
+// experimental: computer use - delete with source/auroraopencode/computeruse.d
+import auroraopencode.computeruse : experimentalComputerUseExecute,
+    experimentalComputerUseTools;
 import std.file : dirEntries, exists, isFile, isDir, isSymlink, SpanMode, read,
     readText, write, mkdirRecurse, fileCopy = copy, remove, rename,
     rmdir, rmdirRecurse, tempDir, getSize,
@@ -382,6 +385,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         grepToolDefinition(),
     ];
     defs ~= experimentalWebSearchTools(); // experimental: websearch
+    defs ~= experimentalComputerUseTools(); // experimental: computer use
     return defs;
 }
 
@@ -437,6 +441,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         grepToolDefinition(),
     ];
     defs ~= experimentalWebSearchTools(); // experimental: websearch
+    defs ~= experimentalComputerUseTools(); // experimental: computer use
     return defs;
 }
 
@@ -4867,6 +4872,17 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             auto search = experimentalWebSearchExecute(call.arguments,
                 workspace);
             return ToolExecution("websearch", search[0], search[1]);
+        }
+        // experimental: computer use - delete with
+        // source/auroraopencode/computeruse.d
+        case "computer":
+        {
+            auto control = experimentalComputerUseExecute(call.arguments,
+                workspace);
+            auto result = ToolExecution("computer", control.output,
+                control.failed);
+            result.images = control.images;
+            return result;
         }
         case "rebuild":
             return runRebuildTool(call.arguments);

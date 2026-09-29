@@ -407,6 +407,11 @@ private final class MessageBubble : Widget
     }
     private SelectSegment[] _selSegments;
     private bool _selecting;
+    // Set while a double-/triple-click drag is in flight so the moving end of
+    // the selection snaps to whole words. Without it a one-pixel jitter after
+    // a double-click re-extended the range grapheme by grapheme and trimmed
+    // the word the click had just picked.
+    private bool _selWordMode;
     private int _selAnchorSeg = -1;
     private size_t _selAnchorChar;
     private int _selFocusSeg = -1;
@@ -2334,7 +2339,7 @@ private final class MessageBubble : Widget
         if (selectSegmentAt(position, segIndex, charIndex))
         {
             _selFocusSeg = segIndex;
-            _selFocusChar = charIndex;
+            _selFocusChar = wordSnappedFocus(segIndex, charIndex);
             return;
         }
         if (_selSegments.length == 0) return;
@@ -2360,10 +2365,87 @@ private final class MessageBubble : Widget
 
     private void clearSelection()
     {
+        _selWordMode = false;
         if (_selAnchorSeg < 0 && _selFocusSeg < 0) return;
         _selAnchorSeg = -1;
         _selFocusSeg = -1;
         invalidate();
+    }
+
+    /// Word test for double-click selection, matching the TextEditor widget:
+    /// ASCII letters/digits, underscores and every non-ASCII letter.
+    private static bool isWordChar(dchar ch) @safe pure nothrow @nogc
+    {
+        return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+               (ch >= '0' && ch <= '9') || ch == '_' || ch >= 128;
+    }
+
+    /// Start of the word containing `index` (the index itself on a delimiter).
+    private static size_t wordStartAt(const(dchar)[] text, size_t index)
+    {
+        if (index > text.length) index = text.length;
+        index = floorGraphemeBoundary(text, index);
+        while (index > 0)
+        {
+            const previous = previousGraphemeBoundary(text, index);
+            if (!isWordChar(text[previous])) break;
+            index = previous;
+        }
+        return index;
+    }
+
+    /// End of the word containing `index` (the index itself on a delimiter).
+    private static size_t wordEndAt(const(dchar)[] text, size_t index)
+    {
+        if (index > text.length) index = text.length;
+        index = floorGraphemeBoundary(text, index);
+        while (index < text.length && isWordChar(text[index]))
+            index = nextGraphemeBoundary(text, index);
+        return index;
+    }
+
+    /// Double-click semantics: select the word under the caret, or the single
+    /// character when the caret sits on whitespace/punctuation.
+    private bool selectWordAt(int segIndex, size_t charIndex)
+    {
+        if (segIndex < 0 || segIndex >= cast(int) _selSegments.length)
+            return false;
+        const text = _selSegments[cast(size_t) segIndex].layout.text();
+        if (text.length == 0) return false;
+        if (charIndex > text.length) charIndex = text.length;
+        auto index = floorGraphemeBoundary(text, charIndex);
+        if (index == text.length && index > 0)
+            index = previousGraphemeBoundary(text, index);
+        const start = wordStartAt(text, index);
+        auto end = wordEndAt(text, index);
+        if (end <= start && index < text.length)
+            end = nextGraphemeBoundary(text, index);
+        _selAnchorSeg = segIndex;
+        _selAnchorChar = start;
+        _selFocusSeg = segIndex;
+        _selFocusChar = end;
+        invalidate();
+        return true;
+    }
+
+    /// Snap the moving end of a double-click drag onto a word boundary on the
+    /// side of the anchor the pointer is heading, so the highlight grows and
+    /// shrinks word by word instead of grapheme by grapheme.
+    private size_t wordSnappedFocus(int segIndex, size_t charIndex)
+    {
+        if (!_selWordMode) return charIndex;
+        if (segIndex < 0 || segIndex >= cast(int) _selSegments.length)
+            return charIndex;
+        const text = _selSegments[cast(size_t) segIndex].layout.text();
+        if (text.length == 0) return charIndex;
+        auto cursor = charIndex > text.length ? text.length : charIndex;
+        const rollingBack = segIndex < _selAnchorSeg ||
+            (segIndex == _selAnchorSeg && cursor < _selAnchorChar);
+        if (rollingBack) return wordStartAt(text, cursor);
+        auto end = wordEndAt(text, cursor);
+        if (end <= cursor && cursor < text.length)
+            end = nextGraphemeBoundary(text, cursor);
+        return end;
     }
 
     /// Whether this bubble reserves (and draws) the one-line meta footer.
@@ -2598,10 +2680,31 @@ private final class MessageBubble : Widget
         if (selectSegmentAt(event.position, segIndex, charIndex))
         {
             _selecting = true;
-            _selAnchorSeg = segIndex;
-            _selAnchorChar = charIndex;
-            _selFocusSeg = segIndex;
-            _selFocusChar = charIndex;
+            _selWordMode = false;
+            if (event.clickCount >= 3)
+            {
+                // Triple-click: the whole run, the bubble's closest thing to a
+                // line of text.
+                _selAnchorSeg = segIndex;
+                _selAnchorChar = 0;
+                _selFocusSeg = segIndex;
+                _selFocusChar =
+                    _selSegments[cast(size_t) segIndex].layout.text().length;
+            }
+            else if (event.clickCount == 2)
+            {
+                // Double-click: the word under the pointer, like the composer
+                // and every other text field in the app.
+                _selWordMode = true;
+                selectWordAt(segIndex, charIndex);
+            }
+            else
+            {
+                _selAnchorSeg = segIndex;
+                _selAnchorChar = charIndex;
+                _selFocusSeg = segIndex;
+                _selFocusChar = charIndex;
+            }
             // Take keyboard focus so Ctrl+C/Ctrl+A target this bubble rather
             // than the composer while transcript text is selected. Ctrl+V is
             // handled by the root, which returns focus to the composer.
@@ -2621,6 +2724,7 @@ private final class MessageBubble : Widget
         if (_selecting)
         {
             _selecting = false;
+            _selWordMode = false;
             releaseMouse();
             return true;
         }
@@ -2726,6 +2830,10 @@ private string humanToolTitle(string toolName)
         // experimental: websearch - delete with source/auroraopencode/websearch.d
         case "websearch":
             return "Web search";
+        // experimental: computer use - delete with
+        // source/auroraopencode/computeruse.d
+        case "computer":
+            return "Computer";
         default:
             if (toolName.length == 0) return "Tool";
             return capitalizeFirst(toolName);
@@ -2775,6 +2883,10 @@ private string humanToolProgressTitle(string toolName)
         // experimental: websearch - delete with source/auroraopencode/websearch.d
         case "websearch":
             return "Searching";
+        // experimental: computer use - delete with
+        // source/auroraopencode/computeruse.d
+        case "computer":
+            return "Controlling";
         default:
             if (toolName.length == 0) return "Preparing";
             return "Preparing " ~ toolName;
@@ -2873,6 +2985,32 @@ private string humanToolSubtitle(string toolName, string toolArgs)
         // experimental: websearch - delete with source/auroraopencode/websearch.d
         case "websearch":
             return partialStringArg(toolArgs, "query");
+        // experimental: computer use - delete with
+        // source/auroraopencode/computeruse.d
+        case "computer":
+        {
+            const action = partialStringArg(toolArgs, "action");
+            if (action.length == 0) return "";
+            if (action == "type")
+            {
+                auto text = partialStringArg(toolArgs, "text");
+                if (text.length > 40)
+                {
+                    // Clamp without splitting a multibyte character.
+                    size_t cut = 40;
+                    while (cut < text.length && (text[cut] & 0xC0) == 0x80)
+                        ++cut;
+                    text = text[0 .. cut] ~ "…";
+                }
+                return text.length > 0 ? "type " ~ text : action;
+            }
+            if (action == "key")
+            {
+                const name = partialStringArg(toolArgs, "name");
+                return name.length > 0 ? "key " ~ name : action;
+            }
+            return action;
+        }
         default:
             return partialStringArg(toolArgs, "path");
     }
@@ -7853,11 +7991,23 @@ public final class OpenCodeRoot : VBox
     private UpdateCheck _updateReady;
     private string _updateStagedPath;
     private string _updateHash;
+    // The update check gets a visible dialog: the one-line status bar is easy
+    // to miss, and a build that can rebuild itself has no toolbar Update
+    // button, so the dialog is also where the install action lives.
+    private PopupOverlay _updateDialog;
+    private Label _updateDialogMessage;
+    private Button _updateDialogAction;
     // An agent-triggered rebuild arrives on the tool worker thread. Record it
     // there and perform it a few ticks later on the UI thread, by which point
     // the tool result has been drained and persisted into the transcript.
     private bool _agentRebuildRequested;
     private string _agentRebuildReason;
+    /// The conversation whose `rebuild` tool call triggered the pending rebuild,
+    /// captured when the tool batch was dispatched. This is the exact chat the
+    /// relaunched app must resume; relying on live "busy" state instead is what
+    /// let the delayed rebuild land after the turn settled and fall back to the
+    /// sidebar selection, which may be an unrelated chat.
+    private string _agentRebuildOwnerId;
     private int _agentRebuildCountdown;
     private static immutable int agentRebuildDelayTicks = 4;
 
@@ -8099,6 +8249,7 @@ public final class OpenCodeRoot : VBox
         if (!exists(path)) return;
         string cause;
         string reason;
+        string noteSession;
         try
         {
             auto value = parseJSON(readText(path));
@@ -8106,56 +8257,26 @@ public final class OpenCodeRoot : VBox
                 cause = field.str;
             if (auto field = "reason" in value.object)
                 reason = field.str;
+            if (auto field = "session" in value.object)
+                noteSession = field.str;
         }
         catch (Exception error)
             logError("resume note unreadable: " ~ error.msg);
         // Consumed once: a single crash must not replay on every later launch.
         try fileRemove(path);
         catch (Exception) {}
-        if (_current < 0)
+        // Resolve and open the conversation to continue. The rebuild records
+        // the exact conversation whose `rebuild` tool call triggered it; a
+        // crash leaves the turn-active marker naming the working thread. Both
+        // are authoritative over the sidebar selection, which is often a
+        // brand-new empty chat the user opened while the last turn ran.
+        const target = resumeTargetIndex(noteSession);
+        if (target < 0)
         {
             logInfo("resume skipped: no conversation to continue");
             return;
         }
-        // Prefer the exact thread recorded when the turn began instead of the
-        // last sidebar selection saved by an unrelated UI update.
-        try
-        {
-            const activeId = readText(activeTurnMarkerPath()).strip();
-            if (activeId.length > 0 && activeId != "active")
-                foreach (i, session; _sessions)
-                    if (session.id == activeId)
-                    {
-                        _current = cast(int) i;
-                        loadRuntime(_current);
-                        break;
-                    }
-        }
-        catch (Exception) {}
-        // A resume may only continue a conversation that actually holds a
-        // transcript. When the recorded thread is not found, `_current` is
-        // whatever the saved selection was - often a brand-new empty chat the
-        // user opened while the last turn ran. Injecting the note there
-        // manufactured a nameless "New chat" holding agent work and no user
-        // prompt, while the conversation that requested the restart was never
-        // resumed. Prefer the newest conversation that was interrupted
-        // mid-turn, which is the one a restart exists to continue.
-        if (_sessions[_current].messages.length == 0)
-        {
-            int interrupted = -1;
-            foreach (i, session; _sessions)
-                if (session.messages.length > 0 &&
-                    session.turnStatus == "running")
-                    interrupted = cast(int) i;
-            if (interrupted < 0)
-            {
-                logInfo("resume skipped: no interrupted conversation to " ~
-                    "continue");
-                return;
-            }
-            _current = interrupted;
-            loadRuntime(_current);
-        }
+        adoptResumeSession(target);
         // A rebuild that fails to compile relaunches the PREVIOUS binary. The
         // helper removes `rebuild-report.txt` after a good build and writes it
         // only on failure, so its presence is the reliable "your changes are
@@ -8199,6 +8320,61 @@ public final class OpenCodeRoot : VBox
             buildStamp);
         _resumeCountdown = resumeDelayTicks;
         logInfo("resume queued for the restored conversation");
+    }
+
+    /// The conversation a restart must continue, most specific first: the id the
+    /// resume note recorded (a deliberate rebuild), the turn-active marker (a
+    /// crash), a conversation left mid-turn, then the restored selection when it
+    /// holds a transcript. Returns -1 when nothing qualifies.
+    private int resumeTargetIndex(string noteSession)
+    {
+        int byId(string id)
+        {
+            if (id.length == 0) return -1;
+            foreach (i, session; _sessions)
+                if (session.id == id) return cast(int) i;
+            return -1;
+        }
+        const noteIndex = byId(noteSession);
+        if (noteIndex >= 0) return noteIndex;
+        // Prefer the exact thread recorded when the turn began instead of the
+        // last sidebar selection saved by an unrelated UI update.
+        string activeId;
+        try activeId = readText(activeTurnMarkerPath()).strip();
+        catch (Exception) {}
+        if (activeId == "active") activeId = "";
+        const activeIndex = byId(activeId);
+        if (activeIndex >= 0) return activeIndex;
+        // A conversation left mid-turn is the one a restart exists to continue.
+        int interrupted = -1;
+        foreach (i, session; _sessions)
+            if (session.messages.length > 0 && session.turnStatus == "running")
+                interrupted = cast(int) i;
+        if (interrupted >= 0) return interrupted;
+        // Nothing recorded: keep the restored selection when it holds a
+        // transcript, so a resume never invents a nameless empty chat.
+        if (_current >= 0 && _current < cast(int) _sessions.length &&
+            _sessions[_current].messages.length > 0)
+            return _current;
+        return -1;
+    }
+
+    /// Open the conversation a resume selected and make it the visible view.
+    /// Setting `_current` alone is not enough: the sidebar highlight and the
+    /// transcript were built for the restored selection, so without this refresh
+    /// the resumed chat is not the one on screen - the "random conversation"
+    /// a rebuild appeared to select.
+    private void adoptResumeSession(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return;
+        if (index != _current)
+        {
+            _current = index;
+            loadRuntime(_current);
+        }
+        updateSessionList(false);
+        rebuildMessageColumn();
+        markDirty();
     }
 
     /// Build the resume prompt from a recorded cause and, for a rebuild, the
@@ -8344,6 +8520,35 @@ public final class OpenCodeRoot : VBox
             thisExePath()).workingDir.length > 0;
     }
 
+    /// Test-only: the conversation a restart would continue, resolved from the
+    /// live state exactly as `requestAgentRebuild` does.
+    public string resumeOwnerForTesting()
+    {
+        return resumeOwnerSessionId();
+    }
+
+    /// Test-only: run the startup resume resolution against the current state,
+    /// as a relaunch does, so a test can prove which conversation is opened.
+    public void prepareResumeForTesting()
+    {
+        prepareResumeAfterCrash();
+    }
+
+    /// Test-only: drop any pending startup-resume request, so a test that
+    /// exercises resume resolution does not also fire the follow-up request.
+    public void clearPendingResumeForTesting()
+    {
+        _resumePrompt = "";
+        _resumeCountdown = 0;
+    }
+
+    /// Test-only: the stored id of a conversation.
+    public string sessionIdForTesting(int index) const
+    {
+        return index >= 0 && index < cast(int) _sessions.length
+            ? _sessions[index].id : "";
+    }
+
     /// Rebuild the package with DUB and relaunch the app.
     ///
     /// The rebuild cannot happen in-process: DUB must overwrite the running
@@ -8396,6 +8601,9 @@ public final class OpenCodeRoot : VBox
                     opencodeStateDirectory(), _updateHash))
             {
                 updateStatus("Update failed: could not start the replacement helper.");
+                updateUpdateDialog(
+                    "Update failed: could not start the replacement helper.",
+                    true);
                 return;
             }
             _rebuildPending = true;
@@ -8407,6 +8615,7 @@ public final class OpenCodeRoot : VBox
 
         _updateChecking = true;
         updateStatus("Checking for an Aurora update...");
+        showUpdateCheckDialog();
         const exe = thisExePath();
         const stateDir = opencodeStateDirectory();
         auto worker = new Thread({
@@ -8431,16 +8640,91 @@ public final class OpenCodeRoot : VBox
             _updateResultPending = false;
         }
         _updateChecking = false;
+        string message;
+        bool canInstall;
         if (result.error.length > 0)
-            updateStatus("Update check failed: " ~ result.error);
+        {
+            message = "Update check failed: " ~ result.error;
+            updateStatus(message);
+        }
         else if (result.available)
         {
             _updateStagedPath = result.stagedPath;
             _updateHash = result.hash;
             if (_updateButton !is null) _updateButton.setText("Update");
-            updateStatus("An Aurora update is ready. Click Update to install it.");
+            message = "An Aurora update is ready.";
+            canInstall = true;
+            updateStatus("An Aurora update is ready. Click Install and restart " ~
+                "to install it.");
         }
-        else updateStatus("Aurora OpenCode is up to date.");
+        else
+        {
+            message = "Aurora OpenCode is up to date.";
+            updateStatus(message);
+        }
+        updateUpdateDialog(message, canInstall);
+    }
+
+    /// Show the update dialog while the check (and any download) runs, so the
+    /// action has a real UI instead of only the one-line status bar. The dialog
+    /// is updated in place when the result arrives.
+    private void showUpdateCheckDialog()
+    {
+        dismissPopup();
+        _updateDialog = null;
+        _updateDialogMessage = null;
+        _updateDialogAction = null;
+
+        auto content = new VBox(10, Insets(16));
+        content.layoutHints().preferredWidth = 420;
+
+        auto title = content.add(new Label("Aurora OpenCode update"));
+        title.setPixelSize(opencodeFontTitle);
+
+        _updateDialogMessage =
+            content.add(new Label("Checking for an Aurora update..."));
+        _updateDialogMessage.setId("oc-update-message");
+
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 36;
+        footer.add(new Spacer());
+        auto close = footer.add(new Button("Close"));
+        close.setId("oc-update-close");
+        close.onClick = delegate() { dismissPopup(); };
+        _updateDialogAction = footer.add(
+            new Button("Install and restart", IconKind.refresh));
+        _updateDialogAction.setId("oc-update-install");
+        _updateDialogAction.setAccent(true);
+        _updateDialogAction.onClick = delegate() { requestUpdate(); };
+        _updateDialogAction.setVisible(false);
+        content.add(footer);
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(440, 190));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate()
+        {
+            _updateDialog = null;
+            _updateDialogMessage = null;
+            _updateDialogAction = null;
+            if (_activePopup is popup) _activePopup = null;
+        };
+        _updateDialog = popup;
+        openPopup(popup);
+    }
+
+    /// Reflect the finished check in the dialog, if the user still has it open.
+    /// A staged update offers the install action; otherwise only Close remains.
+    private void updateUpdateDialog(string message, bool canInstall)
+    {
+        if (_updateDialog is null) return;
+        if (_updateDialogMessage !is null) _updateDialogMessage.setText(message);
+        if (_updateDialogAction !is null)
+        {
+            _updateDialogAction.setVisible(canInstall);
+            if (canInstall) _updateDialogAction.setText("Install and restart");
+        }
     }
 
     /// Whether this build can rebuild itself: the executable lives under a
@@ -8494,10 +8778,25 @@ public final class OpenCodeRoot : VBox
         // was saved differently. That conversation is the one whose turn is
         // running - never merely the selected chat, which may be an unrelated
         // new chat the user opened while the turn worked.
-        const sessionId = resumeOwnerSessionId();
-        writeResumeNoteForRebuild(reason);
+        // The requester is the conversation whose `rebuild` tool call triggered
+        // this, captured at dispatch time. Only if that was somehow lost do we
+        // fall back to the live busy state.
+        string sessionId = _agentRebuildOwnerId;
+        _agentRebuildOwnerId = "";
+        if (!sessionIdKnown(sessionId)) sessionId = resumeOwnerSessionId();
+        writeResumeNoteForRebuild(reason, sessionId);
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
         if (!requestRebuild()) removeResumeNoteForRebuild();
+    }
+
+    /// Whether `id` names a conversation that still exists, so the resume note
+    /// never records a target that was deleted between dispatch and rebuild.
+    private bool sessionIdKnown(string id)
+    {
+        if (id.length == 0) return false;
+        foreach (session; _sessions)
+            if (session.id == id) return true;
+        return false;
     }
 
     /// The conversation a post-restart resume must return to: the one whose
@@ -8514,23 +8813,17 @@ public final class OpenCodeRoot : VBox
     /// nothing at all is running.
     private string resumeOwnerSessionId()
     {
-        int owner = -1;
+        // The selection wins when it is genuinely working, so a rebuild
+        // requested from the visible chat keeps resuming exactly as before.
+        // `sessionIsBusy` spans the whole turn - including the gaps between tool
+        // rounds where the narrower in-flight flag is momentarily clear - so the
+        // running conversation is still recognized as the owner.
+        if (_current >= 0 && _current < cast(int) _sessions.length &&
+            _sessions[_current].id.length > 0 && sessionIsBusy(_current))
+            return _sessions[_current].id;
         foreach (index, session; _sessions)
-        {
-            if (session.id.length == 0) continue;
-            bool active;
-            if (session.id == _loadedRuntimeId)
-                active = _turnInFlight;
-            else if (auto found = session.id in _conversationRuntimes)
-                active = (*found).turnInFlight;
-            if (!active) continue;
-            // The selection wins when several conversations are working, so a
-            // rebuild requested while the working chat is the visible one keeps
-            // resuming exactly as before.
-            if (cast(int) index == _current) return session.id;
-            if (owner < 0) owner = cast(int) index;
-        }
-        if (owner >= 0) return _sessions[cast(size_t) owner].id;
+            if (session.id.length > 0 && sessionIsBusy(cast(int) index))
+                return session.id;
         return _current >= 0 && _current < cast(int) _sessions.length
             ? _sessions[_current].id : "";
     }
@@ -8538,13 +8831,14 @@ public final class OpenCodeRoot : VBox
     /// Leave a resume request the next launch consumes, so a deliberate rebuild
     /// reopens the requesting conversation with a "rebuilt" note rather than
     /// looking like a crash.
-    private void writeResumeNoteForRebuild(string reason)
+    private void writeResumeNoteForRebuild(string reason, string sessionId)
     {
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
         string json;
         json ~= "{\n";
         json ~= "  \"cause\": \"rebuild\",\n";
-        json ~= "  \"reason\": " ~ resumeNoteJsonString(reason) ~ "\n";
+        json ~= "  \"reason\": " ~ resumeNoteJsonString(reason) ~ ",\n";
+        json ~= "  \"session\": " ~ resumeNoteJsonString(sessionId) ~ "\n";
         json ~= "}\n";
         try write(path, json);
         catch (Exception error)
@@ -8561,10 +8855,10 @@ public final class OpenCodeRoot : VBox
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
         if (exists(path)) return;
         if (!turnIsBusy()) return;
-        const sessionId = _current >= 0 ? _sessions[_current].id : "";
+        const sessionId = resumeOwnerSessionId();
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
         writeResumeNoteForRebuild(
-            "the rebuild was requested while this turn was running");
+            "the rebuild was requested while this turn was running", sessionId);
     }
 
     /// Drop the resume request when the rebuild could not actually start.
@@ -12202,6 +12496,18 @@ public final class OpenCodeRoot : VBox
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
         if (message.role != "assistant") return;
+
+        // Pin the conversation that asked to be rebuilt. The `rebuild` tool only
+        // records the request; the app performs it a few ticks later, after the
+        // tool continuation, by which point the turn may have settled and the
+        // sidebar selection may name an unrelated chat. Remembering the owner
+        // here is what makes the relaunched app continue THIS conversation.
+        foreach (call; calls)
+            if (call.name == "rebuild")
+            {
+                _agentRebuildOwnerId = session.id;
+                break;
+            }
 
         if (!_settings.toolsEnabled || calls.length == 0)
         {
@@ -17801,6 +18107,18 @@ public final class OpenCodeRoot : VBox
         // is not shuffled until it is actually used. Pinned conversations are
         // listed first; each group is ordered the same way.
         const byRecency = _settings.sortSessionsByRecency;
+        // While two or more conversations are running at once, background turn
+        // activity must not shuffle the rows under the user. Freeze the relative
+        // order the list already shows until at most one conversation is active.
+        int activeCount;
+        foreach (i, session; _sessions)
+            if (sessionIsBusy(cast(int) i)) ++activeCount;
+        const freezeOrder = byRecency && activeCount >= 2 &&
+            _sessionIndices.length > 0;
+        int[int] previousRank; // session index -> its current row, 1-based
+        if (freezeOrder)
+            foreach (i, sessionIndex; _sessionIndices)
+                previousRank[sessionIndex] = cast(int) i + 1;
         foreach (bool pinnedPass; [true, false])
         {
             int[] group;    // session indices, newest-created first
@@ -17820,7 +18138,29 @@ public final class OpenCodeRoot : VBox
                 group ~= cast(int) index;
                 groupAt ~= session.updatedAt;
             }
-            if (byRecency)
+            if (freezeOrder)
+            {
+                // Keep the order already on screen (ascending previous row). A
+                // conversation not seen before - a just-created chat - has no
+                // rank and sorts to the top, keeping newest-created-first.
+                foreach (i; 1 .. group.length)
+                {
+                    const value = group[i];
+                    auto valueRank = value in previousRank;
+                    const key = valueRank is null ? 0 : *valueRank;
+                    size_t j = i;
+                    while (j > 0)
+                    {
+                        auto prevRank = group[j - 1] in previousRank;
+                        const prevKey = prevRank is null ? 0 : *prevRank;
+                        if (prevKey <= key) break;
+                        group[j] = group[j - 1];
+                        --j;
+                    }
+                    group[j] = value;
+                }
+            }
+            else if (byRecency)
             {
                 // Stable insertion sort, most recent first; equal stamps keep
                 // the newest-created-first order they arrived in.
