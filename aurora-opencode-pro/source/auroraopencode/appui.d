@@ -13334,6 +13334,23 @@ public final class OpenCodeRoot : VBox
         return false;
     }
 
+    /// Retire the currently loaded client when its worker is still streaming.
+    /// A synchronous WinINet read is not reliably unblocked by closing its
+    /// handle from another thread, so `busy()` can stay true for seconds after
+    /// a cancel. Waiting on that read is what left the composer stuck in
+    /// "Stopping…" and silently dropped the next message. Closing the session
+    /// and installing a fresh client releases the composer at once; the
+    /// retired daemon worker keeps unwinding on its own and its event queue is
+    /// never drained again, so late output cannot reach the UI.
+    private void retireBusyClient()
+    {
+        if (_client is null || !_client.busy()) return;
+        auto retired = _client;
+        retired.closeSession();
+        _client = new OpenCodeClient(_settings.baseUrl,
+            activeApiKey(_settings));
+    }
+
     /// Stop is a local state transition first and an I/O cancellation second.
     /// Invalidate the request id before closing handles so already-queued or
     /// late events cannot append output, restart a tool continuation, or keep
@@ -13354,7 +13371,10 @@ public final class OpenCodeRoot : VBox
         _activeRequestSession = -1;
         _toolCancellation.cancel();
         _client.cancel();
-        _stopPending = _client.busy();
+        // Do not gate the composer on the cancelled worker. Complete the
+        // stop now so Send is usable again on this very click.
+        retireBusyClient();
+        _stopPending = false;
         _stopRequestedAt = MonoTime.currTime;
 
         if (_streamBubble !is null)
@@ -20297,10 +20317,7 @@ public final class OpenCodeRoot : VBox
             // not own the composer forever. Detach its daemon worker and give
             // subsequent turns a fresh client; the retired client's queue is
             // no longer drained, so it cannot leak late output into the UI.
-            auto retired = _client;
-            retired.closeSession();
-            _client = new OpenCodeClient(_settings.baseUrl,
-                activeApiKey(_settings));
+            retireBusyClient();
             _stopPending = false;
             updateStatus("Stopped.");
             updateSendButton();
