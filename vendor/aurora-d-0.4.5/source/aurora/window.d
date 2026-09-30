@@ -123,6 +123,9 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private Widget _root;
     private Widget _focused;
     private Widget _hovered;
+    // Set for the release that follows a consumed dropdown-toggle press, so the
+    // mouse-up does not re-hover (and re-light) the anchor the click closed.
+    private bool _suppressHoverRefresh;
     private Widget _captured;
     private Widget _dragTarget;
     private Widget _nativeScrollSource;
@@ -1603,7 +1606,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private void handleMouseUp(ref Event event)
     {
-        if (_captured is null)
+        // A consumed closing press (a dropdown toggle) cleared hover on the way
+        // down; re-hovering here would immediately re-light the anchor button
+        // the release lands on and leave it stuck until the pointer moved.
+        const rehover = _captured !is null || !_suppressHoverRefresh;
+        if (_captured is null && rehover)
             updateHover(event.globalPosition);
         auto target = _captured !is null ? _captured : _hovered;
         // Republish the press click count so onMouseUp can detect a double-click
@@ -1614,8 +1621,9 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             dispatchToBubble(target, event);
         // A captured widget commonly releases capture from onMouseUp. Refresh
         // hover once, after dispatch, at the final pointer position.
-        if (_captured is null)
+        if (_captured is null && rehover)
             updateHover(event.globalPosition);
+        _suppressHoverRefresh = false;
     }
 
     private void handleMouseWheel(ref Event event)
@@ -1793,7 +1801,27 @@ final class GuiWindow : WidgetHost, NativeWindowSink
                 event.button);
             if (consumed)
             {
-                updateHover(event.globalPosition);
+                // The press was swallowed by the toggle, so re-hovering the
+                // point would light up the anchor button the press landed on -
+                // and that highlight would stick until the pointer moved,
+                // because no further input arrives. Clear hover instead; the
+                // next move re-hovers normally.
+                if (_hovered !is null)
+                {
+                    _hovered.setHoveredInternal(false);
+                    _hovered = null;
+                }
+                setActiveCursor(CursorKind.arrow);
+                // Keep the release from re-hovering the same point (see
+                // handleMouseUp): the whole click is the toggle and must leave
+                // the anchor unlit until the pointer actually moves.
+                _suppressHoverRefresh = true;
+                // The press was consumed before any widget saw it, so mark the
+                // control under the pointer as pointer-focused. Otherwise an
+                // anchor button that the focus landed on keeps drawing its
+                // keyboard focus ring after the menu closes.
+                if (auto under = targetAt(event.globalPosition))
+                    under.markPointerFocus();
                 return true;
             }
 

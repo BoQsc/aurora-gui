@@ -134,6 +134,13 @@ class Button : Widget
             onClick();
     }
 
+    override void markPointerFocus()
+    {
+        if (_focusedByPointer) return;
+        _focusedByPointer = true;
+        invalidate();
+    }
+
     protected override void onPaint(ref Canvas canvas)
     {
         const palette = theme();

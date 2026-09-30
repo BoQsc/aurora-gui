@@ -115,7 +115,16 @@ abstract class TransientPopup : Widget, PopupSurface
         clearHoverInternal();
         if (focusReturn !is null && focusReturn.parent() !is null &&
             focusReturn.visible() && focusReturn.enabled())
+        {
             focusReturn.requestFocus();
+            // Opening this popup stole focus (resetting the control's
+            // pointer-focus flag), so restoring focus here would draw the
+            // keyboard focus ring on the anchor after the menu closes. Focus is
+            // being returned as a consequence of the interaction, not by Tab
+            // navigation, so suppress the ring.
+            focusReturn.markPointerFocus();
+        }
+
         if (dismissedCallback !is null) dismissedCallback();
     }
 

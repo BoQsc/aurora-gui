@@ -420,6 +420,15 @@ abstract class Widget
             _host.requestFocus(this);
     }
 
+    /**
+     * Suppress the keyboard focus ring for a widget focused by pointer input.
+     * A popup that consumes the press it toggles (a dropdown anchor) never
+     * reaches the widget's own mouse-down, so the widget cannot mark itself as
+     * pointer-focused and would otherwise keep drawing a focus ring after the
+     * menu closes. Overridden by controls that draw such a ring.
+     */
+    void markPointerFocus() {}
+
     void captureMouse()
     {
         if (_host !is null)
