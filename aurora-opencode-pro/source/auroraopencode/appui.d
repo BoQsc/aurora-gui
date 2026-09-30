@@ -31,7 +31,7 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
 import auroraopencode.computeruse :
     experimentalComputerUseEnabled, experimentalImageHistoryLimit,
     setComputerUseProvider, setComputerUseSetting, startComputerUseKillSwitch,
-    stopComputerUseKillSwitch;
+    stopComputerUseKillSwitch, clearComputerUseAbort, computerUseAbortActive;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -13556,6 +13556,9 @@ public final class OpenCodeRoot : VBox
             _autoContinueStreak.remove(_current);
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
+        // A real user instruction is also the signal to lift a kill-switch stop:
+        // the sticky abort latch refuses every computer call until here.
+        clearComputerUseAbort();
         if (startSideQuestion(composerText)) return;
         if (_stopPending)
         {
@@ -14033,6 +14036,8 @@ public final class OpenCodeRoot : VBox
         _pendingProgressGuidance = "";
         _toolRounds = 0;
         _finalAnswerRequested = false;
+        // A queued user prompt is a real instruction too: lift a kill-switch stop.
+        clearComputerUseAbort();
         updateStatus("Starting queued follow-up…");
         startChatRequest(sessionIndex);
     }
@@ -15726,6 +15731,15 @@ public final class OpenCodeRoot : VBox
         if (!experimentalComputerUseEnabled())
         {
             logAutoContinue("skip: computer use off");
+            return;
+        }
+        // The human pressed the kill switch: do not resurrect the turn. The
+        // abort latch is only cleared by a new user message (sendMessage), so
+        // the agent stays stopped instead of auto-resuming past the stop.
+        if (computerUseAbortActive())
+        {
+            _autoContinuePendingSession = -1;
+            logAutoContinue("skip: kill switch pressed");
             return;
         }
         // Resume the session that OWNS the finished turn, not only the one the

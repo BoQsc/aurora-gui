@@ -79,8 +79,12 @@ public void setComputerUseSetting(bool value)
 /// UI show; the actual VK/modifiers live in the Windows section below.
 public enum string computerUseKillSwitchChord = "Ctrl+Alt+Shift+K";
 
-/// Set by the hotkey thread, read by the tool worker. Cleared at the start of
-/// every computer call so a stray press while idle cannot stop a later run.
+/// Set by the hotkey thread, read by the tool worker. Sticky: once the human
+/// presses the chord, every later computer call is refused until a genuine new
+/// user message clears it (clearComputerUseAbort). It is NOT cleared at the
+/// start of a computer call, because a press that lands while the model is
+/// between calls was previously forgotten and the next call resumed as if the
+/// stop never happened.
 private __gshared bool computerUseAbortFlag = false;
 
 /// Workspace directory of the current call, so a `macro` can be loaded from
@@ -100,6 +104,13 @@ public bool computerUseAbortActive()
 public void requestComputerUseAbort()
 {
     computerUseAbortFlag = true;
+}
+
+/// Clear the sticky kill-switch latch. Called when the human sends a new
+/// message, which is the explicit signal that they want computer use again.
+public void clearComputerUseAbort()
+{
+    computerUseAbortFlag = false;
 }
 
 /// Start the background thread that owns the global kill-switch hotkey. No-op
@@ -209,13 +220,17 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
 public ComputerUseResult experimentalComputerUseExecute(string args,
     string workspace)
 {
+    // The kill switch is sticky: after the human presses the chord, refuse
+    // every computer call until a new user message clears the latch
+    // (clearComputerUseAbort). The in-flight call is aborted between its steps;
+    // this guard stops the calls that a resumed chat would otherwise issue.
+    if (computerUseAbortActive())
+        return failedResult("Error: computer use was stopped by the kill switch (" ~
+            computerUseKillSwitchChord ~ "). Send a new message to re-enable it.");
+
     JSONValue value;
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
-
-    // A new call always starts un-aborted; a press meant for a previous call
-    // must not silently kill this one.
-    computerUseAbortFlag = false;
 
     string action;
     int screenshotFlag = -1; // -1 absent, 0 false, 1 true
