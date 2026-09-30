@@ -2,9 +2,42 @@ module aurora.widgets.popup;
 
 import aurora.canvas : Canvas;
 import aurora.color : Color;
-import aurora.event : Event, Key, MouseButton;
+import aurora.event : Event, EventType, Key, MouseButton;
 import aurora.types : Point, Rect, Size, clampInt, maxInt;
 import aurora.widget : PopupSurface, Widget;
+
+/**
+ * The pointer-down point of the most recent mouse press, in host-global logical
+ * coordinates, or `Point.init` when the last interaction was not a press.
+ *
+ * Transient popups record this when they open. A popup whose anchor widget
+ * happens to be a sub-region of the control the user actually clicked (or that
+ * anchors itself somewhere the widget cannot express) then still recognizes the
+ * closing press as the same press that opened it, so a dropdown opens on the
+ * first click and closes on the second instead of closing and immediately
+ * reopening. Recomputed by GuiWindow on every pointer press.
+ */
+public Point lastPointerPressGlobal = Point.init;
+
+/**
+ * True once a popup opener has seen the current press. A self-managed toggle
+ * surface uses it to tell its own opening press from a later press at the same
+ * coordinates, which must dismiss instead of toggling again.
+ */
+public bool lastPointerPressClaimed;
+
+/** Convenience: does `globalPoint` sit on the press that most recently opened UI? */
+bool openedOnLastPointerPress(Rect globalAnchor, Point globalPoint)
+    @safe nothrow @nogc
+{
+    // Non-empty points only: `Point.init` (0,0) is the "no press recorded" and
+    // "no anchor given" sentinel, so it must never match a real click at the
+    // top-left corner.
+    return globalPoint != Point.init &&
+        (globalAnchor.contains(globalPoint) ||
+            lastPointerPressGlobal == globalPoint);
+}
+
 
 /** Placement of a transient Aurora-rendered popup relative to an anchor. */
 enum PopupPlacement : ubyte
@@ -85,6 +118,16 @@ abstract class TransientPopup : Widget, PopupSurface
         dismiss();
     }
 
+    /**
+     * Whether this press is the one that opened the surface for a self-managed
+     * toggle. A surface without a toggle anchor (a plain popup overlay) always
+     * returns false and simply dismisses.
+     */
+    bool togglePressMatches(Point globalPoint, MouseButton button)
+    {
+        return false;
+    }
+
     override bool dismissPopupForPointer(Point globalPoint, MouseButton button)
     {
         dismiss();
@@ -111,7 +154,12 @@ class PopupOverlay : TransientPopup
     private bool _drawShadow = true;
     private Color _backdrop = Color.rgba(0, 0, 0, 0);
     private bool _consumeAnchorPress;
+    // Global point of the pointer press that opened this popup. A later press at
+    // the same point is the click that should close it, whether or not the point
+    // falls inside the anchor rect a caller measured.
+    private Point _openPressGlobal;
     private bool _manualPanelPosition;
+
     private Point _manualPanelOrigin;
 
     this(Widget content, Widget focusReturn = null)
@@ -204,9 +252,18 @@ class PopupOverlay : TransientPopup
     }
 
     /** Keep an anchor toggle from closing and immediately reopening its popup. */
-    void setConsumeAnchorPress(bool value)
+    void setConsumeAnchorPress(Widget anchor)
     {
-        _consumeAnchorPress = value;
+        if (anchor is null)
+        {
+            _consumeAnchorPress = _openPressGlobal != Point.init;
+            if (_consumeAnchorPress) _anchorGlobal = Rect.init;
+            return;
+        }
+        const origin = anchor.globalOrigin();
+        _anchorGlobal = Rect(origin.x, origin.y, anchor.bounds().width,
+            anchor.bounds().height);
+        _consumeAnchorPress = true;
     }
 
     override bool popupContains(Point globalPoint) const @safe pure nothrow @nogc
@@ -218,14 +275,17 @@ class PopupOverlay : TransientPopup
 
     override bool dismissPopupForPointer(Point globalPoint, MouseButton button)
     {
-        // Only the left press that toggles the anchor is swallowed; a
+        // Only the left press that opened this popup is swallowed; a
         // right-click still passes through so the anchor's context menu can
-        // open while this popup closes.
+        // open while this popup closes. The press is matched by its exact point
+        // first, so an opener whose anchor rect covers more (or less) than the
+        // clicked control still toggles cleanly.
         const consume = _consumeAnchorPress && button == MouseButton.left &&
-            _anchorGlobal.contains(globalPoint);
+            openedOnLastPointerPress(_anchorGlobal, globalPoint);
         dismiss();
         return consume;
     }
+
 
     /** Focus the first focusable control contained by the panel. */
     void focusFirst()
@@ -414,10 +474,15 @@ PopupOverlay showPopup(Widget owner, Rect globalAnchor, Widget content,
     root.bringChildToFront(popup);
     popup.setRequestedSize(requestedSize);
     popup.setAnchor(globalAnchor, placement);
+    // Toggle behavior: opening from an anchor button remembers which press did
+    // it, so the next click on that button closes the popup rather than
+    // closing and immediately reopening it.
+    popup.setConsumeAnchorPress(owner);
     popup.layoutTree();
     popup.focusFirst();
     return popup;
 }
+
 
 unittest
 {

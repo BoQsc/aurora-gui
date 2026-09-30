@@ -19,6 +19,8 @@ import aurora.text.atlas : FontSystem;
 import aurora.theme : Theme;
 import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size, maxInt;
 import aurora.widget : PopupSurface, Widget, WidgetHost;
+import aurora.widgets.popup : lastPointerPressClaimed, lastPointerPressGlobal;
+
 import core.time : MonoTime;
 import std.conv : to;
 import std.math : isNaN;
@@ -1567,7 +1569,17 @@ final class GuiWindow : WidgetHost, NativeWindowSink
 
     private void handleMouseDown(ref Event event)
     {
+        // Remember where this press landed: a popup opened by it (or by a
+        // widget activation it triggers) matches that point to swallow the
+        // closing press, so dropdowns toggle instead of reopening.
+        lastPointerPressGlobal = event.globalPosition;
+        // Self-managed toggles read this to tell their own opening press from a
+        // later press at the same coordinates; it is set true once this press
+        // has been handled, so any opener that captures it sees the live press.
+        lastPointerPressClaimed = false;
+        scope (exit) lastPointerPressClaimed = true;
         if (dismissOutsidePopups(event)) return;
+
         updateHover(event.globalPosition);
         auto target = _captured !is null ? _captured : _hovered;
         updateClickCount(target, event);

@@ -77,9 +77,18 @@ interface PopupSurface
      */
     bool dismissPopupForPointer(Point globalPoint, MouseButton button);
 
+    /**
+     * Whether this press is the one that opened the surface for a self-managed
+     * toggle (a dropdown whose owner opens a new surface on its own press
+     * instead of keeping this one). A surface without such a toggle returns
+     * false.
+     */
+    bool togglePressMatches(Point globalPoint, MouseButton button);
+
     /** Dismiss without a pointer event, for example from Escape. */
     void dismissPopup();
 }
+
 
 /** Base class for all retained-mode Aurora controls. */
 abstract class Widget

@@ -7,7 +7,10 @@ import aurora.icons : IconKind, drawIcon;
 import aurora.types : CursorKind, HorizontalAlign, Point, Rect, VerticalAlign,
     clampInt, maxInt, minInt;
 import aurora.widget : Widget;
-import aurora.widgets.popup : TransientPopup, dismissTransientPopups, popupRoot;
+import aurora.widgets.popup : TransientPopup, currentTransientPopup,
+    dismissTransientPopups, lastPointerPressClaimed, lastPointerPressGlobal,
+    popupRoot;
+
 import std.utf : toUTF32;
 
 /** One command, check item, or separator in an Aurora-rendered context menu. */
@@ -85,6 +88,11 @@ class ContextMenu : TransientPopup
     private bool _hasRequestedAnchor;
     private Rect _consumeAnchorGlobal;
     private bool _consumeAnchorPress;
+    // Whether this menu may toggle by the recorded press point. Set by the
+    // opener only for a live press.
+    private bool _toggleByPress;
+    private Point _openPressGlobal;
+
     private Rect _menuRect;
     private int _hot = -1;
     private int _pressed = -1;
@@ -152,22 +160,72 @@ class ContextMenu : TransientPopup
             globalPoint.y - origin.y));
     }
 
-    /** Keep an anchor toggle from closing and immediately reopening this menu. */
-    void setConsumeAnchorPress(Rect globalAnchor)
+    /**
+     * Keep an anchor toggle from closing and immediately reopening this menu.
+     *
+     * `globalAnchor` is the anchor rectangle a press inside it toggles. It may
+     * be empty: the opening press point then decides the toggle, which is what
+     * an opener that does not know the control geometry (a menu opened by a
+     * view opened on the same click) relies on.
+     *
+     * `ownerHandlesToggle` true means the owner keeps its own surface open and
+     * closes it on the next click by itself, so an empty-rect menu must not
+     * also swallow that click by the shared press point.
+     */
+    void setConsumeAnchorPress(Rect globalAnchor,
+        bool ownerHandlesToggle = false)
     {
         _consumeAnchorGlobal = globalAnchor;
         _consumeAnchorPress = true;
+        _toggleByPress = !ownerHandlesToggle;
+    }
+
+    /** Arm the toggle against a widget anchor, deriving its global rect. */
+    void setConsumeAnchorPress(Widget anchor)
+    {
+        if (anchor is null)
+        {
+            _consumeAnchorPress = _openPressGlobal != Point.init;
+            if (_consumeAnchorPress) _consumeAnchorGlobal = Rect.init;
+            return;
+        }
+        const origin = anchor.globalOrigin();
+        setConsumeAnchorPress(Rect(origin.x, origin.y,
+            anchor.bounds().width, anchor.bounds().height));
     }
 
     override bool dismissPopupForPointer(Point globalPoint, MouseButton button)
     {
         // Swallow only the left press that toggles the anchor button; other
-        // presses dismiss the menu and pass through unchanged.
-        const consume = _consumeAnchorPress && button == MouseButton.left &&
-            _consumeAnchorGlobal.contains(globalPoint);
+        // presses dismiss the menu and pass through unchanged. The exact opener
+        // press point is matched too, so a menu anchored below its button (or
+        // owned by a larger row) still toggles instead of reopening.
+        const consume = consumePressedAnchor(globalPoint, button);
         dismiss();
         return consume;
     }
+
+    /// The "is this the press that opened me, and does it toggle?" decision.
+    private bool consumePressedAnchor(Point globalPoint, MouseButton button)
+    {
+        if (button != MouseButton.left || !_consumeAnchorPress) return false;
+        // A right-click, or a menu with no toggle anchor, just dismisses and
+        // lets the press through.
+        //
+        // The anchor rect is the owner's own geometry and therefore precise: a
+        // press inside it is the anchor toggle, so swallow it.
+        if (!_consumeAnchorGlobal.empty() && _consumeAnchorGlobal.contains(globalPoint))
+            return true;
+        // The recorded press point covers the case where the anchor rect does
+        // not describe the control that was clicked (a menu opened below its
+        // button, or owned by a wider row). It is trusted only while its press
+        // has not already been claimed: a second press at the same point is a
+        // genuinely new click, so it must dismiss and pass through instead of
+        // toggling.
+        return _toggleByPress &&
+            _openPressGlobal != Point.init && _openPressGlobal == globalPoint;
+    }
+
 
     void openAt(Point localPosition)
     {
@@ -685,6 +743,10 @@ ContextMenu showContextMenu(Widget owner, Point globalPosition, ContextMenuItem[
     root.add(popup);
     popup.setBounds(Rect(0, 0, root.bounds().width, root.bounds().height));
     root.bringChildToFront(popup);
+    // Toggle behavior: clicking this menu's anchor opens it here, so remember
+    // which press did. The next press at the same point then closes the menu
+    // instead of closing and immediately reopening it.
+    popup.setConsumeAnchorPress(owner);
     popup.openAt(root.globalToLocal(globalPosition));
     return popup;
 }
@@ -714,8 +776,16 @@ ContextMenu showContextMenuKeepPopups(Widget owner, Point globalPosition,
     return popup;
 }
 
-/** Show a context menu directly below the owner widget as a dropdown. */
-ContextMenu showContextMenuBelow(Widget owner, ContextMenuItem[] items)
+/**
+ * Show a context menu directly below the owner widget as a dropdown.
+ *
+ * `ownerHandlesToggle` true means the owner keeps its own surface open and
+ * closes it on the next click itself: the menu then only dismisses and never
+ * swallows a press by the shared opener point (the owner's own anchor rect
+ * still toggles the menu closed).
+ */
+ContextMenu showContextMenuBelow(Widget owner, ContextMenuItem[] items,
+    bool ownerHandlesToggle = false)
 {
     if (owner is null || items.length == 0) return null;
     auto root = popupRoot(owner);
@@ -727,11 +797,15 @@ ContextMenu showContextMenuBelow(Widget owner, ContextMenuItem[] items)
     root.bringChildToFront(popup);
     const ownerOrigin = owner.globalOrigin();
     const rootOrigin = root.globalOrigin();
+    popup.setConsumeAnchorPress(Rect(ownerOrigin.x - rootOrigin.x,
+        ownerOrigin.y - rootOrigin.y, owner.bounds().width,
+        owner.bounds().height), ownerHandlesToggle);
     popup.openBelow(Rect(ownerOrigin.x - rootOrigin.x,
         ownerOrigin.y - rootOrigin.y, owner.bounds().width,
         owner.bounds().height));
     return popup;
 }
+
 
 unittest
 {
@@ -807,8 +881,80 @@ unittest
     assert(childActivated);
     assert(child.dismissed());
     assert(cascade.dismissed());
+
+    // Toggle contract: a menu opened by a press on its anchor must be closed
+    // (and that press swallowed) by the next press at the same point, so an
+    // anchored dropdown opens on one click and closes on the next instead of
+    // closing and immediately reopening.
+    lastPointerPressGlobal = Point(120, 90);
+    auto toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    assert(toggle !is null && !toggle.dismissed());
+    assert(toggle.dismissPopupForPointer(Point(120, 90), MouseButton.left),
+        "the closing press on the opener point was not swallowed");
+    assert(toggle.dismissed(), "the menu did not close on its toggle press");
+    // A menu opened with an explicit anchor rect ignores the press point: a
+    // press inside the rect toggles, a press outside dismisses and passes
+    // through so it can reach whatever sits underneath.
+    lastPointerPressGlobal = Point(400, 300);
+    toggle = showContextMenu(root, Point(400, 300), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect(120, 80, 80, 40));
+    assert(toggle.dismissPopupForPointer(Point(160, 100), MouseButton.left),
+        "a press inside the anchor rect must toggle");
+    assert(toggle.dismissed());
+    lastPointerPressGlobal = Point(400, 300);
+    toggle = showContextMenu(root, Point(400, 300), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect(120, 80, 80, 40));
+    assert(!toggle.dismissPopupForPointer(Point(400, 300), MouseButton.left),
+        "a press outside the anchor rect must pass through");
+    assert(toggle.dismissed());
+    // A press somewhere else still dismisses but must NOT be swallowed, so it
+    // can reach whatever sits underneath.
+    lastPointerPressGlobal = Point(120, 90);
+    toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    // An empty anchor rect (the widget call is skipped by hand here) matches the
+    // opener point only, so a press at another point passes through.
+    toggle.setConsumeAnchorPress(Rect.init);
+    assert(!toggle.dismissPopupForPointer(Point(400, 300), MouseButton.left),
+        "a click away from the opener point must pass through");
+    assert(toggle.dismissed());
+    // A later click at the same point is a new press, not the opener: it must
+    // dismiss and pass through, or the anchor button could never be clicked
+    // again while the coordinates still match the previous open.
+    lastPointerPressClaimed = true;
+    toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect.init);
+    assert(!toggle.dismissPopupForPointer(Point(120, 90), MouseButton.left),
+        "a later press at the opener point must pass through");
+    assert(toggle.dismissed());
+    // The top-left corner is the "no press recorded" sentinel and must never
+    // look like a toggle.
+    lastPointerPressGlobal = Point.init;
+    toggle = showContextMenu(root, Point(120, 90), [
+        ContextMenuItem.command("Only", delegate() {})
+    ]);
+    toggle.setConsumeAnchorPress(Rect.init);
+    assert(!toggle.dismissPopupForPointer(Point(0, 0), MouseButton.left),
+        "the missing-press sentinel must not swallow a corner click");
+    toggle.dismiss();
 }
+
 
 private final class ContextMenuTestRoot : Widget
 {
 }
+
+version (unittest)
+{
+    int main() { return 0; }
+}
+

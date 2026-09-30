@@ -16148,10 +16148,6 @@ public final class OpenCodeRoot : VBox
         popup.setAnchor(Rect(origin.x, origin.y, _modelButton.size().width,
             _modelButton.size().height), PopupPlacement.above);
         popup.setBackdrop(Color.rgba(0, 0, 0, 90));
-        // A second press on the anchor button must close the picker and be
-        // swallowed; otherwise it falls through, re-fires the button's
-        // onClick, and immediately reopens the picker on the same click.
-        popup.setConsumeAnchorPress(true);
         popup.onDismissed = delegate()
         {
             _activePopup = null;
@@ -16229,7 +16225,7 @@ public final class OpenCodeRoot : VBox
             items ~= ContextMenuItem.command(
                 "Token budget requires detected llama.cpp",
                 delegate() {}, "", false);
-        showContextMenuBelow(_thinkingBox, items);
+        showContextMenuBelow(_thinkingBox, items, true);
     }
 
     /// One row of the Thinking dropdown. `off` clears the chat's thinking flag;
@@ -17237,14 +17233,9 @@ public final class OpenCodeRoot : VBox
             const origin = providerButton.globalOrigin();
             // Keep the Settings dialog open: showContextMenuBelow dismisses
             // every transient popup, including this dialog.
-            auto menu = showContextMenuKeepPopups(providerButton,
+            showContextMenuKeepPopups(providerButton,
                 Point(origin.x, origin.y + providerButton.size().height),
                 items);
-            // A second press on the button closes the menu and must be
-            // swallowed, or it falls through and reopens the menu at once.
-            if (menu !is null)
-                menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
-                    providerButton.size().width, providerButton.size().height));
         };
         _settingsProviderButton = providerButton;
 
@@ -17505,13 +17496,9 @@ public final class OpenCodeRoot : VBox
                 items ~= verbosityMenuItem(name);
             const origin = verbosityButton.globalOrigin();
             // Keep the Settings dialog open, exactly like the provider picker.
-            auto menu = showContextMenuKeepPopups(verbosityButton,
+            showContextMenuKeepPopups(verbosityButton,
                 Point(origin.x, origin.y + verbosityButton.size().height),
                 items);
-            // Closing press must not fall through and reopen the menu.
-            if (menu !is null)
-                menu.setConsumeAnchorPress(Rect(origin.x, origin.y,
-                    verbosityButton.size().width, verbosityButton.size().height));
         };
         _settingsVerbosityButton = verbosityButton;
         optionsBody.add(verbosityRow);
