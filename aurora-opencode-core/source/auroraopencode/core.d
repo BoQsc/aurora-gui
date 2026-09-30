@@ -1019,7 +1019,7 @@ public struct ModelReasoningControl
 {
     string baseUrl;
     string model;
-    // Empty keeps the existing Thinking-on default of "high".
+    // Empty keeps the Thinking-on default of "low".
     string effort;
     // Zero leaves the server's reasoning budget unchanged.
     int budgetTokens;

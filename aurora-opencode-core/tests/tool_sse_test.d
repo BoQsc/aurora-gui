@@ -251,12 +251,21 @@ private void assertPlainBody()
     assert(("tools" in value.object) is null, "Plain chat sent tools");
     assert(("parallel_tool_calls" in value.object) is null,
         "Plain chat sent a tool-only request option");
-    assert(value.object["reasoning_effort"].str == "high",
-        "Thinking=on did not request hosted reasoning");
+    assert(value.object["reasoning_effort"].str == "low",
+        "Thinking=on with no effort selection should default to low");
     auto thinkingOff = parseJSON(client.buildBodyForTesting([user], null,
         "deepseek/deepseek-v4.1-flash", false));
     assert(("reasoning_effort" in thinkingOff.object) is null,
-        "Thinking=off still enabled hosted reasoning");
+        "Thinking=off must not send reasoning_effort to a generic gateway");
+    // The OpenCode Zen route accepts `reasoning_effort: "none"`, the only
+    // value that actually disables DeepSeek V4's reasoning there.
+    auto zenClient = new OpenCodeClient("https://opencode.ai/zen/go/v1",
+        "test-key");
+    auto zenOff = parseJSON(zenClient.buildBodyForTesting([user], null,
+        "deepseek-v4.1-flash", false));
+    assert(zenOff.object["reasoning_effort"].str == "none",
+        "Thinking=off did not disable reasoning on the OpenCode gateway");
+    zenClient.closeSession();
     writeln("Plain chat body stays tool-free");
     client.closeSession();
 }
@@ -377,8 +386,8 @@ private void assertLlamaServerCompatibility()
         "local Thinking=off did not disable llama-server reasoning");
     auto on = parseJSON(client.buildBodyForTesting([user], null,
         "qwen-local", true));
-    assert(on.object["reasoning_effort"].str == "high",
-        "local Thinking=on did not request reasoning");
+    assert(on.object["reasoning_effort"].str == "low",
+        "local Thinking=on should default to low effort");
 
     // Hosted providers keep checkpoints in chronological order. Pulling a newly
     // appended instruction to message zero would rewrite the entire token prefix

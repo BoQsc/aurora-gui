@@ -1665,22 +1665,27 @@ final class OpenCodeClient
         JSONValue streamOptions;
         streamOptions["include_usage"] = true;
         root["stream_options"] = streamOptions;
-        // `low` still enables reasoning on hosted DeepSeek/OpenCode routes.
-        // That made an unchecked Thinking box misleading and could make the
-        // next request fail when a provider demanded its hidden
-        // `reasoning_content` back. Local llama-server accepts `none`; hosted
-        // gateways such as CommandCode may reject it, so omit the option there
-        // when thinking is disabled and let the provider's non-reasoning
-        // default apply.
+        // Thinking on maps the composer's effort onto `reasoning_effort`. The
+        // DeepSeek-class routes over-think at the provider's own default, so an
+        // unset effort resolves to `low` instead of the previous implicit
+        // `high`.
         if (thinking)
         {
             root["reasoning_effort"] = reasoningEffort == "low" ||
                 reasoningEffort == "medium" || reasoningEffort == "high"
-                ? reasoningEffort : "high";
+                ? reasoningEffort : "low";
             if (llamaCppServer && thinkingBudgetTokens > 0)
                 root["thinking_budget_tokens"] = thinkingBudgetTokens;
         }
-        else if (llamaCppServer || isLoopbackApiBaseUrl(baseUrl))
+        // Thinking off must actually disable reasoning. Local llama-server and
+        // the OpenCode Zen gateway both accept `reasoning_effort: "none"`
+        // (Zen's validator lists none/minimal/low/medium/high/xhigh/max), so
+        // send it there. CommandCode's OpenAI route accepts only
+        // low/medium/high/xhigh/max -- `none` is an HTTP 400 -- so omit the
+        // option there; the provider's own default applies instead. api.
+        // deepseek.com is the same story via a different switch.
+        else if (llamaCppServer || isLoopbackApiBaseUrl(baseUrl) ||
+            isOpenCodeApiBaseUrl(baseUrl))
             root["reasoning_effort"] = "none";
         return root.toString();
     }

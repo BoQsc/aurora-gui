@@ -2677,29 +2677,37 @@ int main(string[] args)
         writeln("Common UI buttons show hover tooltips");
     }
 
-    // Right-clicking Thinking changes effort without toggling the checkbox.
+    // The Thinking control is a dropdown: right-clicking (and left-clicking)
+    // opens an Off/Low/Medium/High menu. Picking a level both enables thinking
+    // and records the effort for this endpoint and model; Off disables it.
     driver.click(globalCenter(thinkingToggle), MouseButton.right);
     root.tickTree(0.02);
     auto reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
-    assert(reasoningMenu !is null && reasoningMenu.items().length == 6 &&
-        reasoningMenu.items()[3].checked,
-        "Thinking menu must offer Low, Medium and default High effort");
-    reasoningMenu.items()[1].action();
+    assert(reasoningMenu !is null && reasoningMenu.items().length == 7 &&
+        reasoningMenu.items()[1].checked,
+        "Thinking menu must offer Off, Low, Medium and High (default Off)");
+    // Row 2 is Low: selecting it enables thinking at low effort.
+    reasoningMenu.items()[2].action();
     dismissContextMenus(root);
     auto reloadedReasoningSettings = loadSettings();
     auto savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
         "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash");
-    assert(savedReasoning.effort == "low" && savedReasoning.budgetTokens == 0,
-        "Low reasoning effort must persist for this endpoint and model");
+    assert(reloadedReasoningSettings.thinking && savedReasoning.effort == "low" &&
+        savedReasoning.budgetTokens == 0,
+        "Choosing Low must enable thinking and persist low effort");
+    assert(root.thinkingModeLabelForTesting() == "Thinking: Low",
+        "Selector label must reflect the chosen effort: " ~
+        root.thinkingModeLabelForTesting());
 
     root.setLlamaCppEndpointForTesting(true);
     driver.click(globalCenter(thinkingToggle), MouseButton.right);
     root.tickTree(0.02);
     reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
-    assert(reasoningMenu !is null && reasoningMenu.items().length == 11 &&
-        reasoningMenu.items()[6].checked,
+    assert(reasoningMenu !is null && reasoningMenu.items().length == 12 &&
+        reasoningMenu.items()[7].checked,
         "Detected llama.cpp should expose token budget presets");
-    reasoningMenu.items()[8].action();
+    // Row 9 is the 2,048-token preset.
+    reasoningMenu.items()[9].action();
     dismissContextMenus(root);
     reloadedReasoningSettings = loadSettings();
     savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
@@ -2707,19 +2715,28 @@ int main(string[] args)
     assert(savedReasoning.effort == "low" &&
         savedReasoning.budgetTokens == 2_048,
         "Budget selection must preserve effort and persist");
-    // Restore the smoke fixture's default request behavior.
+    // Restore the smoke fixture's default request behavior: implicit effort
+    // (High), no budget, thinking off.
     driver.click(globalCenter(thinkingToggle), MouseButton.right);
     root.tickTree(0.02);
     reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
-    reasoningMenu.items()[3].action();
+    reasoningMenu.items()[4].action();
     dismissContextMenus(root);
     driver.click(globalCenter(thinkingToggle), MouseButton.right);
     root.tickTree(0.02);
     reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
-    reasoningMenu.items()[6].action();
+    reasoningMenu.items()[7].action();
+    dismissContextMenus(root);
+    driver.click(globalCenter(thinkingToggle), MouseButton.right);
+    root.tickTree(0.02);
+    reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
+    reasoningMenu.items()[1].action();
     dismissContextMenus(root);
     root.setLlamaCppEndpointForTesting(false);
-    writeln("Thinking menu saves per-model effort and detected llama budget");
+    assert(root.thinkingModeLabelForTesting() == "Thinking: Off",
+        "Selector label must read Thinking: Off after disabling");
+    writeln("Thinking dropdown saves per-model effort and detected llama budget");
+
 
     // Removing a project moves its chats to the sandbox.
     root.removeProjectForTesting(1);

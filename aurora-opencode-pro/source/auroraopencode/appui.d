@@ -5590,6 +5590,41 @@ private final class HoverCheckBox : CheckBox
     }
 }
 
+/// Composer Thinking selector. Unlike the checkbox it replaces, a left click
+/// opens the Off/Low/Medium/High menu (a dropdown) and the label always shows
+/// the active mode, so an implicit high-effort DeepSeek route is visible at a
+/// glance. Right-click opens the same menu, preserving the old gesture.
+private final class ThinkingControl : Button
+{
+    void delegate(bool hovered) onHoverChanged;
+    void delegate(Point) onContextMenuRequested;
+
+    this(string text = "") { super(text); }
+
+    protected override void onMouseEnter()
+    {
+        super.onMouseEnter();
+        if (onHoverChanged !is null) onHoverChanged(true);
+    }
+
+    protected override void onMouseLeave()
+    {
+        super.onMouseLeave();
+        if (onHoverChanged !is null) onHoverChanged(false);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (enabled() && event.button == MouseButton.right)
+        {
+            if (onContextMenuRequested !is null)
+                onContextMenuRequested(localToGlobal(event.position));
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+}
+
 /// A saved, display-only notice placed after the message that triggered a
 /// compacted request. It is not a chat message and never enters model context.
 private final class ContextCompactionNoticeRow : Widget
@@ -5663,10 +5698,10 @@ private final class KeyStatusBadge : Label
 
 /// Explanation shown when hovering the composer's Thinking toggle.
 private immutable string thinkingToggleTooltipText =
-    "Toggle reasoning for this chat. Right-click to choose reasoning effort for " ~
-    "this endpoint and model. Detected llama.cpp servers also offer a " ~
-    "thinking token budget. A server CLI budget can override it; providers " ~
-    "may ignore unsupported controls.";
+    "Thinking mode for this chat. Click to choose Off, Low, Medium or High " ~
+    "reasoning effort for this endpoint and model. Off sends no reasoning " ~
+    "request; some gateways (CommandCode) still reason at their own default. " ~
+    "Detected llama.cpp servers also offer a thinking token budget.";
 
 /// Tooltip text for the common toolbar, rail, sidebar, and Send buttons.
 /// Deliberately terse: these panels render in HoverTooltip's compact mode, so
@@ -7828,7 +7863,7 @@ public final class OpenCodeRoot : VBox
     // second instead of on every frame.
     private double _miniChatAccum;
     private Button _modelButton;
-    private CheckBox _thinkingBox;
+    private ThinkingControl _thinkingBox;
     private CheckBox _toolsBox;
     private KeyStatusBadge _keyBadge;
     private Label _status;
@@ -9226,27 +9261,23 @@ public final class OpenCodeRoot : VBox
         };
         _usageBadge.onMenuRequested = &showContextTargetMenu;
 
-        auto thinkingBox = new HoverCheckBox("Thinking");
-        _thinkingBox = composerControls.add(thinkingBox);
+        auto thinkingControl = new ThinkingControl(thinkingModeLabel());
+        _thinkingBox = composerControls.add(thinkingControl);
         _thinkingBox.setId("oc-thinking");
-        hugCheckBoxLabel(_thinkingBox, "Thinking");
-        _thinkingBox.setChecked(_settings.thinking, false);
-        _thinkingBox.onChanged = delegate(bool value)
-        {
-            _settings.thinking = value;
-            if (_current >= 0) _sessions[_current].thinking = value;
-            saveSettingsNow();
-        };
-        // The tooltip hangs off the Thinking checkbox itself rather than a
+        // A left click opens the same Off/Low/Medium/High menu a right click
+        // does, so the control reads as a dropdown instead of a bare toggle.
+        _thinkingBox.onClick = delegate() { showReasoningControlMenu(); };
+        // The tooltip hangs off the Thinking control itself rather than a
         // separate "?" badge, so hovering the control explains it.
-        thinkingBox.onHoverChanged = delegate(bool open)
+        thinkingControl.onHoverChanged = delegate(bool open)
         {
             if (_thinkingTooltip is null)
                 _thinkingTooltip = new HoverTooltip(_thinkingBox);
             setTooltipOpen(_thinkingBox, thinkingToggleTooltipText,
                 _thinkingTooltip, _thinkingTooltipOpen, open, true);
         };
-        thinkingBox.onContextMenuRequested = &showReasoningControlMenu;
+        thinkingControl.onContextMenuRequested =
+            delegate(Point) { showReasoningControlMenu(); };
 
         _toolsBox = composerControls.add(new CheckBox("Tools"));
         _toolsBox.setId("oc-tools");
@@ -10230,7 +10261,7 @@ public final class OpenCodeRoot : VBox
         _sessions[index].model = _settings.model;
         _settings.thinking = _sessions[index].thinking;
         _modelButton.setText(_settings.model);
-        _thinkingBox.setChecked(_settings.thinking, false);
+        refreshThinkingControl();
         markDirty();
         updateStatus("");
         refreshUsageBadge();
@@ -16168,7 +16199,7 @@ public final class OpenCodeRoot : VBox
         showContextMenu(_modelButton, globalPosition, items);
     }
 
-    private void showReasoningControlMenu(Point globalPosition)
+    private void showReasoningControlMenu()
     {
         if (_activePopup !is null) _activePopup.dismiss();
         if (_thinkingTooltipOpen)
@@ -16177,13 +16208,14 @@ public final class OpenCodeRoot : VBox
         const model = _settings.model;
         const control = reasoningControlForModel(_settings,
             _settings.baseUrl, model);
-        const selectedEffort = control.effort.length > 0
-            ? control.effort : "high";
+        const effort = control.effort.length > 0 ? control.effort : "low";
         ContextMenuItem[] items;
-        items ~= ContextMenuItem.command("Reasoning effort (Thinking on)",
+        items ~= ContextMenuItem.command("Thinking mode",
             delegate() {}, "", false);
-        foreach (effort; ["low", "medium", "high"])
-            items ~= reasoningEffortMenuItem(model, effort, selectedEffort);
+        foreach (mode; ["off", "low", "medium", "high"])
+            items ~= thinkingModeMenuItem(mode,
+                mode == "off" ? !_settings.thinking
+                : (_settings.thinking && mode == effort));
         items ~= ContextMenuItem.separatorItem();
         if (_reasoningCapsBaseUrl == _settings.baseUrl && _llamaCppEndpoint)
         {
@@ -16197,27 +16229,63 @@ public final class OpenCodeRoot : VBox
             items ~= ContextMenuItem.command(
                 "Token budget requires detected llama.cpp",
                 delegate() {}, "", false);
-        showContextMenu(_thinkingBox, globalPosition, items);
+        showContextMenuBelow(_thinkingBox, items);
     }
 
-    private ContextMenuItem reasoningEffortMenuItem(string model,
-        string effort, string selected)
+    /// One row of the Thinking dropdown. `off` clears the chat's thinking flag;
+    /// an effort both enables thinking and records the level for this endpoint
+    /// and model (High is stored as the empty implicit default).
+    private ContextMenuItem thinkingModeMenuItem(string mode, bool selected)
     {
-        string label;
-        switch (effort)
-        {
-            case "low": label = "Low"; break;
-            case "medium": label = "Medium"; break;
-            default: label = "High (current default)"; break;
-        }
-        return ContextMenuItem.check(label, effort == selected, delegate()
+        return ContextMenuItem.check(
+            mode == "off" ? "Off" : thinkingEffortLabel(mode), selected,
+            delegate() { setThinkingMode(mode); });
+    }
+
+    /// Apply a Thinking mode to the active chat and the endpoint/model record,
+    /// then update the composer selector's label.
+    private void setThinkingMode(string mode)
+    {
+        const enabled = mode != "off";
+        _settings.thinking = enabled;
+        if (_current >= 0) _sessions[_current].thinking = enabled;
+        if (enabled)
         {
             auto control = reasoningControlForModel(_settings,
-                _settings.baseUrl, model);
-            setReasoningControlForModel(_settings, _settings.baseUrl, model,
-                effort == "high" ? "" : effort, control.budgetTokens);
-            saveSettingsNow();
-        });
+                _settings.baseUrl, _settings.model);
+            setReasoningControlForModel(_settings, _settings.baseUrl,
+                _settings.model, mode == "high" ? "" : mode,
+                control.budgetTokens);
+        }
+        saveSettingsNow();
+        refreshThinkingControl();
+    }
+
+    private static string thinkingEffortLabel(string effort)
+    {
+        switch (effort)
+        {
+            case "low": return "Low";
+            case "medium": return "Medium";
+            case "high": return "High";
+            default: return "Low";
+        }
+    }
+
+    /// The composer selector's label for the chat's current mode.
+    private string thinkingModeLabel()
+    {
+        if (!_settings.thinking) return "Thinking: Off";
+        const effort = reasoningControlForModel(_settings, _settings.baseUrl,
+            _settings.model).effort;
+        return "Thinking: " ~ thinkingEffortLabel(effort.length > 0
+            ? effort : "low");
+    }
+
+    /// Push the active chat's mode onto the composer selector.
+    private void refreshThinkingControl()
+    {
+        if (_thinkingBox !is null) _thinkingBox.setText(thinkingModeLabel());
     }
 
     private ContextMenuItem reasoningBudgetMenuItem(string model,
@@ -20251,7 +20319,7 @@ public final class OpenCodeRoot : VBox
             _settings.model = _sessions[_current].model;
             _settings.thinking = _sessions[_current].thinking;
             _modelButton.setText(_settings.model);
-            _thinkingBox.setChecked(_settings.thinking, false);
+            refreshThinkingControl();
             // Put back a prompt the user typed but never sent, so a restart or
             // rebuild does not silently drop it. notify=false: this is a
             // restore, not a user edit.
@@ -22236,6 +22304,13 @@ public final class OpenCodeRoot : VBox
         return isThinkingTooltipOpenForTesting() && _thinkingTooltip !is null
             ? _thinkingTooltip.textForTesting() : "";
     }
+
+    /// Test-only: the composer Thinking selector's current label.
+    public string thinkingModeLabelForTesting()
+    {
+        return thinkingModeLabel();
+    }
+
 
     /// Test-only: the absolute-path tooltip text ("" when closed).
     public string pathTooltipTextForTesting()
