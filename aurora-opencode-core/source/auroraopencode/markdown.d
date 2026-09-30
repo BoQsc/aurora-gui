@@ -144,6 +144,17 @@ private dstring trimStart(dstring s)
     return s[i .. $];
 }
 
+/// Strip leading and trailing spaces/tabs, so a code span's padding (`` ` x ` ``)
+/// does not hide the path inside it.
+private dstring trimSpacesD(dstring s) @safe pure nothrow @nogc
+{
+    size_t begin;
+    while (begin < s.length && isSpace(s[begin])) ++begin;
+    size_t end = s.length;
+    while (end > begin && isSpace(s[end - 1])) --end;
+    return s[begin .. end];
+}
+
 // Count leading indentation in spaces, treating a tab as four columns.
 private int lineIndent(dstring line)
 {
@@ -520,7 +531,200 @@ private InlineRun[] parseRuns(dstring text, size_t start, size_t end)
         ++i;
     }
     flush();
+    return autolinkLocalPaths(result);
+}
+
+/// Whether `c` can appear inside a filesystem path token.
+bool isPathChar(dchar c) @safe pure nothrow @nogc
+{
+    if (c >= 'a' && c <= 'z') return true;
+    if (c >= 'A' && c <= 'Z') return true;
+    if (c >= '0' && c <= '9') return true;
+    switch (c)
+    {
+        case '_', '-', '.', '/', '\\', ':', '~', '+', '@', '%', '#':
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// Punctuation a path can pick up from the surrounding sentence and that must
+/// be trimmed off before the token is treated as a path.
+private bool isTrailingPathPunct(dchar c) @safe pure nothrow @nogc
+{
+    switch (c)
+    {
+        case '.', ',', ';', ':', '!', '?', ')', ']', '}':
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool isAsciiAlpha(dchar c) @safe pure nothrow @nogc
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+/// Whether `tok` reads as a local filesystem path rather than an ordinary
+/// slash-bearing word. URLs are excluded, and a bare relative path needs a
+/// filename extension or a nested folder so prose such as "and/or", "24/7" or
+/// "TCP/IP" is left alone.
+bool looksLikeLocalPath(dstring tok) @safe pure nothrow @nogc
+{
+    const n = tok.length;
+    if (n < 2) return false;
+    // A `file://` URI is always a local path.
+    if (n >= 7 && tok[0] == 'f' && tok[1] == 'i' && tok[2] == 'l' &&
+        tok[3] == 'e' && tok[4] == ':' && tok[5] == '/' && tok[6] == '/')
+        return true;
+    // Reject any other scheme (`http://`, `https://`, `ftp://`, …).
+    foreach (idx, ch; tok)
+        if (ch == ':' && idx >= 1 && idx + 2 < n &&
+            tok[idx + 1] == '/' && tok[idx + 2] == '/')
+            return false;
+    // Windows drive (`C:\…` / `C:/…`) and UNC (`\\server\share`).
+    if (n >= 3 && isAsciiAlpha(tok[0]) && tok[1] == ':' &&
+        (tok[2] == '\\' || tok[2] == '/'))
+        return true;
+    if (tok[0] == '\\' && tok[1] == '\\' && n > 2)
+        return true;
+    bool hasSep;
+    foreach (ch; tok)
+        if (ch == '/' || ch == '\\')
+        {
+            hasSep = true;
+            break;
+        }
+    if (!hasSep) return false;
+    // An explicit relative/root prefix is unambiguous.
+    if (n >= 2 && tok[0] == '.' && (tok[1] == '/' || tok[1] == '\\'))
+        return true;
+    if (n >= 3 && tok[0] == '.' && tok[1] == '.' &&
+        (tok[2] == '/' || tok[2] == '\\'))
+        return true;
+    if (n >= 2 && tok[0] == '~' && (tok[1] == '/' || tok[1] == '\\'))
+        return true;
+    // Otherwise require a filename extension in the final segment, or a nested
+    // path, to avoid linking ordinary fraction/word slashes.
+    foreach_reverse (idx, ch; tok)
+    {
+        if (ch == '/' || ch == '\\') break;
+        if (ch == '.') return true;
+    }
+    size_t separators;
+    foreach (ch; tok)
+        if (ch == '/' || ch == '\\') ++separators;
+    return separators >= 2;
+}
+
+/// Match a local-path token starting at `i`, yielding the one-past-the-end
+/// offset in `stop`. Trailing sentence punctuation and a `:line(:col)` tool
+/// suffix are trimmed so the link names the file itself.
+private bool localPathToken(dstring text, size_t i, out size_t stop)
+    @safe pure nothrow @nogc
+{
+    stop = i;
+    if (!isPathChar(text[i])) return false;
+    if (i > 0 && isPathChar(text[i - 1])) return false;
+    size_t j = i;
+    while (j < text.length && isPathChar(text[j])) ++j;
+    while (j > i && isTrailingPathPunct(text[j - 1])) --j;
+    // Drop a trailing `:line` or `:line:col` diagnostic suffix.
+    size_t e = j;
+    {
+        size_t k = e;
+        while (k > i && text[k - 1] >= '0' && text[k - 1] <= '9') --k;
+        if (k < e && k > i && text[k - 1] == ':')
+        {
+            const colon = k - 1;
+            size_t c = colon;
+            while (c > i && text[c - 1] >= '0' && text[c - 1] <= '9') --c;
+            e = (c < colon && c > i && text[c - 1] == ':') ? c - 1 : colon;
+        }
+    }
+    if (e <= i) return false;
+    if (!looksLikeLocalPath(text[i .. e])) return false;
+    stop = e;
+    return true;
+}
+
+/// Every local-path token `text` names, in order. The same rule the autolinker
+/// applies to prose runs, exposed so the UI can tell which paths a message
+/// mentions without re-parsing it and without drifting from the link rule.
+/// Scanning starts at every offset, so a word directly before a path cannot
+/// hide it.
+dstring[] localPathTokens(dstring text)
+{
+    dstring[] result;
+    size_t i;
+    while (i < text.length)
+    {
+        size_t stop;
+        if (localPathToken(text, i, stop))
+        {
+            result ~= text[i .. stop].idup;
+            i = stop;
+            continue;
+        }
+        ++i;
+    }
     return result;
+}
+
+/// Split prose runs so bare local paths become link runs whose target is the
+/// path. The visible text is unchanged; the new runs only carry link styling,
+/// which lets the message context menu offer "Open file" / "Open folder" on
+/// them. Inline code, fenced code and authored `[..](..)` links are untouched.
+private InlineRun[] autolinkLocalPaths(InlineRun[] runs)
+{
+    InlineRun[] outRuns;
+    foreach (run; runs)
+    {
+        if (run.style == InlineStyle.code)
+        {
+            // An inline code span that holds nothing but a local path is a path
+            // the reader points at (`` `source/app.d` ``, `` `C:\work\src` ``),
+            // so it carries the same link target as bare prose. Code spans with
+            // any prose, wildcard or regex in them are left as code.
+            size_t stop;
+            if (looksLikeLocalPath(run.text) &&
+                localPathToken(trimSpacesD(run.text), 0, stop) &&
+                stop == trimSpacesD(run.text).length)
+                outRuns ~= InlineRun(run.style, run.text, run.text, run.strike);
+            else
+                outRuns ~= run;
+            continue;
+        }
+        if (run.target.length > 0)
+        {
+            outRuns ~= run;
+            continue;
+        }
+        size_t i;
+        size_t plainStart;
+        while (i < run.text.length)
+        {
+            size_t stop;
+            if (localPathToken(run.text, i, stop))
+            {
+                if (i > plainStart)
+                    outRuns ~= InlineRun(run.style, run.text[plainStart .. i],
+                        null, run.strike);
+                outRuns ~= InlineRun(InlineStyle.link, run.text[i .. stop],
+                    run.text[i .. stop], run.strike);
+                i = stop;
+                plainStart = stop;
+                continue;
+            }
+            ++i;
+        }
+        if (plainStart < run.text.length)
+            outRuns ~= InlineRun(run.style, run.text[plainStart .. $],
+                null, run.strike);
+    }
+    return outRuns;
 }
 
 private InlineRun[] parseInline(dstring text)
@@ -1712,6 +1916,83 @@ unittest
     assert(blocks[0].itemDepths.length == 2, "missing per-item depth");
     assert(blocks[0].itemDepths[0] == 0 && blocks[0].itemDepths[1] == 1,
         "nested bullet depth was not recorded");
+}
+
+unittest
+{
+    // Bare local paths in prose become link runs whose target is the path, so
+    // the message context menu can offer "Open file" / "Open folder" on them.
+    {
+    auto blocks = parseMarkdown(
+        "see source/app.d and C:/work/src and ../notes/todo.md"d);
+    string[] linked;
+    foreach (run; blocks[0].runs)
+        if (run.style == InlineStyle.link && run.target.length > 0)
+            linked ~= to!string(run.text);
+    assert(linked.length == 3, "local paths were not autolinked: " ~
+        to!string(linked));
+    assert(linked[0] == "source/app.d" &&
+        linked[1] == "C:/work/src" &&
+        linked[2] == "../notes/todo.md",
+        "autolinked paths must keep their exact text");
+    foreach (run; blocks[0].runs)
+        if (run.style == InlineStyle.link)
+            assert(run.text == run.target,
+                "a local-path link must target the path it shows");
+    }
+
+    // Ordinary slash-bearing prose must not become a link.
+    foreach (run; parseMarkdown("and/or 24/7 TCP/IP"d)[0].runs)
+        assert(run.style != InlineStyle.link,
+            "prose slashes were mistaken for a path");
+
+    // A URL stays an ordinary link and never gains local-path handling.
+    foreach (run; parseMarkdown("https://example.com/a/b"d)[0].runs)
+        if (run.style == InlineStyle.link)
+            assert(to!string(run.target) == "https://example.com/a/b",
+                "a URL must not be rewritten as a local path");
+
+    // A `:line:col` diagnostic suffix is trimmed off the link text.
+    {
+    auto blocks = parseMarkdown("boom at C:/work/main.d:42:7 here"d);
+    bool sawTrimmed;
+    foreach (run; blocks[0].runs)
+        if (run.style == InlineStyle.link)
+        {
+            assert(to!string(run.text) == "C:/work/main.d",
+                "the diagnostic line suffix must be trimmed: " ~
+                to!string(run.text));
+            sawTrimmed = true;
+        }
+    assert(sawTrimmed, "the diagnostic path was not autolinked");
+    }
+
+    // Authored links and inline code keep their own meaning.
+    foreach (run; parseMarkdown("[app](./source/app.d)"d)[0].runs)
+        if (run.style == InlineStyle.link)
+            assert(to!string(run.target) == "./source/app.d");
+
+    // An inline code span that is nothing but a path still carries its target,
+    // so right-clicking `` `source/app.d` `` offers Open file / Open folder,
+    // while the run stays code-styled. A span with other content stays plain.
+    {
+    bool sawCodePath;
+    foreach (run; parseMarkdown("`source/app.d`"d)[0].runs)
+    {
+        assert(run.style == InlineStyle.code,
+            "a path code span must stay code-styled");
+        if (to!string(run.text) == "source/app.d")
+        {
+            assert(to!string(run.target) == "source/app.d",
+                "a path code span must carry the path as its target");
+            sawCodePath = true;
+        }
+    }
+    assert(sawCodePath, "the path code span lost its text");
+    foreach (run; parseMarkdown("`glob *.d here`"d)[0].runs)
+        assert(run.target.length == 0,
+            "a code span with prose must not become a path link");
+    }
 }
 
 unittest

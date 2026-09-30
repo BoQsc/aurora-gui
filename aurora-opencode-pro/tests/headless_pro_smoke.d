@@ -373,7 +373,7 @@ int main(string[] args)
     assert(driver.paint(), "Initial pro paint failed");
     root.tickTree(0.02);
     assert(driver.paint(), "Second pro paint failed");
-
+    writeln("[marker] smoke main entered");
     // Git-independent Changes table is always available from the toolbar,
     // including in an ordinary non-repository workspace.
     auto changesButton = requireWidget!Button(root, "oc-changes");
@@ -2299,6 +2299,57 @@ int main(string[] args)
         "Toggling again should collapse the rail");
     assert(driver.paint(), "Rail toggle did not repaint");
     writeln("Project rail collapses to icon width and persists its state");
+
+    // A local path mentioned in a reply is a link, and the message's
+    // right-click menu offers "Open file" / "Open folder" for it even when the
+    // click lands beside the link. The path stays an ordinary selectable run:
+    // dragging across it must select its text (the parser must not block
+    // primary selection on a path).
+    {
+        const pathFile = buildPath(stateDir, "pro_path_probe.d");
+        if (!exists(stateDir)) mkdirRecurse(stateDir);
+        write(pathFile, "// probe\n");
+        root.addConversationForTesting(["user", "assistant"],
+            ["where is it?", "It lives in " ~ pathFile ~ " right now."]);
+        root.tickTree(0.02);
+        assert(driver.paint(), "Path-link test did not paint");
+        const pathIndex = root.messageCountForTesting() - 1;
+        // The path in the reply was turned into a link.
+        auto rect = root.messagePathLinkRectForTesting(pathIndex, pathFile);
+        assert(rect.width > 0 && rect.height > 0,
+            "the path in the reply was not turned into a link");
+
+        // Drag across the path: it selects like any other text.
+        driver.drag(Point(rect.x + 1, rect.y + rect.height / 2),
+            Point(rect.x + rect.width - 1, rect.y + rect.height / 2));
+        root.tickTree(0.02);
+        assert(driver.paint(), "Path-link drag did not repaint");
+        assert(root.selectedMessageTextForTesting(pathIndex).indexOf(
+            "pro_path_probe.d") >= 0,
+            "dragging across the path did not select it: '" ~
+            root.selectedMessageTextForTesting(pathIndex) ~ "'");
+
+        // Right-click with nothing selected: the menu still offers the path.
+        driver.click(Point(rect.x, rect.y + rect.height + 60));
+        root.tickTree(0.02);
+        root.openMessageContextMenuForTesting(pathIndex);
+        root.tickTree(0.02);
+        auto pathMenu = cast(ContextMenu) currentTransientPopup(root);
+        assert(pathMenu !is null, "path context menu did not open");
+        bool sawOpenFile;
+        bool sawOpenFolder;
+        foreach (item; pathMenu.items())
+        {
+            if (item.label == toUTF32("Open file")) sawOpenFile = true;
+            if (item.label == toUTF32("Open folder")) sawOpenFolder = true;
+        }
+        assert(sawOpenFile, "Open file missing for the path in the reply");
+        assert(sawOpenFolder, "Open folder missing for the path in the reply");
+        dismissContextMenus(root);
+        root.tickTree(0.02);
+        writeln("Path links select normally; the menu offers Open file / " ~
+            "Open folder");
+    }
 
     // "New project" adds a fresh numbered sandbox with no folder dialog:
     // sandbox 1 is the default, so the first created project is sandbox 2 in

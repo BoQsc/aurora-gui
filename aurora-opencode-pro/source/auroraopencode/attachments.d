@@ -560,6 +560,9 @@ unittest
     assert(attachmentImageKindForBytes(webpHeader[]) == "image/webp");
     assert(attachmentImageKindForBytes(cast(ubyte[]) "not an image") == "");
 
+    import std.algorithm.searching : startsWith;
+    import std.string : indexOf;
+
     auto image = attachmentImageForData("image/png", "shot.png",
         cast(ubyte[]) "Man");
     assert(image.base64Data == "TWFu" && image.mimeType == "image/png");

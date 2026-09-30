@@ -5,7 +5,8 @@ import auroraopencode.core;
 import auroraopencode.logging : logError, logInfo, setLogDirectory;
 import auroraopencode.crashguard : noteActivity;
 import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
-    paintMarkdownBackgrounds, paintMarkdownGlyphs, parseMarkdown;
+    localPathTokens, paintMarkdownBackgrounds, paintMarkdownGlyphs,
+    parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind, autoResendDelayMs, quotaResetDelayMs;
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
@@ -145,6 +146,22 @@ private void openFolderInExplorer(string path)
     // The "explore" verb targets the folder itself, so a click opens the
     // directory in File Explorer instead of running its default handler.
     ShellExecuteW(null, toUTF16z("explore"), toUTF16z(path), null, null, 1);
+}
+
+version (Windows)
+private void openPathWithShell(string path)
+{
+    // Default handler: a file opens in its associated application and a folder
+    // opens in File Explorer.
+    if (path.length > 0)
+        ShellExecuteW(null, null, toUTF16z(path), null, null, 1);
+}
+
+/// Whether a link target is a web URL rather than a local path.
+private bool isWebUrl(string target)
+{
+    const lower = target.toLower();
+    return lower.startsWith("http://") || lower.startsWith("https://");
 }
 
 /// Directory that holds every persisted chat (sessions, pins, runtime
@@ -401,6 +418,8 @@ private final class MessageBubble : Widget
     private string[] _copyLabels;
     private Rect[] _linkRects;
     private string[] _linkUrls;
+    // Workspace a message's local file/folder links resolve against on click.
+    private string _workspace;
 
     // Text selection (Pro): drag across a message to select it, then copy from
     // the right-click menu. The paint pass records one segment per selectable
@@ -856,6 +875,11 @@ private final class MessageBubble : Widget
         _contentCacheCount = 0;
         resetMarkdownCommit();
         invalidate();
+    }
+
+    void setWorkspace(string workspace)
+    {
+        _workspace = workspace;
     }
 
     void setCompactBottom(bool value)
@@ -2169,9 +2193,11 @@ private final class MessageBubble : Widget
             // code-block panel: the panel's Copy pill still copies the whole
             // block, but a drag can also select an individual line.
             if (item.kind == MdItemKind.text && item.layout !is null)
+            {
                 _selSegments ~= SelectSegment(item.layout,
                     cast(int)(padH + item.x), cast(int)(contentY + item.y),
                     maxInt(1, cast(int) item.w), maxInt(1, cast(int) item.h));
+            }
 
             if (item.kind == MdItemKind.text && item.target.length > 0)
             {
@@ -2254,6 +2280,18 @@ private final class MessageBubble : Widget
         const segment = _selSegments[0];
         return localToGlobal(Point(segment.x + 1,
             segment.y + maxInt(1, segment.h / 2)));
+    }
+
+    /// Test-only: global bounds of the selectable run whose path link target
+    /// equals `target` (zero-sized when the text carries no such link).
+    public Rect pathLinkRectForTesting(string target)
+    {
+        foreach (index, rect; _linkRects)
+            if (index < _linkUrls.length && _linkUrls[index] == target)
+                return Rect(localToGlobal(Point(rect.x, rect.y)).x,
+                    localToGlobal(Point(rect.x, rect.y)).y,
+                    maxInt(1, rect.width), maxInt(1, rect.height));
+        return Rect.init;
     }
 
     /// Test-only: global point just inside the right edge of the first run.
@@ -2586,11 +2624,15 @@ private final class MessageBubble : Widget
             _versionHover = overVersion;
             _textHover = overText;
             if (onPathHoverChanged !is null) onPathHoverChanged(_pathHover);
-            setCursor(nextCopy >= 0 || nextLink >= 0 || overAction ||
+            // A link is text: over it the pointer falls through to the text
+            // caret so a drag read as "select this path" rather than "click
+            // this button". Only the real controls (copy pills, action pills,
+            // collapse headers) take the hand.
+            setCursor(nextCopy >= 0 || overAction ||
                 overSecondaryAction || overTertiaryAction ||
                 overCollapse || overToolCopy || overThinking || overVersion != 0
                 ? CursorKind.hand :
-                (overText ? CursorKind.text : CursorKind.arrow));
+                (overText || nextLink >= 0 ? CursorKind.text : CursorKind.arrow));
             invalidate();
         }
         return false;
@@ -2677,12 +2719,10 @@ private final class MessageBubble : Widget
                 return true;
             }
         }
-        if (_hoverLink >= 0 && _hoverLink < cast(int) _linkUrls.length)
-        {
-            version (Windows)
-                openLinkInBrowser(_linkUrls[_hoverLink]);
-            return true;
-        }
+        // A link (web URL or local file/folder path) is not consumed here: the
+        // left button always starts a text selection, so the reader can drag
+        // across a path like any other text. Opening a link is the job of the
+        // right-click menu's "Open file" / "Open folder" items.
         // Begin a text selection when the point lands on selectable text.
         int segIndex;
         size_t charIndex;
@@ -3216,7 +3256,24 @@ unittest
         `source/app.d`);
 }
 
+/// The first local file/folder path the message's own text names, resolved
+/// against `workspace`. Scans the raw text with the shared path lexer, so
+/// prose, inline code, list items and tables all count and a word directly
+/// before a path cannot hide it. Existence is the caller's concern: the menu
+/// shows "Open file"/"Open folder" only for what is really on disk.
+private string messageLocalPath(ref const ChatMessage message, string workspace)
+{
+    foreach (token; localPathTokens(cast(dstring) toUTF32(message.content)))
+    {
+        const resolved = resolveDisplayedPath(to!string(token), workspace);
+        if (resolved.length > 0)
+            return resolved;
+    }
+    return "";
+}
+
 private string resolveDisplayedPath(string path, string workspace)
+
 {
     path = path.strip();
     if (path.length == 0) return "";
@@ -10139,6 +10196,7 @@ public final class OpenCodeRoot : VBox
             _streamBubble = new MessageBubble();
             _streamBubble.setRole("assistant");
             _streamBubble.setContent(message.content);
+            _streamBubble.setWorkspace(workspaceForSession(cast(int) index));
             _streamBubble.setThinking(message.reasoning);
             // An assistant slot exists before its first visible token. Keep the
             // empty slot out of layout so a tool-only round does not move its
@@ -11499,6 +11557,9 @@ public final class OpenCodeRoot : VBox
                 versionAction(index, -1), versionAction(index, +1));
         }
         bubble.setContent(message.content);
+        // Local file/folder paths in the message open against the workspace the
+        // message was written in.
+        bubble.setWorkspace(workspaceForSession(cast(int) index));
         if (message.role == "user" && message.images.length > 0)
             bubble.setImages(message.images);
         // A tool-call wrapper with no prose and no reasoning to show is not a
@@ -11856,6 +11917,7 @@ public final class OpenCodeRoot : VBox
         auto bubble = new MessageBubble();
         bubble.setRole("user");
         bubble.setContent(text);
+        bubble.setWorkspace(workspaceForSession(_current));
         bubble.setImages(images);
         if (_current >= 0 && _sessions[_current].messages.length > 0)
         {
@@ -11910,6 +11972,7 @@ public final class OpenCodeRoot : VBox
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
         _streamBubble.setStreaming(true);
+        _streamBubble.setWorkspace(workspaceForSession(sessionIndex));
         // The durable assistant message must exist now, but an empty visual
         // bubble must not reserve padding above the activity/tool row. Reveal
         // it only when actual reasoning or answer text arrives.
@@ -18904,29 +18967,52 @@ public final class OpenCodeRoot : VBox
                 });
         }
         const workspace = workspaceForSession(_current);
-        // Exactly one "Open containing folder", and it goes straight there: it
-        // reveals the folder of the row's own file, or of the local link that was
-        // right-clicked. Turning it into a submenu of every path the row happened
-        // to mention made the reader pick between files they never asked about.
-        string folderTarget;
-        if (linkTarget.length > 0 &&
-            !linkTarget.toLower().startsWith("http://") &&
-            !linkTarget.toLower().startsWith("https://"))
+        // "Open file" / "Open folder" for the local file or folder this message
+        // actually names. The target is, in order: the path link the pointer
+        // right-clicked, the path parsed out of the message, or the tool row's
+        // own path. A single unambiguous target, so the reader is never asked to
+        // choose between paths the row merely happened to mention. "Open file"
+        // runs it with its default handler; "Open folder" reveals the folder
+        // itself, or the folder that held a since-deleted file.
+        string localTarget;
+        if (linkTarget.length > 0)
         {
-            auto localTarget = linkTarget;
-            if (localTarget.toLower().startsWith("file:///"))
-                localTarget = localTarget[8 .. $];
-            const resolved = resolveDisplayedPath(localTarget, workspace);
-            const parent = directoryOf(resolved);
-            if (exists(resolved) || (parent.length > 0 && exists(parent)))
-                folderTarget = resolved;
+            if (!isWebUrl(linkTarget))
+            {
+                auto target = linkTarget;
+                if (target.toLower().startsWith("file:///"))
+                    target = target[8 .. $];
+                const resolved = resolveDisplayedPath(target, workspace);
+                if (resolved.length > 0)
+                    localTarget = resolved;
+            }
         }
-        if (folderTarget.length == 0 && message.role == "tool")
-            folderTarget = primaryToolPath(message, workspace);
-        if (folderTarget.length > 0)
-            items ~= ContextMenuItem.command("Open containing folder",
-                IconKind.folder,
-                openFileLocationAction(folderTarget, workspace));
+        if (localTarget.length == 0)
+            localTarget = messageLocalPath(message, workspace);
+        if (localTarget.length == 0 && message.role == "tool")
+            localTarget = primaryToolPath(message, workspace);
+        // When text is selected the menu is about that selection, so the path
+        // items stay out of the way.
+        if (localTarget.length > 0 && !hasSelection)
+        {
+            // The path itself, if it is still on disk.
+            if (exists(localTarget))
+                items ~= ContextMenuItem.command("Open file", IconKind.open,
+                    delegate()
+                    {
+                        version (Windows) openPathWithShell(localTarget);
+                    });
+            // The folder: the path when it is a folder, otherwise the folder
+            // that holds the file (so a file deleted since keeps its home).
+            const folder = exists(localTarget) && isDir(localTarget)
+                ? localTarget : directoryOf(localTarget);
+            if (folder.length > 0 && exists(folder))
+                items ~= ContextMenuItem.command("Open folder", IconKind.folder,
+                    delegate()
+                    {
+                        version (Windows) openFolderInExplorer(folder);
+                    });
+        }
         showContextMenu(_messageColumn, globalPosition, items);
     }
 
@@ -21647,6 +21733,14 @@ public final class OpenCodeRoot : VBox
     public string lastCopiedMessageTextForTesting()
     {
         return _lastMessageCopy;
+    }
+
+    /// Test-only: global bounds of the local-path link named `target` inside
+    /// message `index` (zero-sized when the message carries no such link).
+    public Rect messagePathLinkRectForTesting(int index, string target)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? Rect.init : bubble.pathLinkRectForTesting(target);
     }
 
     /// Test-only: feed a usage event as the client would while streaming.
