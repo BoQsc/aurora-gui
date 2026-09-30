@@ -966,6 +966,11 @@ public struct Settings
     // local desktop (screen/click/type/key/scroll). Off by default; the Settings
     // dialog owns this switch.
     bool experimentalComputerUse;
+    // Experimental sub-switch of computer use: drive a ghost "virtual pointer"
+    // that delivers input with posted window messages instead of moving the real
+    // pointer / stealing focus, so the person keeps using mouse and keyboard.
+    // Off by default; only meaningful while experimentalComputerUse is on.
+    bool experimentalComputerUseVirtualPointer;
     // Optional always-on-top mini chat overlay: a small frameless window that
     // floats above other apps and shows the last few messages of the current
     // conversation plus a one-line input, so the user can read and steer while
@@ -1299,6 +1304,10 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalComputerUse =
                             found.type == JSONType.true_;
+                if (auto found = "experimentalComputerUseVirtualPointer" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalComputerUseVirtualPointer =
+                            found.type == JSONType.true_;
                 if (auto found = "floatingMiniChat" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.floatingMiniChat = found.type == JSONType.true_;
@@ -1570,6 +1579,8 @@ public void saveSettings(const ref Settings settings)
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     root["experimentalComputerUse"] = settings.experimentalComputerUse;
+    root["experimentalComputerUseVirtualPointer"] =
+        settings.experimentalComputerUseVirtualPointer;
     root["floatingMiniChat"] = settings.floatingMiniChat;
     root["floatingMiniChatLines"] = settings.floatingMiniChatLines;
     JSONValue contextBudgets = JSONValue(string[].init);

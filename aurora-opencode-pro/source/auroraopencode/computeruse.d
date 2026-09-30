@@ -66,6 +66,36 @@ public __gshared bool computerUseEnabledBySetting = false;
 public void setComputerUseSetting(bool value)
 {
     computerUseEnabledBySetting = value;
+    version (Windows)
+    {
+        // Keep the ghost-cursor overlay in step with the master switch: it only
+        // makes sense while computer use itself is enabled.
+        if (value && computerUseVirtualPointerBySetting) startVirtualOverlay();
+        else if (!value) stopVirtualOverlay();
+    }
+}
+
+/// Experimental "virtual pointer": the agent draws its own ghost cursor and
+/// delivers input with posted window messages instead of moving the single
+/// system pointer / stealing focus, so a person keeps using mouse and keyboard.
+/// Off by default - it is opt-in and experimental.
+public __gshared bool computerUseVirtualPointerBySetting = false;
+
+public bool computerUseVirtualPointerEnabled()
+{
+    return computerUseVirtualPointerBySetting;
+}
+
+/// Apply the Settings choice and (on Windows) start or stop the ghost-cursor
+/// overlay. Called on load and whenever the checkbox changes.
+public void setComputerUseVirtualPointer(bool value)
+{
+    computerUseVirtualPointerBySetting = value;
+    version (Windows)
+    {
+        if (value && computerUseEnabledBySetting) startVirtualOverlay();
+        else if (!value) stopVirtualOverlay();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +286,9 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
         scope (exit) releaseHeldInputs();
         const started = MonoTime.currTime;
         computerUseWorkspace = workspace;
+        // Snapshot the mode for the whole call so a checkbox flip mid-call
+        // cannot switch the input path halfway through.
+        virtualPointerActive = computerUseVirtualPointerBySetting;
         ComputerUseResult result;
         // A batch screenshots by default: the caller's next move depends on the
         // result, and asking for it in the same call saves a whole model turn.
@@ -846,6 +879,28 @@ version (Windows)
         RGBQUAD bmiColors;
     }
 
+    private struct RECT
+    {
+        LONG left;
+        LONG top;
+        LONG right;
+        LONG bottom;
+    }
+
+    private struct WNDCLASSW
+    {
+        UINT style;
+        void* lpfnWndProc;
+        int cbClsExtra;
+        int cbWndExtra;
+        void* hInstance;
+        void* hIcon;
+        void* hCursor;
+        void* hbrBackground;
+        const(wchar)* lpszMenuName;
+        const(wchar)* lpszClassName;
+    }
+
     private extern (Windows)
     {
         int SetCursorPos(int x, int y);
@@ -906,6 +961,30 @@ version (Windows)
         int InternetCloseHandle(void* handle);
         int HttpQueryInfoW(void* request, uint infoLevel, void* buffer,
             uint* bufferLength, uint* index);
+        // Virtual-pointer overlay + posted (non-intrusive) input.
+        ushort RegisterClassW(const WNDCLASSW* wc);
+        void* CreateWindowExW(uint exStyle, const wchar* className,
+            const wchar* windowName, uint style, int x, int y, int w, int h,
+            void* parent, void* menu, void* instance, void* param);
+        size_t DefWindowProcW(void* hwnd, uint msg, WPARAM wParam,
+            LPARAM lParam);
+        int DestroyWindow(void* hwnd);
+        int IsWindow(void* hwnd);
+        int SetLayeredWindowAttributes(void* hwnd, uint colorKey, ubyte alpha,
+            uint flags);
+        int SetWindowPos(void* hwnd, void* insertAfter, int x, int y, int cx,
+            int cy, uint flags);
+        int InvalidateRect(void* hwnd, const RECT* rect, int erase);
+        int UpdateWindow(void* hwnd);
+        void* LoadCursorW(void* instance, const wchar* name);
+        int DrawIconEx(void* hdc, int x, int y, void* icon, int cx, int cy,
+            uint step, void* flicker, uint flags);
+        int PostMessageW(void* hwnd, uint msg, WPARAM wParam, LPARAM lParam);
+        void* WindowFromPoint(POINT point);
+        int ScreenToClient(void* hwnd, POINT* point);
+        void* CreateSolidBrush(uint color);
+        int FillRect(void* hdc, const RECT* rect, void* brush);
+        void PostQuitMessage(int exitCode);
     }
 
     // -----------------------------------------------------------------------
@@ -1054,6 +1133,342 @@ version (Windows)
             PostThreadMessageW(killSwitchThreadId, WM_QUIT, 0, 0);
         killSwitchThread.join();
         killSwitchThread = null;
+    }
+
+    // -----------------------------------------------------------------------
+    // Experimental virtual pointer ("don't disturb the user"). Off unless the
+    // Settings checkbox is on. Instead of the single system pointer that
+    // SendInput drives, the agent draws its own ghost cursor on a topmost,
+    // click-through overlay and delivers input with posted window messages
+    // (WM_*BUTTON*/WM_MOUSEWHEEL/WM_CHAR/WM_KEY*). The real pointer and the
+    // foreground window are never touched, so a person keeps using the machine.
+    //
+    // Honest limits: user-mode code cannot create a second HID pointer, so the
+    // ghost cursor is a drawing, not a second hardware cursor; and apps that
+    // read raw input or ignore posted messages (many games, some UWP) will not
+    // react to the posted clicks/keys. That is why the mode is experimental and
+    // opt-in, and why the tool result reports posted (not injected) input.
+    // -----------------------------------------------------------------------
+
+    private __gshared bool virtualPointerActive;
+    private __gshared int virtualX = -1;
+    private __gshared int virtualY = -1;
+    /// Last `focus` target; also the window posted input is aimed at.
+    private __gshared void* virtualTargetHwnd;
+    private __gshared Thread overlayThread;
+    private __gshared uint overlayThreadId;
+    private __gshared bool overlayStop;
+    private __gshared void* overlayHwnd;
+    private __gshared bool overlayReady;
+
+    private enum uint WM_PAINT = 0x000F;
+    private enum uint WM_ERASEBKGND = 0x0014;
+    private enum uint WM_DESTROY = 0x0002;
+    private enum uint WM_CHAR = 0x0102;
+    private enum uint WM_MOUSEMOVE = 0x0200;
+    private enum uint WM_LBUTTONDOWN = 0x0201;
+    private enum uint WM_LBUTTONUP = 0x0202;
+    private enum uint WM_RBUTTONDOWN = 0x0204;
+    private enum uint WM_RBUTTONUP = 0x0205;
+    private enum uint WM_MBUTTONDOWN = 0x0207;
+    private enum uint WM_MBUTTONUP = 0x0208;
+    private enum uint WM_MOUSEWHEEL = 0x020A;
+    private enum uint WM_APP_MOVE_CURSOR = 0x8000 + 1;
+    private enum ushort MK_LBUTTON = 0x0001;
+    private enum ushort MK_RBUTTON = 0x0002;
+    private enum ushort MK_MBUTTON = 0x0010;
+    private enum uint WS_POPUP = 0x80000000;
+    private enum uint WS_EX_LAYERED = 0x00080000;
+    private enum uint WS_EX_TRANSPARENT = 0x00000020;
+    private enum uint WS_EX_TOOLWINDOW = 0x00000080;
+    private enum uint WS_EX_TOPMOST = 0x00000008;
+    private enum uint WS_EX_NOACTIVATE = 0x08000000;
+    private enum uint LWA_COLORKEY = 0x00000001;
+    private enum uint SWP_NOSIZE = 0x0001;
+    private enum uint SWP_NOACTIVATE = 0x0010;
+    private enum uint SWP_SHOWWINDOW = 0x0040;
+    private enum int virtualCursorSize = 32;
+    private enum string overlayClassName = "AuroraComputerUseCursor";
+    private enum uint overlayColorKey = 0x00FF00FF; // COLORREF magenta
+
+    private extern (Windows) size_t overlayWndProc(void* hwnd, uint msg,
+        WPARAM wParam, LPARAM lParam)
+    {
+        switch (msg)
+        {
+            case WM_PAINT:
+                paintOverlay();
+                return 0;
+            case WM_ERASEBKGND:
+                return 1;
+            case WM_APP_MOVE_CURSOR:
+                SetWindowPos(hwnd, cast(void*) -1, cast(int) wParam,
+                    cast(int) lParam, 0, 0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                InvalidateRect(hwnd, null, 1);
+                return 0;
+            case WM_DESTROY:
+                PostQuitMessage(0);
+                return 0;
+            default:
+                return DefWindowProcW(hwnd, msg, wParam, lParam);
+        }
+    }
+
+    /// Repaint the ghost cursor: fill with the transparency key colour, then
+    /// stamp the standard arrow on top so it reads as a real pointer.
+    private void paintOverlay()
+    {
+        auto dc = GetDC(overlayHwnd);
+        if (dc is null) return;
+        RECT rect;
+        rect.right = virtualCursorSize;
+        rect.bottom = virtualCursorSize;
+        auto brush = CreateSolidBrush(overlayColorKey);
+        FillRect(dc, &rect, brush);
+        DeleteObject(brush);
+        auto cursor = LoadCursorW(null, cast(const wchar*) 32512); // IDC_ARROW
+        DrawIconEx(dc, 0, 0, cursor, virtualCursorSize, virtualCursorSize, 0,
+            null, 3); // DI_NORMAL
+        ReleaseDC(overlayHwnd, dc);
+    }
+
+    private void runOverlayThread()
+    {
+        // A window thread needs its own message queue.
+        MSG message;
+        PeekMessageW(&message, null, 0, 0, PM_NOREMOVE);
+        overlayThreadId = GetCurrentThreadId();
+
+        auto classNameZ = overlayClassName.toUTF16z;
+        WNDCLASSW wc;
+        wc.lpfnWndProc = cast(void*) &overlayWndProc;
+        wc.hInstance = GetModuleHandleW(null);
+        wc.lpszClassName = classNameZ;
+        RegisterClassW(&wc);
+        overlayHwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
+                WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            classNameZ, "Aurora".toUTF16z, WS_POPUP, 0, 0,
+            virtualCursorSize, virtualCursorSize, null, null, wc.hInstance,
+            null);
+        if (overlayHwnd !is null)
+        {
+            SetLayeredWindowAttributes(overlayHwnd, overlayColorKey, 0,
+                LWA_COLORKEY);
+            overlayReady = true;
+        }
+        while (!overlayStop)
+        {
+            const got = GetMessageW(&message, null, 0, 0);
+            if (got <= 0) break;
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        if (overlayHwnd !is null)
+        {
+            DestroyWindow(overlayHwnd);
+            overlayHwnd = null;
+        }
+        overlayReady = false;
+    }
+
+    private void startVirtualOverlay()
+    {
+        if (overlayThread !is null) return;
+        overlayStop = false;
+        overlayReady = false;
+        overlayHwnd = null;
+        overlayThreadId = 0;
+        overlayThread = new Thread(&runOverlayThread);
+        overlayThread.isDaemon = true;
+        overlayThread.start();
+        // Wait briefly for the window so the first move lands on a real handle.
+        foreach (_; 0 .. 100)
+        {
+            if (overlayReady) break;
+            Thread.sleep(msecs(10));
+        }
+    }
+
+    private void stopVirtualOverlay()
+    {
+        if (overlayThread is null) return;
+        overlayStop = true;
+        foreach (_; 0 .. 100)
+        {
+            if (overlayThreadId != 0) break;
+            Thread.sleep(msecs(10));
+        }
+        if (overlayThreadId != 0)
+            PostThreadMessageW(overlayThreadId, WM_QUIT, 0, 0);
+        overlayThread.join();
+        overlayThread = null;
+        overlayThreadId = 0;
+        overlayHwnd = null;
+        overlayReady = false;
+        virtualX = -1;
+        virtualY = -1;
+    }
+
+    /// Move the ghost cursor to a screenshot-space coordinate (same scaling and
+    /// clamping as the real `moveCursor`), never touching the system pointer.
+    private void virtualMoveTo(int x, int y)
+    {
+        if (overlayThread is null) startVirtualOverlay();
+        const step = screenDownscale();
+        const width = GetSystemMetrics(SM_CXSCREEN);
+        const height = GetSystemMetrics(SM_CYSCREEN);
+        const point = clampScreenPoint(x, y, step, width, height);
+        virtualX = point[0];
+        virtualY = point[1];
+        if (overlayHwnd !is null)
+            PostMessageW(overlayHwnd, WM_APP_MOVE_CURSOR,
+                cast(WPARAM) virtualX, cast(LPARAM) virtualY);
+    }
+
+    /// The window posted input is aimed at: an explicit `focus` target, else the
+    /// window under the ghost cursor, else the foreground window.
+    private void* virtualTargetWindow()
+    {
+        if (virtualTargetHwnd !is null && IsWindow(virtualTargetHwnd) != 0)
+            return virtualTargetHwnd;
+        if (virtualX >= 0)
+        {
+            POINT point;
+            point.x = virtualX;
+            point.y = virtualY;
+            auto hwnd = WindowFromPoint(point);
+            if (hwnd !is null) return hwnd;
+        }
+        return GetForegroundWindow();
+    }
+
+    private void virtualPostMouse(uint msg, ushort buttonFlags)
+    {
+        auto hwnd = virtualTargetWindow();
+        if (hwnd is null) return;
+        POINT point;
+        point.x = virtualX;
+        point.y = virtualY;
+        ScreenToClient(hwnd, &point);
+        const lp = cast(LPARAM)
+            ((point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16));
+        PostMessageW(hwnd, msg, buttonFlags, lp);
+    }
+
+    private ushort buttonFlagFor(DWORD down)
+    {
+        if (down == MOUSEEVENTF_RIGHTDOWN) return MK_RBUTTON;
+        if (down == MOUSEEVENTF_MIDDLEDOWN) return MK_MBUTTON;
+        return MK_LBUTTON;
+    }
+
+    private uint downMsgFor(DWORD down)
+    {
+        if (down == MOUSEEVENTF_RIGHTDOWN) return WM_RBUTTONDOWN;
+        if (down == MOUSEEVENTF_MIDDLEDOWN) return WM_MBUTTONDOWN;
+        return WM_LBUTTONDOWN;
+    }
+
+    private uint upMsgFor(DWORD down)
+    {
+        if (down == MOUSEEVENTF_RIGHTDOWN) return WM_RBUTTONUP;
+        if (down == MOUSEEVENTF_MIDDLEDOWN) return WM_MBUTTONUP;
+        return WM_LBUTTONUP;
+    }
+
+    private void virtualClickAt(int x, int y, int count, DWORD down, DWORD up)
+    {
+        virtualMoveTo(x, y);
+        Thread.sleep(msecs(30));
+        foreach (i; 0 .. count)
+        {
+            virtualPostMouse(downMsgFor(down), buttonFlagFor(down));
+            virtualPostMouse(upMsgFor(up), 0);
+            if (i + 1 < count) Thread.sleep(msecs(60));
+        }
+    }
+
+    private void virtualDrag(int x1, int y1, int x2, int y2, int durationMs,
+        string button)
+    {
+        DWORD down = MOUSEEVENTF_LEFTDOWN;
+        if (button == "right") down = MOUSEEVENTF_RIGHTDOWN;
+        else if (button == "middle" || button == "wheel")
+            down = MOUSEEVENTF_MIDDLEDOWN;
+        virtualMoveTo(x1, y1);
+        Thread.sleep(msecs(40));
+        virtualPostMouse(downMsgFor(down), buttonFlagFor(down));
+        Thread.sleep(msecs(40));
+        int steps = durationMs / 16;
+        if (steps < 2) steps = 2;
+        if (steps > 150) steps = 150;
+        foreach (i; 1 .. steps + 1)
+        {
+            if (computerUseAbortActive()) break;
+            const t = cast(double) i / steps;
+            virtualMoveTo(cast(int) (x1 + (x2 - x1) * t),
+                cast(int) (y1 + (y2 - y1) * t));
+            virtualPostMouse(WM_MOUSEMOVE, buttonFlagFor(down));
+            Thread.sleep(msecs(16));
+        }
+        virtualPostMouse(upMsgFor(down), 0);
+    }
+
+    private void virtualWheel(int amount)
+    {
+        auto hwnd = virtualTargetWindow();
+        if (hwnd is null) return;
+        const lp = cast(LPARAM)
+            ((virtualX & 0xFFFF) | ((virtualY & 0xFFFF) << 16));
+        const wp = cast(WPARAM) ((amount & 0xFFFF) << 16);
+        PostMessageW(hwnd, WM_MOUSEWHEEL, wp, lp);
+    }
+
+    private void virtualChar(ushort unit)
+    {
+        auto hwnd = virtualTargetWindow();
+        if (hwnd is null) return;
+        PostMessageW(hwnd, WM_CHAR, cast(WPARAM) unit, 1);
+    }
+
+    private void virtualKeyEvent(int vk, bool up)
+    {
+        auto hwnd = virtualTargetWindow();
+        if (hwnd is null) return;
+        const lp = up ? cast(LPARAM) 0xC0000001 : cast(LPARAM) 1;
+        PostMessageW(hwnd, up ? WM_KEYUP : WM_KEYDOWN,
+            cast(WPARAM) (vk & 0xFF), lp);
+    }
+
+    private void virtualTypeText(string text)
+    {
+        foreach (dchar c; text)
+        {
+            if (c == '\n')
+            {
+                virtualKeyEvent(0x0D, false);
+                virtualKeyEvent(0x0D, true);
+                continue;
+            }
+            if (c == '\r') continue;
+            if (c == '\t')
+            {
+                virtualKeyEvent(0x09, false);
+                virtualKeyEvent(0x09, true);
+                continue;
+            }
+            foreach (unit; utf16Units(c)) virtualChar(unit);
+        }
+    }
+
+    private void virtualChord(ushort[] modifiers, ushort vk)
+    {
+        foreach (modifier; modifiers) virtualKeyEvent(modifier, false);
+        virtualKeyEvent(vk, false);
+        virtualKeyEvent(vk, true);
+        foreach_reverse (modifier; modifiers) virtualKeyEvent(modifier, true);
     }
 
     /// One downscaled, top-down RGB frame plus its pixel dimensions. `ok` is
@@ -1320,6 +1735,9 @@ version (Windows)
     /// key lands in the intended window even after the foreground drifted.
     private void ensureInputTarget()
     {
+        // Virtual mode never takes the foreground: posted input goes to the
+        // target window without disturbing whoever is actually focused.
+        if (virtualPointerActive) return;
         if (computerUseFocusTarget is null) return;
         if (GetForegroundWindow() is computerUseFocusTarget) return;
         forceForeground(computerUseFocusTarget);
@@ -1330,6 +1748,11 @@ version (Windows)
     /// screen so an out-of-range model guess cannot move it off the desktop.
     private void moveCursor(int x, int y)
     {
+        if (virtualPointerActive)
+        {
+            virtualMoveTo(x, y);
+            return;
+        }
         ensureInputTarget();
         const step = screenDownscale();
         const width = GetSystemMetrics(SM_CXSCREEN);
@@ -1346,6 +1769,11 @@ version (Windows)
     private void clickAt(int x, int y, int count,
         DWORD down = MOUSEEVENTF_LEFTDOWN, DWORD up = MOUSEEVENTF_LEFTUP)
     {
+        if (virtualPointerActive)
+        {
+            virtualClickAt(x, y, count, down, up);
+            return;
+        }
         // Coordinates arrive in the (possibly downscaled) screenshot's pixel
         // space; mapToReal maps them onto real screen pixels before the press.
         moveCursor(x, y);
@@ -1371,6 +1799,11 @@ version (Windows)
 
     private void sendKeyEvent(ushort vk, bool up)
     {
+        if (virtualPointerActive)
+        {
+            virtualKeyEvent(vk, up);
+            return;
+        }
         INPUT[1] inputs;
         inputs[0].type = INPUT_KEYBOARD;
         inputs[0].ki.wVk = vk;
@@ -1435,6 +1868,11 @@ version (Windows)
     private void dragMouse(int x1, int y1, int x2, int y2, int durationMs,
         string button)
     {
+        if (virtualPointerActive)
+        {
+            virtualDrag(x1, y1, x2, y2, durationMs, button);
+            return;
+        }
         DWORD down = MOUSEEVENTF_LEFTDOWN;
         DWORD up = MOUSEEVENTF_LEFTUP;
         if (button == "right")
@@ -1573,6 +2011,11 @@ version (Windows)
 
     private void typeText(string text)
     {
+        if (virtualPointerActive)
+        {
+            virtualTypeText(text);
+            return;
+        }
         ensureInputTarget();
         foreach (dchar c; text)
         {
@@ -1597,6 +2040,11 @@ version (Windows)
 
     private void pressChord(ushort[] modifiers, ushort vk)
     {
+        if (virtualPointerActive)
+        {
+            virtualChord(modifiers, vk);
+            return;
+        }
         ensureInputTarget();
         auto builder = appender!(INPUT[])();
         void put(ushort key, DWORD flags)
@@ -1736,6 +2184,15 @@ version (Windows)
                 if (hwnd is null)
                     return failedResult("Error: no visible window matches \"" ~
                         title ~ "\".");
+                if (virtualPointerActive)
+                {
+                    // Aim posted input at the window; leave the real foreground
+                    // (and the person using it) alone.
+                    virtualTargetHwnd = hwnd;
+                    return withOptionalScreenshot("Targeted window \"" ~
+                        windowTitleOf(hwnd) ~ "\" for posted input (focus " ~
+                        "unchanged).", screenshot);
+                }
                 forceForeground(hwnd);
                 computerUseFocusTarget = hwnd;
                 Thread.sleep(msecs(150));
@@ -1779,6 +2236,14 @@ version (Windows)
             case "key_up":
                 return keyResultAction(runHoldKey(keyName, true), screenshot);
             case "scroll":
+                if (virtualPointerActive)
+                {
+                    if (x != 0 || y != 0) virtualMoveTo(x, y);
+                    virtualWheel(amount);
+                    return withOptionalScreenshot("Posted a scroll of " ~
+                        to!string(amount) ~ " to the window under the " ~
+                        "virtual pointer.", screenshot);
+                }
                 // Optional x,y put the wheel over the pane to scroll instead
                 // of wherever the pointer happened to be left.
                 if (x != 0 || y != 0) moveCursor(x, y);
@@ -2805,6 +3270,28 @@ version (Windows)
     public bool computerUseArgsWithinFrameForTesting(string argsJson, int w, int h)
     {
         return computerArgsWithinFrame(argsJson, w, h);
+    }
+
+    /// Test hook: the real-screen pixel a screenshot-space coordinate maps to,
+    /// clamped to the screen - the same mapping the real and virtual pointers
+    /// use, so the ghost cursor and the click it stands for never disagree.
+    public int[2] computerUseVirtualPointForTesting(int x, int y, int step,
+        int width, int height)
+    {
+        return clampScreenPoint(x, y, step, width, height);
+    }
+
+    private int[2] clampScreenPoint(int x, int y, int step, int width,
+        int height)
+    {
+        if (step < 1) step = 1;
+        long realX = cast(long) x * step;
+        long realY = cast(long) y * step;
+        if (realX < 0) realX = 0;
+        else if (realX > width - 1) realX = width - 1;
+        if (realY < 0) realY = 0;
+        else if (realY > height - 1) realY = height - 1;
+        return [cast(int) realX, cast(int) realY];
     }
 
     /// Test hook: strip redundant full-screen `screen` steps from a `steps`

@@ -31,7 +31,8 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
 import auroraopencode.computeruse :
     experimentalComputerUseEnabled, experimentalImageHistoryLimit,
     setComputerUseProvider, setComputerUseSetting, startComputerUseKillSwitch,
-    stopComputerUseKillSwitch, clearComputerUseAbort, computerUseAbortActive;
+    stopComputerUseKillSwitch, clearComputerUseAbort, computerUseAbortActive,
+    setComputerUseVirtualPointer;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -8277,6 +8278,8 @@ public final class OpenCodeRoot : VBox
         // experimental: computer use - mirror the persisted switch into the
         // toolset/prompt gate before any request or toolset build.
         setComputerUseSetting(_settings.experimentalComputerUse);
+        setComputerUseVirtualPointer(
+            _settings.experimentalComputerUseVirtualPointer);
         // The subagent action needs the provider; hand it over with the switch.
         setComputerUseProvider(_settings.baseUrl, _settings.apiKey,
             _settings.model);
@@ -17246,6 +17249,25 @@ public final class OpenCodeRoot : VBox
         };
         computerRow.add(computerCheck);
         optionsBody.add(computerRow);
+
+        // experimental: computer use without disturbing the user. The agent
+        // draws a ghost cursor and posts input messages instead of moving the
+        // real pointer or stealing focus. Off by default.
+        auto virtualPointerRow = new HBox(8);
+        virtualPointerRow.layoutHints().preferredHeight = 32;
+        auto virtualPointerCheck = new CheckBox(
+            "Virtual pointer - don't disturb me (computer use)");
+        virtualPointerCheck.setId("oc-virtualpointer");
+        virtualPointerCheck.setChecked(
+            _settings.experimentalComputerUseVirtualPointer, false);
+        virtualPointerCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalComputerUseVirtualPointer = value;
+            setComputerUseVirtualPointer(value);
+            saveSettingsNow();
+        };
+        virtualPointerRow.add(virtualPointerCheck);
+        optionsBody.add(virtualPointerRow);
 
         // Optional: a small always-on-top mini chat that shows the last few
         // messages of the current conversation and a one-line input, so the

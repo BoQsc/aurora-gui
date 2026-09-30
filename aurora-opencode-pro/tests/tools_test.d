@@ -7,7 +7,7 @@ import auroraopencode.attachments : attachmentImageKindForBytes;
 import auroraopencode.computeruse : computerUseEncodePng, setComputerUseSetting,
     computerUseScaledArgsForTesting, computerUseFramesDifferForTesting,
     computerUseArgsWithinFrameForTesting, computerUseFrameFactorForTesting,
-    computerUseStripNestedScreensForTesting;
+    computerUseStripNestedScreensForTesting, computerUseVirtualPointForTesting;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
@@ -1033,6 +1033,17 @@ int main()
             "a nested out-of-frame step must be rejected");
         assert(computerUseArgsWithinFrameForTesting(`{"action":"focus"}`, 0, 0),
             "unknown frame size must not reject");
+    }
+    // Experimental virtual pointer: a screenshot-space coordinate maps to the
+    // same real screen pixel as a real move, and is clamped to the screen, so
+    // the ghost cursor never points somewhere the click does not land.
+    {
+        auto point = computerUseVirtualPointForTesting(200, 100, 2, 1920, 1080);
+        assert(point[0] == 400 && point[1] == 200,
+            "virtual point must scale by the screenshot factor");
+        auto edge = computerUseVirtualPointForTesting(100000, -5, 1, 1920, 1080);
+        assert(edge[0] == 1919 && edge[1] == 0,
+            "virtual point must clamp to the screen");
     }
     // `frame=half` must actually be half (factor 2); it was once coerced to
     // quarter (factor 4), handing the model a 240x135 frame and wrecking accuracy.
