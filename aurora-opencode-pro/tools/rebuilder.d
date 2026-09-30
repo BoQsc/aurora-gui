@@ -318,7 +318,7 @@ private int runAndReport(in Options options)
     try
     {
         auto pid = spawnProcess([options.exePath], stdin, stdout, stderr, null,
-            Config.none,
+            Config.suppressConsole,
             options.packageDir.length > 0 ? options.packageDir : null);
         const code = wait(pid);
         appendLine(options.logPath, "app exited: " ~ to!string(code) ~ " (" ~
@@ -573,9 +573,13 @@ private bool runBuild(in Options options)
     int code;
     try
     {
+        // `dub` is a console program and this helper runs without a console, so
+        // a bare spawn would allocate a visible console window for the whole
+        // build. CREATE_NO_WINDOW keeps it (and its `cmd /c` post-build steps)
+        // invisible while stdout/stderr still land in the capture file.
         auto pid = spawnProcess(dubBuildArgv(options),
             stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
-            Config.none, options.packageDir);
+            Config.suppressConsole, options.packageDir);
         code = wait(pid);
     }
     catch (Exception error)

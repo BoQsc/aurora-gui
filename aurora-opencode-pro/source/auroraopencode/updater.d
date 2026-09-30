@@ -61,9 +61,12 @@ UpdateCheck checkForUpdate(string exePath, string stateDir)
 
         mkdirRecurse(stateDir);
         const staged = buildPath(stateDir, "aurora-update-download.exe");
+        // `curl.exe` is a console program; the app owns no console, so without
+        // CREATE_NO_WINDOW Windows allocates a new one and a cmd window flashes
+        // up during the update. Suppress it.
         auto download = execute(["curl.exe", "--fail", "--silent",
             "--show-error", "--location", "--max-time", "180",
-            "--output", staged, url]);
+            "--output", staged, url], null, Config.suppressConsole);
         if (download.status != 0 || !exists(staged))
             throw new Exception("Could not download the update.");
         if (getSize(staged) != size || fileHash(staged) != hash)
@@ -91,7 +94,8 @@ private string fetchReleaseMetadata()
     try
     {
         auto api = execute(["curl.exe", "--fail", "--silent", "--show-error",
-            "--location", "--max-time", "20", releaseApi]);
+            "--location", "--max-time", "20", releaseApi], null,
+            Config.suppressConsole);
         if (api.status == 0 && looksLikeRelease(api.output)) return api.output;
     }
     catch (Exception)
@@ -99,7 +103,8 @@ private string fetchReleaseMetadata()
         // A missing curl or an unreachable API still leaves the hosted file.
     }
     auto hosted = execute(["curl.exe", "--fail", "--silent", "--show-error",
-        "--location", "--max-time", "20", releaseMetadataUrl]);
+        "--location", "--max-time", "20", releaseMetadataUrl], null,
+        Config.suppressConsole);
     if (hosted.status != 0)
         throw new Exception("Could not reach the release channel.");
     if (!looksLikeRelease(hosted.output))
