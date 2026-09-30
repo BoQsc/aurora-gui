@@ -12,7 +12,7 @@ class SplitPane : Widget
     private Widget _second;
     private Orientation _orientation;
     private double _ratio = 0.3;
-    private int _dividerSize = 7;
+    private int _dividerSize = 3;
     private bool _dragging;
 
     void delegate(double ratio) onRatioChanged;
