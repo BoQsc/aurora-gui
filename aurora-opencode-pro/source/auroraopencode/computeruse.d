@@ -953,6 +953,7 @@ version (Windows)
         int PostThreadMessageW(uint threadId, uint message, WPARAM wParam,
             LPARAM lParam);
         uint GetCurrentThreadId();
+        uint GetCurrentProcessId();
         uint GetLastError();
         void* InternetOpenW(const wchar* agent, uint accessType,
             const wchar* proxy, const wchar* proxyBypass, uint flags);
@@ -1374,9 +1375,25 @@ version (Windows)
 
     /// The window posted input is aimed at: an explicit `focus` target, else the
     /// window under the ghost cursor, else the foreground window.
+    /// True when `hwnd` belongs to this process (Aurora's own window). Posted
+    /// input must never be aimed here: it makes the agent act on its own UI - a
+    /// mis-aimed `type` was inserting text into the chat input instead of the
+    /// target app.
+    private bool isOwnProcessWindow(void* hwnd)
+    {
+        if (hwnd is null) return false;
+        uint pid;
+        GetWindowThreadProcessId(hwnd, &pid);
+        return pid == GetCurrentProcessId();
+    }
+
+    /// The window posted input is aimed at: an explicit `focus` target, else the
+    /// window under the ghost cursor, else the foreground window. Aurora's own
+    /// window is always skipped, so posted input can never land in this app.
     private void* virtualTargetWindow()
     {
-        if (virtualTargetHwnd !is null && IsWindow(virtualTargetHwnd) != 0)
+        if (virtualTargetHwnd !is null && IsWindow(virtualTargetHwnd) != 0 &&
+            !isOwnProcessWindow(virtualTargetHwnd))
             return virtualTargetHwnd;
         if (virtualX >= 0)
         {
@@ -1384,9 +1401,22 @@ version (Windows)
             point.x = virtualX;
             point.y = virtualY;
             auto hwnd = WindowFromPoint(point);
-            if (hwnd !is null) return hwnd;
+            if (hwnd !is null && !isOwnProcessWindow(hwnd)) return hwnd;
         }
-        return GetForegroundWindow();
+        auto fg = GetForegroundWindow();
+        return isOwnProcessWindow(fg) ? null : fg;
+    }
+
+    /// Virtual mode never changes the real foreground, but browsers and most
+    /// apps ignore posted keyboard messages (WM_KEY*/WM_CHAR), so `type`/`key`
+    /// silently did nothing there. Keys are therefore still injected for real:
+    /// raise the intended target first so they land in it rather than in
+    /// whatever window the person left focused.
+    private void prepareKeyboardTarget()
+    {
+        if (!virtualPointerActive) return;
+        auto hwnd = virtualTargetWindow();
+        if (hwnd !is null) forceForeground(hwnd);
     }
 
     private void virtualPostMouse(uint msg, ushort buttonFlags)
@@ -1767,8 +1797,8 @@ version (Windows)
         bool ok = SetForegroundWindow(hwnd) != 0;
         if (!ok)
         {
-            sendKeyEvent(0x12, false); // VK_MENU (ALT) tap
-            sendKeyEvent(0x12, true);
+            injectKeyEvent(0x12, false); // VK_MENU (ALT) tap
+            injectKeyEvent(0x12, true);
             ok = SetForegroundWindow(hwnd) != 0;
         }
         SetActiveWindow(hwnd);
@@ -1842,18 +1872,25 @@ version (Windows)
     private __gshared bool heldRightButton;
     private __gshared bool heldMiddleButton;
 
-    private void sendKeyEvent(ushort vk, bool up)
+    /// Raw injected key event. Kept separate from `sendKeyEvent` so the focus
+    /// helper can synthesize its ALT tap without re-entering the virtual-mode
+    /// target resolution.
+    private void injectKeyEvent(ushort vk, bool up)
     {
-        if (virtualPointerActive)
-        {
-            virtualKeyEvent(vk, up);
-            return;
-        }
         INPUT[1] inputs;
         inputs[0].type = INPUT_KEYBOARD;
         inputs[0].ki.wVk = vk;
         inputs[0].ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
         SendInput(1, inputs.ptr, INPUT.sizeof);
+    }
+
+    /// Deliver a lone key press/release. In virtual mode the keys are still
+    /// injected for real (posted messages are ignored by real apps), after
+    /// raising the intended target so they land in it.
+    private void sendKeyEvent(ushort vk, bool up)
+    {
+        if (virtualPointerActive) prepareKeyboardTarget();
+        injectKeyEvent(vk, up);
     }
 
     /// Release every key and mouse button the agent is holding. Called by the
@@ -2056,11 +2093,7 @@ version (Windows)
 
     private void typeText(string text)
     {
-        if (virtualPointerActive)
-        {
-            virtualTypeText(text);
-            return;
-        }
+        if (virtualPointerActive) prepareKeyboardTarget();
         ensureInputTarget();
         foreach (dchar c; text)
         {
@@ -2085,11 +2118,7 @@ version (Windows)
 
     private void pressChord(ushort[] modifiers, ushort vk)
     {
-        if (virtualPointerActive)
-        {
-            virtualChord(modifiers, vk);
-            return;
-        }
+        if (virtualPointerActive) prepareKeyboardTarget();
         ensureInputTarget();
         auto builder = appender!(INPUT[])();
         void put(ushort key, DWORD flags)
@@ -2231,6 +2260,9 @@ version (Windows)
                         title ~ "\".");
                 if (virtualPointerActive)
                 {
+                    if (isOwnProcessWindow(hwnd))
+                        return failedResult("Error: refusing to target this " ~
+                            "app's own window.");
                     // Aim posted input at the window; leave the real foreground
                     // (and the person using it) alone.
                     virtualTargetHwnd = hwnd;
