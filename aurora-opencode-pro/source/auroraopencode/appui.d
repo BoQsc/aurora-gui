@@ -408,8 +408,8 @@ private final class MessageBubble : Widget
     private int _versionHover;
     private int _versionWidth;
     // Right-click requests a context menu (Regenerate / Edit & resend / Copy).
-    void delegate(int messageIndex, Point globalPosition, string linkTarget)
-        onContextMenuRequested;
+    void delegate(int messageIndex, Point globalPosition, string linkTarget,
+        Point localPosition) onContextMenuRequested;
 
     // Interactive affordances (Pro): message/code copy buttons and links.
     private int _hoverCopy = -1;
@@ -881,6 +881,19 @@ private final class MessageBubble : Widget
     {
         _workspace = workspace;
     }
+
+    /// The local path link the point falls on ("" when the point is not on a
+    /// path), so the message menu opens the path the reader actually pointed
+    /// at instead of the first path anywhere in the message.
+    public string pathTargetAt(Point point)
+    {
+        foreach (index, rect; _linkRects)
+            if (index < _linkUrls.length &&
+                rect.contains(point) && !isWebUrl(_linkUrls[index]))
+                return _linkUrls[index];
+        return "";
+    }
+
 
     void setCompactBottom(bool value)
     {
@@ -2653,7 +2666,8 @@ private final class MessageBubble : Widget
                         break;
                     }
                 onContextMenuRequested(_messageIndex,
-                    localToGlobal(event.position), linkTarget);
+                    localToGlobal(event.position), linkTarget,
+                    event.position);
                 return true;
             }
             return false;
@@ -11680,10 +11694,11 @@ public final class OpenCodeRoot : VBox
         if (message.failed)
             bubble.setFailed("");
         bubble.onContextMenuRequested =
-            delegate(int messageIndex, Point globalPosition, string linkTarget)
+            delegate(int messageIndex, Point globalPosition, string linkTarget,
+                Point localPosition)
             {
                 showMessageContextMenu(bubble.messageIndex(),
-                    globalPosition, bubble, linkTarget);
+                    globalPosition, bubble, linkTarget, localPosition);
             };
         // Persisted token usage appears only on the latest assistant reply.
         if (cast(int) index == latestAssistantIndex &&
@@ -11973,10 +11988,10 @@ public final class OpenCodeRoot : VBox
                 cast(int) _sessions[_current].messages.length - 1);
             bubble.onContextMenuRequested =
                 delegate(int messageIndex, Point globalPosition,
-                    string linkTarget)
+                    string linkTarget, Point localPosition)
                 {
                     showMessageContextMenu(bubble.messageIndex(),
-                        globalPosition, bubble, linkTarget);
+                        globalPosition, bubble, linkTarget, localPosition);
                 };
         }
         _messageColumn.add(bubble);
@@ -18984,7 +18999,8 @@ public final class OpenCodeRoot : VBox
     }
 
     private void showMessageContextMenu(int messageIndex, Point globalPosition,
-        MessageBubble sourceBubble = null, string linkTarget = "")
+        MessageBubble sourceBubble = null, string linkTarget = "",
+        Point localPosition = Point(-1, -1))
     {
         if (_current < 0) return;
         auto session = &_sessions[_current];
@@ -19045,6 +19061,10 @@ public final class OpenCodeRoot : VBox
         // runs it with its default handler; "Open folder" reveals the folder
         // itself, or the folder that held a since-deleted file.
         string localTarget;
+        // The path under the pointer wins: right-clicking a path must offer
+        // that path, not the first path anywhere in the message.
+        if (localTarget.length == 0 && sourceBubble !is null)
+            linkTarget = sourceBubble.pathTargetAt(localPosition);
         if (linkTarget.length > 0)
         {
             if (!isWebUrl(linkTarget))
