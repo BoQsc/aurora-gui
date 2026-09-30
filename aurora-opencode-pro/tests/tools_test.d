@@ -7,7 +7,8 @@ import auroraopencode.attachments : attachmentImageKindForBytes;
 import auroraopencode.computeruse : computerUseEncodePng, setComputerUseSetting,
     computerUseScaledArgsForTesting, computerUseFramesDifferForTesting,
     computerUseArgsWithinFrameForTesting, computerUseFrameFactorForTesting,
-    computerUseStripNestedScreensForTesting, computerUseVirtualPointForTesting;
+    computerUseStripNestedScreensForTesting, computerUseVirtualPointForTesting,
+    computerUseInputTargetRefusalForTesting;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
@@ -1068,6 +1069,18 @@ int main()
         auto f = parseJSON(filtered);
         assert(f["steps"].array.length == 2,
             "the click and the region crop must remain: " ~ filtered);
+    }
+    // Input targeting: when no safe window can be resolved an input action must
+    // refuse loudly instead of injecting into whatever is foreground. Pin that
+    // contract here - the refusal must say nothing was sent and how to aim.
+    {
+        const refusal = computerUseInputTargetRefusalForTesting();
+        assert(refusal.indexOf("no safe input target") >= 0,
+            "refusal must name the problem: " ~ refusal);
+        assert(refusal.indexOf("Nothing was sent") >= 0,
+            "refusal must state that nothing was injected: " ~ refusal);
+        assert(refusal.indexOf("focus") >= 0 && refusal.indexOf("window") >= 0,
+            "refusal must say how to set a target: " ~ refusal);
     }
     writeln("experimental computer use is opt-in, validated and switchable");
     assert(toolSteeringPrompt(true).indexOf("no shell") >= 0,

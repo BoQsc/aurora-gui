@@ -229,8 +229,16 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "clicking (e.g. edge-pan), `drag` for box-select, order and camera " ~
             "drags, and `key_down`/`key_up` to hold a key down (camera pan, " ~
             "shift-queue). `focus` brings a window to the front by title " ~
-            "substring, and every action reports the active window so you can " ~
-            "tell where input actually went. `macro` runs a named sequence of " ~
+            "substring, and every action reports the window it landed in so " ~
+            "you can tell where input actually went. INPUT IS TARGETED: every " ~
+            "action that sends input resolves a target window first - an " ~
+            "explicit `window`/`title` argument, else the target you last " ~
+            "committed with `focus` or a click, else the current foreground - " ~
+            "and REFUSES (does nothing, with an error) when the only candidate " ~
+            "would be this app's own window or when no window can be resolved. " ~
+            "So `type`/`key` never leak into the wrong app: to be sure, pass " ~
+            "`window` (or `focus` first), and a click always reports which " ~
+            "window it hit. `macro` runs a named sequence of " ~
             "steps from computer-macros.json in the workspace - one call, no " ~
             "per-action reasoning, for learned routines; `loop` repeats a " ~
             "macro for `seconds` at `interval_ms` with no model turns at all. " ~
@@ -241,13 +249,13 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "prefer one `steps` batch (click a field, type a line, press enter) " ~
             "over a see -> act -> see round trip per action; `screenshot` " ~
             "decides whether a fresh capture comes back (default: yes for " ~
-            "`steps`, no for one action, always for `screen`). Keep focus: the " ~
-            "action goes to whatever window is focused, so click the target " ~
-            "first. The human can stop everything at any time with " ~
+            "`steps`, no for one action, always for `screen`). Aim from the " ~
+            "latest `screen`: coordinates come from the frame you last saw. " ~
+            "The human can stop everything at any time with " ~
             computerUseKillSwitchChord ~ ". Keep reasoning minimal; only stop " ~
             "to plan when genuinely stuck (an unexpected dialog, a choice that " ~
             "needs judgement). Windows only.",
-            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: override the loop model for this call (default: the app's model)"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: override the loop model for this call (default: the app's model)"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -992,6 +1000,7 @@ version (Windows)
             uint step, void* flicker, uint flags);
         int PostMessageW(void* hwnd, uint msg, WPARAM wParam, LPARAM lParam);
         void* WindowFromPoint(POINT point);
+        void* GetAncestor(void* hwnd, uint flags);
         int ScreenToClient(void* hwnd, POINT* point);
         void* CreateSolidBrush(uint color);
         int FillRect(void* hdc, const RECT* rect, void* brush);
@@ -1767,6 +1776,7 @@ version (Windows)
             "; click in these image pixels" ~
             (active.length ? ", active window \"" ~ active ~ "\"" : "") ~
             ").";
+        // This frame is now the one the model has seen.
         result.images = [attachmentImageForData("image/png", "screen.png",
             png)];
         return result;
@@ -1781,12 +1791,103 @@ version (Windows)
         SendInput(1, inputs.ptr, INPUT.sizeof);
     }
 
-    /// The window a `focus` call last targeted. Before injecting input we
-    /// re-assert it: the foreground flips to another window (Aurora, a browser)
-    /// between separate computer calls, so a click/key would otherwise land on
-    /// the wrong window. Set by the `focus` action; null until then (so we never
-    /// steal focus unprompted).
+    // -----------------------------------------------------------------------
+    // Input targeting.
+    //
+    // The old design had a single failure mode with several faces: input was
+    // injected at whatever window happened to be foreground unless the model
+    // first called `focus`. A `type` with no `focus` landed in Aurora's own
+    // chat box; a stale click hit the window that had taken the foreground.
+    //
+    // The redesign makes the window an explicit, checked part of every input:
+    //   * `computerUseFocusTarget` is the *committed* input target. It is set
+    //     by `focus`, by a click on a real window, and by an explicit `window`
+    //     argument on type/key.
+    //   * Before ANY input we re-resolve the target and refuse the action when
+    //     it would land in this app's own window (see `resolveInputTarget`),
+    //     instead of silently typing into the wrong place.
+    //   * A click records the window under the pointer as the new target, and
+    //     the action's reply names that window, so the model sees where a click
+    //     actually went rather than assuming.
+    // -----------------------------------------------------------------------
+
+    /// The committed input target: the window input is meant to reach. Set by
+    /// `focus`, by a click on a real window, and by an explicit `window`/`title`
+    /// argument. Null until the model has established one.
     private __gshared void* computerUseFocusTarget;
+
+    /// Human-readable description of how the current target was chosen, surfaced
+    /// in replies so the model can tell "I aimed this" from "I inherited this".
+    private __gshared string computerUseTargetSource;
+
+    /// Whether the target is a real, still-existing window we are willing to
+    /// inject into: non-null, alive, and not this app's own window.
+    private bool targetUsable(void* hwnd)
+    {
+        if (hwnd is null) return false;
+        if (IsWindow(hwnd) == 0) return false;
+        if (isOwnProcessWindow(hwnd)) return false;
+        return true;
+    }
+
+    /// Commit `hwnd` as the input target, recording where it came from. Refuses
+    /// (returns false) when the window is this app's own, so a failed
+    /// resolution cannot leave a poisoned target behind.
+    private bool commitInputTarget(void* hwnd, string source)
+    {
+        if (!targetUsable(hwnd)) return false;
+        computerUseFocusTarget = hwnd;
+        computerUseTargetSource = source;
+        return true;
+    }
+
+    /// Resolve the window an input action should reach, in priority order:
+    ///   1. an explicit `window`/`title` argument, focused now;
+    ///   2. the committed target (from `focus`, a prior click, or `window`);
+    ///   3. the current foreground window, if it is not this app's.
+    /// Returns null when nothing safe can be resolved, which callers turn into a
+    /// refusal rather than injecting input blindly. `why` explains the choice.
+    private void* resolveInputTarget(string explicitTitle, out string why)
+    {
+        if (explicitTitle.length > 0)
+        {
+            auto hwnd = findTopWindow(strip(toLower(explicitTitle)));
+            if (hwnd is null)
+            {
+                why = "no visible window matches \"" ~ explicitTitle ~ "\"";
+                return null;
+            }
+            if (!targetUsable(hwnd))
+            {
+                why = "the window matching \"" ~ explicitTitle ~
+                    "\" is this app's own window";
+                return null;
+            }
+            forceForeground(hwnd);
+            commitInputTarget(hwnd, "explicit window \"" ~ explicitTitle ~ "\"");
+            why = null;
+            return hwnd;
+        }
+        if (targetUsable(computerUseFocusTarget))
+        {
+            why = null;
+            return computerUseFocusTarget;
+        }
+        // A dead or poisoned committed target: drop it so the fallback is honest.
+        computerUseFocusTarget = null;
+        computerUseTargetSource = null;
+        auto fg = GetForegroundWindow();
+        if (targetUsable(fg))
+        {
+            commitInputTarget(fg, "current foreground window");
+            why = null;
+            return fg;
+        }
+        why = isOwnProcessWindow(fg)
+            ? "the only candidate is this app's own window"
+            : "no target window could be resolved";
+        return null;
+    }
 
     /// Bring `hwnd` to the foreground robustly. `SetForegroundWindow` alone is
     /// denied to a background process (the Windows foreground lock), which is
@@ -1816,21 +1917,52 @@ version (Windows)
         if (attached) AttachThreadInput(fgThread, thisThread, 0);
     }
 
-    /// Re-assert the last `focus` target before injecting input, so a click or
+    /// Re-assert the resolved input target before injecting input, so a click or
     /// key lands in the intended window even after the foreground drifted.
-    private void ensureInputTarget()
+    /// Returns the target, or null when none can be resolved safely - callers
+    /// then refuse the action instead of typing into an arbitrary window.
+    private void* ensureInputTarget(string explicitTitle = "")
     {
         // Virtual mode never takes the foreground: posted input goes to the
         // target window without disturbing whoever is actually focused.
-        if (virtualPointerActive) return;
-        if (computerUseFocusTarget is null) return;
-        if (GetForegroundWindow() is computerUseFocusTarget) return;
-        forceForeground(computerUseFocusTarget);
-        Thread.sleep(msecs(60));
+        if (virtualPointerActive) return virtualTargetHwnd;
+        string why;
+        auto hwnd = resolveInputTarget(explicitTitle, why);
+        if (hwnd is null) return null;
+        if (GetForegroundWindow() !is hwnd)
+        {
+            forceForeground(hwnd);
+            Thread.sleep(msecs(60));
+        }
+        return hwnd;
+    }
+
+    /// Remember the top-level window under a screenshot-space point as the input
+    /// target, so keys after a click go to the app that was clicked rather than
+    /// to whatever window is actually focused. Returns the resolved window (or
+    /// null when the point is over this app's own window, which must never
+    /// become a target).
+    private void* noteClickTarget(int x, int y)
+    {
+        if (virtualPointerActive) return virtualTargetHwnd;
+        const step = screenDownscale();
+        POINT point;
+        point.x = cast(int)(cast(long) x * step);
+        point.y = cast(int)(cast(long) y * step);
+        auto hwnd = WindowFromPoint(point);
+        if (hwnd is null) return null;
+        auto root = GetAncestor(hwnd, 2 /*GA_ROOT*/);
+        if (root !is null) hwnd = root;
+        if (!targetUsable(hwnd)) return null;
+        commitInputTarget(hwnd, "the window clicked at " ~ to!string(x) ~ "," ~
+            to!string(y));
+        return hwnd;
     }
 
     /// Move the pointer to a screenshot-space coordinate, clamped to the real
     /// screen so an out-of-range model guess cannot move it off the desktop.
+    /// Moving the pointer is inert: it neither resolves nor changes the input
+    /// target, so hovering can never silently re-aim later input.
     private void moveCursor(int x, int y)
     {
         if (virtualPointerActive)
@@ -1838,7 +1970,6 @@ version (Windows)
             virtualMoveTo(x, y);
             return;
         }
-        ensureInputTarget();
         const step = screenDownscale();
         const width = GetSystemMetrics(SM_CXSCREEN);
         const height = GetSystemMetrics(SM_CYSCREEN);
@@ -1851,16 +1982,28 @@ version (Windows)
         SetCursorPos(cast(int) realX, cast(int) realY);
     }
 
-    private void clickAt(int x, int y, int count,
+    /// Click at a screenshot-space point. The window under the point becomes the
+    /// committed input target and is raised first, so the click lands in the app
+    /// the model aimed at instead of in whatever had the foreground. Returns the
+    /// clicked window's title ("" when the point is over this app's own window,
+    /// which is reported by the caller as a refusal).
+    private string clickAt(int x, int y, int count,
         DWORD down = MOUSEEVENTF_LEFTDOWN, DWORD up = MOUSEEVENTF_LEFTUP)
     {
         if (virtualPointerActive)
         {
             virtualClickAt(x, y, count, down, up);
-            return;
+            return windowTitleOf(virtualTargetHwnd);
         }
         // Coordinates arrive in the (possibly downscaled) screenshot's pixel
         // space; mapToReal maps them onto real screen pixels before the press.
+        auto target = noteClickTarget(x, y);
+        if (target is null) return null; // caller refuses: no safe target
+        if (GetForegroundWindow() !is target)
+        {
+            forceForeground(target);
+            Thread.sleep(msecs(60));
+        }
         moveCursor(x, y);
         Thread.sleep(msecs(30)); // let the pointer settle before the press
         foreach (i; 0 .. count)
@@ -1869,6 +2012,7 @@ version (Windows)
             sendMouse(up);
             if (i + 1 < count) Thread.sleep(msecs(60));
         }
+        return windowTitleOf(target);
     }
 
     // -----------------------------------------------------------------------
@@ -1948,10 +2092,22 @@ version (Windows)
         const vk = resolveHoldKey(keyName);
         if (vk == 0)
             return failedResult("Error: unknown key '" ~ keyName ~ "'.");
-        sendKeyEvent(vk, up);
+        if (virtualPointerActive) prepareKeyboardTarget();
+        else if (ensureInputTarget() is null)
+            return failedResult(inputTargetRefusal());
+        injectKeyEvent(vk, up);
         heldKeys[vk & 0xFF] = !up;
         return succeededResult((up ? "Released key \"" : "Held key \"") ~
             keyName ~ "\".");
+    }
+
+    /// The refusal text for an input action with no safe target. Deliberately
+    /// explicit: it tells the model nothing was typed, and how to fix it.
+    private string inputTargetRefusal()
+    {
+        return "Error: no safe input target. Nothing was sent. Name the target " ~
+            "with `focus` (or a `window` argument), or click inside the target " ~
+            "window first, then retry.";
     }
 
     /// Press a mouse button, move through interpolated points, release. Used
@@ -2084,13 +2240,20 @@ version (Windows)
         return result;
     }
 
-    /// Append the currently focused window, so a caller can tell where input
-    /// landed (or that it landed somewhere unexpected).
+    /// Append the window input actually went to, so the model can tell where it
+    /// landed (or that it landed somewhere unexpected). Reports the committed
+    /// input target when there is one, since that is where input was aimed; the
+    /// raw foreground can differ momentarily.
     private string withActiveWindow(string text)
     {
-        const title = foregroundWindowTitle();
+        const title = (targetUsable(computerUseFocusTarget)
+            ? windowTitleOf(computerUseFocusTarget)
+            : foregroundWindowTitle());
         if (title.length == 0) return text;
-        return text ~ " (active window: \"" ~ title ~ "\")";
+        const how = computerUseTargetSource.length
+            ? ", target: " ~ computerUseTargetSource
+            : "";
+        return text ~ " (window: \"" ~ title ~ "\"" ~ how ~ ")";
     }
 
     private ushort[] utf16Units(dchar c)
@@ -2101,17 +2264,20 @@ version (Windows)
             cast(ushort) (0xDC00 + (value & 0x3FF))];
     }
 
-    private void typeText(string text)
+    /// Type `text` into the resolved input target. Returns false (and injects
+    /// nothing) when no safe target can be resolved, so text can never land in
+    /// this app's own window or an unknown one.
+    private bool typeText(string text, string explicitWindow = "")
     {
         if (virtualPointerActive) prepareKeyboardTarget();
-        ensureInputTarget();
+        if (ensureInputTarget(explicitWindow) is null) return false;
         foreach (dchar c; text)
         {
             // Control characters go through virtual keys: a lone Unicode
             // newline/tab is ignored by many controls, so press Enter/Tab.
-            if (c == '\n') { pressChord(null, 0x0D); continue; }
+            if (c == '\n') { injectChord(null, 0x0D); continue; }
             if (c == '\r') continue; // already handled by the \n of a CRLF pair
-            if (c == '\t') { pressChord(null, 0x09); continue; }
+            if (c == '\t') { injectChord(null, 0x09); continue; }
             foreach (unit; utf16Units(c))
             {
                 INPUT[2] inputs;
@@ -2124,12 +2290,13 @@ version (Windows)
                 SendInput(2, inputs.ptr, INPUT.sizeof);
             }
         }
+        return true;
     }
 
-    private void pressChord(ushort[] modifiers, ushort vk)
+    /// Injected key chord, no target resolution (callers resolve once). Used by
+    /// `typeText` for embedded newlines/tabs.
+    private void injectChord(ushort[] modifiers, ushort vk)
     {
-        if (virtualPointerActive) prepareKeyboardTarget();
-        ensureInputTarget();
         auto builder = appender!(INPUT[])();
         void put(ushort key, DWORD flags)
         {
@@ -2145,6 +2312,17 @@ version (Windows)
         foreach_reverse (modifier; modifiers) put(modifier, KEYEVENTF_KEYUP);
         auto inputs = builder.data;
         SendInput(cast(UINT) inputs.length, inputs.ptr, INPUT.sizeof);
+    }
+
+    /// Press a key chord in the resolved input target. Returns false (injecting
+    /// nothing) when no safe target can be resolved.
+    private bool pressChord(ushort[] modifiers, ushort vk,
+        string explicitWindow = "")
+    {
+        if (virtualPointerActive) prepareKeyboardTarget();
+        if (ensureInputTarget(explicitWindow) is null) return false;
+        injectChord(modifiers, vk);
+        return true;
     }
 
     private ushort virtualKeyFor(string token)
@@ -2196,7 +2374,7 @@ version (Windows)
         }
     }
 
-    private ComputerUseResult runKey(string keyName)
+    private ComputerUseResult runKey(string keyName, string window = "")
     {
         auto parts = keyName.toLower.split("+");
         if (parts.length == 0 || strip(parts[$ - 1]).length == 0)
@@ -2216,7 +2394,8 @@ version (Windows)
         if (vk == 0) vk = vkForToken(last);
         if (vk == 0)
             return failedResult("Error: unknown key '" ~ last ~ "'.");
-        pressChord(modifiers, vk);
+        if (!pressChord(modifiers, vk, window))
+            return failedResult(inputTargetRefusal());
         return succeededResult("Pressed key \"" ~ keyName ~ "\".");
     }
 
@@ -2237,6 +2416,11 @@ version (Windows)
         const intervalMs = jsonInt(value, "interval_ms", 250);
         const durationMs = cast(int) jsonInt(value, "duration_ms", 400);
         const button = strip(toLower(jsonString(value, "button")));
+        // An explicit target window. `window` is the general name; `title` is
+        // accepted too (it is the `focus` field name) so a model can carry the
+        // same value across actions.
+        string targetWindow = jsonString(value, "window");
+        if (targetWindow.length == 0) targetWindow = jsonString(value, "title");
 
         switch (action)
         {
@@ -2279,43 +2463,37 @@ version (Windows)
                         "unchanged).", screenshot);
                 }
                 forceForeground(hwnd);
-                computerUseFocusTarget = hwnd;
+                commitInputTarget(hwnd, "focus \"" ~ title ~ "\"");
                 Thread.sleep(msecs(150));
                 return withOptionalScreenshot("Focused window \"" ~
                     foregroundWindowTitle() ~ "\".", screenshot);
             }
             case "click":
-                clickAt(x, y, 1);
-                return withOptionalScreenshot(withActiveWindow("Clicked at " ~
-                    to!string(x) ~ "," ~ to!string(y) ~ "."), screenshot);
+                return clickActionResult(x, y, 1, targetWindow, screenshot,
+                    "Clicked");
             case "double_click":
-                clickAt(x, y, 2);
-                return withOptionalScreenshot(withActiveWindow("Double-clicked " ~
-                    "at " ~ to!string(x) ~ "," ~ to!string(y) ~ "."),
-                    screenshot);
+                return clickActionResult(x, y, 2, targetWindow, screenshot,
+                    "Double-clicked");
             case "right_click":
-                clickAt(x, y, 1, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP);
-                return withOptionalScreenshot(withActiveWindow("Right-clicked " ~
-                    "at " ~ to!string(x) ~ "," ~ to!string(y) ~ "."),
-                    screenshot);
+                return clickActionResult(x, y, 1, targetWindow, screenshot,
+                    "Right-clicked", MOUSEEVENTF_RIGHTDOWN,
+                    MOUSEEVENTF_RIGHTUP);
             case "mouse_move":
                 moveCursor(x, y);
                 return withOptionalScreenshot("Moved the pointer to " ~
                     to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
             case "drag":
-                dragMouse(x, y, x2, y2, durationMs, button);
-                return withOptionalScreenshot(withActiveWindow("Dragged " ~
-                    (button.length > 0 ? button : "left") ~ " from " ~
-                    to!string(x) ~ "," ~ to!string(y) ~ " to " ~
-                    to!string(x2) ~ "," ~ to!string(y2) ~ "."), screenshot);
+                return dragActionResult(x, y, x2, y2, durationMs, button,
+                    targetWindow, screenshot);
             case "type":
                 if (text.length == 0)
                     return failedResult("Error: type requires `text`.");
-                typeText(text);
+                if (!typeText(text, targetWindow))
+                    return failedResult(inputTargetRefusal());
                 return withOptionalScreenshot(withActiveWindow("Typed " ~
-                    to!string(text.length) ~ " characters."), screenshot);
+                    to!string(text.length) ~ " characters"), screenshot);
             case "key":
-                return keyResultAction(runKey(keyName), screenshot);
+                return keyResultAction(runKey(keyName, targetWindow), screenshot);
             case "key_down":
                 return keyResultAction(runHoldKey(keyName, false), screenshot);
             case "key_up":
@@ -2341,6 +2519,91 @@ version (Windows)
                 return failedResult("Error: unknown computer action '" ~
                     action ~ "'.");
         }
+    }
+
+    /// Perform a click and report, in the reply, which window it landed in. When
+    /// the point is over this app's own window the click is refused outright:
+    /// the old code clicked into Aurora and the model had no way to notice.
+    private ComputerUseResult clickActionResult(int x, int y, int count,
+        string targetWindow, bool screenshot, string verb,
+        DWORD down = MOUSEEVENTF_LEFTDOWN, DWORD up = MOUSEEVENTF_LEFTUP)
+    {
+        if (targetWindow.length > 0)
+        {
+            // An explicit window overrides "whatever is under the point".
+            string why;
+            auto hwnd = resolveInputTarget(targetWindow, why);
+            if (hwnd is null)
+                return failedResult("Error: " ~ why ~
+                    ". Nothing was clicked.");
+            auto root = GetAncestor(WindowFromPoint2(x, y), 2);
+            if (root !is null && root !is hwnd && !isOwnProcessWindow(root))
+                return failedResult("Error: the point " ~ to!string(x) ~ "," ~
+                    to!string(y) ~ " is in window \"" ~ windowTitleOf(root) ~
+                    "\", not the requested \"" ~ targetWindow ~
+                    "\". Nothing was clicked; take a fresh `screen` and retry.");
+        }
+        auto title = clickAt(x, y, count, down, up);
+        if (title is null)
+            return failedResult("Error: the point " ~ to!string(x) ~ "," ~
+                to!string(y) ~ " is over this app's own window (or no window). " ~
+                "Nothing was clicked. Take a fresh `screen` and aim at the " ~
+                "target application.");
+        return withOptionalScreenshot(withActiveWindow(verb ~ " at " ~
+            to!string(x) ~ "," ~ to!string(y) ~ " in window \"" ~ title ~ "\""),
+            screenshot);
+    }
+
+    /// Resolve a window under a screenshot point without side effects (used only
+    /// to check that an explicit-window click lands where it was asked to).
+    private void* WindowFromPoint2(int x, int y)
+    {
+        const step = screenDownscale();
+        POINT point;
+        point.x = cast(int)(cast(long) x * step);
+        point.y = cast(int)(cast(long) y * step);
+        auto hwnd = WindowFromPoint(point);
+        if (hwnd is null) return null;
+        auto root = GetAncestor(hwnd, 2 /*GA_ROOT*/);
+        return root !is null ? root : hwnd;
+    }
+
+    /// Drag with the same target discipline as a click: bind the drag's window
+    /// first and report it, so a drag can never silently land elsewhere.
+    private ComputerUseResult dragActionResult(int x, int y, int x2, int y2,
+        int durationMs, string button, string targetWindow, bool screenshot)
+    {
+        if (virtualPointerActive)
+        {
+            dragMouse(x, y, x2, y2, durationMs, button);
+            return withOptionalScreenshot("Dragged from " ~ to!string(x) ~ "," ~
+                to!string(y) ~ " to " ~ to!string(x2) ~ "," ~ to!string(y2) ~
+                ".", screenshot);
+        }
+        string why;
+        void* target;
+        if (targetWindow.length > 0)
+            target = resolveInputTarget(targetWindow, why);
+        else
+        {
+            target = noteClickTarget(x, y);
+            why = "the drag start point is over this app's own window (or no " ~
+                "window)";
+        }
+        if (target is null)
+            return failedResult("Error: no safe target for the drag: " ~ why ~
+                ". Nothing was dragged.");
+        if (GetForegroundWindow() !is target)
+        {
+            forceForeground(target);
+            Thread.sleep(msecs(60));
+        }
+        dragMouse(x, y, x2, y2, durationMs, button);
+        return withOptionalScreenshot(withActiveWindow("Dragged " ~
+            (button.length > 0 ? button : "left") ~ " from " ~
+            to!string(x) ~ "," ~ to!string(y) ~ " to " ~
+            to!string(x2) ~ "," ~ to!string(y2) ~ " in window \"" ~
+            windowTitleOf(target) ~ "\""), screenshot);
     }
 
     /// The action's text, plus a fresh screenshot when the caller asked for one.
@@ -2874,6 +3137,15 @@ version (Windows)
     public bool computerUseArgsWithinFrameForTesting(string argsJson, int w, int h)
     {
         return computerArgsWithinFrame(argsJson, w, h);
+    }
+
+    /// Test hook: the refusal text an input action returns when no safe target
+    /// window can be resolved. Pins the contract that a mis-aimed input is a
+    /// loud, explicit failure rather than a silent injection into the wrong
+    /// window (the bug this guard exists to prevent).
+    public string computerUseInputTargetRefusalForTesting()
+    {
+        return inputTargetRefusal();
     }
 
     /// Test hook: the real-screen pixel a screenshot-space coordinate maps to,
