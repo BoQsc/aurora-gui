@@ -11,6 +11,7 @@ Usage: patch-pe-icon.py icon.ico exe [exe_out]
 
 import struct
 import sys
+import time
 from collections import deque
 
 RT_ICON = 3
@@ -244,8 +245,20 @@ def patch_icon(ico_path, exe_path, out_path=None):
     write_u32(orig, res_dir + 4, new_size)
 
     dest = out_path or exe_path
-    with open(dest, 'wb') as f:
-        f.write(orig)
+    # The freshly linked exe can be briefly locked by the OS (antivirus, Explorer,
+    # or a just-exited process still releasing the image). Retrying avoids a
+    # silent no-op - which is how the app icon disappeared from some builds.
+    error = None
+    for _ in range(40):
+        try:
+            with open(dest, 'wb') as f:
+                f.write(orig)
+            break
+        except PermissionError as exc:
+            error = exc
+            time.sleep(0.25)
+    else:
+        raise SystemExit(f'{dest}: could not write the patched exe: {error}')
     print(f'patched {dest}: .rsrc RVA 0x{new_rva:x} size {new_size} '
           f'({len(entries)} icon image(s))')
 
