@@ -3272,6 +3272,14 @@ private string messageLocalPath(ref const ChatMessage message, string workspace)
     return "";
 }
 
+/// Whether a text selection is itself a local path, so the message menu can
+/// skip a redundant "Open file" for the very text the reader highlighted.
+private bool selectionNamesPath(string selection)
+{
+    if (selection.length == 0) return false;
+    return localPathTokens(cast(dstring) toUTF32(selection)).length > 0;
+}
+
 private string resolveDisplayedPath(string path, string workspace)
 
 {
@@ -18991,9 +18999,13 @@ public final class OpenCodeRoot : VBox
             localTarget = messageLocalPath(message, workspace);
         if (localTarget.length == 0 && message.role == "tool")
             localTarget = primaryToolPath(message, workspace);
-        // When text is selected the menu is about that selection, so the path
-        // items stay out of the way.
-        if (localTarget.length > 0 && !hasSelection)
+        // A selection does NOT hide the path items: the reader can select a path
+        // and still open it. The single exception is a deliberate selection of
+        // the path text itself, where "Open file" would be redundant with the
+        // link target already offered.
+        const selectedPath = hasSelection && sourceBubble !is null &&
+            selectionNamesPath(sourceBubble.selectedText());
+        if (localTarget.length > 0 && !selectedPath)
         {
             // The path itself, if it is still on disk.
             if (exists(localTarget))
