@@ -2842,6 +2842,8 @@ private string humanToolTitle(string toolName)
         // source/auroraopencode/computeruse.d
         case "computer":
             return "Computer";
+        case "process":
+            return "Process";
         default:
             if (toolName.length == 0) return "Tool";
             return capitalizeFirst(toolName);
@@ -2895,6 +2897,8 @@ private string humanToolProgressTitle(string toolName)
         // source/auroraopencode/computeruse.d
         case "computer":
             return "Controlling";
+        case "process":
+            return "Managing";
         default:
             if (toolName.length == 0) return "Preparing";
             return "Preparing " ~ toolName;
@@ -2910,6 +2914,37 @@ private static string capitalizeFirst(string value)
     return cast(string) buffer;
 }
 
+/// One argv token rendered for a compact header: quoted when it contains a
+/// space so `program=python, args=["build.py","two words"]` reads as
+/// `python build.py "two words"` instead of an ambiguous blob.
+private static string quoteCommandArg(string arg)
+{
+    if (arg.length == 0) return `""`;
+    foreach (ch; arg)
+        if (ch == ' ' || ch == '\t') return `"` ~ arg ~ `"`;
+    return arg;
+}
+
+/// The command a shell/run tool will actually execute: an explicit `command`
+/// string when present, otherwise `program` followed by its `args`. Shared by
+/// the row's subtitle and body preview so both name the call the same way, and
+/// so a `run` call shows the arguments it will pass (`python build.py --fast`)
+/// rather than only the bare program (`python`).
+private string humanCommandLine(string toolArgs)
+{
+    const command = partialStringArg(toolArgs, "command");
+    if (command.length > 0) return command;
+    auto builder = appender!string();
+    const program = partialStringArg(toolArgs, "program");
+    if (program.length > 0) builder.put(quoteCommandArg(program));
+    foreach (arg; toolStringArgs(toolArgs, "args"))
+    {
+        if (builder.data.length > 0) builder.put(' ');
+        builder.put(quoteCommandArg(arg));
+    }
+    return builder.data;
+}
+
 /// A short, tool-specific subtitle (the command, filename or pattern).
 private string humanToolSubtitle(string toolName, string toolArgs)
 {
@@ -2918,12 +2953,16 @@ private string humanToolSubtitle(string toolName, string toolArgs)
         case "bash":
         case "run":
         case "dshell":
-            auto command = partialStringArg(toolArgs, "command");
-            if (command.length == 0)
-                command = partialStringArg(toolArgs, "program");
-            if (command.length == 0)
-                command = partialStringArg(toolArgs, "args");
-            return command;
+            return humanCommandLine(toolArgs);
+        case "process":
+        {
+            // Which background process is being inspected and how: a bare
+            // "Process" row said nothing about the action or the id.
+            const action = partialStringArg(toolArgs, "action");
+            const id = partialStringArg(toolArgs, "processId");
+            if (action.length == 0) return id;
+            return id.length > 0 ? action ~ " " ~ id : action;
+        }
         case "read":
         case "write":
         case "edit":
@@ -3338,9 +3377,7 @@ private string humanToolDetail(string toolName, string toolArgs)
         case "bash":
         case "run":
         case "dshell":
-            auto command = partialStringArg(toolArgs, "command");
-            if (command.length == 0) command = partialStringArg(toolArgs, "program");
-            return command;
+            return humanCommandLine(toolArgs);
         default:
             return "";
     }

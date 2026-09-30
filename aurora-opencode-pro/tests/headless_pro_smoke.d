@@ -3530,7 +3530,54 @@ int main(string[] args)
         writeln("Partial edit arguments reveal the nested filename immediately");
     }
 
+    // A command-running tool must name the work it will do, not just the bare
+    // program: a `run` of python with an argv list reads as
+    // "Running  python build.py --fast", and a `process` inspection names the
+    // action and the id it targets instead of a bare "Process".
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Build it"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        OpenCodeToolCall cmdDetailRun;
+        cmdDetailRun.id = "call-run-detail";
+        cmdDetailRun.name = "run";
+        cmdDetailRun.arguments =
+            `{"program":"python","args":["build.py","--fast"]}`;
+        root.injectToolProgressForTesting([cmdDetailRun]);
+        auto cmdDetailRunRows = root.liveToolRowTextsForTesting();
+        assert(cmdDetailRunRows.length == 1 &&
+            cmdDetailRunRows[0].indexOf("python build.py --fast") >= 0,
+            "run row did not show the command line: " ~
+            (cmdDetailRunRows.length ? cmdDetailRunRows[0] : "(none)"));
+        const cmdDetailPreviews = root.liveToolRowPreviewsForTesting();
+        assert(cmdDetailPreviews.length == 1 &&
+            cmdDetailPreviews[0].indexOf("python build.py --fast") >= 0,
+            "run row preview did not show the command line: " ~
+            (cmdDetailPreviews.length ? cmdDetailPreviews[0] : "(none)"));
+
+        OpenCodeToolCall cmdDetailProcess;
+        cmdDetailProcess.id = "call-process-detail";
+        cmdDetailProcess.name = "process";
+        cmdDetailProcess.arguments = `{"action":"status","processId":"proc-7"}`;
+        root.injectToolProgressForTesting([cmdDetailRun, cmdDetailProcess]);
+        const cmdDetailRows = root.liveToolRowTextsForTesting();
+        bool cmdSawProcess, cmdSawRun;
+        foreach (row; cmdDetailRows)
+        {
+            if (row.indexOf("status proc-7") >= 0) cmdSawProcess = true;
+            if (row.indexOf("python build.py --fast") >= 0) cmdSawRun = true;
+        }
+        assert(cmdSawProcess,
+            "process row did not name its action and id: " ~
+            to!string(cmdDetailRows));
+        assert(cmdSawRun,
+            "run row lost its command line: " ~ to!string(cmdDetailRows));
+        assert(driver.paint(), "Detailed run/process rows did not paint");
+        writeln("Command tool rows name their command line and action");
+    }
+
     // Live token counter: while the reply streams (reasoning, then answer) the
+
     // Thinking header shows an output-token count that only grows, and it stays
     // after the turn completes. The generic "Writing…" phase word is gone, so
     // nothing vanishes at completion and reads like a file write.
