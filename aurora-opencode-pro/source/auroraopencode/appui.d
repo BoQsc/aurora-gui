@@ -461,6 +461,10 @@ private final class MessageBubble : Widget
     private size_t[shapeCacheSize] _contentShapedGen;
     private size_t _contentCacheCount;
     private size_t _contentGen = 1;
+    // Ring insert position. Layouts are keyed by (generation, width), so once
+    // the ring is full the new entry evicts the oldest slot instead of shifting
+    // the whole array down on every insert.
+    private size_t _contentCacheNext;
     // The thinking block is wrapped, so its layout depends on width. The
     // ScrollView measures its content twice per layout (once without and once
     // with the scrollbar), which oscillates the width; a single-slot cache
@@ -471,6 +475,17 @@ private final class MessageBubble : Widget
     private size_t[shapeCacheSize] _thinkingShapedGens;
     private size_t _thinkingCacheCount;
     private size_t _thinkingGen = 1;
+    private size_t _thinkingCacheNext;
+    // `_thinking ~= chunk` reallocates the whole dstring for every streamed
+    // fragment. `_thinkingBuffered` holds the fragments and is spilled into
+    // `_thinking` in one power-of-two chunk once the cached prefix is full, so
+    // the cost per fragment stays O(1) instead of O(text length). `_thinkingShown`
+    // is the prefix the layout cache was built from.
+    private dstring _thinkingBuffered;
+    private string _thinkingSpill;
+    private dstring _thinkingShown;
+    private bool _thinkingDirty;
+    private static immutable size_t thinkingSpillBytes = 8192;
 
     private int[2] _mdWidths;
     private MdComposition[2] _mdCompositions;
@@ -933,16 +948,35 @@ private final class MessageBubble : Widget
 
     void appendThinking(string chunk)
     {
-        _thinking ~= toUTF32(chunk);
+        // `_thinking ~= chunk` reallocated and recopied the whole reasoning
+        // block per streamed fragment. Grow a power-of-two chunk instead and
+        // spill the buffered prefix into `_thinking` only when it is full, so a
+        // fragment costs O(chunk) plus one copy per chunk, not per fragment.
+        const needed = _thinkingBuffered.length + chunk.length;
+        if (needed > _thinkingBuffered.capacity)
+        {
+            const grown = needed < thinkingSpillBytes ? thinkingSpillBytes :
+                _thinkingBuffered.capacity * 2;
+            _thinkingBuffered.reserve(max(grown, needed));
+            _thinkingSpill ~= to!string(_thinkingBuffered);
+            _thinkingBuffered.length = 0;
+        }
+        _thinkingBuffered ~= toUTF32(chunk);
+        _thinkingDirty = true;
         ++_thinkingGen;
         invalidate();
     }
 
     void appendContent(string chunk)
     {
-        _content ~= toUTF32(chunk);
+        // `_content ~= toUTF32(chunk)` re-encodes the whole accumulated reply
+        // and reallocates it for every streamed fragment. `transcode` appends
+        // only the new chunk into the dstring's existing storage.
+        foreach (dchar c; chunk)
+            _content ~= c;
         ++_contentGen;
         _contentCacheCount = 0;
+        _contentCacheNext = 0;
         invalidate();
     }
 
@@ -1147,10 +1181,11 @@ private final class MessageBubble : Widget
         _streaming = value;
         ++_contentGen;
         _contentCacheCount = 0;
+        _contentCacheNext = 0;
         invalidate();
     }
 
-    private TextLayout shapedThinking(int width)
+    private TextLayout shapedThinking(int width, size_t budgetDchars = 0)
     {
         foreach (index; 0 .. _thinkingCacheCount)
         {
@@ -1159,23 +1194,88 @@ private final class MessageBubble : Widget
                 return _thinkingLayouts[index];
         }
 
-        auto layout = shape(_thinking, width);
+        auto layout = shape(thinkingText(budgetDchars), width);
 
         if (_thinkingCacheCount == shapeCacheSize)
         {
-            for (size_t shift = 1; shift < shapeCacheSize; ++shift)
-            {
-                _thinkingWidths[shift - 1] = _thinkingWidths[shift];
-                _thinkingLayouts[shift - 1] = _thinkingLayouts[shift];
-                _thinkingShapedGens[shift - 1] = _thinkingShapedGens[shift];
-            }
-            --_thinkingCacheCount;
+            if (budgetDchars > 0 && _thinkingBuffered.length > 0)
+                return rememberThinking(width, null);
+            return rememberThinking(width, layout);
         }
-        _thinkingWidths[_thinkingCacheCount] = width;
-        _thinkingLayouts[_thinkingCacheCount] = layout;
-        _thinkingShapedGens[_thinkingCacheCount] = _thinkingGen;
-        ++_thinkingCacheCount;
+        return rememberThinking(width, layout);
+    }
+
+    /// Cache `layout` for the current generation and width. A null layout means
+    /// "measured from text with a pending tail": the remainder is folded into
+    /// the text before the next measure, so remembering the truncated result
+    /// would hide the new fragments.
+    private TextLayout rememberThinking(int width, TextLayout layout)
+    {
+        size_t slot;
+        if (_thinkingCacheCount == shapeCacheSize)
+        {
+            slot = _thinkingCacheNext % shapeCacheSize;
+            _thinkingCacheNext = slot + 1;
+        }
+        else
+        {
+            slot = _thinkingCacheCount;
+            ++_thinkingCacheCount;
+            _thinkingCacheNext = _thinkingCacheCount % shapeCacheSize;
+        }
+        _thinkingWidths[slot] = width;
+        _thinkingLayouts[slot] = layout;
+        _thinkingShapedGens[slot] = _thinkingGen;
         return layout;
+    }
+
+    /// The reasoning text as a dstring. New fragments land in the small buffer
+    /// (or the spill string once it outgrows a chunk) and are folded into the
+    /// shown text only when a layout actually reads them, so a per-fragment
+    /// `~=` never reallocates or recopies the whole reasoning block.
+    ///
+    /// `budgetDchars` bounds how much of the buffered tail is folded in this
+    /// call (0 = all of it). The wrapped layout that is drawn has to truncate
+    /// to the block it was measured into, so folding the entire backlog would
+    /// pay O(text) per frame while the extra tail was never painted.
+    private dstring thinkingText(size_t budgetDchars = 0)
+    {
+        if (!_thinkingDirty) return _thinking;
+        if (_thinkingSpill.length > 0)
+        {
+            _thinking = _thinking ~ toUTF32(_thinkingSpill);
+            _thinkingSpill = "";
+        }
+        if (_thinkingBuffered.length > 0)
+        {
+            const take = budgetDchars == 0 ||
+                budgetDchars >= _thinkingBuffered.length ?
+                _thinkingBuffered.length : budgetDchars;
+            _thinking ~= _thinkingBuffered[0 .. take];
+            if (take == _thinkingBuffered.length)
+                _thinkingBuffered.length = 0;
+            else
+                _thinkingBuffered = _thinkingBuffered[take .. $].dup;
+        }
+        _thinkingShown = _thinking;
+        _thinkingDirty = false;
+        return _thinking;
+    }
+
+    /// A rough upper bound on the characters a width/height budget can show.
+    /// The layout truncates to the drawn block anyway, so this only decides how
+    /// much of a burst of buffered fragments is folded in per frame.
+    private static size_t thinkingBudgetDchars(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return 0;
+        return cast(size_t) width * cast(size_t) height;
+    }
+
+    /// The reasoning text the layout cache was last built from ("" when none).
+    /// A test uses this to prove a truncated render picks up later fragments.
+    public string pendingThinkingForTesting() const
+    {
+        return to!string(_thinkingShown);
     }
 
     private TextLayout shapedContent(int width)
@@ -1193,29 +1293,40 @@ private final class MessageBubble : Widget
         {
             TextLayout cachedValue;
             if (sharedTextCache().lookupLayout(_content, width, cachedValue))
+            {
+                storeContentCache(width, cachedValue);
                 return cachedValue;
+            }
         }
 
-        dstring display = _content;
-        auto layout = shape(display, width);
+        auto layout = shape(_content, width);
         if (!_streaming && layout !is null)
             sharedTextCache().storeLayout(_content, width, layout);
 
+        storeContentCache(width, layout);
+        return layout;
+    }
+
+    /// Insert into the width-keyed layout ring in O(1). Once the ring was full
+    /// every insert shifted all slots down, so each newly shaped layout cost a
+    /// copy of the whole cache, and the shared-cache hits above were never
+    /// cached at all (the same reply width was re-shaped measure after measure).
+    private void storeContentCache(int width, TextLayout layout)
+    {
         if (_contentCacheCount == shapeCacheSize)
         {
-            for (size_t shift = 1; shift < shapeCacheSize; ++shift)
-            {
-                _contentWidths[shift - 1] = _contentWidths[shift];
-                _contentLayouts[shift - 1] = _contentLayouts[shift];
-                _contentShapedGen[shift - 1] = _contentShapedGen[shift];
-            }
-            --_contentCacheCount;
+            const slot = _contentCacheNext % shapeCacheSize;
+            _contentWidths[slot] = width;
+            _contentLayouts[slot] = layout;
+            _contentShapedGen[slot] = _contentGen;
+            _contentCacheNext = slot + 1;
+            return;
         }
         _contentWidths[_contentCacheCount] = width;
         _contentLayouts[_contentCacheCount] = layout;
         _contentShapedGen[_contentCacheCount] = _contentGen;
         ++_contentCacheCount;
-        return layout;
+        _contentCacheNext = _contentCacheCount % shapeCacheSize;
     }
 
     private void resetMarkdownCommit()
@@ -1482,7 +1593,8 @@ private final class MessageBubble : Widget
             y += thinkingHeaderHeight();
             if (!_thinkingCollapsed)
             {
-                auto layout = shapedThinking(innerWidth);
+                auto layout = shapedThinking(innerWidth,
+                    thinkingBudgetDchars(innerWidth, height - y));
                 noteActivity("paintThinking index=" ~ to!string(_messageIndex) ~
                     " width=" ~ to!string(innerWidth));
                 canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
@@ -10275,6 +10387,9 @@ public final class OpenCodeRoot : VBox
         _sessions[index].model = _settings.model;
         _settings.thinking = _sessions[index].thinking;
         _modelButton.setText(_settings.model);
+        // See the picker's switch: a per-model discovery entry must not survive
+        // a change of model.
+        _providerContextLimits = null;
         refreshThinkingControl();
         markDirty();
         updateStatus("");
@@ -16148,6 +16263,10 @@ public final class OpenCodeRoot : VBox
                 _settings.model = _models[cast(size_t) index];
                 if (_current >= 0) _sessions[_current].model = _settings.model;
                 _modelButton.setText(_settings.model);
+                // A discovered window belongs to the model it was fetched for.
+                // Keeping the map across a switch lets one model's limit meter
+                // a different model, which read as a false "100% context".
+                _providerContextLimits = null;
                 saveSettingsSoon();
                 markDirty();
                 refreshUsageBadge();
@@ -20352,7 +20471,16 @@ public final class OpenCodeRoot : VBox
         int limit = contextLimitForModel(model);
         if (_contextLimitsBaseUrl == _settings.baseUrl)
             if (auto discovered = model in _providerContextLimits)
-                limit = *discovered;
+            {
+                // A discovered window is trusted only when it is believable
+                // against what the catalog says the model supports. The
+                // gateway's /models response carries no context field at all,
+                // so a stored entry can be a stray fallback that would shrink
+                // a 1M model to ~100k and make the usage meter read 100%.
+                const catalog = contextLimitForModel(model);
+                if (catalog <= 0 || *discovered * 2 >= catalog)
+                    limit = *discovered;
+            }
         return limit;
     }
 
@@ -20575,7 +20703,7 @@ public final class OpenCodeRoot : VBox
         size_t eventIndex;
         while (eventIndex < _eventScratch.length)
         {
-            auto event = _eventScratch[eventIndex];
+            auto event = &_eventScratch[eventIndex];
             // Cancellation, navigation, and a subsequent request can all race
             // with a worker's final queue push. Never attach those stale bytes
             // or tool results to a different conversation/branch.
@@ -20677,13 +20805,13 @@ public final class OpenCodeRoot : VBox
                     }
                     break;
                 case OpenCodeEventKind.toolCallDelta:
-                    handleToolCallProgress(event);
+                    handleToolCallProgress(*event);
                     break;
                 case OpenCodeEventKind.toolCalls:
-                    handleToolCalls(event);
+                    handleToolCalls(*event);
                     break;
                 case OpenCodeEventKind.toolResult:
-                    applyToolResult(event);
+                    applyToolResult(*event);
                     break;
                 case OpenCodeEventKind.done:
                     if (!event.cancelled) _autoResendCount = 0;
