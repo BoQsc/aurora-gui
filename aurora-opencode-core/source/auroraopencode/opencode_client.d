@@ -518,6 +518,22 @@ final class OpenCodeClient
     private int _lastPushedCachedPrompt;
     private int _lastPushedUncachedPrompt;
 
+    // "Waiting for the model…" latency breakdown. The UI shows one opaque wait
+    // between Send and the first token; that wait is really several stages with
+    // very different causes, so each is timed and reported (see WaitBreakdown).
+    // All are milliseconds since the request began, or -1 when not reached.
+    private long _waitConnectMs = -1;    // until the TCP/TLS connection is open
+    private long _waitSentMs = -1;       // until the request body (incl. images)
+                                         // is fully uploaded
+    private long _waitHeadersMs = -1;    // until the upstream status line arrives
+    private long _waitFirstByteMs = -1;  // until the first SSE byte of the answer
+    private long _waitFirstTokenMs = -1; // until the first content/reasoning token
+    private long _lastRequestBytes;
+    private long _lastRequestImages;
+    // Request start time, kept as a field so the SSE parser (a different method)
+    // can attribute the first token to the wait that preceded it.
+    private MonoTime _waitStart;
+
     this(string baseUrl, string apiKey)
     {
         _mutex = new Mutex();
@@ -580,6 +596,33 @@ final class OpenCodeClient
         _transientRetrying = false;
         _mutex.unlock();
     }
+
+    /// Stage-by-stage breakdown of the model wait, in milliseconds from the
+    /// request start. Each field is -1 until that stage is reached, so a caller
+    /// can tell "still uploading" from "uploaded, waiting on the provider".
+    /// `firstToken` is the figure the UI's "Waiting for the model…" row shows.
+    struct WaitBreakdown
+    {
+        long connect;     // request start -> connection open
+        long sent;        // request start -> whole body uploaded
+        long headers;     // request start -> upstream response status line
+        long firstByte;   // request start -> first SSE byte of the answer
+        long firstToken;  // request start -> first content/reasoning token
+        long requestBytes;
+        long requestImages;
+        bool valid;       // false before any chat request has run
+    }
+
+    /// Snapshot the current wait breakdown. Safe to poll from the UI thread.
+    WaitBreakdown waitBreakdown()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return WaitBreakdown(_waitConnectMs, _waitSentMs, _waitHeadersMs,
+            _waitFirstByteMs, _waitFirstTokenMs, _lastRequestBytes,
+            _lastRequestImages, _lastRequestBytes > 0 || _waitSentMs >= 0);
+    }
+
 
     /** Start a streaming chat completion. Roles/contents are parallel arrays. */
     void startChat(const(string)[] roles, const(string)[] contents,
@@ -913,6 +956,14 @@ final class OpenCodeClient
             _lastPushedTotal = -1;
             _lastPushedCachedPrompt = -1;
             _lastPushedUncachedPrompt = -1;
+            // Fresh wait breakdown for this request, plus the request size, so
+            // the log can separate "big body / slow upload" from "fast upload,
+            // slow provider".
+            const waitStart = MonoTime.currTime;
+            _waitStart = waitStart;
+            _waitConnectMs = _waitSentMs = _waitHeadersMs = -1;
+            _waitFirstByteMs = _waitFirstTokenMs = -1;
+            _lastRequestBytes = _lastRequestImages = 0;
 
             string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
             if (_apiKey.length > 0)
@@ -970,6 +1021,8 @@ final class OpenCodeClient
                         droppedReasoning ? 0 : thinkingBudgetTokens,
                         llamaCppServer);
                 auto bodyBytes = cast(ubyte[]) body.dup;
+                _lastRequestBytes = cast(long) bodyBytes.length;
+                _lastRequestImages = countInlineImages(messages);
                 HINTERNET connection;
                 HINTERNET request;
                 bool retry;
@@ -983,6 +1036,7 @@ final class OpenCodeClient
                         INTERNET_SERVICE_HTTP, 0, 0);
                     if (connection is null)
                         throw new Exception("Could not connect to " ~ target.host);
+                    _waitConnectMs = elapsedMsSince(waitStart);
 
                     const flags = requestFlags(target);
                     request = HttpOpenRequestW(connection, "POST"w.ptr,
@@ -992,10 +1046,17 @@ final class OpenCodeClient
                     if (registerRequest(request, true) is null)
                         throw new Exception("Chat request cancelled.");
 
+                    // HttpSendRequestW uploads the whole body (images included)
+                    // before it returns, so this stamp splits "upload" from the
+                    // provider's own time-to-first-token.
                     if (!HttpSendRequestW(request, toUTF16z(headers), -1,
                         bodyBytes.ptr, cast(DWORD) bodyBytes.length))
                         throw new Exception("Chat request failed (" ~
                             wininetErrorText(GetLastError()) ~ ").");
+                    _waitSentMs = elapsedMsSince(waitStart);
+
+                    _waitHeadersMs = elapsedMsSince(waitStart);
+
 
                     DWORD statusCode;
                     DWORD statusLength = cast(DWORD) statusCode.sizeof;
@@ -1065,6 +1126,9 @@ final class OpenCodeClient
 
                     if (!retry)
                     {
+                        // The first read that returns bytes is the first time the
+                        // provider has answered at all; from here on the wait is
+                        // decoding tokens, not the provider.
                         pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
                         _streamActive = true;
 
@@ -1088,6 +1152,8 @@ final class OpenCodeClient
                             }
                             if (readBytes == 0) break;
 
+                            if (_waitFirstByteMs < 0)
+                                _waitFirstByteMs = elapsedMsSince(waitStart);
                             lineBuffer ~= cast(string)
                                 buffer[0 .. cast(size_t) readBytes];
                             lineBuffer = dispatchSseLines(lineBuffer);
@@ -1826,6 +1892,41 @@ final class OpenCodeClient
             " [" ~ baseUrl ~ "]");
     }
 
+    /// Milliseconds elapsed since `start`, rounded down. Used for the wait
+    /// breakdown only; not a timer.
+    private static long elapsedMsSince(MonoTime start)
+    {
+        const ms = (MonoTime.currTime - start).total!"msecs";
+        return cast(long) ms;
+    }
+
+    /// Count inline images across the request, matching logRequestShape, so the
+    /// wait log can say whether the delay carried image bytes.
+    private static long countInlineImages(const(ChatRequestMessage)[] messages)
+    {
+        long images;
+        foreach (message; messages)
+            foreach (image; message.images)
+                if (image.base64Data.length > 0) ++images;
+        return images;
+    }
+
+    /// One INFO line per answered request, in milliseconds from request start:
+    /// connect / uploaded body / response headers / first SSE byte / first token.
+    /// This is the evidence that attributes the "Waiting for the model…" delay
+    /// to the connection, the upload, or the provider's own prefill.
+    private void logWaitBreakdown()
+    {
+        logInfo("model wait: connect=" ~ to!string(_waitConnectMs) ~
+            "ms sent=" ~ to!string(_waitSentMs) ~
+            "ms headers=" ~ to!string(_waitHeadersMs) ~
+            "ms firstByte=" ~ to!string(_waitFirstByteMs) ~
+            "ms firstToken=" ~ to!string(_waitFirstTokenMs) ~
+            "ms requestBytes=" ~ to!string(_lastRequestBytes) ~
+            " images=" ~ to!string(_lastRequestImages) ~
+            " [" ~ _baseUrl ~ "]");
+    }
+
     private static string truncateForError(string value)
     {
         if (value.length <= 800) return value;
@@ -2074,6 +2175,14 @@ final class OpenCodeClient
         }
 
         if (reasoningFragment.length == 0 && contentFragment.length == 0) return;
+        // The first token of any kind ends the opaque "Waiting for the model…"
+        // phase; record it once and log the full breakdown so the wait can be
+        // attributed (upload vs provider) instead of guessed at.
+        if (_waitFirstTokenMs < 0)
+        {
+            _waitFirstTokenMs = elapsedMsSince(_waitStart);
+            logWaitBreakdown();
+        }
         if (reasoningFragment.length > 0)
         {
             _streamReasoning ~= reasoningFragment;

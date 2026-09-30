@@ -12618,6 +12618,16 @@ public final class OpenCodeRoot : VBox
         else _activityRow.invalidate();
     }
 
+    /// Human-readable byte count for the wait status ("1.2 MB"). Kept short; the
+    /// figure exists only to explain an upload delay, not to be precise.
+    private static string formatWaitBytes(long bytes)
+    {
+        if (bytes < 1024) return to!string(bytes) ~ " B";
+        if (bytes < 1024 * 1024)
+            return to!string(bytes / 1024) ~ " KB";
+        return to!string(bytes / (1024 * 1024)) ~ " MB";
+    }
+
     /// Whether the phase row should currently be part of the transcript. It is
     /// shown only when it has a label and there is no live tool row to speak for
     /// the current step (a live row plus the phase row was pure redundancy).
@@ -20929,8 +20939,26 @@ public final class OpenCodeRoot : VBox
             if (seconds >= 2 && seconds != _lastColdStartSeconds)
             {
                 _lastColdStartSeconds = seconds;
+                // Name the stage the wait is actually in, using the client's
+                // own breakdown: "still uploading" reads very differently from
+                // "uploaded, provider is thinking", and only the client knows.
+                const wait = _client.waitBreakdown();
+                string stage;
+                if (!wait.valid || wait.sent < 0)
+                    stage = " — preparing the request";
+                else if (wait.headers < 0)
+                    stage = " — uploading " ~
+                        formatWaitBytes(wait.requestBytes) ~
+                        (wait.requestImages > 0
+                            ? " (" ~ to!string(wait.requestImages) ~
+                                " image" ~ (wait.requestImages == 1 ? "" : "s") ~
+                                ")"
+                            : "") ~ ", waiting for the provider";
+                else
+                    stage = " — the provider is thinking (prefill)";
                 updateStatus("Cold-starting the model… " ~
-                    to!string(seconds) ~ "s — first reply can take a while");
+                    to!string(seconds) ~ "s — first reply can take a while" ~
+                    stage);
             }
         }
 
