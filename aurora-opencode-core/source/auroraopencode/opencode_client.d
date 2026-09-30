@@ -784,31 +784,67 @@ final class OpenCodeClient
 
     private HINTERNET openSession()
     {
+        // Fast path: a session already exists or the client is closed. This is
+        // the only part that needs the lock; it is a couple of field reads.
         _mutex.lock();
-        scope (exit) _mutex.unlock();
-        if (_session is null && !_sessionClosed)
+        auto existing = _session;
+        const closed = _sessionClosed;
+        _mutex.unlock();
+        if (existing !is null) return existing;
+        if (closed) throw new Exception("The network client is closed.");
+
+        // Build the WinINet session WITHOUT holding `_mutex`. InternetOpenW and
+        // InternetSetOptionW initialize WinINet and resolve the proxy (which a
+        // WPAD lookup can stall for seconds). The GUI thread takes this same
+        // lock many times per frame (busy()/shuttingDown()), so holding it
+        // across these calls froze the UI whenever a request opened its first
+        // session. Opening outside the lock keeps the UI responsive; the store
+        // below is the only synchronized step.
+        auto session = InternetOpenW(toUTF16z("Aurora OpenCode"),
+            INTERNET_OPEN_TYPE_PRECONFIG, null, null, 0);
+        if (session !is null)
         {
-            auto session = InternetOpenW(toUTF16z("Aurora OpenCode"),
-                INTERNET_OPEN_TYPE_PRECONFIG, null, null, 0);
-            if (session !is null)
-            {
-                DWORD connectTimeout = defaultConnectTimeoutMs;
-                InternetSetOptionW(session, INTERNET_OPTION_CONNECT_TIMEOUT,
-                    &connectTimeout, cast(DWORD) connectTimeout.sizeof);
-                DWORD sendTimeout = defaultSendTimeoutMs;
-                InternetSetOptionW(session, INTERNET_OPTION_SEND_TIMEOUT,
-                    &sendTimeout, cast(DWORD) sendTimeout.sizeof);
-                DWORD receiveTimeout = defaultReceiveTimeoutMs;
-                InternetSetOptionW(session, INTERNET_OPTION_RECEIVE_TIMEOUT,
-                    &receiveTimeout, cast(DWORD) receiveTimeout.sizeof);
-                _session = session;
-            }
+            DWORD connectTimeout = defaultConnectTimeoutMs;
+            InternetSetOptionW(session, INTERNET_OPTION_CONNECT_TIMEOUT,
+                &connectTimeout, cast(DWORD) connectTimeout.sizeof);
+            DWORD sendTimeout = defaultSendTimeoutMs;
+            InternetSetOptionW(session, INTERNET_OPTION_SEND_TIMEOUT,
+                &sendTimeout, cast(DWORD) sendTimeout.sizeof);
+            DWORD receiveTimeout = defaultReceiveTimeoutMs;
+            InternetSetOptionW(session, INTERNET_OPTION_RECEIVE_TIMEOUT,
+                &receiveTimeout, cast(DWORD) receiveTimeout.sizeof);
         }
-        if (_session is null)
-            throw new Exception(_sessionClosed
+
+        // Publish the freshly opened session, or discard it if another worker
+        // won the race or the client was closed while we were opening.
+        bool discard;
+        _mutex.lock();
+        if (_sessionClosed)
+        {
+            discard = session !is null;
+        }
+        else if (_session is null)
+        {
+            _session = session;
+        }
+        else
+        {
+            discard = session !is null;
+        }
+        existing = _session;
+        const closedNow = _sessionClosed;
+        _mutex.unlock();
+
+        if (discard)
+        {
+            try InternetCloseHandle(session);
+            catch (Exception) {}
+        }
+        if (existing is null)
+            throw new Exception(closedNow
                 ? "The network client is closed."
                 : "Could not open an internet session.");
-        return _session;
+        return existing;
     }
 
     private HINTERNET registerRequest(HINTERNET handle, bool chat)
