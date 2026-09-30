@@ -1945,7 +1945,13 @@ else version (Windows)
                     // Show-desktop strip. Report the client everywhere.
                     if (_fullscreen) return HTCLIENT;
                     if (!options.decorated && options.resizable)
+                    {
+                        // A maximized window has no resizable edges: its client
+                        // fills the work area, so the frame margins would
+                        // otherwise still offer resize cursors and drags.
+                        if (isWindowMaximized()) return HTCLIENT;
                         return hitTestBorderlessResize(lParam);
+                    }
                     break;
                 case wmDropFiles:
                 {
@@ -2454,6 +2460,33 @@ else version (Windows)
             if (onTop) return HTTOP;
             if (onBottom) return HTBOTTOM;
             return HTCLIENT;
+        }
+
+        /// True when this window is maximized, so it must expose no resize
+        /// edges. Covers both the OS zoom style and Aurora's frameless
+        /// maximize, which fills the monitor work area instead of using it.
+        private bool isWindowMaximized()
+        {
+            if (_hwnd is null) return false;
+            WINDOWPLACEMENT placement;
+            placement.length = WINDOWPLACEMENT.sizeof;
+            if (GetWindowPlacement(_hwnd, &placement) &&
+                placement.showCmd == SW_SHOWMAXIMIZED)
+                return true;
+            RECT rect;
+            if (!GetWindowRect(_hwnd, &rect)) return false;
+            HMONITOR monitor = MonitorFromWindow(_hwnd, MONITOR_DEFAULTTONEAREST);
+            if (monitor is null) return false;
+            MONITORINFO info;
+            info.cbSize = MONITORINFO.sizeof;
+            if (!GetMonitorInfoW(monitor, &info)) return false;
+            // Logical<->physical rounding can leave a pixel of slack, so allow
+            // a small tolerance when testing that the window fills the work area.
+            const tol = 2;
+            return rect.left <= info.rcWork.left + tol &&
+                rect.top <= info.rcWork.top + tol &&
+                rect.right >= info.rcWork.right - tol &&
+                rect.bottom >= info.rcWork.bottom - tol;
         }
 
         private void updateClientSize(int knownWidth = -1, int knownHeight = -1)
