@@ -6219,6 +6219,10 @@ private final class ChatScrollView : ScrollView
     this(Widget content)
     {
         super(content);
+        // The default 2 px cross inset leaves a band of track on each side of
+        // the thumb, which reads as stray padding inside the scrollbar. Fill
+        // the 10 px track so the transcript scrollbar reads as one solid rail.
+        verticalScrollbar().setThumbCrossInset(0);
     }
 
     /// Keep the reader's position across the next content re-measure. Call
@@ -7107,6 +7111,9 @@ public final class SessionListView : ListView
         // Butt the scrollbar against the split-pane divider so no panel band
         // shows between the conversation list and the width handle.
         setScrollbarInset(0);
+        // Fill the track: the default 2 px cross inset leaves a band on each
+        // side of the thumb that reads as stray padding inside the scrollbar.
+        verticalScrollbar().setThumbCrossInset(0);
     }
 
     /// Mark which rows are busy. Called whenever the live turn changes or the
