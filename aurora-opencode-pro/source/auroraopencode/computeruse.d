@@ -98,6 +98,14 @@ public void setComputerUseVirtualPointer(bool value)
     }
 }
 
+/// Set how long (ms) the ghost cursor may sit idle before it hides itself, so
+/// the experimental virtual pointer never lingers forever once the agent stops.
+/// 0 disables the auto-hide. Default 5000.
+public void setComputerUseVirtualPointerIdleHide(int milliseconds)
+{
+    version (Windows) overlayIdleHideMs = milliseconds < 0 ? 0 : milliseconds;
+}
+
 // ---------------------------------------------------------------------------
 // Kill switch. A global hotkey the human can press to stop the agent at once,
 // even while a fullscreen game owns the keyboard. The hotkey thread sets a flag
@@ -284,6 +292,9 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
         // Any key/button still held when the call ends is released here, so a
         // model that forgets `key_up` cannot leave an input stuck down.
         scope (exit) releaseHeldInputs();
+        // Hide the ghost cursor when the call ends, so the experimental virtual
+        // pointer does not persist once the agent has stopped acting.
+        scope (exit) virtualHideOverlay();
         const started = MonoTime.currTime;
         computerUseWorkspace = workspace;
         // Snapshot the mode for the whole call so a checkbox flip mid-call
@@ -976,6 +987,7 @@ version (Windows)
             int cy, uint flags);
         int InvalidateRect(void* hwnd, const RECT* rect, int erase);
         int ValidateRect(void* hwnd, const RECT* rect);
+        size_t SetTimer(void* hwnd, size_t id, uint elapse, void* proc);
         int UpdateWindow(void* hwnd);
         void* LoadCursorW(void* instance, const wchar* name);
         int DrawIconEx(void* hdc, int x, int y, void* icon, int cx, int cy,
@@ -1174,7 +1186,9 @@ version (Windows)
     private enum uint WM_MBUTTONDOWN = 0x0207;
     private enum uint WM_MBUTTONUP = 0x0208;
     private enum uint WM_MOUSEWHEEL = 0x020A;
+    private enum uint WM_TIMER = 0x0113;
     private enum uint WM_APP_MOVE_CURSOR = 0x8000 + 1;
+    private enum uint WM_APP_HIDE_CURSOR = 0x8000 + 2;
     private enum ushort MK_LBUTTON = 0x0001;
     private enum ushort MK_RBUTTON = 0x0002;
     private enum ushort MK_MBUTTON = 0x0010;
@@ -1191,6 +1205,14 @@ version (Windows)
     private enum int virtualCursorSize = 32;
     private enum string overlayClassName = "AuroraComputerUseCursor";
     private enum uint overlayColorKey = 0x00FF00FF; // COLORREF magenta
+    private enum uint overlayTimerId = 1;
+    private enum int SW_HIDE = 0;
+
+    /// Idle timeout for the ghost cursor: after this long with no agent pointer
+    /// move the overlay hides itself, so the virtual pointer never lingers on
+    /// screen forever once the agent stops. A fresh move brings it back.
+    private __gshared int overlayIdleHideMs = 5000;
+    private __gshared MonoTime overlayLastMove;
 
     private extern (Windows) size_t overlayWndProc(void* hwnd, uint msg,
         WPARAM wParam, LPARAM lParam)
@@ -1203,9 +1225,20 @@ version (Windows)
             case WM_ERASEBKGND:
                 return 1;
             case WM_APP_MOVE_CURSOR:
+                overlayLastMove = MonoTime.currTime;
                 SetWindowPos(hwnd, cast(void*) -1, cast(int) wParam,
                     cast(int) lParam, 0, 0,
                     SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                return 0;
+            case WM_TIMER:
+                // Auto-hide on idle so the ghost cursor does not persist.
+                if (IsWindowVisible(hwnd) != 0 &&
+                    MonoTime.currTime - overlayLastMove >
+                        msecs(overlayIdleHideMs))
+                    ShowWindow(hwnd, SW_HIDE);
+                return 0;
+            case WM_APP_HIDE_CURSOR:
+                ShowWindow(hwnd, SW_HIDE);
                 return 0;
             case WM_DESTROY:
                 PostQuitMessage(0);
@@ -1259,6 +1292,8 @@ version (Windows)
         {
             SetLayeredWindowAttributes(overlayHwnd, overlayColorKey, 0,
                 LWA_COLORKEY);
+            overlayLastMove = MonoTime.currTime;
+            SetTimer(overlayHwnd, overlayTimerId, 1000, null);
             overlayReady = true;
         }
         while (!overlayStop)
@@ -1328,6 +1363,14 @@ version (Windows)
         if (overlayHwnd !is null)
             PostMessageW(overlayHwnd, WM_APP_MOVE_CURSOR,
                 cast(WPARAM) virtualX, cast(LPARAM) virtualY);
+    }
+
+    /// Hide the ghost cursor at once (used when a computer call ends), so the
+    /// virtual pointer never sits on screen after the agent stops acting.
+    private void virtualHideOverlay()
+    {
+        if (overlayHwnd !is null)
+            PostMessageW(overlayHwnd, WM_APP_HIDE_CURSOR, 0, 0);
     }
 
     /// The window posted input is aimed at: an explicit `focus` target, else the

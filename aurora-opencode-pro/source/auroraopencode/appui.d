@@ -7765,6 +7765,11 @@ public final class OpenCodeRoot : VBox
     // Conversation ids pinned to the top of the sidebar. Persisted in
     // pins.json so pins survive restarts without touching session state.
     private string[] _pinnedSessionIds;
+    // Conversation ids the user archived: hidden from the sidebar by default
+    // but kept on disk so the chat and its history are never destroyed.
+    // Persisted in archived.json, mirroring pins.json.
+    private string[] _archivedSessionIds;
+    private bool _showArchived;
     private string _filterText;
     private string _lastUsageText;
     // Live output-token counter for the in-flight reply. The provider usually
@@ -9335,6 +9340,15 @@ public final class OpenCodeRoot : VBox
             openFolderInExplorer(workspace.length > 0 ? workspace : ".");
         };
         addButtonTooltip(_openFolderButton, openFolderTooltipText);
+        auto archiveToggle = titleRow.add(new IconButton(IconKind.drive));
+        archiveToggle.setId("oc-archived-toggle");
+        archiveToggle.setFlat(true);
+        archiveToggle.onClick = delegate()
+        {
+            _showArchived = !_showArchived;
+            updateSessionList(false);
+        };
+        addButtonTooltip(archiveToggle, "Show archived conversations");
         titleRow.add(new Spacer());
         _sessionsPath = headerColumn.add(new Label(""));
         _sessionsPath.setId("oc-project-path");
@@ -18608,6 +18622,9 @@ public final class OpenCodeRoot : VBox
                 // Sessions restored from an older build have no project; they
                 // belong to the sandbox.
                 if (sessionProjectId(session) != projectId) continue;
+                // Archived conversations are hidden unless the archived view
+                // is on, but they are never removed from _sessions.
+                if (!_showArchived && isSessionArchived(session.id)) continue;
                 const pinned = isSessionPinned(session.id);
                 if (pinned != pinnedPass) continue;
                 const title = session.title.length > 0 ? session.title
@@ -18669,8 +18686,10 @@ public final class OpenCodeRoot : VBox
                 const path = activeMessagePath(session);
                 if (path.length > 0)
                     secondary = session.messages[path[$ - 1]].time;
-                items ~= ListItem(pinnedPass ? "★ " ~ title : title,
-                    IconKind.none, secondary);
+                const rowLabel = isSessionArchived(session.id)
+                    ? "(archived) " ~ title
+                    : (pinnedPass ? "★ " ~ title : title);
+                items ~= ListItem(rowLabel, IconKind.none, secondary);
                 if (pinnedPass) ++pinnedCount;
             }
         }
@@ -18710,6 +18729,14 @@ public final class OpenCodeRoot : VBox
             return;
         }
         const removed = _sessions[sessionIndex];
+        if (isSessionArchived(removed.id))
+        {
+            string[] kept;
+            foreach (archivedId; _archivedSessionIds)
+                if (archivedId != removed.id) kept ~= archivedId;
+            _archivedSessionIds = kept;
+            saveArchivedSessions();
+        }
         publishRuntimeEvent(AgentEventKind.threadDeleted, removed);
         _sessions = _sessions[0 .. sessionIndex] ~
             _sessions[sessionIndex + 1 .. $];
@@ -18927,6 +18954,14 @@ public final class OpenCodeRoot : VBox
             {
                 showRenameSession(sessionIndex);
             }),
+            ContextMenuItem.command(
+                isSessionArchived(_sessions[sessionIndex].id)
+                    ? "Unarchive conversation" : "Archive conversation",
+                IconKind.drive, delegate()
+                {
+                    setSessionArchived(sessionIndex,
+                        !isSessionArchived(_sessions[sessionIndex].id));
+                }),
             ContextMenuItem.command("Delete", IconKind.trash, delegate()
             {
                 deleteSession(sessionIndex);
@@ -19013,6 +19048,78 @@ public final class OpenCodeRoot : VBox
         }
         catch (Exception error)
             logError("could not save pinned conversations: " ~ error.msg);
+    }
+
+    // -- Archived conversations ------------------------------------------
+
+    private bool isSessionArchived(const string id)
+    {
+        return id.length > 0 && _archivedSessionIds.canFind(id);
+    }
+
+    private void setSessionArchived(int sessionIndex, bool archived)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        setSessionArchivedId(_sessions[sessionIndex].id, archived);
+    }
+
+    // Add or remove an id from the archive set and persist it. Idempotent so a
+    // repeated action does not rewrite the archive file.
+    private void setSessionArchivedId(const string id, bool archived)
+    {
+        if (id.length == 0) return;
+        if (_archivedSessionIds.canFind(id) == archived) return;
+        if (archived)
+        {
+            _archivedSessionIds ~= id;
+        }
+        else
+        {
+            string[] kept;
+            foreach (archivedId; _archivedSessionIds)
+                if (archivedId != id) kept ~= archivedId;
+            _archivedSessionIds = kept;
+        }
+        saveArchivedSessions();
+        updateSessionList(false);
+        updateStatus(archived
+            ? "Conversation archived. Use the archive button to view it."
+            : "Unarchived conversation.");
+    }
+
+    private void loadArchivedSessions()
+    {
+        const path = buildPath(opencodeStateDirectory(), "archived.json");
+        if (!exists(path)) return;
+        try
+        {
+            auto value = parseJSON(readText(path));
+            if (value.type != JSONType.array) return;
+            string[] ids;
+            foreach (item; value.array)
+                if (item.type == JSONType.string && item.str.length > 0)
+                    ids ~= item.str;
+            _archivedSessionIds = ids;
+        }
+        catch (Exception error)
+            logError("could not read archived conversations: " ~ error.msg);
+    }
+
+    private void saveArchivedSessions()
+    {
+        try
+        {
+            ensureStateDirectory();
+            JSONValue root = JSONValue(string[].init);
+            foreach (id; _archivedSessionIds)
+                root.array ~= JSONValue(id);
+            writeFileAtomically(
+                buildPath(opencodeStateDirectory(), "archived.json"),
+                root.toString());
+        }
+        catch (Exception error)
+            logError("could not save archived conversations: " ~ error.msg);
     }
 
     private void showRenameSession(int sessionIndex)
@@ -19632,6 +19739,7 @@ public final class OpenCodeRoot : VBox
     {
         _sessions.length = 0;
         loadPinnedSessions();
+        loadArchivedSessions();
         const dir = opencodeStateDirectory();
         auto restoreMark = MonoTime.currTime;
         void restorePhase(string what)
