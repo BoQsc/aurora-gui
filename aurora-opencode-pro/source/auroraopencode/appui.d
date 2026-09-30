@@ -7913,6 +7913,10 @@ public final class OpenCodeRoot : VBox
     private bool _stateDirty;
     private MonoTime _persistDue;
     private static immutable int persistDebounceMs = 5_000;
+    // True while the debounced snapshot is being serialized and written on a
+    // worker thread. Guarded by `synchronized (this)`; a change that arrives
+    // during the write leaves `_stateDirty` set so the next tick queues another.
+    private bool _persistWriteInFlight;
     // Settings writes are debounced off the click path for the same reason as
     // the session snapshot: a synchronous file write inside an input handler
     // delays the frame that shows the result of the click.
@@ -19114,6 +19118,18 @@ public final class OpenCodeRoot : VBox
 
     private void persistState()
     {
+        // Shutdown and tests call this synchronously. If the background
+        // snapshot writer is still running, wait for it so the two never write
+        // the same files at once. The wait only happens on the way out, where a
+        // short pause is harmless.
+        const waitDeadline = MonoTime.currTime + msecs(10_000);
+        while (true)
+        {
+            bool inFlight;
+            synchronized (this) inFlight = _persistWriteInFlight;
+            if (!inFlight || MonoTime.currTime >= waitDeadline) break;
+            Thread.sleep(msecs(20));
+        }
         _stateDirty = false;
         // Fold the live composer into the active conversation first, so a prompt
         // typed but not sent is written with the same snapshot as the messages.
@@ -19140,6 +19156,72 @@ public final class OpenCodeRoot : VBox
         {
             logError("persist sessions failed: " ~ error.msg);
         }
+    }
+
+    /**
+     * Write the debounced session snapshot on a background thread.
+     *
+     * `persistState` serializes every conversation into one JSON string and
+     * rewrites that file plus its `.bak`. On a long-lived install that set can
+     * be hundreds of megabytes, which took the UI thread offline for many
+     * seconds - the freeze a New chat click or a keystroke appeared to trigger,
+     * because both mark state dirty and the debounced save then ran on the next
+     * tick. The JSON file is only a compatibility cache (the append-only journal
+     * is the recovery authority), so building and writing it off the UI thread
+     * is safe. Only one snapshot runs at a time; a change during the write
+     * leaves `_stateDirty` set and the next tick queues another.
+     */
+    private void persistStateAsync()
+    {
+        synchronized (this)
+        {
+            if (_persistWriteInFlight) return;
+            _persistWriteInFlight = true;
+        }
+        _stateDirty = false;
+        // Fold the live composer into this snapshot like `persistState` does.
+        syncComposerDraft();
+        // `ChatSession` is a value type, so `dup` copies the struct array. The
+        // worker reads its own copies of every slice header; message content is
+        // appended by allocating a fresh slice (never mutated in place), and no
+        // turn is busy while a snapshot is queued, so the read is consistent.
+        auto sessions = _sessions.dup;
+        const currentIndex = _current;
+        const hasRuntime = _runtime !is null;
+        ulong foldedSequence;
+        ulong foldedSize;
+        if (hasRuntime)
+        {
+            foldedSequence = _runtime.latestSequence();
+            foldedSize = _runtime.journalSize();
+        }
+        auto worker = new Thread({
+            scope (exit)
+            {
+                synchronized (this) _persistWriteInFlight = false;
+            }
+            try
+            {
+                ensureStateDirectory();
+                JSONValue list = JSONValue(string[].init);
+                foreach (session; sessions)
+                    list.array ~= sessionToJson(session);
+                JSONValue root;
+                root["sessions"] = list;
+                root["current"] = currentIndex;
+                const path = buildPath(opencodeStateDirectory(), "sessions.json");
+                writeFileAtomically(path, root.toString());
+                // Record the journal state this snapshot folded, so the next
+                // start reads only the bytes appended since.
+                if (hasRuntime)
+                    writeFoldedMarker(opencodeStateDirectory(), foldedSequence,
+                        foldedSize);
+            }
+            catch (Exception error)
+                logError("persist sessions failed: " ~ error.msg);
+        });
+        worker.isDaemon = true;
+        worker.start();
     }
 
     private static int availableContextFromError(string failureText)
@@ -20387,7 +20469,7 @@ public final class OpenCodeRoot : VBox
 
         if (_stateDirty && MonoTime.currTime >= _persistDue &&
             !anyTurnIsBusy())
-            persistState();
+            persistStateAsync();
 
         if (_settingsDirty && MonoTime.currTime >= _settingsPersistDue)
             flushSettings();
