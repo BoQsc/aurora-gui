@@ -10379,6 +10379,42 @@ public final class OpenCodeRoot : VBox
         session.activeLeafId = message.id;
         publishMessageEvent(AgentEventKind.itemAdded, session,
             session.messages[$ - 1]);
+        // A screenshot is the one payload that can grow a session into
+        // gigabytes: a computer-use loop appends a fresh PNG per step and the
+        // transcript rebuilds a chip for each. Release the pixels of the older
+        // frames as soon as a new image arrives.
+        if (session.messages[$ - 1].images.length > 0)
+            pruneTranscriptImagePayloads(session);
+    }
+
+    /// Bound the base64 pixels the in-memory transcript keeps. Only the newest
+    /// few image-carrying messages can ever travel on the wire (see
+    /// buildRequestMessages' keepImage / experimentalImageHistoryLimit), so an
+    /// older message's pixels are dead weight: each PNG is hundreds of KB and
+    /// the transcript never drops them. Dropping the payload frees the string
+    /// while leaving the entry in place, so the attachment chip still renders
+    /// from the name and mime type and the model request is unchanged.
+    private static void pruneTranscriptImagePayloads(ref ChatSession session)
+    {
+        const wireLimit = experimentalImageHistoryLimit();
+        if (wireLimit == 0) return; // the wire limit is disabled: keep every frame
+        // Retain a little more than the wire window so an edit/regenerate that
+        // re-sends a recent turn still finds its pixels.
+        enum size_t retainedImages = 8;
+        const keep = wireLimit > retainedImages ? wireLimit : retainedImages;
+        size_t kept;
+        foreach_reverse (index; activeMessagePath(session))
+        {
+            auto message = &session.messages[index];
+            if (message.images.length == 0) continue;
+            if (kept < keep)
+            {
+                ++kept;
+                continue;
+            }
+            foreach (ref image; message.images)
+                image.base64Data = "";
+        }
     }
 
     private bool markContextCompactionNotice(ref ChatSession session)
@@ -19788,6 +19824,10 @@ public final class OpenCodeRoot : VBox
         foreach (ref session; _sessions)
         {
             ensureMessageGraph(session);
+            // A prior long session (usually a computer-use loop) can carry
+            // hundreds of screenshots; release all but the newest few frames so
+            // restoring it does not pin gigabytes of base64 in memory.
+            pruneTranscriptImagePayloads(session);
             if (session.id.length == 0)
             {
                 // A legacy transcript has no thread id. Derive it from the
