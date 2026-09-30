@@ -100,7 +100,7 @@ public void setComputerUseVirtualPointer(bool value)
 
 /// Set how long (ms) the ghost cursor may sit idle before it hides itself, so
 /// the experimental virtual pointer never lingers forever once the agent stops.
-/// 0 disables the auto-hide. Default 5000.
+/// 0 disables the auto-hide. Default 10000.
 public void setComputerUseVirtualPointerIdleHide(int milliseconds)
 {
     version (Windows) overlayIdleHideMs = milliseconds < 0 ? 0 : milliseconds;
@@ -292,9 +292,6 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
         // Any key/button still held when the call ends is released here, so a
         // model that forgets `key_up` cannot leave an input stuck down.
         scope (exit) releaseHeldInputs();
-        // Hide the ghost cursor when the call ends, so the experimental virtual
-        // pointer does not persist once the agent has stopped acting.
-        scope (exit) virtualHideOverlay();
         const started = MonoTime.currTime;
         computerUseWorkspace = workspace;
         // Snapshot the mode for the whole call so a checkbox flip mid-call
@@ -1210,8 +1207,10 @@ version (Windows)
 
     /// Idle timeout for the ghost cursor: after this long with no agent pointer
     /// move the overlay hides itself, so the virtual pointer never lingers on
-    /// screen forever once the agent stops. A fresh move brings it back.
-    private __gshared int overlayIdleHideMs = 5000;
+    /// screen forever once the agent stops. Long enough that the person can see
+    /// where the agent acted, short enough that it does not stick around. A
+    /// fresh move brings it back.
+    private __gshared int overlayIdleHideMs = 10000;
     private __gshared MonoTime overlayLastMove;
 
     private extern (Windows) size_t overlayWndProc(void* hwnd, uint msg,
