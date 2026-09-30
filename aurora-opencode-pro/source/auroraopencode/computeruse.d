@@ -1560,14 +1560,24 @@ version (Windows)
     /// Longest edge of a capture. Keeping the frame near 1280px matches the
     /// ~1300px budget vision models resize to anyway, and keeps the PNG under
     /// the attachment size cap without compressing.
-    private enum int captureMaxEdge = 1280;
+    ///
+    /// Kept at the screen's native size. A downscaled capture made the model's
+    /// pixel readings ambiguous: the screenshot was halved but click
+    /// coordinates were multiplied by the same factor, so a click aimed at a
+    /// control landed on a different one (a "Thinking" click opened the model
+    /// menu). Reporting native pixels removes that class of mis-targeting
+    /// entirely - one image pixel is one screen pixel for every action.
+    private enum int captureMaxEdge = 0;
 
     /// Integer downscale factor applied to screenshots (1 = native pixels).
-    /// Input coordinates arrive in the downscaled screenshot's pixel space, so
-    /// input handlers multiply by this to reach real screen pixels. Computed the
-    /// same way as `captureScreen` so the two can never disagree.
+    /// Input coordinates arrive in the screenshot's pixel space, so input
+    /// handlers multiply by this to reach real screen pixels. Always 1 now that
+    /// captures are native, so one image pixel is one screen pixel for every
+    /// action and a coordinate read off a frame lands on the control the model
+    /// aimed at.
     private int screenDownscale()
     {
+        if (captureMaxEdge <= 0) return 1;
         const width = GetSystemMetrics(SM_CXSCREEN);
         const height = GetSystemMetrics(SM_CYSCREEN);
         const maxEdge = width > height ? width : height;

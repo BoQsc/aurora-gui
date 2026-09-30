@@ -721,6 +721,21 @@ abstract class Widget
         invalidate();
     }
 
+    /**
+     * Clear this widget's own hover and every descendant's hover without firing
+     * enter/leave on widgets that were not hovered. Used when an overlay that
+     * sits under the pointer is removed, so no widget is left with a stale
+     * highlight until the next pointer move.
+     */
+    void clearHoverInternal()
+    {
+        auto snapshot = _children.dup;
+        _hovered = false;
+        foreach (child; snapshot)
+            if (child._parent is this)
+                child.clearHoverInternal();
+    }
+
     /** Propagate native host activation without assuming the tree is immutable. */
     void notifyHostFocusChanged(bool focused)
     {

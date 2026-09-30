@@ -107,6 +107,12 @@ abstract class TransientPopup : Widget, PopupSurface
         auto owner = parent();
         _dismissed = true;
         if (owner !is null) owner.remove(this);
+        // A consumed closing press returns before GuiWindow's normal hover
+        // refresh, so clear any hover this popup inherited from the pointer
+        // position; otherwise the anchor (or the row under the pointer) keeps a
+        // stale highlight after the menu closes. GuiWindow re-hovers the point
+        // on the next move, so this only removes the visible stuck highlight.
+        clearHoverInternal();
         if (focusReturn !is null && focusReturn.parent() !is null &&
             focusReturn.visible() && focusReturn.enabled())
             focusReturn.requestFocus();
@@ -508,6 +514,21 @@ unittest
     outside.position = Point(620, 20);
     assert(popup.onMouseDown(outside));
     assert(popup.dismissed());
+
+    // Closing the popup clears any hover it inherited from the pointer position,
+    // so a widget under the anchor does not keep a stale highlight after a
+    // consumed closing press (which returns before GuiWindow's hover refresh).
+    auto secondContent = new WidgetTestPanel();
+    secondContent.layoutHints().preferredWidth = 120;
+    secondContent.layoutHints().preferredHeight = 80;
+    auto second = showPopup(anchor, Rect(8, 430, 40, 40), secondContent,
+        PopupPlacement.above);
+    assert(second !is null);
+    // Hover the popup (as the window would while the pointer is over it).
+    second.setHoveredInternal(true);
+    assert(second.hovered());
+    second.dismiss();
+    assert(!second.hovered(), "dismiss must clear the popup's stale hover");
 }
 
 private final class WidgetTestPanel : Widget
