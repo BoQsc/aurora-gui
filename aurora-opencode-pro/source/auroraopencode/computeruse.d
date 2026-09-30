@@ -975,6 +975,7 @@ version (Windows)
         int SetWindowPos(void* hwnd, void* insertAfter, int x, int y, int cx,
             int cy, uint flags);
         int InvalidateRect(void* hwnd, const RECT* rect, int erase);
+        int ValidateRect(void* hwnd, const RECT* rect);
         int UpdateWindow(void* hwnd);
         void* LoadCursorW(void* instance, const wchar* name);
         int DrawIconEx(void* hdc, int x, int y, void* icon, int cx, int cy,
@@ -1205,7 +1206,6 @@ version (Windows)
                 SetWindowPos(hwnd, cast(void*) -1, cast(int) wParam,
                     cast(int) lParam, 0, 0,
                     SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                InvalidateRect(hwnd, null, 1);
                 return 0;
             case WM_DESTROY:
                 PostQuitMessage(0);
@@ -1231,6 +1231,9 @@ version (Windows)
         DrawIconEx(dc, 0, 0, cursor, virtualCursorSize, virtualCursorSize, 0,
             null, 3); // DI_NORMAL
         ReleaseDC(overlayHwnd, dc);
+        // The sprite never changes, so validate the region: without this the
+        // window keeps re-painting every loop and the ghost cursor blinks.
+        ValidateRect(overlayHwnd, null);
     }
 
     private void runOverlayThread()
