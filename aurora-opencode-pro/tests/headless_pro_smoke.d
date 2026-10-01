@@ -21,8 +21,8 @@ import auroraopencode.rebuild : planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, nativeOnlyToolDefinitions,
     previewToolDiff, rebuildRequestHandler;
-import auroraopencode.usage_limits : parseCommandCodePlan, parseCommandCodeUser,
-    parseOpenCodeGoServiceAccountName, parseUsageLimits,
+import auroraopencode.usage_limits : UsageLimitsResult, parseCommandCodePlan,
+    parseCommandCodeUser, parseOpenCodeGoServiceAccountName, parseUsageLimits,
     usageProviderForBaseUrl;
 import core.time : msecs, seconds;
 import core.thread : Thread;
@@ -1233,6 +1233,9 @@ int main(string[] args)
             "the running conversation was not recognized as the rebuild owner");
         root.finishStreamInSessionForTesting(resumeOwner);
 
+        // The user left text in the viewer's composer. Every conversation
+        // shares one composer, so this text must stay with the viewer.
+        root.setInputForTesting("unsent text from the viewer");
         // The rebuild records the owner in the resume note. Simulate the next
         // launch consuming it while the saved selection is still the viewer.
         const note = `{"cause":"rebuild","reason":"apply the fix","session":"` ~
@@ -1241,6 +1244,13 @@ int main(string[] args)
         root.prepareResumeForTesting();
         assert(root.currentSessionForTesting() == resumeOwner,
             "the rebuild resumed a chat other than the requesting conversation");
+        // Switching to the resumed chat must swap the composer draft, exactly
+        // as clicking a chat does. Otherwise the text left in the viewer's box
+        // follows into the owner's input and is saved as the owner's draft -
+        // the "last message leaked into an unrelated chat" corruption after a
+        // rebuild.
+        assert(root.inputTextForTesting() == "",
+            "the viewer's unsent text followed the resume into another chat");
         // Consume the queued follow-up request so it cannot fire during a later
         // test and disturb the turn ownership those tests rely on.
         root.clearPendingResumeForTesting();
@@ -4987,6 +4997,39 @@ int main(string[] args)
             "a rebuild at the bottom should stay pinned to the bottom");
     }
     writeln("Rebuild keeps scroll position and expanded tool outputs");
+
+    // Regression: opening a conversation lands on its newest message. Chats
+    // share one scroll view, so a reader who scrolled up in the chat they left
+    // must not open the next one stuck at that stale offset with the last
+    // message below the fold.
+    {
+        root.newChatForTesting();
+        import std.array : appender;
+        auto body = appender!string();
+        foreach (i; 0 .. 16)
+            body.put("Opening line " ~ to!string(i) ~
+                " padding the reopened transcript past the viewport.\n");
+        foreach (i; 0 .. 6)
+        {
+            root.addConversationForTesting(["user"],
+                ["Question " ~ to!string(i)]);
+            root.addConversationForTesting(["assistant"], [body.data]);
+        }
+        root.tickTree(0.02);
+        assert(driver.paint(), "Reopen transcript paint failed");
+        root.scrollToForTesting(0);
+        root.tickTree(0.02);
+        assert(!root.followForTesting(),
+            "scrolling up should have disengaged auto-follow before reopening");
+        // Re-open the same conversation through the production path.
+        root.selectSessionForTesting(root.currentSessionForTesting());
+        root.tickTree(0.02);
+        assert(root.followForTesting(),
+            "reopening a conversation did not re-engage auto-follow");
+        assert(root.scrollYForTesting() > 0,
+            "reopening a conversation did not scroll to its newest message");
+    }
+    writeln("Opening a conversation shows its newest message");
 
     // Regression: while the agent is still working, a reader who scrolls up must
     // keep a stable offset. New content arrives from two sources during a live

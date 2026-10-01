@@ -137,6 +137,18 @@ private int runApp(string[] args)
     // the OpenCodeRoot constructor.
     const startupBegan = MonoTime.currTime;
     auto window = new GuiWindow(options, opencodeTheme());
+    // `GuiWindow.run()` is the only place that shows the window, and it is not
+    // reached until the OpenCodeRoot constructor has finished restoring the
+    // conversation - which parses a multi-megabyte sessions.json and can take
+    // several seconds on a large history. Present the themed first frame here so
+    // the window appears immediately instead of leaving the desktop blank until
+    // the restore completes; run() re-presents the same frame when the UI is
+    // ready.
+    if (auto native = window.nativeWindow())
+    {
+        native.prepareFirstFrame(opencodeTheme().windowBackground);
+        native.show();
+    }
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
     logInfo("startup: ui built in " ~ to!string((MonoTime.currTime -

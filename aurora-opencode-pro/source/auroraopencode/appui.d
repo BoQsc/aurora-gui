@@ -9045,17 +9045,49 @@ public final class OpenCodeRoot : VBox
         phase("buildUi");
         updateProjectRail();
         phase("project rail");
+        // The conversation store is the slow part of startup - the sessions
+        // snapshot can be tens of megabytes - and parsing it here held the
+        // first frame for seconds. Defer it to the first tick instead, so the
+        // window and its chrome are on screen immediately and the history
+        // loads on demand. A default client is created now so any input that
+        // arrives before that tick has something valid to talk to; opening a
+        // restored conversation replaces it.
+        _client = new OpenCodeClient(_settings.baseUrl, activeApiKey(_settings));
+        _toolCancellation = new ToolCancellation();
+        _startupLoadPending = true;
+        phase("deferred restore");
+        // Let the agent rebuild this app through the `rebuild` tool. The
+        // handler only records the request; onTick performs it.
+        rebuildRequestHandler = &onAgentRebuildRequested;
+        // Optional floating mini chat overlay, off by default.
+        setMiniChatEnabled(_settings.floatingMiniChat);
+    }
+
+    /// True until the deferred conversation load runs on the first tick.
+    private bool _startupLoadPending;
+
+    /**
+     * Parse the persisted conversations and wire the restored selection into
+     * the UI. Kept out of the constructor so the window is visible before the
+     * multi-megabyte snapshot is read; onTick runs it once, before any work
+     * that depends on the restored state. The phase timings are logged here so
+     * the startup cost stays attributable.
+     */
+    private void loadStartupState()
+    {
+        auto phaseMark = MonoTime.currTime;
+        void phase(string what)
+        {
+            const now = MonoTime.currTime;
+            logInfo("startup phase: " ~ what ~ " " ~
+                to!string((now - phaseMark).total!"msecs") ~ " ms");
+            phaseMark = now;
+        }
         restoreSessions();
         phase("restoreSessions");
         syncCurrentToActiveProject();
         if (_current >= 0)
             loadRuntime(_current);
-        else
-        {
-            _client = new OpenCodeClient(_settings.baseUrl,
-                activeApiKey(_settings));
-            _toolCancellation = new ToolCancellation();
-        }
         phase("load runtime");
         // The restored selection is applied before the first layout. Revealing
         // it at that point would measure against a zero-height viewport and
@@ -9069,11 +9101,6 @@ public final class OpenCodeRoot : VBox
         _input.requestFocus();
         prepareResumeAfterCrash();
         phase("finish");
-        // Let the agent rebuild this app through the `rebuild` tool. The
-        // handler only records the request; onTick performs it.
-        rebuildRequestHandler = &onAgentRebuildRequested;
-        // Optional floating mini chat overlay, off by default.
-        setMiniChatEnabled(_settings.floatingMiniChat);
     }
 
     // -- resume after an unexpected shutdown ------------------------------
@@ -9086,14 +9113,26 @@ public final class OpenCodeRoot : VBox
         private string _resumePrompt;
 
         /// The turn the on-disk resume request points at had already finished
-        /// before the process ended, so the request describes history rather
-        /// than outstanding work. The conversation is still reopened and the
-        /// note is still added to it, but no follow-up request is sent: a stale
-        /// note - a chat the user continued after a rebuild, or one closed
-        /// mid-turn and later carried to completion - must not replay as an
-        /// unsolicited turn on the next launch. Only the resolved target's own
-        /// state decides this; any live turn elsewhere keeps the resume armed.
-        private bool _resumeWasAlreadyHandled;
+        /// before the process ended, so the note describes history rather than
+        /// outstanding work. That conversation is still reopened and the note
+        /// is still added to it, but no follow-up request is sent: a stale note
+        /// - a chat the user continued after a rebuild, or one closed mid-turn
+        /// and later carried to completion - must not replay as an unsolicited
+        /// turn on the next launch. The decision is per conversation, so it
+        /// never stops another chat the restart actually interrupted.
+        private bool _resumeNoteAlreadyHandled;
+
+        /// The conversation the pending resume must continue. Captured when the
+        /// note is resolved so the follow-up request cannot be redirected by a
+        /// selection change - the user clicking another chat, or startup restore
+        /// re-selecting - during the few ticks before the request is sent. -1
+        /// when no resume is pending, in which case the visible chat is used.
+        private int _resumeTarget = -1;
+
+        /// Every conversation the pending resume must continue: the pinned
+        /// target first, then each chat the restart left mid-turn. A rebuild
+        /// that interrupted several working chats continues all of them.
+        private int[] _resumeTargets;
 
     private static string activeTurnMarkerPath()
     {
@@ -9157,18 +9196,21 @@ public final class OpenCodeRoot : VBox
         // are authoritative over the sidebar selection, which is often a
         // brand-new empty chat the user opened while the last turn ran.
         const target = resumeTargetIndex(noteSession);
-        if (target < 0)
-        {
-            logInfo("resume skipped: no conversation to continue");
-            return;
-        }
-        adoptResumeSession(target);
+        if (target >= 0)
+            adoptResumeSession(target);
+        else
+            logInfo("resume note named no conversation; continuing any other "
+                ~ "conversation the restart left mid-turn");
         // The note describes a turn the pre-restart process was running. When
         // that turn has since finished (`turnStatus` is no longer `running`),
         // there is nothing left to continue: resume the view, add the note, and
         // stop there. A crash leaves the status frozen at `running`, so this
         // only suppresses requests that would replay completed work.
-        _resumeWasAlreadyHandled = _sessions[target].turnStatus != "running";
+        // Judge the unbalanced note per conversation, not once overall: a stale
+        // note about an already-finished chat must not veto continuing OTHER
+        // chats the restart genuinely interrupted.
+        _resumeNoteAlreadyHandled = target >= 0 &&
+            _sessions[target].turnStatus != "running";
         // A rebuild that fails to compile relaunches the PREVIOUS binary. The
         // helper removes `rebuild-report.txt` after a good build and writes it
         // only on failure, so its presence is the reliable "your changes are
@@ -9188,7 +9230,7 @@ public final class OpenCodeRoot : VBox
             else
                 buildStamp = rebuildSuccessStamp();
         }
-        if (cause == "rebuild" && rebuildReport.length == 0 &&
+        if (target >= 0 && cause == "rebuild" && rebuildReport.length == 0 &&
             buildStamp.length > 0)
         {
             auto session = &_sessions[target];
@@ -9210,17 +9252,61 @@ public final class OpenCodeRoot : VBox
         }
         _resumePrompt = resumePromptFor(cause, reason, rebuildReport,
             buildStamp);
-        // Nothing to send when the noted turn had already finished by the time
-        // the process ended: reopen the conversation and show the note, but do
-        // not replay a turn the agent already completed.
-        if (_resumeWasAlreadyHandled)
+        // Everything that must be picked back up: the noted conversation first
+        // (when its turn was still running), then every other conversation the
+        // restart left mid-turn. A rebuild that interrupted several working
+        // chats continues all of them, not only the one that asked for it.
+        // Only `running` counts: it is the honest "in flight when the process
+        // ended" state, read before the marking below flips it. `interrupted`
+        // is NOT a candidate - it is written both by this restart marking and
+        // by the user pressing Stop, and it survives in the saved sessions, so
+        // resuming it would drag every chat stopped hours ago back into work
+        // alongside the ones this restart actually cut short.
+        int[] targets;
+        if (target >= 0 && !_resumeNoteAlreadyHandled)
+            targets ~= target;
+        foreach (i, session; _sessions)
+            if (cast(int) i != target && session.messages.length > 0 &&
+                session.turnStatus == "running")
+                targets ~= cast(int) i;
+        // Mark the leftover `running` turns now, AFTER they were collected. A
+        // resume note (rebuild or crash) means the process ended with agent work
+        // outstanding, so the sidebar warning must survive the restart even
+        // when the resume cannot be sent (no note, nothing adopted, a provider
+        // failure). Flipping the status before the scan above would hide the
+        // very conversations it exists to find, and the restart would continue
+        // nothing at all.
+        foreach (ref session; _sessions)
+            if (session.messages.length > 0 && session.turnStatus == "running")
+            {
+                session.turnStatus = "interrupted";
+                logInfo("turn marked interrupted by restart: session=" ~
+                    session.id);
+            }
+        if (targets.length == 0)
         {
-            logInfo("resume note matched an already-completed turn; " ~
-                "reopening the conversation without a follow-up request");
+            logInfo("resume skipped: no conversation to continue; note session="
+                ~ (noteSession.length > 0 ? noteSession : "none"));
             return;
         }
+        if (_resumeNoteAlreadyHandled)
+            logInfo("resume note matched an already-completed turn; reopening "
+                ~ "it without a follow-up while the interrupted chats continue");
+        // Pin the conversations now: onTick must continue these chats even if
+        // the sidebar selection changes before the requests are sent. The noted
+        // conversation stays the one on screen; the rest continue in background.
+        _resumeTargets = targets;
+        _resumeTarget = target >= 0 ? target : targets[0];
         _resumeCountdown = resumeDelayTicks;
-        logInfo("resume queued for the restored conversation");
+        // Name the conversations being continued, so a mismatch that leaves the
+        // wrong chat visible is diagnosable from logs.
+        string queued;
+        foreach (index; targets)
+            queued ~= (queued.length == 0 ? "" : ",") ~ _sessions[index].id;
+        logInfo("resume queued for the restored conversation: session=" ~
+            _sessions[_resumeTarget].id ~ " visible=" ~ (_current >= 0 &&
+                _current < cast(int) _sessions.length
+                ? _sessions[_current].id : "none") ~ " continuing=" ~ queued);
     }
 
     /// The conversation a restart must continue, most specific first: the id the
@@ -9270,8 +9356,17 @@ public final class OpenCodeRoot : VBox
         if (index < 0 || index >= cast(int) _sessions.length) return;
         if (index != _current)
         {
+            // Change the visible conversation exactly as `selectSession` does:
+            // keep the outgoing chat's unsent text with that chat, then show the
+            // resumed chat's own draft. Setting `_current` alone left the text
+            // the user was typing in the previously selected chat sitting in the
+            // shared composer, so the next save wrote it into the resumed
+            // (usually unrelated) conversation - after a rebuild the last message
+            // reappeared in the wrong chat's input.
+            syncComposerDraft();
             _current = index;
             loadRuntime(_current);
+            if (_input !is null) _input.setText(_sessions[index].draft, false);
         }
         updateSessionList(false);
         rebuildMessageColumn();
@@ -9522,7 +9617,9 @@ public final class OpenCodeRoot : VBox
     {
         _resumePrompt = "";
         _resumeCountdown = 0;
-        _resumeWasAlreadyHandled = false;
+        _resumeNoteAlreadyHandled = false;
+        _resumeTarget = -1;
+        _resumeTargets = null;
     }
 
     /// Test-only: the stored id of a conversation.
@@ -9807,7 +9904,12 @@ public final class OpenCodeRoot : VBox
         foreach (index, session; _sessions)
             if (session.id.length > 0 && sessionIsBusy(cast(int) index))
                 return session.id;
-        return _current >= 0 && _current < cast(int) _sessions.length
+        // Last resort: the selected chat, but only when it holds a transcript.
+        // An empty "New chat" the user opened while nothing was running is not
+        // an owner - recording it made the relaunched app inject the "rebuilt,
+        // continue" note into that blank chat and never resume the real one.
+        return _current >= 0 && _current < cast(int) _sessions.length &&
+            _sessions[_current].messages.length > 0
             ? _sessions[_current].id : "";
     }
 
@@ -10839,6 +10941,19 @@ public final class OpenCodeRoot : VBox
 
     // -- sessions ---------------------------------------------------------
 
+    /// Point the transcript at its newest message. Every conversation shares
+    /// one scroll view, so opening a different one would otherwise inherit the
+    /// previous conversation's `follow` flag: a reader who had scrolled up in
+    /// the chat they were leaving would open the next one stuck at that stale
+    /// offset, with the last message below the fold and no rebuild forcing the
+    /// view back down. Re-engaging follow here makes every open land on the
+    /// newest message again.
+    private void followNewestMessage()
+    {
+        if (_messagesScroll !is null)
+            _messagesScroll.resumeFollow();
+    }
+
     private void newChat()
     {
         saveLoadedRuntime();
@@ -10864,6 +10979,7 @@ public final class OpenCodeRoot : VBox
         _editMessageIndex = -1;
         _filterText = "";
         if (_filterField !is null) _filterField.setText("", false);
+        followNewestMessage();
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
@@ -10920,6 +11036,7 @@ public final class OpenCodeRoot : VBox
             _streamBubble.setLiveTokens(_liveOutputTokens, true);
             _streamBubble.setTokenRate(_liveTokenRateTenths);
         }
+        followNewestMessage();
         rebuildMessageColumn();
         _settings.model = resolveAvailableModel(_sessions[index].model);
         _sessions[index].model = _settings.model;
@@ -12764,6 +12881,7 @@ public final class OpenCodeRoot : VBox
         publishThreadUpdated(*session);
         _streamBubble = null;
         _editMessageIndex = -1;
+        followNewestMessage();
         rebuildMessageColumn();
         updateSessionList(false);
         markDirty();
@@ -19962,6 +20080,7 @@ public final class OpenCodeRoot : VBox
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
         _streamBubble = null;
+        followNewestMessage();
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
@@ -21503,6 +21622,14 @@ public final class OpenCodeRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        // Load the persisted conversations on demand: the window is already on
+        // screen by the time a tick runs, so the multi-megabyte snapshot read
+        // no longer holds up the first frame.
+        if (_startupLoadPending)
+        {
+            _startupLoadPending = false;
+            loadStartupState();
+        }
         drainUpdateResult();
         drainKeyUsageResults();
         // Resume after an unexpected shutdown, once the restored transcript has
@@ -21513,19 +21640,44 @@ public final class OpenCodeRoot : VBox
         {
             const prompt = _resumePrompt;
             _resumePrompt = "";
-            logInfo("resuming after an unexpected shutdown");
-            if (_current >= 0)
+            // Continue every conversation the restart interrupted, and open the
+            // one the note named. Restore or a stray click during the layout
+            // delay used to retarget this single request, so the intended chat
+            // stayed idle while an unrelated one was extended.
+            auto targets = _resumeTargets;
+            _resumeTargets = null;
+            const primary = _resumeTarget;
+            _resumeTarget = -1;
+            if (targets.length == 0 && _current >= 0)
+                targets ~= _current;
+            string resumed;
+            foreach (index; targets)
+                if (index >= 0 && index < cast(int) _sessions.length)
+                    resumed ~= (resumed.length == 0 ? "" : ",") ~
+                        _sessions[index].id;
+            logInfo("resuming after an unexpected shutdown: " ~ resumed);
+            if (primary >= 0 && primary < cast(int) _sessions.length &&
+                primary != _current)
+                adoptResumeSession(primary);
+            foreach (index; targets)
             {
-                appendQueuedGuidance(_sessions[_current]);
+                if (index < 0 || index >= cast(int) _sessions.length) continue;
+                // Each conversation owns its own runtime: load it so the
+                // request streams through that chat's client, not the visible
+                // chat's. The visible context is restored after the loop.
+                loadRuntime(index);
+                appendQueuedGuidance(_sessions[index]);
                 ChatMessage recovery;
                 recovery.role = "user";
                 recovery.internal = true;
                 recovery.content = prompt;
                 recovery.time = currentTimestamp();
-                appendMessage(_sessions[_current], recovery);
-                markDirty();
-                startChatRequest(_current);
+                appendMessage(_sessions[index], recovery);
+                startChatRequest(index);
             }
+            if (_current >= 0 && _current < cast(int) _sessions.length)
+                loadRuntime(_current);
+            markDirty();
             updateStatus("Resuming after an unexpected shutdown…");
         }
 
