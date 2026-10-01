@@ -1,0 +1,57 @@
+{
+  "name": "aurora-dimmer",
+  "description": "Aurora Dimmer - dim the Windows desktop with a click-through translucent overlay for comfortable night-time use.",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "executable",
+  "targetName": "aurora-dimmer",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source",
+    "..\\vendor\\aurora-d-0.4.5\\source"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "version": "0.1.0"
+}

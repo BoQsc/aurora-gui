@@ -1,0 +1,7 @@
+build/
+.dub/
+dub.selections.json
+*.exe
+*.obj
+*.pdb
+*.lib
