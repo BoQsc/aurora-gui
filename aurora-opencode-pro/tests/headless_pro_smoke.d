@@ -342,6 +342,76 @@ private void writeStartupState(string stateDir)
     write(buildPath(stateDir, "sessions.json"), root.toString());
 }
 
+/// A tool row's header names the file the tool touched (an Edit, Patch or Read
+/// row). That row lives inside a collapsed action group, so it must be built
+/// with its real transcript index: a placeholder made `showMessageContextMenu`
+/// bail on its range guard and the header had no menu at all, so its file could
+/// not be opened or revealed.
+private void verifyToolHeaderContextMenu(OpenCodeRoot root,
+    UiTestDriver driver, string stateDir)
+{
+    const toolFile = buildPath(stateDir, "pro_tool_probe.d");
+    if (!exists(stateDir)) mkdirRecurse(stateDir);
+    write(toolFile, "// probe\n");
+    JSONValue toolArgsObj;
+    toolArgsObj["filePath"] = JSONValue(toolFile);
+    const toolArgs = toolArgsObj.toString();
+    root.newChatForTesting();
+    root.appendToolRequestTurnForTesting("", "call-probe", "edit", toolArgs);
+    root.appendOwnedToolResultForTesting("call-probe", "edit",
+        "Edited " ~ toolFile ~ " (1 line).", toolArgs, 1, 1,
+        "--- a/probe\n+++ b/probe\n@@ -1 +1 @@\n-a\n+b\n");
+    root.tickTree(0.02);
+    assert(driver.paint(), "Owned tool-row test did not paint");
+    const toolIndex = root.toolBubbleMessageIndexForTesting(0);
+    assert(toolIndex >= 0 && toolIndex < root.messageCountForTesting(),
+        "an owned tool row did not carry its real transcript index: " ~
+        to!string(toolIndex));
+    root.openToolBubbleContextMenuForTesting(0);
+    root.tickTree(0.02);
+    auto toolMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(toolMenu !is null, "the tool row's context menu did not open");
+    bool sawToolFile;
+    bool sawToolFolder;
+    foreach (item; toolMenu.items())
+    {
+        if (item.label == toUTF32("Open file")) sawToolFile = true;
+        if (item.label == toUTF32("Open folder")) sawToolFolder = true;
+    }
+    assert(sawToolFile,
+        "Open file missing for the file named by a tool header");
+    assert(sawToolFolder,
+        "Open folder missing for the file named by a tool header");
+    dismissContextMenus(root);
+    root.tickTree(0.02);
+
+    // An ordinary reply that names a path still offers the same items: the
+    // tool row's preference for its own path must not disturb other messages.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["where is it?", "It lives in " ~ toolFile ~ " right now."]);
+    root.tickTree(0.02);
+    assert(driver.paint(), "Reply path-link test did not paint");
+    const replyIndex = root.messageCountForTesting() - 1;
+    root.openMessageContextMenuForTesting(replyIndex);
+    root.tickTree(0.02);
+    auto replyMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(replyMenu !is null, "the reply's context menu did not open");
+    bool sawReplyFile;
+    bool sawReplyFolder;
+    foreach (item; replyMenu.items())
+    {
+        if (item.label == toUTF32("Open file")) sawReplyFile = true;
+        if (item.label == toUTF32("Open folder")) sawReplyFolder = true;
+    }
+    assert(sawReplyFile && sawReplyFolder,
+        "a reply that names a path should still offer Open file / Open folder");
+    dismissContextMenus(root);
+    root.tickTree(0.02);
+    writeln("Diff/edit tool headers offer Open file / Open folder for " ~
+        "their file");
+}
+
 int main(string[] args)
 {
     const stateDir = buildPath(tempDir(), "aurora-opencode-pro-smoke-state");
@@ -416,6 +486,13 @@ int main(string[] args)
         assert(groups[2].indexOf("Ran a command") >= 0,
             "third group should be the command run: " ~ groups[2]);
         writeln("group-only OK");
+        return 0;
+    }
+    if (args.length > 1 && args[$ - 1] == "--tool-menu-only")
+    {
+        // Focused run for the tool-header context-menu fix: run alone so the
+        // regression can be exercised without the rest of the suite.
+        verifyToolHeaderContextMenu(root, driver, stateDir);
         return 0;
     }
     // Git-independent Changes table is always available from the toolbar,
@@ -1972,6 +2049,10 @@ int main(string[] args)
     assert(tooltip.indexOf("deepseek-v4.1-flash") >= 0,
         "Tooltip lacks the model");
     assert(tooltip.indexOf("1,000,000") >= 0, "Tooltip lacks the context limit");
+    assert(tooltip.indexOf("Context target:") >= 0 &&
+        tooltip.indexOf("Context target:") <
+            tooltip.indexOf("Provider context limit:"),
+        "Tooltip must lead with the selected context target: " ~ tooltip);
     assert(tooltip.indexOf("240,000") >= 0, "Tooltip lacks active input");
     assert(tooltip.indexOf("24%") >= 0, "Tooltip lacks the usage percent");
     assert(tooltip.indexOf("10,000") >= 0, "Tooltip lacks last output tokens");
@@ -2061,21 +2142,26 @@ int main(string[] args)
         auto targetMenu = cast(ContextMenu) currentTransientPopup(root);
         assert(targetMenu !is null,
             "Right-clicking the model should open context targets");
-        assert(targetMenu.items().length == 10,
-            "Context menu should show a compaction switch and five targets");
+        assert(targetMenu.items().length == 11,
+            "Context menu should show the target, the provider limit, a " ~
+            "compaction switch and five targets");
         assert(targetMenu.items()[0].label ==
-            toUTF32("Provider limit: 1,000,000 tokens") &&
+            toUTF32("Context target: Auto (provider limit)") &&
             !targetMenu.items()[0].enabled,
+            "Context menu must lead with the selected context target");
+        assert(targetMenu.items()[4].label ==
+            toUTF32("Provider limit: 1,000,000 tokens") &&
+            !targetMenu.items()[4].enabled,
             "Context menu must display the read-only provider limit");
         assert(!targetMenu.items()[2].checked,
             "Automatic compaction should be off by default");
-        assert(targetMenu.items()[5].checked,
+        assert(targetMenu.items()[6].checked,
             "Auto target should be selected by default");
-        assert(targetMenu.items()[9].label == toUTF32("500,000 tokens") &&
-            targetMenu.items()[9].enabled,
+        assert(targetMenu.items()[10].label == toUTF32("500,000 tokens") &&
+            targetMenu.items()[10].enabled,
             "500K target should be available below a 1M provider limit");
         targetMenu.items()[2].action();
-        targetMenu.items()[9].action();
+        targetMenu.items()[10].action();
         dismissContextMenus(root);
         root.tickTree(0.02);
         assert(root.requestContextBudgetForTesting(
@@ -2103,6 +2189,9 @@ int main(string[] args)
         targetMenu = cast(ContextMenu) currentTransientPopup(root);
         assert(targetMenu !is null && targetMenu.items()[2].checked,
             "The model menu should show the saved compaction choice");
+        assert(targetMenu.items()[0].label ==
+            toUTF32("Context target: 500,000 tokens"),
+            "The model menu must show the selected context target");
         targetMenu.items()[2].action();
         dismissContextMenus(root);
         root.tickTree(0.02);
@@ -2150,7 +2239,7 @@ int main(string[] args)
         driver.click(globalCenter(usageBadge));
         root.tickTree(0.02);
         targetMenu = cast(ContextMenu) currentTransientPopup(root);
-        assert(targetMenu !is null && !targetMenu.items()[9].enabled,
+        assert(targetMenu !is null && !targetMenu.items()[10].enabled,
             "Clicking the context badge should open targets and disable " ~
             "those above the provider limit");
         dismissContextMenus(root);
@@ -2420,6 +2509,8 @@ int main(string[] args)
         writeln("Path links select normally; the menu offers Open file / " ~
             "Open folder");
     }
+
+    verifyToolHeaderContextMenu(root, driver, stateDir);
 
     // "New project" adds a fresh numbered sandbox with no folder dialog:
     // sandbox 1 is the default, so the first created project is sandbox 2 in

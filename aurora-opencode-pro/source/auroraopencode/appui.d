@@ -1283,7 +1283,8 @@ private final class MessageBubble : Widget
         foreach (index; 0 .. _thinkingCacheCount)
         {
             if (_thinkingShapedGens[index] == _thinkingGen &&
-                _thinkingWidths[index] == width)
+                _thinkingWidths[index] == width &&
+                _thinkingLayouts[index] !is null)
                 return _thinkingLayouts[index];
         }
 
@@ -1291,8 +1292,16 @@ private final class MessageBubble : Widget
 
         if (_thinkingCacheCount == shapeCacheSize)
         {
+            // A pending tail means the text just measured is only a prefix.
+            // Remember a placeholder so the next frame folds the new fragments
+            // in, but return the layout we did measure: every caller dereferences
+            // the result, and returning the null placeholder was the
+            // access violation while painting a reasoning-only bubble.
             if (budgetDchars > 0 && _thinkingBuffered.length > 0)
-                return rememberThinking(width, null);
+            {
+                rememberThinking(width, null);
+                return layout;
+            }
             return rememberThinking(width, layout);
         }
         return rememberThinking(width, layout);
@@ -1569,7 +1578,20 @@ private final class MessageBubble : Widget
             // next to a collapsed group row.
             height += thinkingHeaderHeight();
             if (!_thinkingCollapsed)
-                height += shapedThinking(innerWidth).measuredSize().height + gap;
+            {
+                // `shapedThinking` reports "nothing measured yet" as a null
+                // layout (a ring placeholder or a failed shape), so the result
+                // must not be dereferenced unguarded.
+                auto layout = shapedThinking(innerWidth);
+                if (layout !is null)
+                {
+                    noteActivity("measureThinking index=" ~
+                        to!string(_messageIndex) ~ " width=" ~
+                        to!string(innerWidth) ~ " lines=" ~
+                        to!string(layout.lines.length));
+                    height += layout.measuredSize().height + gap;
+                }
+            }
         }
 
         if (_role == "tool")
@@ -1629,7 +1651,11 @@ private final class MessageBubble : Widget
         const stripWidth = maxInt(24, panelW - 2 * padH);
         int y = padV;
         if (_content.length > 0)
-            y += shapedContent(stripWidth).measuredSize().height + gap;
+        {
+            auto contentLayout = shapedContent(stripWidth);
+            if (contentLayout !is null)
+                y += contentLayout.measuredSize().height + gap;
+        }
         _sentAttachments.setBounds(Rect(maxInt(0, bounds().width - panelW) +
             padH, y, stripWidth, sentAttachmentHeight));
     }
@@ -1689,9 +1715,11 @@ private final class MessageBubble : Widget
                 auto layout = shapedThinking(innerWidth,
                     thinkingBudgetDchars(innerWidth, height - y));
                 noteActivity("paintThinking index=" ~ to!string(_messageIndex) ~
-                    " width=" ~ to!string(innerWidth));
+                    " width=" ~ to!string(innerWidth) ~ " layout=" ~
+                    (layout is null ? "null" : "ok"));
                 canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
-                y += layout.measuredSize().height + gap;
+                if (layout !is null)
+                    y += layout.measuredSize().height + gap;
             }
         }
 
@@ -1751,12 +1779,15 @@ private final class MessageBubble : Widget
                 auto layout = shapedContent(textWidth);
                 canvas.drawLayout(Point(textX, contentY), layout,
                     _queued ? opencodeMuted : opencodeText);
-                if (layout.lines.length > 0)
-                    _selSegments ~= SelectSegment(layout, textX, contentY,
-                        maxInt(1, textWidth),
-                        layout.measuredSize().height);
+                if (layout !is null)
+                {
+                    if (layout.lines.length > 0)
+                        _selSegments ~= SelectSegment(layout, textX, contentY,
+                            maxInt(1, textWidth),
+                            layout.measuredSize().height);
+                    y = contentY + layout.measuredSize().height;
+                }
                 drawSelection(canvas);
-                y = contentY + layout.measuredSize().height;
             }
         }
 
@@ -11724,6 +11755,7 @@ public final class OpenCodeRoot : VBox
                 // paragraph -> collapsible -> paragraph -> collapsible instead
                 // of one group stranded at the turn's start.
                 size_t[] childSlots;
+                size_t[] childIndices;
                 const(ChatMessage)[] childMessages;
                 foreach (call; message.toolCalls)
                 {
@@ -11735,6 +11767,7 @@ public final class OpenCodeRoot : VBox
                             call.id)
                         {
                             childSlots ~= childSlot;
+                            childIndices ~= path[childSlot];
                             childMessages ~= session.messages[path[childSlot]];
                             break;
                         }
@@ -11749,7 +11782,7 @@ public final class OpenCodeRoot : VBox
                     nestPad.left = toolNestIndent;
                     auto nest = new TurnNest(nestPad);
                     if (childMessages.length > 0)
-                        addActionGroups(nest, childMessages, *session,
+                        addActionGroups(nest, childMessages, childIndices, *session,
                             latestAssistantIndex, versionPositions,
                             versionTotals);
                     if (slot == liveHostSlot)
@@ -12326,14 +12359,16 @@ public final class OpenCodeRoot : VBox
     /// headers ("Explored 3 files", "Edited 2 files") instead of one mixed
     /// summary. Key order follows the calls, so the round's shape is stable.
     private void addActionGroups(VBox target, const(ChatMessage)[] callMessages,
-        ref const ChatSession session, int latestAssistantIndex,
+        const(size_t)[] indices, ref const ChatSession session,
+        int latestAssistantIndex,
         size_t[] versionPositions, size_t[] versionTotals)
     {
         if (callMessages.length == 0) return;
         if (!_settings.groupSameAction)
         {
-            addToolSlots(target, callMessages[0].id, callMessages, session,
-                latestAssistantIndex, versionPositions, versionTotals);
+            addToolSlots(target, callMessages[0].id, callMessages, indices,
+                session, latestAssistantIndex, versionPositions,
+                versionTotals);
             return;
         }
         // A `tool` result stores its request id, not the tool's name, so the
@@ -12350,28 +12385,35 @@ public final class OpenCodeRoot : VBox
         {
             if (kindAt(i) == kindAt(start)) continue;
             addToolSlots(target, callMessages[start].id,
-                callMessages[start .. i], session, latestAssistantIndex,
-                versionPositions, versionTotals);
+                callMessages[start .. i], indices[start .. i], session,
+                latestAssistantIndex, versionPositions, versionTotals);
             start = i;
         }
         addToolSlots(target, callMessages[start].id,
-            callMessages[start .. $], session, latestAssistantIndex,
-            versionPositions, versionTotals);
+            callMessages[start .. $], indices[start .. $], session,
+            latestAssistantIndex, versionPositions, versionTotals);
     }
 
     /// Build one action group for a run of tool results and add it to `target`.
     /// `key` is the run's first tool-call id, so a run's expanded state survives
     /// the rebuilds that happen while the round streams.
     private ToolGroupBubble addToolSlots(VBox target, string key,
-        const(ChatMessage)[] callMessages, ref const ChatSession session,
+        const(ChatMessage)[] callMessages, const(size_t)[] indices,
+        ref const ChatSession session,
         int latestAssistantIndex, size_t[] versionPositions,
         size_t[] versionTotals)
     {
         if (callMessages.length == 0) return null;
         Widget[] parts;
-        foreach (call; callMessages)
+        foreach (i, call; callMessages)
         {
-            auto row = buildMessageBubble(session.messages.length, call,
+            // Each row must keep its real transcript index: its right-click menu
+            // (Copy / Open file / Open folder) and workspace both resolve the
+            // message by that index, so the group's own length is not a valid
+            // placeholder.
+            const rowIndex = i < indices.length ? indices[i]
+                : session.messages.length;
+            auto row = buildMessageBubble(rowIndex, call,
                 latestAssistantIndex, versionPositions, versionTotals);
             // A restored `tool` result often carries no `toolName` of its own
             // (the name lives on the assistant's `toolCalls`), so resolve it
@@ -17126,8 +17168,11 @@ public final class OpenCodeRoot : VBox
         const providerLimit = effectiveContextLimit(model);
         const selected = contextBudgetForModel(_settings, _settings.baseUrl, model);
         ContextMenuItem[] items;
-        items ~= ContextMenuItem.command("Provider limit: " ~
-            formatThousands(providerLimit) ~ " tokens", delegate() {}, "", false);
+        // Lead with what the user picked. The provider window is only the hard
+        // ceiling; the request budget is the choice made here, so showing the
+        // provider limit as the headline read as "my target was ignored".
+        items ~= ContextMenuItem.command("Context target: " ~
+            contextBudgetLabel(selected), delegate() {}, "", false);
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.check("Compact old context automatically",
             contextCompactionForModel(_settings, _settings.baseUrl, model),
@@ -17141,6 +17186,8 @@ public final class OpenCodeRoot : VBox
                 refreshUsageBadge();
             });
         items ~= ContextMenuItem.separatorItem();
+        items ~= ContextMenuItem.command("Provider limit: " ~
+            formatThousands(providerLimit) ~ " tokens", delegate() {}, "", false);
         items ~= ContextMenuItem.command("Compaction target (when enabled)",
             delegate() {}, "", false);
         foreach (target; [0, 64_000, 128_000, 200_000, 500_000])
@@ -19052,15 +19099,15 @@ public final class OpenCodeRoot : VBox
         string[] rows;
         const hasUsage = _usageBadge !is null && _usageBadge.hasUsage();
         rows ~= "Model: " ~ _settings.model;
+        const target = contextBudgetForModel(_settings, _settings.baseUrl,
+            _settings.model);
+        rows ~= "Context target: " ~ contextBudgetLabel(target);
         rows ~= "Provider context limit: " ~
             formatThousands(_usageBadge is null ? 0 : _usageBadge.limit()) ~
             " tokens";
-        const target = contextBudgetForModel(_settings, _settings.baseUrl,
-            _settings.model);
         rows ~= "Automatic compaction: " ~
             (contextCompactionForModel(_settings, _settings.baseUrl,
                 _settings.model) ? "On" : "Off");
-        rows ~= "Request context target: " ~ contextBudgetLabel(target);
         rows ~= "Click for context options.";
         if (hasUsage)
         {
@@ -20146,11 +20193,13 @@ public final class OpenCodeRoot : VBox
         const workspace = workspaceForSession(_current);
         // "Open file" / "Open folder" for the local file or folder this message
         // actually names. The target is, in order: the path link the pointer
-        // right-clicked, the path parsed out of the message, or the tool row's
-        // own path. A single unambiguous target, so the reader is never asked to
-        // choose between paths the row merely happened to mention. "Open file"
-        // runs it with its default handler; "Open folder" reveals the folder
-        // itself, or the folder that held a since-deleted file.
+        // right-clicked, a tool row's own file/folder argument, or the first
+        // path its text names. A tool row's header names its own target, so that
+        // path must win over any path its output merely happens to mention
+        // (a Read's file contents can name unrelated paths). A single
+        // unambiguous target, so the reader is never asked to choose. "Open
+        // file" runs it with its default handler; "Open folder" reveals the
+        // folder itself, or the folder that held a since-deleted file.
         string localTarget;
         // The path under the pointer wins: right-clicking a path must offer
         // that path, not the first path anywhere in the message.
@@ -20168,10 +20217,10 @@ public final class OpenCodeRoot : VBox
                     localTarget = resolved;
             }
         }
-        if (localTarget.length == 0)
-            localTarget = messageLocalPath(message, workspace);
         if (localTarget.length == 0 && message.role == "tool")
             localTarget = primaryToolPath(message, workspace);
+        if (localTarget.length == 0)
+            localTarget = messageLocalPath(message, workspace);
         // A selection does NOT hide the path items: the reader can select a path
         // and still open it. The single exception is a deliberate selection of
         // the path text itself, where "Open file" would be redundant with the
@@ -24222,6 +24271,30 @@ public final class OpenCodeRoot : VBox
         rebuildMessageColumn();
     }
 
+    /// Test-only: append a fully populated `tool` result owned by `callId`, so
+    /// a test can drive an owned (grouped) tool row — name, arguments and diff
+    /// included — the way a settled tool execution does.
+    public void appendOwnedToolResultForTesting(string callId, string toolName,
+        string content, string args, int additions, int deletions, string diff,
+        long elapsedMs = 0)
+    {
+        if (_current < 0) return;
+        auto session = &_sessions[_current];
+        ChatMessage message;
+        message.role = "tool";
+        message.toolCallId = callId;
+        message.toolName = toolName;
+        message.content = content;
+        message.toolArgs = args;
+        message.diffAdditions = additions;
+        message.diffDeletions = deletions;
+        message.toolDiff = diff;
+        message.toolElapsedMs = elapsedMs;
+        message.time = currentTimestamp();
+        appendMessage(*session, message);
+        rebuildMessageColumn();
+    }
+
     /// Test-only: open the settings dialog and return the legacy checkbox, or
     /// null when absent.
     public CheckBox legacyToolsCheckboxForTesting()
@@ -24901,6 +24974,26 @@ public final class OpenCodeRoot : VBox
         auto bubbles = toolBubblesForTesting();
         if (n < 0 || n >= cast(int) bubbles.length) return "";
         return bubbles[cast(size_t) n].toolArgsDisplayForTesting();
+    }
+
+    /// Test-only: the transcript index the `tool` result bubble at `n` carries,
+    /// so a test can open its context menu exactly as a right-click would.
+    /// Returns -1 when there is no such row.
+    public int toolBubbleMessageIndexForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return -1;
+        return bubbles[cast(size_t) n].messageIndex();
+    }
+
+    /// Test-only: open the context menu for the `tool` result row at `n`,
+    /// exactly as a right-click on that row's header would.
+    public void openToolBubbleContextMenuForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return;
+        auto bubble = bubbles[cast(size_t) n];
+        showMessageContextMenu(bubble.messageIndex(), Point(10, 10), bubble);
     }
 
     /// Test-only: scroll the message view to a specific offset.
