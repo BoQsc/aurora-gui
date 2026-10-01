@@ -984,6 +984,10 @@ public struct Settings
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
     bool quickTitle = true;
+    // Hide the `@@ -old,+new @@` hunk headers in rendered diffs: they carry no
+    // information for a reader, only for the patch parser. On by default; set
+    // false to restore the full unified diff.
+    bool hideHunkHeaders = true;
     // List conversations by most recent activity (message or turn) instead of
     // creation order. On by default; set false to keep the original
     // newest-created-first listing.
@@ -1289,6 +1293,9 @@ public Settings loadSettings()
                 if (auto found = "quickTitle" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.quickTitle = found.type == JSONType.true_;
+                if (auto found = "hideHunkHeaders" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.hideHunkHeaders = found.type == JSONType.true_;
                 if (auto found = "sortSessionsByRecency" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.sortSessionsByRecency =
@@ -1575,6 +1582,7 @@ public void saveSettings(const ref Settings settings)
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
     root["quickTitle"] = settings.quickTitle;
+    root["hideHunkHeaders"] = settings.hideHunkHeaders;
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;

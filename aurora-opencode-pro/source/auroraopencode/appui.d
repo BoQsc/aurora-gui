@@ -593,6 +593,8 @@ private final class MessageBubble : Widget
     }
     private ToolLine[] _toolLines;
     private size_t _toolLinesGen;
+    // Hidden by default: see setHideHunkHeaders.
+    private bool _hideHunkHeaders = true;
     private size_t _toolLinesBuiltGen = size_t.max;
     private int _toolLinesWidth = -1;
     private int _toolLinesHeight;
@@ -764,6 +766,18 @@ private final class MessageBubble : Widget
 
     /// Test-only: the quick-search query this bubble highlights.
     public string searchQueryForTesting() const { return _searchQuery; }
+
+    /// Hide the `@@ … @@` hunk-header rows: they are patch-parser bookkeeping,
+    /// not information for someone reading the change. Every other row keeps
+    /// its own numbering, so the diff still reads correctly without them.
+    void setHideHunkHeaders(bool value)
+    {
+        if (_hideHunkHeaders == value) return;
+        _hideHunkHeaders = value;
+        ++_toolLinesGen;
+        _toolLinesWidth = -1;
+        invalidate();
+    }
 
     void setDiff(int additions, int deletions, string diff)
     {
@@ -2090,6 +2104,7 @@ private final class MessageBubble : Widget
             {
                 if (raw.length > 0 && raw[0] == '@')
                 {
+                    if (_hideHunkHeaders) continue;
                     line.kind = ToolLineKind.hunk;
                     oldNo = hunkStart(raw, '-') - 1;
                     newNo = hunkStart(raw, '+') - 1;
@@ -11984,6 +11999,7 @@ public final class OpenCodeRoot : VBox
                 : previewToolDiffText(message.toolName, message.toolArgs);
             bubble.setDiff(message.diffAdditions, message.diffDeletions,
                 diffText);
+            bubble.setHideHunkHeaders(_settings.hideHunkHeaders);
             bubble.setToolElapsed(message.toolElapsedMs);
             // Name the file or folder this row touched, resolved to an absolute
             // path, so a collapsed row can reveal exactly where the work
@@ -17847,6 +17863,22 @@ public final class OpenCodeRoot : VBox
         };
         titleRow.add(titleCheck);
         optionsBody.add(titleRow);
+
+        // Diff rows: hide the `@@ -old,+new @@` hunk headers. They are patch
+        // bookkeeping, so the default keeps them out of the rendered diff.
+        auto hunkRow = new HBox(8);
+        hunkRow.layoutHints().preferredHeight = 32;
+        auto hunkCheck = new CheckBox("Hide @@ hunk headers in diffs");
+        hunkCheck.setId("oc-hidehunks");
+        hunkCheck.setChecked(_settings.hideHunkHeaders, false);
+        hunkCheck.onChanged = delegate(bool value)
+        {
+            _settings.hideHunkHeaders = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        hunkRow.add(hunkCheck);
+        optionsBody.add(hunkRow);
 
         // Conversation order: list by most recent activity (message or turn)
         // instead of creation order. On by default.
