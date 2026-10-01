@@ -2472,8 +2472,16 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         return tuple("Error: could not open output file.", true);
 
     Pid pid;
-    try pid = spawnProcess(argv, stdin, outFile, outFile, null,
-        Config.suppressConsole, workdir);
+    // Give the child an immediately exhausted stdin instead of the app's own.
+    // A foreground command that inherits an interactive stdin -- a bare `cmd`
+    // or any program that drops into a REPL -- blocks on input forever, so the
+    // live "Running a command" row climbs for the whole (default one hour)
+    // timeout and the turn never returns. The null device reads EOF at once,
+    // so such a command exits instead of hanging. Callers that need to feed a
+    // process use the background `process` tool, which supplies its own pipe.
+    auto nullStdin = openNullStdin();
+    try pid = spawnProcess(argv, nullStdin.isOpen ? nullStdin : stdin,
+        outFile, outFile, null, Config.suppressConsole, workdir);
     catch (Exception error)
     {
         try outFile.close();
@@ -2553,6 +2561,20 @@ private bool tryOpenOutput(string outPath, out File outFile, string toolName)
     {
         return false;
     }
+}
+
+/// The platform's null device opened for reading, or an unopened `File` if it
+/// cannot be opened. Passing it as a foreground child's stdin makes an
+/// interactive command read EOF immediately (so it exits) rather than block on
+/// the app's stdin and stall the turn.
+private File openNullStdin()
+{
+    version (Windows)
+        enum nullDevice = "NUL";
+    else
+        enum nullDevice = "/dev/null";
+    try return File(nullDevice, "r");
+    catch (Exception) return File.init;
 }
 
 /// A window of lines read from a file, for the `read` tool's paging.
