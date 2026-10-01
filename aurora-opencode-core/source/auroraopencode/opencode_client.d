@@ -18,8 +18,8 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, lastIndexOf, strip, toLower;
 import std.utf : toUTF16z;
 import auroraopencode.core : ChatImageAttachment, ChatRequestMessage,
-    OpenCodeToolCall, OpenCodeToolDef, isLoopbackApiBaseUrl,
-    isOpenCodeApiBaseUrl, isVisionModel;
+    OpenCodeToolCall, OpenCodeToolDef, defaultReasoningEffortForModel,
+    isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl, isVisionModel;
 import auroraopencode.logging : logError, logInfo;
 
 /** Kinds of events the client delivers to the UI thread. */
@@ -1756,13 +1756,14 @@ final class OpenCodeClient
         root["stream_options"] = streamOptions;
         // Thinking on maps the composer's effort onto `reasoning_effort`. The
         // DeepSeek-class routes over-think at the provider's own default, so an
-        // unset effort resolves to `low` instead of the previous implicit
-        // `high`.
+        // unset effort resolves to `low` there -- except DeepSeek 4.1 Flash,
+        // which the user wants to think high by default (see
+        // defaultReasoningEffortForModel).
         if (thinking)
         {
             root["reasoning_effort"] = reasoningEffort == "low" ||
                 reasoningEffort == "medium" || reasoningEffort == "high"
-                ? reasoningEffort : "low";
+                ? reasoningEffort : defaultReasoningEffortForModel(model);
             if (llamaCppServer && thinkingBudgetTokens > 0)
                 root["thinking_budget_tokens"] = thinkingBudgetTokens;
         }

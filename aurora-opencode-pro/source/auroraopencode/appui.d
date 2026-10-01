@@ -13101,6 +13101,12 @@ public final class OpenCodeRoot : VBox
                 _streamBubble.setHidden(false);
                 _streamBubble.appendThinking(text);
                 _streamBubble.setThinkingLive(true);
+                // The header now carries the live stats, so clear any footer
+                // set before this reply showed reasoning. Merely skipping
+                // later footer updates left that early, now mismatched value
+                // stuck at the bottom of the transcript, right over the
+                // composer.
+                _streamBubble.setUsageText("");
             }
             // The header now speaks for this phase; drop "Waiting for the model…".
             clearActivity();
@@ -13135,8 +13141,7 @@ public final class OpenCodeRoot : VBox
         _streamBubble.setTokenRate(_liveTokenRateTenths);
         // A reasoning reply already has the compact stats in its Thinking
         // header. Only reserve the footer for direct replies with no header.
-        if (!_streamBubble.hasThinkingForTesting())
-            _streamBubble.setUsageText(liveTokenStatsText());
+        refreshLiveUsageFooter();
         // The streamed text changes the bubble height, so the ScrollView must
         // re-measure to keep auto-follow at the bottom as the reply grows.
         _messagesScroll.invalidate();
@@ -13174,6 +13179,21 @@ public final class OpenCodeRoot : VBox
         if (_liveTokenRateTenths > 0)
             result ~= " · " ~ formatTokenRate(_liveTokenRateTenths);
         return result;
+    }
+
+    /// Keep the streaming reply's footer in step with its live numbers.
+    ///
+    /// The compact stats belong in the footer only while the reply is a
+    /// direct answer with no `Thinking` header. Once reasoning arrives the
+    /// header speaks for the turn, so the footer is cleared: leaving an early
+    /// value in place (the old code only *skipped* later updates) froze a
+    /// mismatched line at the bottom of the transcript that read as if it
+    /// belonged to the composer.
+    private void refreshLiveUsageFooter()
+    {
+        if (_streamBubble is null) return;
+        _streamBubble.setUsageText(_streamBubble.hasThinkingForTesting()
+            ? "" : liveTokenStatsText());
     }
 
     private void finishAssistantMessage(bool cancelled, int promptTokens = 0,
@@ -17252,7 +17272,8 @@ public final class OpenCodeRoot : VBox
         const model = _settings.model;
         const control = reasoningControlForModel(_settings,
             _settings.baseUrl, model);
-        const effort = control.effort.length > 0 ? control.effort : "low";
+        const effort = control.effort.length > 0 ? control.effort
+            : defaultReasoningEffortForModel(model);
         ContextMenuItem[] items;
         items ~= ContextMenuItem.command("Thinking mode",
             delegate() {}, "", false);
@@ -17322,7 +17343,7 @@ public final class OpenCodeRoot : VBox
         const effort = reasoningControlForModel(_settings, _settings.baseUrl,
             _settings.model).effort;
         return "Thinking: " ~ thinkingEffortLabel(effort.length > 0
-            ? effort : "low");
+            ? effort : defaultReasoningEffortForModel(_settings.model));
     }
 
     /// Push the active chat's mode onto the composer selector.
@@ -21902,8 +21923,7 @@ public final class OpenCodeRoot : VBox
                     {
                         _streamBubble.setLiveTokens(_liveOutputTokens, true);
                         _streamBubble.setTokenRate(_liveTokenRateTenths);
-                        if (!_streamBubble.hasThinkingForTesting())
-                            _streamBubble.setUsageText(liveTokenStatsText());
+                        refreshLiveUsageFooter();
                     }
                     // Only the viewed conversation owns the badge. A background
                     // turn keeps recording its usage in the maps above, but its
@@ -23131,8 +23151,7 @@ public final class OpenCodeRoot : VBox
         {
             _streamBubble.setLiveTokens(_liveOutputTokens, true);
             _streamBubble.setTokenRate(_liveTokenRateTenths);
-            if (!_streamBubble.hasThinkingForTesting())
-                _streamBubble.setUsageText(liveTokenStatsText());
+            refreshLiveUsageFooter();
         }
     }
 

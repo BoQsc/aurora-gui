@@ -241,6 +241,24 @@ public bool isDeepSeekV41Model(string model)
     return id == "deepseek-v4.1" || id.startsWith("deepseek-v4.1-");
 }
 
+/// True for the DeepSeek 4.1 Flash model, under both the bare OpenCode id
+/// (`deepseek-v4.1-flash`) and the CommandCode `vendor/` form
+/// (`deepseek/deepseek-v4.1-flash`).
+public bool isDeepSeekV41FlashModel(string model)
+{
+    return normalizedModelId(model) == "deepseek-v4.1-flash";
+}
+
+/// Reasoning effort used when the user has not chosen one for this model.
+///
+/// DeepSeek 4.1 Flash is configured to think hard by default, so an unset
+/// effort resolves to `high`. Every other route keeps `low`, because the
+/// DeepSeek-class gateways over-think at their own provider default.
+public string defaultReasoningEffortForModel(string model)
+{
+    return isDeepSeekV41FlashModel(model) ? "high" : "low";
+}
+
 /**
  * Whether Aurora may send inline images to a model.
  *
@@ -406,6 +424,19 @@ unittest
     assert(contextLimitForModel("deepseek-v4.1-flash", true) == 500_000);
     assert(contextLimitForModel("deepseek/deepseek-v4-pro", true) == 1_000_000);
     assert(contextLimitForModel("gpt-5.5", true) == 400_000);
+}
+
+unittest
+{
+    // DeepSeek 4.1 Flash thinks high when the user has not chosen an effort;
+    // every other route keeps the low default.
+    assert(defaultReasoningEffortForModel("deepseek-v4.1-flash") == "high");
+    assert(defaultReasoningEffortForModel("deepseek/deepseek-v4.1-flash") == "high");
+    assert(defaultReasoningEffortForModel("DeepSeek-V4.1-Flash") == "high");
+    assert(defaultReasoningEffortForModel("deepseek-v4-flash") == "low");
+    assert(defaultReasoningEffortForModel("deepseek-v4.1-pro") == "low");
+    assert(defaultReasoningEffortForModel("gpt-5.5") == "low");
+    assert(defaultReasoningEffortForModel("") == "low");
 }
 
 unittest
@@ -1031,7 +1062,8 @@ public struct ModelReasoningControl
 {
     string baseUrl;
     string model;
-    // Empty keeps the Thinking-on default of "low".
+    // Empty keeps the model's Thinking-on default: `high` for DeepSeek 4.1
+    // Flash, `low` for everything else (see defaultReasoningEffortForModel).
     string effort;
     // Zero leaves the server's reasoning budget unchanged.
     int budgetTokens;
