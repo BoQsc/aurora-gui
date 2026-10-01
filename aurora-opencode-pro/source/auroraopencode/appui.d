@@ -12,7 +12,8 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
-import auroraopencode.rebuild : isAuroraProject, launchRebuild, planRebuild;
+import rebuild : RebuildOutcome, isAuroraProject, launchRebuild, planRebuild,
+    readRebuildOutcome, rebuildFailed, rebuildIncomplete, rebuildStatusLabel;
 import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
@@ -3983,7 +3984,9 @@ private final class LiveToolRow : Widget
 {
     // Match MessageBubble/ToolGroupBubble insets so a live row shares the
     // reading column's left edge and leaves the same 6px above and below.
-    private static immutable int padH = 10;
+    // Indented ~12px past the prose edge so tool activity reads as a level
+    // below the assistant's own text.
+    private static immutable int padH = 22;
     private static immutable int padV = 6;
     // The preview is capped so a huge `write` body can never make the row
     // unbounded or stall a frame.
@@ -4275,7 +4278,9 @@ private final class ActivityRow : Widget
 
     // Same insets as every other transcript row so the gap above and below a
     // stacked collapsible row stays uniform.
-    private static immutable int padH = 10;
+    // Indented past the prose edge so the live activity row sits under the
+    // assistant text rather than level with it.
+    private static immutable int padH = 22;
     private static immutable int padV = 6;
 
     this()
@@ -5256,7 +5261,9 @@ private final class ToolGroupBubble : Widget
     // Mirror MessageBubble's text insets (its padH/padV are private) so the
     // action header sits on the same baseline and left edge as the sibling
     // Thinking / tool rows instead of being flush to the bubble edge.
-    private static immutable int padH = 10;
+    // Indented ~12px past the prose edge: assistant text starts at the main
+    // text edge, while grouped tool operations step in to show hierarchy.
+    private static immutable int padH = 22;
     private static immutable int padV = 6;
     // Expanded children sit at the same left edge as the header text above
     // them; `onLayout` places them at `padH`, matching MessageBubble's text.
@@ -8898,7 +8905,7 @@ public final class OpenCodeRoot : VBox
     // reply), so it is opt-in via `Settings.showWorkedFor` and off by default.
 
     // Rebuild: compile the package with DUB and relaunch the app. A detached
-    // helper does the work after this window closes (see auroraopencode.rebuild);
+     // helper does the work after this window closes (see shared/rebuild.d);
     // the pending flag keeps the transcript live until the helper is started.
     private bool _rebuildPending;
     private Button _updateButton;
@@ -9264,21 +9271,19 @@ public final class OpenCodeRoot : VBox
         _resumeNoteAlreadyHandled = target >= 0 &&
             _sessions[target].turnStatus != "running";
         // A rebuild that fails to compile relaunches the PREVIOUS binary. The
-        // helper removes `rebuild-report.txt` after a good build and writes it
-        // only on failure, so its presence is the reliable "your changes are
-        // not live" signal. Quote it into the prompt so the agent can fix the
-        // errors and rebuild rather than assume the edit took effect.
+        // helper records the lifecycle in `rebuildstate.json` (package root);
+        // the app is the reader. `ok` means the edits are live, so the run is
+        // stamped and its build steps completed. A failed compile - or a
+        // helper that never reached a verdict - means the edits are NOT live
+        // and the reason is quoted into the prompt instead.
         string rebuildReport;
         string buildStamp;
         if (cause == "rebuild")
         {
-            const reportPath = buildPath(opencodeStateDirectory(),
-                "rebuild-report.txt");
-            if (exists(reportPath))
-            {
-                try rebuildReport = readText(reportPath);
-                catch (Exception) {}
-            }
+            auto outcome = readRebuildOutcome(rebuildPackageDirectory());
+            if (rebuildFailed(outcome) || rebuildIncomplete(outcome))
+                rebuildReport = outcome.report.length > 0
+                    ? outcome.report : incompleteRebuildReport(outcome);
             else
                 buildStamp = rebuildSuccessStamp();
         }
@@ -9443,8 +9448,8 @@ public final class OpenCodeRoot : VBox
                     "and checklist from where you left off; apply any queued " ~
                     "guidance before claiming completion.\n\n" ~
                     promptReportExcerpt(rebuildReport) ~
-                    "\n\n(full report: " ~ buildPath(opencodeStateDirectory(),
-                        "rebuild-report.txt") ~ ")";
+                    "\n\n(full report: rebuild-report.txt in the package " ~
+                        "root; see rebuildstate.json)";
             return "The application was rebuilt and relaunched with your " ~
                 "latest source changes." ~ buildStamp ~ " Continue the " ~
                 "durable objective and checklist from where you left off" ~
@@ -9525,6 +9530,34 @@ public final class OpenCodeRoot : VBox
             baseName(newestName) ~ " changed later (" ~
             formatStamp(newestTime) ~ "); the build may be stale — rebuild " ~
             "again.";
+    }
+
+    /// The package directory that owns the shared rebuild state and artifacts,
+    /// or the app state directory when the binary lives outside a package
+    /// (where no rebuild could have happened anyway).
+    private string rebuildPackageDirectory()
+    {
+        const dir = planRebuild(opencodeStateDirectory(), true, thisProcessID,
+            thisExePath()).workingDir;
+        return dir.length > 0 ? dir : opencodeStateDirectory();
+    }
+
+    /// The notice for a rebuild that never reached a verdict: the helper
+    /// stopped before it built, so the edits are not live but there is no
+    /// compiler transcript to quote. The state record itself is described.
+    private static string incompleteRebuildReport(in RebuildOutcome outcome)
+    {
+        string text = "The rebuild did not finish: rebuildstate.json reports " ~
+            "status '" ~ rebuildStatusLabel(outcome.status) ~ "'" ~
+            (outcome.phase.length > 0 ? " (phase: " ~ outcome.phase ~ ")" : "") ~
+            ".\nYour source changes are NOT live; call the rebuild tool " ~
+            "again.\n";
+        if (outcome.errors.length > 0)
+            text ~= "\ncompiler errors:\n  " ~ join(outcome.errors, "\n  ") ~
+                "\n";
+        if (outcome.buildLog.length > 0)
+            text ~= "\n(build log: " ~ outcome.buildLog ~ ")\n";
+        return text;
     }
 
     // -- optional floating mini chat ----------------------------------------
@@ -9691,7 +9724,7 @@ public final class OpenCodeRoot : VBox
     ///
     /// Returns true when the helper was started and the window is closing.
     ///
-    public bool requestRebuild()
+    public bool requestRebuild(string reason = "")
     {
         if (_rebuildPending) return false;
         _rebuildPending = true;
@@ -9711,6 +9744,7 @@ public final class OpenCodeRoot : VBox
 
         auto plan = planRebuild(opencodeStateDirectory(), true,
             thisProcessID, thisExePath());
+        plan.reason = reason;
         if (!launchRebuild(plan))
         {
             _rebuildPending = false;
@@ -9918,7 +9952,7 @@ public final class OpenCodeRoot : VBox
         if (!sessionIdKnown(sessionId)) sessionId = resumeOwnerSessionId();
         writeResumeNoteForRebuild(reason, sessionId);
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
-        if (!requestRebuild()) removeResumeNoteForRebuild();
+        if (!requestRebuild(reason)) removeResumeNoteForRebuild();
     }
 
     /// Whether `id` names a conversation that still exists, so the resume note
@@ -10337,7 +10371,10 @@ public final class OpenCodeRoot : VBox
         auto chatPanel = new VBox(0);
         chatPanel.layoutHints().flex = 1.0;
 
-        _messageColumn = new VBox(6, Insets(12, 8));
+        // Extra horizontal inset so the transcript does not begin flush against
+        // the sidebar divider; the conversation gets more breathing room from
+        // the split than the (denser) session list beside it.
+        _messageColumn = new VBox(6, Insets(28, 10));
         _messageColumn.setId("oc-messages");
         auto messageCenter = new CenteredColumn(_messageColumn,
             opencodeContentMaxWidth);

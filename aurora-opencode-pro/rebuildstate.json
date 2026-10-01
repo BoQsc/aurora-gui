@@ -1,0 +1,13 @@
+{
+  "status": "running",
+  "phase": "building",
+  "reason": "",
+  "command": "dub build --build=release",
+  "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+  "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+  "startedAt": "2026-10-02 00:24:13.4930539",
+  "finishedAt": "2026-10-02 00:24:13.4930539",
+  "durationMs": 0,
+  "exitCode": 0,
+  "errors": []
+}

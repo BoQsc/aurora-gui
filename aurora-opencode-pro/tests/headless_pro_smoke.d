@@ -17,7 +17,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.markdown : BlockType, MdComposition, MdItemKind,
     composeMarkdown, paintMarkdown, parseMarkdown;
-import auroraopencode.rebuild : planRebuild, rebuildHelperArgv;
+import rebuild : planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, nativeOnlyToolDefinitions,
     previewToolDiff, rebuildRequestHandler;
@@ -2314,7 +2314,8 @@ int main(string[] args)
     }
 
     // A failed rebuild is reported back into the resumed conversation. The
-    // helper leaves `rebuild-report.txt` only on failure; the resume prompt
+    // app derives the report from the rebuild lifecycle (`rebuildstate.json`,
+    // plus the helper's `rebuild-report.txt` on failure); the resume prompt
     // must quote it so the agent knows its changes are not live and can fix
     // them, instead of the "rebuilt" success wording.
     {

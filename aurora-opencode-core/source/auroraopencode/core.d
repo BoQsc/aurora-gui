@@ -506,8 +506,9 @@ public immutable Color opencodeDiffGutter = Color.fromHex(0x5c5c68);
 
 /// Small UI text: menus, buttons, captions and the status line.
 public enum int opencodeFontSmall = 13;
-/// Body text: chat messages, session titles and inputs.
-public enum int opencodeFontBase = 14;
+/// Body text: chat messages, session titles and inputs. Slightly larger than the
+/// chrome so long developer sessions read comfortably.
+public enum int opencodeFontBase = 16;
 /// Section and dialog titles.
 public enum int opencodeFontTitle = 16;
 /// Largest in-app text.
@@ -518,12 +519,11 @@ public enum int opencodeControlHeight = 28;
 public enum int opencodeSessionRowHeight = 32;
 /// Height of the merged titlebar/toolbar band.
 public enum int opencodeTitleBarHeight = 40;
-/// Maximum width of the centered conversation/composer column. Wider than the
-/// upstream opencode `--container-3xl` token (48rem = 768 px): the message list
-/// and the prompt read as one centered column, but a little more room is given
-/// so long lines and tool output fit before stretching edge to edge on a wide
-/// window.
-public enum int opencodeContentMaxWidth = 1024;
+/// Maximum width of the centered conversation/composer column. Kept under
+/// ~1000 px so prose stays around a comfortable reading measure instead of
+/// stretching edge to edge on a wide window; the wrapper still centres it so
+/// the transcript reads as one calm column.
+public enum int opencodeContentMaxWidth = 960;
 /// Height of the chat composer panel: roughly twice the old single-row input,
 /// leaving room for a multi-line prompt with the send button pinned below.
 public enum int opencodeComposerHeight = 116;

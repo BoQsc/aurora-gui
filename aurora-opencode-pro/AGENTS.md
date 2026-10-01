@@ -67,9 +67,10 @@ read-only and produce no side effects.
 - Rebuild/restart flow: the app records that a rebuild is needed, exits, the
   helper `aurora-rebuilder.exe` runs `dub build`, and the app is relaunched
   (`bin/restart-now.bat` drives the no-rebuild/run path).
-- Build-side support lives in `tools/rebuilder.d`; in-app build-awareness lives
-  in `source/auroraopencode/rebuildnotice.d` and
-  `source/auroraopencode/rebuild.d`.
+- Build-side support and in-app build-awareness both live in the single module
+  `shared/rebuild.d`: the detached helper logic, the `rebuildstate.json`
+  protocol, the app-side launch flow, the resume notice, and the Win32 progress
+  window. A thin `tools/rebuilder.d` owns `main` and calls `runRebuilder`.
 
 ## How to check whether a rebuild already happened
 

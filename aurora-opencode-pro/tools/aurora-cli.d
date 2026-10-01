@@ -40,7 +40,7 @@ import std.process : Config, spawnProcess, wait;
 import std.stdio : stderr, stdin, stdout;
 import std.string : indexOf, lastIndexOf, split, strip, toLower;
 
-import progresswindow : closeProgressWindow, openProgressWindow, setProgress;
+import rebuild : closeProgressWindow, openProgressWindow, setProgress;
 
 private struct Options
 {

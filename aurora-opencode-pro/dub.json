@@ -11,6 +11,7 @@
   "mainSourceFile": "source/app.d",
   "sourcePaths": [
     "source",
+    "shared",
     "../vendor/aurora-d-0.4.5/source"
   ],
   "stringImportPaths": [
@@ -47,7 +48,8 @@
       "targetName": "aurora-rebuilder",
       "mainSourceFile": "tools/rebuilder.d",
       "sourcePaths": [
-        "tools"
+        "tools",
+        "shared"
       ],
       "excludedSourceFiles": [
         "source/**"
