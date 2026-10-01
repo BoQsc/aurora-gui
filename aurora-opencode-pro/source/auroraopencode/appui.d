@@ -1597,6 +1597,13 @@ private final class MessageBubble : Widget
         if (_failed)
             height += fontPixelSize(1) + 4;
         height += footerReserve();
+        // Reserve a slot for the hover Copy/Edit row so it always lands BELOW
+        // the message text. Without it a one-line message measured to just the
+        // text plus padding, `drawHoverActions` could not fit the row under the
+        // text and clamped it back up onto the same line. The row is hover-only
+        // but the space is always kept, so a hover never shifts the transcript.
+        if (hoverActionsEligible())
+            height += hoverActionReserve();
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
         // VBox layout sizes children from layoutHints, not from the intrinsic
@@ -2739,32 +2746,44 @@ private final class MessageBubble : Widget
         return fontPixelSize(1) + 4;
     }
 
+    /// Whether this bubble ever shows the hover Copy/Edit row (so the measure
+    /// pass knows to reserve its slot). Copy needs message text; Edit is for
+    /// user prompts. Tool rows, failed and hidden bubbles never show the row.
+    private bool hoverActionsEligible() const
+    {
+        if (_hidden || _role == "tool" || _failed) return false;
+        if (_thinking.length > 0) return false;
+        if (_content.length > 0) return true;
+        return _role == "user" && _actionRect.height == 0;
+    }
+
+    /// Height the hover row reserves below the message text: the 18 px pill
+    /// plus a 6 px gap so it clears the last line instead of touching it.
+    private static int hoverActionReserve() { return 18 + 6; }
+
     /// Draw the Copy/Edit pills that appear under a message while the pointer
-    /// rests on the bubble. Unlike the persistent meta footer, this row is
-    /// hover-only, so it reserves no layout height: it is overlaid in the
-    /// bubble's own bottom padding and never shifts the transcript.
+    /// rests on the bubble. The measure pass always reserves `hoverActionReserve`
+    /// below the text, so the row is drawn inside that slot — a one-line message
+    /// gets the pills under its line, never on top of it.
     ///
     /// The row is right-aligned and sits just below the message text (`textBottom`
     /// is the painted text's bottom edge), styled like a hover toolbar. Copy is
-    /// offered for every message; Edit belongs to user prompts alone. Failed,
-    /// hidden and tool bubbles offer nothing.
+    /// offered for every message; Edit belongs to user prompts alone.
     private void drawHoverActions(ref Canvas canvas, int width, int height,
         int textBottom)
     {
         _copyActionRect = Rect.init;
         _editActionRect = Rect.init;
-        if (!_pointerInside || _hidden || _role == "tool" || _failed ||
-            _thinking.length > 0)
-            return;
+        if (!_pointerInside || !hoverActionsEligible()) return;
         const canCopy = _content.length > 0;
         const canEdit = _role == "user" && _actionRect.height == 0;
         if (!canCopy && !canEdit) return;
 
         const rowH = 18;
-        // A few px below the last line, but never past the bubble's bottom edge.
-        int rowY = textBottom + 4;
-        if (rowY + rowH > height - padV)
-            rowY = height - padV - rowH;
+        // Inside the reserved slot below the text; never clamped up onto the
+        // text itself (the slot always exists for an eligible bubble).
+        int rowY = textBottom + 6;
+        if (rowY + rowH > height) rowY = maxInt(textBottom, height - rowH);
         if (rowY < 0) rowY = 0;
 
         // Measure both pills first so a right-aligned pair can be placed as one
