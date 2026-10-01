@@ -1,0 +1,44 @@
+Computer-use targeting and evidence repair, 2026-10-01
+
+Observed in "COH1 tutorial using computer use":
+  The assistant described Windows Start as open while the frame showed Aurora.
+  Virtual click results named an empty target, followed by typing refusals.
+  A failed batch captured a frame that the UI did not stage for the model.
+  Later browser pixels did not support the continuing Windows Search narrative.
+A separate JPEG-only API probe correctly identified the browser and the absence
+of Windows Search/game UI. JPEG delivery itself was functional.
+
+Changes:
+  Virtual clicks bind the actual window under their coordinates and share that
+  committed target with keyboard input. Explicit window overrides are honored.
+  Own-process input is refused. Untitled windows report class/PID identifiers.
+  Posted and native input acknowledge delivery attempts, not UI success.
+  Queue/injection failures propagate instead of being acknowledged as success.
+  input_mode=native provides real OS input for games/shell controls that ignore
+  posted messages; omission preserves the Settings preference. Nested actions
+  inherit the selected mode and restore it on return.
+  Input actions return fresh JPEG evidence by default, including failures.
+  Failed tool results retain valid images for the next model request.
+  Screen capture observes the current desktop without raising an old target.
+  Pixel-change notices explicitly do not verify the intended outcome.
+  Prompt instructions require current visible controls and verified outcomes,
+  distinguish Aurora transcript text from external UI, and change approach
+  after ineffective attempts. Games/Start/Search should use native input.
+
+Validation:
+  Production Win32 input integration: 17 calls against two disposable windows.
+  Actual native text entry produced "aA" and "bB" in the intended windows.
+  A native button event was observed after a posted click was ignored.
+  Virtual click target inheritance, explicit keyboard overrides, invalid and
+  own-process refusals, fresh failure screenshots and observational capture
+  all passed. Fixture windows/state were closed and removed afterward.
+  Pro screenshot/history regression passed, including 4,500 frames, repeated
+  checkpoint rollovers and save/reload. A failed computer batch's JPEG reached
+  the next request and survived persistence without changing the error result.
+  git diff --check passed.
+
+Broader tools suite passed its computer-use checks, then stopped at the existing
+tools_test.d:1215 prompt-length assertion (<8,000 bytes). Both the current prompt
+and unchanged HEAD prompt measured 8,667 bytes with computer use disabled.
+This failure is independent of the computer-use prompt changes. Actual CoH1
+gameplay and universal model grounding are not certified by these fixture tests.

@@ -74,6 +74,18 @@ private void assertFinishReasonFixture()
     client.closeSession();
 }
 
+private void assertToolOnlyFirstToken()
+{
+    auto client = new OpenCodeClient("https://example.com/v1", "test-key");
+    client.resetStreamStateForTesting();
+    client.feedSseForTesting(
+        `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":""}}]}}]}` ~ "\n\n");
+    assert(client.waitBreakdown().firstToken >= 0,
+        "tool-only output must end the first-token wait");
+    client.closeSession();
+    writeln("Tool-only output records the first-token boundary");
+}
+
 /// A few OpenAI-compatible proxies close immediately after the final data
 /// event instead of writing the customary newline. The EOF path must still
 /// deliver that event; it is often only the answer's last character.
@@ -528,6 +540,7 @@ int main()
         "reached", 0) < 0);
     writeln("A failed turn is sent again automatically when waiting will help");
     assertToolCallFixture();
+    assertToolOnlyFirstToken();
     assertFinishReasonFixture();
     assertFinalLineWithoutNewline();
     assertRequestBody();

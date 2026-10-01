@@ -29,6 +29,7 @@ module auroraopencode.computeruse;
 // ===========================================================================
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolDef;
+import auroraopencode.screenshotimage : encodeScreenshotJpeg;
 import auroraopencode.attachments : attachmentImageForData;
 import std.algorithm : canFind, min;
 import std.array : appender;
@@ -41,6 +42,7 @@ import std.base64 : Base64;
 import std.utf : toUTF16z;
 import core.thread : Thread;
 import core.time : msecs, MonoTime;
+import core.sync.mutex : Mutex;
 
 /// Env switch. Off by default: the feature is opt-in. Only these values enable
 /// it, so an unset variable (the common case) leaves computer use disabled.
@@ -180,6 +182,38 @@ public __gshared string computerUseProviderModel;
 /// ~40% faster per round than the main app model on a live desktop benchmark.
 public enum string computerUseDefaultLoopModel = "deepseek-v4-flash-vision-exp";
 
+/// Stable routing id sent as `x-opencode-session` on every nested-loop request.
+/// The OpenCode Go gateway keeps prompt caching and scheduling coherent per id,
+/// so a route id that changes request to request (or is shared by unrelated
+/// callers) forces a cold, uncached path and adds the multi-second wait the
+/// nested computer-use loop used to show.
+private __gshared string _computerUseSession;
+private __gshared bool _computerUseSessionSet;
+
+/// The id the nested loop sends, seeding a fresh one on first use so it stays
+/// stable for the process (and can be overridden by the app for one conversation).
+public string computerUseRoutingSession()
+{
+    if (!_computerUseSessionSet || _computerUseSession.length == 0)
+    {
+        _computerUseSession = "aurora-computer-use-" ~
+            to!string(MonoTime.currTime.ticks);
+        _computerUseSessionSet = true;
+    }
+    return _computerUseSession;
+}
+
+/// Pin the nested loop's routing id to the active conversation's key so its
+/// requests share the same cache route as the rest of the app.
+public void setComputerUseSession(string value)
+{
+    if (value.length > 0)
+    {
+        _computerUseSession = value;
+        _computerUseSessionSet = true;
+    }
+}
+
 /// Called by the app on load and whenever Settings change.
 public void setComputerUseProvider(string baseUrl, string apiKey, string model)
 {
@@ -249,21 +283,90 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "prefer one `steps` batch (click a field, type a line, press enter) " ~
             "over a see -> act -> see round trip per action; `screenshot` " ~
             "decides whether a fresh capture comes back (default: yes for " ~
-            "`steps`, no for one action, always for `screen`). Aim from the " ~
+            "input and `steps`, always for `screen`). Aim from the " ~
             "latest `screen`: coordinates come from the frame you last saw. " ~
             "The human can stop everything at any time with " ~
             computerUseKillSwitchChord ~ ". Keep reasoning minimal; only stop " ~
             "to plan when genuinely stuck (an unexpected dialog, a choice that " ~
-            "needs judgement). Windows only.",
-            `{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: override the loop model for this call (default: the app's model)"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            "needs judgement). A posted virtual action only confirms queue delivery, " ~
+            "not an application response. Set `input_mode` to `native` for games or " ~
+            "shell controls that ignore virtual input. Verify progress in the latest " ~
+            "screenshot; never treat an attempted action as proof of success. Windows only.",
+            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: override the loop model for this call (default: the app's model)"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
+}
+
+/// Serializes computer-use desktop work across the whole process. The desktop
+/// is one global resource, but each conversation runs its tools on its own
+/// worker thread, so without this lock a call from one chat could interleave
+/// with a call from another (or with a `subagent` nested loop) and the two
+/// would fight over focus, the pointer, and the shared committed target. The
+/// model in one chat would see the other chat's clicks land and read them as
+/// "my action did that".
+///
+/// Created eagerly via a module constructor: a lazy `synchronized` guard would
+/// call druntime on a null object (`rt.monitor_.ensureMonitor(null)`), which
+/// faults. Never `synchronized` a possibly-null `__gshared` reference.
+private __gshared Mutex computerUseProcessMutex;
+/// Thread that currently owns `computerUseProcessMutex`, and its re-entry
+/// depth. D's `Mutex` is not recursive, and a `subagent`/`loop` action calls
+/// back into `experimentalComputerUseExecute` on the SAME thread, so the owner
+/// must be allowed to re-enter without re-locking (which would self-deadlock).
+private __gshared size_t computerUseMutexOwner;
+private __gshared int computerUseMutexDepth;
+
+static this()
+{
+    computerUseProcessMutex = new Mutex();
+}
+
+/// Enter the process-wide computer-use critical section. Re-entrant for the
+/// owning thread so nested `subagent`/`loop` calls do not deadlock.
+version (Windows)
+private void lockComputerUseProcess()
+{
+    const me = cast(size_t) GetCurrentThreadId();
+    if (computerUseMutexDepth > 0 && computerUseMutexOwner == me)
+    {
+        ++computerUseMutexDepth;
+        return;
+    }
+    computerUseProcessMutex.lock();
+    computerUseMutexOwner = me;
+    computerUseMutexDepth = 1;
+}
+
+/// Leave the critical section, releasing the mutex only on the outermost exit.
+version (Windows)
+private void unlockComputerUseProcess()
+{
+    if (computerUseMutexDepth <= 0) return;
+    if (--computerUseMutexDepth > 0) return;
+    computerUseMutexOwner = 0;
+    computerUseProcessMutex.unlock();
 }
 
 /// Execute a `computer` call. The desktop work happens here; registration,
 /// dispatch and UI live in the caller so this module stays the single drop
 /// point. Screenshots come back as image attachments in `images`.
 public ComputerUseResult experimentalComputerUseExecute(string args,
+    string workspace)
+{
+    version (Windows)
+    {
+        // One computer call drives the desktop at a time, process-wide: a
+        // second conversation's call waits here instead of interleaving its
+        // input with this one. The desktop has a single pointer, keyboard focus
+        // and committed target, so two chats acting at once would land each
+        // other's clicks and each would misread the other's actions as its own.
+        lockComputerUseProcess();
+        scope (exit) unlockComputerUseProcess();
+    }
+    return experimentalComputerUseExecuteLocked(args, workspace);
+}
+
+private ComputerUseResult experimentalComputerUseExecuteLocked(string args,
     string workspace)
 {
     // The kill switch is sticky: after the human presses the chord, refuse
@@ -297,14 +400,23 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
 
     version (Windows)
     {
+        // Restore the input mode only after releasing any held input.
         // Any key/button still held when the call ends is released here, so a
         // model that forgets `key_up` cannot leave an input stuck down.
-        scope (exit) releaseHeldInputs();
         const started = MonoTime.currTime;
         computerUseWorkspace = workspace;
         // Snapshot the mode for the whole call so a checkbox flip mid-call
         // cannot switch the input path halfway through.
-        virtualPointerActive = computerUseVirtualPointerBySetting;
+        const inputMode = strip(toLower(jsonString(value, "input_mode")));
+        if (inputMode.length && inputMode != "native" && inputMode != "virtual")
+            return failedResult("Error: input_mode must be native or virtual.");
+        const previousMode = virtualPointerActive;
+        scope (exit) virtualPointerActive = previousMode;
+        virtualPointerActive = inputMode == "native" ? false :
+            inputMode == "virtual" ? true : computerUseMutexDepth > 1
+                ? previousMode : computerUseVirtualPointerBySetting;
+        computerUseInputError = "";
+        scope (exit) releaseHeldInputs();
         ComputerUseResult result;
         // A batch screenshots by default: the caller's next move depends on the
         // result, and asking for it in the same call saves a whole model turn.
@@ -312,7 +424,18 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
             result = runWindowsSteps(steps,
                 screenshotFlag < 0 ? true : screenshotFlag == 1);
         else
-            result = runWindowsAction(value, screenshotFlag == 1);
+            result = runWindowsAction(value, screenshotFlag == 1 ||
+                (screenshotFlag < 0 && action != "screen" &&
+                    action != "wait_for_change" && action != "mouse_move" &&
+                    action != "subagent"));
+        // Failed input is precisely when the next decision needs fresh evidence.
+        if (result.failed && result.images.length == 0 && screenshotFlag != 0 &&
+            !computerUseAbortActive())
+        {
+            auto shot = screenshotResult("Screen after the failed action");
+            result.output ~= " " ~ shot.output;
+            result.images = shot.images;
+        }
         result.output = withElapsed(result.output, started);
         return result;
     }
@@ -935,6 +1058,7 @@ version (Windows)
         int DeleteDC(void* hdc);
         void* GetForegroundWindow();
         int GetWindowTextW(void* hwnd, wchar* buffer, int maxCount);
+        int GetClassNameW(void* hwnd, wchar* buffer, int maxCount);
         int IsWindowVisible(void* hwnd);
         int IsIconic(void* hwnd);
         int ShowWindow(void* hwnd, int command);
@@ -1175,6 +1299,7 @@ version (Windows)
     private __gshared int virtualY = -1;
     /// Last `focus` target; also the window posted input is aimed at.
     private __gshared void* virtualTargetHwnd;
+    private __gshared string computerUseInputError;
     private __gshared Thread overlayThread;
     private __gshared uint overlayThreadId;
     private __gshared bool overlayStop;
@@ -1401,44 +1526,33 @@ version (Windows)
     /// window is always skipped, so posted input can never land in this app.
     private void* virtualTargetWindow()
     {
-        if (virtualTargetHwnd !is null && IsWindow(virtualTargetHwnd) != 0 &&
-            !isOwnProcessWindow(virtualTargetHwnd))
-            return virtualTargetHwnd;
-        if (virtualX >= 0)
+        return targetUsable(virtualTargetHwnd) ? virtualTargetHwnd : null;
+    }
+
+    /// Posting acknowledges queue delivery only; applications may ignore it.
+    private bool virtualPostMouse(uint msg, ushort buttonFlags, void* receiver = null)
+    {
+        auto hwnd = receiver is null ? virtualTargetWindow() : receiver;
+        if (!targetUsable(hwnd))
         {
-            POINT point;
-            point.x = virtualX;
-            point.y = virtualY;
-            auto hwnd = WindowFromPoint(point);
-            if (hwnd !is null && !isOwnProcessWindow(hwnd)) return hwnd;
+            computerUseInputError = "Error: no valid virtual mouse target. Nothing was posted.";
+            return false;
         }
-        auto fg = GetForegroundWindow();
-        return isOwnProcessWindow(fg) ? null : fg;
-    }
-
-    /// Virtual mode never changes the real foreground, but browsers and most
-    /// apps ignore posted keyboard messages (WM_KEY*/WM_CHAR), so `type`/`key`
-    /// silently did nothing there. Keys are therefore still injected for real:
-    /// raise the intended target first so they land in it rather than in
-    /// whatever window the person left focused.
-    private void prepareKeyboardTarget()
-    {
-        if (!virtualPointerActive) return;
-        auto hwnd = virtualTargetWindow();
-        if (hwnd !is null) forceForeground(hwnd);
-    }
-
-    private void virtualPostMouse(uint msg, ushort buttonFlags)
-    {
-        auto hwnd = virtualTargetWindow();
-        if (hwnd is null) return;
         POINT point;
         point.x = virtualX;
         point.y = virtualY;
-        ScreenToClient(hwnd, &point);
-        const lp = cast(LPARAM)
-            ((point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16));
-        PostMessageW(hwnd, msg, buttonFlags, lp);
+        if (!ScreenToClient(hwnd, &point))
+        {
+            computerUseInputError = "Error: virtual mouse coordinates could not be mapped to the target. Nothing was posted.";
+            return false;
+        }
+        const lp = cast(LPARAM) ((point.x & 0xFFFF) | ((point.y & 0xFFFF) << 16));
+        if (!PostMessageW(hwnd, msg, buttonFlags, lp))
+        {
+            computerUseInputError = "Error: Windows refused posted mouse input. The action is unverified.";
+            return false;
+        }
+        return true;
     }
 
     private ushort buttonFlagFor(DWORD down)
@@ -1462,52 +1576,68 @@ version (Windows)
         return WM_LBUTTONUP;
     }
 
-    private void virtualClickAt(int x, int y, int count, DWORD down, DWORD up)
+    private bool virtualClickAt(int x, int y, int count, DWORD down, DWORD up)
     {
+        auto target = noteClickTarget(x, y);
+        if (target is null) return false;
         virtualMoveTo(x, y);
+        POINT point;
+        point.x = virtualX;
+        point.y = virtualY;
+        auto receiver = WindowFromPoint(point);
+        if (!targetUsable(receiver)) return false;
         Thread.sleep(msecs(30));
         foreach (i; 0 .. count)
         {
-            virtualPostMouse(downMsgFor(down), buttonFlagFor(down));
-            virtualPostMouse(upMsgFor(up), 0);
+            const pressed = virtualPostMouse(downMsgFor(down), buttonFlagFor(down), receiver);
+            const released = virtualPostMouse(upMsgFor(up), 0, receiver);
+            if (!pressed || !released) return false;
             if (i + 1 < count) Thread.sleep(msecs(60));
         }
+        return true;
     }
 
-    private void virtualDrag(int x1, int y1, int x2, int y2, int durationMs,
+    private bool virtualDrag(int x1, int y1, int x2, int y2, int durationMs,
         string button)
     {
         DWORD down = MOUSEEVENTF_LEFTDOWN;
         if (button == "right") down = MOUSEEVENTF_RIGHTDOWN;
         else if (button == "middle" || button == "wheel")
             down = MOUSEEVENTF_MIDDLEDOWN;
+        if (noteClickTarget(x1, y1) is null) return false;
         virtualMoveTo(x1, y1);
         Thread.sleep(msecs(40));
-        virtualPostMouse(downMsgFor(down), buttonFlagFor(down));
+        if (!virtualPostMouse(downMsgFor(down), buttonFlagFor(down))) return false;
         Thread.sleep(msecs(40));
         int steps = durationMs / 16;
         if (steps < 2) steps = 2;
         if (steps > 150) steps = 150;
+        bool complete = true;
         foreach (i; 1 .. steps + 1)
         {
-            if (computerUseAbortActive()) break;
+            if (computerUseAbortActive()) { complete = false; break; }
             const t = cast(double) i / steps;
             virtualMoveTo(cast(int) (x1 + (x2 - x1) * t),
                 cast(int) (y1 + (y2 - y1) * t));
-            virtualPostMouse(WM_MOUSEMOVE, buttonFlagFor(down));
+            if (!virtualPostMouse(WM_MOUSEMOVE, buttonFlagFor(down)))
+            {
+                complete = false;
+                break;
+            }
             Thread.sleep(msecs(16));
         }
-        virtualPostMouse(upMsgFor(down), 0);
+        const released = virtualPostMouse(upMsgFor(down), 0);
+        return complete && released;
     }
 
-    private void virtualWheel(int amount)
+    private bool virtualWheel(int amount)
     {
         auto hwnd = virtualTargetWindow();
-        if (hwnd is null) return;
+        if (hwnd is null) return false;
         const lp = cast(LPARAM)
             ((virtualX & 0xFFFF) | ((virtualY & 0xFFFF) << 16));
         const wp = cast(WPARAM) ((amount & 0xFFFF) << 16);
-        PostMessageW(hwnd, WM_MOUSEWHEEL, wp, lp);
+        return PostMessageW(hwnd, WM_MOUSEWHEEL, wp, lp) != 0;
     }
 
     private void virtualChar(ushort unit)
@@ -1754,7 +1884,7 @@ version (Windows)
     {
         auto capture = captureScreen(rx, ry, rw, rh);
         if (!capture.ok) return failedResult(capture.error);
-        auto png = computerUseEncodePng(capture.width, capture.height,
+        auto jpeg = encodeScreenshotJpeg(capture.width, capture.height,
             capture.rgb);
         const step = screenDownscale();
         const screenW = GetSystemMetrics(SM_CXSCREEN);
@@ -1771,24 +1901,26 @@ version (Windows)
         const active = foregroundWindowTitle();
         ComputerUseResult result;
         result.output = prefix ~ " (" ~ to!string(capture.width) ~ "x" ~
-            to!string(capture.height) ~ ", " ~ to!string(png.length) ~
+            to!string(capture.height) ~ ", " ~ to!string(jpeg.length) ~
             " bytes" ~ (note.length ? ", " ~ note : "") ~
             "; click in these image pixels" ~
             (active.length ? ", active window \"" ~ active ~ "\"" : "") ~
             ").";
         // This frame is now the one the model has seen.
-        result.images = [attachmentImageForData("image/png", "screen.png",
-            png)];
+        result.images = [attachmentImageForData("image/jpeg", "screen.jpg",
+            jpeg)];
         return result;
     }
 
-    private void sendMouse(DWORD flags, int data = 0)
+    private bool sendMouse(DWORD flags, int data = 0)
     {
         INPUT[1] inputs;
         inputs[0].type = INPUT_MOUSE;
         inputs[0].mi.dwFlags = flags;
         inputs[0].mi.mouseData = cast(DWORD) data;
-        SendInput(1, inputs.ptr, INPUT.sizeof);
+        const accepted = SendInput(1, inputs.ptr, INPUT.sizeof) == 1;
+        if (!accepted) computerUseInputError = "Error: Windows refused native mouse input. The action is unverified.";
+        return accepted;
     }
 
     // -----------------------------------------------------------------------
@@ -1837,6 +1969,7 @@ version (Windows)
     {
         if (!targetUsable(hwnd)) return false;
         computerUseFocusTarget = hwnd;
+        virtualTargetHwnd = hwnd;
         computerUseTargetSource = source;
         return true;
     }
@@ -1863,7 +1996,6 @@ version (Windows)
                     "\" is this app's own window";
                 return null;
             }
-            forceForeground(hwnd);
             commitInputTarget(hwnd, "explicit window \"" ~ explicitTitle ~ "\"");
             why = null;
             return hwnd;
@@ -1923,9 +2055,8 @@ version (Windows)
     /// then refuse the action instead of typing into an arbitrary window.
     private void* ensureInputTarget(string explicitTitle = "")
     {
-        // Virtual mode never takes the foreground: posted input goes to the
-        // target window without disturbing whoever is actually focused.
-        if (virtualPointerActive) return virtualTargetHwnd;
+        // Keyboard input is native in both modes. Resolve the same target used
+        // by clicks, honor explicit overrides, and verify activation first.
         string why;
         auto hwnd = resolveInputTarget(explicitTitle, why);
         if (hwnd is null) return null;
@@ -1933,6 +2064,12 @@ version (Windows)
         {
             forceForeground(hwnd);
             Thread.sleep(msecs(60));
+        }
+        auto foreground = GetForegroundWindow();
+        if (foreground !is hwnd && GetAncestor(foreground, 2) !is hwnd)
+        {
+            computerUseInputError = "Error: the input target could not be activated. No keyboard input was sent.";
+            return null;
         }
         return hwnd;
     }
@@ -1944,7 +2081,6 @@ version (Windows)
     /// become a target).
     private void* noteClickTarget(int x, int y)
     {
-        if (virtualPointerActive) return virtualTargetHwnd;
         const step = screenDownscale();
         POINT point;
         point.x = cast(int)(cast(long) x * step);
@@ -1963,12 +2099,12 @@ version (Windows)
     /// screen so an out-of-range model guess cannot move it off the desktop.
     /// Moving the pointer is inert: it neither resolves nor changes the input
     /// target, so hovering can never silently re-aim later input.
-    private void moveCursor(int x, int y)
+    private bool moveCursor(int x, int y)
     {
         if (virtualPointerActive)
         {
             virtualMoveTo(x, y);
-            return;
+            return true;
         }
         const step = screenDownscale();
         const width = GetSystemMetrics(SM_CXSCREEN);
@@ -1979,7 +2115,9 @@ version (Windows)
         else if (realX > width - 1) realX = width - 1;
         if (realY < 0) realY = 0;
         else if (realY > height - 1) realY = height - 1;
-        SetCursorPos(cast(int) realX, cast(int) realY);
+        const moved = SetCursorPos(cast(int) realX, cast(int) realY) != 0;
+        if (!moved) computerUseInputError = "Error: Windows refused to move the pointer. No click was sent.";
+        return moved;
     }
 
     /// Click at a screenshot-space point. The window under the point becomes the
@@ -1992,8 +2130,8 @@ version (Windows)
     {
         if (virtualPointerActive)
         {
-            virtualClickAt(x, y, count, down, up);
-            return windowTitleOf(virtualTargetHwnd);
+            if (!virtualClickAt(x, y, count, down, up)) return null;
+            return windowLabelOf(virtualTargetHwnd);
         }
         // Coordinates arrive in the (possibly downscaled) screenshot's pixel
         // space; mapToReal maps them onto real screen pixels before the press.
@@ -2004,15 +2142,16 @@ version (Windows)
             forceForeground(target);
             Thread.sleep(msecs(60));
         }
-        moveCursor(x, y);
+        if (!moveCursor(x, y)) return null;
         Thread.sleep(msecs(30)); // let the pointer settle before the press
         foreach (i; 0 .. count)
         {
-            sendMouse(down);
-            sendMouse(up);
+            const pressed = sendMouse(down);
+            const released = sendMouse(up);
+            if (!pressed || !released) return null;
             if (i + 1 < count) Thread.sleep(msecs(60));
         }
-        return windowTitleOf(target);
+        return windowLabelOf(target);
     }
 
     // -----------------------------------------------------------------------
@@ -2029,13 +2168,15 @@ version (Windows)
     /// Raw injected key event. Kept separate from `sendKeyEvent` so the focus
     /// helper can synthesize its ALT tap without re-entering the virtual-mode
     /// target resolution.
-    private void injectKeyEvent(ushort vk, bool up)
+    private bool injectKeyEvent(ushort vk, bool up)
     {
         INPUT[1] inputs;
         inputs[0].type = INPUT_KEYBOARD;
         inputs[0].ki.wVk = vk;
         inputs[0].ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
-        SendInput(1, inputs.ptr, INPUT.sizeof);
+        const accepted = SendInput(1, inputs.ptr, INPUT.sizeof) == 1;
+        if (!accepted) computerUseInputError = "Error: Windows refused native keyboard input.";
+        return accepted;
     }
 
     /// Deliver a lone key press/release. In virtual mode the keys are still
@@ -2043,7 +2184,6 @@ version (Windows)
     /// raising the intended target so they land in it.
     private void sendKeyEvent(ushort vk, bool up)
     {
-        if (virtualPointerActive) prepareKeyboardTarget();
         injectKeyEvent(vk, up);
     }
 
@@ -2087,15 +2227,14 @@ version (Windows)
         return vk;
     }
 
-    private ComputerUseResult runHoldKey(string keyName, bool up)
+    private ComputerUseResult runHoldKey(string keyName, bool up, string window = "")
     {
         const vk = resolveHoldKey(keyName);
         if (vk == 0)
             return failedResult("Error: unknown key '" ~ keyName ~ "'.");
-        if (virtualPointerActive) prepareKeyboardTarget();
-        else if (ensureInputTarget() is null)
+        if (ensureInputTarget(window) is null)
             return failedResult(inputTargetRefusal());
-        injectKeyEvent(vk, up);
+        if (!injectKeyEvent(vk, up)) return failedResult(inputTargetRefusal());
         heldKeys[vk & 0xFF] = !up;
         return succeededResult((up ? "Released key \"" : "Held key \"") ~
             keyName ~ "\".");
@@ -2105,6 +2244,7 @@ version (Windows)
     /// explicit: it tells the model nothing was typed, and how to fix it.
     private string inputTargetRefusal()
     {
+        if (computerUseInputError.length) return computerUseInputError;
         return "Error: no safe input target. Nothing was sent. Name the target " ~
             "with `focus` (or a `window` argument), or click inside the target " ~
             "window first, then retry.";
@@ -2118,7 +2258,8 @@ version (Windows)
     {
         if (virtualPointerActive)
         {
-            virtualDrag(x1, y1, x2, y2, durationMs, button);
+            if (!virtualDrag(x1, y1, x2, y2, durationMs, button))
+                computerUseInputError = "Error: virtual drag input was not completely posted; inspect the latest screen.";
             return;
         }
         DWORD down = MOUSEEVENTF_LEFTDOWN;
@@ -2134,7 +2275,7 @@ version (Windows)
             up = MOUSEEVENTF_MIDDLEUP;
         }
 
-        moveCursor(x1, y1);
+        if (!moveCursor(x1, y1)) return;
         Thread.sleep(msecs(40));
         sendMouse(down);
         if (down == MOUSEEVENTF_LEFTDOWN) heldLeftButton = true;
@@ -2240,6 +2381,20 @@ version (Windows)
         return result;
     }
 
+    private string windowLabelOf(void* hwnd)
+    {
+        import std.utf : toUTF8;
+        if (!targetUsable(hwnd)) return "unresolved target";
+        const title = windowTitleOf(hwnd);
+        if (title.length) return title;
+        wchar[256] name;
+        const n = GetClassNameW(hwnd, name.ptr, cast(int) name.length);
+        uint pid;
+        GetWindowThreadProcessId(hwnd, &pid);
+        return "untitled " ~ (n > 0 ? toUTF8(name[0 .. n]) : "window") ~
+            " (pid " ~ to!string(pid) ~ ")";
+    }
+
     /// Append the window input actually went to, so the model can tell where it
     /// landed (or that it landed somewhere unexpected). Reports the committed
     /// input target when there is one, since that is where input was aimed; the
@@ -2247,7 +2402,7 @@ version (Windows)
     private string withActiveWindow(string text)
     {
         const title = (targetUsable(computerUseFocusTarget)
-            ? windowTitleOf(computerUseFocusTarget)
+            ? windowLabelOf(computerUseFocusTarget)
             : foregroundWindowTitle());
         if (title.length == 0) return text;
         const how = computerUseTargetSource.length
@@ -2269,15 +2424,14 @@ version (Windows)
     /// this app's own window or an unknown one.
     private bool typeText(string text, string explicitWindow = "")
     {
-        if (virtualPointerActive) prepareKeyboardTarget();
         if (ensureInputTarget(explicitWindow) is null) return false;
         foreach (dchar c; text)
         {
             // Control characters go through virtual keys: a lone Unicode
             // newline/tab is ignored by many controls, so press Enter/Tab.
-            if (c == '\n') { injectChord(null, 0x0D); continue; }
+            if (c == '\n') { if (!injectChord(null, 0x0D)) return false; continue; }
             if (c == '\r') continue; // already handled by the \n of a CRLF pair
-            if (c == '\t') { injectChord(null, 0x09); continue; }
+            if (c == '\t') { if (!injectChord(null, 0x09)) return false; continue; }
             foreach (unit; utf16Units(c))
             {
                 INPUT[2] inputs;
@@ -2287,7 +2441,11 @@ version (Windows)
                 inputs[1].type = INPUT_KEYBOARD;
                 inputs[1].ki.wScan = unit;
                 inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-                SendInput(2, inputs.ptr, INPUT.sizeof);
+                if (SendInput(2, inputs.ptr, INPUT.sizeof) != 2)
+                {
+                    computerUseInputError = "Error: Windows refused keyboard events; text may be partially sent. Inspect the latest screen.";
+                    return false;
+                }
             }
         }
         return true;
@@ -2295,7 +2453,7 @@ version (Windows)
 
     /// Injected key chord, no target resolution (callers resolve once). Used by
     /// `typeText` for embedded newlines/tabs.
-    private void injectChord(ushort[] modifiers, ushort vk)
+    private bool injectChord(ushort[] modifiers, ushort vk)
     {
         auto builder = appender!(INPUT[])();
         void put(ushort key, DWORD flags)
@@ -2311,7 +2469,9 @@ version (Windows)
         put(vk, KEYEVENTF_KEYUP);
         foreach_reverse (modifier; modifiers) put(modifier, KEYEVENTF_KEYUP);
         auto inputs = builder.data;
-        SendInput(cast(UINT) inputs.length, inputs.ptr, INPUT.sizeof);
+        const accepted = SendInput(cast(UINT) inputs.length, inputs.ptr, INPUT.sizeof) == inputs.length;
+        if (!accepted) computerUseInputError = "Error: Windows did not accept the complete keyboard chord; inspect the latest screen.";
+        return accepted;
     }
 
     /// Press a key chord in the resolved input target. Returns false (injecting
@@ -2319,10 +2479,8 @@ version (Windows)
     private bool pressChord(ushort[] modifiers, ushort vk,
         string explicitWindow = "")
     {
-        if (virtualPointerActive) prepareKeyboardTarget();
         if (ensureInputTarget(explicitWindow) is null) return false;
-        injectChord(modifiers, vk);
-        return true;
+        return injectChord(modifiers, vk);
     }
 
     private ushort virtualKeyFor(string token)
@@ -2396,7 +2554,7 @@ version (Windows)
             return failedResult("Error: unknown key '" ~ last ~ "'.");
         if (!pressChord(modifiers, vk, window))
             return failedResult(inputTargetRefusal());
-        return succeededResult("Pressed key \"" ~ keyName ~ "\".");
+        return succeededResult("Sent key \"" ~ keyName ~ "\"; application response is unverified.");
     }
 
     /// One computer action, driven by the JSON object (top-level call or one
@@ -2457,7 +2615,7 @@ version (Windows)
                             "app's own window.");
                     // Aim posted input at the window; leave the real foreground
                     // (and the person using it) alone.
-                    virtualTargetHwnd = hwnd;
+                    commitInputTarget(hwnd, "explicit focus target");
                     return withOptionalScreenshot("Targeted window \"" ~
                         windowTitleOf(hwnd) ~ "\" for posted input (focus " ~
                         "unchanged).", screenshot);
@@ -2465,6 +2623,9 @@ version (Windows)
                 forceForeground(hwnd);
                 commitInputTarget(hwnd, "focus \"" ~ title ~ "\"");
                 Thread.sleep(msecs(150));
+                auto foreground = GetForegroundWindow();
+                if (foreground !is hwnd && GetAncestor(foreground, 2) !is hwnd)
+                    return failedResult("Error: the requested window could not be focused. Inspect the current screen before retrying.");
                 return withOptionalScreenshot("Focused window \"" ~
                     foregroundWindowTitle() ~ "\".", screenshot);
             }
@@ -2479,7 +2640,7 @@ version (Windows)
                     "Right-clicked", MOUSEEVENTF_RIGHTDOWN,
                     MOUSEEVENTF_RIGHTUP);
             case "mouse_move":
-                moveCursor(x, y);
+                if (!moveCursor(x, y)) return failedResult(inputTargetRefusal());
                 return withOptionalScreenshot("Moved the pointer to " ~
                     to!string(x) ~ "," ~ to!string(y) ~ ".", screenshot);
             case "drag":
@@ -2490,29 +2651,47 @@ version (Windows)
                     return failedResult("Error: type requires `text`.");
                 if (!typeText(text, targetWindow))
                     return failedResult(inputTargetRefusal());
-                return withOptionalScreenshot(withActiveWindow("Typed " ~
-                    to!string(text.length) ~ " characters"), screenshot);
+                return withOptionalScreenshot(withActiveWindow("Sent " ~
+                    to!string(text.length) ~ " characters to the keyboard target; application response is unverified"), screenshot);
             case "key":
                 return keyResultAction(runKey(keyName, targetWindow), screenshot);
             case "key_down":
-                return keyResultAction(runHoldKey(keyName, false), screenshot);
+                return keyResultAction(runHoldKey(keyName, false, targetWindow), screenshot);
             case "key_up":
-                return keyResultAction(runHoldKey(keyName, true), screenshot);
+                return keyResultAction(runHoldKey(keyName, true, targetWindow), screenshot);
             case "scroll":
                 if (virtualPointerActive)
                 {
+                    if (targetWindow.length)
+                    {
+                        string why;
+                        if (resolveInputTarget(targetWindow, why) is null)
+                            return failedResult("Error: " ~ why);
+                    }
+                    else if (x != 0 || y != 0)
+                    {
+                        if (noteClickTarget(x, y) is null) return failedResult(inputTargetRefusal());
+                    }
                     if (x != 0 || y != 0) virtualMoveTo(x, y);
-                    virtualWheel(amount);
+                    if (!virtualWheel(amount)) return failedResult("Error: no valid virtual scroll target or Windows refused the post.");
                     return withOptionalScreenshot("Posted a scroll of " ~
                         to!string(amount) ~ " to the window under the " ~
-                        "virtual pointer.", screenshot);
+                        "virtual pointer; application response is unverified.", screenshot);
                 }
                 // Optional x,y put the wheel over the pane to scroll instead
                 // of wherever the pointer happened to be left.
-                if (x != 0 || y != 0) moveCursor(x, y);
-                sendMouse(MOUSEEVENTF_WHEEL, amount);
-                return withOptionalScreenshot("Scrolled by " ~
-                    to!string(amount) ~ ".", screenshot);
+                if (x != 0 || y != 0)
+                {
+                    auto target = noteClickTarget(x, y);
+                    if (target is null) return failedResult(inputTargetRefusal());
+                    if (!moveCursor(x, y)) return failedResult(inputTargetRefusal());
+                }
+                if (ensureInputTarget(targetWindow) is null)
+                    return failedResult(inputTargetRefusal());
+                if (!sendMouse(MOUSEEVENTF_WHEEL, amount))
+                    return failedResult(inputTargetRefusal());
+                return withOptionalScreenshot(withActiveWindow("Sent native scroll of " ~
+                    to!string(amount) ~ "; application response is unverified"), screenshot);
             case "wait_for_change":
                 return waitForChange(timeoutMs, intervalMs);
             default:
@@ -2536,6 +2715,11 @@ version (Windows)
             if (hwnd is null)
                 return failedResult("Error: " ~ why ~
                     ". Nothing was clicked.");
+            if (!virtualPointerActive)
+            {
+                forceForeground(hwnd);
+                Thread.sleep(msecs(60));
+            }
             auto root = GetAncestor(WindowFromPoint2(x, y), 2);
             if (root !is null && root !is hwnd && !isOwnProcessWindow(root))
                 return failedResult("Error: the point " ~ to!string(x) ~ "," ~
@@ -2544,13 +2728,18 @@ version (Windows)
                     "\". Nothing was clicked; take a fresh `screen` and retry.");
         }
         auto title = clickAt(x, y, count, down, up);
+        if (title is null && computerUseInputError.length)
+            return failedResult(computerUseInputError);
         if (title is null)
             return failedResult("Error: the point " ~ to!string(x) ~ "," ~
                 to!string(y) ~ " is over this app's own window (or no window). " ~
                 "Nothing was clicked. Take a fresh `screen` and aim at the " ~
                 "target application.");
-        return withOptionalScreenshot(withActiveWindow(verb ~ " at " ~
-            to!string(x) ~ "," ~ to!string(y) ~ " in window \"" ~ title ~ "\""),
+        const gesture = count > 1 ? "double-click" :
+            down == MOUSEEVENTF_RIGHTDOWN ? "right-click" : "click";
+        const delivery = (virtualPointerActive ? "Queued virtual " : "Sent native ") ~ gesture;
+        return withOptionalScreenshot(withActiveWindow(delivery ~ " at " ~
+            to!string(x) ~ "," ~ to!string(y) ~ " in window \"" ~ title ~ "\"; application response is unverified"),
             screenshot);
     }
 
@@ -2575,10 +2764,18 @@ version (Windows)
     {
         if (virtualPointerActive)
         {
+            if (targetWindow.length)
+            {
+                string why;
+                auto target = resolveInputTarget(targetWindow, why);
+                if (target is null || WindowFromPoint2(x, y) !is target)
+                    return failedResult("Error: virtual drag start does not match the requested target. Nothing was posted.");
+            }
             dragMouse(x, y, x2, y2, durationMs, button);
-            return withOptionalScreenshot("Dragged from " ~ to!string(x) ~ "," ~
+            if (computerUseInputError.length) return failedResult(computerUseInputError);
+            return withOptionalScreenshot("Queued virtual drag from " ~ to!string(x) ~ "," ~
                 to!string(y) ~ " to " ~ to!string(x2) ~ "," ~ to!string(y2) ~
-                ".", screenshot);
+                "; application response is unverified.", screenshot);
         }
         string why;
         void* target;
@@ -2599,11 +2796,12 @@ version (Windows)
             Thread.sleep(msecs(60));
         }
         dragMouse(x, y, x2, y2, durationMs, button);
-        return withOptionalScreenshot(withActiveWindow("Dragged " ~
+        if (computerUseInputError.length) return failedResult(computerUseInputError);
+        return withOptionalScreenshot(withActiveWindow("Sent native drag " ~
             (button.length > 0 ? button : "left") ~ " from " ~
             to!string(x) ~ "," ~ to!string(y) ~ " to " ~
             to!string(x2) ~ "," ~ to!string(y2) ~ " in window \"" ~
-            windowTitleOf(target) ~ "\""), screenshot);
+            windowLabelOf(target) ~ "\"; application response is unverified"), screenshot);
     }
 
     /// The action's text, plus a fresh screenshot when the caller asked for one.
@@ -2611,6 +2809,7 @@ version (Windows)
         bool screenshot)
     {
         if (!screenshot) return succeededResult(text);
+        Thread.sleep(msecs(100)); // allow the target to process queued input
         auto shot = screenshotResult(text ~ " Screen after the action");
         if (shot.failed) return shot;
         return shot;
@@ -2631,7 +2830,7 @@ version (Windows)
     private ComputerUseResult withFinalScreenshot(ComputerUseResult result,
         bool screenshot)
     {
-        if (!screenshot || result.failed) return result;
+        if (!screenshot) return result;
         auto shot = screenshotResult("Screen after the action");
         if (shot.failed)
         {
@@ -2918,7 +3117,7 @@ version (Windows)
         scope (exit) InternetCloseHandle(request);
         const headers = "Content-Type: application/json\r\n" ~
             "Authorization: Bearer " ~ apiKey ~ "\r\n" ~
-            "x-opencode-session: aurora-subagent\r\n";
+            "x-opencode-session: " ~ computerUseRoutingSession() ~ "\r\n";
         if (!HttpSendRequestW(request, toUTF16z(headers), -1,
             cast(void*) body.ptr, cast(uint) body.length))
         {
@@ -2991,14 +3190,14 @@ version (Windows)
     }
 
     /// One user message holding a caption and its image.
-    private string imagePart(string caption, ubyte[] png)
+    private string imagePart(string caption, ubyte[] jpeg)
     {
-        return multiImagePart([caption], [png]);
+        return multiImagePart([caption], [jpeg]);
     }
 
     /// One user message holding several caption/image pairs (the diff mode sends
     /// only the tiles that changed, each at native scale).
-    private string multiImagePart(string[] captions, ubyte[][] pngs)
+    private string multiImagePart(string[] captions, ubyte[][] jpegs)
     {
         auto parts = appender!string();
         parts.put(`,{"role":"user","content":[`);
@@ -3007,8 +3206,8 @@ version (Windows)
             if (i > 0) parts.put(",");
             parts.put(`{"type":"text","text":` ~ jsonQuote(captions[i]) ~ `},`);
             parts.put(`{"type":"image_url","image_url":{"url":` ~
-                jsonQuote("data:image/png;base64," ~
-                Base64.encode(pngs[i]).idup) ~ `}}`);
+                jsonQuote("data:image/jpeg;base64," ~
+                Base64.encode(jpegs[i]).idup) ~ `}}`);
         }
         parts.put(`]}`);
         return parts.data;
@@ -3418,8 +3617,9 @@ version (Windows)
             // Let the UI settle so this frame reflects the previous action
             // rather than the state before it.
             Thread.sleep(msecs(300));
+            const captureStarted = MonoTime.currTime;
             auto shot = captureScreen();
-            captureTotalMs += (MonoTime.currTime - roundStarted).total!"msecs";
+            captureTotalMs += (MonoTime.currTime - captureStarted).total!"msecs";
             // Did the previous round's action change anything? A game UI that
             // swallows a click leaves the frame byte-identical; tell the model,
             // which otherwise re-clicks the same dead spot forever.
@@ -3459,7 +3659,7 @@ version (Windows)
                     if (previousFrame.length != shot.rgb.length)
                         screenPart = imagePart("Full screen (first look; " ~
                             "coordinates are in this image's pixels):",
-                            computerUseEncodePng(shot.width, shot.height,
+                            encodeScreenshotJpeg(shot.width, shot.height,
                             shot.rgb));
                     else
                     {
@@ -3482,7 +3682,7 @@ version (Windows)
                                     h, shot.rgb, previousFrame);
                             }
                         string[] captions;
-                        ubyte[][] pngs;
+                        ubyte[][] jpegs;
                         foreach (_; 0 .. 6)
                         {
                             int best = -1;
@@ -3506,11 +3706,11 @@ version (Windows)
                                 "," ~ to!string(y) ~ ", size " ~ to!string(w) ~
                                 "x" ~ to!string(h) ~ " (coordinates are in the " ~
                                 "full 960x540 space):";
-                            pngs ~= computerUseEncodePng(w, h,
+                            jpegs ~= encodeScreenshotJpeg(w, h,
                                 cropRgb(shot.width, shot.rgb, x, y, w, h));
                         }
-                        screenPart = pngs.length > 0
-                            ? multiImagePart(captions, pngs)
+                        screenPart = jpegs.length > 0
+                            ? multiImagePart(captions, jpegs)
                             : textPart("No significant screen change since the " ~
                               "last step. Continue if there is a next action.");
                     }
@@ -3523,7 +3723,7 @@ version (Windows)
                 for (int f = frameFactor; f > 1; f /= 2)
                     frame = halfRgb(frameWidth, frameHeight, frame,
                         frameWidth, frameHeight);
-                auto png = computerUseEncodePng(frameWidth, frameHeight, frame);
+                auto jpeg = encodeScreenshotJpeg(frameWidth, frameHeight, frame);
                 const caption = frameScale == "full"
                     ? "Current screen (same pixel space as click coordinates):"
                     : "Current screen: this image is " ~
@@ -3535,8 +3735,8 @@ version (Windows)
                 screenPart = `,{"role":"user","content":[{"type":"text","text":` ~
                     jsonQuote(caption) ~
                     `},{"type":"image_url","image_url":{"url":` ~
-                    jsonQuote("data:image/png;base64," ~
-                    Base64.encode(png).idup) ~ `}}]}`;
+                    jsonQuote("data:image/jpeg;base64," ~
+                    Base64.encode(jpeg).idup) ~ `}}]}`;
                 }
                 previousFrame = shot.rgb;
                 previousWidth = shot.width;
@@ -3796,6 +3996,13 @@ version (Windows)
         if (!before.ok) return failedResult(before.error);
         const deadline = MonoTime.currTime +
             msecs(timeoutMs > 60000 ? 60000 : timeoutMs);
+        // The frame the model will see: the newest capture, so a timeout still
+        // hands back the current screen instead of leaving the model blind. A
+        // timed-out wait that returned text only forced another `screen` round
+        // trip (and the next call's frame was one action stale), which read as
+        // "late awareness" of the desktop.
+        auto latest = before;
+        bool changed;
         while (MonoTime.currTime < deadline)
         {
             if (computerUseAbortActive())
@@ -3804,20 +4011,24 @@ version (Windows)
             Thread.sleep(msecs(intervalMs));
             auto now = captureScreen();
             if (!now.ok) return failedResult(now.error);
+            latest = now;
             if (frameChangeCount(before.width, before.height, now.rgb,
                 before.rgb) >= frameChangeThreshold)
             {
-                auto png = computerUseEncodePng(now.width, now.height,
-                    now.rgb);
-                ComputerUseResult result;
-                result.output = "Screen changed.";
-                result.images = [attachmentImageForData("image/png",
-                    "screen.png", png)];
-                return result;
+                changed = true;
+                break;
             }
         }
-        return succeededResult("Screen did not change within " ~
-            to!string(timeoutMs) ~ " ms.");
+        auto jpeg = encodeScreenshotJpeg(latest.width, latest.height,
+            latest.rgb);
+        ComputerUseResult result;
+        result.output = changed
+            ? "Screen pixels changed; this does not verify the intended action succeeded. Inspect this current frame."
+            : "Screen did not change within " ~ to!string(timeoutMs) ~
+              " ms; this is the current screen.";
+        result.images = [attachmentImageForData("image/jpeg", "screen.jpg",
+            jpeg)];
+        return result;
     }
 }
 

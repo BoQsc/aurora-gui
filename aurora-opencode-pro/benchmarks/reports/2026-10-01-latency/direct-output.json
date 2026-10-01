@@ -1,0 +1,86 @@
+[
+  {
+    "case": "none",
+    "attempt": 1,
+    "image": null,
+    "saved_images": false,
+    "image_count": 0,
+    "transport": "curl",
+    "context_lines": 0,
+    "request_bytes": 250,
+    "first_event_s": 1.7643,
+    "first_token_s": 1.7673,
+    "first_content_s": 1.7673,
+    "reasoning_chars": 0,
+    "content_chars": 1091,
+    "tool_chars": 0,
+    "usage": {
+      "prompt_tokens": 24,
+      "completion_tokens": 599,
+      "total_tokens": 623,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      }
+    },
+    "errors": [],
+    "http_status": 200,
+    "curl": {
+      "time_namelookup": 0.009278,
+      "time_connect": 0.017932,
+      "time_appconnect": 0.366845,
+      "time_pretransfer": 0.367013,
+      "time_posttransfer": 0.367012,
+      "time_starttransfer": 1.736783,
+      "time_total": 3.441691,
+      "size_upload": 250,
+      "size_download": 25149
+    },
+    "exit_code": 0,
+    "total_s": 3.4733
+  },
+  {
+    "case": "none",
+    "attempt": 2,
+    "image": null,
+    "saved_images": false,
+    "image_count": 0,
+    "transport": "curl",
+    "context_lines": 0,
+    "request_bytes": 250,
+    "first_event_s": 1.8669,
+    "first_token_s": 1.886,
+    "first_content_s": 1.886,
+    "reasoning_chars": 0,
+    "content_chars": 1091,
+    "tool_chars": 0,
+    "usage": {
+      "prompt_tokens": 24,
+      "completion_tokens": 599,
+      "total_tokens": 623,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      }
+    },
+    "errors": [],
+    "http_status": 200,
+    "curl": {
+      "time_namelookup": 0.010223,
+      "time_connect": 0.018891,
+      "time_appconnect": 0.362082,
+      "time_pretransfer": 0.362243,
+      "time_posttransfer": 0.362242,
+      "time_starttransfer": 1.846448,
+      "time_total": 3.851696,
+      "size_upload": 250,
+      "size_download": 25382
+    },
+    "exit_code": 0,
+    "total_s": 3.8771
+  }
+]

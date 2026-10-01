@@ -1,0 +1,2305 @@
+{
+  "note": "Historical sent_ms includes response-header wait; these logs omit many tool-only rounds. No conversation text included.",
+  "groups": {
+    "text_only": {
+      "count": 30,
+      "median_first_token_ms": 1585.5,
+      "min_first_token_ms": 847,
+      "max_first_token_ms": 2954
+    },
+    "images_under_2MB": {
+      "count": 189,
+      "median_first_token_ms": 3506,
+      "min_first_token_ms": 2005,
+      "max_first_token_ms": 16454
+    },
+    "images_over_4MB": {
+      "count": 50,
+      "median_first_token_ms": 22497.0,
+      "min_first_token_ms": 7696,
+      "max_first_token_ms": 44228
+    }
+  },
+  "requests": [
+    {
+      "sent_ms": 3911,
+      "headers_ms": 3911,
+      "first_byte_ms": 7409,
+      "first_token_ms": 7419,
+      "request_bytes": 1846306,
+      "images": 3
+    },
+    {
+      "sent_ms": 3147,
+      "headers_ms": 3147,
+      "first_byte_ms": 6391,
+      "first_token_ms": 6393,
+      "request_bytes": 1849684,
+      "images": 3
+    },
+    {
+      "sent_ms": 3438,
+      "headers_ms": 3438,
+      "first_byte_ms": 6715,
+      "first_token_ms": 6716,
+      "request_bytes": 1850743,
+      "images": 3
+    },
+    {
+      "sent_ms": 3382,
+      "headers_ms": 3382,
+      "first_byte_ms": 6606,
+      "first_token_ms": 6608,
+      "request_bytes": 1853437,
+      "images": 3
+    },
+    {
+      "sent_ms": 3251,
+      "headers_ms": 3251,
+      "first_byte_ms": 6536,
+      "first_token_ms": 6558,
+      "request_bytes": 1856819,
+      "images": 3
+    },
+    {
+      "sent_ms": 1661,
+      "headers_ms": 1661,
+      "first_byte_ms": 2222,
+      "first_token_ms": 2410,
+      "request_bytes": 1866074,
+      "images": 3
+    },
+    {
+      "sent_ms": 2068,
+      "headers_ms": 2068,
+      "first_byte_ms": 5277,
+      "first_token_ms": 5277,
+      "request_bytes": 1869176,
+      "images": 3
+    },
+    {
+      "sent_ms": 1991,
+      "headers_ms": 1991,
+      "first_byte_ms": 2514,
+      "first_token_ms": 2514,
+      "request_bytes": 1874459,
+      "images": 3
+    },
+    {
+      "sent_ms": 3128,
+      "headers_ms": 3128,
+      "first_byte_ms": 3621,
+      "first_token_ms": 3621,
+      "request_bytes": 1879703,
+      "images": 3
+    },
+    {
+      "sent_ms": 2608,
+      "headers_ms": 2608,
+      "first_byte_ms": 3555,
+      "first_token_ms": 3562,
+      "request_bytes": 1887478,
+      "images": 3
+    },
+    {
+      "sent_ms": 1932,
+      "headers_ms": 1932,
+      "first_byte_ms": 2394,
+      "first_token_ms": 2400,
+      "request_bytes": 1891393,
+      "images": 3
+    },
+    {
+      "sent_ms": 4141,
+      "headers_ms": 4141,
+      "first_byte_ms": 7478,
+      "first_token_ms": 7478,
+      "request_bytes": 1894439,
+      "images": 3
+    },
+    {
+      "sent_ms": 3080,
+      "headers_ms": 3080,
+      "first_byte_ms": 3546,
+      "first_token_ms": 3552,
+      "request_bytes": 1900481,
+      "images": 3
+    },
+    {
+      "sent_ms": 10071,
+      "headers_ms": 10071,
+      "first_byte_ms": 10470,
+      "first_token_ms": 10470,
+      "request_bytes": 1903616,
+      "images": 3
+    },
+    {
+      "sent_ms": 13081,
+      "headers_ms": 13081,
+      "first_byte_ms": 16454,
+      "first_token_ms": 16454,
+      "request_bytes": 1905386,
+      "images": 3
+    },
+    {
+      "sent_ms": 3340,
+      "headers_ms": 3340,
+      "first_byte_ms": 3706,
+      "first_token_ms": 3706,
+      "request_bytes": 1906293,
+      "images": 3
+    },
+    {
+      "sent_ms": 4130,
+      "headers_ms": 4130,
+      "first_byte_ms": 4539,
+      "first_token_ms": 4539,
+      "request_bytes": 1908403,
+      "images": 3
+    },
+    {
+      "sent_ms": 2766,
+      "headers_ms": 2766,
+      "first_byte_ms": 3466,
+      "first_token_ms": 3466,
+      "request_bytes": 1918257,
+      "images": 3
+    },
+    {
+      "sent_ms": 3166,
+      "headers_ms": 3166,
+      "first_byte_ms": 7163,
+      "first_token_ms": 7189,
+      "request_bytes": 1920720,
+      "images": 3
+    },
+    {
+      "sent_ms": 2650,
+      "headers_ms": 2650,
+      "first_byte_ms": 3269,
+      "first_token_ms": 3269,
+      "request_bytes": 1923149,
+      "images": 3
+    },
+    {
+      "sent_ms": 3104,
+      "headers_ms": 3104,
+      "first_byte_ms": 3511,
+      "first_token_ms": 3511,
+      "request_bytes": 1923938,
+      "images": 3
+    },
+    {
+      "sent_ms": 3623,
+      "headers_ms": 3623,
+      "first_byte_ms": 4026,
+      "first_token_ms": 4026,
+      "request_bytes": 1924671,
+      "images": 3
+    },
+    {
+      "sent_ms": 3061,
+      "headers_ms": 3061,
+      "first_byte_ms": 6510,
+      "first_token_ms": 6512,
+      "request_bytes": 1925820,
+      "images": 3
+    },
+    {
+      "sent_ms": 2482,
+      "headers_ms": 2482,
+      "first_byte_ms": 6388,
+      "first_token_ms": 6388,
+      "request_bytes": 1927984,
+      "images": 3
+    },
+    {
+      "sent_ms": 2765,
+      "headers_ms": 2765,
+      "first_byte_ms": 3142,
+      "first_token_ms": 3142,
+      "request_bytes": 1928501,
+      "images": 3
+    },
+    {
+      "sent_ms": 2841,
+      "headers_ms": 2841,
+      "first_byte_ms": 3414,
+      "first_token_ms": 3414,
+      "request_bytes": 1932424,
+      "images": 3
+    },
+    {
+      "sent_ms": 2464,
+      "headers_ms": 2464,
+      "first_byte_ms": 2878,
+      "first_token_ms": 2879,
+      "request_bytes": 1933576,
+      "images": 3
+    },
+    {
+      "sent_ms": 1489,
+      "headers_ms": 1489,
+      "first_byte_ms": 2005,
+      "first_token_ms": 2005,
+      "request_bytes": 1939631,
+      "images": 3
+    },
+    {
+      "sent_ms": 2692,
+      "headers_ms": 2692,
+      "first_byte_ms": 3224,
+      "first_token_ms": 3224,
+      "request_bytes": 1941521,
+      "images": 3
+    },
+    {
+      "sent_ms": 1325,
+      "headers_ms": 1325,
+      "first_byte_ms": 1330,
+      "first_token_ms": 1330,
+      "request_bytes": 359,
+      "images": 0
+    },
+    {
+      "sent_ms": 1770,
+      "headers_ms": 1770,
+      "first_byte_ms": 1801,
+      "first_token_ms": 1801,
+      "request_bytes": 33283,
+      "images": 0
+    },
+    {
+      "sent_ms": 4037,
+      "headers_ms": 4037,
+      "first_byte_ms": 4052,
+      "first_token_ms": 4052,
+      "request_bytes": 410150,
+      "images": 1
+    },
+    {
+      "sent_ms": 3675,
+      "headers_ms": 3675,
+      "first_byte_ms": 3744,
+      "first_token_ms": 3744,
+      "request_bytes": 415634,
+      "images": 1
+    },
+    {
+      "sent_ms": 6791,
+      "headers_ms": 6791,
+      "first_byte_ms": 6831,
+      "first_token_ms": 6831,
+      "request_bytes": 874560,
+      "images": 2
+    },
+    {
+      "sent_ms": 29154,
+      "headers_ms": 29154,
+      "first_byte_ms": 29201,
+      "first_token_ms": 29201,
+      "request_bytes": 4083277,
+      "images": 2
+    },
+    {
+      "sent_ms": 3088,
+      "headers_ms": 3088,
+      "first_byte_ms": 6753,
+      "first_token_ms": 6758,
+      "request_bytes": 1945372,
+      "images": 3
+    },
+    {
+      "sent_ms": 2915,
+      "headers_ms": 2915,
+      "first_byte_ms": 3304,
+      "first_token_ms": 3304,
+      "request_bytes": 1946203,
+      "images": 3
+    },
+    {
+      "sent_ms": 2302,
+      "headers_ms": 2302,
+      "first_byte_ms": 2719,
+      "first_token_ms": 2720,
+      "request_bytes": 1954372,
+      "images": 3
+    },
+    {
+      "sent_ms": 3361,
+      "headers_ms": 3361,
+      "first_byte_ms": 3872,
+      "first_token_ms": 3873,
+      "request_bytes": 1967099,
+      "images": 3
+    },
+    {
+      "sent_ms": 2875,
+      "headers_ms": 2875,
+      "first_byte_ms": 3282,
+      "first_token_ms": 3284,
+      "request_bytes": 1968612,
+      "images": 3
+    },
+    {
+      "sent_ms": 3370,
+      "headers_ms": 3370,
+      "first_byte_ms": 3991,
+      "first_token_ms": 3992,
+      "request_bytes": 1972195,
+      "images": 3
+    },
+    {
+      "sent_ms": 2894,
+      "headers_ms": 2894,
+      "first_byte_ms": 3398,
+      "first_token_ms": 3399,
+      "request_bytes": 1973710,
+      "images": 3
+    },
+    {
+      "sent_ms": 2986,
+      "headers_ms": 2986,
+      "first_byte_ms": 3409,
+      "first_token_ms": 3409,
+      "request_bytes": 1977285,
+      "images": 3
+    },
+    {
+      "sent_ms": 1289,
+      "headers_ms": 1289,
+      "first_byte_ms": 1301,
+      "first_token_ms": 1301,
+      "request_bytes": 337,
+      "images": 0
+    },
+    {
+      "sent_ms": 1736,
+      "headers_ms": 1736,
+      "first_byte_ms": 1743,
+      "first_token_ms": 1743,
+      "request_bytes": 33239,
+      "images": 0
+    },
+    {
+      "sent_ms": 2985,
+      "headers_ms": 2985,
+      "first_byte_ms": 2990,
+      "first_token_ms": 2990,
+      "request_bytes": 911451,
+      "images": 1
+    },
+    {
+      "sent_ms": 4250,
+      "headers_ms": 4250,
+      "first_byte_ms": 4259,
+      "first_token_ms": 4259,
+      "request_bytes": 1803507,
+      "images": 2
+    },
+    {
+      "sent_ms": 3510,
+      "headers_ms": 3510,
+      "first_byte_ms": 3518,
+      "first_token_ms": 3518,
+      "request_bytes": 1845860,
+      "images": 2
+    },
+    {
+      "sent_ms": 13209,
+      "headers_ms": 13209,
+      "first_byte_ms": 13210,
+      "first_token_ms": 13211,
+      "request_bytes": 4530404,
+      "images": 2
+    },
+    {
+      "sent_ms": 20042,
+      "headers_ms": 20042,
+      "first_byte_ms": 20065,
+      "first_token_ms": 20065,
+      "request_bytes": 6214128,
+      "images": 2
+    },
+    {
+      "sent_ms": 3429,
+      "headers_ms": 3429,
+      "first_byte_ms": 7615,
+      "first_token_ms": 7616,
+      "request_bytes": 1982656,
+      "images": 3
+    },
+    {
+      "sent_ms": 3021,
+      "headers_ms": 3021,
+      "first_byte_ms": 6870,
+      "first_token_ms": 6875,
+      "request_bytes": 1983584,
+      "images": 3
+    },
+    {
+      "sent_ms": 4622,
+      "headers_ms": 4622,
+      "first_byte_ms": 8529,
+      "first_token_ms": 8529,
+      "request_bytes": 1984608,
+      "images": 3
+    },
+    {
+      "sent_ms": 3059,
+      "headers_ms": 3059,
+      "first_byte_ms": 6968,
+      "first_token_ms": 6969,
+      "request_bytes": 1986243,
+      "images": 3
+    },
+    {
+      "sent_ms": 2963,
+      "headers_ms": 2963,
+      "first_byte_ms": 3400,
+      "first_token_ms": 3401,
+      "request_bytes": 1989163,
+      "images": 3
+    },
+    {
+      "sent_ms": 2352,
+      "headers_ms": 2352,
+      "first_byte_ms": 3080,
+      "first_token_ms": 3123,
+      "request_bytes": 1990728,
+      "images": 3
+    },
+    {
+      "sent_ms": 2730,
+      "headers_ms": 2730,
+      "first_byte_ms": 6610,
+      "first_token_ms": 6610,
+      "request_bytes": 1992764,
+      "images": 3
+    },
+    {
+      "sent_ms": 2288,
+      "headers_ms": 2288,
+      "first_byte_ms": 2729,
+      "first_token_ms": 2729,
+      "request_bytes": 1994281,
+      "images": 3
+    },
+    {
+      "sent_ms": 3581,
+      "headers_ms": 3581,
+      "first_byte_ms": 4094,
+      "first_token_ms": 4095,
+      "request_bytes": 1997563,
+      "images": 3
+    },
+    {
+      "sent_ms": 3213,
+      "headers_ms": 3213,
+      "first_byte_ms": 7627,
+      "first_token_ms": 7629,
+      "request_bytes": 1998816,
+      "images": 3
+    },
+    {
+      "sent_ms": 3430,
+      "headers_ms": 3430,
+      "first_byte_ms": 3830,
+      "first_token_ms": 3831,
+      "request_bytes": 1999528,
+      "images": 3
+    },
+    {
+      "sent_ms": 2972,
+      "headers_ms": 2972,
+      "first_byte_ms": 7301,
+      "first_token_ms": 7301,
+      "request_bytes": 2000697,
+      "images": 3
+    },
+    {
+      "sent_ms": 1640,
+      "headers_ms": 1640,
+      "first_byte_ms": 1649,
+      "first_token_ms": 1649,
+      "request_bytes": 33239,
+      "images": 0
+    },
+    {
+      "sent_ms": 1772,
+      "headers_ms": 1772,
+      "first_byte_ms": 1772,
+      "first_token_ms": 1772,
+      "request_bytes": 337,
+      "images": 0
+    },
+    {
+      "sent_ms": 2080,
+      "headers_ms": 2080,
+      "first_byte_ms": 2091,
+      "first_token_ms": 2091,
+      "request_bytes": 407433,
+      "images": 1
+    },
+    {
+      "sent_ms": 2155,
+      "headers_ms": 2155,
+      "first_byte_ms": 2165,
+      "first_token_ms": 2165,
+      "request_bytes": 496427,
+      "images": 2
+    },
+    {
+      "sent_ms": 2542,
+      "headers_ms": 2542,
+      "first_byte_ms": 2546,
+      "first_token_ms": 2546,
+      "request_bytes": 326895,
+      "images": 2
+    },
+    {
+      "sent_ms": 2166,
+      "headers_ms": 2166,
+      "first_byte_ms": 2180,
+      "first_token_ms": 2180,
+      "request_bytes": 657416,
+      "images": 2
+    },
+    {
+      "sent_ms": 1244,
+      "headers_ms": 1244,
+      "first_byte_ms": 1255,
+      "first_token_ms": 1255,
+      "request_bytes": 337,
+      "images": 0
+    },
+    {
+      "sent_ms": 1329,
+      "headers_ms": 1329,
+      "first_byte_ms": 1340,
+      "first_token_ms": 1340,
+      "request_bytes": 33239,
+      "images": 0
+    },
+    {
+      "sent_ms": 2002,
+      "headers_ms": 2002,
+      "first_byte_ms": 2028,
+      "first_token_ms": 2028,
+      "request_bytes": 406794,
+      "images": 1
+    },
+    {
+      "sent_ms": 2626,
+      "headers_ms": 2626,
+      "first_byte_ms": 2662,
+      "first_token_ms": 2662,
+      "request_bytes": 798758,
+      "images": 2
+    },
+    {
+      "sent_ms": 12103,
+      "headers_ms": 12103,
+      "first_byte_ms": 12113,
+      "first_token_ms": 12113,
+      "request_bytes": 827223,
+      "images": 2
+    },
+    {
+      "sent_ms": 3233,
+      "headers_ms": 3233,
+      "first_byte_ms": 3240,
+      "first_token_ms": 3240,
+      "request_bytes": 848936,
+      "images": 2
+    },
+    {
+      "sent_ms": 2542,
+      "headers_ms": 2542,
+      "first_byte_ms": 2550,
+      "first_token_ms": 2550,
+      "request_bytes": 849830,
+      "images": 2
+    },
+    {
+      "sent_ms": 2156,
+      "headers_ms": 2156,
+      "first_byte_ms": 2160,
+      "first_token_ms": 2160,
+      "request_bytes": 851704,
+      "images": 2
+    },
+    {
+      "sent_ms": 2298,
+      "headers_ms": 2298,
+      "first_byte_ms": 2311,
+      "first_token_ms": 2311,
+      "request_bytes": 902472,
+      "images": 2
+    },
+    {
+      "sent_ms": 2332,
+      "headers_ms": 2332,
+      "first_byte_ms": 2340,
+      "first_token_ms": 2340,
+      "request_bytes": 903402,
+      "images": 2
+    },
+    {
+      "sent_ms": 3050,
+      "headers_ms": 3050,
+      "first_byte_ms": 3062,
+      "first_token_ms": 3062,
+      "request_bytes": 905282,
+      "images": 2
+    },
+    {
+      "sent_ms": 10819,
+      "headers_ms": 10819,
+      "first_byte_ms": 10820,
+      "first_token_ms": 10820,
+      "request_bytes": 1482730,
+      "images": 2
+    },
+    {
+      "sent_ms": 4542,
+      "headers_ms": 4542,
+      "first_byte_ms": 4547,
+      "first_token_ms": 4547,
+      "request_bytes": 2014496,
+      "images": 2
+    },
+    {
+      "sent_ms": 3493,
+      "headers_ms": 3493,
+      "first_byte_ms": 3506,
+      "first_token_ms": 3506,
+      "request_bytes": 1479843,
+      "images": 2
+    },
+    {
+      "sent_ms": 3021,
+      "headers_ms": 3021,
+      "first_byte_ms": 3029,
+      "first_token_ms": 3030,
+      "request_bytes": 1486875,
+      "images": 2
+    },
+    {
+      "sent_ms": 3508,
+      "headers_ms": 3508,
+      "first_byte_ms": 3514,
+      "first_token_ms": 3514,
+      "request_bytes": 1494602,
+      "images": 2
+    },
+    {
+      "sent_ms": 3185,
+      "headers_ms": 3185,
+      "first_byte_ms": 3194,
+      "first_token_ms": 3194,
+      "request_bytes": 1517021,
+      "images": 2
+    },
+    {
+      "sent_ms": 3599,
+      "headers_ms": 3599,
+      "first_byte_ms": 3601,
+      "first_token_ms": 3601,
+      "request_bytes": 1522715,
+      "images": 2
+    },
+    {
+      "sent_ms": 3112,
+      "headers_ms": 3112,
+      "first_byte_ms": 3112,
+      "first_token_ms": 3112,
+      "request_bytes": 1523437,
+      "images": 2
+    },
+    {
+      "sent_ms": 3360,
+      "headers_ms": 3360,
+      "first_byte_ms": 3367,
+      "first_token_ms": 3367,
+      "request_bytes": 1539249,
+      "images": 2
+    },
+    {
+      "sent_ms": 3899,
+      "headers_ms": 3899,
+      "first_byte_ms": 3899,
+      "first_token_ms": 3902,
+      "request_bytes": 1550273,
+      "images": 2
+    },
+    {
+      "sent_ms": 3518,
+      "headers_ms": 3518,
+      "first_byte_ms": 3519,
+      "first_token_ms": 3527,
+      "request_bytes": 1559867,
+      "images": 2
+    },
+    {
+      "sent_ms": 3563,
+      "headers_ms": 3563,
+      "first_byte_ms": 3578,
+      "first_token_ms": 3578,
+      "request_bytes": 1586700,
+      "images": 2
+    },
+    {
+      "sent_ms": 4480,
+      "headers_ms": 4480,
+      "first_byte_ms": 4480,
+      "first_token_ms": 4480,
+      "request_bytes": 1593963,
+      "images": 2
+    },
+    {
+      "sent_ms": 4898,
+      "headers_ms": 4898,
+      "first_byte_ms": 4898,
+      "first_token_ms": 4909,
+      "request_bytes": 1637754,
+      "images": 2
+    },
+    {
+      "sent_ms": 3617,
+      "headers_ms": 3617,
+      "first_byte_ms": 3622,
+      "first_token_ms": 3622,
+      "request_bytes": 1641573,
+      "images": 2
+    },
+    {
+      "sent_ms": 3990,
+      "headers_ms": 3990,
+      "first_byte_ms": 3999,
+      "first_token_ms": 3999,
+      "request_bytes": 1685148,
+      "images": 2
+    },
+    {
+      "sent_ms": 3561,
+      "headers_ms": 3561,
+      "first_byte_ms": 3570,
+      "first_token_ms": 3570,
+      "request_bytes": 1688850,
+      "images": 2
+    },
+    {
+      "sent_ms": 3640,
+      "headers_ms": 3640,
+      "first_byte_ms": 3666,
+      "first_token_ms": 3666,
+      "request_bytes": 1398586,
+      "images": 2
+    },
+    {
+      "sent_ms": 3261,
+      "headers_ms": 3261,
+      "first_byte_ms": 3268,
+      "first_token_ms": 3268,
+      "request_bytes": 1000477,
+      "images": 2
+    },
+    {
+      "sent_ms": 2773,
+      "headers_ms": 2773,
+      "first_byte_ms": 2773,
+      "first_token_ms": 2773,
+      "request_bytes": 980093,
+      "images": 2
+    },
+    {
+      "sent_ms": 3168,
+      "headers_ms": 3168,
+      "first_byte_ms": 3173,
+      "first_token_ms": 3173,
+      "request_bytes": 982445,
+      "images": 2
+    },
+    {
+      "sent_ms": 3677,
+      "headers_ms": 3677,
+      "first_byte_ms": 3682,
+      "first_token_ms": 3682,
+      "request_bytes": 985115,
+      "images": 2
+    },
+    {
+      "sent_ms": 2772,
+      "headers_ms": 2772,
+      "first_byte_ms": 2782,
+      "first_token_ms": 2782,
+      "request_bytes": 1010918,
+      "images": 2
+    },
+    {
+      "sent_ms": 2860,
+      "headers_ms": 2860,
+      "first_byte_ms": 2869,
+      "first_token_ms": 2869,
+      "request_bytes": 1014854,
+      "images": 2
+    },
+    {
+      "sent_ms": 2490,
+      "headers_ms": 2490,
+      "first_byte_ms": 2504,
+      "first_token_ms": 2504,
+      "request_bytes": 1017832,
+      "images": 2
+    },
+    {
+      "sent_ms": 2778,
+      "headers_ms": 2778,
+      "first_byte_ms": 2780,
+      "first_token_ms": 2780,
+      "request_bytes": 1022118,
+      "images": 2
+    },
+    {
+      "sent_ms": 3049,
+      "headers_ms": 3049,
+      "first_byte_ms": 3057,
+      "first_token_ms": 3057,
+      "request_bytes": 1024414,
+      "images": 2
+    },
+    {
+      "sent_ms": 3010,
+      "headers_ms": 3010,
+      "first_byte_ms": 3048,
+      "first_token_ms": 3048,
+      "request_bytes": 1025487,
+      "images": 2
+    },
+    {
+      "sent_ms": 2954,
+      "headers_ms": 2954,
+      "first_byte_ms": 2958,
+      "first_token_ms": 2960,
+      "request_bytes": 1029150,
+      "images": 2
+    },
+    {
+      "sent_ms": 2718,
+      "headers_ms": 2718,
+      "first_byte_ms": 2719,
+      "first_token_ms": 2720,
+      "request_bytes": 1031235,
+      "images": 2
+    },
+    {
+      "sent_ms": 4166,
+      "headers_ms": 4166,
+      "first_byte_ms": 4174,
+      "first_token_ms": 4174,
+      "request_bytes": 1036263,
+      "images": 2
+    },
+    {
+      "sent_ms": 3059,
+      "headers_ms": 3059,
+      "first_byte_ms": 3059,
+      "first_token_ms": 3059,
+      "request_bytes": 1043250,
+      "images": 2
+    },
+    {
+      "sent_ms": 2664,
+      "headers_ms": 2664,
+      "first_byte_ms": 2671,
+      "first_token_ms": 2676,
+      "request_bytes": 1044338,
+      "images": 2
+    },
+    {
+      "sent_ms": 3230,
+      "headers_ms": 3230,
+      "first_byte_ms": 3249,
+      "first_token_ms": 3249,
+      "request_bytes": 1052807,
+      "images": 2
+    },
+    {
+      "sent_ms": 9737,
+      "headers_ms": 9737,
+      "first_byte_ms": 9737,
+      "first_token_ms": 9737,
+      "request_bytes": 1057044,
+      "images": 2
+    },
+    {
+      "sent_ms": 3631,
+      "headers_ms": 3631,
+      "first_byte_ms": 3636,
+      "first_token_ms": 3636,
+      "request_bytes": 1059194,
+      "images": 2
+    },
+    {
+      "sent_ms": 3258,
+      "headers_ms": 3258,
+      "first_byte_ms": 3264,
+      "first_token_ms": 3264,
+      "request_bytes": 1062409,
+      "images": 2
+    },
+    {
+      "sent_ms": 3228,
+      "headers_ms": 3228,
+      "first_byte_ms": 3234,
+      "first_token_ms": 3234,
+      "request_bytes": 1063463,
+      "images": 2
+    },
+    {
+      "sent_ms": 3439,
+      "headers_ms": 3439,
+      "first_byte_ms": 3439,
+      "first_token_ms": 3449,
+      "request_bytes": 1068010,
+      "images": 2
+    },
+    {
+      "sent_ms": 4012,
+      "headers_ms": 4012,
+      "first_byte_ms": 4017,
+      "first_token_ms": 4018,
+      "request_bytes": 1071136,
+      "images": 2
+    },
+    {
+      "sent_ms": 3490,
+      "headers_ms": 3490,
+      "first_byte_ms": 3490,
+      "first_token_ms": 3490,
+      "request_bytes": 1075277,
+      "images": 2
+    },
+    {
+      "sent_ms": 3147,
+      "headers_ms": 3147,
+      "first_byte_ms": 3160,
+      "first_token_ms": 3160,
+      "request_bytes": 1076553,
+      "images": 2
+    },
+    {
+      "sent_ms": 14938,
+      "headers_ms": 14938,
+      "first_byte_ms": 14946,
+      "first_token_ms": 14946,
+      "request_bytes": 1077181,
+      "images": 2
+    },
+    {
+      "sent_ms": 3427,
+      "headers_ms": 3427,
+      "first_byte_ms": 3434,
+      "first_token_ms": 3434,
+      "request_bytes": 1078137,
+      "images": 2
+    },
+    {
+      "sent_ms": 2493,
+      "headers_ms": 2493,
+      "first_byte_ms": 2542,
+      "first_token_ms": 2542,
+      "request_bytes": 1078743,
+      "images": 2
+    },
+    {
+      "sent_ms": 4625,
+      "headers_ms": 4625,
+      "first_byte_ms": 4649,
+      "first_token_ms": 4649,
+      "request_bytes": 1081335,
+      "images": 2
+    },
+    {
+      "sent_ms": 1583,
+      "headers_ms": 1583,
+      "first_byte_ms": 1591,
+      "first_token_ms": 1591,
+      "request_bytes": 337,
+      "images": 0
+    },
+    {
+      "sent_ms": 1987,
+      "headers_ms": 1987,
+      "first_byte_ms": 2030,
+      "first_token_ms": 2030,
+      "request_bytes": 33239,
+      "images": 0
+    },
+    {
+      "sent_ms": 2439,
+      "headers_ms": 2439,
+      "first_byte_ms": 2491,
+      "first_token_ms": 2491,
+      "request_bytes": 34081,
+      "images": 0
+    },
+    {
+      "sent_ms": 4548,
+      "headers_ms": 4548,
+      "first_byte_ms": 4567,
+      "first_token_ms": 4567,
+      "request_bytes": 1083211,
+      "images": 2
+    },
+    {
+      "sent_ms": 2607,
+      "headers_ms": 2607,
+      "first_byte_ms": 2615,
+      "first_token_ms": 2615,
+      "request_bytes": 1086569,
+      "images": 2
+    },
+    {
+      "sent_ms": 2441,
+      "headers_ms": 2441,
+      "first_byte_ms": 2442,
+      "first_token_ms": 2442,
+      "request_bytes": 1095408,
+      "images": 2
+    },
+    {
+      "sent_ms": 2948,
+      "headers_ms": 2948,
+      "first_byte_ms": 2956,
+      "first_token_ms": 2956,
+      "request_bytes": 1101173,
+      "images": 2
+    },
+    {
+      "sent_ms": 2454,
+      "headers_ms": 2454,
+      "first_byte_ms": 2457,
+      "first_token_ms": 2457,
+      "request_bytes": 1104334,
+      "images": 2
+    },
+    {
+      "sent_ms": 2814,
+      "headers_ms": 2814,
+      "first_byte_ms": 2823,
+      "first_token_ms": 2823,
+      "request_bytes": 1111263,
+      "images": 2
+    },
+    {
+      "sent_ms": 3021,
+      "headers_ms": 3021,
+      "first_byte_ms": 3035,
+      "first_token_ms": 3035,
+      "request_bytes": 1116639,
+      "images": 2
+    },
+    {
+      "sent_ms": 2711,
+      "headers_ms": 2711,
+      "first_byte_ms": 2711,
+      "first_token_ms": 2711,
+      "request_bytes": 1126680,
+      "images": 2
+    },
+    {
+      "sent_ms": 2976,
+      "headers_ms": 2976,
+      "first_byte_ms": 2979,
+      "first_token_ms": 2979,
+      "request_bytes": 1138860,
+      "images": 2
+    },
+    {
+      "sent_ms": 3195,
+      "headers_ms": 3195,
+      "first_byte_ms": 3203,
+      "first_token_ms": 3203,
+      "request_bytes": 1140202,
+      "images": 2
+    },
+    {
+      "sent_ms": 2845,
+      "headers_ms": 2845,
+      "first_byte_ms": 2845,
+      "first_token_ms": 2846,
+      "request_bytes": 1146630,
+      "images": 2
+    },
+    {
+      "sent_ms": 3234,
+      "headers_ms": 3234,
+      "first_byte_ms": 3234,
+      "first_token_ms": 3235,
+      "request_bytes": 1154458,
+      "images": 2
+    },
+    {
+      "sent_ms": 3199,
+      "headers_ms": 3199,
+      "first_byte_ms": 3199,
+      "first_token_ms": 3199,
+      "request_bytes": 1156967,
+      "images": 2
+    },
+    {
+      "sent_ms": 3197,
+      "headers_ms": 3197,
+      "first_byte_ms": 3202,
+      "first_token_ms": 3202,
+      "request_bytes": 1159106,
+      "images": 2
+    },
+    {
+      "sent_ms": 3780,
+      "headers_ms": 3780,
+      "first_byte_ms": 3786,
+      "first_token_ms": 3786,
+      "request_bytes": 1161166,
+      "images": 2
+    },
+    {
+      "sent_ms": 3707,
+      "headers_ms": 3707,
+      "first_byte_ms": 3718,
+      "first_token_ms": 3718,
+      "request_bytes": 1170809,
+      "images": 2
+    },
+    {
+      "sent_ms": 3133,
+      "headers_ms": 3133,
+      "first_byte_ms": 3146,
+      "first_token_ms": 3146,
+      "request_bytes": 1178167,
+      "images": 2
+    },
+    {
+      "sent_ms": 2884,
+      "headers_ms": 2884,
+      "first_byte_ms": 2885,
+      "first_token_ms": 2885,
+      "request_bytes": 1179491,
+      "images": 2
+    },
+    {
+      "sent_ms": 3199,
+      "headers_ms": 3199,
+      "first_byte_ms": 3202,
+      "first_token_ms": 3202,
+      "request_bytes": 1183690,
+      "images": 2
+    },
+    {
+      "sent_ms": 3661,
+      "headers_ms": 3661,
+      "first_byte_ms": 3661,
+      "first_token_ms": 3661,
+      "request_bytes": 1187871,
+      "images": 2
+    },
+    {
+      "sent_ms": 3689,
+      "headers_ms": 3689,
+      "first_byte_ms": 3689,
+      "first_token_ms": 3689,
+      "request_bytes": 1193299,
+      "images": 2
+    },
+    {
+      "sent_ms": 2962,
+      "headers_ms": 2962,
+      "first_byte_ms": 2972,
+      "first_token_ms": 2972,
+      "request_bytes": 1199774,
+      "images": 2
+    },
+    {
+      "sent_ms": 3342,
+      "headers_ms": 3342,
+      "first_byte_ms": 3357,
+      "first_token_ms": 3357,
+      "request_bytes": 1201212,
+      "images": 2
+    },
+    {
+      "sent_ms": 3063,
+      "headers_ms": 3063,
+      "first_byte_ms": 3075,
+      "first_token_ms": 3075,
+      "request_bytes": 1203945,
+      "images": 2
+    },
+    {
+      "sent_ms": 5098,
+      "headers_ms": 5098,
+      "first_byte_ms": 5132,
+      "first_token_ms": 5161,
+      "request_bytes": 1170467,
+      "images": 2
+    },
+    {
+      "sent_ms": 1310,
+      "headers_ms": 1310,
+      "first_byte_ms": 1316,
+      "first_token_ms": 1316,
+      "request_bytes": 337,
+      "images": 0
+    },
+    {
+      "sent_ms": 1367,
+      "headers_ms": 1367,
+      "first_byte_ms": 1402,
+      "first_token_ms": 1402,
+      "request_bytes": 33351,
+      "images": 0
+    },
+    {
+      "sent_ms": 1521,
+      "headers_ms": 1521,
+      "first_byte_ms": 1536,
+      "first_token_ms": 1536,
+      "request_bytes": 34401,
+      "images": 0
+    },
+    {
+      "sent_ms": 1191,
+      "headers_ms": 1191,
+      "first_byte_ms": 1208,
+      "first_token_ms": 1208,
+      "request_bytes": 35536,
+      "images": 0
+    },
+    {
+      "sent_ms": 2263,
+      "headers_ms": 2263,
+      "first_byte_ms": 2284,
+      "first_token_ms": 2284,
+      "request_bytes": 488441,
+      "images": 1
+    },
+    {
+      "sent_ms": 2114,
+      "headers_ms": 2114,
+      "first_byte_ms": 2121,
+      "first_token_ms": 2121,
+      "request_bytes": 490254,
+      "images": 1
+    },
+    {
+      "sent_ms": 2427,
+      "headers_ms": 2427,
+      "first_byte_ms": 2438,
+      "first_token_ms": 2438,
+      "request_bytes": 491417,
+      "images": 1
+    },
+    {
+      "sent_ms": 2978,
+      "headers_ms": 2978,
+      "first_byte_ms": 2991,
+      "first_token_ms": 2992,
+      "request_bytes": 962018,
+      "images": 2
+    },
+    {
+      "sent_ms": 2574,
+      "headers_ms": 2574,
+      "first_byte_ms": 2580,
+      "first_token_ms": 2580,
+      "request_bytes": 963318,
+      "images": 2
+    },
+    {
+      "sent_ms": 3075,
+      "headers_ms": 3075,
+      "first_byte_ms": 3075,
+      "first_token_ms": 3075,
+      "request_bytes": 964032,
+      "images": 2
+    },
+    {
+      "sent_ms": 3964,
+      "headers_ms": 3964,
+      "first_byte_ms": 3984,
+      "first_token_ms": 3984,
+      "request_bytes": 1764095,
+      "images": 2
+    },
+    {
+      "sent_ms": 3614,
+      "headers_ms": 3614,
+      "first_byte_ms": 3614,
+      "first_token_ms": 3614,
+      "request_bytes": 1764672,
+      "images": 2
+    },
+    {
+      "sent_ms": 5380,
+      "headers_ms": 5380,
+      "first_byte_ms": 5387,
+      "first_token_ms": 5387,
+      "request_bytes": 2544930,
+      "images": 2
+    },
+    {
+      "sent_ms": 4225,
+      "headers_ms": 4225,
+      "first_byte_ms": 4250,
+      "first_token_ms": 4250,
+      "request_bytes": 1974162,
+      "images": 2
+    },
+    {
+      "sent_ms": 2635,
+      "headers_ms": 2635,
+      "first_byte_ms": 2635,
+      "first_token_ms": 2642,
+      "request_bytes": 1209570,
+      "images": 2
+    },
+    {
+      "sent_ms": 3061,
+      "headers_ms": 3061,
+      "first_byte_ms": 3061,
+      "first_token_ms": 3061,
+      "request_bytes": 1014905,
+      "images": 2
+    },
+    {
+      "sent_ms": 9969,
+      "headers_ms": 9969,
+      "first_byte_ms": 9981,
+      "first_token_ms": 9981,
+      "request_bytes": 4854848,
+      "images": 2
+    },
+    {
+      "sent_ms": 22955,
+      "headers_ms": 22955,
+      "first_byte_ms": 23017,
+      "first_token_ms": 23017,
+      "request_bytes": 8245503,
+      "images": 2
+    },
+    {
+      "sent_ms": 34565,
+      "headers_ms": 34565,
+      "first_byte_ms": 34565,
+      "first_token_ms": 34565,
+      "request_bytes": 8246900,
+      "images": 2
+    },
+    {
+      "sent_ms": 20120,
+      "headers_ms": 20120,
+      "first_byte_ms": 20138,
+      "first_token_ms": 20138,
+      "request_bytes": 8250339,
+      "images": 2
+    },
+    {
+      "sent_ms": 22177,
+      "headers_ms": 22177,
+      "first_byte_ms": 22185,
+      "first_token_ms": 22185,
+      "request_bytes": 8253042,
+      "images": 2
+    },
+    {
+      "sent_ms": 31744,
+      "headers_ms": 31744,
+      "first_byte_ms": 31750,
+      "first_token_ms": 31750,
+      "request_bytes": 8258387,
+      "images": 2
+    },
+    {
+      "sent_ms": 20683,
+      "headers_ms": 20683,
+      "first_byte_ms": 20694,
+      "first_token_ms": 20694,
+      "request_bytes": 8266286,
+      "images": 2
+    },
+    {
+      "sent_ms": 24563,
+      "headers_ms": 24563,
+      "first_byte_ms": 24577,
+      "first_token_ms": 24577,
+      "request_bytes": 8276809,
+      "images": 2
+    },
+    {
+      "sent_ms": 22496,
+      "headers_ms": 22496,
+      "first_byte_ms": 22496,
+      "first_token_ms": 22496,
+      "request_bytes": 8290681,
+      "images": 2
+    },
+    {
+      "sent_ms": 24333,
+      "headers_ms": 24333,
+      "first_byte_ms": 24333,
+      "first_token_ms": 24333,
+      "request_bytes": 8305284,
+      "images": 2
+    },
+    {
+      "sent_ms": 23131,
+      "headers_ms": 23131,
+      "first_byte_ms": 23136,
+      "first_token_ms": 23136,
+      "request_bytes": 8312884,
+      "images": 2
+    },
+    {
+      "sent_ms": 22496,
+      "headers_ms": 22496,
+      "first_byte_ms": 22498,
+      "first_token_ms": 22498,
+      "request_bytes": 8320002,
+      "images": 2
+    },
+    {
+      "sent_ms": 22569,
+      "headers_ms": 22569,
+      "first_byte_ms": 22569,
+      "first_token_ms": 22569,
+      "request_bytes": 8324506,
+      "images": 2
+    },
+    {
+      "sent_ms": 21552,
+      "headers_ms": 21552,
+      "first_byte_ms": 21557,
+      "first_token_ms": 21557,
+      "request_bytes": 8329256,
+      "images": 2
+    },
+    {
+      "sent_ms": 24961,
+      "headers_ms": 24961,
+      "first_byte_ms": 24973,
+      "first_token_ms": 24973,
+      "request_bytes": 8332600,
+      "images": 2
+    },
+    {
+      "sent_ms": 26106,
+      "headers_ms": 26106,
+      "first_byte_ms": 26124,
+      "first_token_ms": 26124,
+      "request_bytes": 8335586,
+      "images": 2
+    },
+    {
+      "sent_ms": 23433,
+      "headers_ms": 23433,
+      "first_byte_ms": 23445,
+      "first_token_ms": 23445,
+      "request_bytes": 8336175,
+      "images": 2
+    },
+    {
+      "sent_ms": 32357,
+      "headers_ms": 32357,
+      "first_byte_ms": 32370,
+      "first_token_ms": 32370,
+      "request_bytes": 8341042,
+      "images": 2
+    },
+    {
+      "sent_ms": 34966,
+      "headers_ms": 34966,
+      "first_byte_ms": 34969,
+      "first_token_ms": 34969,
+      "request_bytes": 8347781,
+      "images": 2
+    },
+    {
+      "sent_ms": 25930,
+      "headers_ms": 25930,
+      "first_byte_ms": 25943,
+      "first_token_ms": 25943,
+      "request_bytes": 8351932,
+      "images": 2
+    },
+    {
+      "sent_ms": 23784,
+      "headers_ms": 23784,
+      "first_byte_ms": 23787,
+      "first_token_ms": 23787,
+      "request_bytes": 8365491,
+      "images": 2
+    },
+    {
+      "sent_ms": 29692,
+      "headers_ms": 29692,
+      "first_byte_ms": 29692,
+      "first_token_ms": 29692,
+      "request_bytes": 8370158,
+      "images": 2
+    },
+    {
+      "sent_ms": 33943,
+      "headers_ms": 33943,
+      "first_byte_ms": 33945,
+      "first_token_ms": 33945,
+      "request_bytes": 8374950,
+      "images": 2
+    },
+    {
+      "sent_ms": 34821,
+      "headers_ms": 34821,
+      "first_byte_ms": 34821,
+      "first_token_ms": 34821,
+      "request_bytes": 8376324,
+      "images": 2
+    },
+    {
+      "sent_ms": 15121,
+      "headers_ms": 15121,
+      "first_byte_ms": 15123,
+      "first_token_ms": 15123,
+      "request_bytes": 4579864,
+      "images": 2
+    },
+    {
+      "sent_ms": 11023,
+      "headers_ms": 11023,
+      "first_byte_ms": 11043,
+      "first_token_ms": 11044,
+      "request_bytes": 4580549,
+      "images": 2
+    },
+    {
+      "sent_ms": 3434,
+      "headers_ms": 3434,
+      "first_byte_ms": 3452,
+      "first_token_ms": 3452,
+      "request_bytes": 1299150,
+      "images": 2
+    },
+    {
+      "sent_ms": 2895,
+      "headers_ms": 2895,
+      "first_byte_ms": 2897,
+      "first_token_ms": 2898,
+      "request_bytes": 845509,
+      "images": 2
+    },
+    {
+      "sent_ms": 2437,
+      "headers_ms": 2437,
+      "first_byte_ms": 2519,
+      "first_token_ms": 2519,
+      "request_bytes": 855882,
+      "images": 2
+    },
+    {
+      "sent_ms": 2153,
+      "headers_ms": 2153,
+      "first_byte_ms": 2155,
+      "first_token_ms": 2156,
+      "request_bytes": 858733,
+      "images": 2
+    },
+    {
+      "sent_ms": 2909,
+      "headers_ms": 2909,
+      "first_byte_ms": 2915,
+      "first_token_ms": 2915,
+      "request_bytes": 867510,
+      "images": 2
+    },
+    {
+      "sent_ms": 2786,
+      "headers_ms": 2786,
+      "first_byte_ms": 2788,
+      "first_token_ms": 2788,
+      "request_bytes": 877291,
+      "images": 2
+    },
+    {
+      "sent_ms": 2721,
+      "headers_ms": 2721,
+      "first_byte_ms": 2744,
+      "first_token_ms": 2744,
+      "request_bytes": 880955,
+      "images": 2
+    },
+    {
+      "sent_ms": 2380,
+      "headers_ms": 2380,
+      "first_byte_ms": 2398,
+      "first_token_ms": 2398,
+      "request_bytes": 889803,
+      "images": 2
+    },
+    {
+      "sent_ms": 2710,
+      "headers_ms": 2710,
+      "first_byte_ms": 2710,
+      "first_token_ms": 2710,
+      "request_bytes": 897382,
+      "images": 2
+    },
+    {
+      "sent_ms": 7677,
+      "headers_ms": 7677,
+      "first_byte_ms": 7695,
+      "first_token_ms": 7696,
+      "request_bytes": 4006800,
+      "images": 2
+    },
+    {
+      "sent_ms": 25413,
+      "headers_ms": 25413,
+      "first_byte_ms": 25420,
+      "first_token_ms": 25426,
+      "request_bytes": 6922588,
+      "images": 2
+    },
+    {
+      "sent_ms": 15446,
+      "headers_ms": 15446,
+      "first_byte_ms": 15446,
+      "first_token_ms": 15446,
+      "request_bytes": 6924562,
+      "images": 2
+    },
+    {
+      "sent_ms": 8607,
+      "headers_ms": 8607,
+      "first_byte_ms": 8618,
+      "first_token_ms": 8618,
+      "request_bytes": 3671179,
+      "images": 2
+    },
+    {
+      "sent_ms": 8448,
+      "headers_ms": 8448,
+      "first_byte_ms": 8453,
+      "first_token_ms": 8453,
+      "request_bytes": 3652264,
+      "images": 2
+    },
+    {
+      "sent_ms": 13343,
+      "headers_ms": 13343,
+      "first_byte_ms": 13356,
+      "first_token_ms": 13356,
+      "request_bytes": 6323530,
+      "images": 2
+    },
+    {
+      "sent_ms": 20991,
+      "headers_ms": 20991,
+      "first_byte_ms": 20999,
+      "first_token_ms": 20999,
+      "request_bytes": 7688714,
+      "images": 2
+    },
+    {
+      "sent_ms": 20136,
+      "headers_ms": 20136,
+      "first_byte_ms": 20154,
+      "first_token_ms": 20154,
+      "request_bytes": 7697080,
+      "images": 2
+    },
+    {
+      "sent_ms": 8886,
+      "headers_ms": 8886,
+      "first_byte_ms": 8916,
+      "first_token_ms": 8916,
+      "request_bytes": 4447564,
+      "images": 2
+    },
+    {
+      "sent_ms": 11810,
+      "headers_ms": 11810,
+      "first_byte_ms": 11816,
+      "first_token_ms": 11816,
+      "request_bytes": 4451486,
+      "images": 2
+    },
+    {
+      "sent_ms": 9057,
+      "headers_ms": 9057,
+      "first_byte_ms": 9084,
+      "first_token_ms": 9084,
+      "request_bytes": 4457412,
+      "images": 2
+    },
+    {
+      "sent_ms": 7209,
+      "headers_ms": 7209,
+      "first_byte_ms": 7209,
+      "first_token_ms": 7210,
+      "request_bytes": 3929762,
+      "images": 2
+    },
+    {
+      "sent_ms": 5761,
+      "headers_ms": 5761,
+      "first_byte_ms": 5774,
+      "first_token_ms": 5774,
+      "request_bytes": 3291395,
+      "images": 2
+    },
+    {
+      "sent_ms": 7382,
+      "headers_ms": 7382,
+      "first_byte_ms": 7388,
+      "first_token_ms": 7388,
+      "request_bytes": 3296548,
+      "images": 2
+    },
+    {
+      "sent_ms": 6915,
+      "headers_ms": 6915,
+      "first_byte_ms": 6923,
+      "first_token_ms": 6923,
+      "request_bytes": 3302094,
+      "images": 2
+    },
+    {
+      "sent_ms": 6306,
+      "headers_ms": 6306,
+      "first_byte_ms": 6316,
+      "first_token_ms": 6316,
+      "request_bytes": 3304455,
+      "images": 2
+    },
+    {
+      "sent_ms": 8105,
+      "headers_ms": 8105,
+      "first_byte_ms": 8118,
+      "first_token_ms": 8118,
+      "request_bytes": 3902728,
+      "images": 2
+    },
+    {
+      "sent_ms": 9410,
+      "headers_ms": 9410,
+      "first_byte_ms": 9418,
+      "first_token_ms": 9418,
+      "request_bytes": 3909087,
+      "images": 2
+    },
+    {
+      "sent_ms": 7946,
+      "headers_ms": 7946,
+      "first_byte_ms": 7955,
+      "first_token_ms": 7955,
+      "request_bytes": 3914338,
+      "images": 2
+    },
+    {
+      "sent_ms": 8112,
+      "headers_ms": 8112,
+      "first_byte_ms": 8114,
+      "first_token_ms": 8114,
+      "request_bytes": 3926175,
+      "images": 2
+    },
+    {
+      "sent_ms": 11056,
+      "headers_ms": 11056,
+      "first_byte_ms": 11056,
+      "first_token_ms": 11056,
+      "request_bytes": 3930929,
+      "images": 2
+    },
+    {
+      "sent_ms": 8666,
+      "headers_ms": 8666,
+      "first_byte_ms": 8674,
+      "first_token_ms": 8674,
+      "request_bytes": 3933206,
+      "images": 2
+    },
+    {
+      "sent_ms": 19393,
+      "headers_ms": 19393,
+      "first_byte_ms": 19460,
+      "first_token_ms": 19461,
+      "request_bytes": 7408527,
+      "images": 2
+    },
+    {
+      "sent_ms": 30094,
+      "headers_ms": 30094,
+      "first_byte_ms": 40155,
+      "first_token_ms": 40155,
+      "request_bytes": 9433963,
+      "images": 2
+    },
+    {
+      "sent_ms": 10769,
+      "headers_ms": 10769,
+      "first_byte_ms": 12100,
+      "first_token_ms": 12100,
+      "request_bytes": 5482182,
+      "images": 2
+    },
+    {
+      "sent_ms": 1977,
+      "headers_ms": 1977,
+      "first_byte_ms": 2949,
+      "first_token_ms": 2949,
+      "request_bytes": 1425860,
+      "images": 2
+    },
+    {
+      "sent_ms": 2361,
+      "headers_ms": 2361,
+      "first_byte_ms": 5179,
+      "first_token_ms": 5179,
+      "request_bytes": 1611902,
+      "images": 2
+    },
+    {
+      "sent_ms": 2015,
+      "headers_ms": 2015,
+      "first_byte_ms": 3085,
+      "first_token_ms": 3085,
+      "request_bytes": 1613528,
+      "images": 2
+    },
+    {
+      "sent_ms": 8310,
+      "headers_ms": 8310,
+      "first_byte_ms": 23303,
+      "first_token_ms": 26082,
+      "request_bytes": 4708107,
+      "images": 2
+    },
+    {
+      "sent_ms": 19715,
+      "headers_ms": 19715,
+      "first_byte_ms": 21520,
+      "first_token_ms": 21520,
+      "request_bytes": 7462562,
+      "images": 2
+    },
+    {
+      "sent_ms": 10524,
+      "headers_ms": 10524,
+      "first_byte_ms": 12430,
+      "first_token_ms": 12442,
+      "request_bytes": 5662354,
+      "images": 2
+    },
+    {
+      "sent_ms": 7842,
+      "headers_ms": 7842,
+      "first_byte_ms": 10066,
+      "first_token_ms": 10066,
+      "request_bytes": 4950715,
+      "images": 2
+    },
+    {
+      "sent_ms": 16510,
+      "headers_ms": 16510,
+      "first_byte_ms": 17737,
+      "first_token_ms": 17737,
+      "request_bytes": 7079960,
+      "images": 2
+    },
+    {
+      "sent_ms": 14913,
+      "headers_ms": 14913,
+      "first_byte_ms": 16842,
+      "first_token_ms": 16842,
+      "request_bytes": 7081819,
+      "images": 2
+    },
+    {
+      "sent_ms": 1764,
+      "headers_ms": 1764,
+      "first_byte_ms": 1766,
+      "first_token_ms": 1766,
+      "request_bytes": 33169,
+      "images": 0
+    },
+    {
+      "sent_ms": 2950,
+      "headers_ms": 2950,
+      "first_byte_ms": 2954,
+      "first_token_ms": 2954,
+      "request_bytes": 302,
+      "images": 0
+    },
+    {
+      "sent_ms": 1531,
+      "headers_ms": 1531,
+      "first_byte_ms": 1544,
+      "first_token_ms": 1544,
+      "request_bytes": 33407,
+      "images": 0
+    },
+    {
+      "sent_ms": 1697,
+      "headers_ms": 1697,
+      "first_byte_ms": 1698,
+      "first_token_ms": 1700,
+      "request_bytes": 302,
+      "images": 0
+    },
+    {
+      "sent_ms": 1309,
+      "headers_ms": 1309,
+      "first_byte_ms": 1320,
+      "first_token_ms": 1320,
+      "request_bytes": 33169,
+      "images": 0
+    },
+    {
+      "sent_ms": 2177,
+      "headers_ms": 2177,
+      "first_byte_ms": 2222,
+      "first_token_ms": 2222,
+      "request_bytes": 302,
+      "images": 0
+    },
+    {
+      "sent_ms": 1290,
+      "headers_ms": 1290,
+      "first_byte_ms": 1301,
+      "first_token_ms": 1301,
+      "request_bytes": 33819,
+      "images": 0
+    },
+    {
+      "sent_ms": 1584,
+      "headers_ms": 1584,
+      "first_byte_ms": 1593,
+      "first_token_ms": 1593,
+      "request_bytes": 44808,
+      "images": 0
+    },
+    {
+      "sent_ms": 1594,
+      "headers_ms": 1594,
+      "first_byte_ms": 1612,
+      "first_token_ms": 1613,
+      "request_bytes": 423,
+      "images": 0
+    },
+    {
+      "sent_ms": 1721,
+      "headers_ms": 1721,
+      "first_byte_ms": 1880,
+      "first_token_ms": 1880,
+      "request_bytes": 33411,
+      "images": 0
+    },
+    {
+      "sent_ms": 3967,
+      "headers_ms": 3967,
+      "first_byte_ms": 4008,
+      "first_token_ms": 4008,
+      "request_bytes": 471112,
+      "images": 1
+    },
+    {
+      "sent_ms": 1308,
+      "headers_ms": 1308,
+      "first_byte_ms": 1308,
+      "first_token_ms": 1308,
+      "request_bytes": 629,
+      "images": 0
+    },
+    {
+      "sent_ms": 1529,
+      "headers_ms": 1529,
+      "first_byte_ms": 1580,
+      "first_token_ms": 1580,
+      "request_bytes": 34040,
+      "images": 0
+    },
+    {
+      "sent_ms": 4470,
+      "headers_ms": 4470,
+      "first_byte_ms": 4478,
+      "first_token_ms": 4478,
+      "request_bytes": 527616,
+      "images": 1
+    },
+    {
+      "sent_ms": 6345,
+      "headers_ms": 6345,
+      "first_byte_ms": 6545,
+      "first_token_ms": 6545,
+      "request_bytes": 543896,
+      "images": 1
+    },
+    {
+      "sent_ms": 4560,
+      "headers_ms": 4560,
+      "first_byte_ms": 4609,
+      "first_token_ms": 4609,
+      "request_bytes": 547055,
+      "images": 1
+    },
+    {
+      "sent_ms": 8353,
+      "headers_ms": 8353,
+      "first_byte_ms": 8394,
+      "first_token_ms": 8394,
+      "request_bytes": 1107477,
+      "images": 2
+    },
+    {
+      "sent_ms": 7844,
+      "headers_ms": 7844,
+      "first_byte_ms": 7914,
+      "first_token_ms": 7915,
+      "request_bytes": 1117729,
+      "images": 2
+    },
+    {
+      "sent_ms": 9636,
+      "headers_ms": 9636,
+      "first_byte_ms": 9673,
+      "first_token_ms": 9673,
+      "request_bytes": 1130567,
+      "images": 2
+    },
+    {
+      "sent_ms": 7828,
+      "headers_ms": 7828,
+      "first_byte_ms": 7887,
+      "first_token_ms": 7887,
+      "request_bytes": 1134093,
+      "images": 2
+    },
+    {
+      "sent_ms": 9540,
+      "headers_ms": 9540,
+      "first_byte_ms": 9580,
+      "first_token_ms": 9580,
+      "request_bytes": 1156787,
+      "images": 2
+    },
+    {
+      "sent_ms": 7776,
+      "headers_ms": 7776,
+      "first_byte_ms": 7835,
+      "first_token_ms": 7835,
+      "request_bytes": 1162737,
+      "images": 2
+    },
+    {
+      "sent_ms": 7771,
+      "headers_ms": 7771,
+      "first_byte_ms": 7811,
+      "first_token_ms": 7811,
+      "request_bytes": 1176432,
+      "images": 2
+    },
+    {
+      "sent_ms": 8808,
+      "headers_ms": 8808,
+      "first_byte_ms": 8836,
+      "first_token_ms": 8836,
+      "request_bytes": 1178771,
+      "images": 2
+    },
+    {
+      "sent_ms": 11681,
+      "headers_ms": 11681,
+      "first_byte_ms": 11732,
+      "first_token_ms": 11732,
+      "request_bytes": 1185533,
+      "images": 2
+    },
+    {
+      "sent_ms": 9866,
+      "headers_ms": 9866,
+      "first_byte_ms": 9908,
+      "first_token_ms": 9909,
+      "request_bytes": 1199165,
+      "images": 2
+    },
+    {
+      "sent_ms": 7285,
+      "headers_ms": 7285,
+      "first_byte_ms": 7324,
+      "first_token_ms": 7324,
+      "request_bytes": 1209104,
+      "images": 2
+    },
+    {
+      "sent_ms": 10255,
+      "headers_ms": 10255,
+      "first_byte_ms": 10321,
+      "first_token_ms": 10321,
+      "request_bytes": 1217958,
+      "images": 2
+    },
+    {
+      "sent_ms": 9372,
+      "headers_ms": 9372,
+      "first_byte_ms": 9441,
+      "first_token_ms": 9441,
+      "request_bytes": 1242964,
+      "images": 2
+    },
+    {
+      "sent_ms": 8461,
+      "headers_ms": 8461,
+      "first_byte_ms": 8514,
+      "first_token_ms": 8514,
+      "request_bytes": 1249532,
+      "images": 2
+    },
+    {
+      "sent_ms": 10777,
+      "headers_ms": 10777,
+      "first_byte_ms": 10780,
+      "first_token_ms": 10780,
+      "request_bytes": 1252215,
+      "images": 2
+    },
+    {
+      "sent_ms": 12384,
+      "headers_ms": 12384,
+      "first_byte_ms": 12432,
+      "first_token_ms": 12432,
+      "request_bytes": 1256530,
+      "images": 2
+    },
+    {
+      "sent_ms": 7969,
+      "headers_ms": 7969,
+      "first_byte_ms": 7969,
+      "first_token_ms": 7979,
+      "request_bytes": 1257630,
+      "images": 2
+    },
+    {
+      "sent_ms": 11179,
+      "headers_ms": 11179,
+      "first_byte_ms": 11179,
+      "first_token_ms": 11179,
+      "request_bytes": 1258828,
+      "images": 2
+    },
+    {
+      "sent_ms": 9227,
+      "headers_ms": 9227,
+      "first_byte_ms": 9294,
+      "first_token_ms": 9294,
+      "request_bytes": 1262487,
+      "images": 2
+    },
+    {
+      "sent_ms": 11794,
+      "headers_ms": 11794,
+      "first_byte_ms": 11901,
+      "first_token_ms": 11916,
+      "request_bytes": 1263750,
+      "images": 2
+    },
+    {
+      "sent_ms": 8940,
+      "headers_ms": 8940,
+      "first_byte_ms": 8981,
+      "first_token_ms": 8981,
+      "request_bytes": 1269943,
+      "images": 2
+    },
+    {
+      "sent_ms": 12347,
+      "headers_ms": 12347,
+      "first_byte_ms": 12407,
+      "first_token_ms": 12407,
+      "request_bytes": 1274953,
+      "images": 2
+    },
+    {
+      "sent_ms": 9615,
+      "headers_ms": 9615,
+      "first_byte_ms": 9646,
+      "first_token_ms": 9646,
+      "request_bytes": 1277868,
+      "images": 2
+    },
+    {
+      "sent_ms": 7059,
+      "headers_ms": 7059,
+      "first_byte_ms": 7120,
+      "first_token_ms": 7120,
+      "request_bytes": 936814,
+      "images": 2
+    },
+    {
+      "sent_ms": 8362,
+      "headers_ms": 8362,
+      "first_byte_ms": 8367,
+      "first_token_ms": 8410,
+      "request_bytes": 898885,
+      "images": 2
+    },
+    {
+      "sent_ms": 44186,
+      "headers_ms": 44186,
+      "first_byte_ms": 44228,
+      "first_token_ms": 44228,
+      "request_bytes": 4500237,
+      "images": 2
+    },
+    {
+      "sent_ms": 28848,
+      "headers_ms": 28848,
+      "first_byte_ms": 28896,
+      "first_token_ms": 28896,
+      "request_bytes": 4528892,
+      "images": 2
+    },
+    {
+      "sent_ms": 29337,
+      "headers_ms": 29337,
+      "first_byte_ms": 29337,
+      "first_token_ms": 29378,
+      "request_bytes": 4531266,
+      "images": 2
+    },
+    {
+      "sent_ms": 1004,
+      "headers_ms": 1004,
+      "first_byte_ms": 1281,
+      "first_token_ms": 1281,
+      "request_bytes": 33169,
+      "images": 0
+    },
+    {
+      "sent_ms": 2606,
+      "headers_ms": 2606,
+      "first_byte_ms": 2607,
+      "first_token_ms": 2607,
+      "request_bytes": 302,
+      "images": 0
+    },
+    {
+      "sent_ms": 718,
+      "headers_ms": 718,
+      "first_byte_ms": 847,
+      "first_token_ms": 847,
+      "request_bytes": 33874,
+      "images": 0
+    }
+  ]
+}

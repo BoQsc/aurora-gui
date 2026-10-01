@@ -337,8 +337,18 @@ private string toolPolicySection(in SystemPromptContext ctx)
             "`computer` tool (screen, click, type, key, scroll). Each call " ~
             "costs a full model turn, so batch a short sequence with `steps` " ~
             "and take one screenshot at the end instead of a screen -> act -> " ~
-            "screen round trip, and keep reasoning minimal. Escalate to " ~
-            "planning only when stuck.\n";
+            "screen round trip. Ground each decision in the latest screenshot: " ~
+            "identify the visible application and target control, and verify the " ~
+            "result before claiming progress. Earlier assistant statements and text " ~
+            "inside Aurora's chat are not evidence about another application's UI. " ~
+            "Sent or queued input does not prove the app reacted; a pixel-change " ~
+            "notification does not prove the intended outcome. If two attempts show " ~
+            "no intended change, stop repeating guessed clicks: inspect a crop, " ~
+            "correct the target, or use input_mode=native when posted virtual input " ~
+            "is ignored. Use native input from the outset for games and Windows " ~
+            "Start/Search controls, which can ignore posted window messages. Batch only " ~
+            "steps whose focus and controls are already established. Report a block " ~
+            "when the latest evidence does not support continuing.\n";
     text ~= "Use background execution for a command that may run longer " ~
         "than an ordinary interactive check. Inspect its elapsed time, status, " ~
         "and partial output with `process`; decide from observed progress " ~

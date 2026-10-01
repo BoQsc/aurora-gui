@@ -1,0 +1,51 @@
+JPEG and long-chat validation, 2026-10-01
+
+Production encoder: Windows GDI+ JPEG quality 85, native captured dimensions.
+The two retained real 1920x1080 frames measured:
+  PNG 381,589 bytes -> JPEG 54,406 bytes
+  PNG 2,768,426 bytes -> JPEG 345,023 bytes
+Both JPEGs were independently decoded with Pillow. An odd-width 101x77
+fixture verified row padding, RGB order, vertical orientation and exact size.
+
+Requests retain one latest generated screen, independent of user attachments.
+Transcripts retain two generated frames across the complete message graph;
+inactive branches cannot leak old screen payloads. Existing PNG frames still
+retained after pruning are upgraded on restore. Chat messages and attachment
+metadata remain saved. User uploads on inactive branches remain intact.
+
+API comparison: Aurora's actual WinINet client, DeepSeek V4.1 Flash on
+OpenCode Go, reasoning off, 6,500 synthetic history records (~70k text tokens),
+two repetitions per condition, same short output prompt. No saved chat text was
+sent. Each condition had its own stable route/session id.
+
+Before, two real PNG frames:
+  Request 4,557,576 bytes; upload complete 1,067 / 1,103 ms
+  First output 8,531 / 6,734 ms (median 7,632.5 ms)
+After, latest real frame encoded by production JPEG encoder:
+  Request 771,389 bytes; upload complete 510 / 498 ms
+  First output 3,383 / 3,322 ms (median 3,352.5 ms)
+All four API requests completed with no errors. Request bytes fell 83.1%.
+This is a small sequential sample. It demonstrates smaller payloads and the
+observed timings, not a guarantee against upstream load or cache variation.
+Raw timing/usage-only results: jpeg-before.json and jpeg-after.json.
+
+Focused screenshot_history_test.d passed:
+  4,500 frames including multi-image messages and inactive branches
+  Exactly one generated screenshot on wire and two retained in storage
+  User reference attachments independently retained
+  1.4 MB text history compacted to 191,684 bytes
+  Durable objective, newest instruction and complete tool pairs preserved
+  Checkpoint persisted/reloaded without another rollover
+  Three more growing-history checkpoint rollovers stayed under budget
+
+The existing full Pro smoke suite has an unrelated provider-metadata assertion
+failure at headless_pro_smoke.d:2093, confirmed against unchanged HEAD before
+the JPEG work. This focused suite verifies the affected paths independently.
+
+Release build succeeded and was installed/relaunched via the rebuild helper.
+Installed binary matches the new release and is newer than edited sources.
+The restored active conversation still contains 207 messages and its retained
+screens are now JPEG: 72,544 and 460,032 base64 characters. The persisted state
+contains 34 generated frames across all chats after pruning and conversion.
+DeepSeek V4.1 Flash on the configured OpenCode Go endpoint has automatic context
+compaction enabled with a 128,000-token target. The startup migration was saved.

@@ -3,7 +3,7 @@ module auroraopencode.opencode_client;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
-import core.sys.windows.windows : DWORD, BOOL, FALSE, TRUE, GetLastError;
+import core.sys.windows.windows : DWORD, DWORD_PTR, BOOL, FALSE, TRUE, GetLastError;
 import core.sys.windows.wininet : ERROR_INTERNET_OPERATION_CANCELLED,
     HTTP_QUERY_FLAG_NUMBER, HTTP_QUERY_STATUS_CODE, HttpOpenRequestW,
     HttpQueryInfoW, HttpSendRequestW, HINTERNET, INTERNET_DEFAULT_HTTPS_PORT,
@@ -12,7 +12,7 @@ import core.sys.windows.wininet : ERROR_INTERNET_OPERATION_CANCELLED,
     INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
     INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP, InternetCloseHandle,
     InternetConnectW, InternetOpenW, InternetOpenUrlW, InternetReadFile,
-    InternetSetOptionW;
+    InternetSetOptionW, InternetSetStatusCallback, INTERNET_STATUS_REQUEST_SENT;
 import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, lastIndexOf, strip, toLower;
@@ -507,6 +507,9 @@ final class OpenCodeClient
     private int _lastTotalTokens;
     private int _lastCachedPromptTokens;
     private int _lastUncachedPromptTokens;
+    // True once the prompt-cache split for the current request has been logged,
+    // so the wait log carries the cache verdict exactly once per request.
+    private bool _waitCacheLogged;
     // Exact count returned by llama.cpp's tokenizer-only endpoint before the
     // matching completion is sent. The final streamed usage is still parsed
     // independently and can expose a server regression if the two diverge.
@@ -603,7 +606,7 @@ final class OpenCodeClient
     /// `firstToken` is the figure the UI's "Waiting for the model…" row shows.
     struct WaitBreakdown
     {
-        long connect;     // request start -> connection open
+        long connect;     // connection handle created; not a TCP measurement
         long sent;        // request start -> whole body uploaded
         long headers;     // request start -> upstream response status line
         long firstByte;   // request start -> first SSE byte of the answer
@@ -621,6 +624,19 @@ final class OpenCodeClient
         return WaitBreakdown(_waitConnectMs, _waitSentMs, _waitHeadersMs,
             _waitFirstByteMs, _waitFirstTokenMs, _lastRequestBytes,
             _lastRequestImages, _lastRequestBytes > 0 || _waitSentMs >= 0);
+    }
+
+    private static extern(Windows) void chatRequestStatus(HINTERNET handle,
+        DWORD_PTR context, DWORD status, void* information, DWORD length)
+    {
+        if (context == 0 || status != INTERNET_STATUS_REQUEST_SENT) return;
+        auto client = cast(OpenCodeClient) cast(void*) context;
+        client._mutex.lock();
+        // HttpSendRequest returns only after response headers arrive. The
+        // request-sent notification is the actual end of the upload.
+        if (client._chatHandle is handle)
+            client._waitSentMs = elapsedMsSince(client._waitStart);
+        client._mutex.unlock();
     }
 
 
@@ -961,6 +977,7 @@ final class OpenCodeClient
             // slow provider".
             const waitStart = MonoTime.currTime;
             _waitStart = waitStart;
+            _waitCacheLogged = false;
             _waitConnectMs = _waitSentMs = _waitHeadersMs = -1;
             _waitFirstByteMs = _waitFirstTokenMs = -1;
             _lastRequestBytes = _lastRequestImages = 0;
@@ -1040,21 +1057,24 @@ final class OpenCodeClient
 
                     const flags = requestFlags(target);
                     request = HttpOpenRequestW(connection, "POST"w.ptr,
-                        toUTF16z(target.path), null, null, null, flags, 0);
+                        toUTF16z(target.path), null, null, null, flags,
+                        cast(DWORD_PTR) cast(void*) this);
                     if (request is null)
                         throw new Exception("Could not create the chat request.");
                     if (registerRequest(request, true) is null)
                         throw new Exception("Chat request cancelled.");
 
-                    // HttpSendRequestW uploads the whole body (images included)
-                    // before it returns, so this stamp splits "upload" from the
-                    // provider's own time-to-first-token.
+                    InternetSetStatusCallback(request, &chatRequestStatus);
+                    _mutex.lock();
+                    _waitSentMs = _waitHeadersMs = -1;
+                    _mutex.unlock();
+
+                    // This call includes both upload and response-header wait.
+                    // The status callback records the upload boundary separately.
                     if (!HttpSendRequestW(request, toUTF16z(headers), -1,
                         bodyBytes.ptr, cast(DWORD) bodyBytes.length))
                         throw new Exception("Chat request failed (" ~
                             wininetErrorText(GetLastError()) ~ ").");
-                    _waitSentMs = elapsedMsSince(waitStart);
-
                     _waitHeadersMs = elapsedMsSince(waitStart);
 
 
@@ -1282,6 +1302,9 @@ final class OpenCodeClient
     /// Test-only: reset the per-stream accumulation state between fixtures.
     public void resetStreamStateForTesting()
     {
+        _waitStart = MonoTime.currTime;
+        _waitFirstTokenMs = -1;
+        _waitCacheLogged = false;
         _streamActive = true;
         _streamReasoning = "";
         _streamContent = "";
@@ -1927,6 +1950,14 @@ final class OpenCodeClient
             " [" ~ _baseUrl ~ "]");
     }
 
+    private void recordFirstStreamToken()
+    {
+        if (_waitFirstTokenMs >= 0) return;
+        _waitFirstTokenMs = elapsedMsSince(_waitStart);
+        logWaitBreakdown();
+        logPromptCache();
+    }
+
     private static string truncateForError(string value)
     {
         if (value.length <= 800) return value;
@@ -2095,6 +2126,8 @@ final class OpenCodeClient
                     }
                 }
                 _streamWantedTools = true;
+                if (_streamToolCalls.length > 0)
+                    recordFirstStreamToken();
                 // Announce each tool as soon as its name is known so the UI can
                 // show "Writing foo.html ..." while the arguments (the whole file
                 // body) are still streaming. Without this the reply looks
@@ -2178,11 +2211,7 @@ final class OpenCodeClient
         // The first token of any kind ends the opaque "Waiting for the model…"
         // phase; record it once and log the full breakdown so the wait can be
         // attributed (upload vs provider) instead of guessed at.
-        if (_waitFirstTokenMs < 0)
-        {
-            _waitFirstTokenMs = elapsedMsSince(_waitStart);
-            logWaitBreakdown();
-        }
+        recordFirstStreamToken();
         if (reasoningFragment.length > 0)
         {
             _streamReasoning ~= reasoningFragment;
@@ -2306,6 +2335,28 @@ final class OpenCodeClient
             event.cachedPromptTokens = _lastCachedPromptTokens;
             event.uncachedPromptTokens = _lastUncachedPromptTokens;
             pushStreamEvent(event);
+        }
+
+        logPromptCache();
+    }
+
+    private void logPromptCache()
+    {
+        // Correlation line: the wait breakdown says how long the first token
+        // took; this says how much of that prompt the provider served from its
+        // cache. High firstToken + low cache hits = prefill was paid in full.
+        if (!_waitCacheLogged && _streamActive && _waitFirstTokenMs >= 0 &&
+            (_lastCachedPromptTokens > 0 || _lastUncachedPromptTokens > 0))
+        {
+            _waitCacheLogged = true;
+            const total = _lastCachedPromptTokens + _lastUncachedPromptTokens;
+            const ratio = total > 0
+                ? (_lastCachedPromptTokens * 100 / total) : 0;
+            logInfo("prompt cache: cached=" ~
+                to!string(_lastCachedPromptTokens) ~ " uncached=" ~
+                to!string(_lastUncachedPromptTokens) ~ " (" ~
+                to!string(ratio) ~ "% hit) firstToken=" ~
+                to!string(_waitFirstTokenMs) ~ "ms [" ~ _baseUrl ~ "]");
         }
     }
 

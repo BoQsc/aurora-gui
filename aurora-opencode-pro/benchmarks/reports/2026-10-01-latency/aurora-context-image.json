@@ -1,0 +1,40 @@
+[
+  {
+    "case": "none",
+    "attempt": 1,
+    "image": "stored",
+    "transport": "aurora",
+    "context_lines": 6500,
+    "cached_tokens": 70400,
+    "completed": true,
+    "completion_tokens": 1,
+    "content_chars": 2,
+    "errors": [],
+    "first_byte_ms": 8410,
+    "first_token_ms": 8521,
+    "headers_ms": 8381,
+    "prompt_tokens": 71145,
+    "request_bytes": 4509541,
+    "sent_ms": 8381,
+    "total_ms": 8538
+  },
+  {
+    "case": "none",
+    "attempt": 2,
+    "image": "stored",
+    "transport": "aurora",
+    "context_lines": 6500,
+    "cached_tokens": 71040,
+    "completed": true,
+    "completion_tokens": 1,
+    "content_chars": 2,
+    "errors": [],
+    "first_byte_ms": 9520,
+    "first_token_ms": 9643,
+    "headers_ms": 9500,
+    "prompt_tokens": 71145,
+    "request_bytes": 4509541,
+    "sent_ms": 9500,
+    "total_ms": 9658
+  }
+]

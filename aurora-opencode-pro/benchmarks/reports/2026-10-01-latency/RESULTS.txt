@@ -1,0 +1,108 @@
+Aurora OpenCode Pro / OpenCode Go latency investigation
+2026-10-01, Europe/Kiev
+Endpoint: https://opencode.ai/zen/go/v1/chat/completions
+Model: deepseek-v4.1-flash
+
+Findings
+
+The largest waits correlate with retained image payloads. Each tool continuation
+resends up to two image-bearing messages, including screenshots from older turns.
+The active chat's recent requests were approximately 4.5 MB, of which 4.2 MB was
+image base64. Several 29-44 second waits still had 98-99% cached prompt tokens.
+Prompt-cache hits do not avoid transmitting the images or all upstream work.
+
+Historical logs for October 1 (answered requests with a first-token stamp):
+  Text only:           30 requests; median 1.586 s, range 0.847-2.954 s.
+  Images below 2 MB:  189 requests; median 3.506 s, range 2.005-16.454 s.
+  Images above 4 MB:   50 requests; median 22.497 s, range 7.696-44.228 s.
+These are observational groups, not a controlled causal experiment. The old
+parser omitted first-token timing for many tool-only replies, so these groups
+are incomplete and cannot be used to calculate all-request frequencies.
+
+Controlled API probes (two requests per case unless stated otherwise):
+  Tiny text, Aurora:                  first output 1.567 / 1.834 s.
+  Tiny text, curl, reasoning none:    first output 1.646 / 1.720 s.
+  70,513-token synthetic text, curl:  first output 3.970 / 2.575 s.
+    The second request had 70,400 cached tokens.
+  4.2 MB synthetic PNG, Aurora:      first output 7.736 / 8.368 s.
+  Same pixels compressed, Aurora:    first output 1.941 / 1.641 s.
+    Request bytes fell from 4,211,651 to 8,748; no pixels were changed.
+    This compressible synthetic fixture is not representative of every image.
+  71,145-token text plus PNG, Aurora: first output 8.521 / 9.643 s.
+  Actual retained screenshots, Aurora:
+    Upload finished at 2.081 / 0.974 s.
+    Response headers arrived at 8.704 / 6.641 s.
+    First output arrived at 8.879 / 6.799 s.
+    Thus 6.623 / 5.667 s occurred after upload and before headers.
+  Actual retained screenshots, curl:
+    Upload finished at 1.253 / 1.302 s (curl time_posttransfer).
+    First output arrived at 4.696 / 5.291 s (Python observation).
+    Both warmed requests had 1,920 of 1,950 input tokens cached.
+    Transport tests ran sequentially, with different session IDs; routing, load,
+    and cache state may vary. This does not establish a fixed WinINet penalty.
+  Long text output, curl:
+    First output 1.767 / 1.886 s; total 3.473 / 3.877 s.
+    599 completion tokens each, no reasoning tokens.
+    Approximate post-first-output generation rate: 301-351 tokens/sec.
+  Long text output, Aurora:
+    First output 1.732 / 1.420 s; total 3.621 / 3.401 s.
+    599 completion tokens each, approximately 302-317 tokens/sec after first output.
+    Receive/generation throughput is comparable to the direct API in this sample.
+
+Thinking=off was verified: reasoning_effort=none produced zero reasoning tokens.
+The explicit thinking disabled API switch did too. Low effort generated reasoning.
+No retry statuses or transport errors occurred in the controlled API probes.
+The experiments do not reproduce every historical 30-44 second upstream delay.
+
+Image inspection
+
+The two retained PNGs preserve 1920x1080 RGB pixels and total 3,150,015 bytes.
+Recompressing their existing filtered IDAT streams locally reduced IDAT bytes
+by only 15.5% and 16.7%. These real images were already compressed; the dramatic
+synthetic compression result should not be extrapolated to them.
+
+Changes applied
+
+1. Use WinINet INTERNET_STATUS_REQUEST_SENT to measure the upload boundary.
+   HttpSendRequestW includes response-header wait and cannot measure upload alone.
+2. Count streamed tool-call deltas as first model output in timing and UI state.
+   Tool-only replies no longer keep the cold-start status active while arguments
+   are already arriving. Cache correlation waits until the first-output time exists.
+3. Describe observed network stages without asserting every wait is a cold start
+   or a prompt-cache miss.
+4. Add reproducible, credential-safe API and real-client benchmark tools.
+
+The changes correct diagnostics and apparent waiting; they do not claim to remove
+the measured upstream delays. For text-only work, a fresh chat avoids repeatedly
+carrying old screenshots. A future image-wire policy or optional smaller image
+encoding could reduce repeated multimodal work, with explicit fidelity/history
+tradeoffs. Original conversation text and image payloads were left intact.
+
+Validation
+
+Core SSE/request-body regression suite passed, including tool-only first output.
+Loopback HTTP integration passed: a deliberate 500 ms header delay is separated
+from upload timing, and exact-token preflight/request behavior remains intact.
+The Pro UI smoke suite compiled and passed its streaming/tool-progress checks,
+then failed at headless_pro_smoke.d:2093 (provider context metadata assertion).
+The identical failure was reproduced with unchanged HEAD appui/client sources.
+This existing broader-suite failure was not changed by the latency work.
+All 26 recorded live probes completed successfully. Two exploratory long-output
+driver runs exposed an unsigned JSON counter bug in the new benchmark driver;
+it was corrected and the final recorded long-output probes passed.
+
+DUB release build with the newbuild configuration exited successfully. Its binary
+and symbols were copied to the normal app paths while no Aurora app was running.
+The rebuilt normal executable was launched as PID 15072 and verified alive, with
+its modification time newer than all production source files. No release was
+published. Startup restored the large saved snapshots in 9.487 s; this is a
+startup cost, not a measured per-request model wait.
+
+References
+
+Microsoft HttpSendRequestW contract (response headers are read before return):
+https://learn.microsoft.com/en-us/windows/win32/api/wininet/nf-wininet-httpsendrequestw
+OpenCode Go official source documentation (session-aware routing/cache guidance):
+https://github.com/anomalyco/opencode/blob/dev/packages/web/src/content/docs/go.mdx
+
+Raw results are the adjacent JSON files. They contain no credentials or chat text.

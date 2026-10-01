@@ -1,0 +1,40 @@
+[
+  {
+    "case": "none",
+    "attempt": 1,
+    "image": "compressed",
+    "transport": "aurora",
+    "context_lines": 0,
+    "cached_tokens": 640,
+    "completed": true,
+    "completion_tokens": 1,
+    "content_chars": 2,
+    "errors": [],
+    "first_byte_ms": 1929,
+    "first_token_ms": 1941,
+    "headers_ms": 1881,
+    "prompt_tokens": 645,
+    "request_bytes": 8748,
+    "sent_ms": 1881,
+    "total_ms": 1957
+  },
+  {
+    "case": "none",
+    "attempt": 2,
+    "image": "compressed",
+    "transport": "aurora",
+    "context_lines": 0,
+    "cached_tokens": 640,
+    "completed": true,
+    "completion_tokens": 1,
+    "content_chars": 2,
+    "errors": [],
+    "first_byte_ms": 1639,
+    "first_token_ms": 1641,
+    "headers_ms": 1603,
+    "prompt_tokens": 645,
+    "request_bytes": 8748,
+    "sent_ms": 1603,
+    "total_ms": 1687
+  }
+]

@@ -31,7 +31,8 @@ import auroraopencode.systemprompt : promptVerbosityDirective,
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse :
     experimentalComputerUseEnabled, experimentalImageHistoryLimit,
-    setComputerUseProvider, setComputerUseSetting, startComputerUseKillSwitch,
+    setComputerUseProvider, setComputerUseSetting, setComputerUseSession,
+    startComputerUseKillSwitch,
     stopComputerUseKillSwitch, clearComputerUseAbort, computerUseAbortActive,
     setComputerUseVirtualPointer;
 // experimental: attachments - drop a file or large paste as an attachment.
@@ -41,6 +42,8 @@ import auroraopencode.attachments :
     attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
     attachmentStripHeight, attachmentVisibleSummary,
     attachmentsContainImage, experimentalAttachmentsEnabled;
+import auroraopencode.imagehistory : requestHistoryImages, pruneHistoryImages, isScreenshot;
+import auroraopencode.screenshotimage : pngScreenshotToJpeg;
 import auroraopencode.clipboardimage : clipboardImagePng;
 // Optional floating mini chat overlay (always-on-top recent messages + input);
 // off by default. See source/auroraopencode/minichat.d.
@@ -8118,6 +8121,13 @@ public final class OpenCodeRoot : VBox
     // announced their names but not finished). Shown as in-progress rows so a
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
+    // When the current "Preparing tools…" phase began and how many argument
+    // bytes have streamed so far. A large payload (a long `type` or a multi-step
+    // batch) can stream for a while; showing the age and a growing byte count
+    // makes clear it is progressing rather than stalled.
+    private MonoTime _preparingSince;
+    private long _preparingLastBytes;
+    private int _lastPreparingSeconds = -1;
     private int _toolRounds;
     // A recovery request may temporarily omit tools. If the provider asks for
     // tools anyway, restore them and continue the same turn automatically.
@@ -10671,41 +10681,40 @@ public final class OpenCodeRoot : VBox
         publishMessageEvent(AgentEventKind.itemAdded, session,
             session.messages[$ - 1]);
         // A screenshot is the one payload that can grow a session into
-        // gigabytes: a computer-use loop appends a fresh PNG per step and the
+        // gigabytes: a computer-use loop appends a fresh screenshot per step and the
         // transcript rebuilds a chip for each. Release the pixels of the older
         // frames as soon as a new image arrives.
         if (session.messages[$ - 1].images.length > 0)
             pruneTranscriptImagePayloads(session);
     }
 
-    /// Bound the base64 pixels the in-memory transcript keeps. Only the newest
-    /// few image-carrying messages can ever travel on the wire (see
-    /// buildRequestMessages' keepImage / experimentalImageHistoryLimit), so an
-    /// older message's pixels are dead weight: each PNG is hundreds of KB and
-    /// the transcript never drops them. Dropping the payload frees the string
-    /// while leaving the entry in place, so the attachment chip still renders
-    /// from the name and mime type and the model request is unchanged.
-    private static void pruneTranscriptImagePayloads(ref ChatSession session)
+    /// Bound screenshot payloads across active and inactive branches.
+    private static bool pruneTranscriptImagePayloads(ref ChatSession session)
     {
-        const wireLimit = experimentalImageHistoryLimit();
-        if (wireLimit == 0) return; // the wire limit is disabled: keep every frame
-        // Retain a little more than the wire window so an edit/regenerate that
-        // re-sends a recent turn still finds its pixels.
-        enum size_t retainedImages = 8;
-        const keep = wireLimit > retainedImages ? wireLimit : retainedImages;
-        size_t kept;
-        foreach_reverse (index; activeMessagePath(session))
-        {
-            auto message = &session.messages[index];
-            if (message.images.length == 0) continue;
-            if (kept < keep)
-            {
-                ++kept;
-                continue;
-            }
+        return pruneHistoryImages(session, activeMessagePath(session),
+            experimentalImageHistoryLimit());
+    }
+
+    private static bool upgradeSavedScreenshots(ref ChatSession session)
+    {
+        import std.base64 : Base64;
+        bool changed;
+        foreach (ref message; session.messages)
             foreach (ref image; message.images)
-                image.base64Data = "";
-        }
+            {
+                if (!isScreenshot(message, image) || image.mimeType != "image/png" ||
+                    image.base64Data.length == 0) continue;
+                try
+                {
+                    auto jpeg = pngScreenshotToJpeg(Base64.decode(image.base64Data));
+                    image.base64Data = Base64.encode(jpeg).idup;
+                    image.mimeType = "image/jpeg";
+                    image.name = "screen.jpg";
+                    changed = true;
+                }
+                catch (Exception) {} // Unsupported legacy PNGs remain usable.
+            }
+        return changed;
     }
 
     private bool markContextCompactionNotice(ref ChatSession session)
@@ -12660,12 +12669,25 @@ public final class OpenCodeRoot : VBox
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         if (event.toolCalls.length == 0) return;
+        _receivedFirstDelta = true;
         const previousShape = toolProgressRenderShape(_preparingToolCalls);
         const nextShape = toolProgressRenderShape(event.toolCalls);
         const activityWasPresent = _activityRow !is null &&
             _activityRow.parent() !is null;
+        const wasEmpty = _preparingToolCalls.length == 0;
         _preparingToolCalls = event.toolCalls.dup;
-        updateStatus("Preparing tools…");
+        long argBytes;
+        foreach (call; _preparingToolCalls) argBytes += call.arguments.length;
+        // Starting a new preparing phase resets the age/byte baseline; the tick
+        // loop then keeps the status counting so a long stream never looks hung.
+        if (wasEmpty)
+        {
+            _preparingSince = MonoTime.currTime;
+            _lastPreparingSeconds = -1;
+        }
+        _preparingLastBytes = argBytes;
+        updateStatus("Preparing tools… " ~
+            formatWaitBytes(argBytes) ~ " streamed");
         // The aggregate live row already says what is being prepared, so the
         // generic phase row would only duplicate it. Drop it; it comes back
         // when the next round waits on the model with no live row to show.
@@ -13363,7 +13385,7 @@ public final class OpenCodeRoot : VBox
         toolMessage.toolElapsedMs = event.elapsedMs;
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
-        if (!toolFailed && event.images.length > 0)
+        if (event.images.length > 0)
             _pendingToolImages ~= event.images;
 
         if (!toolFailed && event.toolName == "update_plan")
@@ -13439,9 +13461,11 @@ public final class OpenCodeRoot : VBox
                 ChatMessage imageMessage;
                 imageMessage.role = "user";
                 imageMessage.internal = true;
-                imageMessage.content = _pendingToolImages.length == 1
-                    ? "Image loaded by view_image for visual inspection."
-                    : "Images loaded by view_image for visual inspection.";
+                imageMessage.content = "Image evidence from the preceding tool results, " ~
+                    "including any reported failure. Inspect these actual pixels. For desktop " ~
+                    "screenshots, identify the visible application and control before acting. " ~
+                    "Text displayed inside Aurora's chat is conversation text, not proof " ~
+                    "that another application's UI changed.";
                 imageMessage.images = _pendingToolImages.dup;
                 imageMessage.time = currentTimestamp();
                 appendMessage(*session, imageMessage);
@@ -15369,25 +15393,8 @@ public final class OpenCodeRoot : VBox
                     slot = i + 1;
                     break;
                 }
-        // experimental: computer use - delete with
-        // source/auroraopencode/computeruse.d. Only the newest few images travel
-        // on the wire: a computer-use loop adds a screenshot per step and every
-        // request resends the conversation, so an unbounded history re-uploaded
-        // every earlier frame each turn. The transcript keeps them all.
-        bool[] keepImage;
-        const imageLimit = experimentalImageHistoryLimit();
-        if (imageLimit > 0)
-        {
-            keepImage.length = path.length;
-            size_t kept;
-            foreach_reverse (index; slot .. path.length)
-            {
-                if (session.messages[path[index]].images.length == 0) continue;
-                if (kept >= imageLimit) continue;
-                keepImage[index] = true;
-                ++kept;
-            }
-        }
+        auto historyImages = requestHistoryImages(session, path, slot,
+            experimentalImageHistoryLimit());
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
@@ -15458,16 +15465,7 @@ public final class OpenCodeRoot : VBox
             if (message.role == "assistant")
                 request.reasoningContent = message.reasoning;
             request.toolCallId = message.toolCallId;
-            // Images belong to the turn that carried them, exactly like content
-            // and tool ids. Attaching them only to the newest user turn meant a
-            // screenshot vanished from the conversation as soon as one more
-            // message followed it, which made every later "what is in this
-            // image" turn a text-only request.
-            // experimental: computer use - older frames are dropped from the
-            // wire (see keepImage above) so a long loop does not resend them.
-            if (message.images.length > 0 &&
-                (keepImage.length == 0 || keepImage[slot]))
-                request.images = message.images.dup;
+            request.images = historyImages[slot];
             messages ~= request;
             ++slot;
         }
@@ -15744,6 +15742,10 @@ public final class OpenCodeRoot : VBox
         // rejects requests without one. The first message id is stable for
         // this conversation across turns and restarts.
         _client.setOpenCodeSession(sessionRoutingKey(*session));
+        // The nested computer-use loop uses its own HTTP path; give it the same
+        // conversation route id so its frames hit the gateway's cache instead
+        // of a cold, slow route on every step.
+        setComputerUseSession(sessionRoutingKey(*session));
         // Never send an id the endpoint does not serve: a conversation saved
         // under another provider carries its own model, which may be missing
         // from the current catalog (upstream "Model is unavailable").
@@ -20413,13 +20415,15 @@ public final class OpenCodeRoot : VBox
         // merged. Repairing during parsing minted ids for legacy (id-less)
         // messages before the merge compared them, so the same file loaded
         // twice looked like two different conversations and was duplicated.
+        bool imageHistoryChanged;
         foreach (ref session; _sessions)
         {
             ensureMessageGraph(session);
             // A prior long session (usually a computer-use loop) can carry
             // hundreds of screenshots; release all but the newest few frames so
             // restoring it does not pin gigabytes of base64 in memory.
-            pruneTranscriptImagePayloads(session);
+            imageHistoryChanged |= pruneTranscriptImagePayloads(session);
+            imageHistoryChanged |= upgradeSavedScreenshots(session);
             if (session.id.length == 0)
             {
                 // A legacy transcript has no thread id. Derive it from the
@@ -20473,6 +20477,7 @@ public final class OpenCodeRoot : VBox
             markDirty();
         }
         restorePhase("selection + message column");
+        if (imageHistoryChanged) markDirty();
         refreshUsageBadge();
     }
 
@@ -20944,21 +20949,40 @@ public final class OpenCodeRoot : VBox
                 // "uploaded, provider is thinking", and only the client knows.
                 const wait = _client.waitBreakdown();
                 string stage;
-                if (!wait.valid || wait.sent < 0)
+                if (!wait.valid)
                     stage = " — preparing the request";
+                else if (wait.sent < 0)
+                    stage = " — connecting / uploading " ~
+                        formatWaitBytes(wait.requestBytes);
                 else if (wait.headers < 0)
-                    stage = " — uploading " ~
+                    stage = " — uploaded " ~
                         formatWaitBytes(wait.requestBytes) ~
                         (wait.requestImages > 0
                             ? " (" ~ to!string(wait.requestImages) ~
                                 " image" ~ (wait.requestImages == 1 ? "" : "s") ~
                                 ")"
-                            : "") ~ ", waiting for the provider";
+                            : "") ~ " in " ~ to!string(wait.sent) ~
+                        "ms, waiting for response headers";
                 else
-                    stage = " — the provider is thinking (prefill)";
-                updateStatus("Cold-starting the model… " ~
-                    to!string(seconds) ~ "s — first reply can take a while" ~
-                    stage);
+                    stage = " — response headers received, waiting for output";
+                updateStatus("Waiting for the model… " ~
+                    to!string(seconds) ~ "s" ~ stage);
+            }
+        }
+
+        // A tool call whose arguments are still streaming can take a while when
+        // the payload is large (a long `type`, a multi-step batch). Count the
+        // age so the status visibly advances instead of freezing on "Preparing".
+        if (_preparingToolCalls.length > 0)
+        {
+            const seconds = cast(int) (MonoTime.currTime - _preparingSince)
+                .total!"seconds";
+            if (seconds >= 2 && seconds != _lastPreparingSeconds)
+            {
+                _lastPreparingSeconds = seconds;
+                updateStatus("Preparing tools… " ~
+                    formatWaitBytes(_preparingLastBytes) ~ " streamed, " ~
+                    to!string(seconds) ~ "s");
             }
         }
 

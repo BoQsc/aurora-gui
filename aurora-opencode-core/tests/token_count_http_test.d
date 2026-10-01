@@ -91,12 +91,15 @@ int main()
                     sendResponse(connection, "application/json",
                         `{"object":"response.input_tokens","input_tokens":321}`);
                 else
+                {
+                    Thread.sleep(500.msecs);
                     sendResponse(connection, "text/event-stream",
                         "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n" ~
                         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]," ~
                         "\"usage\":{\"prompt_tokens\":321,\"completion_tokens\":1," ~
                         "\"total_tokens\":322}}\n\n" ~
                         "data: [DONE]\n\n");
+                }
             }
         }
         catch (Exception error)
@@ -119,9 +122,13 @@ int main()
     OpenCodeEvent[] events;
     const deadline = MonoTime.currTime + 10.seconds;
     bool done;
+    bool sawUploadedBeforeHeaders;
     while (!done && MonoTime.currTime < deadline)
     {
         client.drain(drained);
+        const wait = client.waitBreakdown();
+        if (wait.sent >= 0 && wait.headers < 0)
+            sawUploadedBeforeHeaders = true;
         foreach (event; drained)
         {
             events ~= event;
@@ -134,6 +141,9 @@ int main()
     if (serverFailure !is null) throw serverFailure;
 
     assert(done, "client did not finish the mock chat");
+    const wait = client.waitBreakdown();
+    assert(sawUploadedBeforeHeaders && wait.headers - wait.sent >= 400,
+        "response-header delay was incorrectly counted as body upload");
     assert(captured[0].path == "/v1/chat/completions/input_tokens",
         "tokenizer-only endpoint was not called first: " ~ captured[0].path);
     assert(captured[1].path == "/v1/chat/completions",
