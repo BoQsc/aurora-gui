@@ -415,6 +415,17 @@ private final class MessageBubble : Widget
     // Right-click requests a context menu (Regenerate / Edit & resend / Copy).
     void delegate(int messageIndex, Point globalPosition, string linkTarget,
         Point localPosition) onContextMenuRequested;
+    // Hover row (Pro): Copy/Edit pills drawn directly under a message while the
+    // pointer is over the bubble. Copy is available for every message; Edit is
+    // offered only for user prompts (it prefills the composer to branch from
+    // them), so the assistant row carries Copy alone.
+    private Rect _copyActionRect;
+    private Rect _editActionRect;
+    private bool _copyActionHover;
+    private bool _editActionHover;
+    private void delegate() _copyActionCallback;
+    private void delegate() _editActionCallback;
+    private bool _pointerInside;
 
     // Interactive affordances (Pro): message/code copy buttons and links.
     private int _hoverCopy = -1;
@@ -1180,6 +1191,69 @@ private final class MessageBubble : Widget
         return true;
     }
 
+    /// The message text the hover Copy pill writes to the clipboard.
+    void setCopyAction(void delegate() callback)
+    {
+        _copyActionCallback = callback;
+    }
+
+    /// The hover Edit pill (user prompts only): prefills the composer to branch
+    /// from this message.
+    void setEditAction(void delegate() callback)
+    {
+        _editActionCallback = callback;
+    }
+
+    /// The raw message text, so a hover Copy writes the same payload the
+    /// right-click "Copy message" does.
+    public string contentText() const
+    {
+        return to!string(_content);
+    }
+
+    /// Test-only: whether the hover row would draw its Copy pill.
+    public bool hoverCopyVisibleForTesting() const
+    {
+        return _pointerInside && !_hidden && _role != "tool" && !_failed &&
+            _thinking.length == 0 && _content.length > 0;
+    }
+
+    /// Test-only: whether the hover row would draw its Edit pill.
+    public bool hoverEditVisibleForTesting() const
+    {
+        return _pointerInside && !_hidden && !_failed && _thinking.length == 0 &&
+            _role == "user" && _actionRect.height == 0;
+    }
+
+    /// Test-only: invoke the hover Copy pill, if the row is armed.
+    public bool invokeCopyActionForTesting()
+    {
+        if (!hoverCopyVisibleForTesting() || _copyActionCallback is null)
+            return false;
+        _copyActionCallback();
+        return true;
+    }
+
+    /// Test-only: invoke the hover Edit pill, if the row is armed.
+    public bool invokeEditActionForTesting()
+    {
+        if (!hoverEditVisibleForTesting() || _editActionCallback is null)
+            return false;
+        _editActionCallback();
+        return true;
+    }
+
+    /// Test-only: simulate the pointer resting on / leaving the bubble so the
+    /// hover row's gating can be asserted without a real mouse.
+    public void setPointerInsideForTesting(bool inside)
+    {
+        _pointerInside = inside;
+        invalidate();
+    }
+
+    public Rect copyActionBoundsForTesting() const { return _copyActionRect; }
+    public Rect editActionBoundsForTesting() const { return _editActionRect; }
+
     void setStreaming(bool value)
     {
         if (_streaming == value) return;
@@ -1653,6 +1727,7 @@ private final class MessageBubble : Widget
                     paintMarkdownBackgrounds(canvas, composition, padH, contentY);
                     drawSelection(canvas);
                     paintMarkdownGlyphs(canvas, composition, padH, contentY);
+                    y = contentY + cast(int) ceil(composition.height);
                 }
             }
             else
@@ -1667,6 +1742,7 @@ private final class MessageBubble : Widget
                         maxInt(1, textWidth),
                         layout.measuredSize().height);
                 drawSelection(canvas);
+                y = contentY + layout.measuredSize().height;
             }
         }
 
@@ -1687,6 +1763,7 @@ private final class MessageBubble : Widget
         }
         drawVersionNav(canvas, width, height);
         drawActionPill(canvas, width, height);
+        drawHoverActions(canvas, width, height, y);
         drawFooter(canvas, width, height);
         // Quick-search highlights go last: the select segments this frame just
         // registered are the geometry of the text that was actually painted, and
@@ -2662,6 +2739,77 @@ private final class MessageBubble : Widget
         return fontPixelSize(1) + 4;
     }
 
+    /// Draw the Copy/Edit pills that appear under a message while the pointer
+    /// rests on the bubble. Unlike the persistent meta footer, this row is
+    /// hover-only, so it reserves no layout height: it is overlaid in the
+    /// bubble's own bottom padding and never shifts the transcript.
+    ///
+    /// The row is right-aligned and sits just below the message text (`textBottom`
+    /// is the painted text's bottom edge), styled like a hover toolbar. Copy is
+    /// offered for every message; Edit belongs to user prompts alone. Failed,
+    /// hidden and tool bubbles offer nothing.
+    private void drawHoverActions(ref Canvas canvas, int width, int height,
+        int textBottom)
+    {
+        _copyActionRect = Rect.init;
+        _editActionRect = Rect.init;
+        if (!_pointerInside || _hidden || _role == "tool" || _failed ||
+            _thinking.length > 0)
+            return;
+        const canCopy = _content.length > 0;
+        const canEdit = _role == "user" && _actionRect.height == 0;
+        if (!canCopy && !canEdit) return;
+
+        const rowH = 18;
+        // A few px below the last line, but never past the bubble's bottom edge.
+        int rowY = textBottom + 4;
+        if (rowY + rowH > height - padV)
+            rowY = height - padV - rowH;
+        if (rowY < 0) rowY = 0;
+
+        // Measure both pills first so a right-aligned pair can be placed as one
+        // block: `[Copy] [Edit]` with the group's right edge at the bubble's pad.
+        int copyW;
+        int editW;
+        if (canCopy)
+        {
+            auto layout = canvas.layoutText(toUTF32("Copy"), 1, FontRole.ui,
+                cast(FontFace) theme().uiFont, 200, false);
+            copyW = maxInt(52, cast(int) layout.width + 18);
+        }
+        if (canEdit)
+        {
+            auto layout = canvas.layoutText(toUTF32("Edit"), 1, FontRole.ui,
+                cast(FontFace) theme().uiFont, 200, false);
+            editW = maxInt(52, cast(int) layout.width + 18);
+        }
+        const gapW = (canCopy && canEdit) ? 6 : 0;
+        const totalW = copyW + gapW + editW;
+        int x = maxInt(padH, width - padH - totalW);
+        if (canCopy)
+        {
+            _copyActionRect = Rect(x, rowY, copyW, rowH);
+            x += copyW + gapW;
+        }
+        if (canEdit)
+            _editActionRect = Rect(x, rowY, editW, rowH);
+
+        if (_copyActionRect.height > 0)
+            drawHoverPill(canvas, _copyActionRect, "Copy", _copyActionHover);
+        if (_editActionRect.height > 0)
+            drawHoverPill(canvas, _editActionRect, "Edit", _editActionHover);
+    }
+
+    private void drawHoverPill(ref Canvas canvas, Rect rect, string label,
+        bool hovered)
+    {
+        canvas.fillRoundedRect(rect, 9,
+            hovered ? opencodeBorder : opencodeBorder.withAlpha(140));
+        canvas.drawTextInRect(rect, toUTF32(label),
+            hovered ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+    }
+
     private void drawFooter(ref Canvas canvas, int width, int height)
     {
         if (!footerVisible()) return;
@@ -2679,6 +2827,13 @@ private final class MessageBubble : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (!_pointerInside)
+        {
+            // Re-entering the bubble: the hover row was suppressed while the
+            // pointer was away, so bring it back (recomputed on this move).
+            _pointerInside = true;
+            invalidate();
+        }
         if (_selecting)
         {
             extendSelection(event.position);
@@ -2713,6 +2868,10 @@ private final class MessageBubble : Widget
         const overTertiaryAction = _tertiaryActionLabel.length > 0 &&
             _tertiaryActionCallback !is null &&
             _tertiaryActionRect.contains(event.position);
+        const overCopyAction = _copyActionRect.height > 0 &&
+            _copyActionRect.contains(event.position);
+        const overEditAction = _editActionRect.height > 0 &&
+            _editActionRect.contains(event.position);
         const overCollapse = _role == "tool" &&
             _collapseRect.contains(event.position);
         const overToolCopy = _role == "tool" &&
@@ -2737,6 +2896,8 @@ private final class MessageBubble : Widget
             overAction != _actionHover ||
             overSecondaryAction != _secondaryActionHover ||
             overTertiaryAction != _tertiaryActionHover ||
+            overCopyAction != _copyActionHover ||
+            overEditAction != _editActionHover ||
             overCollapse != _collapseHover || overToolCopy != _toolCopyHover ||
             overPath != _pathHover ||
             overThinking != _thinkingHover || overVersion != _versionHover ||
@@ -2747,6 +2908,8 @@ private final class MessageBubble : Widget
             _actionHover = overAction;
             _secondaryActionHover = overSecondaryAction;
             _tertiaryActionHover = overTertiaryAction;
+            _copyActionHover = overCopyAction;
+            _editActionHover = overEditAction;
             _collapseHover = overCollapse;
             _toolCopyHover = overToolCopy;
             _pathHover = overPath;
@@ -2760,6 +2923,7 @@ private final class MessageBubble : Widget
             // collapse headers) take the hand.
             setCursor(nextCopy >= 0 || overAction ||
                 overSecondaryAction || overTertiaryAction ||
+                overCopyAction || overEditAction ||
                 overCollapse || overToolCopy || overThinking || overVersion != 0
                 ? CursorKind.hand :
                 (overText || nextLink >= 0 ? CursorKind.text : CursorKind.arrow));
@@ -2839,6 +3003,16 @@ private final class MessageBubble : Widget
             _tertiaryActionRect.contains(event.position))
         {
             _tertiaryActionCallback();
+            return true;
+        }
+        if (_copyActionRect.height > 0 && _copyActionRect.contains(event.position))
+        {
+            if (_copyActionCallback !is null) _copyActionCallback();
+            return true;
+        }
+        if (_editActionRect.height > 0 && _editActionRect.contains(event.position))
+        {
+            if (_editActionCallback !is null) _editActionCallback();
             return true;
         }
         if (_hoverCopy >= 0 && _hoverCopy < cast(int) _copyRects.length)
@@ -2940,13 +3114,20 @@ private final class MessageBubble : Widget
 
     protected override void onMouseLeave()
     {
+        // The hover action row is suppressed the moment the pointer leaves the
+        // bubble, even when nothing else was hovered, so it never lingers over
+        // a message the pointer has already left.
+        const hadHoverRow = _copyActionHover || _editActionHover;
+        _pointerInside = false;
         if (_hoverCopy != -1 || _hoverLink != -1 || _actionHover ||
+            _copyActionHover || _editActionHover ||
             _collapseHover || _toolCopyHover || _pathHover || _thinkingHover ||
             _versionHover != 0 || _textHover)
-        {
-            _hoverCopy = -1;
+        {            _hoverCopy = -1;
             _hoverLink = -1;
             _actionHover = false;
+            _copyActionHover = false;
+            _editActionHover = false;
             _collapseHover = false;
             _toolCopyHover = false;
             _thinkingHover = false;
@@ -2958,6 +3139,10 @@ private final class MessageBubble : Widget
                 if (onPathHoverChanged !is null) onPathHoverChanged(false);
             }
             setCursor(CursorKind.arrow);
+            invalidate();
+        }
+        else if (hadHoverRow)
+        {
             invalidate();
         }
     }
@@ -11834,6 +12019,21 @@ public final class OpenCodeRoot : VBox
                 showMessageContextMenu(bubble.messageIndex(),
                     globalPosition, bubble, linkTarget, localPosition);
             };
+        // Hover row: Copy always writes the message text; Edit (user prompts
+        // only) prefills the composer to branch from that prompt.
+        bubble.setCopyAction(delegate()
+        {
+            const text = bubble.contentText();
+            if (text.length == 0) return;
+            copyTextToClipboard(text);
+            _lastMessageCopy = text;
+            updateStatus("Copied message.");
+        });
+        if (message.role == "user")
+            bubble.setEditAction(delegate()
+            {
+                editAndResend(_current, bubble.messageIndex());
+            });
         // Persisted token usage appears only on the latest assistant reply.
         if (cast(int) index == latestAssistantIndex &&
             (message.totalTokens > 0 || message.completionTokens > 0 ||
