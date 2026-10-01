@@ -6379,6 +6379,27 @@ private final class ModelContextButton : Button
     }
 }
 
+/// Label that also reports right-clicks, so a piece of text (for example the
+/// conversation path) can expose actions such as "Open folder" from a context
+/// menu instead of only being a static caption.
+private final class ContextMenuLabel : Label
+{
+    void delegate(Point) onContextMenuRequested;
+
+    this(string text = "") { super(text); }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (enabled() && event.button == MouseButton.right)
+        {
+            if (onContextMenuRequested !is null)
+                onContextMenuRequested(localToGlobal(event.position));
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+}
+
 /// Toolbar button that also reports right-clicks, so a primary action can
 /// expose secondary actions (for example an update check) from a context menu
 /// instead of a second toolbar button.
@@ -8463,7 +8484,7 @@ public final class OpenCodeRoot : VBox
     private SplitPane _sessionsSplit;
     private Label _sessionsHeader;
     private IconButton _openFolderButton;
-    private Label _sessionsPath;
+    private ContextMenuLabel _sessionsPath;
     private VBox _sessionsHeaderColumn;
     private Button _newChatButton;
     private bool _sessionsRatioDirty;
@@ -10250,10 +10271,26 @@ public final class OpenCodeRoot : VBox
         };
         addButtonTooltip(archiveToggle, "Show archived conversations");
         titleRow.add(new Spacer());
-        _sessionsPath = headerColumn.add(new Label(""));
+        _sessionsPath = headerColumn.add(new ContextMenuLabel(""));
         _sessionsPath.setId("oc-project-path");
         _sessionsPath.setScale(1);
         _sessionsPath.setColor(opencodeMuted);
+        // Right-clicking the conversation path offers "Open folder", so the
+        // displayed workspace can be revealed in File Explorer without hunting
+        // for the small folder button in the title row.
+        _sessionsPath.onContextMenuRequested = delegate(Point position)
+        {
+            const workspace = activeWorkspace();
+            ContextMenuItem[] items;
+            items ~= ContextMenuItem.command("Open folder", IconKind.folder,
+                delegate()
+                {
+                    version (Windows)
+                        openFolderInExplorer(
+                            workspace.length > 0 ? workspace : ".");
+                });
+            showContextMenu(_sessionsPath, position, items);
+        };
         _newChatButton = headerColumn.add(new Button("New chat", IconKind.newDocument));
         _newChatButton.setId("oc-new");
         // Match the search field's height so the two controls read as a pair.
@@ -11792,6 +11829,16 @@ public final class OpenCodeRoot : VBox
                         // as soon as its first result settled.
                         addLiveToolRows(nest, session.messages[path[slot]].id);
                         liveRowsAdded = true;
+                        // This nest carries the live progress row (and/or the
+                        // running tool rows). When the host turn has no prose or
+                        // reasoning yet, `buildMessageBubble` hid its bubble, and
+                        // the nest is anchored to that bubble's visibility, so
+                        // the progress row vanished with it: the transcript then
+                        // showed nothing while the agent was clearly working.
+                        // Keep the nest visible in that case; a genuinely empty
+                        // nest (no live content yet) stays hidden.
+                        if (replyBubble.hidden())
+                            nest.setVisible(nest.children().length > 0);
                     }
                     _messageColumn.add(nest);
                 }

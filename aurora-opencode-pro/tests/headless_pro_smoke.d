@@ -1071,6 +1071,41 @@ int main(string[] args)
         assert(activeMessagePath(legacy).length == 2,
             "legacy transcript active path should contain both messages");
     }
+    // An explicit branch parent must survive graph repair when the prompt it
+    // points at is itself still id-less. `ensureMessageGraph` used to re-parent
+    // EVERY id-less message onto its predecessor, so on a chat that had never
+    // been persisted the regenerated prompt was absorbed into the abandoned
+    // reply it was rewound from and the fresh reply landed a grandchild below
+    // the old one: Regenerate read as "one more message appended", with no
+    // `< n/m >`. A message whose parent is ahead in the array (the normal
+    // forward branch that appendMessage/prepareRegenerate create) must be kept.
+    {
+        ChatSession legacyBranch;
+        // The prompt already carries an id: in the app `appendMessage` mints it
+        // when the message is added, and only a message that was never appended
+        // through that path (a restored/legacy row) lacks one.
+        ChatMessage prompt; prompt.role = "user"; prompt.content = "p";
+        prompt.id = newMessageId();
+        // The reply that a previous turn appended: it has a real id too.
+        ChatMessage oldReply; oldReply.role = "assistant"; oldReply.content = "old";
+        oldReply.id = newMessageId();
+        oldReply.parentId = prompt.id;
+        legacyBranch.messages = [prompt, oldReply];
+        // prepareRegenerate rewinds the leaf to the prompt and leaves the
+        // abandoned reply in place.
+        legacyBranch.activeLeafId = prompt.id;
+        ChatMessage fresh; fresh.role = "assistant"; fresh.content = "new";
+        fresh.id = newMessageId();
+        fresh.parentId = legacyBranch.activeLeafId;
+        legacyBranch.messages ~= fresh;
+        ensureMessageGraph(legacyBranch);
+        assert(legacyBranch.messages[2].parentId == legacyBranch.messages[0].id,
+            "the fresh reply must stay a sibling of the abandoned reply");
+        const siblingsAfter = siblingMessages(legacyBranch, 1);
+        assert(siblingsAfter.length == 2,
+            "regenerating on a fresh chat should expose two reply versions, got " ~
+            to!string(siblingsAfter.length));
+    }
     writeln("Message-graph persistence keeps branches and repairs legacy files");
 
     // App-level round-trip: a regenerated reply survives a real save to

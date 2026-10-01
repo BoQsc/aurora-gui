@@ -790,9 +790,13 @@ public string sessionRoutingKey(const ref ChatSession session)
 public void ensureMessageGraph(ref ChatSession session)
 {
     // A transcript with no ids at all predates branching: rebuild it as a
-    // single chain. Once any id exists the session carries real graph info, so
-    // an empty parentId is a deliberate root (e.g. the first prompt of a new
-    // branch) and must be preserved.
+    // single chain. The check is deliberately "no message carries an id" rather
+    // than "none seen yet": a freshly regenerated reply arrives with an id and
+    // an explicit parent while the prompts/replies around it are still id-less
+    // (only persisted messages get ids), and treating that as legacy re-parented
+    // the regenerated prompt onto the abandoned reply — the new reply then
+    // landed a grandchild below the old one, so Regenerate looked like it had
+    // merely appended a message instead of branching.
     bool hasGraph;
     foreach (message; session.messages)
         if (message.id.length > 0)
@@ -812,15 +816,14 @@ public void ensureMessageGraph(ref ChatSession session)
             // Legacy linear transcript: chain each message to its predecessor.
             message.parentId = previousId;
         }
-        else if (!hadId && message.parentId.length == 0)
-        {
-            // A message appended without graph info continues the chain.
-            message.parentId = previousId;
-        }
-        else if (message.parentId.length > 0 &&
+        else if (message.parentId.length > 0 && message.parentId != previousId &&
             (message.parentId in seen) is null)
         {
-            // Dangling parent link (corrupt file): reattach to the chain.
+            // Dangling parent link (corrupt file): reattach to the chain. A
+            // parent that is not the predecessor but is still ahead in the
+            // array is a genuine forward branch (see appendMessage/regenerate),
+            // and a parent equal to the predecessor is the ordinary chain, so
+            // neither is touched.
             message.parentId = previousId;
         }
         previousId = message.id;
