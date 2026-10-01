@@ -10039,7 +10039,7 @@ public final class OpenCodeRoot : VBox
 
         _usageBadge = composerControls.add(new ContextUsageBadge());
         _usageBadge.setId("oc-usage");
-        _usageBadge.setLimit(effectiveContextLimit(_settings.model));
+        _usageBadge.setLimit(requestContextBudget(_settings.model));
         _usageBadge.onHoverChanged = delegate(bool open)
         {
             if (open)
@@ -16575,7 +16575,7 @@ public final class OpenCodeRoot : VBox
         if (_current == sessionIndex)
         {
             if (_usageBadge !is null)
-                _usageBadge.setLimit(effectiveContextLimit(session.model));
+                _usageBadge.setLimit(requestContextBudget(session.model));
             refreshUsageBadge();
         }
         // The OpenCode gateway routes by a stable per-conversation id; it
@@ -19056,7 +19056,10 @@ public final class OpenCodeRoot : VBox
     private void refreshUsageBadge()
     {
         if (_usageBadge is null) return;
-        _usageBadge.setLimit(effectiveContextLimit(_settings.model));
+        // Meter against the budget actually requested: a selected target
+        // (e.g. 128k on a 1M model) is what the percentage must reflect. The
+        // provider window is only the ceiling and stays visible in the tooltip.
+        _usageBadge.setLimit(requestContextBudget(_settings.model));
         int prompt = -1, completion = -1, total = -1;
         bool estimated;
         if (_current >= 0)
@@ -19103,8 +19106,7 @@ public final class OpenCodeRoot : VBox
             _settings.model);
         rows ~= "Context target: " ~ contextBudgetLabel(target);
         rows ~= "Provider context limit: " ~
-            formatThousands(_usageBadge is null ? 0 : _usageBadge.limit()) ~
-            " tokens";
+            formatThousands(effectiveContextLimit(_settings.model)) ~ " tokens";
         rows ~= "Automatic compaction: " ~
             (contextCompactionForModel(_settings, _settings.baseUrl,
                 _settings.model) ? "On" : "Off");

@@ -2128,8 +2128,8 @@ int main(string[] args)
     }
 
     // Context targets live on the model button and context badge. The meter
-    // continues to show the actual provider window when a smaller target is
-    // selected for early compaction.
+    // measures against the selected target (falling back to the provider
+    // window while the target is automatic).
     {
         root.recordContextUsageForTesting(240000, 10000, 250000);
         assert(root.contextUsageTextForTesting() == "24%",
@@ -2168,9 +2168,13 @@ int main(string[] args)
             "deepseek-v4.1-flash") == 500_000,
             "500K target should lower the request budget");
         assert(root.contextLimitForTesting() == 1_000_000,
-            "A request target must not alter the provider limit");
+            "Without a target the meter falls back to the provider window");
         assert(root.contextUsageTextForTesting() == "24%",
-            "A request target must not alter the usage meter");
+            "Without a target the meter measures the provider window");
+        assert(root.contextLimitForTesting() == 500_000,
+            "The meter must measure against the selected context target");
+        assert(root.contextUsageTextForTesting() == "48%",
+            "The meter must show the selected target, not the provider window");
         const targetSettings = parseJSON(readText(buildPath(stateDir,
             "settings.json")));
         assert(targetSettings["contextBudgets"].array.length >= 1,
@@ -2246,9 +2250,8 @@ int main(string[] args)
         root.setContextBudgetForTesting(200_000);
         assert(root.requestContextBudgetForTesting(
             "deepseek-v4.1-flash") == 200_000 &&
-            root.contextLimitForTesting() == 300_000,
-            "The optional target must compact earlier without changing " ~
-            "the provider limit shown by the meter");
+            root.contextLimitForTesting() == 200_000,
+            "The selected target must be what the meter measures against");
         root.setContextBudgetForTesting(0);
         // A provider entry well below the catalog window is a bogus fallback
         // (the gateway's /models lists no context field, and a 1M model must
