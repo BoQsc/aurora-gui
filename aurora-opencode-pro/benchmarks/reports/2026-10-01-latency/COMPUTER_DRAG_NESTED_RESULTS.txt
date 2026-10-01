@@ -1,0 +1,71 @@
+Aurora camera-drag and nested-loop repair — 2026-10-01
+
+Observed chat: Company of Heroes 1 tutorial missions
+Thread: t-m639264424718350775-0
+112 messages, 12:07–12:13. Main model DeepSeek V4.1 Flash, thinking disabled.
+
+Diagnosis:
+- The right-click move step passed. The subsequent camera-pan instruction did
+  not advance. 23 middle-drags were delivered across 13 successful batches.
+  The final two retained 1920x1080 JPEGs still showed the pan-to-road-junction
+  objective, despite unsupported claims that it was one nudge from completion.
+- The repeat guard covered clicks only. Drag reset the click guard and had no
+  limit, allowing repeated same-direction drags while scenery/units animated.
+- wait_for_change finished after only 16 different pixels, so a requested
+  2–4 second wait commonly ended within a fraction of a second on animation.
+- The nested loop spent 42.5 seconds over 16 rounds. Virtual focus left Aurora
+  foreground; the loop issued Alt+Tab and taskbar/Search clicks. It used the
+  hard-coded deepseek-v4-flash-vision-exp model despite the selected 4.1 model.
+  It discarded requested crops and injected act-now pressure after inspection.
+
+Changes:
+- A separate same-direction drag budget includes button, target and delivery
+  mode; it groups small coordinate/vector variations and ignores scene motion.
+  Three drags require focused current evidence. The automatic pair permits one
+  retry; further repeats are withheld. Reversing direction or changing approach
+  allows recovery. Explicit crops/new requests reset both progress guards.
+- New wait action dwells for the full requested 1..10000 ms and checks the kill
+  switch every 50 ms. wait_for_change uses the existing coarse visual comparison
+  rather than the 16-pixel trigger. Neither notification proves task completion.
+- Nested loops use the selected provider model unless explicitly overridden,
+  default to native input and the advertised half-size frame, and report model,
+  mode and target in their result. An explicit or established target bounds input
+  to that window, including batches, macros, shortcuts and drag endpoints.
+- Native bound loops reactivate the target before capturing/acting. Inner input
+  modes cannot override the loop mode. Desktop-switching shortcuts and inputs
+  into other windows are refused. Recursive bound subagents are refused.
+- Crops use scaled region arguments and native origins. Requested detail and
+  recovery images are forwarded to the next model request only, at most two in
+  addition to its current frame. A later wait in a batch cannot overwrite a
+  requested crop. Inspection no longer triggers an act-now nudge.
+- Exhausted budgets, unresolved final input refusals and kill-switch exits
+  report failure. All normal exits attach a current JPEG. Prompts require visible
+  instruction/control progress, camera-direction calibration and truthful blocks.
+- The local API test also exposed a URL parsing bug: explicit ports were treated
+  as part of the hostname. The nested WinINet client now parses hostname/port.
+
+Validation:
+- Eight scripted loopback provider rounds passed: selected-model inheritance,
+  explicit override, default native/half frame, locked-target Alt+Tab and
+  other-window refusal, forced inner-mode inheritance and actual fixture text N.
+  A batched crop reached the next request at 240x120 native pixels; subsequent
+  requests contained no stale crop. Limit/refusal results were failures and
+  carried current JPEGs. No user API credentials or gameplay input were used.
+- 16 drag/wait calls passed: nine real Win32 middle-down/up drag pairs, jitter
+  grouping, batch refusal, one grounded retry, reverse-direction recovery,
+  invalid duration/button refusal, full 800 ms dwell and 150 ms kill interruption.
+- Existing 30-call input and 19-call/48-event button tests passed. Pure
+  progress/intent and application stop/explanation/resume tests passed.
+- 4,500 screens and 1,000 recovery pairs remain bounded; 1.4 MB text compacts to
+  191,684 bytes. Three checkpoint rollovers retain objective/latest instruction
+  and tool pairs. Failed screenshots and recovery pairs survive save/reload.
+
+Limits:
+The drag limit deliberately requires re-grounding after three similar drags even
+if they legitimately move scenery; it cannot read or certify a game objective.
+Large animation can still satisfy wait_for_change; wait is the dwell primitive.
+Unbound desktop tasks can still switch applications. Bound virtual loops retain
+virtual delivery semantics and may require native mode when a target is hidden.
+Actual CoH gameplay was not resumed or certified by these fixture tests.
+
+Deployment verification will be appended after release installation.

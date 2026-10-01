@@ -98,11 +98,14 @@ comparing the prior two PNG frames with the current single JPEG frame, with
 `--context-lines 6500` supplying roughly 70k tokens of synthetic chat history.
 
 Generated screen captures now use native-size JPEG at quality 85. Requests carry
-one latest generated frame independently of user attachments. The transcript
+one latest generated frame, or its current focused recovery pair, independently
+of user attachments. The transcript
 retains two generated frames across all branches and upgrades retained legacy
 PNG frames on startup. Earlier attachment metadata and chat text remain saved.
 
-`tests/screenshot_history_test.d` exercises 4,500 frames, inactive branches,
+`python aurora-opencode-pro/tests/test_screenshot_history.py` runs
+`tests/screenshot_history_test.d`, which exercises 4,500 frames, 1,000 recovery
+pairs, inactive branches,
 independent user images, native JPEG dimensions and color orientation, and
 rolling text compaction with tool-pair preservation and save/reload. Compile it
 with the same Pro/core/Aurora import paths and Windows libraries as the benchmark
@@ -113,6 +116,7 @@ further arguments are PNG fixtures to convert using the production encoder.
 
 ```text
 python aurora-opencode-pro/tests/test_computeruse_input.py
+python aurora-opencode-pro/tests/test_mouse_buttons.py
 ```
 
 This compiles the production input code and opens two disposable fixture
@@ -120,12 +124,85 @@ windows. It verifies target changes across windows, keyboard target inheritance,
 explicit overrides, native input delivery through actual text/button events,
 own-process refusal, failed-batch screenshots, and capture without changing
 foreground. The fixtures close and their state directory is removed afterward.
+Run desktop input tests sequentially; they share the desktop. The button test
+records real Win32 down/up events for native and virtual left/right/middle
+clicks, double-clicks, the right-click alias and batches. Invalid button values
+are refused. `click` with `button: "right"` sends the same button as `right_click`.
 
 `computer` accepts `input_mode: "native"` or `"virtual"` for a call and its
-batch/nested actions; omission uses Settings. Posted virtual messages report
+batch/nested actions; omission uses Settings, except nested subagent loops default
+to native input. Posted virtual messages report
 queue delivery with an unverified application response. Use native input for
 games and shell controls that ignore posted messages. Input actions now return
-a fresh JPEG by default; `screenshot: false` explicitly suppresses it. Valid
+a fresh JPEG by default; `screenshot: false` suppresses routine captures returned
+to the model. A withheld stalled click still returns current evidence. Valid
 image evidence survives failed tool results, and observing the screen no longer
 raises a remembered input target. The steering prompt requires current visual
 evidence before claiming progress or repeating an ineffective action.
+
+## Stalled interaction and explanation checks
+
+```text
+python aurora-opencode-pro/tests/test_computeruse_progress.py
+python aurora-opencode-pro/tests/test_computeruse_input.py
+```
+
+After three nearby clicks with little visible change, the next click is withheld
+and returns a native target crop plus an instruction strip as JPEGs, with desktop
+origins and actual crop dimensions. The first pair permits one grounded retry;
+further nearby clicks are withheld if that retry shows little change. This
+includes coordinate jitter, batches and
+calls with `screenshot: false`. A coarse RGB comparison tolerates small animation,
+corner hover effects and the taskbar clock; it is a heuristic, not a semantic
+success detector. A successful crop of at least 32x32 pixels permits another
+attempt; a full-frame screenshot alone does not reset the guard. Changed visible
+state, a different mouse button/input action/area/target/mode, or a real new user request also
+permits recovery.
+
+Explanation-only follow-ups such as "why you couldn't complete" preserve the
+unfinished checklist, skip plan reconciliation and automatic continuation, and
+refuse desktop input. They do not clear a kill-switch stop. Explicit resume or
+combined diagnosis-and-action requests permit work again. Intent recognition is
+conservative English phrase matching, not a general natural-language classifier.
+
+The progress test can also replay a 1920x1080 RGB frame before the stalled click
+sequence plus four post-click frames as command-line arguments. Private chat
+images are not included in the test fixtures.
+
+The latest button-dispatch diagnosis and recovery checks are recorded in
+`reports/2026-10-01-latency/COMPUTER_BUTTON_RECOVERY_RESULTS.txt`.
+
+## Drag, timed wait and nested-loop checks
+
+```text
+python aurora-opencode-pro/tests/test_computeruse_drags.py
+python aurora-opencode-pro/tests/test_computeruse_nested.py
+```
+
+Three drags with the same target, button, delivery mode and direction require a
+focused crop before continuing. Coordinate jitter and scene motion do not reset
+the limit. The automatic crop permits one retry; reversing direction, changing
+approach or explicitly inspecting a crop permits re-grounding. This is a bounded
+interaction policy, not a semantic detector of whether a camera objective passed.
+
+Use `mouse_move` followed by `wait` with `duration_ms` for edge-pan dwell. `wait`
+waits the whole requested 1..10000 ms and checks the kill switch every 50 ms.
+`wait_for_change` now uses the coarse visible-change comparison, which tolerates
+small animation; it can still finish early on a large animation or unrelated
+screen change and does not prove completion.
+
+Nested loops use the selected application model unless `model` explicitly
+overrides it. Their default frame is half size, matching the schema. `window`
+binds a loop to that target; otherwise it inherits an established target.
+Switching desktop shortcuts, other-window inputs and escaping drag endpoints
+are refused within a bound loop. Native loops activate that target before each
+capture and input. Inner calls inherit the outer input mode. Requested native
+crops and recovery pairs reach only the next model request, with origin/scale
+guidance; routine frames and old crops do not accumulate. Loop-limit and
+unresolved-refusal exits report failure and return a current JPEG.
+
+The nested regression uses a loopback scripted provider and disposable windows.
+It records outbound model selections, actual fixture typing, refused shortcuts
+and other-window inputs, crop dimensions, and absence of stale images. It does
+not use the user's provider credentials or resume their game. Details are in
+`reports/2026-10-01-latency/COMPUTER_DRAG_NESTED_RESULTS.txt`.

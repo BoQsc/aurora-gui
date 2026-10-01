@@ -343,12 +343,20 @@ private string toolPolicySection(in SystemPromptContext ctx)
             "inside Aurora's chat are not evidence about another application's UI. " ~
             "Sent or queued input does not prove the app reacted; a pixel-change " ~
             "notification does not prove the intended outcome. If two attempts show " ~
-            "no intended change, stop repeating guessed clicks: inspect a crop, " ~
+            "no intended change, stop repeating guessed clicks or drags: inspect a crop, " ~
             "correct the target, or use input_mode=native when posted virtual input " ~
-            "is ignored. Use native input from the outset for games and Windows " ~
+            "is ignored. Read the current instruction and Continue/Next controls before " ~
+            "assuming an interactive step is enabled; a squad/status marker is not a " ~
+            "mouse cursor. A withheld click or drag requires new evidence or a different action, " ~
+            "not slightly changed coordinates. Use native input from the outset for games and Windows " ~
             "Start/Search controls, which can ignore posted window messages. Batch only " ~
             "steps whose focus and controls are already established. Report a block " ~
-            "when the latest evidence does not support continuing.\n";
+            "when the latest evidence does not support continuing. Camera motion may be opposite " ~
+            "to a drag: calibrate against a stationary landmark. Use mouse_move then wait with " ~
+            "duration_ms for edge-pan dwell; wait_for_change may end on animation. A nested " ~
+            "subagent uses the selected model and native input by default; pass window to bind " ~
+            "its target. Treat old gameplay notes as unverified until the current instruction " ~
+            "confirms them. Never call an objective nearly complete without visible evidence.\n";
     text ~= "Use background execution for a command that may run longer " ~
         "than an ordinary interactive check. Inspect its elapsed time, status, " ~
         "and partial output with `process`; decide from observed progress " ~

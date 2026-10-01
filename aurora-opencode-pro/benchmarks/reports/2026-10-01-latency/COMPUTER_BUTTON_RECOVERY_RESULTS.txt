@@ -1,0 +1,66 @@
+Aurora right-click dispatch and automatic recovery — 2026-10-01
+
+Observed chat: Company of Heroes Tutorial Missions Continue
+Thread: t-m639264406566989667-0
+145 messages; DeepSeek V4.1 Flash; thinking disabled.
+
+The model progressed through selection, then stalled on the move order. It
+issued ten click requests with button:right and no right_click actions. Five
+requests actually delivered left clicks, four subsequent requests were withheld
+by the progress guard, then the kill switch stopped input. The current game
+instruction required RIGHT-CLICK. The dispatcher applied button only to drag,
+silently ignoring it for click. This was an application bug, not just a model
+coordinate mistake. The model also continued guessing after guard refusals
+without obtaining a focused crop.
+
+Changes:
+- Click and double_click validate and honor left/right/middle. right_click
+  always uses right and refuses a conflicting explicit button. Batch schemas
+  advertise the same button values. Acknowledgments name the actual button.
+- Virtual right/middle clicks now post matching button-up messages; the old
+  release mapping selected the wrong message using an UP flag as a DOWN flag.
+- A blocked stagnant click supplies screen-target.jpg (up to 640x480) and
+  screen-instructions.jpg (top 160 pixels) from the same current capture.
+  Both are native JPEGs, with actual dimensions and desktop origins in text.
+- Focused evidence permits one retry per stalled cluster. Another unchanged
+  retry is blocked; repeated refusals do not grant unlimited retries. Changing
+  the mouse button counts as a different approach. Existing crop/change/action
+  recovery remains available.
+- Failed batches preserve recovery images. An unrelated later failure cannot
+  reuse an earlier successful screenshot as its failure evidence.
+- Model requests include only the newest full screenshot or current recovery
+  pair. Two generated images are retained across the whole conversation graph,
+  including inactive branches; user attachment limits remain independent.
+
+Validation:
+- 19 button calls: all 48 actual Win32 native/posted down/up events matched
+  left/right/middle single/double clicks, alias and batches. Three invalid
+  button requests were refused. Desktop tests were run sequentially.
+- 30 input calls passed: real typing/button events, target checks, focused
+  JPEG dimensions/origins, batch preservation, exactly one automatic retry,
+  exhausted retry refusal, full-screen protection and explicit crop recovery.
+  A static test backdrop excludes unrelated desktop animations; batch mode
+  is explicitly native so retries test the same input approach.
+- Pure progress and application intent regressions passed: button changes,
+  animation/noise/dialogue handling, bounded retry, crop pixel/origin mapping,
+  explanation-only completion, unfinished checklist retention, stop retention,
+  input/batch refusal and explicit resume.
+- 4,500 normal frames and 1,000 recovery pairs remain bounded. User images are
+  preserved. A new full frame replaces both recovery crops in the next request.
+  Failed-action JPEGs and recovery pairs survive save/reload and reach the
+  next model request. 1.4 MB chat compacts to 191,684 bytes; three further
+  checkpoint rollovers retain the objective, latest instruction and tool pairs.
+- git diff --check passed.
+
+Deployment:
+Release build --config=newbuild --build=release succeeded. PID 1572 closed
+gracefully before installation. Installed SHA-256 matches the separate release
+output and the executable is newer than all Pro/core source files. Settings
+bytes and .exe.bak bytes were preserved. Detached helper PID 11148 launched
+updated Aurora PID 7748. Startup log confirms UI built at 2026-10-01 12:06:51
+and restored the latest chat (session 183, final message index 144).
+
+Limits: Progress comparison measures visible change, not task completion. The
+instruction strip is a fixed top-screen region and may miss instructions in
+other layouts; explicit screen crops remain available. Real CoH gameplay was
+not resumed or certified by the fixture tests.

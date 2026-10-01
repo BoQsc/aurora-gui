@@ -30,6 +30,9 @@ module auroraopencode.computeruse;
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolDef;
 import auroraopencode.screenshotimage : encodeScreenshotJpeg;
+import auroraopencode.computerprogress : DesktopClickProgress, DesktopDragProgress,
+    observeDesktop, desktopVisiblyChanged, cropDesktop;
+import auroraopencode.requestintent : explanationOnlyRequest;
 import auroraopencode.attachments : attachmentImageForData;
 import std.algorithm : canFind, min;
 import std.array : appender;
@@ -37,7 +40,7 @@ import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON, toJSON;
 import std.file : exists, readText;
 import std.process : environment;
-import std.string : indexOf, split, startsWith, strip, toLower;
+import std.string : indexOf, lastIndexOf, split, startsWith, strip, toLower;
 import std.base64 : Base64;
 import std.utf : toUTF16z;
 import core.thread : Thread;
@@ -153,6 +156,28 @@ public void clearComputerUseAbort()
     computerUseAbortFlag = false;
 }
 
+private __gshared bool computerUseExplanationOnly;
+private __gshared uint computerUseRequestGeneration;
+private __gshared uint computerUseObservedGeneration;
+private __gshared string computerUseProgressSession;
+private __gshared DesktopClickProgress desktopClickProgress;
+private __gshared DesktopDragProgress desktopDragProgress;
+
+/// A diagnostic follow-up must neither lift a stop nor resume desktop input.
+/// Advance the generation here; the worker resets its state under its mutex.
+public void beginComputerUseUserRequest(string text)
+{
+    if (text.strip().length == 0) return;
+    computerUseExplanationOnly = explanationOnlyRequest(text);
+    ++computerUseRequestGeneration;
+    if (!computerUseExplanationOnly) clearComputerUseAbort();
+}
+
+public void setComputerUseExplanationOnly(bool value)
+{
+    computerUseExplanationOnly = value;
+}
+
 /// Start the background thread that owns the global kill-switch hotkey. No-op
 /// when computer use is not compiled for this platform.
 public void startComputerUseKillSwitch()
@@ -177,10 +202,7 @@ public __gshared string computerUseProviderBaseUrl;
 public __gshared string computerUseProviderApiKey;
 public __gshared string computerUseProviderModel;
 
-/// Default model for the nested computer-use loop (the `subagent` action). A
-/// per-call `model` argument overrides it. Vision-capable and cheap; measured
-/// ~40% faster per round than the main app model on a live desktop benchmark.
-public enum string computerUseDefaultLoopModel = "deepseek-v4-flash-vision-exp";
+// The selected application model is used unless a call explicitly overrides it.
 
 /// Stable routing id sent as `x-opencode-session` on every nested-loop request.
 /// The OpenCode Go gateway keeps prompt caching and scheduling coherent per id,
@@ -262,7 +284,11 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "real desktop automatically. Use `mouse_move` to hover without " ~
             "clicking (e.g. edge-pan), `drag` for box-select, order and camera " ~
             "drags, and `key_down`/`key_up` to hold a key down (camera pan, " ~
-            "shift-queue). `focus` brings a window to the front by title " ~
+            "shift-queue). `click` and `double_click` accept `button`: left " ~
+            "(default), right or middle; `click` with button=right is equivalent " ~
+            "to `right_click`. A blocked retry returns a target crop plus an " ~
+            "instruction strip; map crop pixels using the reported desktop origin. " ~
+            "`focus` brings a window to the front by title " ~
             "substring, and every action reports the window it landed in so " ~
             "you can tell where input actually went. INPUT IS TARGETED: every " ~
             "action that sends input resolves a target window first - an " ~
@@ -292,7 +318,7 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
             "not an application response. Set `input_mode` to `native` for games or " ~
             "shell controls that ignore virtual input. Verify progress in the latest " ~
             "screenshot; never treat an attempted action as proof of success. Windows only.",
-            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"drag: milliseconds for the move (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"drag: which button (default left)"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: override the loop model for this call (default: the app's model)"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
+            `{"type":"object","properties":{"input_mode":{"type":"string","enum":["native","virtual"],"description":"Input mode for this call and its batch/nested actions. Native sends real OS input and is needed by games/shell controls that ignore posted messages. Virtual queues window messages with a ghost cursor; application response must be verified. Omit to use Settings. Subagent defaults to native; all its nested calls inherit the loop mode."},"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"],"description":"Action to perform; omit when using steps"},"x":{"type":"integer","description":"Screenshot x (click/double_click/right_click/mouse_move/drag/scroll)"},"y":{"type":"integer","description":"Screenshot y (click/double_click/right_click/mouse_move/drag/scroll)"},"x2":{"type":"integer","description":"Drag end x (screenshot pixels)"},"y2":{"type":"integer","description":"Drag end y (screenshot pixels)"},"text":{"type":"string","description":"Text to type (type); a newline presses Enter"},"name":{"type":"string","description":"Key for key/key_down/key_up (e.g. \"enter\", \"shift\", \"t\", \"ctrl+s\"; key_down key_up hold it until the matching key_up) OR the macro name for macro"},"amount":{"type":"integer","description":"Scroll wheel delta; negative scrolls down (default -120)"},"duration_ms":{"type":"integer","description":"wait: full dwell 1..10000 ms (default 1000); drag: movement duration (default 400)"},"button":{"type":"string","enum":["left","right","middle"],"description":"click/double_click/drag: mouse button (default left); right_click always uses right"},"title":{"type":"string","description":"focus: window title substring to bring to the front, e.g. \"Notepad\""},"window":{"type":"string","description":"Input target for type/key/click/drag: window title substring. Overrides the remembered target and refocuses it, so input cannot land in the wrong window; subagent: bind the loop to this window (otherwise inherits the established target)"},"repeat":{"type":"integer","description":"macro: how many times to run the sequence (default 1, max 64)"},"delay_ms":{"type":"integer","description":"macro: pause between repeats, in ms"},"seconds":{"type":"integer","description":"loop/subagent: time budget in seconds (loop default 10; subagent default 60)"},"task":{"type":"string","description":"subagent: the goal for the nested computer-use loop"},"max_steps":{"type":"integer","description":"subagent: how many model steps the nested loop may take (default 4, max 16)"},"frame":{"type":"string","enum":["full","half","quarter","tiny","diff"],"description":"subagent: per-step view - full/half/quarter (downscaled) or diff (only changed tiles at native scale with origins, fastest + most accurate coordinates; default half)"},"model":{"type":"string","description":"subagent: explicit model override; omission uses the selected application model"},"reasoning":{"type":"string","enum":["none","default"],"description":"subagent: hidden thinking - none (fast, default) or default (slower, better spatial judgement)"},"region":{"type":"object","description":"screen: crop {x,y,w,h} in screenshot pixels for a zoomed view of one area","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"w":{"type":"integer"},"h":{"type":"integer"}}},"timeout_ms":{"type":"integer","description":"wait_for_change: how long to wait for the screen to change (default 5000)"},"interval_ms":{"type":"integer","description":"wait_for_change: how often to re-check, in ms (default 250)"},"screenshot":{"type":"boolean","description":"Return a fresh screenshot after the action(s) as an image"},"steps":{"type":"array","maxItems":32,"description":"Actions run in order in this one call, followed by a single screenshot","items":{"type":"object","properties":{"action":{"type":"string","enum":["screen","click","double_click","right_click","mouse_move","drag","focus","macro","loop","subagent","key","key_down","key_up","type","scroll","wait_for_change","wait"]},"x":{"type":"integer"},"y":{"type":"integer"},"x2":{"type":"integer"},"y2":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"amount":{"type":"integer"},"duration_ms":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"],"description":"Mouse button for click/double_click/drag (default left); right_click uses right"},"title":{"type":"string"},"window":{"type":"string"},"repeat":{"type":"integer"},"delay_ms":{"type":"integer"},"seconds":{"type":"integer"},"task":{"type":"string"},"max_steps":{"type":"integer"},"frame":{"type":"string"},"model":{"type":"string"},"region":{"type":"object"},"timeout_ms":{"type":"integer"},"interval_ms":{"type":"integer"}},"required":["action"]}}},"required":[]}`
         ),
     ];
 }
@@ -362,6 +388,14 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
         // other's clicks and each would misread the other's actions as its own.
         lockComputerUseProcess();
         scope (exit) unlockComputerUseProcess();
+        if (computerUseObservedGeneration != computerUseRequestGeneration ||
+            computerUseProgressSession != _computerUseSession)
+        {
+            desktopClickProgress.reset();
+            desktopDragProgress.reset();
+            computerUseObservedGeneration = computerUseRequestGeneration;
+            computerUseProgressSession = _computerUseSession;
+        }
     }
     return experimentalComputerUseExecuteLocked(args, workspace);
 }
@@ -395,7 +429,7 @@ private ComputerUseResult experimentalComputerUseExecuteLocked(string args,
     if (action.length == 0 && steps.length == 0)
         return failedResult("Error: computer requires an `action` " ~
             "(screen, click, double_click, right_click, mouse_move, drag, " ~
-            "key, key_down, key_up, type, scroll, wait_for_change) or a " ~
+            "key, key_down, key_up, type, scroll, wait, wait_for_change) or a " ~
             "`steps` batch.");
 
     version (Windows)
@@ -414,7 +448,7 @@ private ComputerUseResult experimentalComputerUseExecuteLocked(string args,
         scope (exit) virtualPointerActive = previousMode;
         virtualPointerActive = inputMode == "native" ? false :
             inputMode == "virtual" ? true : computerUseMutexDepth > 1
-                ? previousMode : computerUseVirtualPointerBySetting;
+                ? previousMode : action == "subagent" ? false : computerUseVirtualPointerBySetting;
         computerUseInputError = "";
         scope (exit) releaseHeldInputs();
         ComputerUseResult result;
@@ -1590,7 +1624,7 @@ version (Windows)
         foreach (i; 0 .. count)
         {
             const pressed = virtualPostMouse(downMsgFor(down), buttonFlagFor(down), receiver);
-            const released = virtualPostMouse(upMsgFor(up), 0, receiver);
+            const released = virtualPostMouse(upMsgFor(down), 0, receiver);
             if (!pressed || !released) return false;
             if (i + 1 < count) Thread.sleep(msecs(60));
         }
@@ -1884,6 +1918,17 @@ version (Windows)
     {
         auto capture = captureScreen(rx, ry, rw, rh);
         if (!capture.ok) return failedResult(capture.error);
+        if (rw > 0 && rh > 0 && capture.width >= 32 && capture.height >= 32)
+        {
+            desktopClickProgress.reset();
+            desktopDragProgress.reset();
+        }
+        return screenshotCaptureResult(prefix, capture, rx, ry, rw, rh);
+    }
+
+    private ComputerUseResult screenshotCaptureResult(string prefix,
+        in Capture capture, int rx = -1, int ry = -1, int rw = 0, int rh = 0)
+    {
         auto jpeg = encodeScreenshotJpeg(capture.width, capture.height,
             capture.rgb);
         const step = screenDownscale();
@@ -1947,6 +1992,7 @@ version (Windows)
     /// `focus`, by a click on a real window, and by an explicit `window`/`title`
     /// argument. Null until the model has established one.
     private __gshared void* computerUseFocusTarget;
+    private __gshared void* computerUseNestedTarget;
 
     /// Human-readable description of how the current target was chosen, surfaced
     /// in replies so the model can tell "I aimed this" from "I inherited this".
@@ -2560,6 +2606,62 @@ version (Windows)
     /// One computer action, driven by the JSON object (top-level call or one
     /// entry of a `steps` batch). Reads every field it needs from `value` so
     /// the two call paths share one implementation.
+    private string validateNestedAction(JSONValue value)
+    {
+        if (computerUseNestedTarget is null) return "";
+        const action = strip(toLower(jsonString(value, "action")));
+        if (action == "screen" || action == "wait" || action == "wait_for_change" ||
+            action == "macro" || action == "loop") return "";
+        if (action == "subagent") return "Error: recursive nested loops are not permitted.";
+        if (!targetUsable(computerUseNestedTarget))
+            return "Error: the nested loop's target window closed. Stop and report the blocker.";
+        auto title = jsonString(value, "window");
+        if (!title.length) title = jsonString(value, "title");
+        if (title.length && findTopWindow(title) !is computerUseNestedTarget)
+            return "Error: input cannot leave the nested loop's target window.";
+        const key = strip(toLower(jsonString(value, "name")));
+        if (action == "key" || action == "key_down")
+        {
+            auto tokens = key.split("+");
+            foreach (ref token; tokens) token = token.strip();
+            if (tokens.canFind("win") || tokens.canFind("meta") || tokens.canFind("super") ||
+                (tokens.canFind("alt") && (tokens.canFind("tab") || tokens.canFind("esc") || tokens.canFind("escape"))) ||
+                (tokens.canFind("ctrl") && (tokens.canFind("esc") || tokens.canFind("escape"))) ||
+                (action == "key_down" && key == "alt") ||
+                (heldKeys[0x12] && (key == "tab" || key == "esc" || key == "escape")) ||
+                (heldKeys[0x11] && (key == "esc" || key == "escape")))
+                return "Error: desktop-switching shortcuts cannot leave the nested loop's target window.";
+        }
+        if (!virtualPointerActive && ensureInputTarget(windowTitleOf(computerUseNestedTarget)) is null)
+            return "Error: the nested loop's target could not be activated. No input was sent.";
+        if (action == "click" || action == "double_click" || action == "right_click" ||
+            action == "drag" || action == "mouse_move" || action == "scroll")
+        {
+            const x = cast(int) jsonInt(value, "x", 0), y = cast(int) jsonInt(value, "y", 0);
+            if (GetAncestor(WindowFromPoint2(x, y), 2) !is computerUseNestedTarget)
+                return "Error: coordinates are outside the nested loop's target window. Nothing was sent.";
+            if (action == "drag" && GetAncestor(WindowFromPoint2(
+                cast(int) jsonInt(value, "x2", 0), cast(int) jsonInt(value, "y2", 0)), 2) !is computerUseNestedTarget)
+                return "Error: drag endpoint would leave the nested loop's target window. Nothing was dragged.";
+        }
+        return "";
+    }
+
+    private ComputerUseResult waitForDuration(long durationMs, bool screenshot)
+    {
+        if (durationMs < 1 || durationMs > 10000)
+            return failedResult("Error: wait duration_ms must be between 1 and 10000.");
+        const deadline = MonoTime.currTime + msecs(durationMs);
+        while (MonoTime.currTime < deadline)
+        {
+            if (computerUseAbortActive()) return failedResult("Stopped by the kill switch during timed wait.");
+            const remaining = (deadline - MonoTime.currTime).total!"msecs";
+            if (remaining > 0) Thread.sleep(msecs(min(50L, remaining)));
+        }
+        return withOptionalScreenshot("Waited " ~ to!string(durationMs) ~
+            " ms without ending early on animation; application response is unverified.", screenshot);
+    }
+
     private ComputerUseResult runWindowsAction(JSONValue value, bool screenshot)
     {
         const action = strip(toLower(jsonString(value, "action")));
@@ -2572,13 +2674,28 @@ version (Windows)
         const amount = cast(int) jsonInt(value, "amount", -120);
         const timeoutMs = jsonInt(value, "timeout_ms", 5000);
         const intervalMs = jsonInt(value, "interval_ms", 250);
-        const durationMs = cast(int) jsonInt(value, "duration_ms", 400);
+        const durationMs = cast(int) jsonInt(value, "duration_ms", action == "wait" ? 1000 : 400);
         const button = strip(toLower(jsonString(value, "button")));
         // An explicit target window. `window` is the general name; `title` is
         // accepted too (it is the `focus` field name) so a model can carry the
         // same value across actions.
         string targetWindow = jsonString(value, "window");
         if (targetWindow.length == 0) targetWindow = jsonString(value, "title");
+
+        if (computerUseExplanationOnly && action != "screen")
+            return failedResult("Error: the latest user request asks for an explanation. " ~
+                "Desktop input is paused; answer that request without resuming the old task.");
+        const lockedError = validateNestedAction(value);
+        if (lockedError.length) return failedResult(lockedError);
+        if (action == "drag") desktopClickProgress.reset();
+        else if (action == "click" || action == "double_click" || action == "right_click")
+            desktopDragProgress.reset();
+        else if (action != "screen" && action != "wait" && action != "wait_for_change" &&
+            action != "mouse_move" && action != "macro" && action != "loop" && action != "subagent")
+        {
+            desktopClickProgress.reset();
+            desktopDragProgress.reset();
+        }
 
         switch (action)
         {
@@ -2630,15 +2747,23 @@ version (Windows)
                     foregroundWindowTitle() ~ "\".", screenshot);
             }
             case "click":
-                return clickActionResult(x, y, 1, targetWindow, screenshot,
-                    "Clicked");
             case "double_click":
-                return clickActionResult(x, y, 2, targetWindow, screenshot,
-                    "Double-clicked");
             case "right_click":
-                return clickActionResult(x, y, 1, targetWindow, screenshot,
-                    "Right-clicked", MOUSEEVENTF_RIGHTDOWN,
-                    MOUSEEVENTF_RIGHTUP);
+            {
+                if (auto field = "button" in value.object)
+                    if (field.type != JSONType.string)
+                        return failedResult("Error: button must be left, right or middle. Nothing was clicked.");
+                if (button.length && !["left", "right", "middle"].canFind(button))
+                    return failedResult("Error: button must be left, right or middle. Nothing was clicked.");
+                if (action == "right_click" && button.length && button != "right")
+                    return failedResult("Error: right_click conflicts with button=" ~ button ~ ". Nothing was clicked.");
+                const chosen = action == "right_click" ? "right" : button;
+                DWORD down = MOUSEEVENTF_LEFTDOWN, up = MOUSEEVENTF_LEFTUP;
+                if (chosen == "right") { down = MOUSEEVENTF_RIGHTDOWN; up = MOUSEEVENTF_RIGHTUP; }
+                else if (chosen == "middle") { down = MOUSEEVENTF_MIDDLEDOWN; up = MOUSEEVENTF_MIDDLEUP; }
+                return clickActionResult(x, y, action == "double_click" ? 2 : 1,
+                    targetWindow, screenshot, down, up);
+            }
             case "mouse_move":
                 if (!moveCursor(x, y)) return failedResult(inputTargetRefusal());
                 return withOptionalScreenshot("Moved the pointer to " ~
@@ -2692,6 +2817,8 @@ version (Windows)
                     return failedResult(inputTargetRefusal());
                 return withOptionalScreenshot(withActiveWindow("Sent native scroll of " ~
                     to!string(amount) ~ "; application response is unverified"), screenshot);
+            case "wait":
+                return waitForDuration(durationMs, screenshot);
             case "wait_for_change":
                 return waitForChange(timeoutMs, intervalMs);
             default:
@@ -2704,7 +2831,7 @@ version (Windows)
     /// the point is over this app's own window the click is refused outright:
     /// the old code clicked into Aurora and the model had no way to notice.
     private ComputerUseResult clickActionResult(int x, int y, int count,
-        string targetWindow, bool screenshot, string verb,
+        string targetWindow, bool screenshot,
         DWORD down = MOUSEEVENTF_LEFTDOWN, DWORD up = MOUSEEVENTF_LEFTUP)
     {
         if (targetWindow.length > 0)
@@ -2727,6 +2854,18 @@ version (Windows)
                     "\", not the requested \"" ~ targetWindow ~
                     "\". Nothing was clicked; take a fresh `screen` and retry.");
         }
+        const target = WindowFromPoint2(x, y);
+        auto before = captureScreen();
+        const observation = observeDesktop(before.width, before.height, before.rgb);
+        if (target !is null && desktopClickProgress.refuses(cast(size_t) target,
+            virtualPointerActive, x, y, observation, down))
+        {
+            return focusedRecoveryResult(before, x, y,
+                "Error: repeated nearby clicks produced little visible change. Nothing was clicked. " ~
+                "Inspect the focused evidence, current instructions/buttons and mouse button. " ~
+                "Changing coordinates slightly is not a new approach.", "nearby clicks",
+                before.ok && desktopClickProgress.offerFocusedRecovery());
+        }
         auto title = clickAt(x, y, count, down, up);
         if (title is null && computerUseInputError.length)
             return failedResult(computerUseInputError);
@@ -2735,12 +2874,22 @@ version (Windows)
                 to!string(y) ~ " is over this app's own window (or no window). " ~
                 "Nothing was clicked. Take a fresh `screen` and aim at the " ~
                 "target application.");
-        const gesture = count > 1 ? "double-click" :
-            down == MOUSEEVENTF_RIGHTDOWN ? "right-click" : "click";
+        const buttonLabel = down == MOUSEEVENTF_RIGHTDOWN ? "right" :
+            down == MOUSEEVENTF_MIDDLEDOWN ? "middle" : "";
+        const gesture = count > 1 ? (buttonLabel.length ? buttonLabel ~ " " : "") ~ "double-click" :
+            buttonLabel.length ? buttonLabel ~ "-click" : "click";
         const delivery = (virtualPointerActive ? "Queued virtual " : "Sent native ") ~ gesture;
-        return withOptionalScreenshot(withActiveWindow(delivery ~ " at " ~
-            to!string(x) ~ "," ~ to!string(y) ~ " in window \"" ~ title ~ "\"; application response is unverified"),
-            screenshot);
+        const output = withActiveWindow(delivery ~ " at " ~
+            to!string(x) ~ "," ~ to!string(y) ~ " in window \"" ~ title ~ "\"; application response is unverified");
+        // Track clicks inside batches and screenshot:false calls as well. The
+        // comparison is bounded and the post-action capture is reused for JPEG.
+        Thread.sleep(msecs(100));
+        auto current = captureScreen();
+        desktopClickProgress.record(cast(size_t) target, virtualPointerActive, x, y,
+            observation, observeDesktop(current.width, current.height, current.rgb), down);
+        if (!screenshot) return succeededResult(output);
+        if (!current.ok) return failedResult(current.error);
+        return screenshotCaptureResult(output ~ " Screen after the action", current);
     }
 
     /// Resolve a window under a screenshot point without side effects (used only
@@ -2757,50 +2906,73 @@ version (Windows)
         return root !is null ? root : hwnd;
     }
 
-    /// Drag with the same target discipline as a click: bind the drag's window
-    /// first and report it, so a drag can never silently land elsewhere.
+    /// Return focused evidence without delivering the refused input.
+    private ComputerUseResult focusedRecoveryResult(in Capture before, int x, int y,
+        string reason, string actionLabel, bool retry)
+    {
+        auto refusal = failedResult(reason);
+        if (before.ok)
+        {
+            const w = min(640, before.width), h = min(480, before.height);
+            const rx = x < w / 2 ? 0 : min(x - w / 2, before.width - w);
+            const ry = y < h / 2 ? 0 : min(y - h / 2, before.height - h);
+            auto crop = cropDesktop(before.width, before.height, before.rgb, rx, ry, w, h);
+            auto instructions = cropDesktop(before.width, before.height, before.rgb,
+                0, 0, before.width, min(160, before.height));
+            refusal.images = [
+                attachmentImageForData("image/jpeg", "screen-target.jpg",
+                    encodeScreenshotJpeg(crop.width, crop.height, crop.rgb)),
+                attachmentImageForData("image/jpeg", "screen-instructions.jpg",
+                    encodeScreenshotJpeg(instructions.width, instructions.height, instructions.rgb))];
+            refusal.output ~= " Attached target crop: " ~ to!string(crop.width) ~ "x" ~
+                to!string(crop.height) ~ " at desktop origin (" ~ to!string(crop.x) ~ "," ~
+                to!string(crop.y) ~ "). Desktop x/y = crop x/y + that origin. " ~
+                "Attached instruction strip: " ~ to!string(instructions.width) ~ "x" ~
+                to!string(instructions.height) ~ " at origin (0,0). Both are native pixels " ~
+                "from the same current frame. ";
+            refusal.output ~= retry
+                ? "One retry grounded in these crops is permitted; first verify the control, button and coordinates."
+                : "The focused retry did not establish progress. Further " ~ actionLabel ~ " are withheld; choose a different action or report the blocker.";
+        }
+        return refusal;
+    }
+
     private ComputerUseResult dragActionResult(int x, int y, int x2, int y2,
         int durationMs, string button, string targetWindow, bool screenshot)
     {
-        if (virtualPointerActive)
-        {
-            if (targetWindow.length)
-            {
-                string why;
-                auto target = resolveInputTarget(targetWindow, why);
-                if (target is null || WindowFromPoint2(x, y) !is target)
-                    return failedResult("Error: virtual drag start does not match the requested target. Nothing was posted.");
-            }
-            dragMouse(x, y, x2, y2, durationMs, button);
-            if (computerUseInputError.length) return failedResult(computerUseInputError);
-            return withOptionalScreenshot("Queued virtual drag from " ~ to!string(x) ~ "," ~
-                to!string(y) ~ " to " ~ to!string(x2) ~ "," ~ to!string(y2) ~
-                "; application response is unverified.", screenshot);
-        }
+        if (button.length && !["left", "right", "middle"].canFind(button))
+            return failedResult("Error: drag button must be left, right or middle. Nothing was dragged.");
         string why;
-        void* target;
-        if (targetWindow.length > 0)
-            target = resolveInputTarget(targetWindow, why);
-        else
-        {
-            target = noteClickTarget(x, y);
-            why = "the drag start point is over this app's own window (or no " ~
-                "window)";
-        }
+        auto target = targetWindow.length ? resolveInputTarget(targetWindow, why) : noteClickTarget(x, y);
         if (target is null)
-            return failedResult("Error: no safe target for the drag: " ~ why ~
-                ". Nothing was dragged.");
-        if (GetForegroundWindow() !is target)
+            return failedResult("Error: no safe target for the drag. Nothing was dragged. " ~ why);
+        if (!virtualPointerActive && GetForegroundWindow() !is target)
         {
             forceForeground(target);
             Thread.sleep(msecs(60));
         }
+        if (GetAncestor(WindowFromPoint2(x, y), 2) !is target)
+            return failedResult("Error: drag start does not match the target window. Nothing was dragged.");
+        const mouseButton = button == "right" ? MOUSEEVENTF_RIGHTDOWN :
+            button == "middle" ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_LEFTDOWN;
+        if (desktopDragProgress.refuses(cast(size_t) target, virtualPointerActive,
+            x, y, x2, y2, mouseButton))
+        {
+            auto before = captureScreen();
+            return focusedRecoveryResult(before, x, y,
+                "Error: three same-direction drags require progress verification. Nothing was dragged. " ~
+                "Scene motion does not prove the objective advanced; dragging the map can move the " ~
+                "camera in the opposite direction. Inspect the instruction and calibrate the direction.",
+                "same-direction drags", before.ok && desktopDragProgress.offerFocusedRecovery());
+        }
         dragMouse(x, y, x2, y2, durationMs, button);
         if (computerUseInputError.length) return failedResult(computerUseInputError);
-        return withOptionalScreenshot(withActiveWindow("Sent native drag " ~
-            (button.length > 0 ? button : "left") ~ " from " ~
-            to!string(x) ~ "," ~ to!string(y) ~ " to " ~
-            to!string(x2) ~ "," ~ to!string(y2) ~ " in window \"" ~
+        desktopDragProgress.record(cast(size_t) target, virtualPointerActive,
+            x, y, x2, y2, mouseButton);
+        return withOptionalScreenshot(withActiveWindow(
+            (virtualPointerActive ? "Queued virtual drag " : "Sent native drag ") ~
+            (button.length ? button : "left") ~ " from " ~ to!string(x) ~ "," ~ to!string(y) ~
+            " to " ~ to!string(x2) ~ "," ~ to!string(y2) ~ " in window \"" ~
             windowLabelOf(target) ~ "\"; application response is unverified"), screenshot);
     }
 
@@ -2830,6 +3002,7 @@ version (Windows)
     private ComputerUseResult withFinalScreenshot(ComputerUseResult result,
         bool screenshot)
     {
+        if (result.failed && result.images.length > 0) return result;
         if (!screenshot) return result;
         auto shot = screenshotResult("Screen after the action");
         if (shot.failed)
@@ -3026,6 +3199,33 @@ version (Windows)
             parts.host = rest[0 .. slash];
             parts.path = rest[slash .. $];
         }
+        auto authority = parts.host;
+        string portText;
+        if (authority.startsWith("["))
+        {
+            const close = indexOf(authority, "]");
+            if (close < 0) { parts.host = ""; return parts; }
+            parts.host = authority[1 .. close];
+            if (close + 1 < authority.length)
+            {
+                if (authority[close + 1] != ':') { parts.host = ""; return parts; }
+                portText = authority[close + 2 .. $];
+            }
+        }
+        else
+        {
+            const colon = lastIndexOf(authority, ":");
+            if (colon >= 0)
+            {
+                parts.host = authority[0 .. colon];
+                portText = authority[colon + 1 .. $];
+            }
+        }
+        if (portText.length)
+        {
+            try parts.port = to!ushort(portText);
+            catch (Exception) parts.port = 0;
+        }
         return parts;
     }
 
@@ -3068,6 +3268,11 @@ version (Windows)
         HttpConn conn;
         error = null;
         const parts = parseUrl(url);
+        if (!parts.host.length || parts.port == 0)
+        {
+            error = "invalid provider URL hostname or port.";
+            return conn;
+        }
         conn.session = InternetOpenW(toUTF16z("Aurora OpenCode"),
             INTERNET_OPEN_TYPE_PRECONFIG, null, null, 0);
         if (conn.session is null)
@@ -3272,8 +3477,13 @@ version (Windows)
         try parsed = parseJSON(argsJson);
         catch (Exception) return false;
         if (parsed.type != JSONType.object) return false;
-        auto region = "region" in parsed.object;
-        return region !is null && region.type == JSONType.object;
+        if (auto region = "region" in parsed.object)
+            if (region.type == JSONType.object) return true;
+        if (auto batch = "steps" in parsed.object)
+            if (batch.type == JSONType.array)
+                foreach (step; batch.array)
+                    if (computerArgsHaveRegion(step.toString())) return true;
+        return false;
     }
 
     /// The `action` of a nested computer call, for decisions the loop makes about
@@ -3307,6 +3517,11 @@ version (Windows)
                 if (auto field = key in node.object)
                     if (field.type == JSONType.integer)
                         (*field).integer = (*field).integer * factor;
+            if (auto region = "region" in node.object)
+                if (region.type == JSONType.object)
+                    foreach (key; ["x", "y", "w", "h"])
+                        if (auto field = key in region.object)
+                            if (field.type == JSONType.integer) field.integer = field.integer * factor;
             if (auto batch = "steps" in node.object)
                 if (batch.type == JSONType.array)
                     foreach (ref step; batch.array) scaleOne(step);
@@ -3410,7 +3625,7 @@ version (Windows)
     }
 
     /// Normalize a `frame` argument to one of full/half/quarter/diff. Unknown or
-    /// missing values fall back to `quarter`. NOTE: `half` must be in the
+    /// missing values fall back to the advertised `half`. NOTE: `half` must be in the
     /// allowed set - it used to be coerced to `quarter`, so a caller asking for
     /// `half` silently got the tiny 240x135 frame (a real accuracy loss).
     private string normalizeFrameScale(string frame)
@@ -3418,7 +3633,7 @@ version (Windows)
         auto s = strip(toLower(frame));
         if (s != "full" && s != "half" && s != "quarter" && s != "tiny" &&
             s != "diff")
-            s = "quarter";
+            s = "half";
         return s;
     }
 
@@ -3475,6 +3690,35 @@ version (Windows)
         catch (Exception) return argsJson;
     }
 
+    private string nestedCallArgs(string argsJson, string mode)
+    {
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return argsJson;
+        if (parsed.type != JSONType.object) return argsJson;
+        parsed["input_mode"] = mode;
+        parsed["screenshot"] = false;
+        return parsed.toString();
+    }
+
+    private bool computerArgsHaveInput(string argsJson)
+    {
+        JSONValue parsed;
+        try parsed = parseJSON(argsJson);
+        catch (Exception) return false;
+        if (parsed.type != JSONType.object) return false;
+        if (auto batch = "steps" in parsed.object)
+            if (batch.type == JSONType.array)
+            {
+                foreach (step; batch.array)
+                    if (computerArgsHaveInput(step.toString())) return true;
+                return false;
+            }
+        const action = jsonString(parsed, "action");
+        return ["click", "double_click", "right_click", "drag", "type", "key", "key_down",
+            "key_up", "focus", "mouse_move", "scroll", "macro", "loop"].canFind(action);
+    }
+
     private ComputerUseResult runSubAgent(JSONValue value, string workspace)
     {
         const task = jsonString(value, "task");
@@ -3492,13 +3736,23 @@ version (Windows)
         // pixel readings are scaled back up before we execute (see frameFactor).
         string frameScale = normalizeFrameScale(jsonString(value, "frame"));
         const frameFactor = frameFactorOf(frameScale);
-        // `model` overrides the loop model for this call (e.g. the faster vision
-        // variant) without restarting the app. The default loop model is the
-        // fast, cheap vision model (measured ~40% faster per round than
-        // deepseek-v4.1-flash on the same task); the app's own model is only
-        // used if a call explicitly asks for it.
         string loopModel = jsonString(value, "model");
-        if (loopModel.length == 0) loopModel = computerUseDefaultLoopModel;
+        if (loopModel.length == 0) loopModel = computerUseProviderModel;
+        auto previousTarget = computerUseNestedTarget;
+        scope (exit) computerUseNestedTarget = previousTarget;
+        string targetWhy;
+        auto requestedTarget = jsonString(value, "window");
+        if (!requestedTarget.length) requestedTarget = jsonString(value, "title");
+        if (requestedTarget.length)
+        {
+            computerUseNestedTarget = resolveInputTarget(requestedTarget, targetWhy);
+            if (computerUseNestedTarget is null) return failedResult("Error: " ~ targetWhy);
+        }
+        else if (targetUsable(computerUseFocusTarget)) computerUseNestedTarget = computerUseFocusTarget;
+        if (computerUseNestedTarget !is null && !virtualPointerActive &&
+            ensureInputTarget(windowTitleOf(computerUseNestedTarget)) is null)
+            return failedResult("Error: nested loop could not focus its target window.");
+        const loopMode = virtualPointerActive ? "virtual" : "native";
         // `reasoning`: "default" (thought on) is slower but better at spatial
         // judgements; "none" omits hidden thinking for the fastest reactions.
         // Default is "none" for the ~6 s-per-reaction playtest target; pass
@@ -3524,34 +3778,22 @@ version (Windows)
             jsonQuote(toolDefs[0].name) ~ `,"description":` ~
             jsonQuote(toolDefs[0].description) ~ `,"parameters":` ~
             toolDefs[0].parametersJson ~ `}}`;
-        string system = "You are a fast computer-use operator driving the local " ~
-            "desktop for a short burst. Each step, call the `computer` tool to " ~
-            "act. A screenshot of the current screen is attached to every " ~
-            "message; read positions off it directly (in that image's own pixel " ~
-            "space - the tool scales them) and do NOT spend a step calling " ~
-            "`screen` for the whole screen. Do call `screen` with a small " ~
-            "`region` when you must read fine detail (region crops come back at " ~
-            "full resolution). After each action, look at the newly attached frame before " ~
-            "deciding the next one, and never repeat the same click twice. " ~
-            "Always LOCATE the target visually in the current frame - never reuse " ~
-            "a coordinate from notes or memory, because the window may have moved " ~
-            "or changed size. If an action was meant to change the screen and the " ~
-            "next frame shows no change, that action missed: find the control " ~
-            "visually and click a different point, do not click the same spot " ~
-            "again. If the current frame ALREADY shows the goal state, stop and " ~
-            "answer immediately without clicking. If a menu is open because the " ~
-            "app lost focus (e.g. a game showing RESUME), click RESUME first. " ~
-            "Keep actions " ~
-            "small and reversible, and plan the WHOLE burst up front: put every " ~
-            "action you can foresee into ONE `steps` batch (e.g. press win, type " ~
-            "'notepad', press enter, wait, then type the text) - one round per " ~
-            "keystroke is far too slow. Unless the goal is already achieved, " ~
-            "EVERY step must contain at least one input action (click, " ~
-            "double_click, right_click, drag, type, key or scroll); never end a " ~
-            "step having only inspected the screen, and do not burn a step on a " ~
-            "`screen` region read when you can already act on what you see. When " ~
-            "the goal is reached or you are stuck, reply with a short plain-text " ~
-            "summary and no tool call.";
+        string system = "You operate the desktop using the computer tool. Inspect the current " ~
+            "screenshot before each decision. Read coordinates in the main image's pixel space; " ~
+            "the tool scales them. Native detail crops report desktop origins: add their origin, " ~
+            "then divide by the main frame scale for subsequent actions. You may inspect a crop " ~
+            "without sending input. Batch only actions whose controls and targets are already " ~
+            "established. Verify the visible instruction or control actually advanced before " ~
+            "claiming progress; motion, queued input and pixel changes are not goal verification. " ~
+            "After two ineffective attempts, inspect a crop or change approach; report a blocker " ~
+            "rather than repeat guessed actions. Camera dragging may move the view opposite to " ~
+            "the drag: calibrate with one small action and a stationary landmark. For edge panning " ~
+            "use mouse_move followed by wait with duration_ms; wait_for_change can end on animation. " ~
+            "Stop and report the exact visible state when the goal is achieved or you are stuck.";
+        if (computerUseNestedTarget !is null)
+            system ~= " This loop is bound to window \"" ~ windowTitleOf(computerUseNestedTarget) ~
+                "\". Remain inside it; desktop-switching shortcuts and other windows are refused.";
+        system ~= " Input mode is " ~ loopMode ~ "; nested calls inherit this mode.";
         // The loop has no memory of its own: carry operator-provided context into
         // the prompt. One generic file, <workspace>/computer-use-notes.md, holds
         // whatever the operator wants remembered (coordinates, hotkeys, screen
@@ -3592,7 +3834,8 @@ version (Windows)
         int previousWidth;
         bool havePreviousFrame;
         bool previousRoundHadAction;
-        bool previousStepOnlyInspected;
+        bool lastRoundFailed;
+        string pendingEvidence;
         // Latency accounting for the "how many seconds per reaction" goal.
         // Awareness = settle + capture + model round; response = running the
         // actions the model returned. Measured, never guessed.
@@ -3614,12 +3857,16 @@ version (Windows)
             }
             const roundStarted = MonoTime.currTime;
             string screenPart;
+            if (computerUseNestedTarget !is null && !virtualPointerActive &&
+                ensureInputTarget(windowTitleOf(computerUseNestedTarget)) is null)
+                return failedResult("Error: nested loop lost its target window. No further input was sent.");
             // Let the UI settle so this frame reflects the previous action
             // rather than the state before it.
             Thread.sleep(msecs(300));
             const captureStarted = MonoTime.currTime;
             auto shot = captureScreen();
             captureTotalMs += (MonoTime.currTime - captureStarted).total!"msecs";
+            if (!shot.ok) return failedResult("Error: nested loop has no current screen. " ~ shot.error);
             // Did the previous round's action change anything? A game UI that
             // swallows a click leaves the frame byte-identical; tell the model,
             // which otherwise re-clicks the same dead spot forever.
@@ -3641,16 +3888,6 @@ version (Windows)
                     log_.put("note: injected identical-frame correction\n");
                 }
                 havePreviousFrame = true;
-            }
-            // Break the "analysis paralysis" pattern: if the last step only
-            // looked at the screen and issued no input action, push it to act.
-            if (previousStepOnlyInspected)
-            {
-                correctionPart ~= textPart("Note: your previous step only " ~
-                    "inspected the screen and changed nothing. Issue the next " ~
-                    "input action now (click/drag/type/key) instead of reading " ~
-                    "again.");
-                log_.put("note: injected act-now nudge\n");
             }
             if (shot.ok)
             {
@@ -3705,7 +3942,7 @@ version (Windows)
                             captions ~= "Changed area: origin " ~ to!string(x) ~
                                 "," ~ to!string(y) ~ ", size " ~ to!string(w) ~
                                 "x" ~ to!string(h) ~ " (coordinates are in the " ~
-                                "full 960x540 space):";
+                                "full native desktop space):";
                             jpegs ~= encodeScreenshotJpeg(w, h,
                                 cropRgb(shot.width, shot.rgb, x, y, w, h));
                         }
@@ -3729,7 +3966,8 @@ version (Windows)
                     : "Current screen: this image is " ~
                       to!string(frameWidth) ~ "x" ~ to!string(frameHeight) ~
                       " pixels (a 1/" ~ to!string(frameFactor) ~ " downscale of " ~
-                      "the 960x540 click space). Give click x,y in THIS image's " ~
+                      to!string(shot.width) ~ "x" ~ to!string(shot.height) ~
+                      " native desktop). Give click x,y in THIS image's " ~
                       "pixels; the tool multiplies them by " ~
                       to!string(frameFactor) ~ " for you:";
                 screenPart = `,{"role":"user","content":[{"type":"text","text":` ~
@@ -3742,11 +3980,12 @@ version (Windows)
                 previousWidth = shot.width;
             }
             const body = `{"model":` ~ jsonQuote(loopModel) ~
-                `,"messages":` ~ messages.data ~ correctionPart ~ screenPart ~
+                `,"messages":` ~ messages.data ~ correctionPart ~ screenPart ~ pendingEvidence ~
                 `],"tools":[` ~
                 toolJson ~ `],"tool_choice":"auto",` ~
                 (reasoningArg == "none" ? `"reasoning_effort":"none",` : ``) ~
                 `"stream":false}`;
+            pendingEvidence = "";
             const modelStarted = MonoTime.currTime;
             string error;
             const response = httpPostJson(http, endpoint,
@@ -3788,6 +4027,7 @@ version (Windows)
             }
             const actionStarted = MonoTime.currTime;
             bool roundHadAction;
+            lastRoundFailed = false;
             auto toolCallsJson = appender!string();
             auto toolResultsJson = appender!string();
             ChatImageAttachment[] resultShots;
@@ -3825,8 +4065,8 @@ version (Windows)
                         // to every message), but a `region` crop is the way to get
                         // native-resolution detail, so let those through.
                         if (computerArgsHaveRegion(argsJson))
-                            result = experimentalComputerUseExecute(argsJson,
-                                workspace);
+                            result = experimentalComputerUseExecute(
+                                nestedCallArgs(scaleComputerArgs(argsJson, frameFactor), loopMode), workspace);
                         else
                             result = succeededResult("Skipped: a current " ~
                                 "screenshot is already attached to this " ~
@@ -3845,7 +4085,7 @@ version (Windows)
                         const coordH = shot.ok ? shot.height / frameFactor : 0;
                         if (!computerArgsWithinFrame(argsJson, coordW, coordH))
                         {
-                            result = succeededResult("Rejected: this call's " ~
+                            result = failedResult("Rejected: this call's " ~
                                 "coordinates fall outside the " ~
                                 to!string(coordW) ~ "x" ~ to!string(coordH) ~
                                 " frame you were shown. Re-read the attached " ~
@@ -3860,13 +4100,13 @@ version (Windows)
                             const filtered = stripNestedScreens(argsJson,
                                 stripped);
                             result = experimentalComputerUseExecute(
-                                scaleComputerArgs(filtered, frameFactor), workspace);
+                                nestedCallArgs(scaleComputerArgs(filtered, frameFactor), loopMode), workspace);
                             if (stripped > 0)
                                 result.output = "Skipped " ~
                                     to!string(stripped) ~ " redundant " ~
                                     "full-screen capture(s) in the batch. " ~
                                     result.output;
-                            roundHadAction = true;
+                            roundHadAction |= !result.failed && computerArgsHaveInput(filtered);
                         }
                     }
                 }
@@ -3877,7 +4117,10 @@ version (Windows)
                     result.output ~ " [round " ~
                     to!string((MonoTime.currTime - roundStarted).total!"msecs") ~
                     " ms]\n");
-                foreach (image; result.images) resultShots ~= image;
+                lastRoundFailed |= result.failed;
+                foreach (image; result.images)
+                    if (computerArgsHaveRegion(argsJson) || image.name == "screen-target.jpg" ||
+                        image.name == "screen-instructions.jpg") resultShots ~= image;
                 if (toolResultsJson.data.length > 0) toolResultsJson.put(",");
                 toolResultsJson.put(`{"role":"tool","tool_call_id":` ~
                     jsonQuote(id) ~ `,"content":` ~ jsonQuote(result.output) ~
@@ -3898,11 +4141,14 @@ version (Windows)
                 messages = rebuilt;
                 recentSegments = keep.dup;
             }
-            // Do NOT forward the screenshots nested calls return: every step
-            // already carries a fresh frame, and forwarding these made full
-            // frames accumulate in the history, slowing each later round.
+            // Detail evidence is ephemeral: only the next request receives it.
+            // Routine full frames are already supplied by the next live capture.
+            const firstEvidence = resultShots.length > 2 ? resultShots.length - 2 : 0;
+            foreach (image; resultShots[firstEvidence .. $])
+                pendingEvidence ~= attachmentPart("Requested detail/recovery evidence from the preceding " ~
+                    "tool result. Use its reported desktop origin; subsequent actions still use the " ~
+                    "main frame's pixels (native coordinates divided by " ~ to!string(frameFactor) ~ ").", image);
             previousRoundHadAction = roundHadAction;
-            previousStepOnlyInspected = !roundHadAction;
             actionTotalMs += (MonoTime.currTime - actionStarted).total!"msecs";
             roundTotalMs += (MonoTime.currTime - roundStarted).total!"msecs";
         }
@@ -3914,12 +4160,19 @@ version (Windows)
         const avgAction = rounds > 0 ? actionTotalMs / rounds : 0;
         const avgRound = rounds > 0 ? roundTotalMs / rounds : 0;
         ComputerUseResult out_;
-        out_.output = "Subagent (" ~ to!string(steps) ~ " step(s), avg " ~
+        out_.failed = answer.length == 0 || lastRoundFailed || computerUseAbortActive();
+        auto finalShot = screenshotResult("Current screen after nested loop");
+        if (finalShot.failed) out_.failed = true;
+        out_.images = finalShot.images;
+        out_.output = "Subagent model=" ~ loopModel ~ ", input_mode=" ~ loopMode ~
+            ", target=" ~ (computerUseNestedTarget !is null ? windowTitleOf(computerUseNestedTarget) : "desktop") ~
+            " (" ~ to!string(steps) ~ " step(s), avg " ~
             to!string(avgRound) ~ " ms/round = awareness " ~
             to!string(avgAwareness) ~ " ms (capture " ~ to!string(avgCapture) ~
             " + model " ~ to!string(avgModel) ~ ") + response " ~
             to!string(avgAction) ~ " ms): " ~
-            (answer.length ? answer : "(no final answer)") ~ "\n" ~ log_.data;
+            (answer.length ? answer : "Stopped at loop limit without verified completion.") ~ "\n" ~ log_.data;
+        out_.output ~= finalShot.output;
         return out_;
     }
 
@@ -3936,6 +4189,7 @@ version (Windows)
 
         auto builder = appender!string();
         ComputerUseResult lastStep;
+        ChatImageAttachment[] detailShots;
         bool failed;
         foreach (index, step; steps)
         {
@@ -3943,6 +4197,7 @@ version (Windows)
             if (step.type != JSONType.object)
             {
                 builder.put(label ~ ": Error: each step must be an object.\n");
+                lastStep = ComputerUseResult.init;
                 failed = true;
                 break;
             }
@@ -3951,6 +4206,7 @@ version (Windows)
             {
                 builder.put(label ~ ": stopped by the kill switch (" ~
                     computerUseKillSwitchChord ~ ").\n");
+                lastStep = ComputerUseResult.init;
                 failed = true;
                 break;
             }
@@ -3960,8 +4216,14 @@ version (Windows)
             if (builder.data.length > 0 && builder.data[$ - 1] != '\n')
                 builder.put("\n");
             if (one.images.length > 0) lastStep = one;
+            if (action == "screen" && computerArgsHaveRegion(step.toString()))
+            {
+                detailShots ~= one.images;
+                if (detailShots.length > 2) detailShots = detailShots[$ - 2 .. $];
+            }
             if (one.failed)
             {
+                lastStep = one;
                 failed = true;
                 break;
             }
@@ -3971,6 +4233,11 @@ version (Windows)
         ComputerUseResult result;
         result.output = builder.data;
         result.failed = failed;
+        if (failed && lastStep.images.length > 0)
+        {
+            result.images = lastStep.images;
+            return result;
+        }
         if (screenshot && !computerUseAbortActive())
         {
             auto shot = screenshotResult("Screen after the batch");
@@ -3984,7 +4251,7 @@ version (Windows)
             result.images = shot.images;
         }
         else
-            result.images = lastStep.images;
+            result.images = !failed && detailShots.length ? detailShots : lastStep.images;
         return result;
     }
 
@@ -4002,6 +4269,7 @@ version (Windows)
         // trip (and the next call's frame was one action stale), which read as
         // "late awareness" of the desktop.
         auto latest = before;
+        const observation = observeDesktop(before.width, before.height, before.rgb);
         bool changed;
         while (MonoTime.currTime < deadline)
         {
@@ -4012,8 +4280,7 @@ version (Windows)
             auto now = captureScreen();
             if (!now.ok) return failedResult(now.error);
             latest = now;
-            if (frameChangeCount(before.width, before.height, now.rgb,
-                before.rgb) >= frameChangeThreshold)
+            if (desktopVisiblyChanged(observation, observeDesktop(now.width, now.height, now.rgb)))
             {
                 changed = true;
                 break;
@@ -4023,8 +4290,8 @@ version (Windows)
             latest.rgb);
         ComputerUseResult result;
         result.output = changed
-            ? "Screen pixels changed; this does not verify the intended action succeeded. Inspect this current frame."
-            : "Screen did not change within " ~ to!string(timeoutMs) ~
+            ? "Visible screen change detected; this does not verify the intended action succeeded. Inspect this current frame."
+            : "No substantial screen change within " ~ to!string(timeoutMs) ~
               " ms; this is the current screen.";
         result.images = [attachmentImageForData("image/jpeg", "screen.jpg",
             jpeg)];

@@ -2,16 +2,25 @@ module auroraopencode.imagehistory;
 
 import auroraopencode.core : ChatMessage, ChatImageAttachment, ChatSession;
 
+public bool isRecoveryScreenshot(const ref ChatMessage message,
+    const ref ChatImageAttachment image)
+{
+    return message.internal && image.mimeType == "image/jpeg" &&
+        (image.name == "screen-target.jpg" || image.name == "screen-instructions.jpg");
+}
+
 /// Only internally generated screen frames expire independently of user images.
 public bool isScreenshot(const ref ChatMessage message,
     const ref ChatImageAttachment image)
 {
-    return message.internal && (image.name == "screen.png" ||
+    return isRecoveryScreenshot(message, image) ||
+        message.internal && (image.name == "screen.png" ||
         image.name == "screen.jpg") &&
         (image.mimeType == "image/png" || image.mimeType == "image/jpeg");
 }
 
-/// One current screen per request; user attachments retain their own window.
+/// One current screen or its focused recovery pair per request. User attachments
+/// retain their own window; previous desktop evidence never accumulates.
 /// Empty metadata chips never occupy a place in that window.
 public ChatImageAttachment[][] requestHistoryImages(const ref ChatSession session,
     const(size_t)[] path, size_t start, size_t userMessageLimit)
@@ -19,6 +28,8 @@ public ChatImageAttachment[][] requestHistoryImages(const ref ChatSession sessio
     ChatImageAttachment[][] result;
     result.length = path.length;
     size_t screens, userMessages;
+    size_t screenSlot = size_t.max;
+    bool recoveryPair;
     foreach_reverse (slot; start .. path.length)
     {
         const message = session.messages[path[slot]];
@@ -28,7 +39,14 @@ public ChatImageAttachment[][] requestHistoryImages(const ref ChatSession sessio
             if (image.base64Data.length == 0) continue;
             if (isScreenshot(message, image))
             {
-                if (screens++ >= 1) continue;
+                if (screenSlot == size_t.max)
+                {
+                    screenSlot = slot;
+                    recoveryPair = isRecoveryScreenshot(message, image);
+                }
+                if (slot != screenSlot ||
+                    (recoveryPair && !isRecoveryScreenshot(message, image))) continue;
+                if (screens++ >= (recoveryPair ? 2 : 1)) continue;
             }
             else
             {

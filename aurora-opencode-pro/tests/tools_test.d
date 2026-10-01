@@ -1055,8 +1055,8 @@ int main()
             "frame=quarter must use factor 4");
         assert(computerUseFrameFactorForTesting("full") == 1,
             "frame=full must use factor 1");
-        assert(computerUseFrameFactorForTesting("nonsense") == 4,
-            "an unknown frame must fall back to quarter");
+        assert(computerUseFrameFactorForTesting("nonsense") == 2,
+            "an unknown frame must fall back to half");
     }
     // A full-screen `screen` nested in a `steps` batch is redundant (a frame is
     // attached every step); it must be stripped, while a region crop stays.

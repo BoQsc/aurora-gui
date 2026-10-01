@@ -33,8 +33,10 @@ import auroraopencode.computeruse :
     experimentalComputerUseEnabled, experimentalImageHistoryLimit,
     setComputerUseProvider, setComputerUseSetting, setComputerUseSession,
     startComputerUseKillSwitch,
-    stopComputerUseKillSwitch, clearComputerUseAbort, computerUseAbortActive,
-    setComputerUseVirtualPointer;
+    stopComputerUseKillSwitch, computerUseAbortActive,
+    setComputerUseVirtualPointer, beginComputerUseUserRequest,
+    setComputerUseExplanationOnly;
+import auroraopencode.requestintent : explanationOnlyRequest;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -10468,9 +10470,18 @@ public final class OpenCodeRoot : VBox
         return payload.toString();
     }
 
-    /// Machine-readable task state supplied on every request.  This is the
-    /// durable equivalent of Codex's thread goal: compaction and restarts cannot
-    /// silently erase the objective or turn an unfinished checklist into "done".
+    /// Internal checkpoints cannot supersede the human's latest request.
+    private static string latestActualUserRequest(const ref ChatSession session)
+    {
+        if (session.queuedGuidance.length > 0) return session.queuedGuidance[$ - 1];
+        foreach_reverse (index; activeMessagePath(session))
+            if (session.messages[index].role == "user" && !session.messages[index].internal)
+                return session.messages[index].content;
+        return "";
+    }
+
+    /// Machine-readable task state supplied on every request. Compaction and
+    /// restarts retain the objective without overriding the latest user intent.
     private static string durableTaskPrompt(const ref ChatSession session,
         bool nestedEnabled)
     {
@@ -10480,13 +10491,7 @@ public final class OpenCodeRoot : VBox
         prompt.put("\n\n# Durable Task State\n");
         prompt.put("Objective: " ~ (session.objective.length > 0
             ? session.objective : "(not set)") ~ "\n");
-        string currentRequest;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal)
-                currentRequest = message.content;
-        }
+        const currentRequest = latestActualUserRequest(session);
         if (currentRequest.length > 0 && currentRequest != session.objective)
             prompt.put("Current request: " ~ currentRequest ~ "\n");
         prompt.put("Status: " ~ (session.taskStatus.length > 0
@@ -10511,9 +10516,14 @@ public final class OpenCodeRoot : VBox
                     prompt.put("  - [" ~ step.status ~ "] " ~ step.text ~ "\n");
             }
         }
-        prompt.put("Treat this state as authoritative. Update the plan as work " ~
-            "changes. Do not claim completion while verification is required " ~
-            "or a checklist item remains pending/in_progress.\n");
+        if (explanationOnlyRequest(currentRequest))
+            prompt.put("The latest request asks for an explanation. Answer it from the " ~
+                "evidence; do not resume desktop actions or reconcile the older checklist. " ~
+                "The unfinished objective remains recorded for a later explicit resume.\n");
+        else
+            prompt.put("Treat this state as authoritative. Update the plan as work " ~
+                "changes. Do not claim completion while verification is required " ~
+                "or a checklist item remains pending/in_progress.\n");
         return prompt.data;
     }
 
@@ -12410,7 +12420,8 @@ public final class OpenCodeRoot : VBox
             startChatRequest(sessionIndex, false);
             return;
         }
-        if (planNeedsCompletionReview(*session))
+        if (!explanationOnlyRequest(latestActualUserRequest(*session)) &&
+            planNeedsCompletionReview(*session))
         {
             ChatMessage guidance;
             guidance.role = "user";
@@ -13195,6 +13206,7 @@ public final class OpenCodeRoot : VBox
         // The UI may clear/replace its live arrays as soon as the user cancels
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
+        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)));
         auto client = _client;
         auto cancellation = _toolCancellation;
         auto worker = new Thread({
@@ -13846,9 +13858,6 @@ public final class OpenCodeRoot : VBox
             _autoContinueStreak.remove(_current);
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
-        // A real user instruction is also the signal to lift a kill-switch stop:
-        // the sticky abort latch refuses every computer call until here.
-        clearComputerUseAbort();
         if (startSideQuestion(composerText)) return;
         if (_stopPending)
         {
@@ -13874,6 +13883,8 @@ public final class OpenCodeRoot : VBox
                 experimentalAttachmentsEnabled();
             if ((guidance.length > 0 || hasAttachments) && _current >= 0)
             {
+                beginComputerUseUserRequest(guidance.length > 0 ? guidance :
+                    "Please review the attached content.");
                 auto session = &_sessions[_current];
                 session.queuedGuidance ~= guidance ~
                     attachmentContextBlock(_pendingAttachments);
@@ -13899,6 +13910,9 @@ public final class OpenCodeRoot : VBox
         const attachments = _pendingAttachments.dup;
         const baseText = text.length > 0 ? text
             : "Please review the attached content.";
+        // Only an accepted user message can reset desktop progress. Asking why
+        // something failed leaves desktop input and any kill-switch stop paused.
+        beginComputerUseUserRequest(baseText);
         const visibleAttachmentSummary = attachmentVisibleSummary(attachments);
         const attachmentSuffix = visibleAttachmentSummary.length == 0 ? "" :
             "\n\n" ~ visibleAttachmentSummary;
@@ -14326,8 +14340,7 @@ public final class OpenCodeRoot : VBox
         _pendingProgressGuidance = "";
         _toolRounds = 0;
         _finalAnswerRequested = false;
-        // A queued user prompt is a real instruction too: lift a kill-switch stop.
-        clearComputerUseAbort();
+        beginComputerUseUserRequest(text);
         updateStatus("Starting queued follow-up…");
         startChatRequest(sessionIndex);
     }
@@ -15746,6 +15759,7 @@ public final class OpenCodeRoot : VBox
         // conversation route id so its frames hit the gateway's cache instead
         // of a cold, slow route on every step.
         setComputerUseSession(sessionRoutingKey(*session));
+        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)));
         // Never send an id the endpoint does not serve: a conversation saved
         // under another provider carries its own model, which may be missing
         // from the current catalog (upstream "Model is unavailable").
@@ -16022,6 +16036,12 @@ public final class OpenCodeRoot : VBox
         }
         auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0) return;
+        if (explanationOnlyRequest(latestActualUserRequest(*session)))
+        {
+            _autoContinuePendingSession = -1;
+            logAutoContinue("skip: latest request asks for an explanation");
+            return;
+        }
         if (session.queuedFollowUps.length > 0 ||
             session.queuedGuidance.length > 0)
         {
@@ -16144,6 +16164,9 @@ public final class OpenCodeRoot : VBox
                 "the previous response at its output limit. Continue exactly " ~
                 "from the point where it stopped. Do not repeat or summarize " ~
                 "text already present, and preserve the current branch.";
+        else if (explanationOnlyRequest(latestActualUserRequest(*session)))
+            continuation.content = "Continue answering the user's explanation request " ~
+                "from the recorded evidence. Do not resume the older desktop task.";
         else if (message.finishReason == "cancelled" ||
             session.taskStatus == "active" ||
             session.taskStatus == "blocked" ||

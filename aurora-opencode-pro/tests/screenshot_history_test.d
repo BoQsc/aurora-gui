@@ -97,6 +97,44 @@ int main(string[] args)
     assert(suffix[$ - 1].length == 1 && suffix[0].length == 0);
     writeln("4,500 frames: one on wire, two retained; user images preserved");
 
+    // Recovery evidence is a current pair, never another growing image history.
+    foreach (round; 0 .. 1000)
+    {
+        ChatMessage recovery;
+        recovery.role = "user";
+        recovery.internal = true;
+        recovery.images = [
+            ChatImageAttachment("image/jpeg", "target-" ~ to!string(round), "screen-target.jpg"),
+            ChatImageAttachment("image/jpeg", "instructions-" ~ to!string(round), "screen-instructions.jpg")];
+        session.messages ~= recovery;
+        path ~= session.messages.length - 1;
+        pruneHistoryImages(session, path, 2);
+        auto wire = requestHistoryImages(session, path, 0, 2);
+        size_t generated;
+        foreach (images; wire[1 .. $]) generated += images.length;
+        assert(generated == 2 && wire[$ - 1].length == 2,
+            "Recovery evidence accumulated or lost part of the current pair");
+        assert(wire[0].length == 1, "Recovery evidence displaced the user attachment");
+    }
+    storedScreens = 0;
+    foreach (message; session.messages)
+        if (message.internal)
+            foreach (image; message.images)
+                if (image.base64Data.length) ++storedScreens;
+    assert(storedScreens == 2, "Recovery images escaped whole-graph pruning");
+    // A subsequent full frame replaces both crops in the request.
+    ChatMessage currentScreen;
+    currentScreen.role = "user";
+    currentScreen.internal = true;
+    currentScreen.images = [ChatImageAttachment("image/jpeg", "new-full", "screen.jpg")];
+    session.messages ~= currentScreen;
+    path ~= session.messages.length - 1;
+    auto newWire = requestHistoryImages(session, path, 0, 2);
+    size_t newGenerated;
+    foreach (images; newWire[1 .. $]) newGenerated += images.length;
+    assert(newGenerated == 1 && newWire[$ - 1][0].base64Data == "new-full");
+    writeln("1,000 recovery pairs: latest pair only, two retained; a new full frame replaces both");
+
     setOpencodeStateDirectoryForTesting(directory);
     scope (exit) setOpencodeStateDirectoryForTesting("");
     Settings settings;
@@ -189,5 +227,24 @@ int main(string[] args)
     failedRequest = root.requestMessagesForTesting();
     assert(failedRequest[$ - 1].images.length == 1);
     writeln("Failed-batch screenshot reaches the next request and survives save/reload");
+    root.pauseToolContinuationForTesting();
+    root.appendToolRequestTurnForTesting("", "call_recovery", "computer", "{}");
+    auto recoveryImages = [
+        ChatImageAttachment("image/jpeg", screen.base64Data, "screen-target.jpg"),
+        ChatImageAttachment("image/jpeg", screen.base64Data, "screen-instructions.jpg")];
+    root.injectToolResultForTesting("computer", "Withheld click. Focused target and instruction evidence.",
+        true, "{}", 0, 0, "", recoveryImages);
+    auto recoveryRequest = root.requestMessagesForTesting();
+    assert(recoveryRequest[$ - 1].images.length == 2);
+    assert(recoveryRequest[$ - 1].images[0].name == "screen-target.jpg" &&
+        recoveryRequest[$ - 1].images[1].name == "screen-instructions.jpg");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    recoveryRequest = root.requestMessagesForTesting();
+    assert(recoveryRequest[$ - 1].images.length == 2 &&
+        recoveryRequest[$ - 1].images[0].base64Data == screen.base64Data &&
+        recoveryRequest[$ - 1].images[1].base64Data == screen.base64Data,
+        "Recovery pair did not survive save/reload");
+    writeln("Failed-action recovery pair reaches the next request and survives save/reload");
     return 0;
 }

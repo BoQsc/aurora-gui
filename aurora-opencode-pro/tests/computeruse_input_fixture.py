@@ -7,9 +7,15 @@ from pathlib import Path
 
 directory = Path(sys.argv[1])
 root = tk.Tk()
+# Cover unrelated desktop animations during visual-progress assertions.
+root.overrideredirect(True)
+root.geometry(f'{root.winfo_screenwidth()}x{root.winfo_screenheight()}+0+0')
+root.configure(background='#202020')
+root.attributes('-topmost', True)
+root.update()
 windows = {}
 for index, name in enumerate(('A', 'B')):
-    window = root if index == 0 else tk.Toplevel(root)
+    window = tk.Toplevel(root)
     window.title('Aurora Input Fixture ' + name)
     window.geometry(f'300x150+{40 + index * 350}+160')
     window.attributes('-topmost', True)
@@ -40,5 +46,8 @@ def update():
     pending.write_text(json.dumps(data), encoding='utf-8')
     pending.replace(directory / 'state.json')
     root.after(40, update)
+root.update()
+for state in windows.values():
+    state['window'].lift()
 root.after(100, update)
 root.mainloop()

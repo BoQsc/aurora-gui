@@ -1,0 +1,51 @@
+Aurora computer-use stalled interaction repair — 2026-10-01
+
+Observed chat: Attempting Coh1 tutorial with computer use
+Thread: t-m639264387653701233-0
+The tutorial remained on an explanation with a visible Continue button. The
+model attempted 17 soldier clicks, confused a squad marker with the cursor,
+and invented a 1920x1206 resolution. Recovered JPEGs are 1920x1080. The human
+pressed the kill switch after progress had already stalled.
+
+Runtime changes:
+- Nearby click retries are tracked per target and delivery mode, rather than
+  by identical JSON arguments. Three clicks with little visible change cause
+  the next click to be withheld with current JPEG evidence.
+- Small animations, corner hover effects, and the taskbar clock are tolerated.
+  A crop or different approach permits recovery; full screenshots alone do not.
+- Batches and screenshot:false calls use the same guard. Existing successful
+  input acknowledgments remain explicitly unverified.
+- Explanation-only requests preserve unfinished task state, skip plan
+  reconciliation and automatic continuation, and block desktop input. They
+  preserve a kill-switch stop. Explicit resume permits work again.
+
+Validation:
+- Production input exercised through 27 calls to isolated fixture windows:
+  actual text/button events, target checks, jitter refusal, current failure
+  evidence, batch protection, full-frame protection and crop recovery passed.
+- Headless application test: explanation settles without another model request,
+  retains pending checklist entries, preserves kill switch and blocks both
+  single input and batch input; explicit resume succeeds.
+- Pure progress/intent tests cover animation/noise, button hover, clock, dialogue
+  changes, target/mode changes, recovery and combined diagnosis/action requests.
+- Replay of actual before/after CoH frames with production comparison code
+  withheld the fifth click: the first click removed a large explanatory overlay,
+  then the next three showed no meaningful visible change. Subsequent retries
+  would require a crop or a different approach. Replay images were temporary.
+- Long-chat regression passed: 4,500 generated frames stay bounded, 1.4 MB
+  of text compacts to 191,684 bytes, subsequent checkpoint rollovers retain
+  the objective/tool pairs, and failed-action evidence survives save/reload.
+
+Limits:
+Visual progress detection is a heuristic, not proof of application success or
+game completion. Small legitimate changes can require a crop; large unrelated
+animations can look like progress. Explanation intent matching is deliberately
+limited to explicit English diagnostic requests. Actual CoH gameplay has not
+been resumed or certified by these tests.
+
+Deployment:
+Release build --config=newbuild --build=release succeeded. The separate release
+executable was installed after graceful shutdown of PID 3392. Installed hash
+matches the release output and the executable is newer than edited source.
+Rebuilt Aurora is running as PID 1572; startup log confirms UI built at
+2026-10-01 11:36:36. Existing settings and .exe.bak bytes were preserved.
