@@ -988,6 +988,11 @@ public struct Settings
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
     bool hideHunkHeaders = true;
+    // Split a tool round into runs of the same kind of action, so each run
+    // gets its own header ("Explored a file", then "Edited a file") instead of
+    // one header for the whole round. On by default; set false to keep the
+    // single per-round header.
+    bool groupSameAction = true;
     // List conversations by most recent activity (message or turn) instead of
     // creation order. On by default; set false to keep the original
     // newest-created-first listing.
@@ -1296,6 +1301,9 @@ public Settings loadSettings()
                 if (auto found = "hideHunkHeaders" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.hideHunkHeaders = found.type == JSONType.true_;
+                if (auto found = "groupSameAction" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.groupSameAction = found.type == JSONType.true_;
                 if (auto found = "sortSessionsByRecency" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.sortSessionsByRecency =
@@ -1583,6 +1591,7 @@ public void saveSettings(const ref Settings settings)
     root["showWorkedFor"] = settings.showWorkedFor;
     root["quickTitle"] = settings.quickTitle;
     root["hideHunkHeaders"] = settings.hideHunkHeaders;
+    root["groupSameAction"] = settings.groupSameAction;
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;

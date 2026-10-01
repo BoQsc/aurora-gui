@@ -320,8 +320,12 @@ private OpenCodeToolDef rebuildToolDefinition()
         "this process to exit, runs `dub build`, and relaunches the app, which " ~
         "then continues this conversation. The running executable is never " ~
         "overwritten in place, so this is the only safe way to apply source " ~
-        "changes to the app. It needs no user approval or confirmation; use it " ~
-        "whenever the app's own source is ready to build.",
+        "changes to the app. This tool runs `dub build` for you and is a " ~
+        "deploy: do not run `dub build` yourself and never kill or restart " ~
+        "the app. It needs no user approval or confirmation; use it " ~
+        "deliberately - not as a byproduct of answering a question, not " ~
+        "mid-discussion, not on half-applied code, not twice for one change - " ~
+        "and announce it when you do.",
         `{"type":"object","properties":{"reason":{"type":"string","description":"Short note on why a rebuild is needed; recorded in the conversation."}},"required":[]}`
     );
 }
@@ -4811,7 +4815,8 @@ private ToolExecution runRebuildTool(string arguments)
             "Rebuild was not started: a rebuild is already pending, or the " ~
             "running app is not built from its own source package.", true);
     return ToolExecution("rebuild",
-        "Rebuild and relaunch started. The app will persist this " ~
+        "Rebuild and relaunch started (this tool runs `dub build`; do not " ~
+        "build or restart the app yourself). The app will persist this " ~
         "conversation, close, run `dub build`, relaunch, and continue here. " ~
         "If the build fails to compile, the app relaunches the previous " ~
         "binary and reports the compiler errors in the resumed conversation " ~

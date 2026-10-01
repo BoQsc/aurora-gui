@@ -1212,8 +1212,8 @@ int main()
             "The standalone directive must carry the style section and vary");
     }
     writeln("Optional verbosity selector shapes the prompt safely");
-    assert(toolSteeringPrompt(false).length < 8_000,
-        "Steering prompt should stay concise; tool syntax belongs in schemas");
+    assert(toolSteeringPrompt(false).length < 9_000,
+        "Steering prompt should stay bounded; tool syntax belongs in schemas");
     // The app can edit its own source; the prompt must forbid the agent from
     // building or killing the process that hosts its session.
     assert(toolSteeringPrompt(false).indexOf(
@@ -1233,7 +1233,19 @@ int main()
         {
             bool hasRebuild;
             foreach (tool; tools)
-                if (tool.name == "rebuild") hasRebuild = true;
+                if (tool.name == "rebuild")
+                {
+                    hasRebuild = true;
+                    // The tool's own description must carry the guardrails too:
+                    // it is the one view every tool round includes, so the agent
+                    // still sees them after late context compaction.
+                    assert(tool.description.indexOf("do not run `dub build`") >= 0,
+                        "the rebuild tool description must forbid dub build: " ~
+                        tool.description);
+                    assert(tool.description.indexOf("never kill or restart") >= 0,
+                        "the rebuild tool description must forbid killing the app: " ~
+                        tool.description);
+                }
             assert(hasRebuild, "both toolsets must advertise the rebuild tool");
         }
         auto noHandler = executeTool(makeCall("rebuild", `{}`), dir);
@@ -1254,6 +1266,9 @@ int main()
         assert(requested.output.indexOf("reports the compiler errors") >= 0,
             "the tool must tell the agent a failed build is reported back: " ~
             requested.output);
+        assert(requested.output.indexOf("do not build or restart the app") >= 0,
+            "the rebuild result must remind the agent not to build or " ~
+            "restart the app itself: " ~ requested.output);
         // The app installs the handler on its UI thread but the tool runs on
         // its worker thread, so the global must be shared across threads
         // (module-level variables are thread-local by default in D). Calling it
@@ -1292,12 +1307,17 @@ int main()
         const withRebuild = buildSystemPrompt(true, ".", "auto");
         assert(withRebuild.indexOf("Rebuilding Aurora OpenCode") >= 0,
             "a registered rebuild module must appear in the prompt");
-        // The notice tells the agent the tool needs no approval and is meant to
-        // be used on demand; that guidance is why the section exists.
+        // The notice tells the agent the tool needs no approval, is deliberate
+        // (not an automatic save), and that the agent must neither run the
+        // build itself nor kill the app; that guidance is why the section exists.
         assert(withRebuild.indexOf("no user approval") >= 0,
             "the rebuild notice must state that no user approval is needed");
-        assert(withRebuild.indexOf("whenever a source change is ready") >= 0,
-            "the rebuild notice must say to use the tool when needed");
+        assert(withRebuild.indexOf("do not run `dub build`") >= 0,
+            "the rebuild notice must tell the agent not to run dub build itself");
+        assert(withRebuild.indexOf("never kill or restart the app") >= 0,
+            "the rebuild notice must tell the agent never to kill or restart the app");
+        assert(withRebuild.indexOf("`rebuild` does the compile") >= 0,
+            "the rebuild notice must state that the rebuild tool performs the compile");
         setSystemPromptModules(null);
         assert(buildSystemPrompt(true, ".", "auto").indexOf(
             "Rebuilding Aurora OpenCode") < 0,

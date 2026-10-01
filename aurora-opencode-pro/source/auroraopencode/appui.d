@@ -53,7 +53,7 @@ import auroraopencode.minichat : MiniChatHost, MiniChatLine, miniChatOneLine;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
-import std.array : appender;
+import std.array : appender, join;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
 import std.digest : toHexString;
@@ -1611,13 +1611,6 @@ private final class MessageBubble : Widget
         if (_failed)
             height += fontPixelSize(1) + 4;
         height += footerReserve();
-        // Reserve a slot for the hover Copy/Edit row so it always lands BELOW
-        // the message text. Without it a one-line message measured to just the
-        // text plus padding, `drawHoverActions` could not fit the row under the
-        // text and clamped it back up onto the same line. The row is hover-only
-        // but the space is always kept, so a hover never shifts the transcript.
-        if (hoverActionsEligible())
-            height += hoverActionReserve();
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
         // VBox layout sizes children from layoutHints, not from the intrinsic
@@ -2761,9 +2754,9 @@ private final class MessageBubble : Widget
         return fontPixelSize(1) + 4;
     }
 
-    /// Whether this bubble ever shows the hover Copy/Edit row (so the measure
-    /// pass knows to reserve its slot). Copy needs message text; Edit is for
-    /// user prompts. Tool rows, failed and hidden bubbles never show the row.
+    /// Whether this bubble shows the hover Copy/Edit row. Copy needs message
+    /// text; Edit is for user prompts. Tool rows, failed and hidden bubbles
+    /// never show the row.
     private bool hoverActionsEligible() const
     {
         if (_hidden || _role == "tool" || _failed) return false;
@@ -2772,14 +2765,10 @@ private final class MessageBubble : Widget
         return _role == "user" && _actionRect.height == 0;
     }
 
-    /// Height the hover row reserves below the message text: the 18 px pill
-    /// plus a 6 px gap so it clears the last line instead of touching it.
-    private static int hoverActionReserve() { return 18 + 6; }
-
     /// Draw the Copy/Edit pills that appear under a message while the pointer
-    /// rests on the bubble. The measure pass always reserves `hoverActionReserve`
-    /// below the text, so the row is drawn inside that slot — a one-line message
-    /// gets the pills under its line, never on top of it.
+    /// rests on the bubble. The row adds nothing to the layout: the measure pass
+    /// reserves no slot for it, so the floating toolbar overlays the space below
+    /// the message text and the transcript keeps the spacing it had before.
     ///
     /// The row is right-aligned and sits just below the message text (`textBottom`
     /// is the painted text's bottom edge), styled like a hover toolbar. Copy is
@@ -2795,10 +2784,10 @@ private final class MessageBubble : Widget
         if (!canCopy && !canEdit) return;
 
         const rowH = 18;
-        // Inside the reserved slot below the text; never clamped up onto the
-        // text itself (the slot always exists for an eligible bubble).
+        // Float below the text: the row overlays the bubble's bottom, so the
+        // message spacing is the same hovered or not.
         int rowY = textBottom + 6;
-        if (rowY + rowH > height) rowY = maxInt(textBottom, height - rowH);
+        if (rowY + rowH > height) rowY = maxInt(textBottom + 2, height - rowH);
         if (rowY < 0) rowY = 0;
 
         // Measure both pills first so a right-aligned pair can be placed as one
@@ -3799,6 +3788,58 @@ private string humanToolDetail(string toolName, string toolArgs)
     }
 }
 
+/// The category a single tool name folds into when action runs are summarised
+/// or split. Mirrors Codex: a file mutation, a command (bash/run/dshell),
+/// exploration (read/glob/grep) and plan upkeep; anything else is `other`.
+private enum ActionKind : ubyte { other, explore, edit, command, plan }
+
+private ActionKind actionKindOf(string toolName)
+{
+    switch (toolName)
+    {
+        case "read":
+        case "glob":
+        case "grep":
+            return ActionKind.explore;
+        case "write":
+        case "edit":
+        case "apply_patch":
+        case "copy":
+        case "move":
+        case "rename":
+        case "create_folder":
+        case "remove":
+            return ActionKind.edit;
+        case "bash":
+        case "run":
+        case "dshell":
+            return ActionKind.command;
+        case "update_plan":
+        case "update_subplan":
+            return ActionKind.plan;
+        default:
+            return ActionKind.other;
+    }
+}
+
+/// The tool name behind a `tool` result: the name of the assistant call whose
+/// id the result answers. Falls back to the result's own `toolName` (empty for
+/// a legacy turn whose call has left the graph), so a summary can still name
+/// the action instead of calling every orphan "Worked".
+private string toolNameForResult(const ref ChatSession session,
+    const ref ChatMessage result)
+{
+    if (result.toolCallId.length == 0)
+        return result.toolName;
+    foreach (message; session.messages)
+    {
+        foreach (call; message.toolCalls)
+            if (call.id == result.toolCallId && call.name.length > 0)
+                return call.name;
+    }
+    return result.toolName;
+}
+
 /// A Codex-style natural-language summary of a run of tool actions, e.g.
 /// "Edited a file, ran 2 commands" or "Explored 3 files". `live` phrases the
 /// actions as present participles for the in-flight header ("Editing a file,
@@ -3810,33 +3851,15 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
 {
     int edits, commands, explores, plans;
     foreach (name; toolNames)
-    {
-        switch (name)
+        switch (actionKindOf(name))
         {
-            case "write":
-            case "edit":
-            case "apply_patch":
-            case "copy":
-            case "move":
-            case "rename":
-            case "create_folder":
-            case "remove":
-                ++edits; break;
-            case "bash":
-            case "run":
-            case "dshell":
-                ++commands; break;
-            case "read":
-            case "glob":
-            case "grep":
-                ++explores; break;
-            case "update_plan":
-            case "update_subplan":
-                ++plans; break;
-            default:
-                break;
+            case ActionKind.edit: ++edits; break;
+            case ActionKind.command: ++commands; break;
+            case ActionKind.explore: ++explores; break;
+            case ActionKind.plan: ++plans; break;
+            case ActionKind.other: break;
+            default: break;
         }
-    }
 
     string[] pieces;
     if (edits > 0)
@@ -4398,6 +4421,97 @@ private void drawBentArrowIcon(ref Canvas canvas, Rect box, Color color,
             cast(int) (bendY + box.height * 0.18)), color, thickness);
 }
 
+/// A floating, wrapping text panel used for hover tooltips inside a card.
+/// Unlike the taskbar's single-line tooltip this wraps the text into several
+/// lines and grows downward from an anchor, so a long plan objective can be
+/// read in full instead of being clipped to the row's width. The owner calls
+/// `place` with the available rectangle and then `paint`; the bubble itself is
+/// never part of the widget tree, so it cannot steal hit testing from the
+/// transcript underneath.
+private struct TooltipBubble
+{
+    // Text insets and the wrap width limits. The panel hugs the text but stays
+    // inside a comfortable reading width on very wide cards.
+    private static immutable int padH = 10;
+    private static immutable int padV = 7;
+    private static immutable int minWrap = 160;
+    private static immutable int maxWrap = 520;
+    private static immutable int gap = 6;
+
+    dstring text;
+    // Final panel rect in the owner's coordinates, valid after `place`.
+    Rect rect;
+    // The wrap width `place` shaped with. `paint` re-lays the text out with the
+    // very same width, so measuring and drawing can never disagree and clip a
+    // line the measured height did not account for.
+    int wrapWidth;
+
+    /// Wrap `value` into `available` (below the anchor when it fits, above it
+    /// otherwise) and return the panel's height so the owner can clamp it.
+    /// `canvas` is only borrowed for shaping, so place and paint agree on the
+    /// wrap width without duplicating the toolkit's layout options.
+    int place(ref Canvas canvas, string value, Rect anchor, Rect available)
+    {
+        text = toUTF32(value);
+        rect = Rect(anchor.x, anchor.bottom() + gap, 0, 0);
+        if (text.length == 0 || available.width <= 2 * padH) return 0;
+        const wrap = clampInt(
+            minInt(maxWrap, maxInt(minWrap, available.width / 2)),
+            1, available.width - 2 * padH);
+        const size = measureText(canvas, text, wrap);
+        wrapWidth = wrap;
+        int height = size.height + 2 * padV;
+        int x = clampInt(anchor.x, available.x,
+            maxInt(available.x, available.right() - wrap - 2 * padH));
+        int y = anchor.bottom() + gap;
+        if (y + height > available.bottom())
+        {
+            const above = anchor.y - gap - height;
+            y = above >= available.y ? above : available.bottom() - height;
+        }
+        y = clampInt(y, available.y, maxInt(available.y,
+            available.bottom() - height));
+        rect = Rect(x, y, wrap + 2 * padH, height);
+        return rect.height;
+    }
+
+    /// Whether `point` lies inside the placed panel.
+    bool contains(Point point) const
+    {
+        return rect.contains(point);
+    }
+
+    /// Lay the text out with the same word wrapping the panel measured with.
+    /// `Canvas.layoutText` is the toolkit's own entry point, so the measure and
+    /// the later paint share one implementation and cannot disagree.
+    private static Size measureText(ref Canvas canvas, const(dchar)[] value,
+        int wrapWidth)
+    {
+        return canvas.layoutText(value, 1, FontRole.ui, null, wrapWidth, true)
+            .measuredSize();
+    }
+
+    /// Draw the panel. The wrapped layout is shaped with the same width `place`
+    /// measured with and replayed through `drawLayout`, clipped to the interior:
+    /// `drawTextInRect` never wraps (it shapes at maxWidth 0), which would draw
+    /// one long line inside a tall box.
+    void paint(ref Canvas canvas) const
+    {
+        if (rect.width <= 0 || rect.height <= 0) return;
+        canvas.fillRoundedRect(rect.translated(1, 2), 8,
+            Color.rgba(0, 0, 0, 90));
+        canvas.fillRoundedRect(rect, 8, opencodePanel);
+        canvas.drawRoundedRect(rect.inset(1), 8, Color.rgba(0, 0, 0, 0),
+            opencodeBorder.withAlpha(200), 1);
+        const wrap = maxInt(1, wrapWidth);
+        const inner = Rect(rect.x + padH, rect.y + padV, wrap,
+            maxInt(0, rect.height - 2 * padV));
+        auto layout = canvas.layoutText(text, 1, FontRole.ui, null, wrap, true);
+        auto child = canvas.clipped(inner);
+        child.drawLayout(Point(inner.x, inner.y), layout, opencodeText);
+    }
+}
+
 private final class PlanCard : Widget
 {
     private static immutable int padH = 12;
@@ -4430,6 +4544,16 @@ private final class PlanCard : Widget
     private bool _railOnly;
     private bool _handleHot;
     private bool _hideHot;
+    // The objective row is a single line the card clips, so hovering it shows
+    // the whole text in a floating panel. `_objectiveHot` marks the row under
+    // the pointer; `_objectiveTipText` / `_objectiveTipRect` are that panel's
+    // placement, recomputed on every hover move so the frame that follows a
+    // pointer move is already correct.
+    private Rect _objectiveRect;
+    private bool _objectiveHot;
+    private TooltipBubble _objectiveTip;
+    private string _objectiveTipText;
+    private Rect _objectiveTipRect;
     // Whether the pointer is asking for the hover expansion. The left border
     // freezes this while the pointer is on it: growing the card there would
     // slide the border out from under the pointer that is trying to click it.
@@ -4598,10 +4722,22 @@ private final class PlanCard : Widget
         y += lineH;
         if (hasObjective())
         {
-            canvas.drawTextInRect(Rect(padH, y, textWidth, lineH),
-                toUTF32("Objective: " ~ _objective), opencodeMuted, 1,
+            // The row is one clipped line; hovering it reveals the whole text as
+            // a floating wrap panel, drawn last so it sits above the steps.
+            const row = Rect(padH, y, textWidth, lineH);
+            _objectiveRect = row;
+            const label = "Objective: " ~ _objective;
+            canvas.drawTextInRect(row, toUTF32(label),
+                _objectiveHot ? opencodeText : opencodeMuted, 1,
                 HorizontalAlign.left, VerticalAlign.middle, true);
+            layoutObjectiveTip(canvas, row, label);
             y += lineH;
+        }
+        else
+        {
+            _objectiveRect = Rect(0, 0, 0, 0);
+            _objectiveTipRect = Rect(0, 0, 0, 0);
+            _objectiveTip.rect = Rect(0, 0, 0, 0);
         }
         // Graphical progress bar: an accent fill over a track, proportional to
         // the completed steps, replacing the old text-only counter.
@@ -4662,6 +4798,31 @@ private final class PlanCard : Widget
                 }
         }
         drawHideIcon(canvas);
+        // Painted last so the panel covers the progress bar and steps it
+        // overlaps; gated on the hover flag so it disappears on unhover instead
+        // of lingering until the card is rebuilt.
+        if (_objectiveHot) _objectiveTip.paint(canvas);
+    }
+
+    /// Place the full-objective panel while the pointer sits on the objective
+    /// row. It may extend past the card's right edge, so it is not clipped by
+    /// the card's single text column.
+    private void layoutObjectiveTip(ref Canvas canvas, Rect anchor, string label)
+    {
+        if (!_objectiveHot)
+        {
+            _objectiveTipRect = Rect(0, 0, 0, 0);
+            return;
+        }
+        if (label != _objectiveTipText)
+        {
+            _objectiveTipText = label;
+            _objectiveTip.text = toUTF32(label);
+        }
+        const available = Rect(0, 0, maxInt(1, bounds().width),
+            maxInt(1, bounds().height));
+        _objectiveTip.place(canvas, label, anchor, available);
+        _objectiveTipRect = _objectiveTip.rect;
     }
 
     /// The left border: an accent rail that doubles as the collapse handle.
@@ -4738,10 +4899,12 @@ private final class PlanCard : Widget
 
     protected override void onMouseLeave()
     {
-        const changed = _handleHot || _expandWanted || _hideHot;
+        const changed = _handleHot || _expandWanted || _hideHot || _objectiveHot;
         _handleHot = false;
         _expandWanted = false;
         _hideHot = false;
+        _objectiveHot = false;
+        _objectiveTipRect = Rect(0, 0, 0, 0);
         if (changed)
         {
             invalidate();
@@ -4764,6 +4927,17 @@ private final class PlanCard : Widget
         if (overIcon != _hideHot)
         {
             _hideHot = overIcon;
+            invalidate();
+        }
+        // The objective tooltip follows the pointer, so the hover flag is set
+        // directly rather than waiting for a paint to place the panel: the mouse
+        // handler has no canvas, but the row rect from the last paint is enough
+        // to decide the flag and the frame that follows sizes the panel.
+        const overObjective = !_railOnly && !_objectiveRect.empty() &&
+            _objectiveRect.contains(event.position);
+        if (overObjective != _objectiveHot)
+        {
+            _objectiveHot = overObjective;
             invalidate();
         }
         setCursor(onHandle || overIcon ||
@@ -5536,6 +5710,14 @@ private final class HoverTooltip : Widget
     // running counter (e.g. a live monthly token total) can refresh the footer
     // without rebuilding the usage breakdown above it.
     private dstring[] _extra;
+    // Freshness line for the provider usage panel: "Cached · updated <time>",
+    // "Updating…", "Updated just now" or a failure note. Drawn in its own
+    // colour so the state of the fetch is visible at a glance.
+    private dstring _status;
+    private Color _statusColor;
+    // Small accent dot in the title row, drawn while a background refresh is in
+    // flight so an open usage panel shows that it is still working.
+    private bool _accentDot;
 
     this(Widget hoverOwner)
     {
@@ -5569,6 +5751,7 @@ private final class HoverTooltip : Widget
     {
         _usageBars.length = 0;
         _extra.length = 0;
+        clearStatus();
         _title = toUTF32(title);
         _rows.length = 0;
         foreach (row; rows)
@@ -5580,6 +5763,7 @@ private final class HoverTooltip : Widget
     {
         _usageBars.length = 0;
         _extra.length = 0;
+        clearStatus();
         _title.length = 0;
         _rows.length = 0;
         foreach (line; text.splitLines)
@@ -5620,11 +5804,43 @@ private final class HoverTooltip : Widget
         invalidate();
     }
 
+    /// Show (or clear, with an empty `text`) the freshness line above the footer
+    /// rows. The colour carries the meaning: muted for a cached value still
+    /// being refreshed, accent for a completed update, warning for a failure.
+    void setStatus(string text, Color color)
+    {
+        const next = toUTF32(text);
+        if (_status == next && _statusColor == color) return;
+        _status = next;
+        _statusColor = color;
+        invalidate();
+    }
+
+    private void clearStatus()
+    {
+        _status.length = 0;
+        _statusColor = opencodeMuted;
+        _accentDot = false;
+    }
+
+    /// Show or hide the small accent dot in the title row (an in-flight fetch).
+    void setAccentDot(bool value)
+    {
+        if (_accentDot == value) return;
+        _accentDot = value;
+        invalidate();
+    }
+
     /// Test-only: the tooltip text, one row per line.
     public string textForTesting()
     {
         auto builder = appender!string();
         if (_title.length > 0) builder.put(to!string(_title));
+        if (_status.length > 0)
+        {
+            if (builder.data.length > 0) builder.put("\n");
+            builder.put(to!string(_status));
+        }
         foreach (row; _rows)
         {
             if (builder.data.length > 0) builder.put("\n");
@@ -5661,6 +5877,7 @@ private final class HoverTooltip : Widget
             : (_usageBars.length > 0 ? 320 : 272);
         int height = padV * 2;
         if (_title.length > 0) height += lineH + (_compact ? 4 : 6);
+        if (_status.length > 0) height += lineH;
         _rowLayouts.length = 0;
         if (_wrap)
         {
@@ -5706,7 +5923,16 @@ private final class HoverTooltip : Widget
         {
             canvas.drawText(Point(padX, y), _title, palette.text, 1,
                 FontRole.ui, cast(FontFace) palette.uiFont);
+            if (_accentDot)
+                canvas.fillCircle(Point(width - padX - 6, y + 8), 3,
+                    opencodeAccent);
             y += _compact ? 18 : 24;
+        }
+        if (_status.length > 0)
+        {
+            canvas.drawText(Point(padX, y), _status, _statusColor, 1,
+                FontRole.ui, cast(FontFace) palette.uiFont);
+            y += _compact ? compactLineH : 18;
         }
         if (_wrap)
         {
@@ -6587,6 +6813,16 @@ private final class ChatScrollView : ScrollView
     private static bool _holdPending;
     private int _holdScrollY = -1;
     private int _lastMaxScroll = -1;
+    // Deferred re-pin. A streamed token grows the content height AFTER this
+    // pass has already handed the base class the layout: only the base's
+    // internal measure knows the new height, so the scroll clamp below runs on
+    // the STALE height and the newest line stays one invalidate behind (below
+    // the fold) until the next frame. Chaining one extra re-layout from the
+    // tick callback re-measures with the settled height and pins the reader to
+    // the true bottom in the same frame. The guard bounds the chain to a single
+    // pass so a follow change from `onScrollChanged` cannot loop.
+    private bool _repinQueued;
+    private bool _repinning;
 
     // Freshly inserted older history sits above the reader's position: the next
     // layout shifts the viewport down by this many pixels so the row they were
@@ -6649,13 +6885,42 @@ private final class ChatScrollView : ScrollView
             return;
         }
         super.onLayout();
-        if (_anchorGrow != 0)
+        if (follow)
         {
-            const delta = _anchorGrow;
-            _anchorGrow = 0;
-            setScrollY(scrollY() + delta);
+            // `maxScroll()` reads the height the base class just measured, so
+            // this pins to the true bottom even when the content grew in this
+            // same pass (the stale clamp in applyScrollY is corrected here).
+            setScrollY(maxScroll());
+            queueRepin();
         }
-        if (follow) setScrollY(maxScroll());
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        // The tick runs on the next frame whatever the scene does with the
+        // base tree. Chain exactly one extra layout pass so a streamed content
+        // growth that arrived after this view already measured is followed by a
+        // re-pin to the real bottom. The transcript is a composited layer, so
+        // `layoutTree` from here bypasses the base scene entirely and one pass
+        // settles it.
+        if (_repinQueued && !_repinning)
+        {
+            _repinQueued = false;
+            _repinning = true;
+            layoutTree();
+            _repinning = false;
+        }
+    }
+
+    /// Schedule one extra layout pass after the current one, so the newest
+    /// streamed line that landed below the fold is followed by a re-pin to the
+    /// real bottom. No-op once a pass is already queued, so a burst of deltas
+    /// inside a single frame coalesces into one extra layout.
+    private void queueRepin()
+    {
+        if (_repinning || _repinQueued) return;
+        _repinQueued = true;
+        invalidate();
     }
 
     protected override void onScrollChanged()
@@ -7728,18 +7993,20 @@ public final class SessionListView : ListView
             // (setScrollbarInset(0) in the constructor).
             enum rightPad = 18;
             enum titleGap = 10;
-            enum warnSize = 12;
+            enum warnDotSize = 8;
             enum dotSize = 6;
             enum statusGap = 7;
-            // A right-aligned status cluster: a warning triangle for a chat
-            // that stopped without completing, and/or a dot for one that
-            // finished while the user was elsewhere and has not been opened.
+            // A right-aligned status cluster of colored dots: a larger amber one
+            // for a chat that stopped without completing, and/or an accent one
+            // for a chat that finished while the user was elsewhere and has not
+            // been opened. The warning triangle glyph is kept for other uses, it
+            // is just no longer painted here.
             const incomplete = index < cast(int) _incompleteRows.length &&
                 _incompleteRows[index];
             const unread = index < cast(int) _unreadRows.length &&
                 _unreadRows[index];
             int statusWidth = 0;
-            if (incomplete) statusWidth += warnSize;
+            if (incomplete) statusWidth += warnDotSize;
             if (unread) statusWidth += (incomplete ? statusGap : 0) + dotSize;
             const statusLeft = width - rightPad - statusWidth;
             const timeRight = width - rightPad -
@@ -7754,13 +8021,13 @@ public final class SessionListView : ListView
                     HorizontalAlign.right, VerticalAlign.middle, true);
             }
             if (incomplete)
-                drawWarningGlyph(content,
-                    Rect(statusLeft, y + (rowHeight - warnSize) / 2, warnSize,
-                        warnSize), opencodeWarning);
+                content.fillCircle(
+                    Point(statusLeft + warnDotSize / 2, y + rowHeight / 2),
+                    warnDotSize / 2, opencodeWarning);
             if (unread)
             {
                 const dotLeft = statusLeft +
-                    (incomplete ? warnSize + statusGap : 0);
+                    (incomplete ? warnDotSize + statusGap : 0);
                 content.fillCircle(
                     Point(dotLeft + dotSize / 2, y + rowHeight / 2),
                     dotSize / 2, opencodeAccent);
@@ -8293,9 +8560,23 @@ public final class OpenCodeRoot : VBox
     private string _keyUsageTokenId;
     private UsageLimitsResult[string] _keyUsageCache;
     private long[string] _keyUsageCacheAt;
+    // How long a cached usage panel counts as fresh: within this window the
+    // numbers are shown as-is (and marked "Cached") while a refresh runs in the
+    // background; older than this and the panel shows "Loading…" until it lands.
+    private static immutable long keyUsageFreshSeconds = 60;
+    // Last failed refresh per request, so a hover can say the cached value could
+    // not be updated instead of silently showing stale numbers.
+    private long[string] _keyUsageFailedAt_;
     private long[string] _keyAccountCacheAt;
     private bool[string] _keyUsageFetching;
     private UsageLimitsResult[string] _keyUsageReady;
+    // What the open tooltip is currently reporting. `_keyUsageShowingCached` is
+    // true while the panel shows a still-fresh cached value that is being
+    // refreshed in the background; `_keyUsageFailedAt` is the Unix time of the
+    // last failed refresh for the open request (0 = none), so the panel can say
+    // the cached value could not be updated instead of silently going stale.
+    private bool _keyUsageShowingCached;
+    private long _keyUsageFailedAt;
     // Monthly token ledger per provider, keyed "<YYYY-MM>|<provider label>".
     // Persisted to usage-monthly.json so a provider's monthly total survives
     // restarts and provider switches. The transcript itself stores neither a
@@ -8801,8 +9082,18 @@ public final class OpenCodeRoot : VBox
     /// conversation has been laid out before it is extended.
     private static immutable int resumeDelayTicks = 3;
 
-    private int _resumeCountdown;
-    private string _resumePrompt;
+        private int _resumeCountdown;
+        private string _resumePrompt;
+
+        /// The turn the on-disk resume request points at had already finished
+        /// before the process ended, so the request describes history rather
+        /// than outstanding work. The conversation is still reopened and the
+        /// note is still added to it, but no follow-up request is sent: a stale
+        /// note - a chat the user continued after a rebuild, or one closed
+        /// mid-turn and later carried to completion - must not replay as an
+        /// unsolicited turn on the next launch. Only the resolved target's own
+        /// state decides this; any live turn elsewhere keeps the resume armed.
+        private bool _resumeWasAlreadyHandled;
 
     private static string activeTurnMarkerPath()
     {
@@ -8872,6 +9163,12 @@ public final class OpenCodeRoot : VBox
             return;
         }
         adoptResumeSession(target);
+        // The note describes a turn the pre-restart process was running. When
+        // that turn has since finished (`turnStatus` is no longer `running`),
+        // there is nothing left to continue: resume the view, add the note, and
+        // stop there. A crash leaves the status frozen at `running`, so this
+        // only suppresses requests that would replay completed work.
+        _resumeWasAlreadyHandled = _sessions[target].turnStatus != "running";
         // A rebuild that fails to compile relaunches the PREVIOUS binary. The
         // helper removes `rebuild-report.txt` after a good build and writes it
         // only on failure, so its presence is the reliable "your changes are
@@ -8894,7 +9191,7 @@ public final class OpenCodeRoot : VBox
         if (cause == "rebuild" && rebuildReport.length == 0 &&
             buildStamp.length > 0)
         {
-            auto session = &_sessions[_current];
+            auto session = &_sessions[target];
             foreach (ref step; session.taskSteps)
             {
                 const lower = step.text.toLower();
@@ -8913,6 +9210,15 @@ public final class OpenCodeRoot : VBox
         }
         _resumePrompt = resumePromptFor(cause, reason, rebuildReport,
             buildStamp);
+        // Nothing to send when the noted turn had already finished by the time
+        // the process ended: reopen the conversation and show the note, but do
+        // not replay a turn the agent already completed.
+        if (_resumeWasAlreadyHandled)
+        {
+            logInfo("resume note matched an already-completed turn; " ~
+                "reopening the conversation without a follow-up request");
+            return;
+        }
         _resumeCountdown = resumeDelayTicks;
         logInfo("resume queued for the restored conversation");
     }
@@ -9216,6 +9522,7 @@ public final class OpenCodeRoot : VBox
     {
         _resumePrompt = "";
         _resumeCountdown = 0;
+        _resumeWasAlreadyHandled = false;
     }
 
     /// Test-only: the stored id of a conversation.
@@ -11148,10 +11455,15 @@ public final class OpenCodeRoot : VBox
         // Nesting: a `tool` result belongs to the assistant turn that requested
         // it. Match each result's `toolCallId` to the assistant whose `toolCalls`
         // names it, so results render as indented children of that turn instead
-        // of as top-level siblings. `owner[slot]` is the owning slot
+        // of as top-level siblings. Everything here is keyed by SLOT (a position
+        // in `path`), not by message index: `path` is the visible window and its
+        // entries are global indexes, so the two only coincide when no older
+        // history is trimmed. `owner[slot]` is the owning slot
         // (size_t.max = orphan, kept top level).
         auto owner = new size_t[](path.length);
         foreach (ref o; owner) o = size_t.max;
+        size_t[size_t] slotOfIndex;
+        foreach (slot, index; path) slotOfIndex[index] = slot;
         foreach (slot, index; path)
         {
             const message = session.messages[index];
@@ -11295,6 +11607,7 @@ public final class OpenCodeRoot : VBox
                 // paragraph -> collapsible -> paragraph -> collapsible instead
                 // of one group stranded at the turn's start.
                 size_t[] childSlots;
+                const(ChatMessage)[] childMessages;
                 foreach (call; message.toolCalls)
                 {
                     if (call.id.length == 0) continue;
@@ -11305,6 +11618,7 @@ public final class OpenCodeRoot : VBox
                             call.id)
                         {
                             childSlots ~= childSlot;
+                            childMessages ~= session.messages[path[childSlot]];
                             break;
                         }
                     }
@@ -11317,16 +11631,16 @@ public final class OpenCodeRoot : VBox
                     Insets nestPad;
                     nestPad.left = toolNestIndent;
                     auto nest = new TurnNest(nestPad);
-                    auto group = addToolSlots(nest, childSlots, path, *session,
-                        latestAssistantIndex, versionPositions, versionTotals,
-                        session.messages[path[slot]].id);
+                    if (childMessages.length > 0)
+                        addActionGroups(nest, childMessages, *session,
+                            latestAssistantIndex, versionPositions,
+                            versionTotals);
                     if (slot == liveHostSlot)
                     {
                         // Use the same key before, during and after execution.
                         // A different live key reset an expanded action group
                         // as soon as its first result settled.
-                        group = addLiveToolRows(group, nest,
-                            session.messages[path[slot]].id);
+                        addLiveToolRows(nest, session.messages[path[slot]].id);
                         liveRowsAdded = true;
                     }
                     _messageColumn.add(nest);
@@ -11339,22 +11653,54 @@ public final class OpenCodeRoot : VBox
             }
 
             // Orphan tool results (no owning assistant turn in the path) fold
-            // into one action group, exactly like a turn's own tools.
+            // into action groups, exactly like a turn's own tools: runs of the
+            // same kind of action each get their own collapsible, so a restored
+            // transcript still reads as "Explored a file" then "Edited a file"
+            // instead of one indistinguishable "Worked" header per result.
             if (message.role == "tool")
             {
                 size_t end = slot;
                 while (end < path.length && owner[end] == size_t.max &&
                     session.messages[path[end]].role == "tool")
                     ++end;
-                Widget[] parts;
+                // Resolve each orphan's tool name from its owning call so the
+                // run can be split by action kind; fall back to the result's own
+                // toolName when the call has scrolled out of the graph.
+                string[] orphanNames;
                 foreach (member; slot .. end)
-                    parts ~= buildMessageBubble(path[member],
-                        session.messages[path[member]],
-                        latestAssistantIndex, versionPositions,
-                        versionTotals);
-                auto group = new ToolGroupBubble(parts);
-                wireToolGroup(group, session.messages[path[slot]].id);
-                _messageColumn.add(group);
+                {
+                    auto resolved = toolNameForResult(*session,
+                        session.messages[path[member]]);
+                    orphanNames ~= resolved;
+                }
+                size_t run = slot;
+                while (run < end)
+                {
+                    size_t runEnd = run + 1;
+                    while (runEnd < end && actionKindOf(orphanNames[runEnd - slot]) ==
+                        actionKindOf(orphanNames[run - slot]))
+                        ++runEnd;
+                    Widget[] parts;
+                    foreach (member; run .. runEnd)
+                    {
+                        auto row = buildMessageBubble(path[member],
+                            session.messages[path[member]],
+                            latestAssistantIndex, versionPositions,
+                            versionTotals);
+                        // A `tool` result is persisted without its call's name,
+                        // so hand the resolved name to the row itself: the
+                        // group then summarizes as "Explored a file" instead of
+                        // an anonymous "Worked", with no change to the session.
+                        if (member - slot < orphanNames.length &&
+                            orphanNames[member - slot].length > 0)
+                            row.setToolName(orphanNames[member - slot]);
+                        parts ~= row;
+                    }
+                    auto group = new ToolGroupBubble(parts);
+                    wireToolGroup(group, session.messages[path[run]].id);
+                    _messageColumn.add(group);
+                    run = runEnd;
+                }
                 slot = end;
                 continue;
             }
@@ -11380,7 +11726,7 @@ public final class OpenCodeRoot : VBox
         // Live rows with no assistant turn to nest under (e.g. a tool progress
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
-            addLiveToolRows(null, _messageColumn, "live");
+            addLiveToolRows(_messageColumn, "live");
         // Steering typed while this turn is still running is queued durably and
         // injected at the next valid message boundary. Show it now as a
         // dimmed, pending user bubble so submitting a prompt never looks like
@@ -11818,7 +12164,7 @@ public final class OpenCodeRoot : VBox
     /// round's assistant message id, so an expanded group stays expanded across
     /// the rebuilds that happen while the round streams. Returns null when the
     /// round ran no tools.
-    private ToolGroupBubble addToolSlots(VBox target, const(size_t)[] slots,
+    private ToolGroupBubble addToolSlotsOf(VBox target, const(size_t)[] slots,
         const(size_t)[] path, ref const ChatSession session,
         int latestAssistantIndex, size_t[] versionPositions,
         size_t[] versionTotals, string collapseKey)
@@ -11837,6 +12183,8 @@ public final class OpenCodeRoot : VBox
         return group;
     }
 
+    /// Add one action group holding a run of already-built tool rows. Used by
+    /// the same-action split, where each group carries only its own rows.
     /// Wire an action group's size callback and re-apply its saved expand state
     /// so a group the user opened stays open across streamed rebuilds.
     private void wireToolGroup(ToolGroupBubble group, string key)
@@ -11854,6 +12202,75 @@ public final class OpenCodeRoot : VBox
         };
         if (auto saved = group.collapseKey in _groupCollapsed)
             group.setCollapsed(*saved);
+    }
+
+    /// Add one action group per run of the same kind of tool call, so a round
+    /// that first read three files and then edited two reads as two stacked
+    /// headers ("Explored 3 files", "Edited 2 files") instead of one mixed
+    /// summary. Key order follows the calls, so the round's shape is stable.
+    private void addActionGroups(VBox target, const(ChatMessage)[] callMessages,
+        ref const ChatSession session, int latestAssistantIndex,
+        size_t[] versionPositions, size_t[] versionTotals)
+    {
+        if (callMessages.length == 0) return;
+        if (!_settings.groupSameAction)
+        {
+            addToolSlots(target, callMessages[0].id, callMessages, session,
+                latestAssistantIndex, versionPositions, versionTotals);
+            return;
+        }
+        // A `tool` result stores its request id, not the tool's name, so the
+        // run is split on the name looked up from the call it answers.
+        // A round's calls each keep a distinct kind (read, then write, then a
+        // command), so consecutive rows of the same kind stay together and a
+        // change of kind starts a new header. A row whose call cannot be found
+        // returns ActionKind.other, which also separates it rather than
+        // silently absorbing it into whatever preceded it.
+        size_t start;
+        auto kindAt = (size_t i) => actionKindOf(
+            toolNameForResult(session, callMessages[i]));
+        foreach (i; 1 .. callMessages.length)
+        {
+            if (kindAt(i) == kindAt(start)) continue;
+            addToolSlots(target, callMessages[start].id,
+                callMessages[start .. i], session, latestAssistantIndex,
+                versionPositions, versionTotals);
+            start = i;
+        }
+        addToolSlots(target, callMessages[start].id,
+            callMessages[start .. $], session, latestAssistantIndex,
+            versionPositions, versionTotals);
+    }
+
+    /// Build one action group for a run of tool results and add it to `target`.
+    /// `key` is the run's first tool-call id, so a run's expanded state survives
+    /// the rebuilds that happen while the round streams.
+    private ToolGroupBubble addToolSlots(VBox target, string key,
+        const(ChatMessage)[] callMessages, ref const ChatSession session,
+        int latestAssistantIndex, size_t[] versionPositions,
+        size_t[] versionTotals)
+    {
+        if (callMessages.length == 0) return null;
+        Widget[] parts;
+        foreach (call; callMessages)
+        {
+            auto row = buildMessageBubble(session.messages.length, call,
+                latestAssistantIndex, versionPositions, versionTotals);
+            // A restored `tool` result often carries no `toolName` of its own
+            // (the name lives on the assistant's `toolCalls`), so resolve it
+            // here: without this every row summarized as an anonymous "Worked"
+            // and the same-action grouping had nothing to name.
+            if (call.toolName.length == 0)
+            {
+                auto resolved = toolNameForResult(session, call);
+                if (resolved.length > 0) row.setToolName(resolved);
+            }
+            parts ~= row;
+        }
+        auto group = new ToolGroupBubble(parts);
+        wireToolGroup(group, key);
+        target.add(group);
+        return group;
     }
 
     /// Build the in-flight row for one tool call: name/subtitle, a provisional
@@ -11874,14 +12291,12 @@ public final class OpenCodeRoot : VBox
         return row;
     }
 
-    /// Append every in-flight tool call as a live child of `group` (creating a
-    /// group when the round has no settled tools yet) so the action row is
-    /// present while tools run and becomes the record once their result bubbles
-    /// arrive. With nothing in flight, falls back to the generic phase row.
-    /// Returns the group (possibly newly created), or null when there was
-    /// nothing in flight and only the phase row was added.
-    private ToolGroupBubble addLiveToolRows(ToolGroupBubble group, VBox target,
-        string key)
+    /// Append the in-flight tool calls as live children of one action group per
+    /// run of the same kind of action, so the rows are present while tools run
+    /// and line up with the groups the settled results form.
+    /// With nothing in flight, falls back to the generic phase row.
+    /// Returns the last group added, or null when only the phase row was.
+    private ToolGroupBubble addLiveToolRows(VBox target, string key)
     {
         OpenCodeToolCall[] inFlight;
         foreach (call; _liveToolCalls)
@@ -11890,25 +12305,42 @@ public final class OpenCodeRoot : VBox
             if (call.name.length > 0) inFlight ~= call;
         if (inFlight.length > 0)
         {
-            if (group is null)
+            if (!_settings.groupSameAction)
+                return addLiveToolGroup(target, key, inFlight);
+            ToolGroupBubble last;
+            size_t start;
+            foreach (i; 1 .. inFlight.length)
             {
-                group = new ToolGroupBubble(new Widget[0]);
-                wireToolGroup(group, key);
-                target.add(group);
+                if (actionKindOf(inFlight[i].name) ==
+                    actionKindOf(inFlight[start].name)) continue;
+                last = addLiveToolGroup(target,
+                    key ~ ":" ~ inFlight[start].id, inFlight[start .. i]);
+                start = i;
             }
-            foreach (call; inFlight)
-            {
-                bool running;
-                foreach (live; _liveToolCalls)
-                    if (live.id == call.id) { running = true; break; }
-                group.addPart(buildLiveToolRow(call, running));
-            }
-            group.setLive(true);
-            return group;
+            return addLiveToolGroup(target, key ~ ":" ~ inFlight[start].id,
+                inFlight[start .. $]);
         }
         if (activityRowWanted())
             target.add(_activityRow);
         return null;
+    }
+
+    /// One live action group holding `calls`, wired and marked live.
+    private ToolGroupBubble addLiveToolGroup(VBox target, string key,
+        OpenCodeToolCall[] calls)
+    {
+        auto group = new ToolGroupBubble(new Widget[0]);
+        wireToolGroup(group, key);
+        target.add(group);
+        foreach (call; calls)
+        {
+            bool running;
+            foreach (live; _liveToolCalls)
+                if (live.id == call.id) { running = true; break; }
+            group.addPart(buildLiveToolRow(call, running));
+        }
+        group.setLive(true);
+        return group;
     }
 
     /// True for the read-only context tools that fold into an "Explored" group.
@@ -16634,7 +17066,7 @@ public final class OpenCodeRoot : VBox
 
     /// One row of the Thinking dropdown. `off` clears the chat's thinking flag;
     /// an effort both enables thinking and records the level for this endpoint
-    /// and model (High is stored as the empty implicit default).
+    /// and model.
     private ContextMenuItem thinkingModeMenuItem(string mode, bool selected)
     {
         return ContextMenuItem.check(
@@ -16654,8 +17086,7 @@ public final class OpenCodeRoot : VBox
             auto control = reasoningControlForModel(_settings,
                 _settings.baseUrl, _settings.model);
             setReasoningControlForModel(_settings, _settings.baseUrl,
-                _settings.model, mode == "high" ? "" : mode,
-                control.budgetTokens);
+                _settings.model, mode, control.budgetTokens);
         }
         saveSettingsNow();
         refreshThinkingControl();
@@ -17880,6 +18311,24 @@ public final class OpenCodeRoot : VBox
         hunkRow.add(hunkCheck);
         optionsBody.add(hunkRow);
 
+        // Split a round's tool rows into runs of the same kind of action, so a
+        // read-then-edit round reads as "Explored a file" then "Edited a file"
+        // instead of one mixed header. On by default.
+        auto actionRunRow = new HBox(8);
+        actionRunRow.layoutHints().preferredHeight = 32;
+        auto actionRunCheck = new CheckBox(
+            "Group tools into Explored / Edited runs");
+        actionRunCheck.setId("oc-groupsameaction");
+        actionRunCheck.setChecked(_settings.groupSameAction, false);
+        actionRunCheck.onChanged = delegate(bool value)
+        {
+            _settings.groupSameAction = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        actionRunRow.add(actionRunCheck);
+        optionsBody.add(actionRunRow);
+
         // Conversation order: list by most recent activity (message or turn)
         // instead of creation order. On by default.
         auto recencyRow = new HBox(8);
@@ -18394,6 +18843,10 @@ public final class OpenCodeRoot : VBox
         const local = isLoopbackApiBaseUrl(_settings.baseUrl);
         _keyBadge.setText(hasKey ? "Key set" : local ? "Local API" : "No key");
         _keyBadge.setColor(hasKey || local ? opencodeKeyOk : opencodeKeyMissing);
+        // Keep the usage cache warm for the active credential so the first hover
+        // of the key-set tooltip already has a breakdown instead of a "Loading"
+        // placeholder. No-op when the cache is fresh or a fetch is in flight.
+        prefetchKeyUsage();
     }
 
     private void flushToolTranscriptChanges()
@@ -18740,6 +19193,11 @@ public final class OpenCodeRoot : VBox
         _keyUsageAnchor = null;
         _keyUsageRequestId = "";
         _keyUsageTokenId = "";
+        _keyUsageShowingCached = false;
+        _keyUsageFailedAt = 0;
+        // Leave the badge's own colour to updateKeyBadge; the transient
+        // "refreshing" accent must not outlive the panel it signalled.
+        if (_keyBadge !is null) updateKeyBadge();
         if (_keyUsageTooltip !is null && _keyUsageTooltip.parent() !is null)
             _keyUsageTooltip.parent().remove(_keyUsageTooltip);
     }
@@ -18782,18 +19240,54 @@ public final class OpenCodeRoot : VBox
         _keyUsageTokenId = tokenId;
         _keyUsageTooltip = new HoverTooltip(anchor);
         auto cached = requestId in _keyUsageCache;
-        const fresh = cached !is null &&
-            Clock.currTime.toUnixTime() - _keyUsageCacheAt[requestId] < 60;
-        if (fresh)
+        const cachedAt = requestId in _keyUsageCacheAt;
+        const age = cachedAt is null
+            ? 0 : Clock.currTime.toUnixTime() - *cachedAt;
+        const fresh = cached !is null && age < keyUsageFreshSeconds;
+        const willFetch = !fresh;
+        _keyUsageShowingCached = false;
+        _keyUsageFailedAt = 0;
+        // Always draw the last known breakdown, even when it is stale: showing a
+        // smaller "Loading..." placeholder first and swapping in the bars a few
+        // seconds later makes the panel grow in two stages. One cached panel
+        // that updates its footer in place is the single, stable UI.
+        if (cached !is null)
             _keyUsageTooltip.setUsageContent(*cached);
         else
             _keyUsageTooltip.setContent(provider == "opencode" ?
                 "OpenCode Go usage" : "CommandCode usage", ["Loading usage limits..."]);
         _keyUsageTooltip.setExtraRows(apiTokenUsageRows(tokenId));
+        // Say where the numbers come from: a cached value that is being
+        // refreshed, a fresh value, or the last failure.
+        if (cached !is null && willFetch)
+        {
+            _keyUsageShowingCached = true;
+            _keyUsageTooltip.setStatus("Updating…", opencodeMuted);
+        }
+        else if (cached !is null)
+            _keyUsageTooltip.setStatus(cachedUsageStatus(age), opencodeMuted);
+        else if (requestId in _keyUsageFetching)
+            _keyUsageTooltip.setStatus("Updating…", opencodeMuted);
+        else if (auto failedAt = requestId in _keyUsageFailedAt_)
+            _keyUsageTooltip.setStatus(
+                "Update failed · cached " ~ relativeTimeAgo(Clock.currTime.toUnixTime() -
+                    *failedAt), opencodeWarning);
+        setStatusIndicator(_keyUsageTooltip);
         popupRoot(this).add(_keyUsageTooltip);
         positionTooltip(anchor, _keyUsageTooltip);
-        if (fresh || requestId in _keyUsageFetching) return;
+        if (!fresh) startKeyUsageFetch(provider, apiKey);
+    }
+
+    /// Start one background usage fetch for `provider`/`apiKey` unless one is
+    /// already running. Used both by the hover tooltip and by the prefetch that
+    /// warms the cache so the first hover already has data to draw.
+    private void startKeyUsageFetch(string provider, string apiKey)
+    {
+        if (provider.length == 0 || apiKey.length == 0) return;
+        const requestId = provider ~ ":" ~ apiTokenUsageKeyId(apiKey);
+        if (requestId in _keyUsageFetching) return;
         _keyUsageFetching[requestId] = true;
+        auto cached = requestId in _keyUsageCache;
         const cachedName = cached is null ? "" : provider == "opencode" ?
             cached.serviceAccountName : cached.commandCodeUser;
         const cachedPlanName = cached is null ? "" : cached.planName;
@@ -18842,6 +19336,22 @@ public final class OpenCodeRoot : VBox
         worker.start();
     }
 
+    /// Warm the usage cache for the active credential so the very first hover of
+    /// the key-set tooltip already has a breakdown to show. Cheap no-op when the
+    /// cache is fresh or a fetch is already running; the result flows through the
+    /// same `drainKeyUsageResults` path as a hover fetch.
+    private void prefetchKeyUsage()
+    {
+        const provider = usageProviderForBaseUrl(_settings.baseUrl);
+        const key = activeApiKey(_settings).strip();
+        if (provider.length == 0 || key.length == 0) return;
+        const requestId = provider ~ ":" ~ apiTokenUsageKeyId(key);
+        if (auto cachedAt = requestId in _keyUsageCacheAt)
+            if (Clock.currTime.toUnixTime() - *cachedAt < keyUsageFreshSeconds)
+                return;
+        startKeyUsageFetch(provider, key);
+    }
+
     private void drainKeyUsageResults()
     {
         UsageLimitsResult[string] ready;
@@ -18853,18 +19363,75 @@ public final class OpenCodeRoot : VBox
         foreach (requestId, result; ready)
         {
             _keyUsageFetching.remove(requestId);
-            _keyUsageCache[requestId] = result;
-            _keyUsageCacheAt[requestId] = Clock.currTime.toUnixTime();
-            if (result.accountChecked)
-                _keyAccountCacheAt[requestId] = _keyUsageCacheAt[requestId];
+            const empty = !result.available && result.windows.length == 0;
+            if (!empty)
+            {
+                _keyUsageCache[requestId] = result;
+                _keyUsageCacheAt[requestId] = Clock.currTime.toUnixTime();
+                _keyUsageFailedAt_.remove(requestId);
+                if (result.accountChecked)
+                    _keyAccountCacheAt[requestId] = _keyUsageCacheAt[requestId];
+            }
+            else
+                _keyUsageFailedAt_[requestId] = Clock.currTime.toUnixTime();
             if (requestId == _keyUsageRequestId && _keyUsageAnchor !is null &&
                 _keyUsageTooltip !is null && _keyUsageTooltip.parent() !is null)
             {
-                _keyUsageTooltip.setUsageContent(result);
+                if (!empty)
+                {
+                    _keyUsageTooltip.setUsageContent(result);
+                    _keyUsageShowingCached = false;
+                    _keyUsageFailedAt = 0;
+                    _keyUsageTooltip.setStatus("Updated just now", opencodeKeyOk);
+                }
+                else if (_keyUsageShowingCached)
+                {
+                    _keyUsageFailedAt = Clock.currTime.toUnixTime();
+                    _keyUsageTooltip.setStatus(
+                        "Update failed · showing cached values", opencodeWarning);
+                }
+                setStatusIndicator(_keyUsageTooltip);
                 _keyUsageTooltip.setExtraRows(
                     apiTokenUsageRows(_keyUsageTokenId));
                 positionTooltip(_keyUsageAnchor, _keyUsageTooltip);
             }
+        }
+    }
+
+    /// "Cached · updated <ago>" for a cached usage panel, so the panel says how
+    /// stale its numbers are instead of looking freshly fetched.
+    private static string cachedUsageStatus(long ageSeconds)
+    {
+        return ageSeconds < 45 ? "Cached · updated just now"
+            : "Cached · updated " ~ relativeTimeAgo(ageSeconds);
+    }
+
+    /// Short "12s ago" / "5m ago" / "2h ago" for a positive age in seconds.
+    private static string relativeTimeAgo(long seconds)
+    {
+        if (seconds <= 1) return "just now";
+        if (seconds < 60) return to!string(seconds) ~ "s ago";
+        if (seconds < 3600) return to!string(seconds / 60) ~ "m ago";
+        if (seconds < 86_400) return to!string(seconds / 3600) ~ "h ago";
+        return to!string(seconds / 86_400) ~ "d ago";
+    }
+
+    /// Make the fetch state a glanceable signal: a subtle accent dot on the key
+    /// badge while a refresh is in flight, and a warning tint on the label when
+    /// the last refresh failed so a stale "Key set" cannot pass as current.
+    private void setStatusIndicator(HoverTooltip tooltip)
+    {
+        if (tooltip is null || _keyBadge is null || _keyUsageAnchor !is _keyBadge) return;
+        const refreshing =
+            (_keyUsageRequestId in _keyUsageFetching) !is null;
+        tooltip.setAccentDot(refreshing);
+        if (refreshing)
+            _keyBadge.setColor(opencodeAccent);
+        else
+        {
+            const hasKey = activeApiKey(_settings).length > 0;
+            const local = isLoopbackApiBaseUrl(_settings.baseUrl);
+            _keyBadge.setColor(hasKey || local ? opencodeKeyOk : opencodeKeyMissing);
         }
     }
 
@@ -20762,10 +21329,18 @@ public final class OpenCodeRoot : VBox
             if (auto discovered = model in _providerContextLimits)
             {
                 // A discovered window is trusted only when it is believable
-                // against what the catalog says the model supports. The
-                // gateway's /models response carries no context field at all,
-                // so a stored entry can be a stray fallback that would shrink
-                // a 1M model to ~100k and make the usage meter read 100%.
+                // against what the catalog says the model supports: the
+                // provider may report a window below the catalog (and may be
+                // right), but a value far below it is a bogus default, not a
+                // real cap. The gateway's /models response carries no context
+                // field at all, so a stored entry can be a stray fallback that
+                // would shrink a 1M model to 128k and make the usage meter read
+                // 100% whenever that model is selected; the same stale entry
+                // would also silently cap a 1M model's compaction budget at
+                // 128k. Reject a window that is less than half the catalog
+                // value and fall back to the catalog. A provider that doubles a
+                // window (a real 256k entry against a 128k catalog) is still
+                // accepted, as is an exact match.
                 const catalog = contextLimitForModel(model);
                 if (catalog <= 0 || *discovered * 2 >= catalog)
                     limit = *discovered;
@@ -22999,6 +23574,36 @@ public final class OpenCodeRoot : VBox
         return headers;
     }
 
+    /// Test-only: one entry per action group in the column, listing the tool
+    /// names it holds, so a test can prove the same-action split.
+    public string[] toolGroupChildNamesForTesting()
+    {
+        string[] groups;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                groups ~= join(group.childToolNames(), ",");
+        return groups;
+    }
+
+    /// Test-only: a one-line-per-row dump of the transcript column, naming the
+    /// widget type and any tool/role identity, for diagnosing which path built
+    /// a row (owned group, orphan group, plain bubble, nest, ...).
+    public string[] messageColumnDumpForTesting()
+    {
+        string[] rows;
+        foreach (index, child; messageColumnVisuals())
+        {
+            auto line = to!string(index) ~ " " ~ typeid(child).name;
+            if (auto group = cast(ToolGroupBubble) child)
+                line ~= " children=[" ~ join(group.childToolNames(), ",") ~ "]";
+            if (auto bubble = cast(MessageBubble) child)
+                line ~= " role=" ~ bubble.roleForTesting() ~
+                    " tool=" ~ bubble.toolNameForTesting();
+            rows ~= line;
+        }
+        return rows;
+    }
+
     /// Test-only: the phase text currently shown in the live activity row
     /// ("" when the row is not in the transcript). Drives the "what is going
     /// on" indicator so a smoke test can prove it appears, updates and clears.
@@ -23744,6 +24349,32 @@ public final class OpenCodeRoot : VBox
         return _keyUsageTooltip !is null &&
             _keyUsageTooltip.parent() !is null
             ? _keyUsageTooltip.textForTesting() : "";
+    }
+
+    /// Test-only: drive one provider-refresh result into the open panel exactly
+    /// as the background worker's drain does, so the "updating" vs "updated" vs
+    /// "update failed" indicators can be asserted without a live provider.
+    public void applyKeyUsageFetchForTesting(string provider, string key,
+        UsageLimitsResult result)
+    {
+        const requestId = provider ~ ":" ~ key;
+        synchronized (this) _keyUsageReady[requestId] = result;
+        drainKeyUsageResults();
+    }
+
+    /// Test-only: mark a refresh in flight exactly as `openKeyUsageTooltip`
+    /// does before starting the worker (keeps the network out of the test).
+    public void markKeyUsageFetchingForTesting(string provider, string key)
+    {
+        _keyUsageFetching[provider ~ ":" ~ key] = true;
+    }
+
+    /// Test-only: whether the key badge currently wears the "refreshing" accent.
+    public bool keyBadgeBusyForTesting()
+    {
+        return _keyBadge !is null &&
+            to!string(_keyBadge.text()) == "Key set" &&
+            _keyUsageAnchor is _keyBadge;
     }
 
     public bool keyUsageTooltipAboveSettingsForTesting()

@@ -474,17 +474,21 @@ private string environmentSection(in SystemPromptContext ctx)
 public SystemPromptModule rebuildModule()
 {
     return textModule("rebuild", "\n# Rebuilding Aurora OpenCode\n" ~
-        "This is Aurora OpenCode itself, so you can rebuild and relaunch the " ~
-        "application with the `rebuild` tool. It persists this conversation, " ~
-        "hands the build to a detached helper that waits for the app to exit, " ~
-        "runs `dub build`, and relaunches the app, which then continues this " ~
-        "conversation. The live executable is never overwritten while the app " ~
-        "is running: do not try to rebuild it in place with `dub` yourself, " ~
-        "and never kill the app. Use the tool whenever a source change is " ~
-        "ready to test: it needs no user approval or confirmation, and it is " ~
-        "the normal way to apply an edit to the running app. If the build " ~
-        "fails, the resumed conversation reports the compiler errors so you " ~
-        "can fix them and rebuild. This notice appears only because the " ~
-        "active project is Aurora's own source; the tool is not relevant to " ~
-        "any other project.\n");
+        "This is Aurora OpenCode itself, so you can apply a source change to " ~
+        "the running app with the `rebuild` tool. The tool is a deploy, not a " ~
+        "save: it persists this conversation, hands the build to a detached " ~
+        "helper that waits for the app to exit, runs `dub build`, and " ~
+        "relaunches the app, which then continues this conversation. " ~
+        "`rebuild` does the compile: do not run `dub build` (or any build " ~
+        "target) yourself, and never kill or restart the app - only the tool " ~
+        "can, because the live executable is locked while the app runs and a " ~
+        "build in place would both fail to overwrite it and leave a stale " ~
+        "yet rebuilt state. Use the tool deliberately - not as a byproduct of " ~
+        "answering, not mid-discussion, not on half-applied code, not twice " ~
+        "for one change - and announce it when you do. It needs no user " ~
+        "approval or confirmation. If the build fails, the resumed " ~
+        "conversation reports the compiler errors so you can fix them and " ~
+        "call `rebuild` again. This notice appears only because the active " ~
+        "project is Aurora's own source; the tool is not relevant to any " ~
+        "other project.\n");
 }

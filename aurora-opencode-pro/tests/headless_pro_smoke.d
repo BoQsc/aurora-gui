@@ -374,6 +374,50 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(driver.paint(), "Second pro paint failed");
     writeln("[marker] smoke main entered");
+    writeln("[marker] args: ", args);
+    if (args.length > 1 && args[$ - 1] == "--group-only")
+    {
+        // Focused run for the same-action grouping change: read+grep must fold
+        // into an "Explored a file" group and the edit into an "Edited a file"
+        // group, in separate collapsibles, instead of one mixed header.
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Group the actions"]);
+        root.appendToolRequestTurnForTesting("Reading first.", "g-1", "read",
+            `{"filePath":"a.txt"}`);
+        root.appendToolReplyForTesting("g-1", "a body\n");
+        root.appendToolRequestTurnForTesting("Reading two.", "g-2", "read",
+            `{"filePath":"b.txt"}`);
+        root.appendToolReplyForTesting("g-2", "b body\n");
+        root.appendToolRequestTurnForTesting("Searching.", "g-3", "grep",
+            `{"pattern":"needle"}`);
+        root.appendToolReplyForTesting("g-3", "c:1:needle\n");
+        root.appendToolRequestTurnForTesting("Writing.", "g-4", "write",
+            `{"filePath":"out.txt","content":"hi\n"}`);
+        root.appendToolReplyForTesting("g-4", "Wrote out.txt (+1 -0).");
+        root.appendToolRequestTurnForTesting("Running.", "g-5", "run",
+            `{"program":"cmd.exe","args":["/d","/c","echo","hello"]}`);
+        root.appendToolReplyForTesting("g-5", "hello\n");
+        root.tickTree(0.02);
+        assert(driver.paint(), "Group-only paint failed");
+        auto groups = root.toolGroupHeaderTextsForTesting();
+        auto groupChildren = root.toolGroupChildNamesForTesting();
+        foreach (line; root.messageColumnDumpForTesting())
+            writeln("  dump: ", line);
+        writeln("group-only headers: ", groups);
+        foreach (i, h; groups)
+            writeln("  group ", i, " children: ",
+                i < groupChildren.length ? groupChildren[i] : "(none)");
+        assert(groups.length == 3,
+            "expected three same-action groups, got " ~ to!string(groups));
+        assert(groups[0].indexOf("explored") >= 0 && groups[0].indexOf("3") >= 0,
+            "first group should be the explored run: " ~ groups[0]);
+        assert(groups[1].indexOf("Edited a file") >= 0,
+            "second group should be the edited run: " ~ groups[1]);
+        assert(groups[2].indexOf("Ran a command") >= 0,
+            "third group should be the command run: " ~ groups[2]);
+        writeln("group-only OK");
+        return 0;
+    }
     // Git-independent Changes table is always available from the toolbar,
     // including in an ordinary non-repository workspace.
     auto changesButton = requireWidget!Button(root, "oc-changes");
@@ -2107,8 +2151,24 @@ int main(string[] args)
             "The optional target must compact earlier without changing " ~
             "the provider limit shown by the meter");
         root.setContextBudgetForTesting(0);
+        // A provider entry well below the catalog window is a bogus fallback
+        // (the gateway's /models lists no context field, and a 1M model must
+        // not display as 128k whenever it is selected). It is rejected in favor
+        // of the catalog window.
+        root.setProviderContextLimitForTesting(
+            "deepseek-v4.1-flash", 128_000);
+        assert(root.contextLimitForTesting() == 1_000_000,
+            "A provider window far below the catalog must be ignored");
+        // A smaller-but-believable window (at least half the catalog) is
+        // accepted: the provider may really cap the model lower.
+        root.setProviderContextLimitForTesting(
+            "deepseek-v4.1-flash", 600_000);
+        assert(root.contextLimitForTesting() == 600_000,
+            "A believable provider window must still win");
         root.setProviderContextLimitForTesting(
             "deepseek-v4.1-flash", 1_000_000);
+        assert(root.contextLimitForTesting() == 1_000_000,
+            "An exact provider window must be accepted");
         assert(root.availableContextFromErrorForTesting(
             "request (98101 tokens) exceeds the available context size " ~
             "(91904 tokens), try increasing it") == 91_904,
@@ -2722,6 +2782,24 @@ int main(string[] args)
     reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
     reasoningMenu.items()[4].action();
     dismissContextMenus(root);
+    // High must persist literally. It used to be stored as the empty
+    // "implicit" effort, which the request builder now resolves to `low`, so
+    // selecting High silently became Low and the menu never showed it checked.
+    reloadedReasoningSettings = loadSettings();
+    savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
+        "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash");
+    assert(savedReasoning.effort == "high",
+        "Choosing High must persist high effort, not an empty default");
+    assert(root.thinkingModeLabelForTesting() == "Thinking: High",
+        "Selector label must read High after choosing High: " ~
+        root.thinkingModeLabelForTesting());
+    driver.click(globalCenter(thinkingToggle), MouseButton.right);
+    root.tickTree(0.02);
+    reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(reasoningMenu !is null && reasoningMenu.items()[4].checked &&
+        !reasoningMenu.items()[2].checked,
+        "High must stay selected when the Thinking menu is reopened");
+    dismissContextMenus(root);
     driver.click(globalCenter(thinkingToggle), MouseButton.right);
     root.tickTree(0.02);
     reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
@@ -3017,10 +3095,33 @@ int main(string[] args)
         const monthlyAfter = root.keyUsageTooltipTextForTesting();
         assert(monthlyAfter != monthlyBefore,
             "Key badge monthly total did not update with the live reply");
+        // The panel must say where its numbers come from: cached on hover, then
+        // "updated" on a successful refresh, then a warning when a refresh fails
+        // and the cached value is all there is.
+        const cachedBadge = root.keyUsageTooltipTextForTesting();
+        assert(cachedBadge.indexOf("Cached") >= 0,
+            "Key badge tooltip did not mark the cached value: " ~ cachedBadge);
+        root.markKeyUsageFetchingForTesting("opencode", "sk-open-main");
+        root.applyKeyUsageFetchForTesting("opencode", "sk-open-main", openUsage);
+        const updatedBadge = root.keyUsageTooltipTextForTesting();
+        assert(updatedBadge.indexOf("Updated just now") >= 0,
+            "Key badge tooltip did not confirm a successful update: " ~
+                updatedBadge);
+        root.seedKeyUsageForTesting("opencode", "sk-open-main", openUsage);
+        root.markKeyUsageFetchingForTesting("opencode", "sk-open-main");
+        root.applyKeyUsageFetchForTesting("opencode", "sk-open-main",
+            UsageLimitsResult.init);
+        const failedBadge = root.keyUsageTooltipTextForTesting();
+        assert(failedBadge.indexOf("Update failed") >= 0 &&
+            failedBadge.indexOf("5 hours: 76% used") >= 0,
+            "Failed refresh did not keep the cached usage with a warning: " ~
+                failedBadge);
         driver.moveTo(Point(4, 700));
         root.tickTree(0.02);
         assert(!root.keyBadgeTooltipOpenForTesting(),
             "Key badge tooltip stayed open after pointer leave");
+        assert(!root.keyBadgeBusyForTesting(),
+            "Key badge kept the refreshing indicator after the tooltip closed");
         writeln("Toolbar key badge shows API usage and live monthly tokens");
     }
 
@@ -3177,18 +3278,19 @@ int main(string[] args)
         "Tool loop did not append the tool messages to the session");
     writeln("Tool loop preserved the session history");
 
-    // Codex-style action group: the turn's read+grep+run fold into ONE
-    // collapsible whose header summarises the whole turn, instead of a context
-    // group plus a separate shell bubble.
-    assert(root.contextGroupCountForTesting() == 1,
-        "the turn's tools did not fold into one action group");
-    assert(root.firstToolGroupPartCountForTesting() == 3,
-        "action group should contain all three tool parts");
+    // Codex-style action groups: the turn's read+grep fold into one
+    // "Explored 2 files" collapsible and the run into its own "Ran a command"
+    // one, so a turn reads as stacked same-action runs instead of a single
+    // mixed header.
+    assert(root.contextGroupCountForTesting() == 2,
+        "the turn's tools did not fold into two same-action groups");
+    assert(root.firstToolGroupPartCountForTesting() == 2,
+        "the explored group should contain the read and grep parts");
     auto groupHeaders = root.toolGroupHeaderTextsForTesting();
-    assert(groupHeaders.length == 1 &&
-        groupHeaders[0].indexOf("Ran a command") >= 0 &&
-        groupHeaders[0].indexOf("explored 2 files") >= 0,
-        "action group header should summarise the turn: " ~
+    assert(groupHeaders.length == 2 &&
+        groupHeaders[0].indexOf("explored 2 files") >= 0 &&
+        groupHeaders[1].indexOf("Ran a command") >= 0,
+        "action group headers should split by action: " ~
         (groupHeaders.length ? groupHeaders[0] : "<none>"));
     assert(root.firstToolGroupCollapsedForTesting(),
         "action group should start collapsed");
@@ -3884,12 +3986,13 @@ int main(string[] args)
         assert(rows.length == 3,
             "Expected one live row per in-flight tool, got " ~
             to!string(rows.length));
+        // The three calls split by kind: dshel, then write, then read.
         auto liveHeaders = root.toolGroupHeaderTextsForTesting();
-        assert(liveHeaders.length == 1 &&
-            liveHeaders[0].indexOf("Editing a file") >= 0 &&
+        assert(liveHeaders.length == 3 &&
             liveHeaders[0].indexOf("running a command") >= 0 &&
-            liveHeaders[0].indexOf("exploring a file") >= 0,
-            "Live action group header is wrong: " ~
+            liveHeaders[1].indexOf("Editing a file") >= 0 &&
+            liveHeaders[2].indexOf("exploring a file") >= 0,
+            "Live action group headers are wrong: " ~
             (liveHeaders.length ? liveHeaders[0] : "(none)"));
         auto diffs = root.liveToolRowDiffTextsForTesting();
         assert(diffs.length == 3,
@@ -3899,8 +4002,8 @@ int main(string[] args)
             "Live write row did not preview the streamed body: " ~
             (previews.length > 1 ? previews[1] : "(none)"));
         assert(driver.paint(), "Live action group did not paint");
-        writeln("In-flight tools render as children of one live action group: ",
-            liveHeaders[0]);
+        writeln("In-flight tools split into same-action live groups: ",
+            liveHeaders[0], " | ", liveHeaders.length > 1 ? liveHeaders[1] : "");
         // An unnamed tool must not render as a blank row.
         OpenCodeToolCall blank, named;
         blank.name = "";
