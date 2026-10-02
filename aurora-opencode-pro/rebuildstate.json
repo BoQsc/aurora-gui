@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Add off-thread one-time migration write so the per-session conversation store is created at launch instead of waiting for a debounced save that the busy turn blocks.",
+  "reason": "Add inline × clear button inside the sidebar \"Search chats\" field (source/auroraopencode/appui.d).",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 10:36:06.9164509",
-  "finishedAt": "2026-10-02 10:37:09.8473196",
-  "durationMs": 62930,
+  "startedAt": "2026-10-02 10:48:51.2965101",
+  "finishedAt": "2026-10-02 10:49:52.1519307",
+  "durationMs": 60854,
   "exitCode": 0,
   "errors": []
 }

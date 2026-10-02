@@ -7204,6 +7204,98 @@ private final class FollowPill : Widget
 }
 
 // ---------------------------------------------------------------------------
+// Search field with an inline clear button
+// ---------------------------------------------------------------------------
+
+/// The sidebar's "Search chats" field with a small × button pinned inside its
+/// right edge. The button only appears while a query is present, so a search
+/// can be dropped with a single click instead of select-all plus delete. The
+/// field fills the whole box and the button paints above it, so the pair reads
+/// as one input.
+private final class SearchChatsField : Widget
+{
+    private enum int clearButtonSize = 22;
+    private enum int clearButtonMargin = 5;
+
+    TextField field;
+    private FilterClearButton _clear;
+
+    /// Forwarded from the inner field so callers wire a single handler.
+    void delegate() onChanged;
+
+    this()
+    {
+        field = new TextField("");
+        field.setPlaceholder("Search chats");
+        field.onChanged = delegate()
+        {
+            syncClearButton();
+            if (onChanged !is null) onChanged();
+        };
+        add(field);
+
+        _clear = new FilterClearButton();
+        _clear.onClick = delegate()
+        {
+            if (field.textUtf8().length == 0) return;
+            // notify = true runs syncClearButton and the forwarded handler.
+            field.setText("");
+            field.requestFocus();
+        };
+        add(_clear);
+
+        // Match the New chat button's height so the two controls read as a pair.
+        layoutHints().preferredHeight = opencodeControlHeight;
+        layoutHints().minHeight = opencodeControlHeight;
+        syncClearButton();
+    }
+
+    /// Drop the query without firing the forwarded handler; used when the app
+    /// clears the filter itself (e.g. starting a new conversation).
+    void clear()
+    {
+        if (field.textUtf8().length == 0) return;
+        field.setText("", false);
+        syncClearButton();
+    }
+
+    private void syncClearButton()
+    {
+        _clear.setVisible(field.textUtf8().length > 0);
+    }
+
+    protected override void onLayout()
+    {
+        const w = bounds().width;
+        const h = bounds().height;
+        field.setBounds(Rect(0, 0, w, h));
+        const size = minInt(clearButtonSize, maxInt(0, h - 2));
+        _clear.setBounds(Rect(maxInt(0, w - size - clearButtonMargin),
+            (h - size) / 2, size, size));
+    }
+}
+
+/// Flat × that fills the field's own background behind it, so any text scrolled
+/// beneath the button never shows through and the glyph reads as part of the
+/// input rather than a floating control over it.
+private final class FilterClearButton : Button
+{
+    this()
+    {
+        super("×");
+        setFlat(true);
+        setId("oc-filter-clear");
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        canvas.fillRect(Rect(0, 0, bounds().width, bounds().height),
+            theme().fieldBackground);
+        super.onPaint(canvas);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Quick search bar (Pro): Ctrl+F over the open conversation
 // ---------------------------------------------------------------------------
 
@@ -8598,6 +8690,7 @@ public final class OpenCodeRoot : VBox
     private KeyStatusBadge _keyBadge;
     private Label _status;
     private TextField _filterField;
+    private SearchChatsField _filterBox;
     private int[] _sessionIndices;
     // Conversation ids pinned to the top of the sidebar. Persisted in
     // pins.json so pins survive restarts without touching session state.
@@ -10400,12 +10493,10 @@ public final class OpenCodeRoot : VBox
         _newChatButton.layoutHints().minHeight = opencodeControlHeight;
         _newChatButton.onClick = delegate() { newChat(); };
         addButtonTooltip(_newChatButton, newChatTooltipText);
-        _filterField = headerColumn.add(new TextField(""));
+        _filterBox = headerColumn.add(new SearchChatsField());
+        _filterField = _filterBox.field;
         _filterField.setId("oc-filter");
-        _filterField.setPlaceholder("Search chats");
-        _filterField.layoutHints().preferredHeight = opencodeControlHeight;
-        _filterField.layoutHints().minHeight = opencodeControlHeight;
-        _filterField.onChanged = delegate()
+        _filterBox.onChanged = delegate()
         {
             _filterText = _filterField.textUtf8().strip();
             updateSessionList();
@@ -11152,7 +11243,7 @@ public final class OpenCodeRoot : VBox
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
         _filterText = "";
-        if (_filterField !is null) _filterField.setText("", false);
+        if (_filterBox !is null) _filterBox.clear();
         followNewestMessage();
         rebuildMessageColumn();
         updateSessionList();
