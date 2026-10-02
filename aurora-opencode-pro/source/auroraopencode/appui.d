@@ -40,6 +40,19 @@ import auroraopencode.computeruse :
     stopComputerUseKillSwitch, computerUseAbortActive,
     setComputerUseVirtualPointer, beginComputerUseUserRequest,
     setComputerUseExplanationOnly;
+// experimental: orchestrator - delete with source/auroraopencode/orchestrator.d
+import auroraopencode.orchestrator : setOrchestratorSetting,
+    experimentalOrchestratorEnabled,
+    experimentalOrchestratorEnsureRoster,
+    experimentalOrchestratorIsRouter,
+    experimentalOrchestratorAgentModel,
+    experimentalOrchestratorAgentName,
+    experimentalOrchestratorIdentityBlock,
+    experimentalOrchestratorFilterTools,
+    experimentalOrchestratorTakePendingSpeaker,
+    experimentalOrchestratorTakePendingTask,
+    experimentalOrchestratorTakePendingHalt,
+    experimentalOrchestratorTakePendingStatus;
 import auroraopencode.requestintent : explanationOnlyRequest;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
@@ -8740,6 +8753,10 @@ public final class ProjectListView : ListView
 private final class ConversationRuntime
 {
     OpenCodeClient client;
+    // experimental: orchestrator - one extra client per participant, so each
+    // agent talks to the gateway on its own connection/route exactly like a
+    // separate conversation does. Created lazily; empty when the feature is off.
+    OpenCodeClient[string] agentClients;
     OpenCodeClient compactionClient;
     OpenCodeEvent[] compactionEvents;
     string compactionOutput;
@@ -9055,6 +9072,9 @@ public final class OpenCodeRoot : VBox
     private long _preparingLastBytes;
     private int _lastPreparingSeconds = -1;
     private int _toolRounds;
+    // experimental: orchestrator - tool-round count when the current participant
+    // started, so its turn can tell whether that participant actually worked.
+    private int _speakerToolRoundsBase = -1;
     // A recovery request may temporarily omit tools. If the provider asks for
     // tools anyway, restore them and continue the same turn automatically.
     private bool _finalAnswerRequested;
@@ -9323,6 +9343,23 @@ public final class OpenCodeRoot : VBox
         return created;
     }
 
+    /// experimental: orchestrator - the participant's own client, created on
+    /// first use so each agent has a separate connection/route exactly like a
+    /// separate conversation. Falls back to the primary client when the feature
+    /// is off or no speaker is set.
+    private OpenCodeClient orchestratorClientFor(string agentId)
+    {
+        if (agentId.length == 0) return _client;
+        auto found = _loadedRuntimeId in _conversationRuntimes;
+        if (found is null) return _client;
+        auto rt = *found;
+        if (auto existing = agentId in rt.agentClients) return *existing;
+        auto created = new OpenCodeClient(_settings.baseUrl,
+            activeApiKey(_settings));
+        rt.agentClients[agentId] = created;
+        return created;
+    }
+
     /// Persist the handler scratch fields into the conversation currently
     /// loaded in the root. This is deliberately mechanical: the event handlers
     /// remain single-context code, while onTick swaps contexts between queues.
@@ -9332,6 +9369,9 @@ public final class OpenCodeRoot : VBox
         auto found = _loadedRuntimeId in _conversationRuntimes;
         if (found is null) return;
         auto rt = *found;
+        // `_client` may be a per-agent client while that agent's turn is in
+        // flight. Store it so loadRuntime restores the same client on the next
+        // tick and the event pump drains the right queue.
         rt.client = _client;
         rt.cancellation = _toolCancellation;
         rt.eventScratch = _eventScratch;
@@ -9462,6 +9502,9 @@ public final class OpenCodeRoot : VBox
         setComputerUseSetting(_settings.experimentalComputerUse);
         setComputerUseVirtualPointer(
             _settings.experimentalComputerUseVirtualPointer);
+        // experimental: orchestrator - apply the persisted switch before any
+        // toolset/prompt build.
+        setOrchestratorSetting(_settings.experimentalOrchestrator);
         // The subagent action needs the provider; hand it over with the switch.
         setComputerUseProvider(_settings.baseUrl, _settings.apiKey,
             _settings.model);
@@ -11831,6 +11874,14 @@ public final class OpenCodeRoot : VBox
         session.updatedAt = Clock.currTime.toUnixTime();
         message.id = newMessageId();
         message.parentId = session.activeLeafId;
+        // experimental: orchestrator - attribute the message to the active
+        // participant so a multi-agent transcript stays readable. Only while
+        // the feature is on: a persisted roster must not label ordinary replies
+        // after the user disables orchestration.
+        if (experimentalOrchestratorEnabled() &&
+            (message.role == "assistant" || message.role == "tool") &&
+            message.authorId.length == 0 && session.activeAgentId.length > 0)
+            message.authorId = session.activeAgentId;
         session.messages ~= message;
         session.activeLeafId = message.id;
         publishMessageEvent(AgentEventKind.itemAdded, session,
@@ -12179,6 +12230,16 @@ public final class OpenCodeRoot : VBox
             // point the agent hit a limit.
             if (message.internal)
             {
+                // experimental: orchestrator - handoffs and review requests are
+                // shown as compact visible rows so the dispatch is legible.
+                if (isDispatchNote(message))
+                {
+                    auto note = new MessageBubble();
+                    note.setRole("tool");
+                    note.setToolName("handoff");
+                    note.setContent(dispatchNoteText(message));
+                    _messageColumn.add(note);
+                }
                 ++slot;
                 continue;
             }
@@ -12222,6 +12283,8 @@ public final class OpenCodeRoot : VBox
                         latestAssistantIndex, versionPositions, versionTotals,
                         thinkingText[slot]);
                 }
+                if (showAuthorHeader(message))
+                    _messageColumn.add(authorHeaderWidget(message));
                 _messageColumn.add(replyBubble);
                 // This round's own tool results, in the order the model
                 // requested them: the round's prose is followed by its own
@@ -12345,6 +12408,8 @@ public final class OpenCodeRoot : VBox
                 ++slot;
                 continue;
             }
+            if (showAuthorHeader(message))
+                _messageColumn.add(authorHeaderWidget(message));
             _messageColumn.add(buildMessageBubble(index,
                 session.messages[index], latestAssistantIndex,
                 versionPositions, versionTotals));
@@ -13038,6 +13103,99 @@ public final class OpenCodeRoot : VBox
             positions[index] = order;
             totals[index] = count.get(key, 0);
         }
+    }
+
+    /// experimental: orchestrator - a small colored author header above a
+    /// multi-agent reply, so each participant reads as its own speaker.
+    private Widget authorHeaderWidget(const ref ChatMessage message) const
+    {
+        auto row = new HBox(6);
+        row.layoutHints().preferredHeight = 20;
+        auto dot = new Label("●");
+        dot.setColor(agentAccentColor(message.authorId));
+        row.add(dot);
+        auto name = new Label(authorName(message.authorId));
+        name.setColor(opencodeMuted);
+        row.add(name);
+        return row;
+    }
+
+    private static bool showAuthorHeader(const ref ChatMessage message)
+    {
+        return experimentalOrchestratorEnabled() &&
+            message.role == "assistant" && message.authorId.length > 0 &&
+            !message.internal;
+    }
+
+    /// A stable accent color per participant.
+    private static Color agentAccentColor(string id)
+    {
+        if (id == "orchestrator") return opencodeAccent;
+        if (id == "builder") return Color.fromHex(0x5fb3a1);
+        if (id == "reviewer") return Color.fromHex(0xd9a441);
+        if (id == "researcher") return Color.fromHex(0x6aa9e0);
+        return opencodeMuted;
+    }
+
+    /// The participant's display name for an author id.
+    private string authorName(string id) const
+    {
+        if (_current >= 0 && _current < cast(int) _sessions.length)
+            foreach (agent; _sessions[_current].agents)
+                if (agent.id == id) return agent.name;
+        return id;
+    }
+
+    /// experimental: orchestrator - a sub-agent's request is bounded to its own
+    /// task turn instead of the whole shared transcript. Returns the message id
+    /// to start after (the predecessor of the latest handoff note), or "" to
+    /// use the full history (orchestrator turns). This is what stops the
+    /// "freeze right after delegation": the sub-agent no longer re-sends the
+    /// entire conversation on every tool round.
+    private string multiAgentContextAnchor(const ref ChatSession session,
+        string speaker)
+    {
+        if (!experimentalOrchestratorEnabled() || speaker.length == 0)
+            return "";
+        if (experimentalOrchestratorIsRouter(session, speaker)) return "";
+        size_t found = size_t.max;
+        foreach_reverse (i, ref message; session.messages)
+            if (message.internal && message.role == "user" &&
+                message.content.indexOf("Multi-agent handoff.") == 0)
+            {
+                found = i;
+                break;
+            }
+        if (found == size_t.max || found == 0) return "";
+        return session.messages[found - 1].id;
+    }
+
+    /// experimental: orchestrator - an internal control note worth showing in
+    /// the transcript (a handoff or a review request), so the dispatch is
+    /// visible instead of a silent wait.
+    private static bool isDispatchNote(const ref ChatMessage message)
+    {
+        if (!experimentalOrchestratorEnabled()) return false;
+        if (!message.internal || message.role != "user") return false;
+        return message.content.indexOf("Multi-agent handoff.") == 0 ||
+            message.content.indexOf("Multi-agent update:") == 0;
+    }
+
+    /// experimental: orchestrator - whether a participant id is the router
+    /// (orchestrator). Used to decide whose view a request is built for.
+    private static bool isRouterAgent(const ref ChatSession session, string id)
+    {
+        foreach (agent; session.agents)
+            if (agent.id == id) return agent.router;
+        return false;
+    }
+
+    /// The first line of a dispatch note, for the compact visible row.
+    private static string dispatchNoteText(const ref ChatMessage message)
+    {
+        auto nl = message.content.indexOf('\n');
+        return nl < 0 ? message.content
+            : message.content[0 .. cast(size_t) nl];
     }
 
     /// Build the retained bubble for one message, wiring its context menu,
@@ -13766,6 +13924,72 @@ public final class OpenCodeRoot : VBox
             updateStatus("Applying queued guidance…");
             startChatRequest(sessionIndex, false);
             return;
+        }
+        // experimental: orchestrator - a multi-agent dispatch continues instead
+        // of ending: an explicit assign moves to that speaker, and a finished
+        // participant returns control to the orchestrator for review. The
+        // orchestrator's own turn (a router) ends the dispatch.
+        if (experimentalOrchestratorEnabled() && session.agents.length > 0)
+        {
+            const finishedSpeaker = session.activeAgentId;
+            string nextSpeaker = session.nextSpeakerId;
+            if (nextSpeaker.length == 0 &&
+                !experimentalOrchestratorIsRouter(*session, finishedSpeaker))
+                nextSpeaker = "orchestrator";
+            // Do not bounce back to the orchestrator when a participant only
+            // talked (no tool work): that A<->B chatter is what looked like a
+            // frozen app. End the dispatch instead.
+            const didWork = _speakerToolRoundsBase >= 0 &&
+                _toolRounds > _speakerToolRoundsBase;
+            if (nextSpeaker == "orchestrator" &&
+                !experimentalOrchestratorIsRouter(*session, finishedSpeaker) &&
+                !didWork)
+                nextSpeaker = "";
+            // Bound a runaway dispatch.
+            session.agentHops++;
+            if (session.agentHops > 8) nextSpeaker = "";
+            if (nextSpeaker.length > 0)
+            {
+                session.activeAgentId = nextSpeaker;
+                session.nextSpeakerId = "";
+                if (nextSpeaker == "orchestrator" &&
+                    finishedSpeaker.length > 0 &&
+                    finishedSpeaker != "orchestrator")
+                {
+                    ChatMessage review;
+                    review.role = "user";
+                    review.internal = true;
+                    review.time = currentTimestamp();
+                    review.content = "Multi-agent update: participant \"" ~
+                        experimentalOrchestratorAgentName(*session,
+                            finishedSpeaker) ~ "\" finished its turn. Review " ~
+                        "the work in this conversation against the user's goal, " ~
+                        "then either assign the next task or call finish.";
+                    appendMessage(*session, review);
+                }
+                session.taskStatus = "active";
+                publishThreadUpdated(*session);
+                setTurnActiveMarker(true, session.id);
+                setTurnInFlight(true);
+                updateStatus("Continuing with " ~ session.activeAgentId ~ "…");
+                startChatRequest(sessionIndex, false);
+                return;
+            }
+            else if (experimentalOrchestratorIsRouter(*session,
+                finishedSpeaker))
+            {
+                // The orchestrator ended the dispatch (finish/ask_user, or a
+                // plain summary). Mark the task terminal and stop here so the
+                // durable-task continuation does not keep re-opening turns —
+                // that endless "Continuation request…" loop was the real
+                // "does nothing".
+                session.taskStatus = "completed";
+                session.nextSpeakerId = "";
+                session.turnStatus = "completed";
+                publishThreadUpdated(*session);
+                markDirty();
+                return;
+            }
         }
         if (!explanationOnlyRequest(latestActualUserRequest(*session)) &&
             planNeedsCompletionReview(*session))
@@ -14835,6 +15059,50 @@ public final class OpenCodeRoot : VBox
                 imageMessage.time = currentTimestamp();
                 appendMessage(*session, imageMessage);
                 _pendingToolImages.length = 0;
+            }
+            // experimental: orchestrator - consume a routing request from the
+            // routing tools (assign switches the next speaker; ask_user/finish
+            // cancels an outstanding switch).
+            if (experimentalOrchestratorEnabled())
+            {
+                const nextSpeaker =
+                    experimentalOrchestratorTakePendingSpeaker();
+                const task = experimentalOrchestratorTakePendingTask();
+                const halt = experimentalOrchestratorTakePendingHalt();
+                const terminalStatus =
+                    experimentalOrchestratorTakePendingStatus();
+                // finish/ask_user end the dispatch: mark the task terminal so
+                // the durable-task continuation stops re-opening turns (that
+                // endless "Continuation request…" loop was the bug).
+                if (terminalStatus.length > 0)
+                    session.taskStatus = terminalStatus;
+                if (halt || nextSpeaker.length == 0 ||
+                    session.agents.length == 0)
+                    session.nextSpeakerId = "";
+                else
+                {
+                    session.activeAgentId = nextSpeaker;
+                    session.nextSpeakerId = "";
+                    _speakerToolRoundsBase = _toolRounds;
+                    // Give the new participant a direct instruction. Without it
+                    // the model just continues the orchestrator's tool round and
+                    // does no work (it reads the assign result as "I am waiting").
+                    if (nextSpeaker != "orchestrator")
+                    {
+                        ChatMessage handoff;
+                        handoff.role = "user";
+                        handoff.internal = true;
+                        handoff.time = currentTimestamp();
+                        handoff.content = "Multi-agent handoff. Act now as \"" ~
+                            experimentalOrchestratorAgentName(*session,
+                                nextSpeaker) ~ "\". Assigned task: " ~
+                            (task.length > 0 ? task : "(see the conversation)") ~
+                            "\nDo the task with the available tools. Do not " ~
+                            "restate the assignment and do not say you are " ~
+                            "waiting for another agent.";
+                        appendMessage(*session, handoff);
+                    }
+                }
             }
             if (!_toolContinuationPaused)
             {
@@ -16755,7 +17023,8 @@ public final class OpenCodeRoot : VBox
     }
 
     private static ChatRequestMessage[] buildRequestMessages(
-        const ref ChatSession session, string afterMessageId = "")
+        const ref ChatSession session, string afterMessageId = "",
+        bool orchestratorSummaryView = false)
     {
         ChatRequestMessage[] messages;
         const path = activeMessagePath(session);
@@ -16772,6 +17041,18 @@ public final class OpenCodeRoot : VBox
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
+            // experimental: orchestrator - the orchestrator does not read the
+            // sub-agents' shared context (their tool rounds are a separate
+            // "subchat"); it sees only each sub-agent's prose result. This keeps
+            // the orchestrator's request small instead of re-sending everything.
+            if (orchestratorSummaryView && message.authorId.length > 0 &&
+                !isRouterAgent(session, message.authorId) &&
+                !(message.role == "assistant" &&
+                    message.toolCalls.length == 0))
+            {
+                ++slot;
+                continue;
+            }
             if (message.role == "assistant" && message.toolCalls.length > 0)
             {
                 bool[string] outstanding;
@@ -17020,6 +17301,20 @@ public final class OpenCodeRoot : VBox
         if (_settings.toolsEnabled)
             ensureDurableTaskCheckpoint(*session,
                 _settings.experimentalNestedPlans);
+        // experimental: orchestrator - pick the participant that answers this
+        // turn. Off unless the feature is enabled, so the default conversation
+        // is unchanged.
+        bool orchestratorRouter = false;
+        string orchestratorSpeaker;
+        if (experimentalOrchestratorEnabled())
+        {
+            experimentalOrchestratorEnsureRoster(*session);
+            if (session.activeAgentId.length == 0)
+                session.activeAgentId = "orchestrator";
+            orchestratorSpeaker = session.activeAgentId;
+            orchestratorRouter = experimentalOrchestratorIsRouter(*session,
+                orchestratorSpeaker);
+        }
         ChatRequestMessage[] messages;
         if (_settings.toolsEnabled)
         {
@@ -17055,8 +17350,12 @@ public final class OpenCodeRoot : VBox
                         "checklist, use update_subplan with its 1-based " ~
                         "parent_step. This adds one collapsible level without " ~
                         "replacing the main plan. Keep the parent step " ~
-                        "in_progress until its outcome is complete.\n";
+                    "in_progress until its outcome is complete.\n";
             }
+            if (experimentalOrchestratorEnabled() &&
+                orchestratorSpeaker.length > 0)
+                systemPrompt.content ~= experimentalOrchestratorIdentityBlock(
+                    *session, orchestratorSpeaker);
             messages ~= systemPrompt;
         }
         else
@@ -17086,6 +17385,11 @@ public final class OpenCodeRoot : VBox
                 if (tool.name != "update_subplan") filtered ~= tool;
             tools = filtered;
         }
+        // experimental: orchestrator - a router sees only its routing tools;
+        // other participants never see them.
+        if (experimentalOrchestratorEnabled())
+            tools = experimentalOrchestratorFilterTools(tools,
+                orchestratorRouter);
         const fixedRequestBytes = requestMessageBytes(messages) +
             requestToolDefinitionBytes(tools);
         const compactionEnabled = contextCompactionForModel(_settings,
@@ -17102,7 +17406,27 @@ public final class OpenCodeRoot : VBox
         // off; the identical untrimmed bytes would just be refused again.
         const forceCompact = _forceCompactNextRequest;
         _forceCompactNextRequest = false;
-        if (compactionEnabled)
+        // experimental: orchestrator - sub-agent turns run on their own bounded
+        // context (task + this turn), not the shared transcript.
+        const contextAnchor = multiAgentContextAnchor(*session,
+            orchestratorSpeaker);
+        if (contextAnchor.length > 0)
+        {
+            compactedRequestMessages = buildRequestMessages(*session,
+                contextAnchor);
+            checkpointCreated = false;
+            fallbackCompacted = false;
+        }
+        else if (orchestratorRouter)
+        {
+            // The orchestrator sees only each sub-agent's prose result, not the
+            // shared "subchat" detail, so its request stays small instead of
+            // re-sending everything.
+            compactedRequestMessages = buildRequestMessages(*session, "", true);
+            checkpointCreated = false;
+            fallbackCompacted = false;
+        }
+        else if (compactionEnabled)
         {
             const contextLimit = requestContextBudget(session.model);
             compactedRequestMessages = prepareCompactedRequest(*session,
@@ -17154,7 +17478,17 @@ public final class OpenCodeRoot : VBox
         // The OpenCode gateway routes by a stable per-conversation id; it
         // rejects requests without one. The first message id is stable for
         // this conversation across turns and restarts.
-        _client.setOpenCodeSession(sessionRoutingKey(*session));
+        // experimental: orchestrator - each participant uses its own client and
+        // its own gateway route, so agents are isolated like separate
+        // conversations (own cache/schedule) instead of sharing one connection.
+        if (experimentalOrchestratorEnabled() && orchestratorSpeaker.length > 0)
+        {
+            _client = orchestratorClientFor(orchestratorSpeaker);
+            _client.setOpenCodeSession(sessionRoutingKey(*session) ~ "-" ~
+                orchestratorSpeaker);
+        }
+        else
+            _client.setOpenCodeSession(sessionRoutingKey(*session));
         // The nested computer-use loop uses its own HTTP path; give it the same
         // conversation route id so its frames hit the gateway's cache instead
         // of a cold, slow route on every step.
@@ -17169,6 +17503,15 @@ public final class OpenCodeRoot : VBox
             _settings.model = session.model;
             if (_modelButton !is null) _modelButton.setText(session.model);
         }
+        // experimental: orchestrator - a participant may override the model.
+        string orchestratorModel = session.model;
+        if (experimentalOrchestratorEnabled() && orchestratorSpeaker.length > 0)
+        {
+            const modelOverride = experimentalOrchestratorAgentModel(*session,
+                orchestratorSpeaker);
+            if (modelOverride.length > 0)
+                orchestratorModel = resolveAvailableModel(modelOverride);
+        }
         // A user-initiated request opens the turn before a possible summary
         // request, so Stop and queued guidance work while compaction runs.
         if (userTurn)
@@ -17178,12 +17521,14 @@ public final class OpenCodeRoot : VBox
             markDirty();
             _toolRounds = 0;
             _finalAnswerRequested = false;
+            session.agentHops = 0;
+            _speakerToolRoundsBase = -1;
             _reportedToolCallIds = null;
             beginTurnTiming(sessionIndex);
             setTurnActiveMarker(true, session.id);
             setTurnInFlight(true);
             JSONValue payload;
-            payload["model"] = session.model;
+            payload["model"] = orchestratorModel;
             payload["thinking"] = session.thinking;
             publishRuntimeEvent(AgentEventKind.turnStarted, *session,
                 _turnUserId, "", "", payload.toString());
@@ -17201,13 +17546,13 @@ public final class OpenCodeRoot : VBox
             return;
         }
         const reasoningControl = reasoningControlForModel(_settings,
-            _settings.baseUrl, session.model);
+            _settings.baseUrl, orchestratorModel);
         const llamaCpp = _reasoningCapsBaseUrl == _settings.baseUrl &&
             _llamaCppEndpoint;
         const requestId = ++_nextRequestId;
         _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
             activeApiKey(_settings));
-        _client.startChatMessages(messages, tools, session.model,
+        _client.startChatMessages(messages, tools, orchestratorModel,
             session.thinking, requestId, reasoningControl.effort,
             llamaCpp ? reasoningControl.budgetTokens : 0, llamaCpp);
         _activeRequestId = _nextRequestId;
@@ -17216,11 +17561,17 @@ public final class OpenCodeRoot : VBox
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
         _lastRetryStatusSeconds = -1;
-        updateStatus(_contextWasCompacted[session.id]
-            ? "Context compacted · generating…" : "Generating…");
+        // experimental: orchestrator - name the active participant in the
+        // status/activity line so a dispatched turn never looks frozen.
+        const speakerLabel = (experimentalOrchestratorEnabled() &&
+            orchestratorSpeaker.length > 0)
+            ? experimentalOrchestratorAgentName(*session, orchestratorSpeaker) ~
+                " · " : "";
+        updateStatus(speakerLabel ~ (_contextWasCompacted[session.id]
+            ? "Context compacted · generating…" : "Generating…"));
         // Fill the request round-trip immediately: the transcript shows a live
         // "waiting" row from the moment Send is pressed until the first event.
-        setActivity("Waiting for the model…");
+        setActivity(speakerLabel ~ "Waiting for the model…");
         if (newCompactionNotice && _current == sessionIndex)
             rebuildMessageColumn();
         updateSendButton();
@@ -18993,6 +19344,25 @@ public final class OpenCodeRoot : VBox
         };
         virtualPointerRow.add(virtualPointerCheck);
         optionsBody.add(virtualPointerRow);
+
+        // experimental: orchestrator - delete with
+        // source/auroraopencode/orchestrator.d. Off by default: adds the
+        // `assign`/`ask_user`/`finish` routing tools for a multi-agent
+        // dispatch.
+        auto orchestratorRow = new HBox(8);
+        orchestratorRow.layoutHints().preferredHeight = 32;
+        auto orchestratorCheck = new CheckBox(
+            "Experimental orchestrator (multi-agent routing)");
+        orchestratorCheck.setId("oc-orchestrator");
+        orchestratorCheck.setChecked(_settings.experimentalOrchestrator, false);
+        orchestratorCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalOrchestrator = value;
+            setOrchestratorSetting(value);
+            saveSettingsNow();
+        };
+        orchestratorRow.add(orchestratorCheck);
+        optionsBody.add(orchestratorRow);
 
         // Optional: a small always-on-top mini chat that shows the last few
         // messages of the current conversation and a one-line input, so the
@@ -21627,6 +21997,8 @@ public final class OpenCodeRoot : VBox
             messageJson["id"] = message.id;
         if (message.parentId.length > 0)
             messageJson["parentId"] = message.parentId;
+        if (message.authorId.length > 0)
+            messageJson["authorId"] = message.authorId;
         messageJson["role"] = message.role;
         messageJson["content"] = message.content;
         if (message.reasoning.length > 0)
@@ -21760,6 +22132,25 @@ public final class OpenCodeRoot : VBox
             foreach (item; session.queuedFollowUps)
                 followUps.array ~= JSONValue(item);
             root["queuedFollowUps"] = followUps;
+        }
+        // experimental: orchestrator - persist the participant roster and the
+        // active speaker so a multi-agent conversation resumes correctly.
+        if (session.agents.length > 0)
+        {
+            JSONValue agents = JSONValue(string[].init);
+            foreach (agent; session.agents)
+            {
+                JSONValue item;
+                item["id"] = agent.id;
+                item["name"] = agent.name;
+                if (agent.persona.length > 0) item["persona"] = agent.persona;
+                if (agent.model.length > 0) item["model"] = agent.model;
+                if (agent.router) item["router"] = true;
+                agents.array ~= item;
+            }
+            root["agents"] = agents;
+            if (session.activeAgentId.length > 0)
+                root["activeAgentId"] = session.activeAgentId;
         }
         if (session.activeLeafId.length > 0)
             root["activeLeaf"] = session.activeLeafId;
@@ -21987,6 +22378,24 @@ public final class OpenCodeRoot : VBox
         if (auto field = "compactedThroughMessageId" in sessionValue.object)
             if (field.type == JSONType.string)
                 session.compactedThroughMessageId = field.str;
+        // experimental: orchestrator - read the persisted roster/speaker.
+        if (auto field = "agents" in sessionValue.object)
+            if (field.type == JSONType.array)
+                foreach (item; field.array)
+                {
+                    if (item.type != JSONType.object) continue;
+                    AgentSpec agent;
+                    if (auto f = "id" in item.object) agent.id = f.str;
+                    if (auto f = "name" in item.object) agent.name = f.str;
+                    if (auto f = "persona" in item.object) agent.persona = f.str;
+                    if (auto f = "model" in item.object) agent.model = f.str;
+                    if (auto f = "router" in item.object)
+                        agent.router = f.type == JSONType.true_;
+                    if (agent.id.length > 0) session.agents ~= agent;
+                }
+        if (auto field = "activeAgentId" in sessionValue.object)
+            if (field.type == JSONType.string)
+                session.activeAgentId = field.str;
     }
 
     /// Message fields of one conversation's `messages` array, matching
@@ -22003,6 +22412,8 @@ public final class OpenCodeRoot : VBox
                 message.id = f.str;
             if (auto f = "parentId" in messageValue.object)
                 message.parentId = f.str;
+            if (auto f = "authorId" in messageValue.object)
+                message.authorId = f.str;
             if (auto f = "role" in messageValue.object)
                 message.role = f.str;
             if (auto f = "content" in messageValue.object)
@@ -22458,12 +22869,14 @@ public final class OpenCodeRoot : VBox
                                     if (messageValue.type != JSONType.object)
                                         continue;
                                     ChatMessage message;
-                                    if (auto f = "id" in messageValue.object)
-                                        message.id = f.str;
-                                    if (auto f = "parentId" in messageValue.object)
-                                        message.parentId = f.str;
-                                    if (auto f = "role" in messageValue.object)
-                                        message.role = f.str;
+            if (auto f = "id" in messageValue.object)
+                message.id = f.str;
+            if (auto f = "parentId" in messageValue.object)
+                message.parentId = f.str;
+            if (auto f = "authorId" in messageValue.object)
+                message.authorId = f.str;
+            if (auto f = "role" in messageValue.object)
+                message.role = f.str;
                                     if (auto f = "content" in messageValue.object)
                                         message.content = f.str;
                                     if (auto f = "reasoning" in messageValue.object)

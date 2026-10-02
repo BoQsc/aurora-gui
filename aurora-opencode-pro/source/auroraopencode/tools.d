@@ -10,6 +10,9 @@ import auroraopencode.websearch : experimentalWebSearchExecute,
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse : experimentalComputerUseExecute,
     experimentalComputerUseTools;
+// experimental: orchestrator - delete with source/auroraopencode/orchestrator.d
+import auroraopencode.orchestrator : experimentalOrchestratorExecute,
+    experimentalOrchestratorTools;
 import std.file : dirEntries, exists, isFile, isDir, isSymlink, SpanMode, read,
     readText, write, mkdirRecurse, fileCopy = copy, remove, rename,
     rmdir, rmdirRecurse, tempDir, getSize,
@@ -390,6 +393,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
     ];
     defs ~= experimentalWebSearchTools(); // experimental: websearch
     defs ~= experimentalComputerUseTools(); // experimental: computer use
+    defs ~= experimentalOrchestratorTools(); // experimental: orchestrator
     return defs;
 }
 
@@ -446,6 +450,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
     ];
     defs ~= experimentalWebSearchTools(); // experimental: websearch
     defs ~= experimentalComputerUseTools(); // experimental: computer use
+    defs ~= experimentalOrchestratorTools(); // experimental: orchestrator
     return defs;
 }
 
@@ -4910,6 +4915,16 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
                 control.failed);
             result.images = control.images;
             return result;
+        }
+        // experimental: orchestrator - delete with
+        // source/auroraopencode/orchestrator.d
+        case "assign":
+        case "ask_user":
+        case "finish":
+        {
+            auto routing = experimentalOrchestratorExecute(call.name,
+                call.arguments);
+            return ToolExecution(call.name, routing[0], routing[1]);
         }
         case "rebuild":
             return runRebuildTool(call.arguments);

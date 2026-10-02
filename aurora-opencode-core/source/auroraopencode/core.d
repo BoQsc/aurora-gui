@@ -645,6 +645,23 @@ public struct ChatMessage
     // UI-only marker: this message preceded a request whose older context was
     // compacted. It is persisted with the transcript but never sent to a model.
     bool contextCompacted;
+    // Experimental multi-agent: which participant authored this message. Empty
+    // means the default single agent, so legacy transcripts are unaffected.
+    // See docs/multi-agent-single-conversation.md.
+    string authorId;
+}
+
+/// Experimental multi-agent: one participant in a conversation's roster. The
+/// messages the model sees are still one assistant channel, so authorship is
+/// carried per message (`ChatMessage.authorId`) and a roster block in the
+/// system prompt tells the active participant who the others are.
+public struct AgentSpec
+{
+    string id;      // stable key, e.g. "orchestrator"
+    string name;    // display name, e.g. "Orchestrator"
+    string persona; // extra system-prompt section for this participant
+    string model;   // optional model override; empty -> the session's model
+    bool router;    // routing-only participant (gets assign/ask_user/finish)
 }
 
 /// Durable work state kept independently of transcript prose.  The model may
@@ -767,6 +784,15 @@ public struct ChatSession
     // prompt survives a restart or a rebuild-and-relaunch instead of vanishing
     // with the process. Empty once the prompt is sent.
     string draft;
+    // Experimental multi-agent roster. Empty means the ordinary single-agent
+    // conversation. `activeAgentId` is who speaks next; `nextSpeakerId` is set
+    // by a routing tool (assign) and consumed at the next turn boundary.
+    AgentSpec[] agents;
+    string activeAgentId;
+    string nextSpeakerId;
+    // experimental multi-agent: how many participant turns the current dispatch
+    // has taken, to bound a runaway orchestrator loop. Reset on a user turn.
+    int agentHops;
     // Wall-clock seconds (Unix time) of the conversation's last activity - a
     // message or turn change. Lets the sidebar be listed by most recent
     // activity instead of creation order. Zero means "unknown" (a snapshot
@@ -1009,6 +1035,11 @@ public struct Settings
     // pointer / stealing focus, so the person keeps using mouse and keyboard.
     // Off by default; only meaningful while experimentalComputerUse is on.
     bool experimentalComputerUseVirtualPointer;
+    // Highly experimental opt-in: expose the orchestrator routing tools
+    // (`assign`/`ask_user`/`finish`) that let one participant hand work to
+    // others. Off by default; the Settings dialog owns this switch. See
+    // docs/multi-agent-single-conversation.md.
+    bool experimentalOrchestrator;
     // Optional always-on-top mini chat overlay: a small frameless window that
     // floats above other apps and shows the last few messages of the current
     // conversation plus a one-line input, so the user can read and steer while
@@ -1362,6 +1393,10 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalComputerUseVirtualPointer =
                             found.type == JSONType.true_;
+                if (auto found = "experimentalOrchestrator" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalOrchestrator =
+                            found.type == JSONType.true_;
                 if (auto found = "floatingMiniChat" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.floatingMiniChat = found.type == JSONType.true_;
@@ -1637,6 +1672,7 @@ public void saveSettings(const ref Settings settings)
     root["experimentalComputerUse"] = settings.experimentalComputerUse;
     root["experimentalComputerUseVirtualPointer"] =
         settings.experimentalComputerUseVirtualPointer;
+    root["experimentalOrchestrator"] = settings.experimentalOrchestrator;
     root["floatingMiniChat"] = settings.floatingMiniChat;
     root["floatingMiniChatLines"] = settings.floatingMiniChatLines;
     JSONValue contextBudgets = JSONValue(string[].init);

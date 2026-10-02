@@ -10,63 +10,149 @@ import auroraopencode.logging : logInfo, logLaunch;
 import auroraopencode.updater : runUpdateHelperMode;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
+import std.array : join;
 import std.conv : to;
-import std.stdio : writeln;
+import std.stdio : stdin, stdout, writeln;
+import std.string : strip;
 import std.utf : toUTF32;
 
-private int runScreenshot(string path, bool withChat, string message)
+/// An offscreen UI: the real widgets and a test driver, with no window shown.
+private struct OffscreenUi
+{
+    GuiWindow window;
+    OpenCodeRoot root;
+    UiTestDriver driver;
+}
+
+private OffscreenUi openOffscreen(string title, RendererPreference renderer)
 {
     WindowOptions options;
-    options.title = "Aurora OpenCode";
+    options.title = title;
     options.width = 1200;
     options.height = 800;
     options.decorated = false;
     options.darkTitleBar = true;
     options.iconPath = applicationIconPath();
-    options.renderer = RendererPreference.automatic;
-    auto window = new GuiWindow(options, opencodeTheme());
-    auto root = new OpenCodeRoot(window);
-    window.setRoot(root);
-    auto driver = new UiTestDriver(window);
-    driver.paint();
-    root.tickTree(0.02);
-    driver.paint();
+    options.renderer = renderer;
+    OffscreenUi ui;
+    ui.window = new GuiWindow(options, opencodeTheme());
+    ui.root = new OpenCodeRoot(ui.window);
+    ui.window.setRoot(ui.root);
+    ui.driver = new UiTestDriver(ui.window);
+    ui.driver.paint();
+    ui.root.tickTree(0.02);
+    ui.driver.paint();
+    return ui;
+}
 
-    if (withChat && message.length > 0)
+/// Submit one prompt through the real input widget and wait for the turn to
+/// finish. Returns the assistant's final text for the active conversation.
+private string submitPrompt(ref OffscreenUi ui, string message, bool verbose)
+{
+    auto inputWidget = findById(ui.root, "oc-input");
+    if (inputWidget !is null)
     {
-        auto inputWidget = findById(root, "oc-input");
-        if (inputWidget !is null)
-        {
-            auto input = cast(TextArea) inputWidget;
-            input.requestFocus();
-            root.tickTree(0.02);
-            driver.text(toUTF32(message));
-            root.tickTree(0.02);
-            writeln("typed: ", input.textUtf8());
-            driver.pressKey(Key.enter);
-        }
-        root.tickTree(0.02);
-        printDiagnostics(root, "after send");
-        const deadline = MonoTime.currTime + seconds(120);
-        while (MonoTime.currTime < deadline)
-        {
-            root.tickTree(0.03);
-            Thread.sleep(30.msecs);
-            driver.paint();
-            auto sendWidget = findById(root, "oc-send");
-            if (sendWidget !is null)
-            {
-                auto button = cast(Button) sendWidget;
-                if (button.text() == "Send") break;
-            }
-        }
-        printDiagnostics(root, "after done");
+        auto input = cast(TextArea) inputWidget;
+        input.requestFocus();
+        ui.root.tickTree(0.02);
+        ui.driver.text(toUTF32(message));
+        ui.root.tickTree(0.02);
+        if (verbose) writeln("typed: ", input.textUtf8());
+        ui.driver.pressKey(Key.enter);
     }
+    ui.root.tickTree(0.02);
+    if (verbose) printDiagnostics(ui.root, "after send");
+    const deadline = MonoTime.currTime + seconds(120);
+    while (MonoTime.currTime < deadline)
+    {
+        ui.root.tickTree(0.03);
+        Thread.sleep(30.msecs);
+        ui.driver.paint();
+        auto sendWidget = findById(ui.root, "oc-send");
+        if (sendWidget !is null)
+        {
+            auto button = cast(Button) sendWidget;
+            if (button.text() == "Send") break;
+        }
+    }
+    if (verbose) printDiagnostics(ui.root, "after done");
+    return ui.root.lastAssistantContentForTesting();
+}
 
-    driver.paint();
-    window.saveScreenshot(path);
-    root.shutdownClient();
-    window.close();
+/// Optionally save a screenshot, then tear the offscreen UI down. Returns the
+/// final assistant text so one-shot callers can print it.
+private string finishOffscreen(ref OffscreenUi ui, string screenshotPath)
+{
+    ui.driver.paint();
+    if (screenshotPath.length > 0) ui.window.saveScreenshot(screenshotPath);
+    const reply = ui.root.lastAssistantContentForTesting();
+    ui.root.shutdownClient();
+    ui.window.close();
+    return reply;
+}
+
+/// Drive the real widgets without ever showing a window. Shared by the
+/// `--screenshot*` and `--headless` entry points so an unattended run
+/// exercises the same code as the GUI.
+private string driveOffscreen(string message, string screenshotPath,
+    bool verbose, RendererPreference renderer)
+{
+    auto ui = openOffscreen("Aurora OpenCode", renderer);
+    if (message.length > 0) submitPrompt(ui, message, verbose);
+    return finishOffscreen(ui, screenshotPath);
+}
+
+private int runScreenshot(string path, bool withChat, string message)
+{
+    driveOffscreen(withChat ? message : "", path, true,
+        RendererPreference.automatic);
+    return 0;
+}
+
+/// Read the whole of standard input as one prompt.
+private string readAllStdin()
+{
+    string text;
+    foreach (line; stdin.byLine())
+    {
+        text ~= line;
+        text ~= '\n';
+    }
+    return text;
+}
+
+/// One-shot automation: run one prompt with no visible window and print the
+/// assistant's final reply to stdout. `-` reads the prompt from stdin, so the
+/// exe can be driven by a pipe. Exit code 0 means a reply was produced.
+private int runHeadless(string message)
+{
+    if (message == "-") message = readAllStdin();
+    const reply = driveOffscreen(message, "", false, RendererPreference.software);
+    writeln(reply);
+    return reply.length > 0 ? 0 : 1;
+}
+
+/// Interactive automation: keep one offscreen UI alive and run one prompt per
+/// line of stdin, printing each reply as it completes. Reusing the session
+/// avoids paying the conversation-restore startup cost for every prompt;
+/// `exit` or `quit` ends the loop.
+private int runHeadlessLoop()
+{
+    auto ui = openOffscreen("Aurora OpenCode", RendererPreference.software);
+    scope (exit)
+    {
+        ui.root.shutdownClient();
+        ui.window.close();
+    }
+    foreach (line; stdin.byLine())
+    {
+        const prompt = strip(line).idup;
+        if (prompt.length == 0) continue;
+        if (prompt == "exit" || prompt == "quit") break;
+        const reply = submitPrompt(ui, prompt, false);
+        writeln(reply);
+        stdout.flush();
+    }
     return 0;
 }
 
@@ -125,6 +211,13 @@ private int runApp(string[] args)
         return runScreenshot(args[2], false, "");
     if (args.length >= 4 && args[1] == "--screenshot-chat")
         return runScreenshot(args[2], true, args[3]);
+    // `--headless-loop` keeps one offscreen session and runs one prompt per
+    // stdin line; `--headless <prompt>` runs a single prompt. Both print the
+    // assistant reply, so the exe can be used as an automation tool.
+    if (args.length >= 2 && args[1] == "--headless-loop")
+        return runHeadlessLoop();
+    if (args.length >= 3 && args[1] == "--headless")
+        return runHeadless(join(args[2 .. $], " "));
 
     WindowOptions options;
     options.title = "Aurora OpenCode";
