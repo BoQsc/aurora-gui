@@ -1,30 +1,37 @@
 module auroradimmer.dimmer;
 
 /**
- * Aurora Dimmer - a tiny Windows night-time screen dimmer, plus a matching
- * brightener for daytime use.
+ * Aurora Dimmer - a tiny Windows screen tint tool for night and day use.
  *
- * The control panel is an ordinary Aurora window. The tinting itself is one or
- * two full virtual-screen, always-on-top, click-through layered Win32 windows
- * blended over the desktop at a user-chosen alpha:
+ * Two tint engines are available, chosen in the UI or with `--overlay`:
  *
- *   - the dimmer paints black, lowering apparent brightness; and
- *   - the brightener paints white, lifting the black level of dark content.
+ *   - Full-screen filter (default): the Windows Magnification API
+ *     (`MagSetFullscreenColorEffect`) applies a color matrix to the whole
+ *     primary display *after* compositing. It therefore also tints context
+ *     menus, tooltips, the taskbar and other shell surfaces that a floating
+ *     window cannot sit above. Limitation: it only covers the primary monitor.
  *
- * Because each layer is only a translucent window, nothing behind it changes:
- * windows, games and video keep running normally and the pointer still reaches
- * them. The two layers are independent and can be combined.
+ *   - Overlay: one or two full virtual-screen, always-on-top, click-through
+ *     layered Win32 windows are blended over the desktop. It covers every
+ *     monitor, but windows and menus placed in a higher z-order band (menus,
+ *     the taskbar, secure surfaces) stay at full brightness.
  *
- * Because the layers live above every other window, Aurora's own control
- * window is re-raised above them whenever a level changes.
+ * Both engines are driven by an independent dim level (black, 0-90%) and
+ * brighten level (white, 0-60%). Neither engine changes what is behind it, so
+ * games and video keep running and the pointer still reaches them.
+ *
+ * The control panel is an ordinary Aurora window. In overlay mode it is
+ * re-raised above the tint layers; in filter mode the whole screen, including
+ * this panel, is tinted.
  */
 
 import aurora;
 import aurora.platform.select : PlatformWindow;
 
-import core.sys.windows.windows : BLACK_BRUSH, BYTE, CreateWindowExW,
-    DefWindowProcW, GetModuleHandleW, GetStockObject, GetSystemMetrics, HBRUSH,
-    HINSTANCE, HWND, HWND_TOPMOST, IsWindow, LPARAM, LRESULT, LWA_ALPHA,
+import core.sys.windows.windows : BLACK_BRUSH, BOOL, BYTE, CreateWindowExW,
+    DefWindowProcW, FreeLibrary, GetModuleHandleW, GetProcAddress,
+    GetStockObject, GetSystemMetrics, HBRUSH, HINSTANCE, HMODULE, HWND,
+    HWND_TOPMOST, IsWindow, LoadLibraryW, LPARAM, LRESULT, LWA_ALPHA,
     RegisterClassExW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
     SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOMOVE,
@@ -41,9 +48,16 @@ import std.utf : toUTF16z;
 private enum int minDimPercent = 0;
 private enum int maxDimPercent = 90;
 
-/// Brighten levels are percentages of white wash: 0 = untouched, 60 = strong.
+/// Brighten levels are percentages of lightening: 0 = untouched, 60 = strong.
 private enum int minBrightenPercent = 0;
 private enum int maxBrightenPercent = 60;
+
+/// Which mechanism actually tints the screen.
+enum TintEngine
+{
+    overlay,      ///< Full-screen window overlays (every monitor).
+    screenFilter, ///< Magnification color matrix (primary monitor, all surfaces).
+}
 
 private int clampDimPercent(int value)
 {
@@ -58,6 +72,151 @@ private int clampBrightenPercent(int value)
     if (value > maxBrightenPercent) return maxBrightenPercent;
     return value;
 }
+
+/// Per-channel scale the full-screen filter applies: <1 dims, >1 brightens.
+float combinedTintScale(int dimPercent, bool dimEnabled,
+    int brightenPercent, bool brightenEnabled)
+{
+    float scale = 1.0f;
+    if (dimEnabled)
+        scale *= 1.0f - (cast(float) dimPercent) / 100.0f;
+    if (brightenEnabled)
+        scale *= 1.0f + (cast(float) brightenPercent) / 100.0f;
+    return scale;
+}
+
+// ---------------------------------------------------------------------------
+// Full-screen filter engine (Windows Magnification API).
+// ---------------------------------------------------------------------------
+
+/// 5x5 color matrix used by `MagSetFullscreenColorEffect`.
+private struct MAGCOLOREFFECT
+{
+    float[5][5] transform;
+}
+
+// The Magnification API is loaded at runtime so the app has no link-time
+// dependency on Magnification.lib and degrades gracefully when the DLL or the
+// entry points are missing.
+private alias MagInitializeFn = extern(Windows) BOOL function();
+private alias MagUninitializeFn = extern(Windows) BOOL function();
+private alias MagSetColorEffectFn = extern(Windows) BOOL function(
+    const(MAGCOLOREFFECT)* pEffect);
+private alias MagSetTransformFn = extern(Windows) BOOL function(
+    float magnification, int xOffset, int yOffset);
+
+private __gshared HMODULE g_magModule;
+private __gshared MagInitializeFn g_magInitialize;
+private __gshared MagUninitializeFn g_magUninitialize;
+private __gshared MagSetColorEffectFn g_magSetColorEffect;
+private __gshared MagSetTransformFn g_magSetTransform;
+private __gshared bool g_magTried;
+private __gshared bool g_magActive;
+
+/// Identity matrix; D floats default to NaN, so every cell is written.
+private MAGCOLOREFFECT magIdentity()
+{
+    MAGCOLOREFFECT effect;
+    foreach (i; 0 .. 5)
+        foreach (j; 0 .. 5)
+            effect.transform[i][j] = (i == j) ? 1.0f : 0.0f;
+    return effect;
+}
+
+/// Resolve the Magnification entry points once. False if unavailable.
+private bool magLoad()
+{
+    if (g_magTried) return g_magModule !is null;
+    g_magTried = true;
+
+    g_magModule = LoadLibraryW("Magnification.dll");
+    if (g_magModule is null)
+        return false;
+
+    g_magInitialize = cast(MagInitializeFn)
+        GetProcAddress(g_magModule, "MagInitialize");
+    g_magUninitialize = cast(MagUninitializeFn)
+        GetProcAddress(g_magModule, "MagUninitialize");
+    g_magSetColorEffect = cast(MagSetColorEffectFn)
+        GetProcAddress(g_magModule, "MagSetFullscreenColorEffect");
+    g_magSetTransform = cast(MagSetTransformFn)
+        GetProcAddress(g_magModule, "MagSetFullscreenTransform");
+
+    if (g_magInitialize is null || g_magSetColorEffect is null ||
+        g_magSetTransform is null)
+    {
+        FreeLibrary(g_magModule);
+        g_magModule = null;
+        g_magInitialize = null;
+        g_magUninitialize = null;
+        g_magSetColorEffect = null;
+        g_magSetTransform = null;
+        return false;
+    }
+    return true;
+}
+
+private void magUnload()
+{
+    if (g_magModule !is null)
+    {
+        FreeLibrary(g_magModule);
+        g_magModule = null;
+    }
+    g_magInitialize = null;
+    g_magUninitialize = null;
+    g_magSetColorEffect = null;
+    g_magSetTransform = null;
+    g_magTried = false;
+}
+
+/// Start the full-screen magnifier at 1x on first use. False if unavailable.
+private bool magEnsure()
+{
+    if (g_magActive) return true;
+    if (!magLoad()) return false;
+    if (g_magInitialize() == 0) return false;
+    // 1x magnification passes the screen through unchanged; the color effect
+    // is what tints it.
+    g_magSetTransform(1.0f, 0, 0);
+    g_magActive = true;
+    return true;
+}
+
+/// Apply a per-channel scale to the whole primary display (1.0 = no tint).
+private void magSetScale(float scale)
+{
+    if (!magEnsure()) return;
+    auto effect = magIdentity();
+    effect.transform[0][0] = scale;
+    effect.transform[1][1] = scale;
+    effect.transform[2][2] = scale;
+    g_magSetColorEffect(&effect);
+}
+
+/// Clear any tint from the filter without tearing the magnifier down.
+private void magReset()
+{
+    if (g_magActive)
+        magSetScale(1.0f);
+}
+
+/// Remove the tint and release the magnifier (used when the app closes).
+private void magShutdown()
+{
+    if (g_magActive)
+    {
+        magSetScale(1.0f);
+        if (g_magUninitialize !is null)
+            g_magUninitialize();
+        g_magActive = false;
+    }
+    magUnload();
+}
+
+// ---------------------------------------------------------------------------
+// Overlay engine.
+// ---------------------------------------------------------------------------
 
 /// Keep an overlay covering the whole virtual desktop (all monitors).
 private void resizeOverlay(HWND hwnd)
@@ -166,7 +325,7 @@ private final class OverlayWindow
 }
 
 // ---------------------------------------------------------------------------
-// Controller: owns the dim and brighten levels and keeps the overlays in sync.
+// Controller: owns the dim and brighten levels and drives the active engine.
 // ---------------------------------------------------------------------------
 
 final class ScreenTintController
@@ -179,10 +338,12 @@ final class ScreenTintController
     private bool _dimEnabled;
     private int _brightenPercent;
     private bool _brightenEnabled;
+    private TintEngine _engine;
     private string _lastError;
 
     this(GuiWindow window, int dimPercent, bool dimEnabled,
-        int brightenPercent, bool brightenEnabled)
+        int brightenPercent, bool brightenEnabled,
+        TintEngine engine = TintEngine.screenFilter)
     {
         _window = window;
         _platform = cast(PlatformWindow) window.nativeWindow();
@@ -194,6 +355,7 @@ final class ScreenTintController
         _dimEnabled = dimEnabled;
         _brightenPercent = clampBrightenPercent(brightenPercent);
         _brightenEnabled = brightenEnabled;
+        _engine = engine;
         apply();
     }
 
@@ -202,7 +364,7 @@ final class ScreenTintController
 
     bool dimEnabled() const { return _dimEnabled; }
 
-    /// Layer alpha actually applied to the dim overlay, 0-255.
+    /// Overlay alpha actually applied to the dim layer, 0-255.
     int dimAlpha() const { return _dimEnabled ? (_dimPercent * 255) / 100 : 0; }
 
     /// Requested brightening, 0-60 percent.
@@ -210,10 +372,20 @@ final class ScreenTintController
 
     bool brightenEnabled() const { return _brightenEnabled; }
 
-    /// Layer alpha actually applied to the brighten overlay, 0-255.
+    /// Overlay alpha actually applied to the brighten layer, 0-255.
     int brightenAlpha() const
     {
         return _brightenEnabled ? (_brightenPercent * 255) / 100 : 0;
+    }
+
+    /// Active tint mechanism.
+    TintEngine engine() const { return _engine; }
+
+    /// Per-channel scale the full-screen filter would apply right now.
+    float screenFilterScale() const
+    {
+        return combinedTintScale(_dimPercent, _dimEnabled,
+            _brightenPercent, _brightenEnabled);
     }
 
     /// True once the full-screen dim overlay exists and is showing.
@@ -259,22 +431,41 @@ final class ScreenTintController
 
     void toggleBrighten() { setBrightenEnabled(!_brightenEnabled); }
 
-    /// Drop both tints immediately (used when the app is closing).
+    void setEngine(TintEngine value)
+    {
+        if (value == _engine) return;
+        _engine = value;
+        apply();
+    }
+
+    /// Drop the tint immediately (used when the app is closing).
     void shutdown()
     {
         _dimLayer.setAlpha(0);
         _brightenLayer.setAlpha(0);
+        magShutdown();
     }
 
     private void apply()
     {
         _lastError = "";
-        if (_dimLayer.ensure() is null)
-            _lastError = "Could not create the dim overlay window.";
-        if (_brightenLayer.ensure() is null && _lastError.length == 0)
-            _lastError = "Could not create the brighten overlay window.";
-        _dimLayer.setAlpha(dimAlpha());
-        _brightenLayer.setAlpha(brightenAlpha());
+        if (_engine == TintEngine.screenFilter)
+        {
+            // Hide any overlay left over from a previous engine.
+            _dimLayer.setAlpha(0);
+            _brightenLayer.setAlpha(0);
+            magSetScale(screenFilterScale());
+        }
+        else
+        {
+            magReset();
+            if (_dimLayer.ensure() is null)
+                _lastError = "Could not create the dim overlay window.";
+            if (_brightenLayer.ensure() is null && _lastError.length == 0)
+                _lastError = "Could not create the brighten overlay window.";
+            _dimLayer.setAlpha(dimAlpha());
+            _brightenLayer.setAlpha(brightenAlpha());
+        }
         raiseControl();
     }
 
@@ -301,6 +492,7 @@ final class ControlPanelRoot : VBox
     private Label _dimValueLabel;
     private Label _brightenValueLabel;
     private Label _subtitle;
+    private Label _engineHint;
     private Label _statusLabel;
 
     this(ScreenTintController controller)
@@ -315,6 +507,17 @@ final class ControlPanelRoot : VBox
         _subtitle = new Label(
             "Darken the desktop for night, brighten it for day.");
         add(_subtitle);
+
+        auto filterBox = new CheckBox("Full-screen filter (covers menus, taskbar)",
+            _controller.engine() == TintEngine.screenFilter);
+        filterBox.onChanged = (bool value) {
+            _controller.setEngine(value ? TintEngine.screenFilter : TintEngine.overlay);
+            refresh();
+        };
+        add(filterBox);
+
+        _engineHint = new Label("");
+        add(_engineHint);
 
         add(new Separator());
 
@@ -423,8 +626,14 @@ final class ControlPanelRoot : VBox
     {
         _subtitle.setColor(theme().textMuted);
         _statusLabel.setColor(theme().textMuted);
+        _engineHint.setColor(theme().textMuted);
         _dimValueLabel.setColor(theme().text);
         _brightenValueLabel.setColor(theme().text);
+
+        const filter = _controller.engine() == TintEngine.screenFilter;
+        _engineHint.setText(filter
+            ? "Filter tints every surface on the primary monitor."
+            : "Overlay covers all monitors but leaves menus bright.");
 
         _dimValueLabel.setText(_controller.dimEnabled()
             ? format("%d%%", _controller.dimPercent()) : "Off");
@@ -457,7 +666,7 @@ private WindowOptions dimmerWindowOptions()
     WindowOptions options;
     options.title = "Aurora Dimmer";
     options.width = 430;
-    options.height = 500;
+    options.height = 560;
     options.resizable = false;
     options.decorated = true;
     options.alwaysOnTop = true;
@@ -469,9 +678,10 @@ private WindowOptions dimmerWindowOptions()
     return options;
 }
 
-/// Parse `--dim=NN`, `--brighten=NN`, `--off` and `--brighten-off`.
+/// Parse `--dim=NN`, `--brighten=NN`, `--off`, `--brighten-off`,
+/// `--filter` and `--overlay`.
 private void parseArgs(string[] args, ref int dimPercent, ref bool dimEnabled,
-    ref int brightenPercent, ref bool brightenEnabled)
+    ref int brightenPercent, ref bool brightenEnabled, ref TintEngine engine)
 {
     foreach (arg; args[1 .. $])
     {
@@ -480,6 +690,10 @@ private void parseArgs(string[] args, ref int dimPercent, ref bool dimEnabled,
             dimEnabled = false;
         else if (value == "--brighten-off" || value == "/brighten-off")
             brightenEnabled = false;
+        else if (value == "--filter" || value == "/filter")
+            engine = TintEngine.screenFilter;
+        else if (value == "--overlay" || value == "/overlay")
+            engine = TintEngine.overlay;
         else if (value.startsWith("--dim="))
         {
             try
@@ -508,12 +722,14 @@ int run(string[] args)
     bool initialDimEnabled = true;
     int initialBrightenPercent = 0;
     bool initialBrightenEnabled = false;
+    TintEngine initialEngine = TintEngine.screenFilter;
     parseArgs(args, initialDimPercent, initialDimEnabled,
-        initialBrightenPercent, initialBrightenEnabled);
+        initialBrightenPercent, initialBrightenEnabled, initialEngine);
 
     auto window = new GuiWindow(dimmerWindowOptions(), Theme.dark());
     auto controller = new ScreenTintController(window, initialDimPercent,
-        initialDimEnabled, initialBrightenPercent, initialBrightenEnabled);
+        initialDimEnabled, initialBrightenPercent, initialBrightenEnabled,
+        initialEngine);
     auto root = new ControlPanelRoot(controller);
     window.setRoot(root);
     root.refresh(); // Colors resolve once the widget is attached to the window.

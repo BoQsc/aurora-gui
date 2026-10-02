@@ -4,17 +4,27 @@ A tiny Windows screen tint tool, built with [Aurora-D](../vendor/aurora-d-0.4.5)
 It **dims** the desktop for night-time use and **brightens** it for bright-room
 use.
 
-Each effect is a full virtual-screen, always-on-top, **click-through layered
-Win32 window** blended over everything at a user-chosen alpha:
+## Tint engines
 
-- the **dimmer** paints black, lowering apparent brightness; and
-- the **brightener** paints white, lifting the black level of dark content.
+The app can tint the screen two ways. Pick with the **Full-screen filter**
+checkbox in the UI, or `--filter` / `--overlay` on the command line.
 
-Nothing behind them changes: windows, games and video keep running normally and
-clicks still reach them. The two layers are independent and can be combined.
+- **Full-screen filter** (default) - the Windows Magnification API
+  (`MagSetFullscreenColorEffect`) applies a color matrix to the whole display
+  *after* compositing. It therefore also tints context menus, tooltips, the
+  taskbar and other shell surfaces that a floating window cannot sit above.
+  Limitation: it covers the **primary monitor only**, and it tints this app's
+  own control panel too.
+- **Overlay** - one or two full virtual-screen, always-on-top, click-through
+  **layered Win32 windows** are blended over the desktop at a user-chosen alpha.
+  It covers **every monitor**, but windows and menus placed in a higher z-order
+  band (context menus, the taskbar, secure surfaces) stay at full brightness.
 
-The control panel is an ordinary Aurora window, re-raised above the tint layers
-whenever a level changes.
+Either way nothing behind the tint changes: windows, games and video keep
+running normally and clicks still reach them.
+
+Both engines use an independent **dim** level (black, 0-90%) and **brighten**
+level (white, 0-60%); the filter composes them into one per-channel scale.
 
 ## Run
 
@@ -34,9 +44,12 @@ Options:
 - `--brighten=NN` - start at NN percent brightening (0-60, clamped).
 - `--off` - start with dimming disabled.
 - `--brighten-off` - start with brightening disabled.
+- `--filter` - use the full-screen filter engine (default).
+- `--overlay` - use the window overlay engine.
 
 ## Controls
 
+- **Full-screen filter** checkbox - switch between the two engines.
 - **Darken** section: **Dim level** slider, 0-90%.
 - **Brighten** section: **Brighten level** slider, 0-60%.
 - **Dimming enabled** and **Brightening enabled** checkboxes.
@@ -52,16 +65,22 @@ RUN-HEADLESS-SMOKE.bat
 ```
 
 Builds `tests/headless_smoke.d` with DMD, paints the control panel through
-Aurora's test driver, and checks the dim/brighten math and both overlay windows.
+Aurora's test driver, and checks the dim/brighten math, the filter color-matrix
+math, and both overlay windows.
 
 ## Notes
 
-- The overlays cover the whole virtual desktop, so multi-monitor setups are
-  tinted together.
+- The overlay engine covers the whole virtual desktop, so multi-monitor setups
+  are tinted together.
 - Each overlay uses `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
-  WS_EX_NOACTIVATE` plus `SetLayeredWindowAttributes`, applied directly from
-  the app via the Aurora window's native `HWND` - no vendor patch required. The
-  solid fill comes from the window class background brush (black or white).
-- Level 0 and "enabled off" both blend at alpha 0, i.e. no tint.
-- Brightening is a white wash, so it lifts the black level at the cost of
-  contrast; the level is capped at 60% to keep it usable.
+  WS_EX_NOACTIVATE` plus `SetLayeredWindowAttributes`; the solid fill comes from
+  the window class background brush (black or white).
+- The filter engine loads `Magnification.dll` at runtime (`LoadLibrary` +
+  `GetProcAddress`) and calls `MagInitialize`,
+  `MagSetFullscreenTransform(1.0)` and `MagSetFullscreenColorEffect`; identity
+  (scale 1.0) is used when no tint is active, and `MagUninitialize` plus
+  `FreeLibrary` run on exit. If the API is unavailable the filter simply has no
+  effect and the overlay engine still works.
+- Level 0 and "enabled off" both mean no tint.
+- Brightening raises the black level at the cost of contrast; the level is
+  capped at 60% to keep it usable.
