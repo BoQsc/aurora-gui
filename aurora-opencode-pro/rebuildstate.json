@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply unified collapsible-row indentation (padH 22 -> 10)",
+  "reason": "Apply startup fix: parse conversation snapshots off the UI thread so the window's UI paints immediately instead of freezing ~7s on the 168MB sessions.json parse.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 09:33:27.2018572",
-  "finishedAt": "2026-10-02 09:34:08.2434632",
-  "durationMs": 41041,
+  "startedAt": "2026-10-02 10:00:33.8767832",
+  "finishedAt": "2026-10-02 10:01:08.5094792",
+  "durationMs": 34632,
   "exitCode": 0,
   "errors": []
 }

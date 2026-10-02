@@ -9168,6 +9168,9 @@ public final class OpenCodeRoot : VBox
         _client = new OpenCodeClient(_settings.baseUrl, activeApiKey(_settings));
         _toolCancellation = new ToolCancellation();
         _startupLoadPending = true;
+        // Parse the snapshots off the UI thread so the window can paint its
+        // chrome immediately instead of blocking on the multi-megabyte parse.
+        startSnapshotPreparse();
         phase("deferred restore");
         // Let the agent rebuild this app through the `rebuild` tool. The
         // handler only records the request; onTick performs it.
@@ -9178,6 +9181,15 @@ public final class OpenCodeRoot : VBox
 
     /// True until the deferred conversation load runs on the first tick.
     private bool _startupLoadPending;
+    // The conversation snapshots in their raw parsed form, produced off the UI
+    // thread by `startSnapshotPreparse`. `parseJSON` of the canonical
+    // `sessions.json` is the single largest startup cost - seconds for a
+    // multi-hundred-megabyte history - and running it on the UI thread froze
+    // the window until it finished. The trees are built on a worker while the
+    // chrome paints and the app stays responsive; the first tick that sees
+    // `_snapshotParseDone` walks them and populates the UI.
+    private JSONValue[string] _parsedSnapshots;
+    private bool _snapshotParseDone;
 
     /**
      * Parse the persisted conversations and wire the restored selection into
@@ -11114,6 +11126,10 @@ public final class OpenCodeRoot : VBox
 
     private void newChat()
     {
+        // Startup is still parsing the saved conversations off the UI thread;
+        // creating a chat now would be replaced by the restore. Ignore until
+        // the history is ready.
+        if (_startupLoadPending) return;
         saveLoadedRuntime();
         // Keep the outgoing conversation's draft, then start the new one empty.
         syncComposerDraft();
@@ -14842,6 +14858,14 @@ public final class OpenCodeRoot : VBox
 
     private void sendMessage()
     {
+        // Startup is still parsing the saved conversations off the UI thread.
+        // Sending now would create a chat the restore then replaces, so keep
+        // the typed prompt in the composer and ask the user to wait a moment.
+        if (_startupLoadPending)
+        {
+            updateStatus("Loading conversation history — one moment…");
+            return;
+        }
         const composerText = _input.textUtf8().strip();
         // A real user instruction restarts the auto-continue budget.
         if (_current >= 0 && _current < cast(int) _sessions.length)
@@ -21221,6 +21245,102 @@ public final class OpenCodeRoot : VBox
         return root;
     }
 
+    /// Snapshot files worth loading: the canonical state and its recovery copy
+    /// first, then any other `sessions*.json` left by a crash-safe save.
+    /// Quarantined (`.bad`) and preserved (`.preserve-...`) copies are skipped
+    /// because they are known not to parse.
+    private static string[] snapshotCandidates()
+    {
+        import std.algorithm.searching : startsWith;
+        import std.path : baseName;
+        import std.string : indexOf;
+        const dir = opencodeStateDirectory();
+        string[] candidates = [
+            buildPath(dir, "sessions.recovery.json"),
+            buildPath(dir, "sessions.json"),
+        ];
+        try
+        {
+            // Snapshots all live in the state directory itself. Recursing into
+            // it (breadth) walked the `changes/` blob store - thousands of
+            // files - on every launch for nothing.
+            foreach (entry; dirEntries(dir, SpanMode.shallow))
+            {
+                if (!entry.isFile) continue;
+                const name = baseName(entry.name);
+                if (!name.startsWith("sessions")) continue;
+                if (name.indexOf(".json") < 0) continue;
+                if (name.indexOf(".bad") >= 0 ||
+                    name.indexOf(".preserve") >= 0) continue;
+                candidates ~= entry.name;
+            }
+        }
+        catch (Exception scanError)
+            logError("could not scan the state directory: " ~ scanError.msg);
+        // The scan sees the canonical files too, so `sessions.json` and
+        // `sessions.recovery.json` were each parsed twice - seconds of startup
+        // work re-reading the same megabytes. Keep the first occurrence of each
+        // path.
+        bool[string] seen;
+        string[] unique;
+        foreach (candidate; candidates)
+        {
+            if (candidate in seen) continue;
+            seen[candidate] = true;
+            unique ~= candidate;
+        }
+        return unique;
+    }
+
+    /// Parse every snapshot off the UI thread. `restoreSessions` then reads the
+    /// cached trees instead of re-reading the files, so the window paints and
+    /// stays responsive while a multi-hundred-megabyte history is parsed.
+    /// Small histories - test fixtures and light profiles - parse in well under
+    /// a frame, so they are done inline to keep startup deterministic.
+    private static immutable ulong snapshotPreparseMaxSyncBytes = 16_000_000;
+
+    private void startSnapshotPreparse()
+    {
+        const candidates = snapshotCandidates();
+        ulong totalBytes;
+        foreach (candidate; candidates)
+            if (exists(candidate))
+                try totalBytes += getSize(candidate);
+                catch (Exception) {}
+        if (totalBytes <= snapshotPreparseMaxSyncBytes)
+        {
+            foreach (candidate; candidates)
+                if (exists(candidate))
+                    try _parsedSnapshots[candidate] =
+                        parseJSON(readText(candidate));
+                    catch (Exception) {}
+            _snapshotParseDone = true;
+            return;
+        }
+        auto worker = new Thread({
+            JSONValue[string] parsed;
+            try
+            {
+                foreach (candidate; candidates)
+                {
+                    if (!exists(candidate)) continue;
+                    // A snapshot that fails to parse is simply not cached; the
+                    // main-thread restore reports the error when it falls back.
+                    try parsed[candidate] = parseJSON(readText(candidate));
+                    catch (Exception) {}
+                }
+            }
+            catch (Throwable) {}
+            synchronized (this)
+            {
+                _parsedSnapshots = parsed;
+                _snapshotParseDone = true;
+            }
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
     private void restoreSessions()
     {
         _sessions.length = 0;
@@ -21240,53 +21360,9 @@ public final class OpenCodeRoot : VBox
         // leave the live file holding only the newest conversation while the
         // rest of the history survives in a sibling snapshot. Load every
         // snapshot and merge them (keeping the most complete copy of each
-        // conversation) instead of trusting a single file.
-        import std.file : dirEntries, SpanMode;
-        string[] candidates = [
-            buildPath(dir, "sessions.recovery.json"),
-            buildPath(dir, "sessions.json"),
-        ];
-        try
-        {
-            import std.algorithm.searching : startsWith;
-            import std.path : baseName;
-            import std.string : indexOf;
-            // Snapshots all live in the state directory itself. Recursing into
-            // it (breadth) walked the `changes/` blob store - thousands of
-            // files - on every launch for nothing.
-            foreach (entry; dirEntries(dir, SpanMode.shallow))
-            {
-                if (!entry.isFile) continue;
-                const name = baseName(entry.name);
-                if (!name.startsWith("sessions")) continue;
-                if (name.indexOf(".json") < 0) continue;
-                // A quarantined (`.bad`) or manually preserved
-                // (`.preserve-...`) copy is known not to parse. Reading it
-                // every launch only reproduces the same error and wastes the
-                // restore; `.bak`/`.tmp` are left in because they can be the
-                // last complete save.
-                if (name.indexOf(".bad") >= 0 ||
-                    name.indexOf(".preserve") >= 0) continue;
-                candidates ~= entry.name;
-            }
-        }
-        catch (Exception scanError)
-            logError("could not scan the state directory: " ~ scanError.msg);
-        // The scan sees the canonical files too, so `sessions.json` and
-        // `sessions.recovery.json` were each parsed twice - seconds of startup
-        // work re-reading the same megabytes. Keep the first occurrence of
-        // each path.
-        {
-            bool[string] seen;
-            string[] unique;
-            foreach (candidate; candidates)
-            {
-                if (candidate in seen) continue;
-                seen[candidate] = true;
-                unique ~= candidate;
-            }
-            candidates = unique;
-        }
+        // conversation) instead of trusting a single file. The list mirrors the
+        // preparse worker's, so every snapshot is already parsed by now.
+        auto candidates = snapshotCandidates();
 
         // Trust the selection from the most complete snapshot, not merely the
         // first one read. A stale `sessions.recovery.json` (left by a build
@@ -21328,8 +21404,18 @@ public final class OpenCodeRoot : VBox
             try
             {
                 const parseBegan = MonoTime.currTime;
-                auto value = parseJSON(readText(candidate));
-                logInfo("restore: parsed " ~ candidate ~ " in " ~
+                JSONValue value;
+                bool cached;
+                synchronized (this)
+                    if (auto preparsed = candidate in _parsedSnapshots)
+                    {
+                        value = *preparsed;
+                        cached = true;
+                    }
+                if (!cached)
+                    value = parseJSON(readText(candidate));
+                logInfo("restore: " ~ (cached ? "used preparsed " : "parsed ") ~
+                    candidate ~ " in " ~
                     to!string((MonoTime.currTime - parseBegan).total!"msecs") ~
                     " ms");
                 if (value.type != JSONType.object) continue;
@@ -21556,6 +21642,11 @@ public final class OpenCodeRoot : VBox
                                 candidate ~ ": " ~ error.msg);
                         }
                         }
+        // Every session has been copied out of the parsed trees, so release
+        // them. The DOM nodes are no longer needed (the string payloads stay
+        // alive through the restored sessions that reference them), and holding
+        // both the trees and the sessions doubled the history's footprint.
+        _parsedSnapshots = null;
         restorePhase("snapshots parsed+merged");
         // The event journal is the recovery authority. Merge it after every
         // snapshot so the latest flushed item/task update wins even when the
@@ -21840,7 +21931,10 @@ public final class OpenCodeRoot : VBox
         // Load the persisted conversations on demand: the window is already on
         // screen by the time a tick runs, so the multi-megabyte snapshot read
         // no longer holds up the first frame.
-        if (_startupLoadPending)
+        // Wait for the off-thread snapshot parse before walking the trees: the
+        // window is already painted and responsive, so the restore only needs
+        // to run once its data is ready.
+        if (_startupLoadPending && _snapshotParseDone)
         {
             _startupLoadPending = false;
             loadStartupState();
