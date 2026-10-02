@@ -1,12 +1,12 @@
 {
-  "status": "running",
-  "phase": "building",
+  "status": "pending",
+  "phase": "queued",
   "reason": "",
-  "command": "dub build --build=release",
+  "command": "",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 07:47:21.2660731",
-  "finishedAt": "2026-10-02 07:47:21.2660731",
+  "startedAt": "2026-10-02 07:59:30.1945921",
+  "finishedAt": "",
   "durationMs": 0,
   "exitCode": 0,
   "errors": []

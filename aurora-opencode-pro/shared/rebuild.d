@@ -13,8 +13,10 @@
  *                        edits live, and if not why" for the resumed chat;
  *   - the progress        a small always-on-top Win32 window shown while the
  *     window             app is closed for a rebuild;
- *   - the helper         the detached program itself: wait for the lock to
- *                        clear, `dub build`, relaunch, and supervise crashes.
+ *   - the helper         the detached program itself: build the side-by-side
+ *                        `newbuild` target while the app is still open, wait
+ *                        for the app to close, swap the new binary in,
+ *                        relaunch, and supervise crashes.
  *
  * The helper is built from this module plus a one-line entry point,
  * `tools/rebuilder.d`, which owns `main` and calls `runRebuilder` below. The
@@ -246,6 +248,10 @@ struct RebuildPlan
     int waitPid;
     /// Run `dub build` before relaunching.
     bool rebuild;
+    /// Build to a side-by-side image while the app is still running, then swap
+    /// it in once the app closes. The default self-rebuild path: the app stays
+    /// usable for the whole (slow) compile.
+    bool stageBuild;
     /// Why the rebuild was requested, carried into the state file and the
     /// helper's argv so both writers record the same reason.
     string reason;
@@ -322,6 +328,8 @@ string[] rebuildHelperArgv(in RebuildPlan plan)
     // reaches the app's own exception filter, so the app cannot report it.
     argv ~= "--run";
     argv ~= "--supervise";
+    if (plan.stageBuild)
+        argv ~= "--stage";
     if (!plan.rebuild)
         argv ~= "--no-rebuild";
     return argv;
@@ -853,6 +861,8 @@ private struct Options
 {
     /// The executable to rebuild in place and relaunch.
     string exePath;
+    /// The side-by-side target of a staged build (`--stage`), beside `exePath`.
+    string stagePath;
     /// Package directory holding the DUB recipe; empty means no rebuild.
     string packageDir;
     /// Append-only progress log.
@@ -867,6 +877,9 @@ private struct Options
     /// Pass `--force` to DUB: rebuild every package even when up to date.
     bool force;
     bool rebuild = true;
+    /// Build into `stagePath` while the app is still running, then wait for the
+    /// app to exit and swap the result in (`--stage`).
+    bool stageBuild;
     /// Launch the app as a child and wait for it, recording how it ended
     /// instead of detaching.
     bool run;
@@ -1119,6 +1132,7 @@ private Options parseArgs(string[] args)
         else if (arg == "--reason") options.reason = take();
         else if (arg == "--build") options.buildType = take();
         else if (arg == "--force") options.force = true;
+        else if (arg == "--stage") options.stageBuild = true;
         else if (arg == "--no-rebuild") options.rebuild = false;
         else if (arg == "--run") options.run = true;
         else if (arg == "--supervise") options.supervise = true;
@@ -1142,6 +1156,7 @@ private Options parseArgs(string[] args)
         }
         ++index;
     }
+    options.stagePath = stagePath(options.exePath);
     return options;
 }
 
@@ -1257,15 +1272,15 @@ private string tailText(string text, size_t maxChars)
 
 /// Write the failed-build summary: the command, where it ran, the exit code,
 /// the extracted compiler errors, and the tail of the full output.
-private void writeBuildReport(in Options options, int code, string output,
-    const(string)[] errors)
+private void writeBuildReport(in Options options, string[] argv, int code,
+    string output, const(string)[] errors)
 {
     const path = rebuildReportPath(stateRoot(options));
     if (path.length == 0) return;
     string text;
     text ~= "Aurora OpenCode rebuild report\n";
     text ~= "time:    " ~ to!string(Clock.currTime) ~ "\n";
-    text ~= "command: " ~ join(dubBuildArgv(options), " ") ~ "\n";
+    text ~= "command: " ~ join(argv, " ") ~ "\n";
     text ~= "dir:     " ~ options.packageDir ~ "\n";
     text ~= "exit:    " ~ to!string(code) ~ "\n";
     text ~= "\ncompiler errors (" ~ to!string(errors.length) ~ "):\n";
@@ -1294,7 +1309,73 @@ private string[] dubBuildArgv(in Options options)
     return argv;
 }
 
-private bool runBuild(in Options options, out int exitCode, out string[] errors)
+/**
+ * The DUB command for a staged build: the side-by-side `newbuild` configuration
+ * links `aurora-opencode-pro-new.exe` without touching the running image, so the
+ * compile can proceed while the app is still open.
+ */
+private string[] dubStageArgv(in Options options)
+{
+    return ["dub", "build", "--config=newbuild",
+        "--build=" ~ options.buildType];
+}
+
+/// Where a staged build writes its executable: the `newbuild` target, beside
+/// the running application image.
+private string stagePath(string exePath)
+{
+    if (exePath.length == 0) return "";
+    return buildPath(dirName(exePath), "aurora-opencode-pro-new.exe");
+}
+
+/**
+ * Replace the running image with the freshly staged one. Only valid once the
+ * app has exited and released the image. The previous binary is copied aside
+ * first, so a failed swap can never leave the user without a working app.
+ */
+private bool swapStaged(in Options options)
+{
+    const staged = options.stagePath;
+    if (staged.length == 0 || !exists(staged)) return false;
+    const backup = options.exePath ~ ".bak";
+    bool haveBackup;
+    if (options.exePath.length > 0 && exists(options.exePath))
+    {
+        try
+        {
+            copy(options.exePath, backup);
+            haveBackup = true;
+        }
+        catch (Exception error)
+            appendLine(options.logPath,
+                "could not back up the exe: " ~ error.msg);
+    }
+    try
+    {
+        copy(staged, options.exePath);
+        remove(staged);
+        appendLine(options.logPath, "installed the rebuilt binary");
+        return true;
+    }
+    catch (Exception error)
+    {
+        appendLine(options.logPath,
+            "could not install the rebuilt binary: " ~ error.msg);
+        if (haveBackup)
+            restoreExe(options.exePath, backup, haveBackup, options.logPath);
+        return false;
+    }
+}
+
+/**
+ * Run one DUB build and validate its output. `argv` is the command (in-place or
+ * staged); `targetExe` is the file that must exist and be non-empty afterwards.
+ * `backupMain` guards an in-place build, whose linker truncates the target
+ * before writing it, by keeping a copy to restore on failure. A staged build
+ * leaves the running image alone and so keeps no backup.
+ */
+private bool runBuild(in Options options, string[] argv, string targetExe,
+    bool backupMain, out int exitCode, out string[] errors)
 {
     exitCode = 0;
     errors = null;
@@ -1314,14 +1395,14 @@ private bool runBuild(in Options options, out int exitCode, out string[] errors)
         }
         catch (Exception) {}
     }
-    // Keep a copy of the good exe; a failed link can leave the target empty.
-    const backup = options.exePath ~ ".bak";
+    // Keep a copy of the good target; a failed link can leave the target empty.
+    const backup = targetExe.length > 0 ? targetExe ~ ".bak" : "";
     bool haveBackup;
-    if (options.exePath.length > 0 && exists(options.exePath))
+    if (backupMain && targetExe.length > 0 && exists(targetExe))
     {
         try
         {
-            copy(options.exePath, backup);
+            copy(targetExe, backup);
             haveBackup = true;
         }
         catch (Exception error)
@@ -1335,7 +1416,7 @@ private bool runBuild(in Options options, out int exitCode, out string[] errors)
         // a bare spawn would allocate a visible console window for the whole
         // build. `suppressConsole` keeps it (and its `cmd /c` post-build steps)
         // invisible while stdout/stderr still land in the capture file.
-        auto pid = spawnProcess(dubBuildArgv(options),
+        auto pid = spawnProcess(argv,
             stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
             Config.suppressConsole, options.packageDir);
         code = wait(pid);
@@ -1345,7 +1426,8 @@ private bool runBuild(in Options options, out int exitCode, out string[] errors)
         if (haveSink) sink.close();
         appendLine(options.logPath, "dub could not be started: " ~ error.msg);
         errors = ["dub could not be started: " ~ error.msg];
-        restoreExe(options.exePath, backup, haveBackup, options.logPath);
+        if (haveBackup)
+            restoreExe(targetExe, backup, haveBackup, options.logPath);
         return false;
     }
     if (haveSink) sink.close();
@@ -1355,16 +1437,16 @@ private bool runBuild(in Options options, out int exitCode, out string[] errors)
     const firstError = errors.length > 0 ? errors[0]
         : "(no compiler error line; see " ~ outputPath ~ ")";
     // A zero exit code is not enough: the target must exist and be non-empty.
-    if (code != 0 || options.exePath.length == 0 ||
-        !exists(options.exePath) || getSize(options.exePath) == 0)
+    if (code != 0 || targetExe.length == 0 || !exists(targetExe) ||
+        getSize(targetExe) == 0)
     {
         appendLine(options.logPath, "build failed (exit " ~ to!string(code) ~
-            "; exe " ~ (options.exePath.length == 0 ? "unspecified"
-                : (exists(options.exePath)
-                    ? to!string(getSize(options.exePath)) ~ " bytes"
-                    : "missing")) ~ "); restoring the previous binary");
+            "; target " ~ (targetExe.length == 0 ? "unspecified"
+                : (exists(targetExe)
+                    ? to!string(getSize(targetExe)) ~ " bytes"
+                    : "missing")) ~ "); keeping the previous binary");
         appendLine(options.logPath, "build error: " ~ firstError);
-        writeBuildReport(options, code, output, errors);
+        writeBuildReport(options, argv, code, output, errors);
         // Named in the app's own log too, so the compiler failure lands where
         // the app's crash summary and the user's usual log both look.
         const appLog = appLogPath(options);
@@ -1374,12 +1456,15 @@ private bool runBuild(in Options options, out int exitCode, out string[] errors)
         // the previous binary looks like nothing happened at all.
         setProgress("Rebuild failed: " ~ firstError,
             "see " ~ rebuildReportPath(stateRoot(options)), 1.0);
-        if (options.exePath.length > 0 && exists(options.exePath))
+        if (haveBackup)
         {
-            try remove(options.exePath);
-            catch (Exception) {}
+            if (targetExe.length > 0 && exists(targetExe))
+            {
+                try remove(targetExe);
+                catch (Exception) {}
+            }
+            restoreExe(targetExe, backup, haveBackup, options.logPath);
         }
-        restoreExe(options.exePath, backup, haveBackup, options.logPath);
         return false;
     }
     // A good build clears any report left by an earlier failure, so a stale one
@@ -1421,8 +1506,14 @@ int runRebuilder(string[] args)
 {
     const options = parseArgs(args);
     // Show the progress window before any guard can return early: maintenance
-    // that cannot proceed must not look like nothing happened at all.
-    version (Windows) openProgressWindow("Aurora OpenCode - maintenance");
+    // that cannot proceed must not look like nothing happened at all. A staged
+    // build runs while the app is still open, so its own window is the feedback
+    // and a second one here would be wrong.
+    version (Windows)
+    {
+        if (!options.stageBuild)
+            openProgressWindow("Aurora OpenCode - maintenance");
+    }
     version (Windows) HANDLE supervisorMutex;
     scope (exit)
     {
@@ -1437,36 +1528,9 @@ int runRebuilder(string[] args)
     {
         stderr.writeln("usage: aurora-rebuilder --exe <app.exe> " ~
             "[--dir <packageDir>] [--log <logPath>] [--pid <pid>] " ~
-            "[--build <type>] [--timeout <seconds>] [--no-rebuild] [--run] " ~
-            "[--supervise] [--max-restarts <n>] [--force]");
+            "[--build <type>] [--timeout <seconds>] [--no-rebuild] [--stage] " ~
+            "[--run] [--supervise] [--max-restarts <n>] [--force]");
         return 2;
-    }
-
-    // One parent must own the app. Multiple supervisors race to relaunch it and
-    // turn one crash into several processes and several restart loops.
-    version (Windows)
-    if (options.supervise)
-    {
-        supervisorMutex = CreateMutexW(null, 0,
-            toUTF16z("Local\\AuroraOpenCodeSupervisor"));
-        // An in-app rebuild is launched before the current app exits. Its old
-        // supervisor releases ownership immediately after that clean exit, so
-        // this successor may wait briefly. Unsolicited duplicate launchers do
-        // not wait and simply leave the existing owner alone.
-        const waitMs = options.waitPid != 0 ? 30_000 : 0;
-        const waitResult = supervisorMutex is null ? uint.max :
-            WaitForSingleObject(supervisorMutex, waitMs);
-        if (waitResult != 0 && waitResult != 0x80) // object / abandoned
-        {
-            if (supervisorMutex !is null)
-            {
-                CloseHandle(supervisorMutex);
-                supervisorMutex = null;
-            }
-            appendLine(options.logPath,
-                "another supervisor already owns the app; exiting");
-            return 0;
-        }
     }
 
     // The window was opened above, before any guard could return early; here we
@@ -1483,18 +1547,81 @@ int runRebuilder(string[] args)
         setProgress("Waiting for the app to close...", "", -1.0);
     }
 
-    if (!waitForUnlock(options.exePath, options.timeoutSeconds))
+    // A staged build compiles while the app is still open, so it waits for the
+    // image to clear only after the build, right before the swap. Every other
+    // mode waits for the app to exit before touching the image.
+    if (!options.stageBuild)
     {
-        // Still locked: the app is alive and this rebuild would be a duplicate.
-        appendLine(options.logPath, "app did not exit; rebuild aborted");
-        setProgress("The app did not close; rebuild aborted", "", 1.0);
-        return 0;
+        if (!waitForUnlock(options.exePath, options.timeoutSeconds))
+        {
+            // Still locked: the app is alive and this rebuild would be a
+            // duplicate.
+            appendLine(options.logPath, "app did not exit; rebuild aborted");
+            setProgress("The app did not close; rebuild aborted", "", 1.0);
+            return 0;
+        }
+        // The lock can clear a moment before the image is fully released.
+        Thread.sleep(500.msecs);
     }
 
-    // The lock can clear a moment before the image is fully released.
-    Thread.sleep(500.msecs);
-
-    if (options.rebuild && options.packageDir.length > 0)
+    const hadBuild = options.rebuild && options.packageDir.length > 0;
+    if (hadBuild && options.stageBuild)
+    {
+        appendLine(options.logPath, "staged rebuild: " ~
+            join(dubStageArgv(options), " "));
+        const began = MonoTime.currTime;
+        const startedAt = strip(timestamp());
+        // The app wrote `pending`; take the record over and mark the build in
+        // flight so a helper that dies mid-build stays visible as "not
+        // finished" rather than looking like it never ran.
+        writeState(options, "running", "building", startedAt, 0, null, began);
+        int exitCode;
+        string[] errors;
+        const rebuilt = runBuild(options, dubStageArgv(options),
+            options.stagePath, false, exitCode, errors);
+        if (rebuilt)
+        {
+            appendLine(options.logPath, "staged build succeeded");
+            // Publish success so the still-running app closes, then wait for it
+            // to release the image before replacing it.
+            writeState(options, "ok", "staged", startedAt, 0, null, began);
+            if (!waitForUnlock(options.exePath, options.timeoutSeconds))
+            {
+                appendLine(options.logPath,
+                    "app did not exit; staged binary not installed");
+                writeState(options, "failed", "awaiting-restart", startedAt, 0,
+                    ["the app did not close, so the staged build was not " ~
+                     "installed"], began);
+                return 0;
+            }
+            Thread.sleep(300.msecs);
+            if (!swapStaged(options))
+            {
+                appendLine(options.logPath,
+                    "the staged binary could not be installed");
+                writeState(options, "failed", "swap-failed", startedAt, 0,
+                    ["the staged binary could not be installed"], began);
+                return 1;
+            }
+        }
+        else
+        {
+            appendLine(options.logPath, "staged build FAILED");
+            writeState(options, "failed", "build-failed", startedAt, exitCode,
+                errors, began);
+            // A still-running app shows the report itself and keeps the
+            // previous build; there is nothing to relaunch.
+            if (!canWrite(options.exePath))
+            {
+                appendLine(options.logPath,
+                    "app still running; leaving it in place with the report");
+                return 1;
+            }
+            appendLine(options.logPath,
+                "app already exited; relaunching the previous binary");
+        }
+    }
+    else if (hadBuild)
     {
         appendLine(options.logPath, "rebuilding: " ~
             join(dubBuildArgv(options), " "));
@@ -1508,7 +1635,8 @@ int runRebuilder(string[] args)
         writeState(options, "running", "building", startedAt, 0, null, began);
         int exitCode;
         string[] errors;
-        const rebuilt = runBuild(options, exitCode, errors);
+        const rebuilt = runBuild(options, dubBuildArgv(options), options.exePath,
+            true, exitCode, errors);
         appendLine(options.logPath, rebuilt ? "build succeeded"
             : "build FAILED; relaunching the previous binary");
         // On failure `runBuild` has already put the first compiler error on
@@ -1528,6 +1656,35 @@ int runRebuilder(string[] args)
     }
     else
         appendLine(options.logPath, "rebuild skipped; relaunching as built");
+
+    // One parent must own the app. Multiple supervisors race to relaunch it and
+    // turn one crash into several processes and several restart loops. Claim
+    // that role now, just before the relaunch: a staged build ran while the
+    // previous supervisor was still alive, so the claim has to happen after the
+    // app finally exits and that supervisor has released the name.
+    version (Windows)
+    if (options.supervise)
+    {
+        supervisorMutex = CreateMutexW(null, 0,
+            toUTF16z("Local\\AuroraOpenCodeSupervisor"));
+        // The previous owner releases as the app exits, so this successor may
+        // wait briefly. Unsolicited duplicate launchers do not wait and simply
+        // leave the existing owner alone.
+        const waitMs = options.waitPid != 0 ? 30_000 : 0;
+        const waitResult = supervisorMutex is null ? uint.max :
+            WaitForSingleObject(supervisorMutex, waitMs);
+        if (waitResult != 0 && waitResult != 0x80) // object / abandoned
+        {
+            if (supervisorMutex !is null)
+            {
+                CloseHandle(supervisorMutex);
+                supervisorMutex = null;
+            }
+            appendLine(options.logPath,
+                "another supervisor already owns the app; exiting");
+            return 0;
+        }
+    }
 
     appendLine(options.logPath, "relaunching " ~ options.exePath);
     if (options.supervise) return superviseApp(options);
