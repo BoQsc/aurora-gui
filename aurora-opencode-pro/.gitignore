@@ -6,3 +6,5 @@
 *.pdb
 *.ilk
 *.log
+/source/auroraopencode/remotecontrol.d
+/source/auroraopencode/remoteviewer.d
