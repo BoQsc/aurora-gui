@@ -1,7 +1,7 @@
 module auroraopencode.markdown;
 
 import aurora;
-import auroraopencode.core : opencodeFontBase, opencodeFontTitle;
+import auroraopencode.core : opencodeFontChat, opencodeFontTitle;
 import std.algorithm.comparison : max, min;
 import std.array : insertInPlace;
 import std.conv : to;
@@ -1305,7 +1305,9 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
     c.cursorY = 0;
     c.cursorPx = 0;
     c.trailingGap = 0;
-    const bodyPx = opencodeFontBase;
+    // Conversation text uses the denser chat size (see opencodeFontChat), not
+    // the shared base, so transcripts read smaller without shrinking the chrome.
+    const bodyPx = opencodeFontChat;
     double y = 0;
     // The last block must not reserve trailing space: that showed up as a
     // phantom gap below every assistant reply. The amount it would have added is

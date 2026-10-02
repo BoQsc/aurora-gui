@@ -509,6 +509,10 @@ public enum int opencodeFontSmall = 13;
 /// Body text: chat messages, session titles and inputs. Slightly larger than the
 /// chrome so long developer sessions read comfortably.
 public enum int opencodeFontBase = 16;
+/// Conversation text (user prompts and assistant replies). Kept one step below
+/// `opencodeFontBase` so long transcripts read denser, while the surrounding
+/// chrome (session titles, inputs, tool rows, headers) keeps its size.
+public enum int opencodeFontChat = 14;
 /// Section and dialog titles.
 public enum int opencodeFontTitle = 16;
 /// Largest in-app text.

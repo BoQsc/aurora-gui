@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "",
+  "reason": "Apply smaller chat message text size (opencodeFontChat)",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 08:55:39.8340571",
-  "finishedAt": "2026-10-02 08:56:21.1513295",
-  "durationMs": 41316,
+  "startedAt": "2026-10-02 09:22:55.6131641",
+  "finishedAt": "2026-10-02 09:23:55.8565782",
+  "durationMs": 60242,
   "exitCode": 0,
   "errors": []
 }

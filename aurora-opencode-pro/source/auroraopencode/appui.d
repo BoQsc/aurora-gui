@@ -1568,7 +1568,9 @@ private final class MessageBubble : Widget
         TextLayoutOptions options;
         options.role = FontRole.ui;
         options.overrideFace = cast(FontFace) theme().uiFont;
-        options.pixelSize = opencodeFontBase;
+        // Conversation text is one step smaller than the base chrome size so
+        // long transcripts read denser (see opencodeFontChat).
+        options.pixelSize = opencodeFontChat;
         options.maxWidth = maxInt(1, width);
         options.wrap = true;
         ++shapeCount;
