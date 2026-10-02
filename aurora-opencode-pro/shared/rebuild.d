@@ -11,9 +11,8 @@
  * The new design removes it. When the app wants to rebuild, it copies *itself*
  * to a throwaway image beside the package and runs that copy as the agent. The
  * copy is instant, always matches the running build, and never needs its own
- * build step. The copy builds a side-by-side `newbuild` target while the app is
- * still open, the app closes when the build reports `ok`, and the copy swaps
- * the fresh binary in and supervises the relaunch.
+ * build step. The app then closes; the copy waits for the image to be released,
+ * shows a small progress window, builds in place, and relaunches the app.
  *
  * One module still owns the whole feature. Its three surfaces are:
  *
@@ -22,7 +21,7 @@
  *                     written here so app, helper and reader never drift;
  *   - the app side    `planRebuild` / `launchRebuild`: copy self, record
  *                     `pending`, spawn the copy detached;
- *   - the agent       `runRebuildHelperMode`: build, wait, swap, supervise,
+ *   - the agent       `runRebuildHelperMode`: wait, build, relaunch, supervise,
  *                     plus the tiny always-on-top progress window that reports
  *                     while the app is closed.
  *
@@ -343,10 +342,6 @@ struct RebuildPlan
     int waitPid;
     /// Run `dub build` before relaunching.
     bool rebuild;
-    /// Build the side-by-side `newbuild` target while the app still runs, then
-    /// swap it in once the app closes. The default self-rebuild path: the app
-    /// stays usable for the whole (slow) compile.
-    bool stageBuild;
     /// Why the rebuild was requested, carried into the ledger and the agent.
     string reason;
 }
@@ -411,7 +406,6 @@ string[] rebuildHelperArgv(in RebuildPlan plan)
     if (plan.logPath.length > 0) argv ~= ["--log", plan.logPath];
     argv ~= ["--pid", to!string(plan.waitPid)];
     if (plan.reason.length > 0) argv ~= ["--reason", plan.reason];
-    if (plan.stageBuild) argv ~= "--stage";
     if (!plan.rebuild) argv ~= "--no-rebuild";
     return argv;
 }
@@ -784,15 +778,13 @@ void closeProgressWindow() {}
 // Usage:
 //   aurora-opencode-pro.exe --aurora-rebuild-helper
 //       --exe <app.exe> [--dir <packageDir>] [--log <logPath>] [--pid <pid>]
-//       [--build <type>] [--timeout <seconds>] [--stage] [--no-rebuild]
+//       [--build <type>] [--timeout <seconds>] [--no-rebuild]
 //       [--max-restarts <n>] [--force]
 
 private struct HelperJob
 {
     /// The executable to rebuild in place and relaunch.
     string exePath;
-    /// The side-by-side target of a staged build, beside `exePath`.
-    string stagePath;
     /// Package directory holding the DUB recipe; empty means no rebuild.
     string packageDir;
     /// Append-only progress log.
@@ -806,8 +798,6 @@ private struct HelperJob
     /// Pass `--force` to DUB: rebuild every package even when up to date.
     bool force;
     bool rebuild = true;
-    /// Build into `stagePath` while the app still runs, then swap it in.
-    bool stageBuild;
     /// Give up after this many unexpected exits, so a crash at startup does not
     /// become an endless restart loop.
     int maxRestarts = 5;
@@ -831,7 +821,6 @@ private HelperJob parseHelperArgs(string[] args)
         else if (arg == "--reason") job.reason = take();
         else if (arg == "--build") job.buildType = take();
         else if (arg == "--force") job.force = true;
-        else if (arg == "--stage") job.stageBuild = true;
         else if (arg == "--no-rebuild") job.rebuild = false;
         else if (arg == "--max-restarts")
         {
@@ -853,16 +842,7 @@ private HelperJob parseHelperArgs(string[] args)
         }
         ++index;
     }
-    if (job.stagePath.length == 0) job.stagePath = stagePath(job.exePath);
     return job;
-}
-
-/// Where a staged build writes its executable: the `newbuild` target, beside
-/// the running application image.
-private string stagePath(string exePath)
-{
-    if (exePath.length == 0) return "";
-    return buildPath(dirName(exePath), "aurora-opencode-pro-new.exe");
 }
 
 /**
@@ -914,7 +894,7 @@ private void writeJobState(in HelperJob job, RebuildStatus status, string phase,
     state.status = status;
     state.phase = phase;
     state.reason = job.reason;
-    state.command = join(dubArgv(job, false), " ");
+    state.command = join(dubArgv(job), " ");
     state.exePath = job.exePath;
     state.packageDir = job.packageDir;
     state.startedAt = startedAt;
@@ -926,13 +906,11 @@ private void writeJobState(in HelperJob job, RebuildStatus status, string phase,
     writeRebuildState(stateRoot(job), state);
 }
 
-/// The DUB command line for an in-place rebuild (`staged` selects `newbuild`).
-private string[] dubArgv(in HelperJob job, bool staged)
+/// The DUB command line for the in-place rebuild.
+private string[] dubArgv(in HelperJob job)
 {
-    string[] argv = ["dub", "build"];
-    if (staged) argv ~= "--config=newbuild";
-    argv ~= "--build=" ~ job.buildType;
-    if (job.force && !staged) argv ~= "--force";
+    string[] argv = ["dub", "build", "--build=" ~ job.buildType];
+    if (job.force) argv ~= "--force";
     return argv;
 }
 
@@ -1112,54 +1090,6 @@ private bool runDub(in HelperJob job, string[] argv, string targetExe,
         try remove(report);
         catch (Exception) {}
     }
-    return true;
-}
-
-/// Replace `to` with `from`, keeping a caller-supplied backup if it fails.
-private bool replaceFile(string from, string to)
-{
-    if (from.length == 0 || to.length == 0 || !exists(from)) return false;
-    try
-    {
-        copy(from, to);
-        remove(from);
-        return true;
-    }
-    catch (Exception)
-        return false;
-}
-
-/**
- * Replace the running image with the freshly staged one. Only valid once the
- * app has exited and released the image. The previous binary is copied aside
- * first, so a failed swap can never leave the user without a working app.
- */
-private bool swapStaged(in HelperJob job)
-{
-    const staged = job.stagePath;
-    if (staged.length == 0 || !exists(staged)) return false;
-    const backup = job.exePath ~ ".bak";
-    bool haveBackup;
-    if (job.exePath.length > 0 && exists(job.exePath))
-    {
-        try
-        {
-            copy(job.exePath, backup);
-            haveBackup = true;
-        }
-        catch (Exception error)
-            appendLine(job.logPath,
-                "could not back up the exe: " ~ error.msg);
-    }
-    if (!replaceFile(staged, job.exePath))
-    {
-        appendLine(job.logPath,
-            "could not install the rebuilt binary; keeping the previous one");
-        if (haveBackup)
-            restoreExe(job.exePath, backup, haveBackup, job.logPath);
-        return false;
-    }
-    appendLine(job.logPath, "installed the rebuilt binary");
     return true;
 }
 
@@ -1412,18 +1342,17 @@ int runRebuildHelperMode(string[] args)
     {
         stderr.writeln("usage: aurora-opencode-pro " ~ rebuildHelperFlag ~
             " --exe <app.exe> [--dir <packageDir>] [--log <logPath>] " ~
-            "[--pid <pid>] [--build <type>] [--timeout <seconds>] [--stage] " ~
+            "[--pid <pid>] [--build <type>] [--timeout <seconds>] " ~
             "[--no-rebuild] [--max-restarts <n>] [--force]");
         return 2;
     }
 
     const haveBuild = job.rebuild && job.packageDir.length > 0;
 
-    // A full rebuild closes the app, so the agent must show something; a staged
-    // build runs while the app is still open, and a plain relaunch shows the
-    // app itself, so neither needs a second window.
+    // The app closes itself before this runs, so while it is gone this small
+    // window is the only feedback: show it whenever a build is going to happen.
     version (Windows)
-        if (haveBuild && !job.stageBuild)
+        if (haveBuild)
             openProgressWindow("Aurora OpenCode - rebuild");
     scope (exit)
     {
@@ -1436,67 +1365,13 @@ int runRebuildHelperMode(string[] args)
         return superviseClaimed(job);
     }
 
-    if (job.stageBuild)
+    // The app must be closed before its image can be written.
+    if (job.waitPid != 0)
     {
-        appendLine(job.logPath, "staged rebuild: " ~
-            join(dubArgv(job, true), " "));
-        const began = MonoTime.currTime;
-        const startedAt = strip(timestamp());
-        // The app wrote `pending`; take the record over and mark the build in
-        // flight so an agent that dies mid-build stays visible as "not
-        // finished" rather than looking like it never ran.
-        writeJobState(job, RebuildStatus.running, "building", startedAt, 0,
-            null, began);
-        int exitCode;
-        string[] errors;
-        if (runDub(job, dubArgv(job, true), job.stagePath, false, exitCode,
-            errors))
-        {
-            appendLine(job.logPath, "staged build succeeded");
-            // Publish success so the still-running app closes, then wait for it
-            // to release the image before replacing it.
-            writeJobState(job, RebuildStatus.ok, "staged", startedAt, 0, null,
-                began);
-            if (!waitForUnlock(job.exePath, job.timeoutSeconds))
-            {
-                appendLine(job.logPath,
-                    "app did not exit; staged binary not installed");
-                writeJobState(job, RebuildStatus.failed, "awaiting-restart",
-                    startedAt, 0, ["the app did not close, so the staged " ~
-                        "build was not installed"], began);
-                return 1;
-            }
-            Thread.sleep(300.msecs);
-            if (!swapStaged(job))
-            {
-                appendLine(job.logPath,
-                    "the staged binary could not be installed");
-                writeJobState(job, RebuildStatus.failed, "swap-failed",
-                    startedAt, 0, ["the staged binary could not be installed"],
-                    began);
-                return 1;
-            }
-        }
-        else
-        {
-            appendLine(job.logPath, "staged build FAILED");
-            writeJobState(job, RebuildStatus.failed, "build-failed", startedAt,
-                exitCode, errors, began);
-            // A still-running app shows the report itself and keeps the
-            // previous build; there is nothing to relaunch.
-            if (!canWrite(job.exePath))
-            {
-                appendLine(job.logPath,
-                    "app still running; leaving it in place with the report");
-                return 1;
-            }
-            appendLine(job.logPath,
-                "app already exited; relaunching the previous binary");
-        }
-        return superviseClaimed(job);
+        appendLine(job.logPath, "waiting for process " ~
+            to!string(job.waitPid) ~ " to exit");
+        setProgress("Waiting for Aurora OpenCode to close...", "", -1.0);
     }
-
-    // In-place rebuild: the app must be closed before its image can be written.
     if (!waitForUnlock(job.exePath, job.timeoutSeconds))
     {
         appendLine(job.logPath, "app did not exit; rebuild aborted");
@@ -1504,7 +1379,8 @@ int runRebuildHelperMode(string[] args)
         return 0;
     }
     Thread.sleep(500.msecs);
-    appendLine(job.logPath, "rebuilding: " ~ join(dubArgv(job, false), " "));
+
+    appendLine(job.logPath, "rebuilding: " ~ join(dubArgv(job), " "));
     setProgress("Rebuilding...", "dub build --build=" ~ job.buildType, -1.0);
     const began = MonoTime.currTime;
     const startedAt = strip(timestamp());
@@ -1512,7 +1388,7 @@ int runRebuildHelperMode(string[] args)
         began);
     int exitCode;
     string[] errors;
-    if (runDub(job, dubArgv(job, false), job.exePath, true, exitCode, errors))
+    if (runDub(job, dubArgv(job), job.exePath, true, exitCode, errors))
     {
         appendLine(job.logPath, "build succeeded");
         setProgress("Rebuild finished. Starting...", "", 1.0);

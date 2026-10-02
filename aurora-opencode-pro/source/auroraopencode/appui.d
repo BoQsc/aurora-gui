@@ -8909,12 +8909,6 @@ public final class OpenCodeRoot : VBox
      // helper does the work after this window closes (see shared/rebuild.d);
     // the pending flag keeps the transcript live until the helper is started.
     private bool _rebuildPending;
-    // A staged rebuild compiles beside the running app and swaps the new binary
-    // in only after the app closes. While the helper builds, this stays set and
-    // onTick watches rebuildstate.json: on success the window closes, on
-    // failure the flag clears and the compiler errors are shown inline.
-    private bool _stagedRebuildActive;
-    private SysTime _stagedRebuildStart;
     private Button _updateButton;
     private bool _updateChecking;
     private bool _updateResultPending;
@@ -9721,110 +9715,44 @@ public final class OpenCodeRoot : VBox
             ? _sessions[index].id : "";
     }
 
-    /// Rebuild the package with DUB and relaunch the app.
+    /// Rebuild the package with DUB and reopen the app.
     ///
-    /// The build is staged: a detached helper compiles the side-by-side
-    /// `newbuild` target while this window stays open and usable, then records
-    /// `ok` in `rebuildstate.json`. `onTick` watches that record and closes the
-    /// window once it appears; the helper then swaps the new binary in and
-    /// relaunches it supervised. DUB never touches the running image, and a
-    /// failed compile leaves us running the previous build with the compiler
-    /// errors in hand instead of relaunching into a broken state.
+    /// This process closes immediately: a detached copy of the binary (the
+    /// agent) waits for the image to be released, shows a small progress window,
+    /// runs `dub build` in place, records the lifecycle in `rebuildstate.json`,
+    /// and relaunches the app supervised. A failed compile relaunches the
+    /// previous binary, and the relaunched app reports the compiler errors.
     ///
-    /// Returns true when the helper was started (the window stays open until
-    /// the build reports a result).
+    /// Returns true when the agent was started; on failure the window stays
+    /// open and false is returned.
     ///
     public bool requestRebuild(string reason = "")
     {
         if (_rebuildPending) return false;
         _rebuildPending = true;
-        updateStatus("Rebuilding in the background; this window stays open "
-            ~ "until the new build is ready...");
+        updateStatus("Rebuilding; Aurora OpenCode will reopen when the new "
+            ~ "build is ready...");
 
-        // Persist now so a manual close during the build still restores where we
-        // left off. The resume note is written when the build succeeds and the
-        // window closes, so a failed build never leaves a stale note behind.
+        // Record where the conversation stood, then hand the rebuild to the
+        // agent and close. The agent shows a small progress window while it
+        // builds; this process is gone for the whole compile.
         persistState();
         saveProjects(_projectState);
 
         auto plan = planRebuild(opencodeStateDirectory(), true,
             thisProcessID, thisExePath());
         plan.reason = reason;
-        plan.stageBuild = true;
         if (!launchRebuild(plan))
         {
             _rebuildPending = false;
             updateStatus("Rebuild failed: could not start the rebuild helper.");
             return false;
         }
-        _stagedRebuildActive = true;
-        _stagedRebuildStart = Clock.currTime;
+        // A turn that was running leaves the note that resumes it on reopen.
+        writeResumeNoteIfTurnActive();
+        closeRuntimeClients();
+        _window.close();
         return true;
-    }
-
-    /// Watch a staged rebuild running beside this app. The helper builds while
-    /// this window stays open; `ok` means the new binary is ready and this
-    /// process must exit so the helper can swap it in, `failed` means the
-    /// previous build is still live and the compiler errors should be shown.
-    private void drainStagedRebuild()
-    {
-        if (!_stagedRebuildActive) return;
-        auto outcome = readRebuildOutcome(rebuildPackageDirectory());
-        if (rebuildSucceeded(outcome))
-        {
-            _stagedRebuildActive = false;
-            // A rebuild that interrupts a running turn leaves the same resume
-            // request the agent-facing rebuild writes, so the relaunched
-            // instance continues the conversation instead of sitting idle.
-            writeResumeNoteIfTurnActive();
-            persistState();
-            saveProjects(_projectState);
-            closeRuntimeClients();
-            updateStatus("Rebuild complete. Restarting with the new build...");
-            _window.close();
-            return;
-        }
-        if (rebuildFailed(outcome))
-        {
-            _stagedRebuildActive = false;
-            _rebuildPending = false;
-            removeResumeNoteForRebuild();
-            updateStatus("Rebuild failed; still running the previous build.");
-            reportRebuildFailure(outcome.report.length > 0
-                ? outcome.report : incompleteRebuildReport(outcome));
-            return;
-        }
-        // Still building (`pending`/`running`). If the helper died without a
-        // verdict, give up after a generous deadline so the app is never stuck
-        // showing "rebuilding" forever.
-        if ((Clock.currTime - _stagedRebuildStart).total!"seconds" > 1200)
-        {
-            _stagedRebuildActive = false;
-            _rebuildPending = false;
-            removeResumeNoteForRebuild();
-            updateStatus("Rebuild did not finish; the app was left running.");
-            reportRebuildFailure(
-                "The rebuild helper stopped before reporting a result; your "
-                ~ "source changes are NOT live. Try the rebuild again.\n\n"
-                ~ incompleteRebuildReport(outcome));
-        }
-    }
-
-    /// Surface a failed staged rebuild in the open conversation, with the
-    /// compiler report excerpt, instead of only in the status bar.
-    private void reportRebuildFailure(string detail)
-    {
-        if (_current < 0 || _current >= cast(int) _sessions.length) return;
-        ChatMessage note;
-        note.role = "assistant";
-        note.failed = true;
-        note.content = "Rebuild failed; the app is still running the previous "
-            ~ "build, so the changes are not live.\n\n"
-            ~ promptReportExcerpt(detail);
-        note.time = currentTimestamp();
-        appendMessage(_sessions[_current], note);
-        markDirty();
-        rebuildMessageColumn();
     }
 
     private void requestUpdate()
@@ -22251,10 +22179,6 @@ public final class OpenCodeRoot : VBox
             _timerBadgeAccum = 0;
             refreshTimerBadge();
         }
-
-        // Watch a staged rebuild: the helper compiles beside the running app
-        // and reports through rebuildstate.json.
-        if (_stagedRebuildActive) drainStagedRebuild();
 
         // Perform an agent-requested rebuild on the UI thread, a few ticks after
         // the request so the tool result has been drained and persisted first.

@@ -64,15 +64,16 @@ read-only and produce no side effects.
   `--build=release`).
 - Do **not** build in a way that overwrites the live executable while it is
   running. Use the rebuild/restart flow instead.
-- Rebuild/restart flow (staged): the app copies *itself* to a throwaway
-  `bin/aurora-rebuild-helper-<pid>.exe` and spawns that copy as the agent; there
-  is no separate helper executable to build or keep in sync. The agent compiles
-  the side-by-side `newbuild` target (`aurora-opencode-pro-new.exe`), records
-  `ok` in `rebuildstate.json`, waits for the app to close, swaps the new binary
-  in, and supervises the relaunch. A failed compile leaves the previous build
-  running with the errors reported in-app. `bin/restart-now.bat` and
-  `bin/supervise-now.bat` drive the no-rebuild run/supervise paths; the app
-  selects agent mode in `source/app.d` when `main` sees `--aurora-rebuild-helper`.
+- Rebuild/restart flow: the app copies *itself* to a throwaway
+  `bin/aurora-rebuild-helper-<pid>.exe`, spawns that copy as the agent, and then
+  closes immediately; there is no separate helper executable to build or keep in
+  sync. The agent waits for the image to be released, shows a small
+  always-on-top progress window, runs `dub build` in place, records the
+  lifecycle in `rebuildstate.json`, and relaunches the app supervised. A failed
+  compile relaunches the previous build and the relaunched app reports the
+  errors. `bin/restart-now.bat` and `bin/supervise-now.bat` drive the no-rebuild
+  run/supervise paths; the app selects agent mode in `source/app.d` when `main`
+  sees `--aurora-rebuild-helper`.
 - Build-side support and in-app build-awareness both live in the single module
   `shared/rebuild.d`: the ledger (`rebuildstate.json` and the build artifacts),
   the app-side launch flow, the resume notice, the Win32 progress window, and
