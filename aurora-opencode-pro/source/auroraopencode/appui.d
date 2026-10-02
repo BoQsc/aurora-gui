@@ -12,10 +12,12 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
-import rebuild : RebuildOutcome, isAuroraProject, launchRebuild, planRebuild,
-    readRebuildOutcome, rebuildFailed, rebuildIncomplete, rebuildStatusLabel,
-    rebuildSucceeded;
+import rebuild : RebuildOutcome, findAuroraRoot, isAuroraProject,
+    launchRebuild, planRebuild, readRebuildOutcome, rebuildFailed,
+    rebuildIncomplete, rebuildStatusLabel, rebuildSucceeded;
 import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
+import auroraopencode.deepseekpeak : DeepSeekPeakStats, deepSeekPeakStats,
+    deepSeekSlotsPerDay;
 import auroraopencode.titlebar : OpenCodeTitleBar;
 import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
     fetchCommandCodePlan, fetchCommandCodeUser,
@@ -5774,6 +5776,11 @@ private final class ToolGroupBubble : Widget
 /// Hover tooltip panel. It never steals the pointer: while it is hovered it
 /// reports the anchor as the hit target, so the tooltip stays open without
 /// capturing input. Supports a plain text body or a titled multi-row body.
+// DeepSeek peak/off-peak timeline colours (match the provider pricing legend:
+// red for peak, green for off-peak).
+private immutable Color peakSegmentColor = Color.rgba(178, 74, 74, 255);
+private immutable Color offPeakSegmentColor = Color.rgba(46, 160, 82, 255);
+
 private final class HoverTooltip : Widget
 {
     private dstring _title;
@@ -5810,6 +5817,12 @@ private final class HoverTooltip : Widget
     // Small accent dot in the title row, drawn while a background refresh is in
     // flight so an open usage panel shows that it is still working.
     private bool _accentDot;
+    // Optional 24-hour peak/off-peak strip (DeepSeek billing). When set, a
+    // full-width segmented bar is drawn under the title with the day's "now"
+    // marker and evenly spaced hour labels.
+    private bool[] _timeline;
+    private double _timelineNow;
+    private dstring[] _timelineAxis;
 
     this(Widget hoverOwner)
     {
@@ -5835,6 +5848,20 @@ private final class HoverTooltip : Widget
     {
         if (_compact == value) return;
         _compact = value;
+        _rowLayouts.length = 0;
+        invalidate();
+    }
+
+    /// Attach a 24-hour peak/off-peak strip. `peakSlots` holds one flag per
+    /// slot (true == peak), `nowFraction` is the elapsed fraction of the day
+    /// (0..1) for the marker, and `axisLabels` are the tick captions.
+    void setTimeline(const(bool)[] peakSlots, double nowFraction,
+        const(string)[] axisLabels)
+    {
+        _timeline = peakSlots.dup;
+        _timelineNow = nowFraction;
+        _timelineAxis.length = 0;
+        foreach (label; axisLabels) _timelineAxis ~= toUTF32(label);
         _rowLayouts.length = 0;
         invalidate();
     }
@@ -5965,8 +5992,9 @@ private final class HoverTooltip : Widget
         const padH = _compact ? compactPadH : 14;
         const padV = _compact ? compactPadV : 12;
         const lineH = _compact ? compactLineH : 18;
-        const width = _wrap ? (_compact ? compactWidth : wrapWidth)
-            : (_usageBars.length > 0 ? 320 : 272);
+        const width = _timeline.length > 0 ? 460
+            : (_wrap ? (_compact ? compactWidth : wrapWidth)
+                : (_usageBars.length > 0 ? 320 : 272));
         int height = padV * 2;
         if (_title.length > 0) height += lineH + (_compact ? 4 : 6);
         if (_status.length > 0) height += lineH;
@@ -5986,6 +6014,7 @@ private final class HoverTooltip : Widget
             height += cast(int) _rows.length * lineH;
         height += cast(int) _usageBars.length * 57;
         height += cast(int) _extra.length * lineH;
+        if (_timeline.length > 0) height += 42;
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = height;
         return Size(width, height);
@@ -6000,6 +6029,53 @@ private final class HoverTooltip : Widget
         options.maxWidth = maxWidth;
         options.wrap = true;
         return fontSystem().textEngine.layout(text, options);
+    }
+
+    /// Draw the peak/off-peak strip at `y` and return the next y. Peak runs are
+    /// overlaid in red on the green off-peak rail, a vertical marker shows the
+    /// current UTC time, and hour labels sit beneath.
+    private int paintTimeline(ref Canvas canvas, int y, int width, int padX)
+    {
+        const railX = padX;
+        const railW = maxInt(1, width - 2 * padX);
+        const barH = 16;
+        canvas.fillRoundedRect(Rect(railX, y, railW, barH), 5,
+            offPeakSegmentColor);
+        const count = _timeline.length;
+        const span = cast(long) railW;
+        const slots = cast(long) count;
+        foreach (slot; 0 .. count)
+        {
+            if (!_timeline[slot]) continue;
+            const x0 = railX + cast(int) (span * cast(long) slot / slots);
+            const x1 = railX +
+                cast(int) (span * (cast(long) slot + 1) / slots);
+            canvas.fillRect(Rect(x0, y, maxInt(1, x1 - x0), barH),
+                peakSegmentColor);
+        }
+        double now = _timelineNow;
+        if (!(now >= 0)) now = 0;
+        if (now > 1) now = 1;
+        const nowX = railX + cast(int) (railW * now);
+        canvas.fillRect(Rect(nowX - 1, y - 2, 2, barH + 4),
+            Color.rgba(255, 255, 255, 255));
+        y += barH + 3;
+        if (_timelineAxis.length > 0)
+        {
+            const labelW = 26;
+            foreach (i, label; _timelineAxis)
+            {
+                const frac = _timelineAxis.length <= 1 ? 0.0
+                    : cast(double) i / (_timelineAxis.length - 1);
+                const lx = railX + cast(int) (railW * frac);
+                const lxClamped = clampInt(lx, railX,
+                    maxInt(railX, railX + railW - labelW));
+                canvas.drawTextInRect(Rect(lxClamped, y, labelW, 14), label,
+                    opencodeMuted, 1, HorizontalAlign.center,
+                    VerticalAlign.middle, false);
+            }
+        }
+        return y + 15;
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -6026,6 +6102,8 @@ private final class HoverTooltip : Widget
                 FontRole.ui, cast(FontFace) palette.uiFont);
             y += _compact ? compactLineH : 18;
         }
+        if (_timeline.length > 0)
+            y = paintTimeline(canvas, y, width, padX);
         if (_wrap)
         {
             foreach (index, row; _rows)
@@ -6672,6 +6750,122 @@ private final class ChatTimerBadge : Widget
 // ---------------------------------------------------------------------------
 // Chat input with Enter-to-send
 // ---------------------------------------------------------------------------
+
+/// Composer badge that answers "am I in DeepSeek peak or off-peak right now,
+/// and when does that change?". The label carries the current band and the
+/// count to the next switch; hovering opens the 24-hour timeline (see
+/// `setPeakTooltipOpen`). Hidden unless a DeepSeek model is selected.
+private final class DeepSeekPeakBadge : Widget
+{
+    void delegate(bool open) onHoverChanged;
+
+    private bool _active;
+    private bool _peak;
+    private bool _holiday;
+    private long _secondsToChange;
+
+    this()
+    {
+        layoutHints().preferredWidth = 128;
+        layoutHints().minWidth = 128;
+        layoutHints().preferredHeight = 22;
+    }
+
+    void setState(bool active, bool peak, bool holiday, long secondsToChange)
+    {
+        if (active == _active && peak == _peak && holiday == _holiday &&
+            secondsToChange == _secondsToChange)
+            return;
+        _active = active;
+        _peak = peak;
+        _holiday = holiday;
+        _secondsToChange = secondsToChange;
+        invalidate();
+    }
+
+    string labelForTesting() const
+    {
+        if (!_active) return "—";
+        auto text = appender!string(_peak ? "Peak " : "Off-peak ");
+        text.put(peakCountdownText(_secondsToChange));
+        return text.data;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        layoutHints().preferredWidth = 128;
+        layoutHints().preferredHeight = 22;
+        return Size(128, 22);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const width = bounds().width;
+        const height = bounds().height;
+        canvas.fillRoundedRect(Rect(0, 0, width, height), height / 2,
+            opencodeField);
+        const dot = _peak ? peakSegmentColor : offPeakSegmentColor;
+        canvas.fillCircle(Point(11, height / 2), 4,
+            _active ? dot : opencodeMuted);
+        canvas.drawTextInRect(Rect(21, 0, width - 23, height),
+            toUTF32(labelForTesting()), _active ? palette.text : opencodeMuted,
+            1, HorizontalAlign.left, VerticalAlign.middle, false);
+    }
+
+    protected override void onMouseEnter()
+    {
+        if (onHoverChanged !is null) onHoverChanged(true);
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (onHoverChanged !is null) onHoverChanged(false);
+    }
+}
+
+/// Compact "3h 12m" / "1d 4h" rendering for a peak/off-peak countdown.
+private string peakCountdownText(long seconds)
+{
+    if (seconds <= 0) return "now";
+    const totalMinutes = seconds / 60;
+    const days = totalMinutes / (24 * 60);
+    const hours = (totalMinutes / 60) % 24;
+    const minutes = totalMinutes % 60;
+    if (days > 0) return to!string(days) ~ "d " ~ to!string(hours) ~ "h";
+    if (hours > 0)
+        return to!string(hours) ~ "h " ~ (minutes < 10 ? "0" : "") ~
+            to!string(minutes) ~ "m";
+    return to!string(minutes) ~ "m";
+}
+
+/// Like `peakCountdownText` but for whole-day totals: zero reads as "0m"
+/// rather than "now".
+private string peakDurationText(long seconds)
+{
+    if (seconds < 0) seconds = 0;
+    const totalMinutes = seconds / 60;
+    const days = totalMinutes / (24 * 60);
+    const hours = (totalMinutes / 60) % 24;
+    const minutes = totalMinutes % 60;
+    if (days > 0) return to!string(days) ~ "d " ~ to!string(hours) ~ "h";
+    if (hours > 0)
+        return to!string(hours) ~ "h " ~ (minutes < 10 ? "0" : "") ~
+            to!string(minutes) ~ "m";
+    return to!string(minutes) ~ "m";
+}
+
+/// Zero-pad a two-digit clock field.
+private string twoDigits(int value)
+{
+    return value < 10 ? "0" ~ to!string(value) : to!string(value);
+}
+
+/// The peak/off-peak badge and its tooltip apply to DeepSeek billing only.
+private bool isDeepSeekModel(string model)
+{
+    return indexOfFold(model, "deepseek") != size_t.max;
+}
 
 private final class ChatInput : TextArea
 {
@@ -7496,6 +7690,13 @@ private immutable string[] defaultIntroSuggestions = [
 /// click inserts a prompt naming the running program's path, so a "fix the app"
 /// request starts from the right folder without the user pasting it.
 private immutable string selfFixSuggestion = "Fix Aurora OpenCode";
+
+/// Empty-state pill that points the agent at the wider Aurora project (the
+/// repository holding this app and its sibling Aurora apps). Its click inserts
+/// a prompt naming that root, so work that spans Aurora starts from the right
+/// folder without the user pasting it. Deliberately not a "fix" prompt: it just
+/// hands over the path.
+private immutable string generalAuroraSuggestion = "Aurora project";
 
 /// Shown over the transcript while the active conversation still has no
 /// messages: a centered welcome block with tappable prompt suggestions that
@@ -9064,6 +9265,14 @@ public final class OpenCodeRoot : VBox
     private long _lastTimerTotal = -1;
     private bool _lastTimerRunning;
 
+    // DeepSeek 4.1 peak/off-peak badge in the composer footer: shows the active
+    // band and the count to the next switch, with a 24-hour timeline on hover.
+    // `_peakBadgeAccum` throttles the recompute to once a second.
+    private DeepSeekPeakBadge _peakBadge;
+    private HoverTooltip _peakTooltip;
+    private bool _peakTooltipOpen;
+    private double _peakBadgeAccum = 0.0;
+
     // Pro: the "Worked for …" completion separator is still fragile (its
     // appearance depends on turn-timing key matches and finishing on a prose
     // reply), so it is opt-in via `Settings.showWorkedFor` and off by default.
@@ -10287,6 +10496,14 @@ public final class OpenCodeRoot : VBox
             }
         };
         _usageBadge.onMenuRequested = &showContextTargetMenu;
+
+        _peakBadge = composerControls.add(new DeepSeekPeakBadge());
+        _peakBadge.setId("oc-peak");
+        _peakBadge.onHoverChanged = delegate(bool open)
+        {
+            setPeakTooltipOpen(open);
+        };
+        refreshPeakBadge(true);
 
         auto thinkingControl = new ThinkingControl(thinkingModeLabel());
         _thinkingBox = composerControls.add(thinkingControl);
@@ -12287,6 +12504,13 @@ public final class OpenCodeRoot : VBox
             prompts.put("Investigate and fix an issue in Aurora OpenCode. Its "
                 ~ "program source is at " ~ source ~ "\n\nWhat's wrong: ");
         }
+        const general = generalAuroraPath();
+        if (general.length > 0)
+        {
+            labels.put(generalAuroraSuggestion);
+            prompts.put("The general Aurora project source is at " ~ general
+                ~ ".");
+        }
         _introOverlay.setSuggestions(labels.data, prompts.data);
     }
 
@@ -12351,6 +12575,14 @@ public final class OpenCodeRoot : VBox
     {
         return planRebuild(opencodeStateDirectory(), true, thisProcessID,
             thisExePath()).workingDir;
+    }
+
+    /// The general Aurora project root: the repository holding this app and its
+    /// sibling Aurora apps, derived from the running program's own source. ""
+    /// when the program runs outside such a tree.
+    private string generalAuroraPath() const
+    {
+        return findAuroraRoot(programSourcePath());
     }
 
     /// Every transcript widget in visual reading order, flattening an assistant
@@ -19483,6 +19715,85 @@ public final class OpenCodeRoot : VBox
         }
     }
 
+    /// Recompute the DeepSeek peak/off-peak badge, hiding it for non-DeepSeek
+    /// models. Throttled by the tick; `force` is for construction/model change.
+    private void refreshPeakBadge(bool force = false)
+    {
+        if (_peakBadge is null) return;
+        const active = isDeepSeekModel(_settings.model);
+        _peakBadge.setVisible(active);
+        if (!active)
+        {
+            if (_peakTooltipOpen) setPeakTooltipOpen(false);
+            return;
+        }
+        const stats = deepSeekPeakStats(Clock.currTime);
+        _peakBadge.setState(true, stats.peak, stats.holiday,
+            stats.secondsToChange);
+        if (_peakTooltipOpen)
+        {
+            _peakTooltip.setContent("DeepSeek billing (UTC)",
+                deepSeekPeakTooltipRows(stats));
+            _peakTooltip.setTimeline(stats.schedule, stats.nowFraction,
+                ["00", "06", "12", "18", "24"]);
+            positionPeakTooltip();
+        }
+    }
+
+    private string[] deepSeekPeakTooltipRows(DeepSeekPeakStats stats)
+    {
+        const utc = Clock.currTime.toUTC();
+        string[] rows;
+        rows ~= "Now: " ~ (stats.peak ? "Peak" : "Off-peak") ~
+            (stats.holiday ? " · Chinese public holiday" : "") ~
+            " (UTC " ~ twoDigits(utc.hour) ~ ":" ~ twoDigits(utc.minute) ~ ")";
+        rows ~= "Next off-peak in " ~
+            peakCountdownText(stats.secondsToNextOffPeak);
+        rows ~= "Next peak in " ~ peakCountdownText(stats.secondsToNextPeak);
+        rows ~= "Today (UTC): peak " ~
+            peakDurationText(stats.peakSecondsToday) ~ " · off-peak " ~
+            peakDurationText(stats.offPeakSecondsToday);
+        rows ~= "Peak windows: 01:00-04:00 and 06:00-10:00 UTC, Mon-Fri.";
+        rows ~= "Off-peak is half price: input cache-miss $0.15 vs $0.30, " ~
+            "output $0.60 vs $1.20 per 1M tokens.";
+        return rows;
+    }
+
+    private void setPeakTooltipOpen(bool open)
+    {
+        if (!open)
+        {
+            _peakTooltipOpen = false;
+            if (_peakTooltip !is null && _peakTooltip.parent() !is null)
+                _peakTooltip.parent().remove(_peakTooltip);
+            return;
+        }
+        if (_peakBadge is null || !isDeepSeekModel(_settings.model)) return;
+        if (_peakTooltip is null)
+            _peakTooltip = new HoverTooltip(_peakBadge);
+        const stats = deepSeekPeakStats(Clock.currTime);
+        _peakTooltip.setContent("DeepSeek billing (UTC)",
+            deepSeekPeakTooltipRows(stats));
+        _peakTooltip.setTimeline(stats.schedule, stats.nowFraction,
+            ["00", "06", "12", "18", "24"]);
+        popupRoot(this).add(_peakTooltip);
+        positionPeakTooltip();
+        _peakTooltipOpen = true;
+    }
+
+    private void positionPeakTooltip()
+    {
+        if (_peakTooltip is null || _peakBadge is null) return;
+        const origin = _peakBadge.localToGlobal(Point(0, 0));
+        const measured = _peakTooltip.measure(Size(int.max, int.max));
+        const gap = 6;
+        int x = clampInt(origin.x, 8,
+            maxInt(8, bounds().width - measured.width - 8));
+        int y = clampInt(origin.y - measured.height - gap, 8,
+            maxInt(8, bounds().height - measured.height - 8));
+        _peakTooltip.setBounds(Rect(x, y, measured.width, measured.height));
+    }
+
     /// Open/close the generic hover tooltip anchored to a TooltipAnchor.
     private void setTooltipOpen(TooltipAnchor anchor, HoverTooltip tooltip,
         ref bool open, bool value)
@@ -22927,6 +23238,16 @@ public final class OpenCodeRoot : VBox
         {
             _timerBadgeAccum = 0;
             refreshTimerBadge();
+        }
+
+        // DeepSeek peak/off-peak badge: the band flips a handful of times a day
+        // and the countdown is shown in whole minutes, so once a second is
+        // plenty and cheap.
+        _peakBadgeAccum += deltaSeconds;
+        if (_peakBadgeAccum >= 1.0)
+        {
+            _peakBadgeAccum = 0;
+            refreshPeakBadge();
         }
 
         // Perform an agent-requested rebuild on the UI thread, a few ticks after

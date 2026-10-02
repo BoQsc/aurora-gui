@@ -40,10 +40,10 @@ import std.datetime : Clock, SysTime;
 import std.file : append, copy, dirEntries, exists, getSize, mkdirRecurse,
     readText, remove, SpanMode, timeLastModified, write;
 import std.json : JSONType, parseJSON;
-import std.path : buildPath, dirName;
+import std.path : baseName, buildPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
-import std.string : indexOf, lastIndexOf, replace, strip;
+import std.string : indexOf, lastIndexOf, replace, startsWith, strip;
 import std.utf : toUTF16;
 
 version (Windows)
@@ -378,6 +378,46 @@ bool isAuroraProject(string dir)
 {
     if (dir.length == 0) return false;
     return exists(buildPath(dir, "shared", "rebuild.d"));
+}
+
+/**
+ * The general Aurora project root: the repository holding this app alongside
+ * the rest of the Aurora family. Starting from the app's own package directory
+ * it walks up to the nearest ancestor that is a checkout root (holds `.git`) or
+ * that contains a sibling `aurora-*` package. Returns "" when the program runs
+ * outside such a tree, so a caller omits the general pill rather than naming a
+ * folder that is not the project.
+ */
+string findAuroraRoot(string packageDir)
+{
+    if (packageDir.length == 0) return "";
+    const own = baseName(packageDir);
+    auto directory = packageDir;
+    foreach (_; 0 .. maxBuildDirLevels)
+    {
+        const parent = dirName(directory);
+        if (parent.length == 0 || parent == directory) break;
+        directory = parent;
+        if (exists(buildPath(directory, ".git"))) return directory;
+        if (hasAuroraSibling(directory, own)) return directory;
+    }
+    return "";
+}
+
+/// True when `directory` holds an `aurora-*` subdirectory other than `own`.
+private bool hasAuroraSibling(string directory, string own)
+{
+    try
+    {
+        foreach (entry; dirEntries(directory, SpanMode.shallow))
+        {
+            if (!entry.isDir) continue;
+            const name = baseName(entry.name);
+            if (name != own && startsWith(name, "aurora-")) return true;
+        }
+    }
+    catch (Exception) {}
+    return false;
 }
 
 /**

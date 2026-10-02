@@ -17,7 +17,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.markdown : BlockType, MdComposition, MdItemKind,
     composeMarkdown, paintMarkdown, parseMarkdown;
-import rebuild : planRebuild, rebuildHelperArgv;
+import rebuild : findAuroraRoot, planRebuild, rebuildHelperArgv;
 import auroraopencode.runtime : AgentEventKind, readAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, nativeOnlyToolDefinitions,
     previewToolDiff, rebuildRequestHandler;
@@ -5461,27 +5461,40 @@ int main(string[] args)
         assert(suggestions.length > 0, "Intro overlay has no suggestions");
         // A pill's label can differ from the text it inserts: the self-repair
         // pill reads short but prefills a prompt naming the running program's
-        // own source path. It appears exactly when that path is known.
+        // own source path, and the general Aurora pill names the wider project
+        // root. Each appears exactly when its path is known.
         const prompts = root.introSuggestionPromptsForTesting();
         assert(prompts.length == suggestions.length,
             "Intro prompts should be parallel to the suggestion labels");
         const program = planRebuild("", false, 0, thisExePath()).workingDir;
-        bool selfFixSeen;
+        const general = findAuroraRoot(program);
+        bool selfFixSeen, generalSeen;
         foreach (i, prompt; prompts)
         {
             if (prompt == suggestions[i]) continue;
-            selfFixSeen = true;
-            assert(program.length > 0 && prompt.indexOf(program) >= 0,
-                "Self-fix prompt should name the running program's source");
+            if (prompt.indexOf(program) >= 0)
+            {
+                // The self-repair pill names the running program's own source.
+                selfFixSeen = true;
+            }
+            else
+            {
+                // The general Aurora pill names the wider project root.
+                assert(general.length > 0 && prompt.indexOf(general) >= 0,
+                    "General Aurora prompt should name the project root");
+                generalSeen = true;
+            }
             assert(root.clickIntroSuggestionForTesting(cast(int) i),
-                "Clicking the self-fix pill should prefill the composer");
+                "Clicking a special pill should prefill the composer");
             root.tickTree(0.02);
             assert(root.inputTextForTesting() == prompt,
-                "Self-fix pill did not insert its own prompt text");
+                "Special pill did not insert its own prompt text");
             root.setInputForTesting("");
         }
         assert(selfFixSeen == (program.length > 0),
             "The self-fix pill should appear exactly when the source is known");
+        assert(generalSeen == (general.length > 0),
+            "The general Aurora pill should appear exactly when its root is known");
         // Staggered fade-in: visible immediately, fully opaque within a tick.
         assert(root.introFadeForTesting() < 1.0,
             "Intro overlay should still be fading in on first paint");

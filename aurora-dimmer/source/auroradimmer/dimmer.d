@@ -1,31 +1,36 @@
 module auroradimmer.dimmer;
 
 /**
- * Aurora Dimmer - a tiny Windows night-time screen dimmer.
+ * Aurora Dimmer - a tiny Windows night-time screen dimmer, plus a matching
+ * brightener for daytime use.
  *
- * The control panel is an ordinary Aurora window. The darkening itself is a
- * full virtual-screen, always-on-top, click-through layered Win32 window that
- * is blended over the desktop at a user-chosen alpha. Because it is only a
- * translucent layer, nothing behind it changes: windows, games and video keep
- * running normally and the pointer still reaches them.
+ * The control panel is an ordinary Aurora window. The tinting itself is one or
+ * two full virtual-screen, always-on-top, click-through layered Win32 windows
+ * blended over the desktop at a user-chosen alpha:
  *
- * Because the layer lives above every other window, Aurora's own control
- * window is re-raised above it whenever the dim level changes.
+ *   - the dimmer paints black, lowering apparent brightness; and
+ *   - the brightener paints white, lifting the black level of dark content.
+ *
+ * Because each layer is only a translucent window, nothing behind it changes:
+ * windows, games and video keep running normally and the pointer still reaches
+ * them. The two layers are independent and can be combined.
+ *
+ * Because the layers live above every other window, Aurora's own control
+ * window is re-raised above them whenever a level changes.
  */
 
 import aurora;
 import aurora.platform.select : PlatformWindow;
 
-import core.sys.windows.windows : BeginPaint, BLACK_BRUSH, BYTE, CreateWindowExW,
-    DefWindowProcW, EndPaint, FillRect, GetClientRect, GetModuleHandleW,
-    GetStockObject, GetSystemMetrics, HBRUSH, HDC, HINSTANCE, HWND, HWND_TOPMOST,
-    IsWindow, LPARAM, LRESULT, LWA_ALPHA, PAINTSTRUCT, RECT, RegisterClassExW,
-    SetLayeredWindowAttributes, SetWindowPos, ShowWindow, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE,
-    SWP_NOOWNERZORDER, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE,
-    UINT, WNDCLASSEXW, WNDPROC, WPARAM, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_PAINT,
-    WM_SETTINGCHANGE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP;
+import core.sys.windows.windows : BLACK_BRUSH, BYTE, CreateWindowExW,
+    DefWindowProcW, GetModuleHandleW, GetStockObject, GetSystemMetrics, HBRUSH,
+    HINSTANCE, HWND, HWND_TOPMOST, IsWindow, LPARAM, LRESULT, LWA_ALPHA,
+    RegisterClassExW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE, UINT, WHITE_BRUSH,
+    WNDCLASSEXW, WNDPROC, WPARAM, WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WS_POPUP,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT;
 
 import std.conv : to;
 import std.format : format;
@@ -35,7 +40,10 @@ import std.utf : toUTF16z;
 /// Dim levels are percentages of darkening: 0 = untouched, 90 = very dark.
 private enum int minDimPercent = 0;
 private enum int maxDimPercent = 90;
-private enum string overlayClassName = "AuroraDimmerOverlay";
+
+/// Brighten levels are percentages of white wash: 0 = untouched, 60 = strong.
+private enum int minBrightenPercent = 0;
+private enum int maxBrightenPercent = 60;
 
 private int clampDimPercent(int value)
 {
@@ -44,17 +52,14 @@ private int clampDimPercent(int value)
     return value;
 }
 
-// ---------------------------------------------------------------------------
-// The translucent overlay window.
-// ---------------------------------------------------------------------------
+private int clampBrightenPercent(int value)
+{
+    if (value < minBrightenPercent) return minBrightenPercent;
+    if (value > maxBrightenPercent) return maxBrightenPercent;
+    return value;
+}
 
-private __gshared HWND overlayWindow;
-private __gshared HINSTANCE overlayModule;
-private __gshared HBRUSH overlayBrush;
-private __gshared bool overlayClassRegistered;
-private __gshared int overlayAlpha;
-
-/// Keep the overlay covering the whole virtual desktop (all monitors).
+/// Keep an overlay covering the whole virtual desktop (all monitors).
 private void resizeOverlay(HWND hwnd)
 {
     if (hwnd is null) return;
@@ -66,26 +71,12 @@ private void resizeOverlay(HWND hwnd)
         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
+/// Shared window procedure for both overlay classes; paints via class brush.
 private extern(Windows) LRESULT overlayWindowProc(HWND hwnd, UINT message,
     WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
-    case WM_ERASEBKGND:
-        return 1; // Fully repainted in WM_PAINT; skip the flickery erase.
-    case WM_PAINT:
-    {
-        PAINTSTRUCT paint;
-        HDC dc = BeginPaint(hwnd, &paint);
-        if (dc !is null)
-        {
-            RECT rect;
-            GetClientRect(hwnd, &rect);
-            FillRect(dc, &rect, overlayBrush);
-        }
-        EndPaint(hwnd, &paint);
-        return 0;
-    }
     case WM_DISPLAYCHANGE:
     case WM_SETTINGCHANGE:
         resizeOverlay(hwnd);
@@ -95,126 +86,199 @@ private extern(Windows) LRESULT overlayWindowProc(HWND hwnd, UINT message,
     }
 }
 
-/// Create the overlay on first use and re-show it if it ever went away.
-private HWND ensureOverlay()
+/**
+ * A single translucent overlay. Its window class carries a solid background
+ * brush (black for the dimmer, white for the brightener) which the default
+ * window procedure paints, and `SetLayeredWindowAttributes` blends that fill
+ * over the desktop at the chosen alpha. The overlay is click-through and never
+ * takes focus.
+ */
+private final class OverlayWindow
 {
-    if (overlayWindow !is null && IsWindow(overlayWindow))
-        return overlayWindow;
+    private string _className;
+    private string _title;
+    private HBRUSH _brush;
+    private HINSTANCE _module;
+    private bool _classRegistered;
+    private HWND _hwnd;
+    private int _alpha;
 
-    if (!overlayClassRegistered)
+    this(string className, string title, HBRUSH brush)
     {
-        overlayModule = GetModuleHandleW(null);
-        WNDCLASSEXW wc;
-        wc.cbSize = WNDCLASSEXW.sizeof;
-        wc.lpfnWndProc = cast(WNDPROC) &overlayWindowProc;
-        wc.hInstance = overlayModule;
-        wc.lpszClassName = toUTF16z(overlayClassName);
-        if (RegisterClassExW(&wc) == 0)
-            return null;
-        overlayClassRegistered = true;
+        _className = className;
+        _title = title;
+        _brush = brush;
+        _module = GetModuleHandleW(null);
     }
 
-    overlayBrush = cast(HBRUSH) GetStockObject(BLACK_BRUSH);
+    /// True once the full-screen overlay exists and is showing.
+    bool active() const
+    {
+        return _hwnd !is null && IsWindow(cast(HWND) _hwnd) != 0;
+    }
 
-    overlayWindow = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-        toUTF16z(overlayClassName), toUTF16z("Aurora Dimmer Overlay"),
-        WS_POPUP,
-        GetSystemMetrics(SM_XVIRTUALSCREEN),
-        GetSystemMetrics(SM_YVIRTUALSCREEN),
-        GetSystemMetrics(SM_CXVIRTUALSCREEN),
-        GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        null, null, overlayModule, null);
-    if (overlayWindow is null)
-        return null;
+    /// Create the overlay on first use and re-show it if it ever went away.
+    HWND ensure()
+    {
+        if (active()) return _hwnd;
 
-    SetWindowPos(overlayWindow, HWND_TOPMOST, 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-    ShowWindow(overlayWindow, SW_SHOWNOACTIVATE);
-    SetLayeredWindowAttributes(overlayWindow, 0, cast(BYTE) overlayAlpha, LWA_ALPHA);
-    return overlayWindow;
-}
+        if (!_classRegistered)
+        {
+            WNDCLASSEXW wc;
+            wc.cbSize = WNDCLASSEXW.sizeof;
+            wc.lpfnWndProc = cast(WNDPROC) &overlayWindowProc;
+            wc.hInstance = _module;
+            wc.hbrBackground = _brush;
+            wc.lpszClassName = toUTF16z(_className);
+            if (RegisterClassExW(&wc) == 0)
+                return null;
+            _classRegistered = true;
+        }
 
-private void applyOverlayAlpha(int value)
-{
-    if (value < 0) value = 0;
-    if (value > 255) value = 255;
-    overlayAlpha = value;
-    if (overlayWindow !is null && IsWindow(overlayWindow))
-        SetLayeredWindowAttributes(overlayWindow, 0, cast(BYTE) overlayAlpha, LWA_ALPHA);
+        _hwnd = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            toUTF16z(_className), toUTF16z(_title),
+            WS_POPUP,
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+            null, null, _module, null);
+        if (_hwnd is null)
+            return null;
+
+        SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
+        setAlpha(_alpha);
+        return _hwnd;
+    }
+
+    /// Blend alpha for the layer, 0-255. 0 leaves the desktop untouched.
+    void setAlpha(int value)
+    {
+        if (value < 0) value = 0;
+        if (value > 255) value = 255;
+        _alpha = value;
+        if (active())
+            SetLayeredWindowAttributes(_hwnd, 0, cast(BYTE) _alpha, LWA_ALPHA);
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Controller: owns the dim level and keeps the overlay in sync.
+// Controller: owns the dim and brighten levels and keeps the overlays in sync.
 // ---------------------------------------------------------------------------
 
-final class DimmerController
+final class ScreenTintController
 {
     private GuiWindow _window;
     private PlatformWindow _platform;
-    private int _percent;
-    private bool _enabled;
+    private OverlayWindow _dimLayer;
+    private OverlayWindow _brightenLayer;
+    private int _dimPercent;
+    private bool _dimEnabled;
+    private int _brightenPercent;
+    private bool _brightenEnabled;
     private string _lastError;
 
-    this(GuiWindow window, int percent, bool enabled)
+    this(GuiWindow window, int dimPercent, bool dimEnabled,
+        int brightenPercent, bool brightenEnabled)
     {
         _window = window;
         _platform = cast(PlatformWindow) window.nativeWindow();
-        _percent = clampDimPercent(percent);
-        _enabled = enabled;
+        _dimLayer = new OverlayWindow("AuroraDimmerDimOverlay",
+            "Aurora Dimmer Overlay", cast(HBRUSH) GetStockObject(BLACK_BRUSH));
+        _brightenLayer = new OverlayWindow("AuroraDimmerBrightenOverlay",
+            "Aurora Brightener Overlay", cast(HBRUSH) GetStockObject(WHITE_BRUSH));
+        _dimPercent = clampDimPercent(dimPercent);
+        _dimEnabled = dimEnabled;
+        _brightenPercent = clampBrightenPercent(brightenPercent);
+        _brightenEnabled = brightenEnabled;
         apply();
     }
 
     /// Requested darkening, 0-90 percent.
-    int percent() const { return _percent; }
+    int dimPercent() const { return _dimPercent; }
 
-    bool enabled() const { return _enabled; }
+    bool dimEnabled() const { return _dimEnabled; }
 
-    /// Layer alpha actually applied to the overlay, 0-255.
-    int alpha() const { return _enabled ? (_percent * 255) / 100 : 0; }
+    /// Layer alpha actually applied to the dim overlay, 0-255.
+    int dimAlpha() const { return _dimEnabled ? (_dimPercent * 255) / 100 : 0; }
 
-    /// True once the full-screen overlay exists and is showing.
-    bool overlayActive() const
+    /// Requested brightening, 0-60 percent.
+    int brightenPercent() const { return _brightenPercent; }
+
+    bool brightenEnabled() const { return _brightenEnabled; }
+
+    /// Layer alpha actually applied to the brighten overlay, 0-255.
+    int brightenAlpha() const
     {
-        return overlayWindow !is null && IsWindow(overlayWindow) != 0;
+        return _brightenEnabled ? (_brightenPercent * 255) / 100 : 0;
     }
+
+    /// True once the full-screen dim overlay exists and is showing.
+    bool dimOverlayActive() const { return _dimLayer.active(); }
+
+    /// True once the full-screen brighten overlay exists and is showing.
+    bool brightenOverlayActive() const { return _brightenLayer.active(); }
 
     /// Empty when the last update succeeded; otherwise the reason it failed.
     string lastError() const { return _lastError; }
 
-    void setPercent(int value)
+    void setDimPercent(int value)
     {
         const next = clampDimPercent(value);
-        if (next == _percent) return;
-        _percent = next;
+        if (next == _dimPercent) return;
+        _dimPercent = next;
         apply();
     }
 
-    void setEnabled(bool value)
+    void setDimEnabled(bool value)
     {
-        if (value == _enabled) return;
-        _enabled = value;
+        if (value == _dimEnabled) return;
+        _dimEnabled = value;
         apply();
     }
 
-    void toggleEnabled() { setEnabled(!_enabled); }
+    void toggleDim() { setDimEnabled(!_dimEnabled); }
 
-    /// Drop the darkening immediately (used when the app is closing).
+    void setBrightenPercent(int value)
+    {
+        const next = clampBrightenPercent(value);
+        if (next == _brightenPercent) return;
+        _brightenPercent = next;
+        apply();
+    }
+
+    void setBrightenEnabled(bool value)
+    {
+        if (value == _brightenEnabled) return;
+        _brightenEnabled = value;
+        apply();
+    }
+
+    void toggleBrighten() { setBrightenEnabled(!_brightenEnabled); }
+
+    /// Drop both tints immediately (used when the app is closing).
     void shutdown()
     {
-        if (overlayWindow !is null && IsWindow(overlayWindow))
-            SetLayeredWindowAttributes(overlayWindow, 0, 0, LWA_ALPHA);
+        _dimLayer.setAlpha(0);
+        _brightenLayer.setAlpha(0);
     }
 
     private void apply()
     {
-        _lastError = ensureOverlay() is null
-            ? "Could not create the dim overlay window." : "";
-        applyOverlayAlpha(alpha());
+        _lastError = "";
+        if (_dimLayer.ensure() is null)
+            _lastError = "Could not create the dim overlay window.";
+        if (_brightenLayer.ensure() is null && _lastError.length == 0)
+            _lastError = "Could not create the brighten overlay window.";
+        _dimLayer.setAlpha(dimAlpha());
+        _brightenLayer.setAlpha(brightenAlpha());
         raiseControl();
     }
 
-    /// Keep the control panel above the full-screen dim layer.
+    /// Keep the control panel above the full-screen tint layers.
     private void raiseControl()
     {
         if (_platform is null) return;
@@ -229,16 +293,17 @@ final class DimmerController
 // Control panel.
 // ---------------------------------------------------------------------------
 
-final class DimmerRoot : VBox
+final class ControlPanelRoot : VBox
 {
-    private DimmerController _controller;
-    private Slider _slider;
+    private ScreenTintController _controller;
+    private Slider _dimSlider;
+    private Slider _brightenSlider;
+    private Label _dimValueLabel;
+    private Label _brightenValueLabel;
     private Label _subtitle;
-    private Label _valueLabel;
     private Label _statusLabel;
-    private CheckBox _enabledBox;
 
-    this(DimmerController controller)
+    this(ScreenTintController controller)
     {
         super(12, Insets(18));
         _controller = controller;
@@ -248,54 +313,85 @@ final class DimmerRoot : VBox
         add(title);
 
         _subtitle = new Label(
-            "Darkens the desktop for night-time use.");
+            "Darken the desktop for night, brighten it for day.");
         add(_subtitle);
 
         add(new Separator());
 
-        auto levelRow = new HBox(10);
+        // ---- Dimmer ----
+        auto dimHeading = new Label("Darken");
+        dimHeading.setScale(2);
+        add(dimHeading);
+
+        auto dimRow = new HBox(10);
         // A nested container gets no intrinsic height, so state it explicitly.
-        levelRow.layoutHints().preferredHeight = 32;
-        auto levelLabel = new Label("Dim level");
-        levelLabel.layoutHints().preferredWidth = 88;
-        levelRow.add(levelLabel);
+        dimRow.layoutHints().preferredHeight = 32;
+        auto dimLabel = new Label("Dim level");
+        dimLabel.layoutHints().preferredWidth = 96;
+        dimRow.add(dimLabel);
 
-        _slider = new Slider(minDimPercent, maxDimPercent, _controller.percent());
-        _slider.layoutHints().flex = 1.0;
-        _slider.layoutHints().preferredWidth = 220;
-        _slider.onChanged = (double value) {
-            _controller.setPercent(cast(int) (value + 0.5));
+        _dimSlider = new Slider(minDimPercent, maxDimPercent, _controller.dimPercent());
+        _dimSlider.layoutHints().flex = 1.0;
+        _dimSlider.layoutHints().preferredWidth = 200;
+        _dimSlider.onChanged = (double value) {
+            _controller.setDimPercent(cast(int) (value + 0.5));
             refresh();
         };
-        levelRow.add(_slider);
+        dimRow.add(_dimSlider);
 
-        _valueLabel = new Label("");
-        _valueLabel.setAlignment(HorizontalAlign.right);
-        _valueLabel.layoutHints().preferredWidth = 56;
-        levelRow.add(_valueLabel);
-        add(levelRow);
+        _dimValueLabel = new Label("");
+        _dimValueLabel.setAlignment(HorizontalAlign.right);
+        _dimValueLabel.layoutHints().preferredWidth = 56;
+        dimRow.add(_dimValueLabel);
+        add(dimRow);
 
-        _enabledBox = new CheckBox("Dimming enabled", _controller.enabled());
-        _enabledBox.onChanged = (bool value) {
-            _controller.setEnabled(value);
+        auto dimEnabledBox = new CheckBox("Dimming enabled", _controller.dimEnabled());
+        dimEnabledBox.onChanged = (bool value) {
+            _controller.setDimEnabled(value);
             refresh();
         };
-        add(_enabledBox);
+        add(dimEnabledBox);
 
-        auto presets = new HBox(8);
-        presets.layoutHints().preferredHeight = 34;
-        foreach (preset; [0, 25, 45, 65, 85])
-        {
-            auto button = new Button(format("%d%%", preset));
-            button.layoutHints().flex = 1.0;
-            const target = preset;
-            button.onClick = () {
-                _slider.setValue(target, true); // Routes back through onChanged.
-                refresh();
-            };
-            presets.add(button);
-        }
-        add(presets);
+        add(buildPresets([0, 25, 45, 65, 85], &_dimSlider));
+
+        add(new Separator());
+
+        // ---- Brightener ----
+        auto brightenHeading = new Label("Brighten");
+        brightenHeading.setScale(2);
+        add(brightenHeading);
+
+        auto brightenRow = new HBox(10);
+        brightenRow.layoutHints().preferredHeight = 32;
+        auto brightenLabel = new Label("Brighten level");
+        brightenLabel.layoutHints().preferredWidth = 96;
+        brightenRow.add(brightenLabel);
+
+        _brightenSlider = new Slider(minBrightenPercent, maxBrightenPercent,
+            _controller.brightenPercent());
+        _brightenSlider.layoutHints().flex = 1.0;
+        _brightenSlider.layoutHints().preferredWidth = 200;
+        _brightenSlider.onChanged = (double value) {
+            _controller.setBrightenPercent(cast(int) (value + 0.5));
+            refresh();
+        };
+        brightenRow.add(_brightenSlider);
+
+        _brightenValueLabel = new Label("");
+        _brightenValueLabel.setAlignment(HorizontalAlign.right);
+        _brightenValueLabel.layoutHints().preferredWidth = 56;
+        brightenRow.add(_brightenValueLabel);
+        add(brightenRow);
+
+        auto brightenEnabledBox = new CheckBox("Brightening enabled",
+            _controller.brightenEnabled());
+        brightenEnabledBox.onChanged = (bool value) {
+            _controller.setBrightenEnabled(value);
+            refresh();
+        };
+        add(brightenEnabledBox);
+
+        add(buildPresets([0, 15, 30, 45, 60], &_brightenSlider));
 
         _statusLabel = new Label("");
         add(_statusLabel);
@@ -303,27 +399,52 @@ final class DimmerRoot : VBox
         refresh();
     }
 
+    /// Build an equal-width row of preset buttons driving one slider.
+    private HBox buildPresets(int[] percents, Slider* slider)
+    {
+        auto presets = new HBox(8);
+        presets.layoutHints().preferredHeight = 34;
+        foreach (preset; percents)
+        {
+            auto button = new Button(format("%d%%", preset));
+            button.layoutHints().flex = 1.0;
+            const target = preset;
+            button.onClick = () {
+                slider.setValue(target, true); // Routes back through onChanged.
+                refresh();
+            };
+            presets.add(button);
+        }
+        return presets;
+    }
+
     /// Re-apply theme colors and text. Safe to call after the widget is attached.
     void refresh()
     {
         _subtitle.setColor(theme().textMuted);
         _statusLabel.setColor(theme().textMuted);
+        _dimValueLabel.setColor(theme().text);
+        _brightenValueLabel.setColor(theme().text);
 
-        if (!_controller.enabled())
-            _valueLabel.setText("Off");
-        else
-            _valueLabel.setText(format("%d%%", _controller.percent()));
+        _dimValueLabel.setText(_controller.dimEnabled()
+            ? format("%d%%", _controller.dimPercent()) : "Off");
+        _brightenValueLabel.setText(_controller.brightenEnabled()
+            ? format("%d%%", _controller.brightenPercent()) : "Off");
 
         if (_controller.lastError().length > 0)
+        {
             _statusLabel.setText(_controller.lastError());
-        else if (!_controller.enabled())
-            _statusLabel.setText("Dimming is off. The screen is at full brightness.");
-        else if (_controller.percent() <= 0)
-            _statusLabel.setText("Dim level 0% - no darkening applied.");
-        else
-            _statusLabel.setText(format(
-                "Dimming the desktop to %d%% of normal brightness.",
-                _controller.percent()));
+            return;
+        }
+
+        string dimText = (_controller.dimEnabled() && _controller.dimPercent() > 0)
+            ? format("Dimming to %d%%.", _controller.dimPercent())
+            : "Dimming off.";
+        string brightenText =
+            (_controller.brightenEnabled() && _controller.brightenPercent() > 0)
+            ? format("Brightening to %d%%.", _controller.brightenPercent())
+            : "Brightening off.";
+        _statusLabel.setText(dimText ~ " " ~ brightenText);
     }
 }
 
@@ -336,7 +457,7 @@ private WindowOptions dimmerWindowOptions()
     WindowOptions options;
     options.title = "Aurora Dimmer";
     options.width = 430;
-    options.height = 312;
+    options.height = 500;
     options.resizable = false;
     options.decorated = true;
     options.alwaysOnTop = true;
@@ -348,20 +469,31 @@ private WindowOptions dimmerWindowOptions()
     return options;
 }
 
-/// Parse `--dim=NN` and `--off`; anything else is ignored.
-private void parseArgs(string[] args, ref int percent, ref bool enabled)
+/// Parse `--dim=NN`, `--brighten=NN`, `--off` and `--brighten-off`.
+private void parseArgs(string[] args, ref int dimPercent, ref bool dimEnabled,
+    ref int brightenPercent, ref bool brightenEnabled)
 {
     foreach (arg; args[1 .. $])
     {
         const value = strip(arg);
         if (value == "--off" || value == "/off")
-        {
-            enabled = false;
-        }
+            dimEnabled = false;
+        else if (value == "--brighten-off" || value == "/brighten-off")
+            brightenEnabled = false;
         else if (value.startsWith("--dim="))
         {
             try
-                percent = clampDimPercent(strip(value["--dim=".length .. $]).to!int);
+                dimPercent = clampDimPercent(strip(value["--dim=".length .. $]).to!int);
+            catch (Exception)
+            {
+                // Ignore malformed levels and keep the default.
+            }
+        }
+        else if (value.startsWith("--brighten="))
+        {
+            try
+                brightenPercent =
+                    clampBrightenPercent(strip(value["--brighten=".length .. $]).to!int);
             catch (Exception)
             {
                 // Ignore malformed levels and keep the default.
@@ -372,13 +504,17 @@ private void parseArgs(string[] args, ref int percent, ref bool enabled)
 
 int run(string[] args)
 {
-    int initialPercent = 45;
-    bool initialEnabled = true;
-    parseArgs(args, initialPercent, initialEnabled);
+    int initialDimPercent = 45;
+    bool initialDimEnabled = true;
+    int initialBrightenPercent = 0;
+    bool initialBrightenEnabled = false;
+    parseArgs(args, initialDimPercent, initialDimEnabled,
+        initialBrightenPercent, initialBrightenEnabled);
 
     auto window = new GuiWindow(dimmerWindowOptions(), Theme.dark());
-    auto controller = new DimmerController(window, initialPercent, initialEnabled);
-    auto root = new DimmerRoot(controller);
+    auto controller = new ScreenTintController(window, initialDimPercent,
+        initialDimEnabled, initialBrightenPercent, initialBrightenEnabled);
+    auto root = new ControlPanelRoot(controller);
     window.setRoot(root);
     root.refresh(); // Colors resolve once the widget is attached to the window.
     window.onCloseRequested = () {

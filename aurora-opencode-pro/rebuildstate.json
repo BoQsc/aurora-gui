@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Draw the search-field clear button's × as vector lines (Button text path truncated it to \"...\" in the small square).",
+  "reason": "Deploy current source (DeepSeek peak/off-peak module + appui wiring) after reverting the stray field; then commit all as requested.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 10:55:10.6572626",
-  "finishedAt": "2026-10-02 10:55:50.1768558",
-  "durationMs": 39519,
+  "startedAt": "2026-10-02 12:26:24.7100573",
+  "finishedAt": "2026-10-02 12:27:07.1389505",
+  "durationMs": 42428,
   "exitCode": 0,
   "errors": []
 }
