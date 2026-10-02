@@ -1,13 +1,13 @@
 {
-  "status": "ok",
-  "phase": "relaunching",
-  "reason": "Subchat view: orchestrator request includes only sub-agents' prose results, not their shared tool context; define isRouterAgent.",
-  "command": "dub build --build=release",
+  "status": "pending",
+  "phase": "queued",
+  "reason": "Apply latest app.d (no-arg shell launch -> interactive console with dedicated console) — exe at 17:52 predates app.d at 17:59.",
+  "command": "",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 17:18:37.1811848",
-  "finishedAt": "2026-10-02 17:19:35.5067762",
-  "durationMs": 58324,
+  "startedAt": "2026-10-02 19:02:45.2099051",
+  "finishedAt": "",
+  "durationMs": 0,
   "exitCode": 0,
   "errors": []
 }

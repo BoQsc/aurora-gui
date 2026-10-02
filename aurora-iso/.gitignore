@@ -1,0 +1,10 @@
+/.dub/
+/build/
+/aurora-iso.exe
+/aurora-iso
+*.o
+*.obj
+*.pdb
+*.ilk
+*.log
+*.iso

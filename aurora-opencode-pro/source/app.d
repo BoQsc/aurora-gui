@@ -12,7 +12,7 @@ import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
 import std.array : join;
 import std.conv : to;
-import std.stdio : stdin, stdout, writeln;
+import std.stdio : stderr, stdin, stdout, writeln;
 import std.string : strip;
 import std.utf : toUTF32;
 
@@ -109,6 +109,92 @@ private int runScreenshot(string path, bool withChat, string message)
     return 0;
 }
 
+/// The exe links as a GUI-subsystem binary, so Windows attaches no console and
+/// any CLI output (`--headless`, usage, errors) would go nowhere. Before the
+/// first write, join the console the exe was launched from so the text lands in
+/// that cmd window (a fresh `AllocConsole` window pops up and vanishes with the
+/// process). When there is no parent console - launched from Explorer - create
+/// one. When standard output is already a pipe or a redirected file, leave the
+/// streams alone so callers can capture the text.
+private void attachCliConsole()
+{
+    version (Windows)
+    {
+        import core.stdc.stdio : freopen, stderr, stdin, stdout;
+        import core.sys.windows.wincon : AllocConsole, AttachConsole,
+            ATTACH_PARENT_PROCESS, GetConsoleWindow, SetConsoleOutputCP;
+        import core.sys.windows.windows : FILE_TYPE_DISK, FILE_TYPE_PIPE,
+            GetFileType, GetStdHandle, INVALID_HANDLE_VALUE, STD_OUTPUT_HANDLE;
+        // Already attached to a console: its standard streams work as they are.
+        if (GetConsoleWindow() !is null) return;
+        // stdout is captured through a pipe or a file: do not replace it.
+        const output = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (output !is null && output != INVALID_HANDLE_VALUE)
+        {
+            const kind = GetFileType(cast(void*) output);
+            if (kind == FILE_TYPE_PIPE || kind == FILE_TYPE_DISK) return;
+        }
+        if (!AttachConsole(ATTACH_PARENT_PROCESS) && !AllocConsole()) return;
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        freopen("CONIN$", "r", stdin);
+        // Replies and prompts are UTF-8; match the console so they do not mojibake.
+        SetConsoleOutputCP(65001);
+    }
+}
+
+/// Whether the process was started from a console (a shell). The GUI subsystem
+/// hides that console, so it is probed once at startup and released again; the
+/// answer decides between an interactive console and the desktop window.
+private __gshared bool startedFromShell;
+
+/// Interactive sessions need a console this process alone reads from. cmd does
+/// not wait for a GUI-subsystem exe, so the shell keeps its own console and
+/// typed lines go to the shell, not here (the session looks dead). Take a fresh
+/// console instead - its window is the session. Piped or redirected stdin is a
+/// script feed, so it is left untouched.
+private void ensureInteractiveConsole()
+{
+    version (Windows)
+    {
+        import core.stdc.stdio : freopen, stderr, stdin, stdout;
+        import core.sys.windows.wincon : AllocConsole, GetConsoleWindow,
+            SetConsoleOutputCP;
+        import core.sys.windows.windows : FILE_TYPE_DISK, FILE_TYPE_PIPE,
+            GetFileType, GetStdHandle, INVALID_HANDLE_VALUE, STD_INPUT_HANDLE;
+        const input = GetStdHandle(STD_INPUT_HANDLE);
+        if (input !is null && input != INVALID_HANDLE_VALUE)
+        {
+            const kind = GetFileType(cast(void*) input);
+            if (kind == FILE_TYPE_PIPE || kind == FILE_TYPE_DISK) return;
+        }
+        if (GetConsoleWindow() is null && !AllocConsole()) return;
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        freopen("CONIN$", "r", stdin);
+        SetConsoleOutputCP(65001);
+    }
+}
+
+/// Describe the command-line modes. Printed for `--help` (and for an option
+/// that is not one of them), instead of silently opening the window.
+private int printUsage()
+{
+    writeln("Aurora OpenCode Pro");
+    writeln("Usage:");
+    writeln("  aurora-opencode-pro                      open the desktop window");
+    writeln(`  aurora-opencode-pro "prompt"             send a prompt; keeps chatting`);
+    writeln("                                           in a console, one-shot on a pipe");
+    writeln("  aurora-opencode-pro -i | --interactive   chat in the console");
+    writeln("  aurora-opencode-pro --headless [prompt]  one prompt; with no prompt");
+    writeln("                                           reads stdin (interactive in a");
+    writeln("                                           console, one batch on a pipe)");
+    writeln("  aurora-opencode-pro --headless-loop      one prompt per stdin line");
+    writeln("  aurora-opencode-pro --screenshot <path>");
+    writeln(`  aurora-opencode-pro --screenshot-chat <path> "prompt"`);
+    return 0;
+}
+
 /// Read the whole of standard input as one prompt.
 private string readAllStdin()
 {
@@ -129,14 +215,22 @@ private int runHeadless(string message)
     if (message == "-") message = readAllStdin();
     const reply = driveOffscreen(message, "", false, RendererPreference.software);
     writeln(reply);
-    return reply.length > 0 ? 0 : 1;
+    stdout.flush();
+    if (reply.length == 0)
+    {
+        stderr.writeln("aurora-opencode-pro: no reply was produced " ~
+            "(check the API key/settings; see logs/errors.log)");
+        return 1;
+    }
+    return 0;
 }
 
 /// Interactive automation: keep one offscreen UI alive and run one prompt per
 /// line of stdin, printing each reply as it completes. Reusing the session
 /// avoids paying the conversation-restore startup cost for every prompt;
-/// `exit` or `quit` ends the loop.
-private int runHeadlessLoop()
+/// `exit` or `quit` ends the loop. A prompt given on the command line
+/// (`firstPrompt`) is answered first, then the session stays open.
+private int runHeadlessLoop(string firstPrompt = "")
 {
     auto ui = openOffscreen("Aurora OpenCode", RendererPreference.software);
     scope (exit)
@@ -144,13 +238,19 @@ private int runHeadlessLoop()
         ui.root.shutdownClient();
         ui.window.close();
     }
+    // Plain output: only the assistant replies reach the console - no banner
+    // or prompt chrome.
+    if (firstPrompt.length > 0)
+    {
+        writeln(submitPrompt(ui, firstPrompt, false));
+        stdout.flush();
+    }
     foreach (line; stdin.byLine())
     {
         const prompt = strip(line).idup;
-        if (prompt.length == 0) continue;
         if (prompt == "exit" || prompt == "quit") break;
-        const reply = submitPrompt(ui, prompt, false);
-        writeln(reply);
+        if (prompt.length == 0) continue;
+        writeln(submitPrompt(ui, prompt, false));
         stdout.flush();
     }
     return 0;
@@ -207,17 +307,87 @@ int main(string[] args)
 /// The real entry point; wrapped by `main` so any uncaught Throwable is logged.
 private int runApp(string[] args)
 {
-    if (args.length >= 3 && args[1] == "--screenshot")
-        return runScreenshot(args[2], false, "");
-    if (args.length >= 4 && args[1] == "--screenshot-chat")
-        return runScreenshot(args[2], true, args[3]);
-    // `--headless-loop` keeps one offscreen session and runs one prompt per
-    // stdin line; `--headless <prompt>` runs a single prompt. Both print the
-    // assistant reply, so the exe can be used as an automation tool.
-    if (args.length >= 2 && args[1] == "--headless-loop")
+    // The GUI subsystem hides the console the exe was started from, so probe
+    // for it once and release it again: the flag decides between an interactive
+    // console (shell launch) and the desktop window (Explorer/double-click).
+    version (Windows)
+    {
+        import core.sys.windows.wincon : AttachConsole, ATTACH_PARENT_PROCESS,
+            FreeConsole;
+        startedFromShell = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
+        if (startedFromShell) FreeConsole();
+    }
+
+    const bool hasArg = args.length >= 2;
+    const string arg1 = hasArg ? args[1] : "";
+
+    if (arg1 == "--help" || arg1 == "-h")
+    {
+        attachCliConsole();
+        return printUsage();
+    }
+    // One interactive session, one prompt per line, until `exit`/`quit`.
+    if (arg1 == "--interactive" || arg1 == "-i" || arg1 == "--headless-loop")
+    {
+        ensureInteractiveConsole();
         return runHeadlessLoop();
-    if (args.length >= 3 && args[1] == "--headless")
-        return runHeadless(join(args[2 .. $], " "));
+    }
+    if (arg1 == "--screenshot" && args.length >= 3)
+    {
+        attachCliConsole();
+        return runScreenshot(args[2], false, "");
+    }
+    if (arg1 == "--screenshot-chat" && args.length >= 4)
+    {
+        attachCliConsole();
+        return runScreenshot(args[2], true, args[3]);
+    }
+    if (arg1 == "--headless")
+    {
+        // With a prompt it is a one-shot; without one, a shell gets the
+        // interactive session and a pipe is read as one batch prompt.
+        if (args.length >= 3)
+        {
+            attachCliConsole();
+            return runHeadless(join(args[2 .. $], " "));
+        }
+        if (startedFromShell)
+        {
+            ensureInteractiveConsole();
+            return runHeadlessLoop();
+        }
+        attachCliConsole();
+        return runHeadless("-");
+    }
+    // A bare prompt: in a shell it answers and keeps the session open, so
+    // launching the exe behaves like a chat; on a pipe it is a one-shot.
+    if (hasArg && arg1.length > 0 && arg1[0] != '-')
+    {
+        const prompt = join(args[1 .. $], " ");
+        if (startedFromShell)
+        {
+            ensureInteractiveConsole();
+            return runHeadlessLoop(prompt);
+        }
+        attachCliConsole();
+        return runHeadless(prompt);
+    }
+    if (hasArg)
+    {
+        // An option that is not a known mode: say so rather than opening the
+        // window, which looked like the command did nothing.
+        attachCliConsole();
+        stderr.writeln("aurora-opencode-pro: unknown option: ", arg1);
+        printUsage();
+        return 2;
+    }
+    // No arguments: launched from a shell, start the interactive console;
+    // launched from Explorer (no console), open the desktop window.
+    if (startedFromShell)
+    {
+        ensureInteractiveConsole();
+        return runHeadlessLoop();
+    }
 
     WindowOptions options;
     options.title = "Aurora OpenCode";

@@ -1,0 +1,61 @@
+{
+  "name": "aurora-iso",
+  "description": "A self-contained ISO image toolkit built with Aurora-D: browse, extract, create, download, and write ISO images to USB drives or the filesystem.",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "executable",
+  "targetName": "aurora-iso",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source",
+    "../vendor/aurora-d-0.4.5/source"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet",
+    "winhttp",
+    "advapi32",
+    "ole32"
+  ],
+  "lflags-windows": [
+    "/SUBSYSTEM:WINDOWS",
+    "/ENTRY:mainCRTStartup"
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ]
+    },
+    "portable-single-exe": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ]
+    }
+  },
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "version": "0.1.0"
+}
