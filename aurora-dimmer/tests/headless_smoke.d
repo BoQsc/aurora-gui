@@ -1,37 +1,39 @@
 module auroradimmer_headless_smoke;
 
 import aurora;
-import auroradimmer.dimmer : ControlPanelRoot, ScreenTintController, TintEngine,
+import auroradimmer.dimmer : ControlPanelRoot, ScreenTintController,
     combinedTintScale;
 import std.stdio : writeln;
 
 /**
  * Drives the control panel through Aurora's test driver and checks the dim and
- * brighten math for both tint engines. Levels stay at 0 whenever an engine is
- * active so the process never tints the real desktop while the smoke test runs.
+ * brighten math for the overlay engine plus the full-screen filter math. Levels
+ * stay at 0 whenever an engine is active so the process never tints the real
+ * desktop while the smoke test runs.
  */
 int main()
 {
     WindowOptions options;
     options.title = "Aurora Dimmer";
     options.width = 430;
-    options.height = 560;
+    options.height = 600;
     options.decorated = false;
     options.renderer = RendererPreference.software;
     auto window = new GuiWindow(options, Theme.dark());
 
     // Overlay engine at 0% so both overlays exist but never tint the desktop.
     auto controller = new ScreenTintController(window, 0, true, 0, true,
-        TintEngine.overlay);
+        false, true);
     auto root = new ControlPanelRoot(controller);
     window.setRoot(root);
     root.refresh();
 
     auto driver = new UiTestDriver(window);
-    driver.resize(Size(430, 560));
+    driver.resize(Size(430, 600));
     assert(driver.paint(), "Initial dimmer paint failed");
     assert(root.children().length > 0, "Control panel produced no widgets");
-    assert(controller.engine() == TintEngine.overlay, "default engine mismatch");
+    assert(controller.useOverlay() && !controller.useFilter(),
+        "engine selection mismatch");
 
     controller.setDimPercent(50);
     assert(controller.dimPercent() == 50, "setDimPercent did not store the value");
@@ -78,11 +80,12 @@ int main()
     assert(combinedTintScale(45, true, 45, true) == (1.0f - 0.45f) * (1.0f + 0.45f),
         "dim and brighten should compose multiplicatively");
 
-    // Switch engines at 0% so the filter applies identity over the desktop.
-    controller.setEngine(TintEngine.screenFilter);
-    assert(controller.engine() == TintEngine.screenFilter, "engine switch failed");
+    // Enable the filter at 0% so it applies identity over the desktop, and
+    // confirm the two engines can be combined.
+    controller.setUseFilter(true);
+    assert(controller.useFilter() && controller.useOverlay(),
+        "engines should be able to run together");
     assert(controller.screenFilterScale() == 1.0f, "0% filter must be identity");
-    controller.setEngine(TintEngine.overlay);
 
     driver.paint();
     assert(driver.paint(), "Dimmer repaint failed");

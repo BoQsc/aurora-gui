@@ -6,24 +6,27 @@ use.
 
 ## Tint engines
 
-The app can tint the screen two ways. Pick with the **Full-screen filter**
-checkbox in the UI, or `--filter` / `--overlay` on the command line.
+Two independent engines tint the screen. Toggle each with a checkbox in the UI,
+or with command-line flags; they can run together.
 
-- **Full-screen filter** (default) - the Windows Magnification API
+- **Full-screen filter** - the Windows Magnification API
   (`MagSetFullscreenColorEffect`) applies a color matrix to the whole display
   *after* compositing. It therefore also tints context menus, tooltips, the
   taskbar and other shell surfaces that a floating window cannot sit above.
   Limitation: it covers the **primary monitor only**, and it tints this app's
   own control panel too.
-- **Overlay** - one or two full virtual-screen, always-on-top, click-through
-  **layered Win32 windows** are blended over the desktop at a user-chosen alpha.
-  It covers **every monitor**, but windows and menus placed in a higher z-order
-  band (context menus, the taskbar, secure surfaces) stay at full brightness.
+- **Overlay windows** - one or two full virtual-screen, always-on-top,
+  click-through **layered Win32 windows** are blended over the desktop at a
+  user-chosen alpha. It covers **every monitor**, but windows and menus placed
+  in a higher z-order band (context menus, the taskbar, secure surfaces) stay at
+  full brightness.
 
-Either way nothing behind the tint changes: windows, games and video keep
-running normally and clicks still reach them.
+When both are enabled, the filter tints the primary monitor and the overlay is
+clipped to the remaining monitors, so nothing is tinted twice and every monitor
+is covered. When only the overlay is enabled it covers all monitors (the
+original behaviour).
 
-Both engines use an independent **dim** level (black, 0-90%) and **brighten**
+Either engine uses an independent **dim** level (black, 0-90%) and **brighten**
 level (white, 0-60%); the filter composes them into one per-channel scale.
 
 ## Run
@@ -44,12 +47,13 @@ Options:
 - `--brighten=NN` - start at NN percent brightening (0-60, clamped).
 - `--off` - start with dimming disabled.
 - `--brighten-off` - start with brightening disabled.
-- `--filter` - use the full-screen filter engine (default).
-- `--overlay` - use the window overlay engine.
+- `--filter` / `--no-filter` - enable/disable the full-screen filter engine.
+- `--overlay` / `--no-overlay` - enable/disable the overlay engine.
 
 ## Controls
 
-- **Full-screen filter** checkbox - switch between the two engines.
+- **Full-screen filter (covers menus, taskbar)** checkbox.
+- **Overlay windows (all monitors)** checkbox.
 - **Darken** section: **Dim level** slider, 0-90%.
 - **Brighten** section: **Brighten level** slider, 0-60%.
 - **Dimming enabled** and **Brightening enabled** checkboxes.
@@ -70,8 +74,9 @@ math, and both overlay windows.
 
 ## Notes
 
-- The overlay engine covers the whole virtual desktop, so multi-monitor setups
-  are tinted together.
+- The overlay engine covers the whole virtual desktop; when the filter is also
+  on it is clipped with `SetWindowRgn` to everything outside the primary
+  monitor.
 - Each overlay uses `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
   WS_EX_NOACTIVATE` plus `SetLayeredWindowAttributes`; the solid fill comes from
   the window class background brush (black or white).

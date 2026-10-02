@@ -3,9 +3,9 @@ module auroradimmer.dimmer;
 /**
  * Aurora Dimmer - a tiny Windows screen tint tool for night and day use.
  *
- * Two tint engines are available, chosen in the UI or with `--overlay`:
+ * Two independent tint engines are available and can be combined:
  *
- *   - Full-screen filter (default): the Windows Magnification API
+ *   - Full-screen filter: the Windows Magnification API
  *     (`MagSetFullscreenColorEffect`) applies a color matrix to the whole
  *     primary display *after* compositing. It therefore also tints context
  *     menus, tooltips, the taskbar and other shell surfaces that a floating
@@ -14,28 +14,31 @@ module auroradimmer.dimmer;
  *   - Overlay: one or two full virtual-screen, always-on-top, click-through
  *     layered Win32 windows are blended over the desktop. It covers every
  *     monitor, but windows and menus placed in a higher z-order band (menus,
- *     the taskbar, secure surfaces) stay at full brightness.
+ *     the taskbar, secure surfaces) stay at full brightness. When the filter is
+ *     also enabled, the overlay is clipped to the non-primary monitors so the
+ *     primary is not tinted twice.
  *
- * Both engines are driven by an independent dim level (black, 0-90%) and
- * brighten level (white, 0-60%). Neither engine changes what is behind it, so
- * games and video keep running and the pointer still reaches them.
+ * Either engine uses an independent dim level (black, 0-90%) and brighten
+ * level (white, 0-60%). Neither changes what is behind it, so games and video
+ * keep running and the pointer still reaches them.
  *
- * The control panel is an ordinary Aurora window. In overlay mode it is
- * re-raised above the tint layers; in filter mode the whole screen, including
- * this panel, is tinted.
+ * The control panel is an ordinary Aurora window. In overlay-only mode it is
+ * re-raised above the tint layers; while the filter is enabled the whole
+ * screen, including this panel, is tinted.
  */
 
 import aurora;
 import aurora.platform.select : PlatformWindow;
 
-import core.sys.windows.windows : BLACK_BRUSH, BOOL, BYTE, CreateWindowExW,
-    DefWindowProcW, FreeLibrary, GetModuleHandleW, GetProcAddress,
-    GetStockObject, GetSystemMetrics, HBRUSH, HINSTANCE, HMODULE, HWND,
-    HWND_TOPMOST, IsWindow, LoadLibraryW, LPARAM, LRESULT, LWA_ALPHA,
-    RegisterClassExW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-    SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE, UINT, WHITE_BRUSH,
+import core.sys.windows.windows : BLACK_BRUSH, BOOL, BYTE, CombineRgn,
+    CreateRectRgn, CreateWindowExW, DefWindowProcW, DeleteObject, FreeLibrary,
+    GetModuleHandleW, GetProcAddress, GetStockObject, GetSystemMetrics, HBRUSH,
+    HINSTANCE, HMODULE, HRGN, HWND, HWND_TOPMOST, IsWindow, LoadLibraryW,
+    LPARAM, LRESULT, LWA_ALPHA, RGN_DIFF, RegisterClassExW,
+    SetLayeredWindowAttributes, SetWindowPos, SetWindowRgn, ShowWindow,
+    SM_CXVIRTUALSCREEN, SM_CXSCREEN, SM_CYVIRTUALSCREEN, SM_CYSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE, UINT, WHITE_BRUSH,
     WNDCLASSEXW, WNDPROC, WPARAM, WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WS_POPUP,
     WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT;
 
@@ -51,13 +54,6 @@ private enum int maxDimPercent = 90;
 /// Brighten levels are percentages of lightening: 0 = untouched, 60 = strong.
 private enum int minBrightenPercent = 0;
 private enum int maxBrightenPercent = 60;
-
-/// Which mechanism actually tints the screen.
-enum TintEngine
-{
-    overlay,      ///< Full-screen window overlays (every monitor).
-    screenFilter, ///< Magnification color matrix (primary monitor, all surfaces).
-}
 
 private int clampDimPercent(int value)
 {
@@ -250,7 +246,8 @@ private extern(Windows) LRESULT overlayWindowProc(HWND hwnd, UINT message,
  * brush (black for the dimmer, white for the brightener) which the default
  * window procedure paints, and `SetLayeredWindowAttributes` blends that fill
  * over the desktop at the chosen alpha. The overlay is click-through and never
- * takes focus.
+ * takes focus. It can be clipped to the non-primary monitors so it can be
+ * combined with the full-screen filter without double-tinting the primary.
  */
 private final class OverlayWindow
 {
@@ -261,6 +258,7 @@ private final class OverlayWindow
     private bool _classRegistered;
     private HWND _hwnd;
     private int _alpha;
+    private bool _secondaryOnly;
 
     this(string className, string title, HBRUSH brush)
     {
@@ -310,6 +308,7 @@ private final class OverlayWindow
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
         setAlpha(_alpha);
+        applyClip();
         return _hwnd;
     }
 
@@ -322,10 +321,52 @@ private final class OverlayWindow
         if (active())
             SetLayeredWindowAttributes(_hwnd, 0, cast(BYTE) _alpha, LWA_ALPHA);
     }
+
+    /// Clip the overlay to everything except the primary monitor. When false
+    /// the overlay covers the whole virtual desktop.
+    void setClipToSecondary(bool secondaryOnly)
+    {
+        if (_secondaryOnly == secondaryOnly && active())
+            return;
+        _secondaryOnly = secondaryOnly;
+        applyClip();
+    }
+
+    private void applyClip()
+    {
+        if (!active()) return;
+        if (!_secondaryOnly)
+        {
+            SetWindowRgn(_hwnd, null, 1); // Remove any clip.
+            return;
+        }
+
+        HRGN virtualRgn = CreateRectRgn(
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN));
+        HRGN primaryRgn = CreateRectRgn(0, 0,
+            GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+        HRGN result = CreateRectRgn(0, 0, 0, 0);
+        if (virtualRgn is null || primaryRgn is null || result is null)
+        {
+            if (virtualRgn !is null) DeleteObject(virtualRgn);
+            if (primaryRgn !is null) DeleteObject(primaryRgn);
+            if (result !is null) DeleteObject(result);
+            return;
+        }
+
+        CombineRgn(result, virtualRgn, primaryRgn, RGN_DIFF);
+        DeleteObject(virtualRgn);
+        DeleteObject(primaryRgn);
+        // The system owns `result` after a successful SetWindowRgn.
+        SetWindowRgn(_hwnd, result, 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Controller: owns the dim and brighten levels and drives the active engine.
+// Controller: owns the dim and brighten levels and drives the active engines.
 // ---------------------------------------------------------------------------
 
 final class ScreenTintController
@@ -338,12 +379,13 @@ final class ScreenTintController
     private bool _dimEnabled;
     private int _brightenPercent;
     private bool _brightenEnabled;
-    private TintEngine _engine;
+    private bool _useFilter;
+    private bool _useOverlay;
     private string _lastError;
 
     this(GuiWindow window, int dimPercent, bool dimEnabled,
         int brightenPercent, bool brightenEnabled,
-        TintEngine engine = TintEngine.screenFilter)
+        bool useFilter = true, bool useOverlay = false)
     {
         _window = window;
         _platform = cast(PlatformWindow) window.nativeWindow();
@@ -355,7 +397,8 @@ final class ScreenTintController
         _dimEnabled = dimEnabled;
         _brightenPercent = clampBrightenPercent(brightenPercent);
         _brightenEnabled = brightenEnabled;
-        _engine = engine;
+        _useFilter = useFilter;
+        _useOverlay = useOverlay;
         apply();
     }
 
@@ -378,8 +421,9 @@ final class ScreenTintController
         return _brightenEnabled ? (_brightenPercent * 255) / 100 : 0;
     }
 
-    /// Active tint mechanism.
-    TintEngine engine() const { return _engine; }
+    bool useFilter() const { return _useFilter; }
+
+    bool useOverlay() const { return _useOverlay; }
 
     /// Per-channel scale the full-screen filter would apply right now.
     float screenFilterScale() const
@@ -431,10 +475,17 @@ final class ScreenTintController
 
     void toggleBrighten() { setBrightenEnabled(!_brightenEnabled); }
 
-    void setEngine(TintEngine value)
+    void setUseFilter(bool value)
     {
-        if (value == _engine) return;
-        _engine = value;
+        if (value == _useFilter) return;
+        _useFilter = value;
+        apply();
+    }
+
+    void setUseOverlay(bool value)
+    {
+        if (value == _useOverlay) return;
+        _useOverlay = value;
         apply();
     }
 
@@ -449,23 +500,31 @@ final class ScreenTintController
     private void apply()
     {
         _lastError = "";
-        if (_engine == TintEngine.screenFilter)
+
+        if (_useOverlay)
         {
-            // Hide any overlay left over from a previous engine.
-            _dimLayer.setAlpha(0);
-            _brightenLayer.setAlpha(0);
-            magSetScale(screenFilterScale());
-        }
-        else
-        {
-            magReset();
             if (_dimLayer.ensure() is null)
                 _lastError = "Could not create the dim overlay window.";
             if (_brightenLayer.ensure() is null && _lastError.length == 0)
                 _lastError = "Could not create the brighten overlay window.";
+            // When the filter is also on, keep the overlay off the primary
+            // monitor so it is not tinted twice.
+            _dimLayer.setClipToSecondary(_useFilter);
+            _brightenLayer.setClipToSecondary(_useFilter);
             _dimLayer.setAlpha(dimAlpha());
             _brightenLayer.setAlpha(brightenAlpha());
         }
+        else
+        {
+            _dimLayer.setAlpha(0);
+            _brightenLayer.setAlpha(0);
+        }
+
+        if (_useFilter)
+            magSetScale(screenFilterScale());
+        else
+            magReset();
+
         raiseControl();
     }
 
@@ -509,12 +568,20 @@ final class ControlPanelRoot : VBox
         add(_subtitle);
 
         auto filterBox = new CheckBox("Full-screen filter (covers menus, taskbar)",
-            _controller.engine() == TintEngine.screenFilter);
+            _controller.useFilter());
         filterBox.onChanged = (bool value) {
-            _controller.setEngine(value ? TintEngine.screenFilter : TintEngine.overlay);
+            _controller.setUseFilter(value);
             refresh();
         };
         add(filterBox);
+
+        auto overlayBox = new CheckBox("Overlay windows (all monitors)",
+            _controller.useOverlay());
+        overlayBox.onChanged = (bool value) {
+            _controller.setUseOverlay(value);
+            refresh();
+        };
+        add(overlayBox);
 
         _engineHint = new Label("");
         add(_engineHint);
@@ -630,10 +697,19 @@ final class ControlPanelRoot : VBox
         _dimValueLabel.setColor(theme().text);
         _brightenValueLabel.setColor(theme().text);
 
-        const filter = _controller.engine() == TintEngine.screenFilter;
-        _engineHint.setText(filter
-            ? "Filter tints every surface on the primary monitor."
-            : "Overlay covers all monitors but leaves menus bright.");
+        const filter = _controller.useFilter();
+        const overlay = _controller.useOverlay();
+        if (filter && overlay)
+            _engineHint.setText(
+                "Filter tints the primary monitor; overlay tints the others.");
+        else if (filter)
+            _engineHint.setText(
+                "Filter tints every surface on the primary monitor.");
+        else if (overlay)
+            _engineHint.setText(
+                "Overlay covers all monitors but leaves menus bright.");
+        else
+            _engineHint.setText("No engine selected - the screen is untouched.");
 
         _dimValueLabel.setText(_controller.dimEnabled()
             ? format("%d%%", _controller.dimPercent()) : "Off");
@@ -666,7 +742,7 @@ private WindowOptions dimmerWindowOptions()
     WindowOptions options;
     options.title = "Aurora Dimmer";
     options.width = 430;
-    options.height = 560;
+    options.height = 600;
     options.resizable = false;
     options.decorated = true;
     options.alwaysOnTop = true;
@@ -678,10 +754,11 @@ private WindowOptions dimmerWindowOptions()
     return options;
 }
 
-/// Parse `--dim=NN`, `--brighten=NN`, `--off`, `--brighten-off`,
-/// `--filter` and `--overlay`.
+/// Parse `--dim=NN`, `--brighten=NN`, `--off`, `--brighten-off`, `--filter`,
+/// `--no-filter`, `--overlay` and `--no-overlay`.
 private void parseArgs(string[] args, ref int dimPercent, ref bool dimEnabled,
-    ref int brightenPercent, ref bool brightenEnabled, ref TintEngine engine)
+    ref int brightenPercent, ref bool brightenEnabled, ref bool useFilter,
+    ref bool useOverlay)
 {
     foreach (arg; args[1 .. $])
     {
@@ -691,9 +768,13 @@ private void parseArgs(string[] args, ref int dimPercent, ref bool dimEnabled,
         else if (value == "--brighten-off" || value == "/brighten-off")
             brightenEnabled = false;
         else if (value == "--filter" || value == "/filter")
-            engine = TintEngine.screenFilter;
+            useFilter = true;
+        else if (value == "--no-filter" || value == "/no-filter")
+            useFilter = false;
         else if (value == "--overlay" || value == "/overlay")
-            engine = TintEngine.overlay;
+            useOverlay = true;
+        else if (value == "--no-overlay" || value == "/no-overlay")
+            useOverlay = false;
         else if (value.startsWith("--dim="))
         {
             try
@@ -722,14 +803,19 @@ int run(string[] args)
     bool initialDimEnabled = true;
     int initialBrightenPercent = 0;
     bool initialBrightenEnabled = false;
-    TintEngine initialEngine = TintEngine.screenFilter;
+    bool initialUseFilter = true;
+    bool initialUseOverlay = false;
     parseArgs(args, initialDimPercent, initialDimEnabled,
-        initialBrightenPercent, initialBrightenEnabled, initialEngine);
+        initialBrightenPercent, initialBrightenEnabled,
+        initialUseFilter, initialUseOverlay);
+    // Never leave the screen untouched by default.
+    if (!initialUseFilter && !initialUseOverlay)
+        initialUseOverlay = true;
 
     auto window = new GuiWindow(dimmerWindowOptions(), Theme.dark());
     auto controller = new ScreenTintController(window, initialDimPercent,
         initialDimEnabled, initialBrightenPercent, initialBrightenEnabled,
-        initialEngine);
+        initialUseFilter, initialUseOverlay);
     auto root = new ControlPanelRoot(controller);
     window.setRoot(root);
     root.refresh(); // Colors resolve once the widget is attached to the window.
