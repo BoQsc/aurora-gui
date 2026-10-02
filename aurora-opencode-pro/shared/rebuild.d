@@ -1,28 +1,34 @@
 /**
- * Self-rebuild: the whole feature in one module.
+ * Self-rebuild, rebuilt around one idea: the app is its own rebuild agent.
  *
- * Aurora OpenCode Pro rebuilds itself by handing the work to a detached helper,
- * because Windows keeps a running image locked and `dub` cannot overwrite it
- * while the process is alive. This module owns every part of that flow:
+ * Windows keeps a running image locked, so an executable cannot overwrite
+ * itself while it is alive. The previous design answered this with a *second*
+ * program - `bin/aurora-rebuilder.exe` - that had to be compiled and kept in
+ * sync with this one. That second program is the whole source of friction: it
+ * can go stale, go missing, or disagree with the app about the protocol, and
+ * every symptom looked like "the rebuild did nothing".
  *
- *   - the protocol       the `rebuildstate.json` schema, its artifact paths,
- *                        and its reader/writer (one definition, no drift);
- *   - the application    building a plan, ensuring the helper is current, and
- *                        launching it detached before the app exits;
- *   - the notice         turning the persisted lifecycle back into "are my
- *                        edits live, and if not why" for the resumed chat;
- *   - the progress        a small always-on-top Win32 window shown while the
- *     window             app is closed for a rebuild;
- *   - the helper         the detached program itself: build the side-by-side
- *                        `newbuild` target while the app is still open, wait
- *                        for the app to close, swap the new binary in,
- *                        relaunch, and supervise crashes.
+ * The new design removes it. When the app wants to rebuild, it copies *itself*
+ * to a throwaway image beside the package and runs that copy as the agent. The
+ * copy is instant, always matches the running build, and never needs its own
+ * build step. The copy builds a side-by-side `newbuild` target while the app is
+ * still open, the app closes when the build reports `ok`, and the copy swaps
+ * the fresh binary in and supervises the relaunch.
  *
- * The helper is built from this module plus a one-line entry point,
- * `tools/rebuilder.d`, which owns `main` and calls `runRebuilder` below. The
- * application and the `aurora-cli` tool compile this module as an ordinary
- * library module. One file holds the whole feature; one thin file is the
- * executable's entry.
+ * One module still owns the whole feature. Its three surfaces are:
+ *
+ *   - the ledger      `rebuildstate.json` (the lifecycle of one rebuild) plus
+ *                     `build.log` / `rebuild-report.txt` (the compiler output),
+ *                     written here so app, helper and reader never drift;
+ *   - the app side    `planRebuild` / `launchRebuild`: copy self, record
+ *                     `pending`, spawn the copy detached;
+ *   - the agent       `runRebuildHelperMode`: build, wait, swap, supervise,
+ *                     plus the tiny always-on-top progress window that reports
+ *                     while the app is closed.
+ *
+ * The entry point lives in `source/app.d`, which dispatches on
+ * `rebuildHelperFlag` before it touches the GUI, so the same binary is either
+ * the app or the agent.
  */
 module rebuild;
 
@@ -32,27 +38,31 @@ import core.time : MonoTime, msecs, seconds;
 import std.array : join;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
-import std.file : append, copy, exists, getSize, mkdirRecurse, readText, remove,
-    timeLastModified, write;
-import std.json : JSONType, JSONValue, parseJSON;
+import std.file : append, copy, dirEntries, exists, getSize, mkdirRecurse,
+    readText, remove, SpanMode, timeLastModified, write;
+import std.json : JSONType, parseJSON;
 import std.path : buildPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
 import std.string : indexOf, lastIndexOf, replace, strip;
-import std.utf : toUTF16, toUTF16z;
+import std.utf : toUTF16;
 
 version (Windows)
     import core.sys.windows.windows;
 
-// ===========================================================================
-// Protocol: rebuildstate.json and its sibling artifacts
-// ===========================================================================
-// The whole rebuild is tracked in `rebuildstate.json` in the package
-// directory. The app writes `pending` before it hands off and exits; the helper
-// drives that record through `running` to `ok` or `failed`; the relaunched app
-// reads the file back to decide whether its edits are live.
+/// The argv token that turns a copy of the app into the rebuild agent. It is
+/// checked as `args[1]` by `main`, before anything else runs.
+enum string rebuildHelperFlag = "--aurora-rebuild-helper";
 
-/// The rebuild lifecycle, as persisted in `rebuildstate.json`.
+// ===========================================================================
+// Ledger: rebuildstate.json and the sibling build artifacts
+// ===========================================================================
+// The app writes `pending` before it hands off. The agent moves the record
+// through `running` to `ok` or `failed`. The relaunched app reads it back to
+// answer "are my edits live, and if not why". The file is the single source of
+// truth; nothing infers state from timing or process presence.
+
+/// The lifecycle recorded in `rebuildstate.json`.
 enum RebuildStatus
 {
     none,
@@ -62,7 +72,7 @@ enum RebuildStatus
     failed,
 }
 
-/// The wire name of a status, the token stored in the file.
+/// The wire token for a status.
 string rebuildStatusName(RebuildStatus status)
 {
     final switch (status)
@@ -75,7 +85,7 @@ string rebuildStatusName(RebuildStatus status)
     }
 }
 
-/// Parse a status token; unknown text is `none`, never an exception.
+/// Parse a status token; unknown text is `none`, so corrupt state is inert.
 RebuildStatus parseRebuildStatus(string text)
 {
     switch (text)
@@ -88,7 +98,7 @@ RebuildStatus parseRebuildStatus(string text)
     }
 }
 
-/// `rebuildstate.json`, the one record of the rebuild lifecycle.
+/// The lifecycle record inside the package directory.
 string rebuildStatePath(string dir)
 {
     return dir.length > 0 ? buildPath(dir, "rebuildstate.json") : "";
@@ -106,15 +116,15 @@ string buildLogPath(string dir)
     return dir.length > 0 ? buildPath(dir, "build.log") : "";
 }
 
-/// A snapshot of `rebuildstate.json`. Unknown or absent fields default empty.
+/// A snapshot of `rebuildstate.json`. Absent or unknown fields default empty.
 struct RebuildState
 {
     RebuildStatus status;
     string phase;
     string reason;
-    /// The `dub build` command line, recorded so the record says what it ran.
+    /// The build command line, recorded so the record says what ran.
     string command;
-    /// The executable rebuilt in place (helper record; empty when unimplemented).
+    /// The executable that was rebuilt and relaunched.
     string exePath;
     /// The package directory the build ran in.
     string packageDir;
@@ -125,8 +135,8 @@ struct RebuildState
     string[] errors;
 }
 
-/// Read the persisted lifecycle. A missing or unreadable file is a `none`
-/// snapshot, so corrupt state never breaks startup.
+/// Read the persisted lifecycle. Missing or unreadable state is `none`, so a
+/// damaged file never breaks startup.
 RebuildState readRebuildState(string dir)
 {
     RebuildState state;
@@ -169,10 +179,9 @@ RebuildState readRebuildState(string dir)
     return state;
 }
 
-/// Write the lifecycle record, replacing any earlier one. Returns false when the
+/// Write the lifecycle record, replacing any earlier one. False when the
 /// package directory was unknown or the write failed. The JSON is formatted by
-/// hand (fixed key order, two-space indent) so the file reads the same no matter
-/// which process wrote it.
+/// hand (fixed key order) so the file reads the same no matter who wrote it.
 bool writeRebuildState(string dir, in RebuildState state)
 {
     const path = rebuildStatePath(dir);
@@ -207,15 +216,14 @@ bool writeRebuildState(string dir, in RebuildState state)
         return false;
 }
 
-/// `2026-09-21 17:54:10` in local time, the timestamp form every rebuild
-/// artifact uses.
-string rebuildStamp(SysTime value)
+/// `2026-09-21 17:54:10` in local time, the timestamp form every artifact uses.
+private string rebuildStamp(SysTime value)
 {
     return value.toLocalTime.toISOExtString.replace("T", " ");
 }
 
-/// A JSON string literal, escaped minimally but correctly.
-string jsonString(string value)
+/// A JSON string literal, escaped correctly and minimally.
+private string jsonString(string value)
 {
     return "\"" ~ value.replace("\\", "\\\\").replace("\"", "\\\"")
         .replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t") ~
@@ -223,7 +231,95 @@ string jsonString(string value)
 }
 
 // ===========================================================================
-// Application side: build a plan and hand off to the helper
+// Notice: what the resumed conversation is told
+// ===========================================================================
+
+/// The rebuild lifecycle as the app needs it: what happened, whether the
+/// running binary includes the edits, and the errors to quote when it does not.
+struct RebuildOutcome
+{
+    /// A lifecycle record existed (a rebuild was recorded at all).
+    bool found;
+    RebuildStatus status;
+    string phase;
+    string reason;
+    string startedAt;
+    string finishedAt;
+    long durationMs;
+    int exitCode;
+    string[] errors;
+    /// The failed-build report text ("" otherwise).
+    string report;
+    /// Where the build transcript lives, for pointing the agent at the detail.
+    string buildLog;
+}
+
+/// A rebuild that reached a verdict and succeeded.
+bool rebuildSucceeded(in RebuildOutcome outcome)
+{
+    return outcome.found && outcome.status == RebuildStatus.ok;
+}
+
+/// A rebuild that reached a verdict and failed to compile.
+bool rebuildFailed(in RebuildOutcome outcome)
+{
+    return outcome.found && outcome.status == RebuildStatus.failed;
+}
+
+/**
+ * A rebuild that never reached a verdict. Only `running` qualifies: the agent
+ * began building, yet we are already running again, so the build did not finish
+ * and the edits are not live. `pending` is excluded - it means no agent ever
+ * took the record over, which the caller resolves by source staleness.
+ */
+bool rebuildIncomplete(in RebuildOutcome outcome)
+{
+    return outcome.found && outcome.status == RebuildStatus.running;
+}
+
+/// The status token for display.
+string rebuildStatusLabel(RebuildStatus status)
+{
+    return rebuildStatusName(status);
+}
+
+/**
+ * Read the persisted rebuild outcome. A missing or unreadable state file yields
+ * `found == false`, which the caller treats as "no rebuild on record".
+ */
+RebuildOutcome readRebuildOutcome(string dir)
+{
+    RebuildOutcome outcome;
+    auto state = readRebuildState(dir);
+    if (state.status == RebuildStatus.none) return outcome;
+    outcome.found = true;
+    outcome.status = state.status;
+    outcome.phase = state.phase;
+    outcome.reason = state.reason;
+    outcome.startedAt = state.startedAt;
+    outcome.finishedAt = state.finishedAt;
+    outcome.durationMs = state.durationMs;
+    outcome.exitCode = state.exitCode;
+    outcome.errors = state.errors;
+    outcome.buildLog = buildLogPath(dir);
+    if (state.status == RebuildStatus.failed)
+    {
+        const path = rebuildReportPath(dir);
+        if (exists(path))
+        {
+            try outcome.report = readText(path);
+            catch (Exception) {}
+        }
+        if (outcome.report.length == 0 && outcome.errors.length > 0)
+            outcome.report = "compiler errors (" ~
+                to!string(outcome.errors.length) ~ "):\n  " ~
+                join(outcome.errors, "\n  ") ~ "\n";
+    }
+    return outcome;
+}
+
+// ===========================================================================
+// App side: plan the rebuild, copy self, hand off
 // ===========================================================================
 
 /// How far above the executable to look for a DUB recipe before giving up.
@@ -232,28 +328,26 @@ private enum int maxBuildDirLevels = 8;
 /// The recipe filenames DUB accepts.
 private immutable string[] recipeNames = ["dub.json", "dub.sdl"];
 
-/// Everything the helper needs to rebuild and relaunch the app.
+/// Everything needed to rebuild and relaunch the app.
 struct RebuildPlan
 {
-    /// The running executable: what gets rebuilt (in place) and relaunched.
+    /// The running executable: rebuilt in place and relaunched.
     string exePath;
-    /// Package directory (the nearest ancestor holding a DUB recipe). Empty
-    /// when the binary lives outside a package, in which case the rebuild is
-    /// skipped but the relaunch still happens. Also the home of the lifecycle
-    /// state file and the build artifacts.
+    /// Package directory (nearest ancestor holding a DUB recipe). Empty when
+    /// the binary lives outside a package, in which case the rebuild is skipped
+    /// but a relaunch still happens. Also the home of the ledger and artifacts.
     string workingDir;
-    /// Helper output log, under the app's state directory.
+    /// Agent log, under the app's state directory.
     string logPath;
-    /// The process the helper waits for: this one, whose exit frees the .exe.
+    /// The process the agent waits for: this one, whose exit frees the image.
     int waitPid;
     /// Run `dub build` before relaunching.
     bool rebuild;
-    /// Build to a side-by-side image while the app is still running, then swap
-    /// it in once the app closes. The default self-rebuild path: the app stays
-    /// usable for the whole (slow) compile.
+    /// Build the side-by-side `newbuild` target while the app still runs, then
+    /// swap it in once the app closes. The default self-rebuild path: the app
+    /// stays usable for the whole (slow) compile.
     bool stageBuild;
-    /// Why the rebuild was requested, carried into the state file and the
-    /// helper's argv so both writers record the same reason.
+    /// Why the rebuild was requested, carried into the ledger and the agent.
     string reason;
 }
 
@@ -274,33 +368,16 @@ string findBuildDirectory(string exePath)
             if (exists(buildPath(directory, recipe)))
                 return directory;
         const parent = dirName(directory);
-        // Stop at a filesystem root, which dirName leaves unchanged.
         if (parent.length == 0 || parent == directory) break;
         directory = parent;
     }
     return "";
 }
 
-/// The standalone rebuilder's location: `bin/aurora-rebuilder.exe` in the
-/// package directory, or "" when it has not been built.
-string rebuilderPath(in RebuildPlan plan)
-{
-    if (plan.workingDir.length == 0) return "";
-    const candidate = buildPath(plan.workingDir, "bin", "aurora-rebuilder.exe");
-    return exists(candidate) ? candidate : "";
-}
-
-/// The helper source files whose change must produce a fresh helper binary.
-/// `dub.json` is included because it is the recipe: a new source path or link
-/// flag changes how the helper must be built.
-private immutable string[] rebuilderSources =
-    ["shared/rebuild.d", "tools/rebuilder.d", "dub.json"];
-
 /**
  * True when `dir` is Aurora OpenCode's own package: it ships this module's
- * source. Used both to decide whether the running app can rebuild itself and to
- * gate the agent-facing rebuild tool and its system-prompt awareness, so a
- * packaged copy with no sources never offers a rebuild it cannot perform.
+ * source. Gates the agent-facing rebuild tool and its system-prompt awareness,
+ * so a packaged copy with no sources never offers a rebuild it cannot perform.
  */
 bool isAuroraProject(string dir)
 {
@@ -308,57 +385,91 @@ bool isAuroraProject(string dir)
     return exists(buildPath(dir, "shared", "rebuild.d"));
 }
 
-/// The argv for the detached helper process.
+/**
+ * The throwaway agent image: a copy of the running app, one per requesting
+ * process. The pid in the name keeps a still-supervising older agent from
+ * colliding with a new one; `launchRebuild` prunes the stale copies it can.
+ * When no build is requested the app itself is the agent (there is nothing to
+ * overwrite, so no copy is needed).
+ */
+string rebuildHelperPath(in RebuildPlan plan)
+{
+    if (!plan.rebuild) return plan.exePath;
+    if (plan.workingDir.length == 0) return "";
+    return buildPath(plan.workingDir, "bin",
+        "aurora-rebuild-helper-" ~ to!string(plan.waitPid) ~ ".exe");
+}
+
+/// The argv for the detached agent process. Pure: it names the helper path even
+/// when the file has not been copied yet, so callers can inspect it directly.
 string[] rebuildHelperArgv(in RebuildPlan plan)
 {
-    const helper = rebuilderPath(plan);
-    if (helper.length == 0)
-        return [];
-    string[] argv = [helper, "--exe", plan.exePath];
-    if (plan.workingDir.length > 0)
-        argv ~= ["--dir", plan.workingDir];
-    if (plan.logPath.length > 0)
-        argv ~= ["--log", plan.logPath];
+    const helper = rebuildHelperPath(plan);
+    if (helper.length == 0) return [];
+    string[] argv = [helper, rebuildHelperFlag, "--exe", plan.exePath];
+    if (plan.workingDir.length > 0) argv ~= ["--dir", plan.workingDir];
+    if (plan.logPath.length > 0) argv ~= ["--log", plan.logPath];
     argv ~= ["--pid", to!string(plan.waitPid)];
-    if (plan.reason.length > 0)
-        argv ~= ["--reason", plan.reason];
-    // `--run` keeps the restarted app as the helper's child, so the helper can
-    // record how it ended; `--supervise` also brings it back after an
-    // unexpected exit. The exit code matters because a fail-fast death never
-    // reaches the app's own exception filter, so the app cannot report it.
-    argv ~= "--run";
-    argv ~= "--supervise";
-    if (plan.stageBuild)
-        argv ~= "--stage";
-    if (!plan.rebuild)
-        argv ~= "--no-rebuild";
+    if (plan.reason.length > 0) argv ~= ["--reason", plan.reason];
+    if (plan.stageBuild) argv ~= "--stage";
+    if (!plan.rebuild) argv ~= "--no-rebuild";
     return argv;
 }
 
+/// Drop agent copies left by earlier rebuilds that are no longer running. A
+/// live copy cannot be deleted (its image is locked) and is skipped by the
+/// failed `remove`; `keep` is the copy this launch is about to write.
+private void pruneStaleHelpers(string dir, string keep)
+{
+    if (dir.length == 0) return;
+    try
+    {
+        foreach (entry; dirEntries(dir, "aurora-rebuild-helper-*.exe",
+            SpanMode.shallow))
+        {
+            if (entry.name == keep) continue;
+            try remove(entry.name);
+            catch (Exception) {}
+        }
+    }
+    catch (Exception) {}
+}
+
+/// Copy this executable to the agent path. Returns the path, or "" on failure.
+private string provisionHelper(in RebuildPlan plan)
+{
+    const path = rebuildHelperPath(plan);
+    if (path.length == 0 || !exists(plan.exePath)) return "";
+    try
+    {
+        mkdirRecurse(dirName(path));
+        pruneStaleHelpers(dirName(path), path);
+        copy(plan.exePath, path);
+        return path;
+    }
+    catch (Exception error)
+    {
+        appendLine(plan.logPath,
+            "could not stage the rebuild agent: " ~ error.msg);
+        return "";
+    }
+}
+
 /**
- * Start the helper detached, so it keeps running after this process exits. The
- * returned `Pid` is deliberately discarded: a detached process is not ours to
- * wait for or kill. Returns false when the helper could not be started, or when
- * it has not been built, so the caller can keep the window open instead of
- * exiting into nothing.
+ * Start the agent detached, so it keeps running after this process exits. The
+ * returned `Pid` is discarded: a detached process is not ours to wait for.
+ * Returns false when the agent could not be provisioned or started, so the
+ * caller keeps the window open instead of exiting into nothing.
  */
 bool launchRebuild(in RebuildPlan plan, string reason = "")
 {
-    // The helper is a separate binary, so nothing else refreshes it when this
-    // source or the protocol changes. Make sure it is current before handing
-    // off; a stale helper would reintroduce bugs the app already fixed.
-    if (plan.rebuild) ensureRebuilder(plan);
+    if (plan.exePath.length == 0) return false;
+    if (plan.rebuild && provisionHelper(plan).length == 0) return false;
     auto argv = rebuildHelperArgv(plan);
-    if (argv.length == 0)
-    {
-        try stderr.writeln("rebuild helper missing: build it with " ~
-            "`dub build --config=rebuilder`");
-        catch (Exception) {}
-        return false;
-    }
-    // Record the request before exiting. The helper overwrites this record as
-    // it advances; if the helper never starts, the `pending` record still
-    // explains why the app came back with no new build.
+    if (argv.length == 0) return false;
+    // Record the request before exiting. The agent overwrites this as it
+    // advances; if the agent never starts, `pending` still explains why the app
+    // came back with no new build.
     if (plan.workingDir.length > 0)
     {
         RebuildState state;
@@ -393,91 +504,10 @@ RebuildPlan planRebuild(string stateDirectory, bool rebuild, int waitPid,
     return plan;
 }
 
-/**
- * Make sure the detached helper exists and is newer than the sources it is
- * built from. The helper is a separate program, so nothing rebuilds it when the
- * app's source changes: a stale `bin/aurora-rebuilder.exe` silently
- * reintroduces bugs, and a missing one makes every rebuild fail. The app is the
- * one process positioned to fix this: it runs inside the package, and when it
- * was launched without a supervisor no helper is running to hold the image
- * locked.
- *
- * Best-effort: any failure leaves the existing helper alone. Returns true when a
- * helper is present afterwards.
- */
-bool ensureRebuilder(in RebuildPlan plan)
-{
-    const helper = rebuilderPath(plan);
-    if (plan.workingDir.length == 0 || !isAuroraProject(plan.workingDir))
-        return helper.length > 0;
-
-    bool haveHelper = helper.length > 0;
-    SysTime helperTime = SysTime.init;
-    if (haveHelper)
-    {
-        try helperTime = timeLastModified(helper);
-        catch (Exception) haveHelper = false;
-    }
-    bool stale = !haveHelper;
-    if (haveHelper)
-        foreach (relative; rebuilderSources)
-        {
-            const path = buildPath(plan.workingDir, relative);
-            try
-            {
-                if (exists(path) && timeLastModified(path) > helperTime)
-                {
-                    stale = true;
-                    break;
-                }
-            }
-            catch (Exception) {}
-        }
-    if (!stale) return true;
-
-    // If the helper is the running supervisor (the usual case) its image is
-    // locked: dub cannot replace it and the link would fail. Leave it alone and
-    // refresh on the next unsupervised start.
-    if (haveHelper && !canWrite(helper)) return true;
-
-    // Build only the helper config; this writes `bin/aurora-rebuilder.exe` and
-    // never touches the running app image, so it is safe in-process. Output is
-    // captured next to the other rebuild artifacts for diagnosis.
-    const logDir = plan.logPath.length > 0 ? dirName(plan.logPath) : "";
-    const logPath = logDir.length > 0
-        ? buildPath(logDir, "rebuilder-build.log") : "";
-    File sink;
-    bool haveSink;
-    if (logPath.length > 0)
-    {
-        try
-        {
-            mkdirRecurse(logDir);
-            sink = File(logPath, "w");
-            haveSink = true;
-        }
-        catch (Exception) haveSink = false;
-    }
-    try
-    {
-        auto pid = spawnProcess(
-            ["dub", "build", "--config=rebuilder", "--build=release"],
-            stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
-            Config.suppressConsole, plan.workingDir);
-        wait(pid);
-    }
-    catch (Exception)
-    {
-        if (haveSink) sink.close();
-    }
-    if (haveSink) sink.close();
-    return rebuilderPath(plan).length > 0;
-}
-
 /// True when `path` can be opened for writing, i.e. no running process holds it
-/// as its image. A missing file counts as free. Deliberately `r+`, not `w`, so a
-/// locked file reports as locked rather than truncating.
-bool canWrite(string path)
+/// as its image. A missing file counts as free. Deliberately `r+`, not `w`, so
+/// a locked file reports as locked rather than truncating.
+private bool canWrite(string path)
 {
     if (path.length == 0 || !exists(path)) return true;
     try
@@ -491,113 +521,19 @@ bool canWrite(string path)
 }
 
 // ===========================================================================
-// Notice: what the resumed conversation is told
-// ===========================================================================
-
-/// The rebuild lifecycle as the app needs to report it: what happened, whether
-/// the running binary includes the edits, and the errors to quote when it does
-/// not.
-struct RebuildOutcome
-{
-    /// A lifecycle record existed (i.e. a rebuild was recorded at all).
-    bool found;
-    RebuildStatus status;
-    string phase;
-    string reason;
-    string startedAt;
-    string finishedAt;
-    long durationMs;
-    int exitCode;
-    string[] errors;
-    /// The failed-build report text, when one was written ("" otherwise).
-    string report;
-    /// Where the build transcript lives, for pointing the agent at the detail.
-    string buildLog;
-}
-
-/// A rebuild that reached a verdict and succeeded.
-bool rebuildSucceeded(in RebuildOutcome outcome)
-{
-    return outcome.found && outcome.status == RebuildStatus.ok;
-}
-
-/// A rebuild that reached a verdict and failed to compile.
-bool rebuildFailed(in RebuildOutcome outcome)
-{
-    return outcome.found && outcome.status == RebuildStatus.failed;
-}
-
-/**
- * A rebuild that never reached a verdict. Only `running` qualifies: the helper
- * advanced the record and began building, yet we are already running again, so
- * the build did not finish and the edits are not live. `pending` is excluded -
- * it means no helper ever took the record over, which the caller resolves by
- * source staleness rather than declaring failure from silence.
- */
-bool rebuildIncomplete(in RebuildOutcome outcome)
-{
-    return outcome.found && outcome.status == RebuildStatus.running;
-}
-
-/// The status token for display, matching the helper's vocabulary.
-string rebuildStatusLabel(RebuildStatus status)
-{
-    return rebuildStatusName(status);
-}
-
-/**
- * Read the persisted rebuild outcome from the package directory. A missing or
- * unreadable state file yields `found == false`, which the caller treats as
- * "no rebuild on record".
- */
-RebuildOutcome readRebuildOutcome(string dir)
-{
-    RebuildOutcome outcome;
-    auto state = readRebuildState(dir);
-    if (state.status == RebuildStatus.none) return outcome;
-    outcome.found = true;
-    outcome.status = state.status;
-    outcome.phase = state.phase;
-    outcome.reason = state.reason;
-    outcome.startedAt = state.startedAt;
-    outcome.finishedAt = state.finishedAt;
-    outcome.durationMs = state.durationMs;
-    outcome.exitCode = state.exitCode;
-    outcome.errors = state.errors;
-    outcome.buildLog = buildLogPath(dir);
-    if (state.status == RebuildStatus.failed)
-    {
-        const path = rebuildReportPath(dir);
-        if (exists(path))
-        {
-            try outcome.report = readText(path);
-            catch (Exception) {}
-        }
-        // The report file is the full record; when it is missing, fall back to
-        // the error lines the state itself stored.
-        if (outcome.report.length == 0 && outcome.errors.length > 0)
-            outcome.report = "compiler errors (" ~
-                to!string(outcome.errors.length) ~ "):\n  " ~
-                join(outcome.errors, "\n  ") ~ "\n";
-    }
-    return outcome;
-}
-
-// ===========================================================================
 // Progress window: a small always-on-top Win32 status display
 // ===========================================================================
-// The app being rebuilt is closed while the helper runs, so the feedback has to
-// come from the tool rather than from the app. It is deliberately plain Win32
-// with no Aurora dependency: the moment this window is most needed is the
-// moment the app is broken.
+// The app is closed while a full rebuild runs, so the feedback has to come from
+// the agent. Plain Win32 with no Aurora dependency: the moment this window is
+// most needed is the moment the app is broken.
 
 version (Windows)
 {
 
 private __gshared Mutex _progressMutex;
 
-// The paint path locks this, and `UpdateWindow` paints immediately, so it has
-// to exist before the window is created.
+// The paint path locks this, and `UpdateWindow` paints immediately, so it must
+// exist before the window is created.
 static this()
 {
     _progressMutex = new Mutex();
@@ -621,8 +557,8 @@ private COLORREF rgb(ubyte r, ubyte g, ubyte b)
 
 /**
  * A NUL-terminated UTF-16 copy of `text`. The result must be held in a local
- * across the Win32 call that consumes it: `toUTF16z` returns a bare pointer
- * whose buffer nothing keeps alive.
+ * across the Win32 call that consumes it: `toUTF16` returns a value whose
+ * buffer nothing else keeps alive.
  */
 private wstring wideString(string text)
 {
@@ -709,13 +645,9 @@ private extern (Windows) LRESULT progressProc(HWND hwnd, UINT message,
     switch (message)
     {
         case WM_PAINT:
-        {
-            // A window procedure must not throw across the Win32 boundary, so
-            // the drawing is isolated here.
             try drawProgress(hwnd);
             catch (Throwable) {}
             return 0;
-        }
         case WM_ERASEBKGND:
             return 1;
         case WM_TIMER:
@@ -726,8 +658,8 @@ private extern (Windows) LRESULT progressProc(HWND hwnd, UINT message,
             PostQuitMessage(0);
             return 0;
         case WM_CLOSE:
-            // The window is a status display, not a control surface: closing it
-            // must not cancel the rebuild halfway through.
+            // A status display, not a control surface: closing it must not
+            // cancel the rebuild halfway through.
             DestroyWindow(hwnd);
             return 0;
         default:
@@ -737,8 +669,6 @@ private extern (Windows) LRESULT progressProc(HWND hwnd, UINT message,
 
 private void progressWindowThread()
 {
-    // The window is a convenience, never a requirement: a fault while building
-    // it must not take down the tool that is doing the actual work.
     try
         runProgressWindowThread();
     catch (Throwable) {}
@@ -747,7 +677,7 @@ private void progressWindowThread()
 
 private void runProgressWindowThread()
 {
-    immutable className = "AuroraProgressWindow";
+    immutable className = "AuroraRebuildProgress";
     // Held in locals for the whole call: the window class keeps using these
     // strings after `RegisterClassW` returns.
     auto classNameWide = wideString(className);
@@ -844,202 +774,404 @@ void closeProgressWindow() {}
 }
 
 // ===========================================================================
-// Detached helper
+// Agent: the detached copy of the app that does the work
 // ===========================================================================
-// The application cannot rebuild itself: Windows keeps a running image locked,
-// so the rebuild has to happen in a process that outlives the app. The helper
-// is deliberately dependency-free (standard library and Win32 only) because it
-// has to keep working when the app under it is broken.
+// A copy of this executable, run with `rebuildHelperFlag`, outlives the app and
+// can therefore replace it. It is deliberately dependency-free (standard
+// library and Win32 only) because it has to keep working when the app under it
+// is broken.
 //
 // Usage:
-//   aurora-rebuilder --exe <app.exe> [--dir <packageDir>] [--log <logPath>]
-//                    [--pid <pid>] [--build <type>] [--timeout <seconds>]
-//                    [--no-rebuild] [--run] [--supervise] [--max-restarts <n>]
-//                    [--force]
+//   aurora-opencode-pro.exe --aurora-rebuild-helper
+//       --exe <app.exe> [--dir <packageDir>] [--log <logPath>] [--pid <pid>]
+//       [--build <type>] [--timeout <seconds>] [--stage] [--no-rebuild]
+//       [--max-restarts <n>] [--force]
 
-private struct Options
+private struct HelperJob
 {
     /// The executable to rebuild in place and relaunch.
     string exePath;
-    /// The side-by-side target of a staged build (`--stage`), beside `exePath`.
+    /// The side-by-side target of a staged build, beside `exePath`.
     string stagePath;
     /// Package directory holding the DUB recipe; empty means no rebuild.
     string packageDir;
     /// Append-only progress log.
     string logPath;
     string buildType = "release";
-    /// Why the rebuild was requested, carried from the app so the state record
-    /// and the app agree on the reason.
+    /// Why the rebuild was requested, carried from the app so both agree.
     string reason;
     /// Only used to name the process in the log.
     int waitPid;
-    int timeoutSeconds = 600;
+    int timeoutSeconds = 900;
     /// Pass `--force` to DUB: rebuild every package even when up to date.
     bool force;
     bool rebuild = true;
-    /// Build into `stagePath` while the app is still running, then wait for the
-    /// app to exit and swap the result in (`--stage`).
+    /// Build into `stagePath` while the app still runs, then swap it in.
     bool stageBuild;
-    /// Launch the app as a child and wait for it, recording how it ended
-    /// instead of detaching.
-    bool run;
-    /// Keep the app running: relaunch it after an unexpected exit rather than
-    /// leaving the user with nothing.
-    bool supervise;
     /// Give up after this many unexpected exits, so a crash at startup does not
     /// become an endless restart loop.
     int maxRestarts = 5;
 }
 
-/// Where unexpected exits are summarised, alongside the app's own log.
-private string notePath(in Options options)
+private HelperJob parseHelperArgs(string[] args)
 {
-    if (options.logPath.length == 0) return "";
-    return buildPath(dirName(options.logPath), "unexpected-exits.log");
+    HelperJob job;
+    size_t index = 2; // args[0] is the image, args[1] is the helper flag.
+    while (index < args.length)
+    {
+        const arg = args[index];
+        string take()
+        {
+            ++index;
+            return index < args.length ? args[index] : "";
+        }
+        if (arg == "--exe") job.exePath = take();
+        else if (arg == "--dir") job.packageDir = take();
+        else if (arg == "--log") job.logPath = take();
+        else if (arg == "--reason") job.reason = take();
+        else if (arg == "--build") job.buildType = take();
+        else if (arg == "--force") job.force = true;
+        else if (arg == "--stage") job.stageBuild = true;
+        else if (arg == "--no-rebuild") job.rebuild = false;
+        else if (arg == "--max-restarts")
+        {
+            const value = take();
+            try job.maxRestarts = to!int(value);
+            catch (Exception) {}
+        }
+        else if (arg == "--pid")
+        {
+            const value = take();
+            try job.waitPid = to!int(value);
+            catch (Exception) {}
+        }
+        else if (arg == "--timeout")
+        {
+            const value = take();
+            try job.timeoutSeconds = to!int(value);
+            catch (Exception) {}
+        }
+        ++index;
+    }
+    if (job.stagePath.length == 0) job.stagePath = stagePath(job.exePath);
+    return job;
+}
+
+/// Where a staged build writes its executable: the `newbuild` target, beside
+/// the running application image.
+private string stagePath(string exePath)
+{
+    if (exePath.length == 0) return "";
+    return buildPath(dirName(exePath), "aurora-opencode-pro-new.exe");
 }
 
 /**
- * Record an unexpected exit in one place, in a form meant to be read: the events
- * that ended the app without being asked to, newest last, so the question "what
- * happened while I was not looking" has a short answer.
+ * The directory that owns the shared ledger and artifacts: the package root,
+ * matching the app's view, so the record lands where the relaunched app looks.
  */
-private void noteUnexpectedExit(in Options options, int code, int restartNumber)
+private string stateRoot(in HelperJob job)
 {
-    const path = notePath(options);
+    if (job.packageDir.length > 0) return job.packageDir;
+    return job.logPath.length > 0 ? dirName(job.logPath) : "";
+}
+
+/// Where unexpected exits are summarised, alongside the app's own log.
+private string notePath(in HelperJob job)
+{
+    if (job.logPath.length == 0) return "";
+    return buildPath(dirName(job.logPath), "unexpected-exits.log");
+}
+
+/// The app's own log, where its `activity:` markers are written.
+private string appLogPath(in HelperJob job)
+{
+    if (job.logPath.length == 0) return "";
+    return buildPath(dirName(job.logPath), "logs", "errors.log");
+}
+
+private string timestamp()
+{
+    return rebuildStamp(Clock.currTime) ~ " ";
+}
+
+private void appendLine(string logPath, string text)
+{
+    if (logPath.length == 0) return;
+    try mkdirRecurse(dirName(logPath));
+    catch (Exception) {}
+    try append(logPath, timestamp() ~ text ~ "\n");
+    catch (Exception) {}
+}
+
+/**
+ * Overwrite the ledger the app reads back. `startedAt` is passed in so every
+ * transition of one rebuild names the same start; `began` measures elapsed.
+ */
+private void writeJobState(in HelperJob job, RebuildStatus status, string phase,
+    string startedAt, int exitCode, string[] errors, MonoTime began)
+{
+    RebuildState state;
+    state.status = status;
+    state.phase = phase;
+    state.reason = job.reason;
+    state.command = join(dubArgv(job, false), " ");
+    state.exePath = job.exePath;
+    state.packageDir = job.packageDir;
+    state.startedAt = startedAt;
+    state.finishedAt = rebuildStamp(Clock.currTime);
+    if (began != MonoTime.init)
+        state.durationMs = (MonoTime.currTime - began).total!"msecs";
+    state.exitCode = exitCode;
+    state.errors = errors;
+    writeRebuildState(stateRoot(job), state);
+}
+
+/// The DUB command line for an in-place rebuild (`staged` selects `newbuild`).
+private string[] dubArgv(in HelperJob job, bool staged)
+{
+    string[] argv = ["dub", "build"];
+    if (staged) argv ~= "--config=newbuild";
+    argv ~= "--build=" ~ job.buildType;
+    if (job.force && !staged) argv ~= "--force";
+    return argv;
+}
+
+/**
+ * The compiler's own error lines, in order, from a captured build transcript.
+ * DMD and DUB both mark these with `Error:` / `error:`; keeping only the
+ * matching lines turns pages of progress output into the handful that explain
+ * the failure.
+ */
+private string[] errorLines(string output)
+{
+    string[] found;
+    size_t start;
+    while (start < output.length)
+    {
+        auto end = output.indexOf('\n', start);
+        if (end < 0) end = output.length;
+        const line = strip(output[start .. end]);
+        if (line.indexOf("Error:") >= 0 || line.indexOf("error:") >= 0)
+            found ~= line;
+        if (end == output.length) break;
+        start = end + 1;
+    }
+    return found;
+}
+
+/// Keep a report bounded: the tail is what a reader needs.
+private string tailText(string text, size_t maxChars)
+{
+    if (text.length <= maxChars) return text;
+    return "...(earlier output omitted)...\n" ~ text[text.length - maxChars .. $];
+}
+
+/// Write the failed-build summary: command, location, exit code, extracted
+/// compiler errors, and the tail of the full output.
+private void writeBuildReport(in HelperJob job, string[] argv, int code,
+    string output, const(string)[] errors)
+{
+    const path = rebuildReportPath(stateRoot(job));
     if (path.length == 0) return;
     string text;
-    text ~= "\n=== unexpected exit ===\n";
-    text ~= "time:        " ~ to!string(Clock.currTime) ~ "\n";
-    text ~= "exit code:   " ~ to!string(code) ~ " (" ~ hex(cast(uint) code) ~
-        ": " ~ describeExitCode(code) ~ ")\n";
-    text ~= "restart:     " ~ to!string(restartNumber) ~ " of " ~
-        to!string(options.maxRestarts) ~ "\n";
-    text ~= "executable:  " ~ options.exePath ~ "\n";
-    text ~= "activity:    " ~ recentActivity(options) ~ "\n";
-    // The fault itself: a native access-violation line with its address, or an
-    // `uncaught Error:` with a symbolized trace.
-    text ~= "last error:  " ~ recentError(options) ~ "\n";
-    appendLine(path, text);
-    // Mirrored into the app's log as a single line, so the two files agree on
-    // when the app went down.
-    appendLine(options.logPath, "unexpected exit " ~ to!string(code) ~ " (" ~
-        describeExitCode(code) ~ "); restarting");
-    requestResume(options, code);
-}
-
-/**
- * Leave a note asking the next start to pick the conversation back up. The app
- * cannot ask for this itself: the deaths that matter are the ones it never gets
- * to handle. The supervisor is the one process that observes them, so it writes
- * the request, and the app consumes it on startup.
- */
-private void requestResume(in Options options, int code)
-{
-    if (options.logPath.length == 0) return;
-    // Idle crashes should reopen the app, but must not silently spend another
-    // model request. The app owns this marker and removes it on done/error/stop.
-    if (!exists(buildPath(dirName(options.logPath), "turn-active"))) return;
-    const path = buildPath(dirName(options.logPath), "restart-resume.json");
-    string json;
-    json ~= "{\n";
-    json ~= "  \"time\": " ~ jsonString(to!string(Clock.currTime)) ~ ",\n";
-    json ~= "  \"exitCode\": " ~ to!string(code) ~ ",\n";
-    json ~= "  \"cause\": " ~ jsonString(describeExitCode(code)) ~ ",\n";
-    json ~= "  \"activity\": " ~ jsonString(recentActivity(options)) ~ "\n";
-    json ~= "}\n";
-    try write(path, json);
-    catch (Exception error)
-        appendLine(options.logPath, "could not write the resume request: " ~
-            error.msg);
-}
-
-/// The app's own log, where its `activity:` markers are written. This is a
-/// different file from `options.logPath`, which is the supervisor's
-/// `restart.log`.
-private string appLogPath(in Options options)
-{
-    if (options.logPath.length == 0) return "";
-    return buildPath(dirName(options.logPath), "logs", "errors.log");
-}
-
-/// The last `activity:` marker the app wrote, naming the step it was executing
-/// when it died. The whole timestamped line is returned so the exit record can
-/// be correlated with the app log by time as well as step.
-private string recentActivity(in Options options)
-{
-    return lastLogLine(options, "activity: ", "none recorded");
-}
-
-/// The last `[ERROR]` line the app wrote, i.e. the crash banner itself. The
-/// address on the native line is resolved against the archived `.pdb` on the
-/// next launch; naming it here keeps the exit summary self-contained.
-private string recentError(in Options options)
-{
-    return lastLogLine(options, "[ERROR]", "none recorded");
-}
-
-/// The last line of the app log containing `marker`, or `fallback` when there
-/// is no log, no marker, or the log cannot be read.
-private string lastLogLine(in Options options, string marker, string fallback)
-{
-    const appLog = appLogPath(options);
-    if (appLog.length == 0 || !exists(appLog)) return "unknown";
+    text ~= "Aurora OpenCode rebuild report\n";
+    text ~= "time:    " ~ to!string(Clock.currTime) ~ "\n";
+    text ~= "command: " ~ join(argv, " ") ~ "\n";
+    text ~= "dir:     " ~ job.packageDir ~ "\n";
+    text ~= "exit:    " ~ to!string(code) ~ "\n";
+    text ~= "\ncompiler errors (" ~ to!string(errors.length) ~ "):\n";
+    if (errors.length == 0)
+        text ~= "  (no line matched 'error:'; see " ~
+            buildLogPath(stateRoot(job)) ~ " for the full output)\n";
+    else
+        foreach (line; errors)
+            text ~= "  " ~ line ~ "\n";
+    text ~= "\nfull output (tail):\n" ~ tailText(output, 12_000) ~ "\n";
     try
     {
-        const text = readText(appLog);
-        const index = text.lastIndexOf(marker);
-        if (index < 0) return fallback;
-        // Walk back to the start of the line so the timestamp prefix is kept.
-        const lineStart = lastIndexOf(text[0 .. index], '\n');
-        auto start = lineStart < 0 ? 0 : lineStart + 1;
-        auto tail = text[start .. $];
-        const stop = tail.indexOf('\n');
-        if (stop >= 0) tail = tail[0 .. stop];
-        return strip(tail);
+        mkdirRecurse(dirName(path));
+        write(path, text);
     }
-    catch (Exception)
-        return "unreadable";
+    catch (Exception) {}
+}
+
+/// Put the pre-build copy of the app exe back after a failed or truncated
+/// build, so a restart can never leave the app unlaunchable. The linker
+/// truncates the target before writing it, so a link that fails mid-write
+/// leaves a 0-byte image even when the exit code is not meaningful.
+private void restoreExe(string exePath, string backup, bool haveBackup,
+    string logPath)
+{
+    if (!haveBackup || exePath.length == 0) return;
+    try
+    {
+        copy(backup, exePath);
+        appendLine(logPath, "restored " ~ exePath ~ " from " ~ backup);
+    }
+    catch (Exception error)
+        appendLine(logPath, "could not restore the exe: " ~ error.msg);
 }
 
 /**
- * Run the app, and run it again if it stops without being asked to. A clean
- * exit code means the window was closed on purpose and the supervisor stops
- * there. Anything else is restarted, recorded in `unexpected-exits.log`, and
- * the cycle repeats up to `maxRestarts` times so a permanent fault cannot spin
- * forever.
+ * Run one DUB build and validate its output. `argv` is the command;
+ * `targetExe` is the file that must exist and be non-empty afterwards.
+ * `backupTarget` guards an in-place build, whose linker truncates the target
+ * before writing it, by keeping a copy to restore on failure.
  */
-private int superviseApp(in Options options)
+private bool runDub(in HelperJob job, string[] argv, string targetExe,
+    bool backupTarget, out int exitCode, out string[] errors)
 {
-    int restart = 0;
-    while (true)
+    exitCode = 0;
+    errors = null;
+    const outputPath = buildLogPath(stateRoot(job));
+    File sink;
+    bool haveSink;
+    if (outputPath.length > 0)
     {
-        if (!exists(options.exePath))
+        try
         {
-            appendLine(options.logPath,
-                "executable missing; supervisor stopping instead of looping");
-            return 2;
+            mkdirRecurse(dirName(outputPath));
+            sink = File(outputPath, "w");
+            haveSink = true;
         }
-        const code = runAndReport(options);
-        if (code == 0)
-        {
-            appendLine(options.logPath, "clean exit; supervisor stopping");
-            return 0;
-        }
-        ++restart;
-        noteUnexpectedExit(options, code, restart);
-        if (restart >= options.maxRestarts)
-        {
-            appendLine(options.logPath, "giving up after " ~
-                to!string(options.maxRestarts) ~ " unexpected exits; see " ~
-                notePath(options));
-            return code;
-        }
-        // A short pause keeps a fault that fires during startup from filling
-        // the disk with process launches.
-        Thread.sleep(2.seconds);
-        appendLine(options.logPath, "restarting (" ~ to!string(restart) ~ "/" ~
-            to!string(options.maxRestarts) ~ ")");
+        catch (Exception) {}
     }
+    const backup = targetExe.length > 0 ? targetExe ~ ".bak" : "";
+    bool haveBackup;
+    if (backupTarget && targetExe.length > 0 && exists(targetExe))
+    {
+        try
+        {
+            copy(targetExe, backup);
+            haveBackup = true;
+        }
+        catch (Exception error)
+            appendLine(job.logPath,
+                "could not back up the exe: " ~ error.msg);
+    }
+    int code;
+    try
+    {
+        // `dub` is a console program and this agent runs without a console, so
+        // a bare spawn would flash a console window for the whole build.
+        // `suppressConsole` keeps it (and its `cmd /c` post-build steps)
+        // invisible while stdout/stderr still land in the capture file.
+        auto pid = spawnProcess(argv,
+            stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
+            Config.suppressConsole, job.packageDir);
+        code = wait(pid);
+    }
+    catch (Exception error)
+    {
+        if (haveSink) sink.close();
+        appendLine(job.logPath, "dub could not be started: " ~ error.msg);
+        errors = ["dub could not be started: " ~ error.msg];
+        if (haveBackup)
+            restoreExe(targetExe, backup, haveBackup, job.logPath);
+        return false;
+    }
+    if (haveSink) sink.close();
+    exitCode = code;
+    const output = haveSink && exists(outputPath) ? readText(outputPath) : "";
+    errors = errorLines(output);
+    const firstError = errors.length > 0 ? errors[0]
+        : "(no compiler error line; see " ~ outputPath ~ ")";
+    // A zero exit code is not enough: the target must exist and be non-empty.
+    if (code != 0 || targetExe.length == 0 || !exists(targetExe) ||
+        getSize(targetExe) == 0)
+    {
+        appendLine(job.logPath, "build failed (exit " ~ to!string(code) ~
+            "; target " ~ (targetExe.length == 0 ? "unspecified"
+                : (exists(targetExe)
+                    ? to!string(getSize(targetExe)) ~ " bytes"
+                    : "missing")) ~ "); keeping the previous binary");
+        appendLine(job.logPath, "build error: " ~ firstError);
+        writeBuildReport(job, argv, code, output, errors);
+        const appLog = appLogPath(job);
+        if (appLog.length > 0)
+            appendLine(appLog, "[ERROR] rebuild failed: " ~ firstError);
+        // Shown on screen, not just on disk: a rebuild that silently reopens
+        // the previous binary looks like nothing happened at all.
+        setProgress("Rebuild failed: " ~ firstError,
+            "see " ~ rebuildReportPath(stateRoot(job)), 1.0);
+        if (haveBackup)
+        {
+            if (targetExe.length > 0 && exists(targetExe))
+            {
+                try remove(targetExe);
+                catch (Exception) {}
+            }
+            restoreExe(targetExe, backup, haveBackup, job.logPath);
+        }
+        return false;
+    }
+    // A good build clears any report left by an earlier failure.
+    const report = rebuildReportPath(stateRoot(job));
+    if (report.length > 0 && exists(report))
+    {
+        try remove(report);
+        catch (Exception) {}
+    }
+    return true;
+}
+
+/// Replace `to` with `from`, keeping a caller-supplied backup if it fails.
+private bool replaceFile(string from, string to)
+{
+    if (from.length == 0 || to.length == 0 || !exists(from)) return false;
+    try
+    {
+        copy(from, to);
+        remove(from);
+        return true;
+    }
+    catch (Exception)
+        return false;
+}
+
+/**
+ * Replace the running image with the freshly staged one. Only valid once the
+ * app has exited and released the image. The previous binary is copied aside
+ * first, so a failed swap can never leave the user without a working app.
+ */
+private bool swapStaged(in HelperJob job)
+{
+    const staged = job.stagePath;
+    if (staged.length == 0 || !exists(staged)) return false;
+    const backup = job.exePath ~ ".bak";
+    bool haveBackup;
+    if (job.exePath.length > 0 && exists(job.exePath))
+    {
+        try
+        {
+            copy(job.exePath, backup);
+            haveBackup = true;
+        }
+        catch (Exception error)
+            appendLine(job.logPath,
+                "could not back up the exe: " ~ error.msg);
+    }
+    if (!replaceFile(staged, job.exePath))
+    {
+        appendLine(job.logPath,
+            "could not install the rebuilt binary; keeping the previous one");
+        if (haveBackup)
+            restoreExe(job.exePath, backup, haveBackup, job.logPath);
+        return false;
+    }
+    appendLine(job.logPath, "installed the rebuilt binary");
+    return true;
+}
+
+private bool waitForUnlock(string exePath, int timeoutSeconds)
+{
+    const deadline = MonoTime.currTime + seconds(timeoutSeconds);
+    while (MonoTime.currTime < deadline)
+    {
+        if (canWrite(exePath)) return true;
+        Thread.sleep(200.msecs);
+    }
+    return canWrite(exePath);
 }
 
 /// Name a process exit code. `0xC0000005` and friends are the exception codes
@@ -1076,28 +1208,99 @@ private string hex(uint value)
     return "0x" ~ buffer.idup;
 }
 
+/// The last line of the app log containing `marker`, or `fallback`.
+private string lastLogLine(in HelperJob job, string marker, string fallback)
+{
+    const appLog = appLogPath(job);
+    if (appLog.length == 0 || !exists(appLog)) return "unknown";
+    try
+    {
+        const text = readText(appLog);
+        const index = text.lastIndexOf(marker);
+        if (index < 0) return fallback;
+        const lineStart = lastIndexOf(text[0 .. index], '\n');
+        auto start = lineStart < 0 ? 0 : lineStart + 1;
+        auto tail = text[start .. $];
+        const stop = tail.indexOf('\n');
+        if (stop >= 0) tail = tail[0 .. stop];
+        return strip(tail);
+    }
+    catch (Exception)
+        return "unreadable";
+}
+
+/**
+ * Leave a note asking the next start to pick the conversation back up. The app
+ * cannot ask for this itself: the deaths that matter are the ones it never gets
+ * to handle. The supervisor is the one process that observes them.
+ */
+private void requestResume(in HelperJob job, int code)
+{
+    if (job.logPath.length == 0) return;
+    // Idle crashes should reopen the app, but must not silently spend another
+    // model request. The app owns this marker and removes it on done/error.
+    if (!exists(buildPath(dirName(job.logPath), "turn-active"))) return;
+    const path = buildPath(dirName(job.logPath), "restart-resume.json");
+    string json;
+    json ~= "{\n";
+    json ~= "  \"time\": " ~ jsonString(to!string(Clock.currTime)) ~ ",\n";
+    json ~= "  \"exitCode\": " ~ to!string(code) ~ ",\n";
+    json ~= "  \"cause\": " ~ jsonString(describeExitCode(code)) ~ ",\n";
+    json ~= "  \"activity\": " ~ jsonString(
+        lastLogLine(job, "activity: ", "none recorded")) ~ "\n";
+    json ~= "}\n";
+    try write(path, json);
+    catch (Exception error)
+        appendLine(job.logPath, "could not write the resume request: " ~
+            error.msg);
+}
+
+/**
+ * Record an unexpected exit in one place, in a form meant to be read: the
+ * events that ended the app without being asked to, newest last.
+ */
+private void noteUnexpectedExit(in HelperJob job, int code, int restartNumber)
+{
+    const path = notePath(job);
+    if (path.length == 0) return;
+    string text;
+    text ~= "\n=== unexpected exit ===\n";
+    text ~= "time:        " ~ to!string(Clock.currTime) ~ "\n";
+    text ~= "exit code:   " ~ to!string(code) ~ " (" ~ hex(cast(uint) code) ~
+        ": " ~ describeExitCode(code) ~ ")\n";
+    text ~= "restart:     " ~ to!string(restartNumber) ~ " of " ~
+        to!string(job.maxRestarts) ~ "\n";
+    text ~= "executable:  " ~ job.exePath ~ "\n";
+    text ~= "activity:    " ~ lastLogLine(job, "activity: ",
+        "none recorded") ~ "\n";
+    text ~= "last error:  " ~ lastLogLine(job, "[ERROR]", "none recorded") ~
+        "\n";
+    appendLine(path, text);
+    appendLine(job.logPath, "unexpected exit " ~ to!string(code) ~ " (" ~
+        describeExitCode(code) ~ "); restarting");
+    requestResume(job, code);
+}
+
 /**
  * Run the app as a child and record how it ended. What the app cannot report
  * about itself is the important case: a fail-fast death terminates the process
  * without calling the app's crash handler, so the exit status is visible only
  * to a parent. Exit code 0 is a normal window close.
  */
-private int runAndReport(in Options options)
+private int runChild(in HelperJob job)
 {
-    appendLine(options.logPath, "running " ~ options.exePath);
-    // The app has the window while it runs, so the helper's own window is put
+    appendLine(job.logPath, "running " ~ job.exePath);
+    // The app has the window while it runs, so the agent's own window is put
     // away: two windows and one of them stale would be worse than none.
     closeProgressWindow();
     try
     {
-        auto pid = spawnProcess([options.exePath], stdin, stdout, stderr, null,
+        auto pid = spawnProcess([job.exePath], stdin, stdout, stderr, null,
             Config.suppressConsole,
-            options.packageDir.length > 0 ? options.packageDir : null);
+            job.packageDir.length > 0 ? job.packageDir : null);
         const code = wait(pid);
-        appendLine(options.logPath, "app exited: " ~ to!string(code) ~ " (" ~
+        appendLine(job.logPath, "app exited: " ~ to!string(code) ~ " (" ~
             hex(cast(uint) code) ~ ": " ~ describeExitCode(code) ~ ")");
-        // An unexpected end is reported on screen as well as in the log: the
-        // app vanishing with no explanation is what makes a crash look random.
         if (code != 0)
         {
             openProgressWindow("Aurora OpenCode - restarting");
@@ -1109,585 +1312,221 @@ private int runAndReport(in Options options)
     }
     catch (Exception error)
     {
-        appendLine(options.logPath, "run failed: " ~ error.msg);
+        appendLine(job.logPath, "run failed: " ~ error.msg);
         return 1;
     }
 }
 
-private Options parseArgs(string[] args)
+/**
+ * Run the app, and run it again if it stops without being asked to. A clean
+ * exit code means the window was closed on purpose and the supervisor stops
+ * there. Anything else is restarted, recorded, and retried up to
+ * `maxRestarts` times so a permanent fault cannot spin forever.
+ */
+private int supervise(in HelperJob job)
 {
-    Options options;
-    size_t index = 1;
-    while (index < args.length)
+    int restart = 0;
+    while (true)
     {
-        const arg = args[index];
-        string take()
+        if (!exists(job.exePath))
         {
-            ++index;
-            return index < args.length ? args[index] : "";
+            appendLine(job.logPath,
+                "executable missing; supervisor stopping instead of looping");
+            return 2;
         }
-        if (arg == "--exe") options.exePath = take();
-        else if (arg == "--dir") options.packageDir = take();
-        else if (arg == "--log") options.logPath = take();
-        else if (arg == "--reason") options.reason = take();
-        else if (arg == "--build") options.buildType = take();
-        else if (arg == "--force") options.force = true;
-        else if (arg == "--stage") options.stageBuild = true;
-        else if (arg == "--no-rebuild") options.rebuild = false;
-        else if (arg == "--run") options.run = true;
-        else if (arg == "--supervise") options.supervise = true;
-        else if (arg == "--max-restarts")
+        const code = runChild(job);
+        if (code == 0)
         {
-            const value = take();
-            try options.maxRestarts = to!int(value);
-            catch (Exception) {}
+            appendLine(job.logPath, "clean exit; supervisor stopping");
+            return 0;
         }
-        else if (arg == "--pid")
+        ++restart;
+        noteUnexpectedExit(job, code, restart);
+        if (restart >= job.maxRestarts)
         {
-            const value = take();
-            try options.waitPid = to!int(value);
-            catch (Exception) {}
+            appendLine(job.logPath, "giving up after " ~
+                to!string(job.maxRestarts) ~ " unexpected exits; see " ~
+                notePath(job));
+            return code;
         }
-        else if (arg == "--timeout")
-        {
-            const value = take();
-            try options.timeoutSeconds = to!int(value);
-            catch (Exception) {}
-        }
-        ++index;
+        Thread.sleep(2.seconds);
+        appendLine(job.logPath, "restarting (" ~ to!string(restart) ~ "/" ~
+            to!string(job.maxRestarts) ~ ")");
     }
-    options.stagePath = stagePath(options.exePath);
-    return options;
-}
-
-/// Wall-clock prefix for one log line, matching the format of `rebuildstate.json`
-/// so an exit recorded here can be lined up against the app's own log.
-private string timestamp()
-{
-    return rebuildStamp(Clock.currTime) ~ " ";
-}
-
-private void appendLine(string logPath, string text)
-{
-    if (logPath.length == 0) return;
-    try mkdirRecurse(dirName(logPath));
-    catch (Exception) {}
-    try append(logPath, timestamp() ~ text ~ "\n");
-    catch (Exception) {}
-}
-
-private bool waitForUnlock(string exePath, int timeoutSeconds)
-{
-    const deadline = MonoTime.currTime + seconds(timeoutSeconds);
-    while (MonoTime.currTime < deadline)
-    {
-        if (canWrite(exePath)) return true;
-        Thread.sleep(200.msecs);
-    }
-    return canWrite(exePath);
-}
-
-/// Put the pre-build copy of the app exe back after a failed or truncated
-/// build, so a restart can never leave the app unlaunchable. The linker
-/// truncates the target before writing it, so a link that fails mid-write
-/// leaves a 0-byte image even when the exit code is not meaningful.
-private void restoreExe(string exePath, string backup, bool haveBackup,
-    string logPath)
-{
-    if (!haveBackup || exePath.length == 0) return;
-    try
-    {
-        copy(backup, exePath);
-        appendLine(logPath, "restored " ~ exePath ~ " from " ~ backup);
-    }
-    catch (Exception error)
-        appendLine(logPath, "could not restore the exe: " ~ error.msg);
 }
 
 /**
- * The directory that owns the shared rebuild state and artifacts: the package
- * root, matching the app's view, so the state file and the report land where
- * the relaunched app looks for them.
+ * Claim the single-supervisor role. Multiple supervisors race to relaunch the
+ * app and turn one crash into several processes and several restart loops.
+ * A named mutex makes the role exclusive. `waitMs` lets a successor wait for a
+ * predecessor that is still tearing down (a staged rebuild runs while the
+ * previous supervisor is alive); a duplicate launcher passes 0 and leaves the
+ * existing owner alone instead of waiting.
  */
-private string stateRoot(in Options options)
+version (Windows)
 {
-    if (options.packageDir.length > 0) return options.packageDir;
-    return options.logPath.length > 0 ? dirName(options.logPath) : "";
-}
-
-/**
- * Overwrite the lifecycle record the app reads back. `startedAt` is passed in
- * so every transition of one rebuild names the same start; `began` measures the
- * elapsed time.
- */
-private void writeState(in Options options, string status, string phase,
-    string startedAt, int exitCode, string[] errors, MonoTime began)
+private bool claimSupervisor(string logPath, int waitMs)
 {
-    RebuildState state;
-    state.status = parseRebuildStatus(status);
-    state.phase = phase;
-    state.reason = options.reason;
-    state.command = join(dubBuildArgv(options), " ");
-    state.exePath = options.exePath;
-    state.packageDir = options.packageDir;
-    state.startedAt = startedAt;
-    state.finishedAt = rebuildStamp(Clock.currTime);
-    if (began != MonoTime.init)
-        state.durationMs = (MonoTime.currTime - began).total!"msecs";
-    state.exitCode = exitCode;
-    state.errors = errors;
-    writeRebuildState(stateRoot(options), state);
-}
-
-/**
- * The compiler's own error lines, in order, from a captured build transcript.
- * DMD and DUB both mark these with `Error:` / `error:`; keeping only the
- * matching lines turns pages of progress output into the handful that explain
- * the failure.
- */
-private string[] errorLines(string output)
-{
-    string[] found;
-    size_t start;
-    while (start < output.length)
-    {
-        auto end = output.indexOf('\n', start);
-        if (end < 0) end = output.length;
-        const line = strip(output[start .. end]);
-        if (line.indexOf("Error:") >= 0 || line.indexOf("error:") >= 0)
-            found ~= line;
-        if (end == output.length) break;
-        start = end + 1;
-    }
-    return found;
-}
-
-/// Keep a report bounded: the tail is what a reader needs, not a transcript of
-/// every module the compiler touched on the way down.
-private string tailText(string text, size_t maxChars)
-{
-    if (text.length <= maxChars) return text;
-    return "...(earlier output omitted)...\n" ~ text[text.length - maxChars .. $];
-}
-
-/// Write the failed-build summary: the command, where it ran, the exit code,
-/// the extracted compiler errors, and the tail of the full output.
-private void writeBuildReport(in Options options, string[] argv, int code,
-    string output, const(string)[] errors)
-{
-    const path = rebuildReportPath(stateRoot(options));
-    if (path.length == 0) return;
-    string text;
-    text ~= "Aurora OpenCode rebuild report\n";
-    text ~= "time:    " ~ to!string(Clock.currTime) ~ "\n";
-    text ~= "command: " ~ join(argv, " ") ~ "\n";
-    text ~= "dir:     " ~ options.packageDir ~ "\n";
-    text ~= "exit:    " ~ to!string(code) ~ "\n";
-    text ~= "\ncompiler errors (" ~ to!string(errors.length) ~ "):\n";
-    if (errors.length == 0)
-        text ~= "  (no line matched 'error:'; see " ~
-            buildLogPath(stateRoot(options)) ~ " for the full output)\n";
-    else
-        foreach (line; errors)
-            text ~= "  " ~ line ~ "\n";
-    text ~= "\nfull output (tail):\n" ~ tailText(output, 12_000) ~ "\n";
-    try
-    {
-        mkdirRecurse(dirName(path));
-        write(path, text);
-    }
-    catch (Exception) {}
-}
-
-/// The DUB command line for a rebuild. `--force` is opt-in: when it is present
-/// DUB rebuilds every package including the ones already up to date, which is
-/// the difference between recompiling one edited package and the whole tree.
-private string[] dubBuildArgv(in Options options)
-{
-    string[] argv = ["dub", "build", "--build=" ~ options.buildType];
-    if (options.force) argv ~= "--force";
-    return argv;
-}
-
-/**
- * The DUB command for a staged build: the side-by-side `newbuild` configuration
- * links `aurora-opencode-pro-new.exe` without touching the running image, so the
- * compile can proceed while the app is still open.
- */
-private string[] dubStageArgv(in Options options)
-{
-    return ["dub", "build", "--config=newbuild",
-        "--build=" ~ options.buildType];
-}
-
-/// Where a staged build writes its executable: the `newbuild` target, beside
-/// the running application image.
-private string stagePath(string exePath)
-{
-    if (exePath.length == 0) return "";
-    return buildPath(dirName(exePath), "aurora-opencode-pro-new.exe");
-}
-
-/**
- * Replace the running image with the freshly staged one. Only valid once the
- * app has exited and released the image. The previous binary is copied aside
- * first, so a failed swap can never leave the user without a working app.
- */
-private bool swapStaged(in Options options)
-{
-    const staged = options.stagePath;
-    if (staged.length == 0 || !exists(staged)) return false;
-    const backup = options.exePath ~ ".bak";
-    bool haveBackup;
-    if (options.exePath.length > 0 && exists(options.exePath))
-    {
-        try
-        {
-            copy(options.exePath, backup);
-            haveBackup = true;
-        }
-        catch (Exception error)
-            appendLine(options.logPath,
-                "could not back up the exe: " ~ error.msg);
-    }
-    try
-    {
-        copy(staged, options.exePath);
-        remove(staged);
-        appendLine(options.logPath, "installed the rebuilt binary");
+    auto name = toUTF16("Local\\AuroraOpenCodeSupervisor") ~ "\0"w;
+    auto mutex = CreateMutexW(null, 0, name.ptr);
+    if (mutex is null) return true;
+    const result = WaitForSingleObject(mutex, cast(uint) waitMs);
+    if (result == 0 || result == 0x80) // acquired, or abandoned by a dead owner
         return true;
-    }
-    catch (Exception error)
-    {
-        appendLine(options.logPath,
-            "could not install the rebuilt binary: " ~ error.msg);
-        if (haveBackup)
-            restoreExe(options.exePath, backup, haveBackup, options.logPath);
-        return false;
-    }
+    CloseHandle(mutex);
+    appendLine(logPath, "another supervisor already owns the app; exiting");
+    return false;
+}
 }
 
-/**
- * Run one DUB build and validate its output. `argv` is the command (in-place or
- * staged); `targetExe` is the file that must exist and be non-empty afterwards.
- * `backupMain` guards an in-place build, whose linker truncates the target
- * before writing it, by keeping a copy to restore on failure. A staged build
- * leaves the running image alone and so keeps no backup.
- */
-private bool runBuild(in Options options, string[] argv, string targetExe,
-    bool backupMain, out int exitCode, out string[] errors)
+else
 {
-    exitCode = 0;
-    errors = null;
-    // DUB's output is captured to `build.log` rather than streamed into the
-    // maintenance log: a failed compile needs its error lines quoted in the
-    // report, and that is only possible if the text can be read back.
-    const outputPath = buildLogPath(stateRoot(options));
-    File sink;
-    bool haveSink;
-    if (outputPath.length > 0)
-    {
-        try
-        {
-            mkdirRecurse(dirName(outputPath));
-            sink = File(outputPath, "w");
-            haveSink = true;
-        }
-        catch (Exception) {}
-    }
-    // Keep a copy of the good target; a failed link can leave the target empty.
-    const backup = targetExe.length > 0 ? targetExe ~ ".bak" : "";
-    bool haveBackup;
-    if (backupMain && targetExe.length > 0 && exists(targetExe))
-    {
-        try
-        {
-            copy(targetExe, backup);
-            haveBackup = true;
-        }
-        catch (Exception error)
-            appendLine(options.logPath,
-                "could not back up the exe: " ~ error.msg);
-    }
-    int code;
-    try
-    {
-        // `dub` is a console program and this helper runs without a console, so
-        // a bare spawn would allocate a visible console window for the whole
-        // build. `suppressConsole` keeps it (and its `cmd /c` post-build steps)
-        // invisible while stdout/stderr still land in the capture file.
-        auto pid = spawnProcess(argv,
-            stdin, haveSink ? sink : stdout, haveSink ? sink : stderr, null,
-            Config.suppressConsole, options.packageDir);
-        code = wait(pid);
-    }
-    catch (Exception error)
-    {
-        if (haveSink) sink.close();
-        appendLine(options.logPath, "dub could not be started: " ~ error.msg);
-        errors = ["dub could not be started: " ~ error.msg];
-        if (haveBackup)
-            restoreExe(targetExe, backup, haveBackup, options.logPath);
-        return false;
-    }
-    if (haveSink) sink.close();
-    exitCode = code;
-    const output = haveSink && exists(outputPath) ? readText(outputPath) : "";
-    errors = errorLines(output);
-    const firstError = errors.length > 0 ? errors[0]
-        : "(no compiler error line; see " ~ outputPath ~ ")";
-    // A zero exit code is not enough: the target must exist and be non-empty.
-    if (code != 0 || targetExe.length == 0 || !exists(targetExe) ||
-        getSize(targetExe) == 0)
-    {
-        appendLine(options.logPath, "build failed (exit " ~ to!string(code) ~
-            "; target " ~ (targetExe.length == 0 ? "unspecified"
-                : (exists(targetExe)
-                    ? to!string(getSize(targetExe)) ~ " bytes"
-                    : "missing")) ~ "); keeping the previous binary");
-        appendLine(options.logPath, "build error: " ~ firstError);
-        writeBuildReport(options, argv, code, output, errors);
-        // Named in the app's own log too, so the compiler failure lands where
-        // the app's crash summary and the user's usual log both look.
-        const appLog = appLogPath(options);
-        if (appLog.length > 0)
-            appendLine(appLog, "[ERROR] rebuild failed: " ~ firstError);
-        // Shown on screen, not just on disk: a rebuild that silently reopens
-        // the previous binary looks like nothing happened at all.
-        setProgress("Rebuild failed: " ~ firstError,
-            "see " ~ rebuildReportPath(stateRoot(options)), 1.0);
-        if (haveBackup)
-        {
-            if (targetExe.length > 0 && exists(targetExe))
-            {
-                try remove(targetExe);
-                catch (Exception) {}
-            }
-            restoreExe(targetExe, backup, haveBackup, options.logPath);
-        }
-        return false;
-    }
-    // A good build clears any report left by an earlier failure, so a stale one
-    // never masquerades as the latest result.
-    const report = rebuildReportPath(stateRoot(options));
-    if (report.length > 0 && exists(report))
-    {
-        try remove(report);
-        catch (Exception) {}
-    }
+private bool claimSupervisor(string logPath, int waitMs)
+{
     return true;
 }
+}
 
-private bool launchApp(in Options options)
+/// Claim the supervisor role, then run (and keep running) the app. The wait is
+/// only non-zero for an app-triggered rebuild, whose predecessor is the
+/// supervisor that was watching the app as it closed.
+private int superviseClaimed(in HelperJob job)
 {
-    try
-    {
-        spawnProcess([options.exePath], stdin, stdout, stderr, null,
-            Config.detached | Config.suppressConsole,
-            options.packageDir.length > 0 ? options.packageDir : null);
-        return true;
-    }
-    catch (Exception error)
-    {
-        appendLine(options.logPath, "launch failed: " ~ error.msg);
-        return false;
-    }
+    if (!claimSupervisor(job.logPath, job.waitPid != 0 ? 30_000 : 0))
+        return 0;
+    return supervise(job);
 }
 
 // ===========================================================================
-// Helper entry point
+// Agent entry point
 // ===========================================================================
 
 /**
- * Entry point for the standalone `aurora-rebuilder` executable. `tools/rebuilder.d`
- * owns `main` and calls this, so every line of the feature lives in this module.
+ * Entry point for the rebuild agent - a copy of the app invoked with
+ * `rebuildHelperFlag`. `source/app.d` dispatches here before touching the GUI.
  */
-int runRebuilder(string[] args)
+int runRebuildHelperMode(string[] args)
 {
-    const options = parseArgs(args);
-    // Show the progress window before any guard can return early: maintenance
-    // that cannot proceed must not look like nothing happened at all. A staged
-    // build runs while the app is still open, so its own window is the feedback
-    // and a second one here would be wrong.
-    version (Windows)
+    const job = parseHelperArgs(args);
+    if (job.exePath.length == 0)
     {
-        if (!options.stageBuild)
-            openProgressWindow("Aurora OpenCode - maintenance");
-    }
-    version (Windows) HANDLE supervisorMutex;
-    scope (exit)
-    {
-        version (Windows)
-            if (supervisorMutex !is null)
-            {
-                ReleaseMutex(supervisorMutex);
-                CloseHandle(supervisorMutex);
-            }
-    }
-    if (options.exePath.length == 0)
-    {
-        stderr.writeln("usage: aurora-rebuilder --exe <app.exe> " ~
-            "[--dir <packageDir>] [--log <logPath>] [--pid <pid>] " ~
-            "[--build <type>] [--timeout <seconds>] [--no-rebuild] [--stage] " ~
-            "[--run] [--supervise] [--max-restarts <n>] [--force]");
+        stderr.writeln("usage: aurora-opencode-pro " ~ rebuildHelperFlag ~
+            " --exe <app.exe> [--dir <packageDir>] [--log <logPath>] " ~
+            "[--pid <pid>] [--build <type>] [--timeout <seconds>] [--stage] " ~
+            "[--no-rebuild] [--max-restarts <n>] [--force]");
         return 2;
     }
 
-    // The window was opened above, before any guard could return early; here we
-    // only arrange for it to be closed again on the way out.
+    const haveBuild = job.rebuild && job.packageDir.length > 0;
+
+    // A full rebuild closes the app, so the agent must show something; a staged
+    // build runs while the app is still open, and a plain relaunch shows the
+    // app itself, so neither needs a second window.
+    version (Windows)
+        if (haveBuild && !job.stageBuild)
+            openProgressWindow("Aurora OpenCode - rebuild");
     scope (exit)
     {
         version (Windows) closeProgressWindow();
     }
 
-    if (options.waitPid != 0)
+    if (!haveBuild)
     {
-        appendLine(options.logPath, "waiting for process " ~
-            to!string(options.waitPid) ~ " to exit");
-        setProgress("Waiting for the app to close...", "", -1.0);
+        appendLine(job.logPath, "no rebuild requested; starting the app");
+        return superviseClaimed(job);
     }
 
-    // A staged build compiles while the app is still open, so it waits for the
-    // image to clear only after the build, right before the swap. Every other
-    // mode waits for the app to exit before touching the image.
-    if (!options.stageBuild)
+    if (job.stageBuild)
     {
-        if (!waitForUnlock(options.exePath, options.timeoutSeconds))
-        {
-            // Still locked: the app is alive and this rebuild would be a
-            // duplicate.
-            appendLine(options.logPath, "app did not exit; rebuild aborted");
-            setProgress("The app did not close; rebuild aborted", "", 1.0);
-            return 0;
-        }
-        // The lock can clear a moment before the image is fully released.
-        Thread.sleep(500.msecs);
-    }
-
-    const hadBuild = options.rebuild && options.packageDir.length > 0;
-    if (hadBuild && options.stageBuild)
-    {
-        appendLine(options.logPath, "staged rebuild: " ~
-            join(dubStageArgv(options), " "));
+        appendLine(job.logPath, "staged rebuild: " ~
+            join(dubArgv(job, true), " "));
         const began = MonoTime.currTime;
         const startedAt = strip(timestamp());
         // The app wrote `pending`; take the record over and mark the build in
-        // flight so a helper that dies mid-build stays visible as "not
+        // flight so an agent that dies mid-build stays visible as "not
         // finished" rather than looking like it never ran.
-        writeState(options, "running", "building", startedAt, 0, null, began);
+        writeJobState(job, RebuildStatus.running, "building", startedAt, 0,
+            null, began);
         int exitCode;
         string[] errors;
-        const rebuilt = runBuild(options, dubStageArgv(options),
-            options.stagePath, false, exitCode, errors);
-        if (rebuilt)
+        if (runDub(job, dubArgv(job, true), job.stagePath, false, exitCode,
+            errors))
         {
-            appendLine(options.logPath, "staged build succeeded");
+            appendLine(job.logPath, "staged build succeeded");
             // Publish success so the still-running app closes, then wait for it
             // to release the image before replacing it.
-            writeState(options, "ok", "staged", startedAt, 0, null, began);
-            if (!waitForUnlock(options.exePath, options.timeoutSeconds))
+            writeJobState(job, RebuildStatus.ok, "staged", startedAt, 0, null,
+                began);
+            if (!waitForUnlock(job.exePath, job.timeoutSeconds))
             {
-                appendLine(options.logPath,
+                appendLine(job.logPath,
                     "app did not exit; staged binary not installed");
-                writeState(options, "failed", "awaiting-restart", startedAt, 0,
-                    ["the app did not close, so the staged build was not " ~
-                     "installed"], began);
-                return 0;
+                writeJobState(job, RebuildStatus.failed, "awaiting-restart",
+                    startedAt, 0, ["the app did not close, so the staged " ~
+                        "build was not installed"], began);
+                return 1;
             }
             Thread.sleep(300.msecs);
-            if (!swapStaged(options))
+            if (!swapStaged(job))
             {
-                appendLine(options.logPath,
+                appendLine(job.logPath,
                     "the staged binary could not be installed");
-                writeState(options, "failed", "swap-failed", startedAt, 0,
-                    ["the staged binary could not be installed"], began);
+                writeJobState(job, RebuildStatus.failed, "swap-failed",
+                    startedAt, 0, ["the staged binary could not be installed"],
+                    began);
                 return 1;
             }
         }
         else
         {
-            appendLine(options.logPath, "staged build FAILED");
-            writeState(options, "failed", "build-failed", startedAt, exitCode,
-                errors, began);
+            appendLine(job.logPath, "staged build FAILED");
+            writeJobState(job, RebuildStatus.failed, "build-failed", startedAt,
+                exitCode, errors, began);
             // A still-running app shows the report itself and keeps the
             // previous build; there is nothing to relaunch.
-            if (!canWrite(options.exePath))
+            if (!canWrite(job.exePath))
             {
-                appendLine(options.logPath,
+                appendLine(job.logPath,
                     "app still running; leaving it in place with the report");
                 return 1;
             }
-            appendLine(options.logPath,
+            appendLine(job.logPath,
                 "app already exited; relaunching the previous binary");
         }
+        return superviseClaimed(job);
     }
-    else if (hadBuild)
+
+    // In-place rebuild: the app must be closed before its image can be written.
+    if (!waitForUnlock(job.exePath, job.timeoutSeconds))
     {
-        appendLine(options.logPath, "rebuilding: " ~
-            join(dubBuildArgv(options), " "));
-        setProgress("Rebuilding...", "dub build --build=" ~ options.buildType,
-            -1.0);
-        const began = MonoTime.currTime;
-        const startedAt = strip(timestamp());
-        // The app wrote `pending` before it exited; take the record over and
-        // mark the build in flight so a helper that dies mid-build is still
-        // visible as "not finished" rather than looking like it never ran.
-        writeState(options, "running", "building", startedAt, 0, null, began);
-        int exitCode;
-        string[] errors;
-        const rebuilt = runBuild(options, dubBuildArgv(options), options.exePath,
-            true, exitCode, errors);
-        appendLine(options.logPath, rebuilt ? "build succeeded"
-            : "build FAILED; relaunching the previous binary");
-        // On failure `runBuild` has already put the first compiler error on
-        // screen; overwriting that with a generic line would hide the reason.
-        if (rebuilt)
-        {
-            setProgress("Rebuild finished. Starting...", "", 1.0);
-            writeState(options, "ok", "relaunching", startedAt, 0, null, began);
-        }
-        else
-        {
-            appendLine(options.logPath,
-                "compiler errors: " ~ rebuildReportPath(stateRoot(options)));
-            writeState(options, "failed", "build-failed", startedAt, exitCode,
-                errors, began);
-        }
+        appendLine(job.logPath, "app did not exit; rebuild aborted");
+        setProgress("The app did not close; rebuild aborted", "", 1.0);
+        return 0;
+    }
+    Thread.sleep(500.msecs);
+    appendLine(job.logPath, "rebuilding: " ~ join(dubArgv(job, false), " "));
+    setProgress("Rebuilding...", "dub build --build=" ~ job.buildType, -1.0);
+    const began = MonoTime.currTime;
+    const startedAt = strip(timestamp());
+    writeJobState(job, RebuildStatus.running, "building", startedAt, 0, null,
+        began);
+    int exitCode;
+    string[] errors;
+    if (runDub(job, dubArgv(job, false), job.exePath, true, exitCode, errors))
+    {
+        appendLine(job.logPath, "build succeeded");
+        setProgress("Rebuild finished. Starting...", "", 1.0);
+        writeJobState(job, RebuildStatus.ok, "relaunching", startedAt, 0, null,
+            began);
     }
     else
-        appendLine(options.logPath, "rebuild skipped; relaunching as built");
-
-    // One parent must own the app. Multiple supervisors race to relaunch it and
-    // turn one crash into several processes and several restart loops. Claim
-    // that role now, just before the relaunch: a staged build ran while the
-    // previous supervisor was still alive, so the claim has to happen after the
-    // app finally exits and that supervisor has released the name.
-    version (Windows)
-    if (options.supervise)
     {
-        supervisorMutex = CreateMutexW(null, 0,
-            toUTF16z("Local\\AuroraOpenCodeSupervisor"));
-        // The previous owner releases as the app exits, so this successor may
-        // wait briefly. Unsolicited duplicate launchers do not wait and simply
-        // leave the existing owner alone.
-        const waitMs = options.waitPid != 0 ? 30_000 : 0;
-        const waitResult = supervisorMutex is null ? uint.max :
-            WaitForSingleObject(supervisorMutex, waitMs);
-        if (waitResult != 0 && waitResult != 0x80) // object / abandoned
-        {
-            if (supervisorMutex !is null)
-            {
-                CloseHandle(supervisorMutex);
-                supervisorMutex = null;
-            }
-            appendLine(options.logPath,
-                "another supervisor already owns the app; exiting");
-            return 0;
-        }
+        appendLine(job.logPath,
+            "build FAILED; relaunching the previous binary");
+        appendLine(job.logPath,
+            "compiler errors: " ~ rebuildReportPath(stateRoot(job)));
+        writeJobState(job, RebuildStatus.failed, "build-failed", startedAt,
+            exitCode, errors, began);
     }
-
-    appendLine(options.logPath, "relaunching " ~ options.exePath);
-    if (options.supervise) return superviseApp(options);
-    if (options.run) return runAndReport(options);
-    return launchApp(options) ? 0 : 1;
+    return superviseClaimed(job);
 }

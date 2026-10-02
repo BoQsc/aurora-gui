@@ -43,23 +43,6 @@
       ]
     },
     {
-      "name": "rebuilder",
-      "targetType": "executable",
-      "targetName": "aurora-rebuilder",
-      "mainSourceFile": "tools/rebuilder.d",
-      "sourcePaths": [
-        "tools",
-        "shared"
-      ],
-      "excludedSourceFiles": [
-        "source/**"
-      ],
-      "targetPath": "bin",
-      "lflags-windows": [
-        "/SUBSYSTEM:CONSOLE"
-      ]
-    },
-    {
       "name": "cli",
       "targetType": "executable",
       "targetName": "aurora-cli",

@@ -5547,10 +5547,10 @@ int main(string[] args)
     }
 
     // Rebuild: a Rebuild button in the toolbar, and a request that persists
-    // state and hands the rebuild to a detached helper before closing the
-    // window. The request is not exercised here (it would spawn a real build
-    // and close the window under the test); the button wiring and the gating
-    // predicates are.
+    // state and hands the rebuild to a detached copy of this binary (the agent)
+    // before closing the window. The request is not exercised here (it would
+    // spawn a real build and close the window under the test); the button
+    // wiring and the gating predicates are.
     {
         auto rebuildButton = requireWidget!Button(root, "oc-rebuild");
         assert(rebuildButton.text() == "Rebuild"d,
@@ -5563,29 +5563,26 @@ int main(string[] args)
             "the packaged build should be able to rebuild itself");
         auto rebuildPlan = planRebuild(stateDir, true, 12345,
             buildPath(stateDir, "package", "aurora-opencode-pro.exe"));
-        // Rebuild hands the work to the standalone rebuilder, so the argv it
-        // would spawn is what is inspected: one implementation, one caller.
+        // The rebuild copies the running binary to a per-pid agent image and
+        // spawns that, so the argv it builds is what is inspected here.
         auto scriptedPlan = rebuildPlan;
         scriptedPlan.workingDir = buildPath("C:\\", "repo with spaces");
         const helperArgv = rebuildHelperArgv(scriptedPlan);
-        if (helperArgv.length > 0)
-        {
-            const helperLine = helperArgv.join(" ");
-            assert(helperLine.indexOf("aurora-rebuilder.exe") >= 0,
-                "Rebuild must use the standalone rebuilder: " ~ helperLine);
-            assert(helperLine.indexOf("--rebuild") < 0 &&
-                helperLine.indexOf("--no-rebuild") < 0,
-                "a rebuild was requested, so no --no-rebuild flag belongs " ~
-                "in the argv: " ~ helperLine);
-            assert(helperLine.indexOf("repo with spaces") >= 0,
-                "the package directory must be passed through verbatim: " ~
-                helperLine);
-            assert(helperLine.indexOf("--run") >= 0,
-                "the relaunched app is watched so its exit code is " ~
-                "recorded: " ~ helperLine);
-        }
-        else
-            writeln("Rebuild helper not built; argv inspection skipped");
+        assert(helperArgv.length > 0,
+            "a rebuild plan must yield a spawnable agent argv");
+        const helperLine = helperArgv.join(" ");
+        assert(helperLine.indexOf("aurora-rebuild-helper") >= 0,
+            "Rebuild must spawn the self-copied agent: " ~ helperLine);
+        assert(helperLine.indexOf("--no-rebuild") < 0,
+            "a rebuild was requested, so no --no-rebuild flag belongs " ~
+            "in the argv: " ~ helperLine);
+        assert(helperLine.indexOf("repo with spaces") >= 0,
+            "the package directory must be passed through verbatim: " ~
+            helperLine);
+        assert(helperLine.indexOf("--exe") >= 0 &&
+            helperLine.indexOf("--pid") >= 0,
+            "the agent must be told what to rebuild and whom to wait for: " ~
+            helperLine);
         writeln("Rebuild button present; rebuild-in-place available");
 
         // The agent-facing rebuild tool is advertised, and the running app

@@ -64,17 +64,19 @@ read-only and produce no side effects.
   `--build=release`).
 - Do **not** build in a way that overwrites the live executable while it is
   running. Use the rebuild/restart flow instead.
-- Rebuild/restart flow (staged): the app starts the helper
-  `bin/aurora-rebuilder.exe` and keeps running; the helper compiles the
-  side-by-side `newbuild` target (`aurora-opencode-pro-new.exe`), records `ok`
-  in `rebuildstate.json`, waits for the app to close, swaps the new binary in,
-  and relaunches it supervised. A failed compile leaves the previous build
+- Rebuild/restart flow (staged): the app copies *itself* to a throwaway
+  `bin/aurora-rebuild-helper-<pid>.exe` and spawns that copy as the agent; there
+  is no separate helper executable to build or keep in sync. The agent compiles
+  the side-by-side `newbuild` target (`aurora-opencode-pro-new.exe`), records
+  `ok` in `rebuildstate.json`, waits for the app to close, swaps the new binary
+  in, and supervises the relaunch. A failed compile leaves the previous build
   running with the errors reported in-app. `bin/restart-now.bat` and
-  `bin/supervise-now.bat` drive the no-rebuild run/supervise paths.
+  `bin/supervise-now.bat` drive the no-rebuild run/supervise paths; the app
+  selects agent mode in `source/app.d` when `main` sees `--aurora-rebuild-helper`.
 - Build-side support and in-app build-awareness both live in the single module
-  `shared/rebuild.d`: the detached helper logic, the `rebuildstate.json`
-  protocol, the app-side launch flow, the resume notice, and the Win32 progress
-  window. A thin `tools/rebuilder.d` owns `main` and calls `runRebuilder`.
+  `shared/rebuild.d`: the ledger (`rebuildstate.json` and the build artifacts),
+  the app-side launch flow, the resume notice, the Win32 progress window, and
+  the agent itself (`runRebuildHelperMode`, dispatched from `source/app.d`).
 
 ## How to check whether a rebuild already happened
 
@@ -82,7 +84,7 @@ Do this **before** concluding any change is complete:
 
 1. **Reports/logs** — read `rebuild-report.txt` and `build.log` in the repo root
    if present. They contain the compiler errors and the tail of the build output
-   (written by `tools/rebuilder.d`).
+   (written by the rebuild agent in `shared/rebuild.d`).
 2. **State file** — if `rebuildstate.json` exists, its `status`
    (`pending` / `running` / `ok` / `failed`), timestamps, duration, and log paths
    tell you whether a rebuild is in flight, succeeded, or failed.
