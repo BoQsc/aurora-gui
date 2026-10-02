@@ -66,10 +66,17 @@ int main()
         stderr.writeln("section=", view.firstSectionBoundsForTesting(),
             " label=", view.firstSectionChildBoundsForTesting());
 
+        const distroCount = view.distroCountForTesting();
+        view.selectDistroForTesting(0);
+        const distroUrl = view.downloadUrlForTesting();
+        stderr.writeln("distros=", distroCount, " firstUrl=", distroUrl);
+
         window.saveScreenshot("build/headless_smoke.png");
         window.close();
 
-        const ok = loaded && entries == 3 && view.imageLoadedForTesting();
+        const ok = loaded && entries == 3 && view.imageLoadedForTesting() &&
+            distroCount >= 6 &&
+            distroUrl == "https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso";
         stderr.writeln(ok ? "HEADLESS SMOKE PASSED" : "HEADLESS SMOKE FAILED");
         return ok ? 0 : 1;
     }

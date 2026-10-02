@@ -8,6 +8,7 @@
 module auroraiso.appui;
 
 import aurora;
+import auroraiso.distro;
 import auroraiso.download;
 import auroraiso.iso;
 import auroraiso.job;
@@ -55,6 +56,8 @@ public final class IsoRoot : VBox
     private CheckBox _createRockRidge;
     private TextField _downloadUrl;
     private TextField _downloadDest;
+    private ListView _distroList;
+    private DistroImage[] _distros;
     private ListView _deviceList;
     private UsbDevice[] _devices;
     private TextField _deviceFs;
@@ -74,6 +77,7 @@ public final class IsoRoot : VBox
         _window = window;
         buildUi();
         setStatus("Open an ISO image, create one, or download a Linux distribution.");
+        refreshDistros();
         refreshDevices();
         updateInfo();
         setBrowserEnabled(false);
@@ -197,6 +201,28 @@ public final class IsoRoot : VBox
         auto createButton = createRow.add(new Button("Create ISO", IconKind.newDocument));
         createButton.onClick = delegate() { startCreate(); };
 
+        // Official distributions.
+        auto distros = section(column, "Official Distributions");
+        _distroList = distros.add(new ListView());
+        _distroList.layoutHints().preferredHeight = 170;
+        _distroList.onSelectionChanged = delegate(int index) { previewDistro(index); };
+        _distroList.onActivated = delegate(int index) {
+            useDistro(index);
+            startDownload();
+        };
+        auto distroRow = distros.add(new HBox(6));
+        distroRow.layoutHints().preferredHeight = 40;
+        auto useButton = distroRow.add(new Button("Use in Download", IconKind.save));
+        useButton.setId("iso-distro-use");
+        useButton.onClick = delegate() { useDistro(_distroList.selectedIndex()); };
+        auto distroDownload = distroRow.add(new Button("Download Now", IconKind.search));
+        distroDownload.setId("iso-distro-download");
+        distroDownload.onClick = delegate() {
+            useDistro(_distroList.selectedIndex());
+            startDownload();
+        };
+        infoLabel(distros, "Official Ubuntu and Fedora images from their release servers.");
+
         // Download.
         auto download = section(column, "Download ISO");
         _downloadUrl = new TextField("");
@@ -243,6 +269,7 @@ public final class IsoRoot : VBox
         finalizeSection(info);
         finalizeSection(extract);
         finalizeSection(create);
+        finalizeSection(distros);
         finalizeSection(download);
         finalizeSection(usb);
         column.add(new Spacer(0));
@@ -618,6 +645,43 @@ public final class IsoRoot : VBox
         }
     }
 
+    // ----- Official distributions -------------------------------------------
+
+    private void refreshDistros()
+    {
+        _distros = officialImages();
+        ListItem[] items;
+        foreach (image; _distros)
+        {
+            string secondary = image.vendor ~ " · " ~ image.edition;
+            if (image.approxBytes > 0)
+                secondary ~= "  ·  ~" ~ formatSize(image.approxBytes);
+            items ~= ListItem(image.name, IconKind.drive, secondary);
+        }
+        _distroList.setItems(items);
+    }
+
+    private void previewDistro(int index)
+    {
+        if (index < 0 || index >= cast(int) _distros.length)
+            return;
+        auto image = _distros[cast(size_t) index];
+        setStatus(image.vendor ~ " " ~ image.edition ~ " — " ~ image.url);
+    }
+
+    private void useDistro(int index)
+    {
+        if (index < 0 || index >= cast(int) _distros.length)
+        {
+            setStatus("Select a distribution first.");
+            return;
+        }
+        auto image = _distros[cast(size_t) index];
+        _downloadUrl.setText(image.url);
+        _downloadDest.setText(buildPath(downloadsDirectory(), baseName(image.url)));
+        setStatus("Selected " ~ image.name ~ ". Press Download to fetch it.");
+    }
+
     // ----- USB ---------------------------------------------------------------
 
     private void refreshDevices()
@@ -923,6 +987,24 @@ public final class IsoRoot : VBox
     public Rect sideScrollBoundsForTesting()
     {
         return _sideScroll is null ? Rect.init : _sideScroll.bounds();
+    }
+
+    /// Test-only: number of catalog entries.
+    public int distroCountForTesting() const
+    {
+        return cast(int) _distros.length;
+    }
+
+    /// Test-only: select a catalog entry as if the user clicked it.
+    public void selectDistroForTesting(int index)
+    {
+        useDistro(index);
+    }
+
+    /// Test-only: current download URL field text.
+    public string downloadUrlForTesting()
+    {
+        return _downloadUrl.textUtf8();
     }
 
     /// Test-only: side content first section bounds.

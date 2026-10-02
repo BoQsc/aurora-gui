@@ -22,6 +22,11 @@ native ISO libraries, and a single portable executable.
 - **Create**: build a new ISO from any folder, choosing volume id, Joliet, and
   Rock Ridge.
 - **Download**: HTTP(S) ISO downloader with progress and resume (WinHTTP).
+- **Official distributions**: a built-in catalog of first-party images —
+  Ubuntu 26.04.1 / 24.04.5 / 22.04.5 LTS (Desktop and Server, amd64) and
+  Fedora 44 Workstation / Server / netinst (x86_64) — taken from Canonical's
+  `releases.ubuntu.com` and Fedora's `download.fedoraproject.org`. Pick an
+  entry to fill the download fields, or download it immediately.
 - **USB / Linux installer**:
   - Enumerate removable USB drives with their backing physical disk, label,
     filesystem, model, and free space.
@@ -45,6 +50,7 @@ aurora-iso/
   source/auroraiso/appui.d        the whole GUI
   source/auroraiso/job.d          background job helper
   source/auroraiso/osutil.d       shell-open + folders
+  source/auroraiso/distro.d       official Ubuntu/Fedora catalog
   source/auroraiso/download.d     WinHTTP download manager
   source/auroraiso/usb.d          USB enumeration, raw write, format
   source/auroraiso/iso/endian.d       both-endian helpers
@@ -86,7 +92,7 @@ build/iso_unit.exe
 Module unit tests plus the integration suite:
 
 ```
-dmd -unittest -Isource -i -ofbuild/unit_all.exe tests/iso_unit.d source/auroraiso/download.d source/auroraiso/usb.d winhttp.lib
+dmd -unittest -Isource -i -ofbuild/unit_all.exe tests/iso_unit.d source/auroraiso/download.d source/auroraiso/usb.d source/auroraiso/distro.d winhttp.lib
 build/unit_all.exe
 ```
 
@@ -101,6 +107,11 @@ build/headless_smoke.exe
 
 ## Notes & limits
 
+- Official images are pinned to concrete file names so downloads are
+  unambiguous. When a vendor publishes a new point release, refresh the version
+  and file name in `source/auroraiso/distro.d` (see the index listings at
+  `releases.ubuntu.com/<release>/` and
+  `download.fedoraproject.org/pub/fedora/linux/releases/<n>/`).
 - The writer targets ISO 9660 level 2 with optional Joliet/Rock Ridge. Files ≥
   4 GiB and multi-extent files beyond the first extent are not yet written.
 - The reader follows the first extent of multi-extent files; the common case
