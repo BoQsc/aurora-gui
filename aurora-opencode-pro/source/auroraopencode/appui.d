@@ -11166,6 +11166,9 @@ public final class OpenCodeRoot : VBox
     private void selectSession(int index)
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
+        // Read this conversation's messages on demand, the first time it is
+        // opened this run.
+        ensureThreadLoaded(index);
         saveLoadedRuntime();
         // Drafts are per conversation: store the text of the one we are leaving
         // and show the one we are opening, so the persisted draft matches the
@@ -11619,6 +11622,9 @@ public final class OpenCodeRoot : VBox
 
     private void rebuildMessageColumn()
     {
+        // The transcript only ever renders the current conversation, so make
+        // sure its messages are in memory before rebuilding.
+        if (_current >= 0) ensureThreadLoaded(_current);
         // A full message-column rebuild is the heaviest thing the UI does and
         // the most likely place for a fault, so record it before the work. A
         // crash here then names this step rather than leaving only an address.
@@ -13042,6 +13048,7 @@ public final class OpenCodeRoot : VBox
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
+        ensureThreadLoaded(sessionIndex);
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 ||
             messageIndex >= cast(int) session.messages.length)
@@ -16630,6 +16637,8 @@ public final class OpenCodeRoot : VBox
         }
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
+        // A turn is about to read and extend this conversation's transcript.
+        ensureThreadLoaded(sessionIndex);
         auto session = &_sessions[sessionIndex];
         if (_settings.toolsEnabled)
             ensureDurableTaskCheckpoint(*session,
@@ -20252,6 +20261,7 @@ public final class OpenCodeRoot : VBox
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
+        ensureThreadLoaded(sessionIndex);
         saveLoadedRuntime();
         auto source = _sessions[sessionIndex];
         ChatSession copy;
@@ -20806,6 +20816,45 @@ public final class OpenCodeRoot : VBox
         saveSettings(_settings);
     }
 
+    /**
+     * Write the on-demand conversation store: one metadata index plus a
+     * messages file per conversation. Only conversations whose messages are in
+     * memory are written; an unloaded conversation keeps its existing file, so
+     * a save never needs the whole history in memory and never blocks on it.
+     * `loaded` maps a session id to whether its messages were materialized
+     * (a missing key means loaded).
+     */
+    private static void writeThreadStore(const ChatSession[] sessions,
+        int currentIndex, bool[string] loaded)
+    {
+        ensureStateDirectory();
+        try mkdirRecurse(threadsDirectory());
+        catch (Exception) {}
+        JSONValue root;
+        root["version"] = 2;
+        root["current"] = currentIndex;
+        if (currentIndex >= 0 && currentIndex < cast(int) sessions.length)
+            root["currentId"] = sessions[currentIndex].id;
+        JSONValue list = JSONValue(string[].init);
+        foreach (session; sessions)
+            list.array ~= sessionMetaToJson(session);
+        root["sessions"] = list;
+        writeFileAtomically(threadsIndexPath(), root.toString());
+        foreach (session; sessions)
+        {
+            if (session.id.length == 0) continue;
+            auto flag = session.id in loaded;
+            // A conversation with messages is materialized even if its map
+            // entry says otherwise, so an append is never silently dropped.
+            const materialized = flag is null || *flag ||
+                session.messages.length > 0;
+            if (!materialized) continue;
+            JSONValue thread;
+            thread["messages"] = messagesToJson(session.messages);
+            writeFileAtomically(threadFilePath(session.id), thread.toString());
+        }
+    }
+
     private void persistState()
     {
         // Shutdown and tests call this synchronously. If the background
@@ -20825,19 +20874,12 @@ public final class OpenCodeRoot : VBox
         // typed but not sent is written with the same snapshot as the messages.
         syncComposerDraft();
         ensureStateDirectory();
-        JSONValue root;
-        JSONValue list = JSONValue(string[].init);
-        foreach (session; _sessions)
-            list.array ~= sessionToJson(session);
-        root["sessions"] = list;
-        root["current"] = _current;
-        const path = buildPath(opencodeStateDirectory(), "sessions.json");
         try
         {
-            writeFileAtomically(path, root.toString());
-            // Record the journal state this snapshot already folded, so the
-            // next start reads only the bytes appended since - not the whole
-            // journal. Written only after the snapshot is safely in place.
+            writeThreadStore(_sessions, _current, _threadLoaded);
+            // Record the journal state this store already folded, so the next
+            // start reads only the bytes appended since - not the whole
+            // journal. Written only after the store is safely in place.
             if (_runtime !is null)
                 writeFoldedMarker(opencodeStateDirectory(),
                     _runtime.latestSequence(), _runtime.journalSize());
@@ -20849,17 +20891,17 @@ public final class OpenCodeRoot : VBox
     }
 
     /**
-     * Write the debounced session snapshot on a background thread.
+     * Write the debounced conversation store on a background thread.
      *
-     * `persistState` serializes every conversation into one JSON string and
-     * rewrites that file plus its `.bak`. On a long-lived install that set can
-     * be hundreds of megabytes, which took the UI thread offline for many
-     * seconds - the freeze a New chat click or a keystroke appeared to trigger,
-     * because both mark state dirty and the debounced save then ran on the next
-     * tick. The JSON file is only a compatibility cache (the append-only journal
-     * is the recovery authority), so building and writing it off the UI thread
-     * is safe. Only one snapshot runs at a time; a change during the write
-     * leaves `_stateDirty` set and the next tick queues another.
+     * `persistState` writes the metadata index and one messages file per loaded
+     * conversation. On a long-lived install the message set can be hundreds of
+     * megabytes, which took the UI thread offline for many seconds - the freeze
+     * a New chat click or a keystroke appeared to trigger, because both mark
+     * state dirty and the debounced save then ran on the next tick. The store is
+     * only a cache (the append-only journal is the recovery authority), so
+     * building and writing it off the UI thread is safe. Only one snapshot runs
+     * at a time; a change during the write leaves `_stateDirty` set and the next
+     * tick queues another.
      */
     private void persistStateAsync()
     {
@@ -20877,6 +20919,11 @@ public final class OpenCodeRoot : VBox
         // turn is busy while a snapshot is queued, so the read is consistent.
         auto sessions = _sessions.dup;
         const currentIndex = _current;
+        // Own copy of the loaded flags: the worker must not read the live map,
+        // which the UI thread mutates as conversations are opened.
+        bool[string] loaded;
+        foreach (id, materialized; _threadLoaded)
+            loaded[id] = materialized;
         const hasRuntime = _runtime !is null;
         ulong foldedSequence;
         ulong foldedSize;
@@ -20893,15 +20940,8 @@ public final class OpenCodeRoot : VBox
             try
             {
                 ensureStateDirectory();
-                JSONValue list = JSONValue(string[].init);
-                foreach (session; sessions)
-                    list.array ~= sessionToJson(session);
-                JSONValue root;
-                root["sessions"] = list;
-                root["current"] = currentIndex;
-                const path = buildPath(opencodeStateDirectory(), "sessions.json");
-                writeFileAtomically(path, root.toString());
-                // Record the journal state this snapshot folded, so the next
+                writeThreadStore(sessions, currentIndex, loaded);
+                // Record the journal state this store folded, so the next
                 // start reads only the bytes appended since.
                 if (hasRuntime)
                     writeFoldedMarker(opencodeStateDirectory(), foldedSequence,
@@ -20909,6 +20949,36 @@ public final class OpenCodeRoot : VBox
             }
             catch (Exception error)
                 logError("persist sessions failed: " ~ error.msg);
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    /**
+     * One-time migration. The legacy snapshot was just parsed, so every
+     * conversation is already in memory and `loaded` is empty (all loaded).
+     * Write the per-conversation store now, off the UI thread, so the next
+     * launch takes the fast path instead of re-parsing the whole snapshot.
+     * Runs through the same in-flight guard as `persistStateAsync`, so the two
+     * writers never touch the store at once.
+     */
+    private void migrateThreadStoreAsync()
+    {
+        synchronized (this)
+        {
+            if (_persistWriteInFlight) return;
+            _persistWriteInFlight = true;
+        }
+        auto sessions = _sessions.dup;
+        const currentIndex = _current;
+        auto worker = new Thread({
+            scope (exit)
+            {
+                synchronized (this) _persistWriteInFlight = false;
+            }
+            try writeThreadStore(sessions, currentIndex, null);
+            catch (Exception error)
+                logError("conversation store migration failed: " ~ error.msg);
         });
         worker.isDaemon = true;
         worker.start();
@@ -21094,7 +21164,103 @@ public final class OpenCodeRoot : VBox
         rename(temporary, path);
     }
 
-    private static JSONValue sessionToJson(const ref ChatSession session)
+    private static JSONValue messageToJson(const ref ChatMessage message)
+    {
+        JSONValue messageJson;
+        if (message.id.length > 0)
+            messageJson["id"] = message.id;
+        if (message.parentId.length > 0)
+            messageJson["parentId"] = message.parentId;
+        messageJson["role"] = message.role;
+        messageJson["content"] = message.content;
+        if (message.reasoning.length > 0)
+            messageJson["reasoning"] = message.reasoning;
+        if (message.time.length > 0)
+            messageJson["time"] = message.time;
+        if (message.failed)
+            messageJson["failed"] = true;
+        if (message.finishReason.length > 0)
+            messageJson["finishReason"] = message.finishReason;
+        if (message.internal)
+            messageJson["internal"] = true;
+        if (message.contextCompacted)
+            messageJson["contextCompacted"] = true;
+        if (message.totalTokens > 0 || message.completionTokens > 0)
+        {
+            messageJson["promptTokens"] = message.promptTokens;
+            messageJson["completionTokens"] = message.completionTokens;
+            messageJson["totalTokens"] = message.totalTokens;
+        }
+        if (message.tokensPerSecondTenths > 0)
+            messageJson["tokensPerSecondTenths"] =
+                message.tokensPerSecondTenths;
+        if (message.toolCalls.length > 0)
+        {
+            JSONValue calls = JSONValue(string[].init);
+            foreach (call; message.toolCalls)
+            {
+                JSONValue callJson;
+                callJson["id"] = call.id;
+                callJson["name"] = call.name;
+                callJson["arguments"] = call.arguments;
+                calls.array ~= callJson;
+            }
+            messageJson["toolCalls"] = calls;
+        }
+        if (message.toolCallId.length > 0)
+            messageJson["toolCallId"] = message.toolCallId;
+        if (message.toolName.length > 0)
+            messageJson["toolName"] = message.toolName;
+        if (message.toolArgs.length > 0)
+            messageJson["toolArgs"] = message.toolArgs;
+        // File-mutating tools carry a computed diff. It must survive a
+        // restart: without it an expanded edit loses its green/red `+N -M`
+        // counters and its line-numbered unified body (the old behavior
+        // showed only the one-line tool summary).
+        if (message.diffAdditions > 0)
+            messageJson["diffAdditions"] = message.diffAdditions;
+        if (message.diffDeletions > 0)
+            messageJson["diffDeletions"] = message.diffDeletions;
+        if (message.toolDiff.length > 0)
+            messageJson["toolDiff"] = message.toolDiff;
+        // The tool's wall-clock duration must also survive a restart, so a
+        // reloaded transcript still shows how long each command took.
+        if (message.toolElapsedMs > 0)
+            messageJson["toolElapsedMs"] = message.toolElapsedMs;
+        // Inline images are part of the conversation: a continued or
+        // replayed turn must still reach the model as a vision request.
+        if (message.images.length > 0)
+        {
+            JSONValue images = JSONValue(string[].init);
+            foreach (image; message.images)
+            {
+                JSONValue imageJson;
+                imageJson["mimeType"] = image.mimeType;
+                imageJson["base64Data"] = image.base64Data;
+                if (image.name.length > 0) imageJson["name"] = image.name;
+                images.array ~= imageJson;
+            }
+            messageJson["images"] = images;
+        }
+        // A finished turn's working time is stored on its opening user
+        // message, so the conversation timer survives a restart.
+        if (isFinite(message.workedSeconds) && message.workedSeconds > 0)
+            messageJson["workedSeconds"] = message.workedSeconds;
+        return messageJson;
+    }
+
+    private static JSONValue messagesToJson(const ChatMessage[] messages)
+    {
+        JSONValue array = JSONValue(string[].init);
+        foreach (message; messages)
+            array.array ~= messageToJson(message);
+        return array;
+    }
+
+    /// Session metadata without the message bodies. The startup index is built
+    /// from this, and messages live in a per-conversation file, so listing the
+    /// sidebar never parses a conversation's message graph.
+    private static JSONValue sessionMetaToJson(const ref ChatSession session)
     {
         JSONValue root;
         if (session.id.length > 0) root["id"] = session.id;
@@ -21156,93 +21322,318 @@ public final class OpenCodeRoot : VBox
             root["compactedThroughMessageId"] =
                 session.compactedThroughMessageId;
         }
-        JSONValue messages = JSONValue(string[].init);
-        foreach (message; session.messages)
-        {
-            JSONValue messageJson;
-            if (message.id.length > 0)
-                messageJson["id"] = message.id;
-            if (message.parentId.length > 0)
-                messageJson["parentId"] = message.parentId;
-            messageJson["role"] = message.role;
-            messageJson["content"] = message.content;
-            if (message.reasoning.length > 0)
-                messageJson["reasoning"] = message.reasoning;
-            if (message.time.length > 0)
-                messageJson["time"] = message.time;
-            if (message.failed)
-                messageJson["failed"] = true;
-            if (message.finishReason.length > 0)
-                messageJson["finishReason"] = message.finishReason;
-            if (message.internal)
-                messageJson["internal"] = true;
-            if (message.contextCompacted)
-                messageJson["contextCompacted"] = true;
-            if (message.totalTokens > 0 || message.completionTokens > 0)
-            {
-                messageJson["promptTokens"] = message.promptTokens;
-                messageJson["completionTokens"] = message.completionTokens;
-                messageJson["totalTokens"] = message.totalTokens;
-            }
-            if (message.tokensPerSecondTenths > 0)
-                messageJson["tokensPerSecondTenths"] =
-                    message.tokensPerSecondTenths;
-            if (message.toolCalls.length > 0)
-            {
-                JSONValue calls = JSONValue(string[].init);
-                foreach (call; message.toolCalls)
-                {
-                    JSONValue callJson;
-                    callJson["id"] = call.id;
-                    callJson["name"] = call.name;
-                    callJson["arguments"] = call.arguments;
-                    calls.array ~= callJson;
-                }
-                messageJson["toolCalls"] = calls;
-            }
-            if (message.toolCallId.length > 0)
-                messageJson["toolCallId"] = message.toolCallId;
-            if (message.toolName.length > 0)
-                messageJson["toolName"] = message.toolName;
-            if (message.toolArgs.length > 0)
-                messageJson["toolArgs"] = message.toolArgs;
-            // File-mutating tools carry a computed diff. It must survive a
-            // restart: without it an expanded edit loses its green/red `+N -M`
-            // counters and its line-numbered unified body (the old behavior
-            // showed only the one-line tool summary).
-            if (message.diffAdditions > 0)
-                messageJson["diffAdditions"] = message.diffAdditions;
-            if (message.diffDeletions > 0)
-                messageJson["diffDeletions"] = message.diffDeletions;
-            if (message.toolDiff.length > 0)
-                messageJson["toolDiff"] = message.toolDiff;
-            // The tool's wall-clock duration must also survive a restart, so a
-            // reloaded transcript still shows how long each command took.
-            if (message.toolElapsedMs > 0)
-                messageJson["toolElapsedMs"] = message.toolElapsedMs;
-            // Inline images are part of the conversation: a continued or
-            // replayed turn must still reach the model as a vision request.
-            if (message.images.length > 0)
-            {
-                JSONValue images = JSONValue(string[].init);
-                foreach (image; message.images)
-                {
-                    JSONValue imageJson;
-                    imageJson["mimeType"] = image.mimeType;
-                    imageJson["base64Data"] = image.base64Data;
-                    if (image.name.length > 0) imageJson["name"] = image.name;
-                    images.array ~= imageJson;
-                }
-                messageJson["images"] = images;
-            }
-            // A finished turn's working time is stored on its opening user
-            // message, so the conversation timer survives a restart.
-            if (isFinite(message.workedSeconds) && message.workedSeconds > 0)
-                messageJson["workedSeconds"] = message.workedSeconds;
-            messages.array ~= messageJson;
-        }
-        root["messages"] = messages;
         return root;
+    }
+
+    private static JSONValue sessionToJson(const ref ChatSession session)
+    {
+        auto root = sessionMetaToJson(session);
+        root["messages"] = messagesToJson(session.messages);
+        return root;
+    }
+
+    // -- on-demand conversation store -------------------------------------
+    //
+    // A large history is almost entirely message text (a 168 MB snapshot is
+    // ~47k messages and only ~22 MB of images), so parsing all of it before the
+    // window can show anything was the real startup cost. The index keeps every
+    // conversation's metadata in one small file; a conversation's messages live
+    // in their own file and are read only when that conversation is opened or
+    // continued.
+
+    /// Session ids whose messages have not been read from disk yet. A missing
+    /// key means "loaded" (new chats and the legacy eager load), so only the
+    /// index path inserts `false` entries.
+    private bool[string] _threadLoaded;
+    private bool _threadStoreActive;
+
+    private static string threadsDirectory()
+    {
+        return buildPath(opencodeStateDirectory(), "threads");
+    }
+
+    private static string threadsIndexPath()
+    {
+        return buildPath(opencodeStateDirectory(), "threads.index.json");
+    }
+
+    private static string threadFilePath(string id)
+    {
+        // Session ids are file-safe ("t-m<digits>-<n>"), but a hand-edited or
+        // legacy id could contain a separator, so keep only safe bytes.
+        auto name = appender!string();
+        foreach (ch; id)
+            name.put((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ? ch : '_');
+        return buildPath(threadsDirectory(),
+            (name.data.length > 0 ? name.data : "unnamed") ~ ".json");
+    }
+
+    private void ensureThreadLoaded(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return;
+        ensureThreadLoadedById(_sessions[index].id);
+    }
+
+    private void ensureThreadLoadedById(string id)
+    {
+        if (id.length == 0) return;
+        auto flag = id in _threadLoaded;
+        if (flag is null || *flag) return;
+        *flag = true;
+        if (!_threadStoreActive) return;
+        foreach (ref session; _sessions)
+            if (session.id == id)
+            {
+                // A conversation that already has messages was materialized in
+                // memory (a new chat, or a journal merge); never overwrite it.
+                if (session.messages.length > 0) return;
+                loadThreadMessages(session);
+                return;
+            }
+    }
+
+    private void loadThreadMessages(ref ChatSession session)
+    {
+        const path = threadFilePath(session.id);
+        if (!exists(path)) return;
+        try
+        {
+            auto value = parseJSON(readText(path));
+            if (value.type != JSONType.object) return;
+            if (auto messages = "messages" in value.object)
+                parseMessagesJson(*messages, session);
+        }
+        catch (Exception error)
+            logError("could not read conversation " ~ session.id ~ ": " ~
+                error.msg);
+    }
+
+    /// Read the metadata-only index, if present. Returns false when it is
+    /// missing or unreadable, so the caller can fall back to the legacy
+    /// snapshot parse and migrate on the next save.
+    private bool loadThreadStore()
+    {
+        const indexPath = threadsIndexPath();
+        if (!exists(indexPath)) return false;
+        JSONValue value;
+        try value = parseJSON(readText(indexPath));
+        catch (Exception error)
+        {
+            // A damaged primary may still have the previous good copy beside
+            // it; without a readable index the legacy snapshot is used instead.
+            const backup = indexPath ~ ".bak";
+            if (!exists(backup)) { logError("could not read the conversation index: " ~ error.msg); return false; }
+            try value = parseJSON(readText(backup));
+            catch (Exception backupError)
+            {
+                logError("could not read the conversation index: " ~
+                    backupError.msg);
+                return false;
+            }
+        }
+        if (value.type != JSONType.object) return false;
+        if (auto versionField = "version" in value.object)
+            if (versionField.type == JSONType.integer &&
+                versionField.integer != 2) return false;
+        auto sessionsField = "sessions" in value.object;
+        if (sessionsField is null || sessionsField.type != JSONType.array)
+            return false;
+        foreach (sessionValue; sessionsField.array)
+        {
+            if (sessionValue.type != JSONType.object) continue;
+            ChatSession session;
+            parseSessionMetaJson(sessionValue, session);
+            if (session.projectId.length == 0)
+                session.projectId = sandboxProjectId;
+            _sessions ~= session;
+        }
+        _threadLoaded = null;
+        foreach (session; _sessions)
+            if (session.id.length > 0)
+                _threadLoaded[session.id] = false;
+        _threadStoreActive = true;
+        int current = -1;
+        if (auto currentField = "current" in value.object)
+            if (currentField.type == JSONType.integer)
+                current = cast(int) currentField.integer;
+        string currentId;
+        if (auto idField = "currentId" in value.object)
+            if (idField.type == JSONType.string) currentId = idField.str;
+        if (currentId.length > 0)
+            foreach (i, session; _sessions)
+                if (session.id == currentId) { current = cast(int) i; break; }
+        if (current < 0 || current >= cast(int) _sessions.length)
+            current = _sessions.length > 0 ? 0 : -1;
+        _current = current;
+        return true;
+    }
+
+    /// Metadata fields of one session object, matching `sessionMetaToJson`.
+    private static void parseSessionMetaJson(JSONValue sessionValue,
+        ref ChatSession session)
+    {
+        if (auto field = "id" in sessionValue.object)
+            session.id = field.str;
+        if (auto field = "title" in sessionValue.object)
+            session.title = field.str;
+        if (auto field = "model" in sessionValue.object)
+            session.model = field.str;
+        if (auto field = "thinking" in sessionValue.object)
+            session.thinking = field.type == JSONType.true_;
+        if (auto field = "project" in sessionValue.object)
+            session.projectId = field.str;
+        if (auto field = "objective" in sessionValue.object)
+            session.objective = field.str;
+        if (auto field = "taskStatus" in sessionValue.object)
+            session.taskStatus = field.str;
+        if (auto field = "turnStatus" in sessionValue.object)
+            session.turnStatus = field.str;
+        if (auto field = "unread" in sessionValue.object)
+            session.unread = field.type == JSONType.true_;
+        if (auto field = "verificationStatus" in sessionValue.object)
+            session.verificationStatus = field.str;
+        if (auto field = "taskSteps" in sessionValue.object)
+            if (field.type == JSONType.array)
+                foreach (item; field.array)
+                {
+                    if (item.type != JSONType.object) continue;
+                    TaskStep step;
+                    if (auto f = "text" in item.object)
+                        if (f.type == JSONType.string) step.text = f.str;
+                    if (auto f = "status" in item.object)
+                        if (f.type == JSONType.string) step.status = f.str;
+                    if (step.text.length > 0) session.taskSteps ~= step;
+                }
+        if (auto field = "nestedPlans" in sessionValue.object)
+            session.nestedPlans = nestedPlansFromJson(*field,
+                session.taskSteps.length);
+        if (auto field = "queuedGuidance" in sessionValue.object)
+            if (field.type == JSONType.array)
+                foreach (item; field.array)
+                    if (item.type == JSONType.string)
+                        session.queuedGuidance ~= item.str;
+        if (auto field = "queuedFollowUps" in sessionValue.object)
+            if (field.type == JSONType.array)
+                foreach (item; field.array)
+                    if (item.type == JSONType.string)
+                        session.queuedFollowUps ~= item.str;
+        if (auto field = "activeLeaf" in sessionValue.object)
+            session.activeLeafId = field.str;
+        if (auto field = "draft" in sessionValue.object)
+            if (field.type == JSONType.string) session.draft = field.str;
+        if (auto field = "updatedAt" in sessionValue.object)
+            if (field.type == JSONType.integer && field.integer > 0)
+                session.updatedAt = field.integer;
+        if (auto field = "compactionSummary" in sessionValue.object)
+            if (field.type == JSONType.string)
+                session.compactionSummary = field.str;
+        if (auto field = "compactedThroughMessageId" in sessionValue.object)
+            if (field.type == JSONType.string)
+                session.compactedThroughMessageId = field.str;
+    }
+
+    /// Message fields of one conversation's `messages` array, matching
+    /// `messageToJson`.
+    private static void parseMessagesJson(JSONValue field,
+        ref ChatSession session)
+    {
+        if (field.type != JSONType.array) return;
+        foreach (messageValue; field.array)
+        {
+            if (messageValue.type != JSONType.object) continue;
+            ChatMessage message;
+            if (auto f = "id" in messageValue.object)
+                message.id = f.str;
+            if (auto f = "parentId" in messageValue.object)
+                message.parentId = f.str;
+            if (auto f = "role" in messageValue.object)
+                message.role = f.str;
+            if (auto f = "content" in messageValue.object)
+                message.content = f.str;
+            if (auto f = "reasoning" in messageValue.object)
+                message.reasoning = f.str;
+            if (auto f = "time" in messageValue.object)
+                message.time = f.str;
+            if (auto f = "failed" in messageValue.object)
+                message.failed = f.type == JSONType.true_;
+            if (auto f = "finishReason" in messageValue.object)
+                if (f.type == JSONType.string) message.finishReason = f.str;
+            if (auto f = "internal" in messageValue.object)
+                message.internal = f.type == JSONType.true_;
+            if (auto f = "contextCompacted" in messageValue.object)
+                message.contextCompacted = f.type == JSONType.true_;
+            if (auto f = "promptTokens" in messageValue.object)
+                if (f.type == JSONType.integer)
+                    message.promptTokens = cast(int) f.integer;
+            if (auto f = "completionTokens" in messageValue.object)
+                if (f.type == JSONType.integer)
+                    message.completionTokens = cast(int) f.integer;
+            if (auto f = "totalTokens" in messageValue.object)
+                if (f.type == JSONType.integer)
+                    message.totalTokens = cast(int) f.integer;
+            if (auto f = "tokensPerSecondTenths" in messageValue.object)
+                if (f.type == JSONType.integer)
+                    message.tokensPerSecondTenths = cast(int) f.integer;
+            if (auto f = "toolCallId" in messageValue.object)
+                message.toolCallId = f.str;
+            if (auto f = "toolName" in messageValue.object)
+                message.toolName = f.str;
+            if (auto f = "toolArgs" in messageValue.object)
+                message.toolArgs = f.str;
+            if (auto f = "diffAdditions" in messageValue.object)
+                if (f.type == JSONType.integer)
+                    message.diffAdditions = cast(int) f.integer;
+            if (auto f = "diffDeletions" in messageValue.object)
+                if (f.type == JSONType.integer)
+                    message.diffDeletions = cast(int) f.integer;
+            if (auto f = "toolDiff" in messageValue.object)
+                message.toolDiff = f.str;
+            if (auto f = "toolElapsedMs" in messageValue.object)
+                if (f.type == JSONType.integer)
+                    message.toolElapsedMs = cast(long) f.integer;
+            if (auto f = "workedSeconds" in messageValue.object)
+            {
+                if (f.type == JSONType.integer)
+                    message.workedSeconds = cast(double) f.integer;
+                else if (f.type == JSONType.float_)
+                    message.workedSeconds = f.floating;
+            }
+            if (auto f = "images" in messageValue.object)
+            {
+                if (f.type == JSONType.array)
+                    foreach (imageValue; f.array)
+                    {
+                        if (imageValue.type != JSONType.object) continue;
+                        ChatImageAttachment image;
+                        if (auto g = "mimeType" in imageValue.object)
+                            image.mimeType = g.str;
+                        if (auto g = "base64Data" in imageValue.object)
+                            image.base64Data = g.str;
+                        if (auto g = "name" in imageValue.object)
+                            image.name = g.str;
+                        if (image.base64Data.length > 0)
+                            message.images ~= image;
+                    }
+            }
+            if (auto f = "toolCalls" in messageValue.object)
+            {
+                if (f.type == JSONType.array)
+                    foreach (callValue; f.array)
+                    {
+                        if (callValue.type != JSONType.object) continue;
+                        OpenCodeToolCall call;
+                        if (auto c = "id" in callValue.object)
+                            call.id = c.str;
+                        if (auto c = "name" in callValue.object)
+                            call.name = c.str;
+                        if (auto c = "arguments" in callValue.object)
+                            call.arguments = c.str;
+                        message.toolCalls ~= call;
+                    }
+            }
+            session.messages ~= message;
+        }
     }
 
     /// Snapshot files worth loading: the canonical state and its recovery copy
@@ -21301,6 +21692,13 @@ public final class OpenCodeRoot : VBox
 
     private void startSnapshotPreparse()
     {
+        // When the per-conversation store exists, restoreSessions never reads
+        // the monolithic snapshot, so do not parse it in the background.
+        if (exists(threadsIndexPath()))
+        {
+            _snapshotParseDone = true;
+            return;
+        }
         const candidates = snapshotCandidates();
         ulong totalBytes;
         foreach (candidate; candidates)
@@ -21354,6 +21752,89 @@ public final class OpenCodeRoot : VBox
             logInfo("restore phase: " ~ what ~ " " ~
                 to!string((now - restoreMark).total!"msecs") ~ " ms");
             restoreMark = now;
+        }
+        _threadLoaded = null;
+        _threadStoreActive = false;
+        // Fast path: a per-session store written by a previous run. Every
+        // conversation's metadata comes from the small index and only the
+        // current conversation's messages are read, so a large history no
+        // longer parses every message of every chat before the window shows
+        // anything.
+        if (loadThreadStore())
+        {
+            restorePhase("thread index");
+            if (_current >= 0) ensureThreadLoaded(_current);
+            restorePhase("current conversation");
+            const resumedCurrentId = _current >= 0
+                ? _sessions[_current].id : "";
+            // The event journal is the recovery authority. Merge only the
+            // events appended since the snapshot, using the checkpoint offset.
+            if (_runtime !is null)
+            {
+                ulong foldedSequence;
+                ulong foldedOffset;
+                const latest = _runtime.latestSequence();
+                if (!readFoldedMarker(opencodeStateDirectory(), foldedSequence,
+                        foldedOffset) || foldedSequence < latest)
+                {
+                    const events = _runtime.eventsFrom(foldedOffset);
+                    foreach (deletedId; deletedAgentRuntimeThreadIds(events))
+                        foreach_reverse (index; 0 .. _sessions.length)
+                            if (_sessions[index].id == deletedId)
+                                _sessions = _sessions[0 .. index] ~
+                                    _sessions[index + 1 .. $];
+                    foreach (session; projectAgentRuntimeEvents(events))
+                    {
+                        if (session.id.length > 0)
+                            ensureThreadLoadedById(session.id);
+                        mergeJournalSession(session);
+                    }
+                }
+            }
+            restorePhase("journal merge");
+            // Re-resolve the selection by id: a journal delete above can shift
+            // every later index.
+            if (resumedCurrentId.length > 0)
+                foreach (i, session; _sessions)
+                    if (session.id == resumedCurrentId)
+                    {
+                        _current = cast(int) i;
+                        break;
+                    }
+            if (_current >= 0) ensureThreadLoaded(_current);
+            bool imageHistoryChanged;
+            foreach (ref session; _sessions)
+            {
+                if (session.messages.length == 0) continue;
+                ensureMessageGraph(session);
+                imageHistoryChanged |= pruneTranscriptImagePayloads(session);
+                imageHistoryChanged |= upgradeSavedScreenshots(session);
+                if (session.id.length == 0) session.id = newSessionId();
+            }
+            restorePhase("graph repair");
+            if (_sessions.length > 0)
+            {
+                if (_current < 0 || _current >= cast(int) _sessions.length)
+                    _current = 0;
+                _settings.model = _sessions[_current].model;
+                _settings.thinking = _sessions[_current].thinking;
+                _modelButton.setText(_settings.model);
+                refreshThinkingControl();
+                if (_input !is null && _sessions[_current].draft.length > 0)
+                    _input.setText(_sessions[_current].draft, false);
+                rebuildMessageColumn();
+            }
+            else
+                _current = -1;
+            if (_current >= 0 && _sessions[_current].unread)
+            {
+                _sessions[_current].unread = false;
+                markDirty();
+            }
+            restorePhase("selection + message column");
+            if (imageHistoryChanged) markDirty();
+            refreshUsageBadge();
+            return;
         }
         // Crash-safe saving renames sessions.json through .bak/.tmp in several
         // steps and also writes a per-message recovery copy, so a crash can
@@ -21745,6 +22226,12 @@ public final class OpenCodeRoot : VBox
         restorePhase("selection + message column");
         if (imageHistoryChanged) markDirty();
         refreshUsageBadge();
+        // Migration: this path only runs when no per-conversation store exists
+        // yet and every conversation is in memory, so write the index and
+        // per-conversation files now - off the UI thread - and the next launch
+        // takes the fast path.
+        markDirty();
+        migrateThreadStoreAsync();
     }
 
     private int effectiveContextLimit(string model)
@@ -21974,6 +22461,7 @@ public final class OpenCodeRoot : VBox
                 // Each conversation owns its own runtime: load it so the
                 // request streams through that chat's client, not the visible
                 // chat's. The visible context is restored after the loop.
+                ensureThreadLoaded(index);
                 loadRuntime(index);
                 appendQueuedGuidance(_sessions[index]);
                 ChatMessage recovery;

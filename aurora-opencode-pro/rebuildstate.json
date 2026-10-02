@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply startup fix: parse conversation snapshots off the UI thread so the window's UI paints immediately instead of freezing ~7s on the 168MB sessions.json parse.",
+  "reason": "Add off-thread one-time migration write so the per-session conversation store is created at launch instead of waiting for a debounced save that the busy turn blocks.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 10:00:33.8767832",
-  "finishedAt": "2026-10-02 10:01:08.5094792",
-  "durationMs": 34632,
+  "startedAt": "2026-10-02 10:36:06.9164509",
+  "finishedAt": "2026-10-02 10:37:09.8473196",
+  "durationMs": 62930,
   "exitCode": 0,
   "errors": []
 }
