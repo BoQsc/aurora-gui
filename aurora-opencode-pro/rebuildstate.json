@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply smaller chat message text size (opencodeFontChat)",
+  "reason": "Apply unified collapsible-row indentation (padH 22 -> 10)",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 09:22:55.6131641",
-  "finishedAt": "2026-10-02 09:23:55.8565782",
-  "durationMs": 60242,
+  "startedAt": "2026-10-02 09:33:27.2018572",
+  "finishedAt": "2026-10-02 09:34:08.2434632",
+  "durationMs": 41041,
   "exitCode": 0,
   "errors": []
 }

@@ -4040,11 +4040,9 @@ private final class TurnNest : VBox
 /// (with its diff) once the tool reports back.
 private final class LiveToolRow : Widget
 {
-    // Match MessageBubble/ToolGroupBubble insets so a live row shares the
-    // reading column's left edge and leaves the same 6px above and below.
-    // Indented ~12px past the prose edge so tool activity reads as a level
-    // below the assistant's own text.
-    private static immutable int padH = 22;
+    // Match MessageBubble's insets so every transcript row shares one left
+    // edge and the same 6px above and below.
+    private static immutable int padH = 10;
     private static immutable int padV = 6;
     // The preview is capped so a huge `write` body can never make the row
     // unbounded or stall a frame.
@@ -4335,10 +4333,8 @@ private final class ActivityRow : Widget
     private bool _live;
 
     // Same insets as every other transcript row so the gap above and below a
-    // stacked collapsible row stays uniform.
-    // Indented past the prose edge so the live activity row sits under the
-    // assistant text rather than level with it.
-    private static immutable int padH = 22;
+    // stacked collapsible row stays uniform and every row shares one left edge.
+    private static immutable int padH = 10;
     private static immutable int padV = 6;
 
     this()
@@ -5319,9 +5315,9 @@ private final class ToolGroupBubble : Widget
     // Mirror MessageBubble's text insets (its padH/padV are private) so the
     // action header sits on the same baseline and left edge as the sibling
     // Thinking / tool rows instead of being flush to the bubble edge.
-    // Indented ~12px past the prose edge: assistant text starts at the main
-    // text edge, while grouped tool operations step in to show hierarchy.
-    private static immutable int padH = 22;
+    // Same left inset as MessageBubble so the group header and its expanded
+    // children line up with the sibling Thinking / tool rows.
+    private static immutable int padH = 10;
     private static immutable int padV = 6;
     // Expanded children sit at the same left edge as the header text above
     // them; `onLayout` places them at `padH`, matching MessageBubble's text.
