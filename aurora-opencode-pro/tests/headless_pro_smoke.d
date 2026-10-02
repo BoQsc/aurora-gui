@@ -1422,7 +1422,16 @@ int main(string[] args)
     root.addConversationForTesting(["user"], ["keep working"]);
     root.startTurnClockForTesting();
     root.beginStreamForTesting();
+    // Regression: an in-progress reply with no text yet must say what is going
+    // on, never render as an empty block.
+    assert(root.liveReplyStatusForTesting().length > 0,
+        "Empty live reply did not show a phase placeholder");
     root.streamReasoningForTesting("still working");
+    // Regression: streamed reasoning lands in the bubble's append buffer, so the
+    // Thinking header must be gated on buffered text too, or the live
+    // in-progress message renders no reasoning.
+    assert(root.thinkingHeaderCountForTesting() >= 1,
+        "Live streamed reasoning did not render a Thinking header");
     root.setInputForTesting("unsent text must remain unsent");
     root.clickSendButtonForTesting();
     assert(!root.turnBusyForTesting(), "Stop did not release the active turn");

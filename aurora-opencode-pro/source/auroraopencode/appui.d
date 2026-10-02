@@ -359,6 +359,10 @@ private final class MessageBubble : Widget
     private dstring _thinking;
     private dstring _content;
     private bool _streaming;
+    // Muted phase line ("Thinking…", "Waiting for the model…", "Reading…")
+    // drawn when this is the live assistant reply and it has no text yet, so an
+    // in-progress turn is never a blank block in the transcript.
+    private string _statusLabel;
     // Prose immediately followed by its own compact action group needs less
     // bottom inset: the markdown line box already carries enough descent, and
     // keeping the full inset made this transition look one row-gap too wide.
@@ -888,10 +892,35 @@ private final class MessageBubble : Widget
         return _thinkingCollapsed;
     }
 
+    /// Whether this bubble has any reasoning to show, including fragments that
+    /// are still buffered and not yet folded into `_thinking`. `appendThinking`
+    /// keeps streamed fragments in `_thinkingBuffered`/`_thinkingSpill` until a
+    /// layout actually reads them, so every render/hover/click gate must test
+    /// this instead of `_thinking` alone: otherwise a live in-progress reply
+    /// (whose fragments are still buffered) renders no Thinking header at all.
+    private bool hasThinking() const
+    {
+        return _thinking.length > 0 || _thinkingBuffered.length > 0 ||
+            _thinkingSpill.length > 0;
+    }
+
+    /// An in-progress assistant reply with no text yet must not render as an
+    /// empty block: it shows what the agent is doing instead.
+    private bool livePlaceholderVisible() const
+    {
+        return _streaming && _role == "assistant" && _content.length == 0 &&
+            !hasThinking();
+    }
+
+    private string livePlaceholderText() const
+    {
+        return _statusLabel.length > 0 ? _statusLabel : "Thinking…";
+    }
+
     /// Test-only: whether a reasoning header is present on this bubble.
     public bool hasThinkingForTesting() const
     {
-        return _thinking.length > 0;
+        return hasThinking();
     }
 
     /// Test-only: the reasoning text held in this bubble's Thinking block, so a
@@ -1231,13 +1260,13 @@ private final class MessageBubble : Widget
     public bool hoverCopyVisibleForTesting() const
     {
         return _pointerInside && !_hidden && _role != "tool" && !_failed &&
-            _thinking.length == 0 && _content.length > 0;
+            !hasThinking() && _content.length > 0;
     }
 
     /// Test-only: whether the hover row would draw its Edit pill.
     public bool hoverEditVisibleForTesting() const
     {
-        return _pointerInside && !_hidden && !_failed && _thinking.length == 0 &&
+        return _pointerInside && !_hidden && !_failed && !hasThinking() &&
             _role == "user" && _actionRect.height == 0;
     }
 
@@ -1278,6 +1307,21 @@ private final class MessageBubble : Widget
         _contentCacheCount = 0;
         _contentCacheNext = 0;
         invalidate();
+    }
+
+    /// The phase line ("Thinking…", "Waiting for the model…", "Reading…") shown
+    /// in place of an empty live reply (see `livePlaceholderText`).
+    void setStatusLabel(string value)
+    {
+        if (_statusLabel == value) return;
+        _statusLabel = value;
+        invalidate();
+    }
+
+    /// Test-only: the phase line carried by this live reply.
+    public string statusLabelForTesting() const
+    {
+        return _statusLabel;
     }
 
     private TextLayout shapedThinking(int width, size_t budgetDchars = 0)
@@ -1570,7 +1614,7 @@ private final class MessageBubble : Widget
         const bottomPad = _compactBottom && _role == "assistant" &&
             _content.length > 0 && !_failed && !footerVisible() ? 0 : padV;
         int height = padV + bottomPad;
-        if (_thinking.length > 0)
+        if (hasThinking())
         {
             // Thinking header (slim) always; full reasoning only when expanded.
             // A collapsed "Thinking" row is a plain one-line transcript row, so
@@ -1606,13 +1650,15 @@ private final class MessageBubble : Widget
         }
         else if (_role == "assistant")
         {
-            if (_thinking.length > 0 && _content.length > 0)
+            if (hasThinking() && _content.length > 0)
                 height += thinkingContentGap;
             if (_content.length > 0)
                 // Markdown line boxes use fractional metrics. Flooring the
                 // total clipped the last pixel row of some fonts and made the
                 // next transcript row appear to cut into the reply.
                 height += cast(int) ceil(markdownFor(innerWidth).height);
+            else if (livePlaceholderVisible())
+                height += fontPixelSize(1) + 4;
         }
         else
         {
@@ -1708,7 +1754,7 @@ private final class MessageBubble : Widget
         const innerWidth = maxInt(1, width - 2 * padH);
         int y = padV;
 
-        if (_thinking.length > 0)
+        if (hasThinking())
         {
             drawThinkingHeader(canvas, innerWidth, y);
             y += thinkingHeaderHeight();
@@ -1731,7 +1777,7 @@ private final class MessageBubble : Widget
         _linkUrls.length = 0;
         _selSegments.length = 0;
 
-        if (_thinking.length > 0 && _content.length > 0)
+        if (hasThinking() && _content.length > 0)
             y += thinkingContentGap;
 
         const contentY = y;
@@ -1772,6 +1818,15 @@ private final class MessageBubble : Widget
                     drawSelection(canvas);
                     paintMarkdownGlyphs(canvas, composition, padH, contentY);
                     y = contentY + cast(int) ceil(composition.height);
+                }
+                else if (livePlaceholderVisible())
+                {
+                    auto layout = canvas.layoutText(
+                        toUTF32(livePlaceholderText()), 1, FontRole.ui,
+                        cast(FontFace) palette.uiFont, innerWidth, true);
+                    canvas.drawLayout(Point(padH, contentY), layout,
+                        opencodeMuted);
+                    y = contentY + layout.measuredSize().height;
                 }
             }
             else
@@ -2793,7 +2848,7 @@ private final class MessageBubble : Widget
     private bool hoverActionsEligible() const
     {
         if (_hidden || _role == "tool" || _failed) return false;
-        if (_thinking.length > 0) return false;
+        if (hasThinking()) return false;
         if (_content.length > 0) return true;
         return _role == "user" && _actionRect.height == 0;
     }
@@ -2937,7 +2992,7 @@ private final class MessageBubble : Widget
         // path.
         const overPath = _role == "tool" && _pathTooltipText.length > 0 &&
             overCollapse;
-        const overThinking = _thinking.length > 0 &&
+        const overThinking = hasThinking() &&
             _thinkingRect.contains(event.position);
         int overVersion;
         if (_versionTotal > 1)
@@ -3010,7 +3065,7 @@ private final class MessageBubble : Widget
             return false;
         }
         if (event.button != MouseButton.left) return false;
-        if (_thinking.length > 0 && _thinkingRect.contains(event.position))
+        if (hasThinking() && _thinkingRect.contains(event.position))
         {
             ChatScrollView.holdPositionForNextLayout();
             setThinkingCollapsed(!_thinkingCollapsed);
@@ -13561,6 +13616,9 @@ public final class OpenCodeRoot : VBox
         const wasPresent = _activityRow.parent() !is null;
         _activityRow.setLabel(label);
         _activityRow.setLive(label.length > 0);
+        // The live reply mirrors the phase so an empty in-progress bubble says
+        // what is happening instead of rendering as a blank block.
+        if (_streamBubble !is null) _streamBubble.setStatusLabel(label);
         if (_current < 0) return;
         const present = activityRowWanted();
         // Only rebuild when the row enters or leaves the transcript; a phase
@@ -13596,6 +13654,9 @@ public final class OpenCodeRoot : VBox
         const wasPresent = _activityRow.parent() !is null;
         _activityRow.setLabel("");
         _activityRow.setLive(false);
+        // Drop the mirrored phase; `livePlaceholderText` then falls back to a
+        // generic "Thinking…" while the reply is still empty.
+        if (_streamBubble !is null) _streamBubble.setStatusLabel("");
         if (wasPresent && _current >= 0 && viewingTurnOwner())
             rebuildMessageColumn();
     }
@@ -23934,6 +23995,13 @@ public final class OpenCodeRoot : VBox
     public string activityTextForTesting()
     {
         return _activityRow is null ? "" : _activityRow.textForTesting();
+    }
+
+    /// Test-only: the phase line carried by the live reply bubble ("" when there
+    /// is no live reply). Proves an empty in-progress reply is never blank.
+    public string liveReplyStatusForTesting() const
+    {
+        return _streamBubble is null ? "" : _streamBubble.statusLabelForTesting();
     }
 
     /// Test-only: the live activity row's rendered text including the elapsed
