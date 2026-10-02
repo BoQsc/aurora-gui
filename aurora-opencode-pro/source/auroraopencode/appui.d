@@ -7277,21 +7277,38 @@ private final class SearchChatsField : Widget
 
 /// Flat × that fills the field's own background behind it, so any text scrolled
 /// beneath the button never shows through and the glyph reads as part of the
-/// input rather than a floating control over it.
+/// input rather than a floating control over it. The cross is drawn as two
+/// lines rather than via Button's text path, which truncates a centered glyph
+/// to "..." inside a square this small (its inner text rect is only a few px).
 private final class FilterClearButton : Button
 {
     this()
     {
-        super("×");
+        super("");
         setFlat(true);
         setId("oc-filter-clear");
     }
 
     protected override void onPaint(ref Canvas canvas)
     {
-        canvas.fillRect(Rect(0, 0, bounds().width, bounds().height),
-            theme().fieldBackground);
-        super.onPaint(canvas);
+        const palette = theme();
+        const rect = Rect(0, 0, bounds().width, bounds().height);
+        canvas.fillRect(rect, palette.fieldBackground);
+        if (pressed() || hovered())
+        {
+            const background = pressed() ? palette.buttonPressed :
+                palette.buttonHover;
+            canvas.fillRoundedRect(rect, minInt(4, rect.width / 4), background);
+        }
+
+        const cx = rect.width / 2;
+        const cy = rect.height / 2;
+        const arm = maxInt(3, minInt(rect.width, rect.height) / 4);
+        const ink = enabled() ? palette.text : palette.disabled;
+        canvas.drawLine(Point(cx - arm, cy - arm), Point(cx + arm, cy + arm),
+            ink, 2);
+        canvas.drawLine(Point(cx - arm, cy + arm), Point(cx + arm, cy - arm),
+            ink, 2);
     }
 }
 

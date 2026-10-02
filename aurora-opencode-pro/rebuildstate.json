@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Add inline × clear button inside the sidebar \"Search chats\" field (source/auroraopencode/appui.d).",
+  "reason": "Draw the search-field clear button's × as vector lines (Button text path truncated it to \"...\" in the small square).",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 10:48:51.2965101",
-  "finishedAt": "2026-10-02 10:49:52.1519307",
-  "durationMs": 60854,
+  "startedAt": "2026-10-02 10:55:10.6572626",
+  "finishedAt": "2026-10-02 10:55:50.1768558",
+  "durationMs": 39519,
   "exitCode": 0,
   "errors": []
 }
