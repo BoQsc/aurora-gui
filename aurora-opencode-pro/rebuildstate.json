@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy current source (DeepSeek peak/off-peak module + appui wiring) after reverting the stray field; then commit all as requested.",
+  "reason": "Recompile after fixing the isFinite(long) type error in the live-delta guard.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 12:26:24.7100573",
-  "finishedAt": "2026-10-02 12:27:07.1389505",
-  "durationMs": 42428,
+  "startedAt": "2026-10-02 13:50:36.4439147",
+  "finishedAt": "2026-10-02 13:51:16.0505062",
+  "durationMs": 39606,
   "exitCode": 0,
   "errors": []
 }

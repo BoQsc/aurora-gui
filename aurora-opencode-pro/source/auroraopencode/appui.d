@@ -16867,36 +16867,70 @@ public final class OpenCodeRoot : VBox
     private void freezeTurnTiming()
     {
         if (!_turnTiming) return;
-        if (_turnUserId.length > 0)
-        {
-            const duration = (MonoTime.currTime - _turnStartedAt).total!"seconds";
-            _turnDurations[_turnUserId] = duration;
-            // Stamp the total on the user message that opened the turn. The
-            // conversation timer sums those stamps, and overwriting (rather than
-            // adding) means regenerating a turn replaces its old time instead of
-            // double-counting it.
-            if (_turnSessionIndex >= 0 &&
-                _turnSessionIndex < cast(int) _sessions.length)
-            {
-                auto session = &_sessions[_turnSessionIndex];
-                foreach (ref message; session.messages)
-                    if (message.id == _turnUserId)
-                    {
-                        message.workedSeconds = duration;
-                        break;
-                    }
-                markDirty();
-            }
-        }
+        // Clear the flag first so every read below (including the badge refresh)
+        // sees the turn as settled, exactly as the old post-stamp assignment
+        // did, but also when the owner session has gone away.
         _turnTiming = false;
+        if (_turnSessionIndex < 0 ||
+            _turnSessionIndex >= cast(int) _sessions.length)
+        {
+            refreshTimerBadge(true);
+            return;
+        }
+        const duration = (MonoTime.currTime - _turnStartedAt).total!"seconds";
+        if (_turnUserId.length > 0)
+            _turnDurations[_turnUserId] = duration;
+        // Stamp the total on the user message that opened the turn. The
+        // conversation timer sums those stamps, and overwriting (rather than
+        // adding) means regenerating a turn replaces its old time instead of
+        // double-counting it. The message is normally found by id; when the
+        // clock was opened for a message that has since been pruned (or an id
+        // was never captured), fall back to the last real user message on the
+        // active path so the elapsed time is preserved instead of silently
+        // dropping out of the total and reading as a reset.
+        auto session = &_sessions[_turnSessionIndex];
+        size_t target = size_t.max;
+        if (_turnUserId.length > 0)
+            foreach (i, ref message; session.messages)
+                if (message.id == _turnUserId)
+                {
+                    target = i;
+                    break;
+                }
+        if (target == size_t.max)
+            foreach (i; activeMessagePath(*session))
+                if (session.messages[i].role == "user" &&
+                    !session.messages[i].internal)
+                    target = i;
+        if (target != size_t.max)
+        {
+            session.messages[target].workedSeconds = duration;
+            markDirty();
+        }
         refreshTimerBadge(true);
     }
 
-    /// Start (or restart) the turn clock for a user-initiated request.
+    /// Start (or resume) the turn clock for a user-initiated request.
+    ///
+    /// A re-send of the *same* user turn (Retry, Regenerate, an automatic
+    /// re-send, or crash recovery) must not restart the clock: the footer timer
+    /// would drop back to the finished-turn total and read as a reset. Only a
+    /// genuinely new prompt, or a clock opened for another conversation, starts
+    /// a fresh turn; a clock still running for a different turn is frozen first
+    /// so its working time is folded into the accumulator, never lost.
     private void beginTurnTiming(int sessionIndex)
     {
+        const userId = activeTurnUserId(sessionIndex);
+        if (_turnTiming && sessionIndex == _turnSessionIndex &&
+            userId.length > 0 && userId == _turnUserId)
+        {
+            // Same turn: keep the running clock so elapsed time keeps adding up.
+            refreshTimerBadge(true);
+            return;
+        }
+        if (_turnTiming) freezeTurnTiming();
         _turnStartedAt = MonoTime.currTime;
-        _turnUserId = activeTurnUserId(sessionIndex);
+        _turnUserId = userId;
         _turnSessionIndex = sessionIndex;
         _turnTiming = true;
         refreshTimerBadge(true);
@@ -16944,7 +16978,10 @@ public final class OpenCodeRoot : VBox
         if (turnBelongsTo(sessionIndex))
         {
             const live = (MonoTime.currTime - _turnStartedAt).total!"seconds";
-            if (live > 0) total += live;
+            // An unset clock (or a skewed MonoTime) yields an absurd delta;
+            // ignore it rather than letting it poison the total. The upper
+            // bound is a single collapsed turn, far beyond any real one.
+            if (live > 0 && live < 10_000_000) total += live;
         }
         return total;
     }
