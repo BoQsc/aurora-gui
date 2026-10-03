@@ -6,8 +6,8 @@
  *       -ofbuild/headless_smoke.exe tests/headless_smoke.d shell32.lib winhttp.lib
  *
  * It builds a small ISO with the writer, loads it through the real GUI root,
- * drives layout/paint through the headless platform, asserts the browser
- * populated, and writes a screenshot for visual inspection.
+ * drives layout/paint through the headless platform, checks the one-button
+ * install view and the advanced view, and writes a screenshot.
  */
 module auroraiso_headless_smoke;
 
@@ -42,14 +42,14 @@ int main()
 
         WindowOptions options;
         options.title = "Aurora ISO";
-        options.width = 1280;
-        options.height = 900;
+        options.width = 980;
+        options.height = 720;
         options.renderer = RendererPreference.software;
         auto window = new GuiWindow(options, auroraIsoTheme());
         auto view = new IsoRoot(window);
         window.setRoot(view);
         auto driver = new UiTestDriver(window);
-        driver.resize(Size(1280, 900));
+        driver.resize(Size(980, 720));
         driver.paint();
         view.tickTree(0.02);
 
@@ -58,24 +58,31 @@ int main()
         driver.paint();
 
         const entries = view.browserCountForTesting();
-        stderr.writeln("loaded=", loaded, " entries=", entries,
-            " status=", view.statusTextForTesting());
-        stderr.writeln("side children=", view.sideChildCountForTesting(),
-            " scroll=", view.sideScrollBoundsForTesting(),
-            " content=", view.sideContentBoundsForTesting());
-        stderr.writeln("section=", view.firstSectionBoundsForTesting(),
-            " label=", view.firstSectionChildBoundsForTesting());
-
         const distroCount = view.distroCountForTesting();
+        const deviceCount = view.deviceCountForTesting();
         view.selectDistroForTesting(0);
         const distroUrl = view.downloadUrlForTesting();
-        stderr.writeln("distros=", distroCount, " firstUrl=", distroUrl);
+        const simpleVisible = !view.advancedVisibleForTesting();
+        stderr.writeln("loaded=", loaded, " entries=", entries,
+            " distros=", distroCount, " devices=", deviceCount,
+            " simple=", simpleVisible);
+        stderr.writeln("firstUrl=", distroUrl, " status=", view.statusTextForTesting());
 
+        // Screenshot the compact install view (the default).
         window.saveScreenshot("build/headless_smoke.png");
+
+        // Exercise the advanced toggle.
+        view.toggleAdvancedForTesting();
+        view.tickTree(0.02);
+        driver.paint();
+        const advancedShown = view.advancedVisibleForTesting();
+        stderr.writeln("advanced now=", advancedShown);
+        window.saveScreenshot("build/headless_advanced.png");
+
         window.close();
 
         const ok = loaded && entries == 3 && view.imageLoadedForTesting() &&
-            distroCount >= 6 &&
+            distroCount >= 6 && simpleVisible && advancedShown &&
             distroUrl == "https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso";
         stderr.writeln(ok ? "HEADLESS SMOKE PASSED" : "HEADLESS SMOKE FAILED");
         return ok ? 0 : 1;

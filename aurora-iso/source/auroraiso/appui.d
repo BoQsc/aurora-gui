@@ -1,27 +1,32 @@
 /**
  * Aurora ISO user interface.
  *
- * One window with an ISO browser on the left and action panels on the right:
- * image info, extraction, ISO creation, download, and USB preparation.
- * Long operations run on background `Job` threads so the UI stays responsive.
+ * The default view is deliberately minimal: pick a distribution, pick a USB
+ * drive, press one button. That single action downloads the official ISO when
+ * it is not cached locally, then writes the image to the physical drive (which
+ * gives the stick the installer's own filesystem and boot loader).
+ *
+ * Everything else (browse/extract an ISO, build an ISO, custom download,
+ * format-only, copy-files) lives behind the "Advanced" toggle.
  */
 module auroraiso.appui;
 
 import aurora;
+import auroraiso.disk : LayoutOptions;
 import auroraiso.distro;
 import auroraiso.download;
+import auroraiso.installflow;
 import auroraiso.iso;
 import auroraiso.job;
+import auroraiso.logging;
 import auroraiso.osutil;
 import auroraiso.usb;
 import std.algorithm : sort;
 import std.conv : to;
-import std.datetime : Clock;
-import std.file : exists, mkdirRecurse, removeFile = remove;
+import std.file : exists, getSize, mkdirRecurse, removeFile = remove;
 import std.format : format;
 import std.path : baseName, buildPath, dirName;
 import std.string : endsWith, strip, toLower;
-import std.process : environment;
 
 private immutable Color isoMuted = Color.fromHex(0x93a0ac);
 private immutable Color isoBorder = Color.fromHex(0x33404c);
@@ -29,18 +34,41 @@ private immutable Color isoAccent = Color.fromHex(0x39a0ff);
 private immutable Color isoWarn = Color.fromHex(0xffb454);
 private immutable Color isoPanel = Color.fromHex(0x181e24);
 
+/// Where the one-button install flow currently is.
+enum InstallPhase
+{
+    idle,
+    downloading,
+    installing
+}
+
 /// The application root widget.
 public final class IsoRoot : VBox
 {
     private GuiWindow _window;
 
-    // Browser state.
+    // Browser state (advanced view).
     private IsoImage _image;
     private string _imagePath;
     private string _currentDir = "/";
     private IsoNode[] _entries;
 
-    // Widgets.
+    // Simple install flow.
+    private VBox _installCard;
+    private VBox _advancedBox;
+    private Button _advancedToggle;
+    private ListView _distroList;
+    private DistroImage[] _distros;
+    private ListView _deviceList;
+    private UsbDevice[] _devices;
+    private CheckBox _deviceConfirm;
+    private CheckBox _makeDataPartition;
+    private CheckBox _useFromScratchLayout;
+    private Button _installButton;
+    private Label _wizardStatus;
+    private Label _adminLabel;
+
+    // Advanced widgets.
     private ListView _browser;
     private Label _pathLabel;
     private Label _countLabel;
@@ -56,39 +84,40 @@ public final class IsoRoot : VBox
     private CheckBox _createRockRidge;
     private TextField _downloadUrl;
     private TextField _downloadDest;
-    private ListView _distroList;
-    private DistroImage[] _distros;
-    private ListView _deviceList;
-    private UsbDevice[] _devices;
     private TextField _deviceFs;
-    private CheckBox _deviceConfirm;
-    private Label _adminLabel;
-    private ProgressBar _progress;
-    private Label _status;
-
-    private Job _job;
-    private IsoDownloader _downloader;
     private ScrollView _sideScroll;
     private VBox _sideColumn;
 
+    // Operations.
+    private Job _job;
+    private IsoDownloader _downloader;
+    private bool _downloadForInstall;
+    private InstallPhase _phase = InstallPhase.idle;
+    private string _installIso;
+    private uint _installDisk;
+    private string _installLabel;
+
+    private ProgressBar _progress;
+    private Label _status;
+
     this(GuiWindow window)
     {
-        super(8, Insets(10));
+        super(10, Insets(12));
         _window = window;
         buildUi();
-        setStatus("Open an ISO image, create one, or download a Linux distribution.");
         refreshDistros();
         refreshDevices();
         updateInfo();
         setBrowserEnabled(false);
+        setStatus("Pick a distribution, pick a USB drive, then press Install.");
     }
 
     // ----- UI construction ---------------------------------------------------
 
     private void buildUi()
     {
-        auto toolbar = add(new HBox(8, Insets(6)));
-        toolbar.layoutHints().preferredHeight = 52;
+        auto toolbar = add(new HBox(10, Insets(8)));
+        toolbar.layoutHints().preferredHeight = 54;
         toolbar.setBorder(isoBorder, 6);
 
         auto title = toolbar.add(new Label("Aurora ISO"));
@@ -98,10 +127,6 @@ public final class IsoRoot : VBox
         auto openButton = toolbar.add(new Button("Open ISO", IconKind.open));
         openButton.setId("iso-open");
         openButton.onClick = delegate() { openIsoDialog(); };
-
-        auto extractButton = toolbar.add(new Button("Extract All", IconKind.save));
-        extractButton.setId("iso-extract-all");
-        extractButton.onClick = delegate() { extractAllDialog(); };
 
         auto refreshButton = toolbar.add(new Button("Rescan USB", IconKind.refresh));
         refreshButton.setId("iso-refresh-usb");
@@ -113,19 +138,111 @@ public final class IsoRoot : VBox
         _adminLabel.setScale(1);
         _adminLabel.setColor(isoWarn);
 
-        auto content = add(new HBox(10));
-        content.layoutHints().flex = 1.0;
+        _advancedToggle = toolbar.add(new Button("Advanced", IconKind.settings));
+        _advancedToggle.setId("iso-advanced");
+        _advancedToggle.onClick = delegate() { toggleAdvanced(); };
 
-        buildBrowser(content);
-        buildSidePanel(content);
+        auto stack = add(new VBox(0));
+        stack.layoutHints().flex = 1.0;
+        _installCard = buildInstallCard(stack);
+        _advancedBox = buildAdvanced(stack);
+        _advancedBox.setVisible(false);
 
         auto statusRow = add(new HBox(8));
         statusRow.layoutHints().preferredHeight = 30;
         _progress = statusRow.add(new ProgressBar(0));
-        _progress.layoutHints().preferredWidth = 260;
+        _progress.layoutHints().preferredWidth = 240;
         _status = statusRow.add(new Label("Ready"));
         _status.setScale(1);
         _status.layoutHints().flex = 1.0;
+    }
+
+    private VBox buildInstallCard(Widget parent)
+    {
+        auto card = parent.add(new VBox(10, Insets(16)));
+        card.layoutHints().flex = 1.0;
+        card.setBorder(isoBorder, 8);
+
+        auto header = card.add(new Label("Install Linux to USB"));
+        header.setScale(3);
+        header.setColor(isoAccent);
+        auto subtitle = card.add(new Label(
+            "Choose a distribution and a USB drive, then press one button."));
+        subtitle.setScale(1);
+        subtitle.setColor(isoMuted);
+
+        auto step1Row = card.add(new HBox(8));
+        step1Row.layoutHints().preferredHeight = 30;
+        auto step1 = step1Row.add(new Label("1 · Distribution"));
+        step1.setScale(1);
+        step1.setColor(isoAccent);
+        step1Row.add(new Spacer());
+        auto deleteDownload = step1Row.add(new Button("Delete download", IconKind.close));
+        deleteDownload.setId("iso-distro-delete");
+        deleteDownload.onClick = delegate() { deleteDistroDownload(); };
+        _distroList = card.add(new ListView());
+        _distroList.setId("iso-distros");
+        _distroList.layoutHints().flex = 1.0;
+        _distroList.layoutHints().minHeight = 120;
+        _distroList.onSelectionChanged = delegate(int index) { previewDistro(index); };
+
+        auto step2Row = card.add(new HBox(8));
+        step2Row.layoutHints().preferredHeight = 30;
+        auto step2 = step2Row.add(new Label("2 · USB drive"));
+        step2.setScale(1);
+        step2.setColor(isoAccent);
+        step2Row.add(new Spacer());
+        auto rescan = step2Row.add(new Button("Rescan", IconKind.refresh));
+        rescan.onClick = delegate() { refreshDevices(); };
+        _deviceList = card.add(new ListView());
+        _deviceList.setId("iso-devices");
+        _deviceList.layoutHints().flex = 1.0;
+        _deviceList.layoutHints().minHeight = 100;
+
+        _deviceConfirm = card.add(new CheckBox(
+            "Erase and overwrite the selected USB drive", false));
+        _deviceConfirm.setId("iso-confirm");
+        _deviceConfirm.layoutHints().preferredHeight = 32;
+
+        _makeDataPartition = card.add(new CheckBox(
+            "Use leftover space as a data partition (exFAT)", true));
+        _makeDataPartition.setId("iso-data-partition");
+        _makeDataPartition.layoutHints().preferredHeight = 32;
+
+        _useFromScratchLayout = card.add(new CheckBox(
+            "Experimental: build partitions from scratch (no raw copy)", false));
+        _useFromScratchLayout.setId("iso-from-scratch");
+        _useFromScratchLayout.layoutHints().preferredHeight = 32;
+
+        _installButton = card.add(new Button("Download & Install to USB", IconKind.drive));
+        _installButton.setId("iso-install");
+        _installButton.layoutHints().preferredHeight = 52;
+        _installButton.onClick = delegate() { startInstall(); };
+
+        _wizardStatus = card.add(new Label(""));
+        _wizardStatus.setScale(1);
+        _wizardStatus.setColor(isoMuted);
+
+        return card;
+    }
+
+    private VBox buildAdvanced(Widget parent)
+    {
+        auto box = parent.add(new VBox(0));
+        box.layoutHints().flex = 1.0;
+        auto content = box.add(new HBox(10));
+        content.layoutHints().flex = 1.0;
+        buildBrowser(content);
+        buildSidePanel(content);
+        return box;
+    }
+
+    private void toggleAdvanced()
+    {
+        const show = !_advancedBox.visible();
+        _advancedBox.setVisible(show);
+        _installCard.setVisible(!show);
+        _advancedToggle.setText(show ? "Simple" : "Advanced");
     }
 
     private void buildBrowser(Widget parent)
@@ -162,14 +279,12 @@ public final class IsoRoot : VBox
         _sideScroll = scroll;
         _sideColumn = column;
 
-        // Image info.
         auto info = section(column, "Image");
         _infoVolume = infoLabel(info, "Volume: —");
         _infoFormat = infoLabel(info, "Format: —");
         _infoBoot = infoLabel(info, "Boot: —");
         _infoSize = infoLabel(info, "Size: —");
 
-        // Extraction.
         auto extract = section(column, "Extract & Open");
         auto extractRow = extract.add(new HBox(6));
         extractRow.layoutHints().preferredHeight = 40;
@@ -177,9 +292,8 @@ public final class IsoRoot : VBox
         allButton.onClick = delegate() { extractAllDialog(); };
         auto selectedButton = extractRow.add(new Button("Extract Selected…", IconKind.file));
         selectedButton.onClick = delegate() { extractSelectedDialog(); };
-        infoLabel(extract, "Tip: double-click a file to extract and open it.");
+        infoLabel(extract, "Double-click a file to extract and open it.");
 
-        // Create.
         auto create = section(column, "Create ISO from Folder");
         _createSource = fieldWithBrowse(create, "Source folder", delegate() {
             showFileDialog(this, folderOptions("Select source folder"),
@@ -201,32 +315,9 @@ public final class IsoRoot : VBox
         auto createButton = createRow.add(new Button("Create ISO", IconKind.newDocument));
         createButton.onClick = delegate() { startCreate(); };
 
-        // Official distributions.
-        auto distros = section(column, "Official Distributions");
-        _distroList = distros.add(new ListView());
-        _distroList.layoutHints().preferredHeight = 170;
-        _distroList.onSelectionChanged = delegate(int index) { previewDistro(index); };
-        _distroList.onActivated = delegate(int index) {
-            useDistro(index);
-            startDownload();
-        };
-        auto distroRow = distros.add(new HBox(6));
-        distroRow.layoutHints().preferredHeight = 40;
-        auto useButton = distroRow.add(new Button("Use in Download", IconKind.save));
-        useButton.setId("iso-distro-use");
-        useButton.onClick = delegate() { useDistro(_distroList.selectedIndex()); };
-        auto distroDownload = distroRow.add(new Button("Download Now", IconKind.search));
-        distroDownload.setId("iso-distro-download");
-        distroDownload.onClick = delegate() {
-            useDistro(_distroList.selectedIndex());
-            startDownload();
-        };
-        infoLabel(distros, "Official Ubuntu and Fedora images from their release servers.");
-
-        // Download.
-        auto download = section(column, "Download ISO");
+        auto download = section(column, "Custom Download");
         _downloadUrl = new TextField("");
-        _downloadUrl.setPlaceholder("https://releases.ubuntu.com/… .iso");
+        _downloadUrl.setPlaceholder("https://… .iso");
         _downloadUrl.layoutHints().preferredHeight = 36;
         download.add(_downloadUrl);
         _downloadDest = fieldWithBrowse(download, "Save to", delegate() {
@@ -242,18 +333,8 @@ public final class IsoRoot : VBox
             if (_downloader !is null) _downloader.cancel();
         };
 
-        // USB.
-        auto usb = section(column, "USB / Linux Installer");
-        _deviceList = usb.add(new ListView());
-        _deviceList.layoutHints().preferredHeight = 150;
-        auto deviceRow = usb.add(new HBox(6));
-        deviceRow.layoutHints().preferredHeight = 40;
-        auto rawButton = deviceRow.add(new Button("Write Image (dd)", IconKind.drive));
-        rawButton.onClick = delegate() { startRawWrite(); };
-        auto copyButton = deviceRow.add(new Button("Format + Copy", IconKind.folder));
-        copyButton.onClick = delegate() { startFormatCopy(); };
-        auto formatOnly = deviceRow.add(new Button("Format Only", IconKind.settings));
-        formatOnly.onClick = delegate() { startFormatOnly(); };
+        auto usb = section(column, "Advanced USB");
+        infoLabel(usb, "Uses the USB drive selected in the main view.");
         auto fsRow = usb.add(new HBox(8));
         fsRow.layoutHints().preferredHeight = 36;
         auto fsLabel = fsRow.add(new Label("Filesystem"));
@@ -261,15 +342,22 @@ public final class IsoRoot : VBox
         _deviceFs = fsRow.add(new TextField("FAT32"));
         _deviceFs.layoutHints().preferredHeight = 36;
         _deviceFs.layoutHints().preferredWidth = 120;
-        _deviceConfirm = new CheckBox("I understand this erases the selected USB drive", false);
-        usb.add(_deviceConfirm);
-        auto refreshUsb = usb.add(new Button("Rescan USB devices", IconKind.refresh));
-        refreshUsb.onClick = delegate() { refreshDevices(); };
+        auto usbRow = usb.add(new HBox(6));
+        usbRow.layoutHints().preferredHeight = 40;
+        auto rawButton = usbRow.add(new Button("Write Image (dd)", IconKind.drive));
+        rawButton.onClick = delegate() { startRawWrite(); };
+        auto formatOnly = usbRow.add(new Button("Format Only", IconKind.settings));
+        formatOnly.onClick = delegate() { startFormatOnly(); };
+        auto copyButton = usbRow.add(new Button("Format + Copy", IconKind.folder));
+        copyButton.onClick = delegate() { startFormatCopy(); };
+        auto noAdminRow = usb.add(new HBox(6));
+        noAdminRow.layoutHints().preferredHeight = 40;
+        auto noAdminButton = noAdminRow.add(new Button("Copy Files (no admin)", IconKind.file));
+        noAdminButton.onClick = delegate() { startCopyFilesNoAdmin(); };
 
         finalizeSection(info);
         finalizeSection(extract);
         finalizeSection(create);
-        finalizeSection(distros);
         finalizeSection(download);
         finalizeSection(usb);
         column.add(new Spacer(0));
@@ -289,7 +377,7 @@ public final class IsoRoot : VBox
     /**
      * Box layout uses each child's layout hints, not its measured intrinsic
      * size, so a nested section box must publish an explicit preferred height
-     * or it collapses to zero. Sum the children's preferred heights here.
+     * or it collapses to zero.
      */
     private void finalizeSection(VBox box)
     {
@@ -352,6 +440,254 @@ public final class IsoRoot : VBox
         return options;
     }
 
+    // ----- Official distribution catalog -------------------------------------
+
+    private void refreshDistros()
+    {
+        _distros = officialImages();
+        ListItem[] items;
+        foreach (image; _distros)
+        {
+            string secondary = image.vendor ~ " · " ~ image.edition;
+            if (image.approxBytes > 0)
+                secondary ~= "  ·  ~" ~ formatSize(image.approxBytes);
+            if (distroCached(image))
+                secondary ~= "  ·  downloaded";
+            items ~= ListItem(image.name, IconKind.drive, secondary);
+        }
+        _distroList.setItems(items);
+    }
+
+    /// Local path where an official image is cached after download.
+    private string distroCachePath(DistroImage image)
+    {
+        return buildPath(downloadsDirectory(), baseName(image.url));
+    }
+
+    /// True when the image is already downloaded and non-empty.
+    private bool distroCached(DistroImage image)
+    {
+        auto path = distroCachePath(image);
+        return exists(path) && getSize(path) > 0;
+    }
+
+    /// Delete the selected distribution's downloaded ISO (and any partial file).
+    private void deleteDistroDownload()
+    {
+        const index = _distroList.selectedIndex();
+        if (index < 0 || index >= cast(int) _distros.length)
+        {
+            setStatus("Select a distribution first.");
+            return;
+        }
+        auto image = _distros[cast(size_t) index];
+        auto path = distroCachePath(image);
+        bool removed = false;
+        if (exists(path))
+        {
+            removeFile(path);
+            removed = true;
+        }
+        if (exists(path ~ ".part"))
+        {
+            removeFile(path ~ ".part");
+            removed = true;
+        }
+        refreshDistros();
+        _distroList.setSelectedIndex(index);
+        setStatus(removed ? ("Deleted " ~ baseName(path)) :
+            "Nothing downloaded for this entry.");
+    }
+
+    private void previewDistro(int index)
+    {
+        if (index < 0 || index >= cast(int) _distros.length)
+            return;
+        auto image = _distros[cast(size_t) index];
+        setStatus(image.name ~ " — " ~ image.url);
+    }
+
+    private void useDistro(int index)
+    {
+        if (index < 0 || index >= cast(int) _distros.length)
+        {
+            setStatus("Select a distribution first.");
+            return;
+        }
+        auto image = _distros[cast(size_t) index];
+        _downloadUrl.setText(image.url);
+        _downloadDest.setText(buildPath(downloadsDirectory(), baseName(image.url)));
+        setStatus("Selected " ~ image.name ~ ".");
+    }
+
+    // ----- One-button install flow -------------------------------------------
+
+    private void startInstall()
+    {
+        if (_phase != InstallPhase.idle || _job !is null)
+        {
+            setStatus("An operation is already running.");
+            return;
+        }
+        const distroIndex = _distroList.selectedIndex();
+        if (distroIndex < 0 || distroIndex >= cast(int) _distros.length)
+        {
+            setStatus("Choose a distribution first.");
+            return;
+        }
+        auto device = selectedDevice();
+        if (device is null)
+        {
+            setStatus("Choose a USB drive first.");
+            return;
+        }
+        if (!device.hasDiskNumber)
+        {
+            setStatus("Cannot resolve the physical disk for this drive.");
+            return;
+        }
+        if (!_deviceConfirm.checked())
+        {
+            setStatus("Tick the confirmation box to allow erasing the USB drive.");
+            return;
+        }
+        if (!hasAdminRights())
+        {
+            requestElevation(distroIndex, device.diskNumber);
+            return;
+        }
+
+        auto image = _distros[cast(size_t) distroIndex];
+        _installIso = buildPath(downloadsDirectory(), baseName(image.url));
+        _installDisk = device.diskNumber;
+        _installLabel = device.displayName();
+        logInfo(format("startInstall: distro='%s' disk=%d iso='%s' cached=%s",
+            image.name, _installDisk, _installIso, distroCached(image)));
+        _downloadUrl.setText(image.url);
+        _downloadDest.setText(_installIso);
+
+        const cacheExists = exists(_installIso);
+        const cacheSize = cacheExists ? getSize(_installIso) : 0;
+        if (firstInstallStep(cacheExists, cacheSize) == InstallStep.writeExisting)
+        {
+            setStatus("Already downloaded — reusing " ~ baseName(_installIso));
+            beginInstallWrite();
+            return;
+        }
+        try
+        {
+            _downloader = new IsoDownloader();
+            _downloader.start(image.url, _installIso, true);
+            _downloadForInstall = true;
+            _phase = InstallPhase.downloading;
+            setStatus("Downloading " ~ baseName(_installIso) ~ " …");
+        }
+        catch (Exception error)
+        {
+            setStatus("Download failed: " ~ error.msg);
+            _downloader = null;
+        }
+    }
+
+    private void beginInstallWrite()
+    {
+        _phase = InstallPhase.installing;
+        auto iso = _installIso;
+        auto disk = _installDisk;
+        auto label = _installLabel;
+        const fromScratch = _useFromScratchLayout.checked();
+        logInfo(format("beginInstallWrite: iso='%s' disk=%d label='%s' fromScratch=%s",
+            iso, disk, label, fromScratch));
+        _job = new Job("Install to USB", delegate() {
+            try
+            {
+                ulong written;
+                if (fromScratch)
+                {
+                    // Experimental: GPT + FAT32 (ISO contents) + exFAT data
+                    // partition, built entirely from scratch.
+                    logInfo(format("install job: writeIsoLayoutToPhysicalDrive iso=%s disk=%d",
+                        iso, disk));
+                    _job.report(0.0, "Building partitions on " ~ label);
+                    LayoutOptions options;
+                    options.fatLabel = "AURORA-ISO";
+                    options.dataLabel = "AURORA-DATA";
+                    written = writeIsoLayoutToPhysicalDrive(iso, disk, options,
+                        delegate(DeviceProgress progress) {
+                            _job.report(progress.fraction, progress.message);
+                        },
+                        delegate() { return _job.cancelled(); });
+                    logInfo(format("install job: layout wrote %d bytes", written));
+                }
+                else
+                {
+                    logInfo(format("install job: writeImageToPhysicalDrive iso=%s disk=%d",
+                        iso, disk));
+                    _job.report(0.0, "Writing image to " ~ label ~ " (this formats the drive)");
+                    written = writeImageToPhysicalDrive(iso, disk,
+                        delegate(DeviceProgress progress) {
+                            _job.report(progress.fraction, progress.message);
+                        },
+                        delegate() { return _job.cancelled(); });
+                    logInfo(format("install job: wrote %d bytes", written));
+                    if (_makeDataPartition.checked())
+                    {
+                        _job.report(1.0, "Formatting leftover space as a data partition");
+                        logInfo("install job: formatRemainingSpace");
+                        formatRemainingSpace(disk, "AURORA");
+                    }
+                }
+                _job.report(1.0, format("Installed to %s (%s written)",
+                    label, formatSize(written)));
+            }
+            catch (Exception error)
+            {
+                logError("install job: exception: " ~ error.msg);
+                throw error;
+            }
+        });
+        _job.start();
+    }
+
+    /**
+     * Relaunch the executable elevated and let the new instance complete the
+     * install. The chosen distribution and physical disk are passed on the
+     * command line, and the elevated copy reuses the same download cache.
+     */
+    private void requestElevation(int distroIndex, uint diskNumber)
+    {
+        auto parameters = format("--auto-install %d %d %d %d", distroIndex, diskNumber,
+            _makeDataPartition.checked() ? 1 : 0,
+            _useFromScratchLayout.checked() ? 1 : 0);
+        const result = shellExecuteRunAs(parameters);
+        if (result <= 32)
+            setStatus("Administrator rights are required to write a USB drive. Elevation was cancelled.");
+        else
+            setStatus("Waiting for the administrator prompt… approve UAC to continue.");
+    }
+
+    /// Entry point for the elevated instance started by requestElevation.
+    public void autoInstall(int distroIndex, uint diskNumber,
+        bool makeDataPartition = true, bool useFromScratchLayout = false)
+    {
+        refreshDistros();
+        refreshDevices();
+        _makeDataPartition.setChecked(makeDataPartition);
+        _useFromScratchLayout.setChecked(useFromScratchLayout);
+        if (distroIndex >= 0 && distroIndex < cast(int) _distros.length)
+            _distroList.setSelectedIndex(distroIndex);
+        foreach (i, device; _devices)
+        {
+            if (device.hasDiskNumber && device.diskNumber == diskNumber)
+            {
+                _deviceList.setSelectedIndex(cast(int) i);
+                break;
+            }
+        }
+        _deviceConfirm.setChecked(true);
+        startInstall();
+    }
+
     // ----- ISO loading -------------------------------------------------------
 
     private void openIsoDialog()
@@ -401,9 +737,7 @@ public final class IsoRoot : VBox
             return;
         }
         try
-        {
             _entries = _image.list(_currentDir).dup;
-        }
         catch (Exception error)
         {
             setStatus("Cannot list " ~ _currentDir ~ ": " ~ error.msg);
@@ -416,21 +750,12 @@ public final class IsoRoot : VBox
         foreach (entry; _entries)
         {
             auto icon = entry.isDirectory ? IconKind.folder : IconKind.file;
-            auto secondary = entry.isDirectory ? "Directory" :
-                formatPipe(entry);
+            auto secondary = entry.isDirectory ? "Directory" : formatSize(entry.size);
             items ~= ListItem(entry.name, icon, secondary);
         }
         _browser.setItems(items);
         _pathLabel.setText(_currentDir);
         _countLabel.setText(format("%d items", _entries.length));
-    }
-
-    private string formatPipe(IsoNode entry)
-    {
-        string text = formatSize(entry.size);
-        if (entry.isSymlink)
-            text ~= "  → " ~ entry.linkTarget;
-        return text;
     }
 
     private void navigateUp()
@@ -495,8 +820,8 @@ public final class IsoRoot : VBox
     private void extractAllDialog()
     {
         if (!requireImage()) return;
-        FileDialogOptions options = folderOptions("Choose extraction folder");
-        showFileDialog(this, options, delegate(string path) { startExtractAll(path); });
+        showFileDialog(this, folderOptions("Choose extraction folder"),
+            delegate(string path) { startExtractAll(path); });
     }
 
     private void startExtractAll(string destination)
@@ -533,8 +858,7 @@ public final class IsoRoot : VBox
             return;
         }
         auto entry = _entries[cast(size_t) index];
-        auto defaultName = baseName(entry.name);
-        showFileDialog(this, saveOptions("Extract file as", defaultName,
+        showFileDialog(this, saveOptions("Extract file as", baseName(entry.name),
             downloadsDirectory()), delegate(string path) {
                 startExtractOne(entry, path);
             });
@@ -602,7 +926,7 @@ public final class IsoRoot : VBox
         _job.start();
     }
 
-    // ----- Download ----------------------------------------------------------
+    // ----- Custom download ---------------------------------------------------
 
     private void startDownload()
     {
@@ -621,10 +945,7 @@ public final class IsoRoot : VBox
         if (destination.length == 0)
         {
             try
-            {
-                destination = buildPath(downloadsDirectory(),
-                    baseName(parseUrl(url).target));
-            }
+                destination = buildPath(downloadsDirectory(), baseName(parseUrl(url).target));
             catch (Exception error)
             {
                 setStatus("Bad URL: " ~ error.msg);
@@ -636,6 +957,7 @@ public final class IsoRoot : VBox
         {
             _downloader = new IsoDownloader();
             _downloader.start(url, destination, true);
+            _downloadForInstall = false;
             setStatus("Downloading " ~ baseName(destination));
         }
         catch (Exception error)
@@ -643,43 +965,6 @@ public final class IsoRoot : VBox
             setStatus("Download failed: " ~ error.msg);
             _downloader = null;
         }
-    }
-
-    // ----- Official distributions -------------------------------------------
-
-    private void refreshDistros()
-    {
-        _distros = officialImages();
-        ListItem[] items;
-        foreach (image; _distros)
-        {
-            string secondary = image.vendor ~ " · " ~ image.edition;
-            if (image.approxBytes > 0)
-                secondary ~= "  ·  ~" ~ formatSize(image.approxBytes);
-            items ~= ListItem(image.name, IconKind.drive, secondary);
-        }
-        _distroList.setItems(items);
-    }
-
-    private void previewDistro(int index)
-    {
-        if (index < 0 || index >= cast(int) _distros.length)
-            return;
-        auto image = _distros[cast(size_t) index];
-        setStatus(image.vendor ~ " " ~ image.edition ~ " — " ~ image.url);
-    }
-
-    private void useDistro(int index)
-    {
-        if (index < 0 || index >= cast(int) _distros.length)
-        {
-            setStatus("Select a distribution first.");
-            return;
-        }
-        auto image = _distros[cast(size_t) index];
-        _downloadUrl.setText(image.url);
-        _downloadDest.setText(buildPath(downloadsDirectory(), baseName(image.url)));
-        setStatus("Selected " ~ image.name ~ ". Press Download to fetch it.");
     }
 
     // ----- USB ---------------------------------------------------------------
@@ -694,10 +979,15 @@ public final class IsoRoot : VBox
                     ? (device.model.length > 0 ? device.model : device.devicePath)
                     : "disk number unknown");
         _deviceList.setItems(items);
-        if (hasRawDiskAccess())
+        logInfo(format("refreshDevices: %d removable device(s)", _devices.length));
+        foreach (device; _devices)
+            logInfo(format("  %c: label='%s' fs='%s' disk=%d hasDisk=%s model='%s'",
+                device.letter, device.volumeLabel, device.fileSystem,
+                device.diskNumber, device.hasDiskNumber, device.model));
+        if (hasAdminRights())
             _adminLabel.setText("");
         else
-            _adminLabel.setText("Administrator rights required to write to USB.");
+            _adminLabel.setText("Install will ask for administrator rights (UAC).");
         if (_devices.length == 0)
             setStatus("No removable USB drives detected.");
     }
@@ -732,7 +1022,7 @@ public final class IsoRoot : VBox
 
     private void startRawWrite()
     {
-        if (_job !is null)
+        if (_job !is null || _phase != InstallPhase.idle)
         {
             setStatus("Another operation is running.");
             return;
@@ -767,6 +1057,11 @@ public final class IsoRoot : VBox
 
     private void startFormatOnly()
     {
+        if (_job !is null || _phase != InstallPhase.idle)
+        {
+            setStatus("Another operation is running.");
+            return;
+        }
         if (!confirmErase()) return;
         auto device = selectedDevice();
         if (device is null)
@@ -779,8 +1074,7 @@ public final class IsoRoot : VBox
         const letter = device.letter;
         _job = new Job("Format USB", delegate() {
             _job.report(0.2, format("Formatting %c: as %s", letter, fs));
-            const ok = formatVolume(letter, fs, "AURORA-USB", true);
-            if (!ok)
+            if (!formatVolume(letter, fs, "AURORA-USB", true))
                 throw new Exception("Format failed (administrator rights required)");
             _job.report(1.0, format("Formatted %c: as %s", letter, fs));
         });
@@ -789,6 +1083,11 @@ public final class IsoRoot : VBox
 
     private void startFormatCopy()
     {
+        if (_job !is null || _phase != InstallPhase.idle)
+        {
+            setStatus("Another operation is running.");
+            return;
+        }
         if (!requireImage()) return;
         if (!confirmErase()) return;
         auto device = selectedDevice();
@@ -822,6 +1121,40 @@ public final class IsoRoot : VBox
     }
 
     // ----- Info & status -----------------------------------------------------
+    /// Copy the current image's files onto the drive's existing filesystem.
+    /// No administrator rights are needed, but this installs no boot loader.
+    private void startCopyFilesNoAdmin()
+    {
+        if (_job !is null || _phase != InstallPhase.idle)
+        {
+            setStatus("Another operation is running.");
+            return;
+        }
+        if (!requireImage()) return;
+        auto device = selectedDevice();
+        if (device is null)
+        {
+            setStatus("Select a USB device first.");
+            return;
+        }
+        const letter = device.letter;
+        auto image = _image;
+        auto root = format("%c:\\", letter);
+        _job = new Job("Copy files to USB", delegate() {
+            _job.report(0.1, format("Copying files to %c:", letter));
+            auto files = image.walk("/", false).length;
+            uint done;
+            extractAll(image, root,
+                delegate(string current) {
+                    ++done;
+                    _job.report(files == 0 ? 1.0 : cast(double) done / files,
+                        "Copying " ~ current);
+                },
+                delegate() { return _job.cancelled(); });
+            _job.report(1.0, format("Copied files to %c: (no admin)", letter));
+        });
+        _job.start();
+    }
 
     private void updateInfo()
     {
@@ -854,13 +1187,18 @@ public final class IsoRoot : VBox
 
     private void setBrowserEnabled(bool enabled)
     {
+        if (_upButton is null || _browser is null)
+            return;
         _upButton.setEnabled(enabled);
         _browser.setEnabled(enabled);
     }
 
     private void setStatus(string text)
     {
-        _status.setText(text);
+        if (_status !is null)
+            _status.setText(text);
+        if (_wizardStatus !is null)
+            _wizardStatus.setText(text);
     }
 
     protected override void onTick(double deltaSeconds)
@@ -882,6 +1220,7 @@ public final class IsoRoot : VBox
             return;
         if (_job.failed())
         {
+            logError("job '" ~ _job.title() ~ "' failed: " ~ _job.error());
             if (_job.error() == "cancelled")
                 setStatus("Operation cancelled.");
             else
@@ -892,6 +1231,8 @@ public final class IsoRoot : VBox
             setStatus(_job.title() ~ " complete.");
         }
         _job = null;
+        _phase = InstallPhase.idle;
+        refreshDistros();
         if (_image !is null && _currentDir.length > 0)
             refreshBrowser();
     }
@@ -903,11 +1244,34 @@ public final class IsoRoot : VBox
         auto snap = _downloader.snapshot();
         if (snap.total > 0)
             _progress.setValue(snap.fraction());
-        setStatus(format("Downloading %s / %s",
-            formatSize(snap.received),
-            snap.total > 0 ? formatSize(snap.total) : "?"));
         if (snap.active)
+        {
+            setStatus(format("Downloading %s / %s", formatSize(snap.received),
+                snap.total > 0 ? formatSize(snap.total) : "?"));
             return;
+        }
+
+        if (_downloadForInstall)
+        {
+            _downloadForInstall = false;
+            _downloader = null;
+            if (snap.failed && !snap.cancelled)
+            {
+                setStatus("Download failed: " ~ snap.error);
+                _phase = InstallPhase.idle;
+            }
+            else if (snap.cancelled)
+            {
+                setStatus("Install cancelled.");
+                _phase = InstallPhase.idle;
+            }
+            else
+            {
+                beginInstallWrite();
+            }
+            return;
+        }
+
         if (snap.failed && !snap.cancelled)
             setStatus("Download failed: " ~ snap.error);
         else if (snap.cancelled)
@@ -915,6 +1279,7 @@ public final class IsoRoot : VBox
         else
         {
             setStatus("Download complete: " ~ baseName(snap.destination));
+            refreshDistros();
             loadIso(snap.destination);
         }
         _downloader = null;
@@ -977,7 +1342,50 @@ public final class IsoRoot : VBox
         return cast(int) _entries.length;
     }
 
-    /// Test-only: side panel child count.
+    /// Test-only: current image (may be null).
+    public IsoImage imageForTesting()
+    {
+        return _image;
+    }
+
+    /// Test-only: number of catalog entries.
+    public int distroCountForTesting() const
+    {
+        return cast(int) _distros.length;
+    }
+
+    /// Test-only: number of detected USB devices.
+    public int deviceCountForTesting() const
+    {
+        return cast(int) _devices.length;
+    }
+
+    /// Test-only: select a catalog entry as if the user clicked it.
+    public void selectDistroForTesting(int index)
+    {
+        _distroList.setSelectedIndex(index);
+        useDistro(index);
+    }
+
+    /// Test-only: current download URL field text.
+    public string downloadUrlForTesting()
+    {
+        return _downloadUrl.textUtf8();
+    }
+
+    /// Test-only: toggle to the advanced view.
+    public void toggleAdvancedForTesting()
+    {
+        toggleAdvanced();
+    }
+
+    /// Test-only: whether the advanced view is showing.
+    public bool advancedVisibleForTesting() const
+    {
+        return _advancedBox.visible();
+    }
+
+    /// Test-only: side content child count.
     public int sideChildCountForTesting() const
     {
         return _sideColumn is null ? -1 : cast(int) _sideColumn.children().length;
@@ -989,22 +1397,10 @@ public final class IsoRoot : VBox
         return _sideScroll is null ? Rect.init : _sideScroll.bounds();
     }
 
-    /// Test-only: number of catalog entries.
-    public int distroCountForTesting() const
+    /// Test-only: side content bounds.
+    public Rect sideContentBoundsForTesting()
     {
-        return cast(int) _distros.length;
-    }
-
-    /// Test-only: select a catalog entry as if the user clicked it.
-    public void selectDistroForTesting(int index)
-    {
-        useDistro(index);
-    }
-
-    /// Test-only: current download URL field text.
-    public string downloadUrlForTesting()
-    {
-        return _downloadUrl.textUtf8();
+        return _sideColumn is null ? Rect.init : _sideColumn.bounds();
     }
 
     /// Test-only: side content first section bounds.
@@ -1024,17 +1420,5 @@ public final class IsoRoot : VBox
         if (section.children().length == 0)
             return Rect.init;
         return section.children()[0].bounds();
-    }
-
-    /// Test-only: side content bounds.
-    public Rect sideContentBoundsForTesting()
-    {
-        return _sideColumn is null ? Rect.init : _sideColumn.bounds();
-    }
-
-    /// Test-only: current image (may be null).
-    public IsoImage imageForTesting()
-    {
-        return _image;
     }
 }

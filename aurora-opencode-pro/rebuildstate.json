@@ -1,13 +1,13 @@
 {
-  "status": "pending",
-  "phase": "queued",
-  "reason": "Apply latest app.d (no-arg shell launch -> interactive console with dedicated console) — exe at 17:52 predates app.d at 17:59.",
-  "command": "",
+  "status": "ok",
+  "phase": "relaunching",
+  "reason": "Apply Copy ID context-menu item and rebuild-agent lock fix; stale instance cleared so the image is free",
+  "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 19:02:45.2099051",
-  "finishedAt": "",
-  "durationMs": 0,
+  "startedAt": "2026-10-02 20:16:04.0579282",
+  "finishedAt": "2026-10-02 20:17:06.1435282",
+  "durationMs": 62086,
   "exitCode": 0,
   "errors": []
 }

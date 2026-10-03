@@ -21296,6 +21296,13 @@ public final class OpenCodeRoot : VBox
                 {
                     toggleSessionPin(sessionIndex);
                 }),
+            ContextMenuItem.command("Copy ID", IconKind.none, delegate()
+            {
+                const id = _sessions[sessionIndex].id;
+                if (id.length == 0) return;
+                copyTextToClipboard(id);
+                updateStatus("Copied conversation ID.");
+            }),
             ContextMenuItem.command("Rename…", IconKind.settings, delegate()
             {
                 showRenameSession(sessionIndex);

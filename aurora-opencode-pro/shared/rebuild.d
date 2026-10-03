@@ -43,11 +43,14 @@ import std.json : JSONType, parseJSON;
 import std.path : baseName, buildPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
-import std.string : indexOf, lastIndexOf, replace, startsWith, strip;
-import std.utf : toUTF16;
+import std.string : indexOf, lastIndexOf, replace, startsWith, strip, toLower;
+import std.utf : toUTF16, toUTF8;
 
 version (Windows)
+{
     import core.sys.windows.windows;
+    import core.sys.windows.tlhelp32;
+}
 
 /// The argv token that turns a copy of the app into the rebuild agent. It is
 /// checked as `args[1]` by `main`, before anything else runs.
@@ -552,6 +555,75 @@ private bool canWrite(string path)
     }
     catch (Exception)
         return false;
+}
+
+// A self-rebuild has to overwrite the running image, and Windows keeps every
+// running image locked against a write. When the app that asked for the rebuild
+// is the only instance this is just a matter of waiting for it to exit, but a
+// second, leftover instance would hold the file until the timeout and the
+// rebuild would look like it did nothing. These helpers wait on the exact
+// process and, if the image is still locked, stop the other instances (as the
+// bin/*.bat restart scripts do with `taskkill /IM`).
+
+version (Windows)
+{
+    private enum DWORD TH32CS_SNAPPROCESS_LOCAL = 0x00000002;
+    private enum DWORD PROCESS_TERMINATE_LOCAL = 0x0001;
+    private enum DWORD SYNCHRONIZE_LOCAL = 0x00100000;
+
+    /// Wait up to `timeoutSeconds` for `pid` to exit. A zero pid (unknown) or a
+    /// pid that is already gone counts as exited, so a missing process never
+    /// blocks the rebuild.
+    private bool waitForProcessExit(int pid, int timeoutSeconds)
+    {
+        if (pid == 0) return true;
+        auto handle = OpenProcess(SYNCHRONIZE_LOCAL, false, cast(DWORD) pid);
+        if (handle is null) return true; // already gone
+        scope (exit) CloseHandle(handle);
+        const milliseconds = timeoutSeconds <= 0
+            ? cast(DWORD) 0xFFFFFFFF
+            : cast(DWORD) (timeoutSeconds * 1000);
+        return WaitForSingleObject(handle, milliseconds) == 0;
+    }
+
+    /// Terminate every process other than `selfPid` whose image is `exePath`, so
+    /// the file can be overwritten in place. Best effort: returns how many were
+    /// asked to exit.
+    private int terminateOtherInstances(string exePath, string logPath,
+        DWORD selfPid)
+    {
+        if (exePath.length == 0) return 0;
+        const wanted = toLower(baseName(exePath));
+        int terminated;
+        auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS_LOCAL, 0);
+        if (snapshot == cast(HANDLE) -1 || snapshot is null) return 0;
+        scope (exit) CloseHandle(snapshot);
+        PROCESSENTRY32W entry;
+        entry.dwSize = cast(DWORD) PROCESSENTRY32W.sizeof;
+        if (!Process32FirstW(snapshot, &entry)) return 0;
+        do
+        {
+            entry.dwSize = cast(DWORD) PROCESSENTRY32W.sizeof;
+            if (entry.th32ProcessID == selfPid) continue;
+            size_t width;
+            while (width < entry.szExeFile.length && entry.szExeFile[width] != 0)
+                ++width;
+            if (width == 0) continue;
+            const name = toLower(toUTF8(entry.szExeFile[0 .. width]));
+            if (name != wanted) continue;
+            auto handle = OpenProcess(PROCESS_TERMINATE_LOCAL, false,
+                entry.th32ProcessID);
+            if (handle is null) continue;
+            if (TerminateProcess(handle, 1))
+            {
+                ++terminated;
+                appendLine(logPath, "terminated other instance pid " ~
+                    to!string(entry.th32ProcessID) ~ " (" ~ name ~ ")");
+            }
+            CloseHandle(handle);
+        } while (Process32NextW(snapshot, &entry));
+        return terminated;
+    }
 }
 
 // ===========================================================================
@@ -1412,10 +1484,43 @@ int runRebuildHelperMode(string[] args)
             to!string(job.waitPid) ~ " to exit");
         setProgress("Waiting for Aurora OpenCode to close...", "", -1.0);
     }
+    version (Windows)
+    {
+        // Wait on the exact process that asked for the rebuild. Polling the
+        // file alone cannot tell "still starting up" from "a second instance is
+        // holding the image", and a leftover instance would otherwise sit here
+        // until the timeout with nothing to show for it.
+        if (!waitForProcessExit(job.waitPid, job.timeoutSeconds))
+        {
+            appendLine(job.logPath, "process " ~ to!string(job.waitPid) ~
+                " did not exit; rebuild aborted");
+            setProgress("The app did not close; rebuild aborted", "", 1.0);
+            return 0;
+        }
+    }
+    // The requesting process is gone, but the image can still be held by
+    // another running copy. Give it a moment, then stop the stragglers so the
+    // link can overwrite the file.
+    if (!waitForUnlock(job.exePath, 3))
+    {
+        version (Windows)
+        {
+            const stopped = terminateOtherInstances(job.exePath, job.logPath,
+                cast(DWORD) GetCurrentProcessId());
+            if (stopped > 0)
+            {
+                appendLine(job.logPath, "stopped " ~ to!string(stopped) ~
+                    " other instance(s); waiting for the executable to unlock");
+                setProgress("Waiting for other Aurora windows to close...", "",
+                    -1.0);
+            }
+        }
+    }
     if (!waitForUnlock(job.exePath, job.timeoutSeconds))
     {
-        appendLine(job.logPath, "app did not exit; rebuild aborted");
-        setProgress("The app did not close; rebuild aborted", "", 1.0);
+        appendLine(job.logPath,
+            "executable still locked by another process; rebuild aborted");
+        setProgress("The app's executable is locked; rebuild aborted", "", 1.0);
         return 0;
     }
     Thread.sleep(500.msecs);

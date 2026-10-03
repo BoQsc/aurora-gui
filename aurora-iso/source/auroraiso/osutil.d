@@ -16,10 +16,14 @@ version (Windows)
     {
         alias void* HWND;
         alias void* HINSTANCE;
+        alias void* HANDLE;
+        alias uint DWORD;
         alias wchar WCHAR;
         alias const(WCHAR)* LPCWSTR;
+        alias WCHAR* LPWSTR;
         HINSTANCE ShellExecuteW(HWND window, LPCWSTR operation, LPCWSTR file,
             LPCWSTR parameters, LPCWSTR directory, int showCommand);
+        DWORD GetModuleFileNameW(HANDLE moduleHandle, LPWSTR filename, DWORD size);
     }
 
     /// Open a path with the operating system's default handler.
@@ -27,11 +31,44 @@ version (Windows)
     {
         ShellExecuteW(null, "open".toUTF16z, path.toUTF16z, null, null, 1);
     }
+
+    /// Absolute path of the running executable.
+    string executablePath()
+    {
+        WCHAR[1024] buffer;
+        const length = GetModuleFileNameW(null, buffer.ptr, 1024);
+        dchar[] chars;
+        foreach (i; 0 .. length)
+            chars ~= cast(dchar) buffer[i];
+        import std.utf : toUTF8;
+        return toUTF8(chars);
+    }
+
+    /**
+     * Relaunch this executable elevated with the given command line. Returns the
+     * ShellExecute code: > 32 on success, 1223 when the user declines the UAC
+     * prompt, other values on failure.
+     */
+    int shellExecuteRunAs(string parameters)
+    {
+        return cast(int) ShellExecuteW(null, "runas".toUTF16z,
+            executablePath.toUTF16z, parameters.toUTF16z, null, 1);
+    }
 }
 else
 {
     void openPathWithShell(string path)
     {
+    }
+
+    string executablePath()
+    {
+        return "";
+    }
+
+    int shellExecuteRunAs(string parameters)
+    {
+        return 0;
     }
 }
 
