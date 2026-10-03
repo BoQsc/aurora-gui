@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply Copy ID context-menu item and rebuild-agent lock fix; stale instance cleared so the image is free",
+  "reason": "Keep latest chat activity visible and preserve tool order and scrolling",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-02 20:16:04.0579282",
-  "finishedAt": "2026-10-02 20:17:06.1435282",
-  "durationMs": 62086,
+  "startedAt": "2026-10-03 08:04:35.9242391",
+  "finishedAt": "2026-10-03 08:05:14.0870292",
+  "durationMs": 38163,
   "exitCode": 0,
   "errors": []
 }

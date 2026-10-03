@@ -3084,7 +3084,7 @@ private final class MessageBubble : Widget
         if (event.button != MouseButton.left) return false;
         if (hasThinking() && _thinkingRect.contains(event.position))
         {
-            ChatScrollView.holdPositionForNextLayout();
+            ChatScrollView.holdPositionForNextLayout(this);
             setThinkingCollapsed(!_thinkingCollapsed);
             return true;
         }
@@ -3096,7 +3096,7 @@ private final class MessageBubble : Widget
         }
         if (_role == "tool" && _collapseRect.contains(event.position))
         {
-            ChatScrollView.holdPositionForNextLayout();
+            ChatScrollView.holdPositionForNextLayout(this);
             setCollapsed(!_collapsed);
             return true;
         }
@@ -5339,6 +5339,7 @@ private final class ToolGroupBubble : Widget
 
     private Widget[] _parts;
     private bool _collapsed = true;
+    private bool _showTail;
     private bool _hover;
     private Rect _headerRect;
     // Live mode: the group is present while its tools are still running. The
@@ -5374,7 +5375,7 @@ private final class ToolGroupBubble : Widget
         _live = live;
         foreach (part; parts)
         {
-            part.setVisible(false);
+            part.setVisible(partVisible(part));
             add(part);
         }
     }
@@ -5399,12 +5400,27 @@ private final class ToolGroupBubble : Widget
     bool collapsedForTesting() const { return _collapsed; }
     string headerTextForTesting() const { return headerText(); }
 
+    private bool partVisible(Widget part)
+    {
+        // A collapsed history group must still show every action in progress.
+        return !_collapsed || (_live && cast(LiveToolRow) part !is null) ||
+            (_showTail && _parts.length > 0 && part is _parts[$ - 1]);
+    }
+
+    void setShowTail(bool value)
+    {
+        if (_showTail == value) return;
+        _showTail = value;
+        foreach (part; _parts) part.setVisible(partVisible(part));
+        invalidate();
+    }
+
     void setCollapsed(bool value)
     {
         if (_collapsed == value) return;
         _collapsed = value;
         foreach (part; _parts)
-            part.setVisible(!_collapsed);
+            part.setVisible(partVisible(part));
         if (onCollapseChanged !is null) onCollapseChanged(_collapsed);
         if (onSizeChanged !is null) onSizeChanged();
         invalidate();
@@ -5417,7 +5433,7 @@ private final class ToolGroupBubble : Widget
     void addPart(Widget part)
     {
         _parts ~= part;
-        part.setVisible(!_collapsed);
+        part.setVisible(partVisible(part));
         add(part);
     }
 
@@ -5427,6 +5443,8 @@ private final class ToolGroupBubble : Widget
     {
         if (_live == value) return;
         _live = value;
+        foreach (part; _parts)
+            part.setVisible(partVisible(part));
         invalidate();
     }
 
@@ -5622,11 +5640,12 @@ private final class ToolGroupBubble : Widget
         // Match MessageBubble's vertical padding so a collapsed group row is
         // the same height as a sibling Thinking / Shell / Read header row.
         double height = 2 * padV + headerHeight();
-        if (!_collapsed)
+        if (!_collapsed || _live || _showTail)
         {
             const childWidth = maxInt(0, width - 2 * padH);
             foreach (part; _parts)
             {
+                if (!part.visible()) continue;
                 part.measure(Size(childWidth, available.height));
                 const hint = part.layoutHints().preferredHeight;
                 height += hint >= 0 ? hint : cast(double) part.bounds().height;
@@ -5640,11 +5659,11 @@ private final class ToolGroupBubble : Widget
 
     protected override void onLayout()
     {
-        if (_collapsed) return;
         const width = maxInt(0, bounds().width - 2 * padH);
         int y = 2 * padV + headerHeight();
         foreach (part; _parts)
         {
+            if (!part.visible()) continue;
             const hint = part.layoutHints().preferredHeight;
             const childHeight = hint >= 0 ? hint : part.bounds().height;
             part.setBounds(Rect(padH, y, width, childHeight));
@@ -5745,7 +5764,7 @@ private final class ToolGroupBubble : Widget
         if (event.button == MouseButton.left &&
             _headerRect.contains(event.position))
         {
-            ChatScrollView.holdPositionForNextLayout();
+            ChatScrollView.holdPositionForNextLayout(this);
             toggle();
             return true;
         }
@@ -7124,25 +7143,11 @@ private final class ChatScrollView : ScrollView
     bool follow = true;
 
     // Set by a collapsible widget (tool output / reasoning / tool group) right
-    // before a user-driven expand/collapse. The freeze below then holds the
-    // content offset across every layout until the block has finished
-    // re-measuring, instead of snapping the viewport back to the bottom and
-    // shoving the clicked row out of view. A single-layout hold is not enough:
-    // an intervening layout (streaming, repaint, onSizeChanged invalidation)
-    // can consume it before the real resize lands.
-    private static bool _holdPending;
-    private int _holdScrollY = -1;
-    private int _lastMaxScroll = -1;
-    // Deferred re-pin. A streamed token grows the content height AFTER this
-    // pass has already handed the base class the layout: only the base's
-    // internal measure knows the new height, so the scroll clamp below runs on
-    // the STALE height and the newest line stays one invalidate behind (below
-    // the fold) until the next frame. Chaining one extra re-layout from the
-    // tick callback re-measures with the settled height and pins the reader to
-    // the true bottom in the same frame. The guard bounds the chain to a single
-    // pass so a follow change from `onScrollChanged` cannot loop.
-    private bool _repinQueued;
-    private bool _repinning;
+    // before a user-driven expand/collapse. Hold the offset while measuring that
+    // change, then derive follow from the resulting position. Each viewport owns
+    // its hold so reopening a chat cannot inherit another viewport's freeze.
+    private bool _holdPending;
+    private bool _layoutScrollChange;
 
     // Freshly inserted older history sits above the reader's position: the next
     // layout shifts the viewport down by this many pixels so the row they were
@@ -7169,82 +7174,48 @@ private final class ChatScrollView : ScrollView
     /// Keep the reader's position across the next content re-measure. Call
     /// immediately before applying a user-driven size change (collapse/expand)
     /// so the toggled row stays put instead of the view jumping to the bottom.
-    static void holdPositionForNextLayout()
+    static void holdPositionForNextLayout(Widget source)
     {
-        _holdPending = true;
+        for (auto ancestor = source; ancestor !is null; ancestor = ancestor.parent())
+            if (auto view = cast(ChatScrollView) ancestor)
+            {
+                view._holdPending = true;
+                return;
+            }
     }
 
     protected override void onLayout()
     {
-        if (_holdPending)
+        const previousY = scrollY();
+        const hold = _holdPending;
+        _holdPending = false;
+        // Internal positioning must not change reader intent or load history.
+        _layoutScrollChange = true;
+        scope (exit) _layoutScrollChange = false;
+        super.onLayout();
+        if (_anchorGrow > 0)
         {
-            // Anchor the offset on the first held layout, then keep restoring it
-            // each pass so the collapsed/expanded row stays put. Release only
-            // once the content height stops changing (the resize has settled).
-            if (_holdScrollY < 0)
-            {
-                _holdScrollY = scrollY();
-                _lastMaxScroll = -1;
-            }
-            super.onLayout();
-            auto max = maxScroll();
-            auto target = _holdScrollY;
-            if (target < 0) target = 0;
-            if (target > max) target = max;
-            if (scrollY() != target) setScrollY(target);
-            if (_lastMaxScroll == max)
-            {
-                _holdPending = false;
-                _holdScrollY = -1;
-                follow = scrollY() >= max - 4;
-            }
-            else
-            {
-                _lastMaxScroll = max;
-            }
+            setScrollY(previousY + _anchorGrow);
+            _anchorGrow = 0;
+            if (scrollY() > topLoadThreshold) _topNotified = false;
             return;
         }
-        super.onLayout();
-        if (follow)
+        if (hold)
         {
-            // `maxScroll()` reads the height the base class just measured, so
-            // this pins to the true bottom even when the content grew in this
-            // same pass (the stale clamp in applyScrollY is corrected here).
-            setScrollY(maxScroll());
-            queueRepin();
+            setScrollY(previousY);
+            follow = scrollY() >= maxScroll() - 4;
+            return;
         }
-    }
-
-    protected override void onTick(double deltaSeconds)
-    {
-        // The tick runs on the next frame whatever the scene does with the
-        // base tree. Chain exactly one extra layout pass so a streamed content
-        // growth that arrived after this view already measured is followed by a
-        // re-pin to the real bottom. The transcript is a composited layer, so
-        // `layoutTree` from here bypasses the base scene entirely and one pass
-        // settles it.
-        if (_repinQueued && !_repinning)
-        {
-            _repinQueued = false;
-            _repinning = true;
-            layoutTree();
-            _repinning = false;
-        }
-    }
-
-    /// Schedule one extra layout pass after the current one, so the newest
-    /// streamed line that landed below the fold is followed by a re-pin to the
-    /// real bottom. No-op once a pass is already queued, so a burst of deltas
-    /// inside a single frame coalesces into one extra layout.
-    private void queueRepin()
-    {
-        if (_repinning || _repinQueued) return;
-        _repinQueued = true;
-        invalidate();
+        // The base layout measures the new content before publishing its range.
+        // Pin in this pass; a deferred layout kept requesting another repaint
+        // even after work stopped.
+        if (follow) setScrollY(maxScroll());
     }
 
     protected override void onScrollChanged()
     {
+        if (_layoutScrollChange) return;
+        _holdPending = false;
         // Any user scroll (thumb drag, track click, wheel, keys) moves away
         // from the auto-follow position. Re-engage follow only once the view
         // is back at the bottom; otherwise onLayout keeps snapping the
@@ -7274,8 +7245,12 @@ private final class ChatScrollView : ScrollView
     /// back after the reader has scrolled up to take control.
     void resumeFollow()
     {
+        _holdPending = false;
+        _anchorGrow = 0;
         follow = true;
+        _layoutScrollChange = true;
         setScrollY(maxScroll());
+        _layoutScrollChange = false;
         invalidate();
     }
 
@@ -8780,6 +8755,7 @@ private final class ConversationRuntime
     bool[string] reportedToolCallIds;
     OpenCodeToolCall[] liveToolCalls;
     OpenCodeToolCall[] preparingToolCalls;
+    MonoTime[string] liveToolStartedAt;
     int toolRounds;
     bool finalAnswerRequested;
     bool toolContinuationPaused;
@@ -9064,6 +9040,7 @@ public final class OpenCodeRoot : VBox
     // announced their names but not finished). Shown as in-progress rows so a
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
+    private MonoTime[string] _liveToolStartedAt;
     // When the current "Preparing tools…" phase began and how many argument
     // bytes have streamed so far. A large payload (a long `type` or a multi-step
     // batch) can stream for a while; showing the age and a growing byte count
@@ -9385,6 +9362,7 @@ public final class OpenCodeRoot : VBox
         rt.reportedToolCallIds = _reportedToolCallIds;
         rt.liveToolCalls = _liveToolCalls;
         rt.preparingToolCalls = _preparingToolCalls;
+        rt.liveToolStartedAt = _liveToolStartedAt;
         rt.toolRounds = _toolRounds;
         rt.finalAnswerRequested = _finalAnswerRequested;
         rt.toolContinuationPaused = _toolContinuationPaused;
@@ -9438,6 +9416,7 @@ public final class OpenCodeRoot : VBox
         _reportedToolCallIds = rt.reportedToolCallIds;
         _liveToolCalls = rt.liveToolCalls;
         _preparingToolCalls = rt.preparingToolCalls;
+        _liveToolStartedAt = rt.liveToolStartedAt;
         _toolRounds = rt.toolRounds;
         _finalAnswerRequested = rt.finalAnswerRequested;
         _toolContinuationPaused = rt.toolContinuationPaused;
@@ -11992,7 +11971,9 @@ public final class OpenCodeRoot : VBox
         if (_messagesScroll is null) return 0;
         auto content = _messagesScroll.content();
         if (content is null) return 0;
-        return content.measure(Size(maxInt(0, _messagesScroll.bounds().width),
+        const width = content.bounds().width > 0 ? content.bounds().width :
+            _messagesScroll.bounds().width;
+        return content.measure(Size(maxInt(0, width),
             int.max)).height;
     }
 
@@ -12198,6 +12179,7 @@ public final class OpenCodeRoot : VBox
             foreach_reverse (slot, index; path)
             {
                 if (owner[slot] != size_t.max) continue; // owned tool result
+                if (session.messages[index].internal) continue;
                 if (session.messages[index].role == "assistant")
                     liveHostSlot = slot;
                 break;
@@ -12318,16 +12300,12 @@ public final class OpenCodeRoot : VBox
                     Insets nestPad;
                     nestPad.left = toolNestIndent;
                     auto nest = new TurnNest(nestPad);
-                    if (childMessages.length > 0)
-                        addActionGroups(nest, childMessages, childIndices, *session,
-                            latestAssistantIndex, versionPositions,
-                            versionTotals);
+                    addRoundToolRows(nest, message, childMessages, childIndices,
+                        slot == liveHostSlot, *session, latestAssistantIndex,
+                        versionPositions, versionTotals);
                     if (slot == liveHostSlot)
                     {
-                        // Use the same key before, during and after execution.
-                        // A different live key reset an expanded action group
-                        // as soon as its first result settled.
-                        addLiveToolRows(nest, session.messages[path[slot]].id);
+                        if (activityRowWanted()) nest.add(_activityRow);
                         liveRowsAdded = true;
                         // This nest carries the live progress row (and/or the
                         // running tool rows). When the host turn has no prose or
@@ -12426,6 +12404,18 @@ public final class OpenCodeRoot : VBox
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
             addLiveToolRows(_messageColumn, "live");
+        // Keep the newest concrete action discoverable after it finishes. Once
+        // a newer prompt or reply exists, the old group returns to normal history.
+        foreach_reverse (child; messageColumnVisuals())
+        {
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                group.setShowTail(true);
+                break;
+            }
+            if (auto bubble = cast(MessageBubble) child)
+                if (!bubble.hidden()) break;
+        }
         // Steering typed while this turn is still running is queued durably and
         // injected at the next valid message boundary. Show it now as a
         // dimmed, pending user bubble so submitting a prompt never looks like
@@ -12918,82 +12908,83 @@ public final class OpenCodeRoot : VBox
             group.setCollapsed(*saved);
     }
 
-    /// Add one action group per run of the same kind of tool call, so a round
-    /// that first read three files and then edited two reads as two stacked
-    /// headers ("Explored 3 files", "Edited 2 files") instead of one mixed
-    /// summary. Key order follows the calls, so the round's shape is stable.
-    private void addActionGroups(VBox target, const(ChatMessage)[] callMessages,
-        const(size_t)[] indices, ref const ChatSession session,
-        int latestAssistantIndex,
+    /// Keep a round's tool slots in request order while parallel results arrive.
+    /// A completed result replaces its live row without changing the group key.
+    private void addRoundToolRows(VBox target, const ref ChatMessage message,
+        const(ChatMessage)[] results, const(size_t)[] indices, bool includeLive,
+        ref const ChatSession session, int latestAssistantIndex,
         size_t[] versionPositions, size_t[] versionTotals)
     {
-        if (callMessages.length == 0) return;
-        if (!_settings.groupSameAction)
+        auto calls = message.toolCalls.dup;
+        if (includeLive)
         {
-            addToolSlots(target, callMessages[0].id, callMessages, indices,
-                session, latestAssistantIndex, versionPositions,
-                versionTotals);
-            return;
-        }
-        // A `tool` result stores its request id, not the tool's name, so the
-        // run is split on the name looked up from the call it answers.
-        // A round's calls each keep a distinct kind (read, then write, then a
-        // command), so consecutive rows of the same kind stay together and a
-        // change of kind starts a new header. A row whose call cannot be found
-        // returns ActionKind.other, which also separates it rather than
-        // silently absorbing it into whatever preceded it.
-        size_t start;
-        auto kindAt = (size_t i) => actionKindOf(
-            toolNameForResult(session, callMessages[i]));
-        foreach (i; 1 .. callMessages.length)
-        {
-            if (kindAt(i) == kindAt(start)) continue;
-            addToolSlots(target, callMessages[start].id,
-                callMessages[start .. i], indices[start .. i], session,
-                latestAssistantIndex, versionPositions, versionTotals);
-            start = i;
-        }
-        addToolSlots(target, callMessages[start].id,
-            callMessages[start .. $], indices[start .. $], session,
-            latestAssistantIndex, versionPositions, versionTotals);
-    }
-
-    /// Build one action group for a run of tool results and add it to `target`.
-    /// `key` is the run's first tool-call id, so a run's expanded state survives
-    /// the rebuilds that happen while the round streams.
-    private ToolGroupBubble addToolSlots(VBox target, string key,
-        const(ChatMessage)[] callMessages, const(size_t)[] indices,
-        ref const ChatSession session,
-        int latestAssistantIndex, size_t[] versionPositions,
-        size_t[] versionTotals)
-    {
-        if (callMessages.length == 0) return null;
-        Widget[] parts;
-        foreach (i, call; callMessages)
-        {
-            // Each row must keep its real transcript index: its right-click menu
-            // (Copy / Open file / Open folder) and workspace both resolve the
-            // message by that index, so the group's own length is not a valid
-            // placeholder.
-            const rowIndex = i < indices.length ? indices[i]
-                : session.messages.length;
-            auto row = buildMessageBubble(rowIndex, call,
-                latestAssistantIndex, versionPositions, versionTotals);
-            // A restored `tool` result often carries no `toolName` of its own
-            // (the name lives on the assistant's `toolCalls`), so resolve it
-            // here: without this every row summarized as an anonymous "Worked"
-            // and the same-action grouping had nothing to name.
-            if (call.toolName.length == 0)
+            void appendCall(const ref OpenCodeToolCall candidate)
             {
-                auto resolved = toolNameForResult(session, call);
-                if (resolved.length > 0) row.setToolName(resolved);
+                foreach (call; calls)
+                    if (candidate.id.length > 0 ? call.id == candidate.id :
+                        call.name == candidate.name &&
+                        call.arguments == candidate.arguments)
+                        return;
+                calls ~= candidate;
             }
-            parts ~= row;
+            foreach (call; _liveToolCalls) appendCall(call);
+            foreach (call; _preparingToolCalls) appendCall(call);
         }
-        auto group = new ToolGroupBubble(parts);
-        wireToolGroup(group, key);
-        target.add(group);
-        return group;
+        Widget[] parts;
+        string[] names, ids;
+        foreach (call; calls)
+        {
+            Widget part;
+            foreach (i, result; results)
+                if (call.id.length > 0 && result.toolCallId == call.id)
+                {
+                    auto row = buildMessageBubble(indices[i], result,
+                        latestAssistantIndex, versionPositions, versionTotals);
+                    if (result.toolName.length == 0) row.setToolName(call.name);
+                    part = row;
+                    break;
+                }
+            if (part is null && includeLive)
+            {
+                foreach (live; _liveToolCalls)
+                    if (live.id == call.id && live.name == call.name)
+                    {
+                        part = buildLiveToolRow(live, true);
+                        break;
+                    }
+                if (part is null)
+                    foreach (preparing; _preparingToolCalls)
+                        if (preparing.id == call.id && preparing.name == call.name)
+                        {
+                            part = buildLiveToolRow(preparing, false);
+                            break;
+                        }
+            }
+            if (part is null) continue;
+            parts ~= part;
+            names ~= call.name;
+            ids ~= call.id;
+        }
+        void addGroup(size_t start, size_t end)
+        {
+            bool live;
+            foreach (part; parts[start .. end])
+                if (cast(LiveToolRow) part !is null) live = true;
+            auto group = new ToolGroupBubble(parts[start .. end], live);
+            wireToolGroup(group, message.id ~ ":" ~
+                (ids[start].length > 0 ? ids[start] : to!string(start)));
+            target.add(group);
+        }
+        if (parts.length == 0) return;
+        size_t start;
+        foreach (i; 1 .. parts.length)
+            if (_settings.groupSameAction &&
+                actionKindOf(names[i]) != actionKindOf(names[start]))
+            {
+                addGroup(start, i);
+                start = i;
+            }
+        addGroup(start, parts.length);
     }
 
     /// Build the in-flight row for one tool call: name/subtitle, a provisional
@@ -13003,6 +12994,11 @@ public final class OpenCodeRoot : VBox
         bool running)
     {
         auto row = new LiveToolRow();
+        const key = call.id.length > 0 ? call.id : call.name;
+        if (auto started = key in _liveToolStartedAt)
+            row._started = *started;
+        else
+            _liveToolStartedAt[key] = row._started;
         const title = running ? humanToolTitle(call.name)
             : humanToolProgressTitle(call.name);
         row.setSummary(call.name, title,
@@ -13629,6 +13625,7 @@ public final class OpenCodeRoot : VBox
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         _preparingToolCalls.length = 0;
+        _liveToolStartedAt = null;
         // Each assistant turn counts its own output from zero.
         _liveOutputBytes = 0;
         _liveOutputTokens = 0;
@@ -25747,13 +25744,20 @@ public final class OpenCodeRoot : VBox
     public void appendToolRequestTurnForTesting(string reasoning, string callId,
         string name, string args, string content = "")
     {
+        appendToolRequestBatchForTesting(
+            [OpenCodeToolCall(callId, name, args)], reasoning, content);
+    }
+
+    public void appendToolRequestBatchForTesting(const(OpenCodeToolCall)[] calls,
+        string reasoning = "", string content = "")
+    {
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
         ChatMessage message;
         message.role = "assistant";
         message.reasoning = reasoning;
         message.content = content;
-        message.toolCalls = [OpenCodeToolCall(callId, name, args)];
+        message.toolCalls = calls.dup;
         message.time = currentTimestamp();
         appendMessage(*session, message);
         rebuildMessageColumn();
@@ -26604,6 +26608,17 @@ public final class OpenCodeRoot : VBox
     public int scrollYForTesting()
     {
         return _messagesScroll.scrollY();
+    }
+
+    public Rect lastToolResultBoundsForTesting()
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (bubbles.length == 0) return Rect.init;
+        auto bubble = bubbles[$ - 1];
+        for (Widget ancestor = bubble; ancestor !is null; ancestor = ancestor.parent())
+            if (!ancestor.visible()) return Rect.init;
+        const origin = bubble.localToGlobal(Point(0, 0));
+        return Rect(origin.x, origin.y, bubble.bounds().width, bubble.bounds().height);
     }
 
     /// Test-only: the `tool` result bubble at index `n`'s compact argument
