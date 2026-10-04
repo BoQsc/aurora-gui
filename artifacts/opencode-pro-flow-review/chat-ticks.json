@@ -1,0 +1,45 @@
+{
+  "baseline_commit": "2326235cc1b96209508851d44bdc60b69542d02b",
+  "conversations": 100,
+  "selected_messages": 1502,
+  "scope": "Root/widget UI tick only; excludes painting, provider, and persistence",
+  "trials": 5,
+  "ticks_per_trial": 300,
+  "before": {
+    "median_us": 1159,
+    "p95_us": 6294,
+    "median_trials_us": [
+      1097,
+      1159,
+      1462,
+      1254,
+      1060
+    ],
+    "p95_trials_us": [
+      3815,
+      6294,
+      10362,
+      8766,
+      6045
+    ]
+  },
+  "after": {
+    "median_us": 46,
+    "p95_us": 2779,
+    "median_trials_us": [
+      46,
+      45,
+      52,
+      49,
+      46
+    ],
+    "p95_trials_us": [
+      2779,
+      2735,
+      3143,
+      2515,
+      3506
+    ]
+  },
+  "speedup": 25.195652173913043
+}

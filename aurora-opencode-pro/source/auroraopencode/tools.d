@@ -1402,9 +1402,8 @@ private string truncateOutputPreview(string text)
     return text[0 .. safe] ~ "\n…(output truncated)";
 }
 
-private string truncateOutput(string text)
+private string saveToolOutput(string text, string sourcePath = "")
 {
-    if (text.length <= maxOutputBytes) return text;
     string savedPath;
     try
     {
@@ -1417,7 +1416,8 @@ private string truncateOutput(string text)
             savedPath = buildPath(outputDir,
                 to!string(Clock.currTime.stdTime) ~ "-" ~
                 to!string(++_toolOutputSequence) ~ ".txt");
-            write(savedPath, text);
+            if (sourcePath.length > 0) fileCopy(sourcePath, savedPath);
+            else write(savedPath, text);
 
             // Keep references useful without allowing unattended agent runs to
             // grow this cache forever. Lexicographic order matches creation
@@ -1436,12 +1436,25 @@ private string truncateOutput(string text)
     }
     catch (Exception) savedPath = "";
 
+    return savedPath;
+}
+
+private string toolOutputReference(string savedPath)
+{
+    if (savedPath.length == 0) return "";
+    return "\nFull output saved to: " ~ savedPath.replace("\\", "/") ~
+        "\nUse `read` with this path and `offset`/`limit` to page it.";
+}
+
+private string truncateOutput(string text)
+{
+    if (text.length <= maxOutputBytes) return text;
+    const savedPath = saveToolOutput(text);
+
     auto result = truncateOutputPreview(text);
     if (savedPath.length > 0)
     {
-        const displayPath = savedPath.replace("\\", "/");
-        result ~= "\nFull output saved to: " ~ displayPath ~
-            "\nUse `read` with this path and `offset`/`limit` to page it.";
+        result ~= toolOutputReference(savedPath);
     }
     return result;
 }
@@ -1528,7 +1541,7 @@ private bool parseToolArgs(string args, ref string command,
 }
 
 private ToolExecution runBash(string args, string workspace,
-    ToolCancellation cancellation = null)
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     string command;
     string shell = "auto";
@@ -1555,7 +1568,7 @@ private ToolExecution runBash(string args, string workspace,
     if (background)
         return startBackgroundProcess(argv, resolvedWorkdir, timeoutMs, "bash");
     auto result = runProcess(argv, resolvedWorkdir, timeoutMs, "bash",
-        cancellation);
+        cancellation, observer);
     return ToolExecution("bash", truncateOutput(result[0]), result[1]);
 }
 
@@ -1564,7 +1577,7 @@ private ToolExecution runBash(string args, string workspace,
 /// bash/cmd/powershell tool: the model names the program and its arguments,
 /// and the app spawns it directly, so no shell syntax or quoting is involved.
 private ToolExecution runProgramTool(string args, string workspace,
-    ToolCancellation cancellation = null)
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -1632,7 +1645,7 @@ private ToolExecution runProgramTool(string args, string workspace,
         return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
             "run");
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
-        cancellation);
+        cancellation, observer);
     return ToolExecution("run", truncateOutput(result[0]), result[1]);
 }
 
@@ -2452,13 +2465,25 @@ version (Windows)
     }
 }
 
-/// Shared process runner used by the shell tool and the native `run` tool.
-/// Spawns `argv` directly (no shell), redirects stdout+stderr to a temp file,
-/// waits up to `timeoutMs`, and kills on timeout. Output is decoded leniently
-/// (console tools emit the OEM codepage, not UTF-8). Returns (output,
-/// timedOut).
+/// Bounded snapshots of output while a foreground command is executing.
+public alias ToolOutputObserver = void delegate(string output);
+
+// Seek to the last bounded bytes; never reread a growing log from the start.
+private string processOutputTail(string path, ulong length, size_t cap = 8192)
+{
+    auto file = File(path, "rb");
+    const start = length > cap ? length - cap : 0;
+    file.seek(cast(long) start);
+    auto bytes = file.rawRead(new ubyte[cast(size_t) (length - start)]);
+    size_t first;
+    if (start > 0)
+        while (first < bytes.length && (bytes[first] & 0xC0) == 0x80) ++first;
+    return decodeBytesLenient(bytes[first .. utf8SafeCut(bytes)]);
+}
+
 private Tuple!(string, bool) runProcess(string[] argv, string workdir,
-    int timeoutMs, string toolName, ToolCancellation cancellation = null)
+    int timeoutMs, string toolName, ToolCancellation cancellation = null,
+    ToolOutputObserver observer = null)
 {
     import std.typecons : tuple;
     import core.atomic : atomicLoad;
@@ -2475,6 +2500,7 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     File outFile;
     if (!tryOpenOutput(outPath, outFile, toolName))
         return tuple("Error: could not open output file.", true);
+    bool preserveOutput;
 
     Pid pid;
     // Give the child an immediately exhausted stdin instead of the app's own.
@@ -2485,6 +2511,12 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     // so such a command exits instead of hanging. Callers that need to feed a
     // process use the background `process` tool, which supplies its own pipe.
     auto nullStdin = openNullStdin();
+    scope (exit) if (nullStdin.isOpen) collectException(nullStdin.close());
+    scope (exit)
+    {
+        if (outFile.isOpen) collectException(outFile.close());
+        if (!preserveOutput) collectException(remove(outPath));
+    }
     try pid = spawnProcess(argv, nullStdin.isOpen ? nullStdin : stdin,
         outFile, outFile, null, Config.suppressConsole, workdir);
     catch (Exception error)
@@ -2496,18 +2528,39 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         return tuple("Error: could not start process: " ~ error.msg, true);
     }
 
+    bool childAlive = true;
+    scope (failure) if (childAlive) killProcessTree(pid);
     const timeout = msecs(timeoutMs);
     auto stopwatch = StopWatch(AutoStart.yes);
     bool timedOut;
     bool cancelled;
     int exitCode;
+    ulong observedBytes;
+    auto nextOutputPoll = MonoTime.currTime;
     // Poll rather than blocking for the whole timeout so a stop request can
     // terminate a long-running command promptly instead of waiting it out.
     while (true)
     {
         const waited = waitTimeout(pid, msecs(100));
+        if (observer !is null && MonoTime.currTime >= nextOutputPoll)
+        {
+            nextOutputPoll = MonoTime.currTime + msecs(250);
+            // Output is best-effort; a temporarily locked log must not abandon
+            // the child process or prevent its terminal result.
+            try
+            {
+                const length = getSize(outPath);
+                if (length != observedBytes)
+                {
+                    observedBytes = length;
+                    observer(processOutputTail(outPath, length));
+                }
+            }
+            catch (Exception) {}
+        }
         if (waited.terminated)
         {
+            childAlive = false;
             exitCode = waited.status;
             break;
         }
@@ -2524,9 +2577,14 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         }
     }
     if (timedOut || cancelled)
+    {
         killProcessTree(pid);
+        childAlive = false;
+    }
+    outFile.close();
 
     string output;
+    bool captureFailed;
     if (exists(outPath))
     {
         try
@@ -2535,11 +2593,32 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
             // console tools, git with a UTF-8 locale) and fall back to a
             // per-byte mapping for legacy OEM-codepage output. Either way the
             // result is valid UTF-8 and safe to persist into JSON sessions.
-            output = decodeBytesLenient(cast(const(ubyte)[]) read(outPath));
+            const length = getSize(outPath);
+            if (length <= maxOutputBytes)
+                output = decodeBytesLenient(cast(const(ubyte)[]) read(outPath));
+            else
+            {
+                auto file = File(outPath, "rb");
+                const head = file.rawRead(new ubyte[maxOutputBytes / 4]);
+                auto savedPath = saveToolOutput("", outPath);
+                if (savedPath.length == 0)
+                {
+                    preserveOutput = true;
+                    savedPath = outPath;
+                }
+                output = decodeBytesLenient(head[0 .. utf8SafeCut(head)]) ~
+                    "\n…(middle of output omitted; latest output follows)\n" ~
+                    processOutputTail(outPath, length, maxOutputBytes / 4) ~
+                    toolOutputReference(savedPath);
+            }
         }
-        catch (Exception) {}
-        try remove(outPath);
-        catch (Exception) {}
+        catch (Exception error)
+        {
+            preserveOutput = true;
+            captureFailed = true;
+            output = "Error: could not read command output: " ~ error.msg ~
+                toolOutputReference(outPath);
+        }
     }
     if (cancelled)
         output = (output.length > 0 ? output ~ "\n" : "") ~
@@ -2552,7 +2631,7 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         output = (output.length > 0 ? output ~ "\n" : "") ~
             "Process exited with code " ~ to!string(exitCode) ~ ".";
     if (output.length == 0) output = "(no output)";
-    return tuple(output, timedOut || cancelled || exitCode != 0);
+    return tuple(output, timedOut || cancelled || captureFailed || exitCode != 0);
 }
 
 private bool tryOpenOutput(string outPath, out File outFile, string toolName)
@@ -4535,7 +4614,7 @@ private string[] expandPostEditCommand(const ref PostEditHook hook,
 
 private void runPostEditHooks(const(PostEditHook)[] hooks, string workspace,
     const(string)[] targets, ToolCancellation cancellation,
-    ref ToolExecution result)
+    ref ToolExecution result, ToolOutputObserver observer = null)
 {
     size_t passed;
     foreach (hook; hooks)
@@ -4549,7 +4628,7 @@ private void runPostEditHooks(const(PostEditHook)[] hooks, string workspace,
             break;
         }
         auto outcome = runProcess(argv, workspace, hook.timeoutMs,
-            "post-edit hook", cancellation);
+            "post-edit hook", cancellation, observer);
         if (outcome[1])
         {
             result.failed = true;
@@ -4571,62 +4650,73 @@ private void runPostEditHooks(const(PostEditHook)[] hooks, string workspace,
 /// out-of-band so the UI can attach them after the batch's tool messages.
 public ToolExecution executeTool(const OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation = null,
-    ChangeContext changeContext = ChangeContext.init)
+    ChangeContext changeContext = ChangeContext.init,
+    ToolOutputObserver observer = null)
 {
     const started = MonoTime.currTime;
     ToolExecution result;
-    if (call.name == "write" || call.name == "edit" ||
-        call.name == "apply_patch" || call.name == "copy" ||
-        call.name == "move" || call.name == "rename" ||
-        call.name == "create_folder" || call.name == "remove")
+    try
     {
-        // Multiple conversations may work in one project. Serialize workspace
-        // mutations so two tool workers can never write/delete concurrently;
-        // context-checked edit/patch calls then detect stale anchors cleanly.
-        auto mutationLock = workspaceMutationLock(workspace);
-        mutationLock.lock();
-        scope (exit) mutationLock.unlock();
-        const hookConfig = loadPostEditHooks(workspace);
-        if (hookConfig.error.length > 0)
-            return ToolExecution(call.name,
-                "Error: invalid post-edit hook configuration: " ~
-                hookConfig.error, true);
-        string[] journalTargets;
-        FileSnapshot[] before;
-        if (changeContext.conversationId.length > 0 ||
-            hookConfig.hooks.length > 0)
+        if (cancellation !is null && cancellation.cancelled())
+            return ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
+        if (call.name == "write" || call.name == "edit" ||
+            call.name == "apply_patch" || call.name == "copy" ||
+            call.name == "move" || call.name == "rename" ||
+            call.name == "create_folder" || call.name == "remove")
         {
-            try
-            {
-                journalTargets = mutationTargetPaths(call, workspace);
-                before = snapshotTargets(journalTargets);
-            }
-            catch (Exception error)
+            // Multiple conversations may work in one project. Serialize workspace
+            // mutations so two tool workers can never write/delete concurrently;
+            // context-checked edit/patch calls then detect stale anchors cleanly.
+            auto mutationLock = workspaceMutationLock(workspace);
+            mutationLock.lock();
+            scope (exit) mutationLock.unlock();
+            // Stop may arrive while another conversation owns the workspace lock.
+            if (cancellation !is null && cancellation.cancelled())
+                return ToolExecution(call.name, "Stopped: tool cancelled before the file change.", true);
+            const hookConfig = loadPostEditHooks(workspace);
+            if (hookConfig.error.length > 0)
                 return ToolExecution(call.name,
-                    "Error: could not create the safety snapshot: " ~
-                    error.msg, true);
-        }
-        result = dispatchTool(call, workspace, cancellation);
-        if (!result.failed && hookConfig.hooks.length > 0)
-            runPostEditHooks(hookConfig.hooks, workspace, journalTargets,
-                cancellation, result);
-        if (changeContext.conversationId.length > 0)
-        {
-            try
+                    "Error: invalid post-edit hook configuration: " ~
+                    hookConfig.error, true);
+            string[] journalTargets;
+            FileSnapshot[] before;
+            if (changeContext.conversationId.length > 0 ||
+                hookConfig.hooks.length > 0)
             {
-                const after = snapshotTargets(journalTargets);
-                const transactionId = call.id.length > 0 ? call.id :
-                    to!string(Clock.currTime.stdTime);
-                recordMutation(call, workspace, changeContext, before, after,
-                    transactionId);
+                try
+                {
+                    journalTargets = mutationTargetPaths(call, workspace);
+                    before = snapshotTargets(journalTargets);
+                }
+                catch (Exception error)
+                    return ToolExecution(call.name,
+                        "Error: could not create the safety snapshot: " ~
+                        error.msg, true);
             }
-            catch (Exception error)
-                result.output ~= "\nWarning: the change was made, but its " ~
-                    "safety snapshot could not be saved: " ~ error.msg;
+            result = dispatchTool(call, workspace, cancellation, observer);
+            if (!result.failed && hookConfig.hooks.length > 0)
+                runPostEditHooks(hookConfig.hooks, workspace, journalTargets,
+                    cancellation, result, observer);
+            if (changeContext.conversationId.length > 0)
+            {
+                try
+                {
+                    const after = snapshotTargets(journalTargets);
+                    const transactionId = call.id.length > 0 ? call.id :
+                        to!string(Clock.currTime.stdTime);
+                    recordMutation(call, workspace, changeContext, before, after,
+                        transactionId);
+                }
+                catch (Exception error)
+                    result.output ~= "\nWarning: the change was made, but its " ~
+                        "safety snapshot could not be saved: " ~ error.msg;
+            }
         }
+        else
+            result = dispatchTool(call, workspace, cancellation, observer);
     }
-    else
-        result = dispatchTool(call, workspace, cancellation);
+    catch (Exception error)
+        result = ToolExecution(call.name, "Error: tool execution failed: " ~ error.msg, true);
     // Microsecond precision then round to ms. An in-process edit can finish in
     // well under a millisecond; clamping to 1 keeps the label visible and
     // honest ("<1ms" would just be noise) instead of dropping it as 0.
@@ -4854,14 +4944,15 @@ private ToolExecution runRebuildTool(string arguments)
 /// single return point and every exit (including the unknown-tool error) is
 /// measured.
 private ToolExecution dispatchTool(const OpenCodeToolCall call,
-    string workspace, ToolCancellation cancellation = null)
+    string workspace, ToolCancellation cancellation = null,
+    ToolOutputObserver observer = null)
 {
     switch (call.name)
     {
         case "bash":
-            return runBash(call.arguments, workspace, cancellation);
+            return runBash(call.arguments, workspace, cancellation, observer);
         case "run":
-            return runProgramTool(call.arguments, workspace, cancellation);
+            return runProgramTool(call.arguments, workspace, cancellation, observer);
         case "process":
             return runProcessTool(call.arguments);
         case "dshell":

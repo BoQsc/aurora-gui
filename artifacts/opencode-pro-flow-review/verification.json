@@ -1,0 +1,43 @@
+{
+  "checked_at_utc": "2026-10-04T19:41:31.109638+00:00",
+  "build": {
+    "status": "ok",
+    "phase": "relaunching",
+    "reason": "Apply verified wait-notice clarity correction",
+    "command": "dub build --build=release",
+    "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+    "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+    "startedAt": "2026-10-04 22:38:54.7794819",
+    "finishedAt": "2026-10-04 22:40:17.4894711",
+    "durationMs": 82709,
+    "exitCode": 0,
+    "errors": []
+  },
+  "binary": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+  "sha256": "3eea96c6dd9df452eac90b23e555e957bbbae1c9e5815a730d65974d005d2cd9",
+  "binary_mtime_ns": 1791142816724517800,
+  "newest_source": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\source\\auroraopencode\\appui.d",
+  "newest_source_mtime_ns": 1791142662256333600,
+  "source_count": 92,
+  "running_pid": 11140,
+  "process_created_at_utc": "2026-10-04T19:40:17.890159+00:00",
+  "visible_window_count": 2,
+  "checks": {
+    "core_unittests_41_modules": "passed",
+    "SSE_parser_regressions": "passed",
+    "baseline_chat_and_headless_suites": "passed",
+    "pro_full_headless_suite": "passed",
+    "chat_consistency_suite": "passed",
+    "process_output_and_stop_resend_suite": "passed",
+    "pro_local_provider_full_flow_and_quiet_notice": "passed",
+    "shared_WinINet_local_HTTP_suite": "passed",
+    "pro_tools_suite": "passed",
+    "live_output_and_quiet_notice_visual_review": "passed",
+    "diff_whitespace_check": "passed"
+  },
+  "limits": [
+    "UI tick benchmark excludes painting, persistence and model inference",
+    "Hosted-provider answer quality and production workloads not benchmarked",
+    "Native standard release uses installed Windows runtime; portable publication skipped"
+  ]
+}

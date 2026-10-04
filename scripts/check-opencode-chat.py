@@ -9,7 +9,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def check(package, source, name, *, unittest=False):
+def check(package, source, name, *, unittest=False, run_args=()):
     folder = ROOT / package
     output = folder / "build" / (name + ".exe")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -25,6 +25,7 @@ def check(package, source, name, *, unittest=False):
     print(f"Building {name}", flush=True)
     subprocess.run(command, cwd=folder, check=True, timeout=180)
     args = [str(output)]
+    args.extend(run_args)
     if name == "chat-flow-smoke":
         artifacts = ROOT / "artifacts/opencode-chat-review"
         artifacts.mkdir(parents=True, exist_ok=True)
@@ -52,7 +53,11 @@ def main():
     check("aurora-opencode", ["tests/chat_flow_smoke.d"], "chat-flow-smoke")
     check("aurora-opencode", ["tests/headless_smoke.d"], "baseline-headless-smoke")
     if options.pro:
+        check("aurora-opencode-pro", ["tests/chat_consistency_smoke.d"], "chat-consistency-smoke")
+        check("aurora-opencode-pro", ["tests/process_flow_smoke.d"], "process-flow-smoke")
         check("aurora-opencode-pro", ["tests/headless_pro_smoke.d"], "chat-pro-smoke")
+        import runpy
+        runpy.run_path(str(ROOT / "scripts/check-opencode-pro-flow.py"))["main"]()
         from PIL import Image
         artifacts = ROOT / "artifacts/opencode-chat-review"
         for folder, name, target in [

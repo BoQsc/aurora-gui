@@ -4068,6 +4068,8 @@ private final class LiveToolRow : Widget
     private string _toolName;
     private string _title;
     private string _subtitle;
+    private string _callId;
+    private bool _outputPreview;
     // Provisional `+N -M` for a file-mutating tool whose arguments are still
     // streaming (or have just arrived). Replaced by the real result bubble's
     // counters once the tool reports back.
@@ -4177,15 +4179,25 @@ private final class LiveToolRow : Widget
         if (_detail.length == 0) return;
         import std.string : splitLines;
         const lines = splitLines(_detail);
+        const lineLimit = _outputPreview ? 8 : maxDetailLines;
+        const first = _outputPreview && lines.length > lineLimit
+            ? lines.length - lineLimit : 0;
+        _detailTruncated = first > 0;
         foreach (index, raw; lines)
         {
-            if (index >= maxDetailLines)
+            if (index < first) continue;
+            if (index - first >= lineLimit)
             {
                 _detailTruncated = true;
                 break;
             }
-            _detailLines ~= raw.length > maxDetailLineChars
-                ? raw[0 .. maxDetailLineChars] ~ "…" : raw;
+            if (raw.length > maxDetailLineChars)
+            {
+                size_t cut = maxDetailLineChars;
+                while (cut > 0 && (cast(ubyte) raw[cut] & 0xC0) == 0x80) --cut;
+                _detailLines ~= raw[0 .. cut] ~ "…";
+            }
+            else _detailLines ~= raw;
         }
     }
 
@@ -4301,7 +4313,7 @@ private final class LiveToolRow : Widget
         const bodyWidth = maxInt(1, bounds().width - bodyX - padH - 8);
         // An editing tool previews a diff, so tint its rows the way the settled
         // tool body does; other previews (a shell command) stay muted.
-        const diffPreview = _toolName == "edit" || _toolName == "write";
+        const diffPreview = !_outputPreview && (_toolName == "edit" || _toolName == "write");
         foreach (line; _detailLines)
         {
             auto bodyLayout = canvas.layoutText(toUTF32(line), 1,
@@ -4313,7 +4325,8 @@ private final class LiveToolRow : Widget
         if (_detailTruncated)
         {
             auto moreLayout = canvas.layoutText(
-                toUTF32("… " ~ to!string(_detail.length) ~ " bytes"),
+                toUTF32(_outputPreview ? "Latest output · earlier lines omitted"
+                    : "… " ~ to!string(_detail.length) ~ " bytes"),
                 1, FontRole.monospace, null, bodyWidth, false);
             canvas.drawLayout(Point(bodyX, y), moreLayout, opencodeMuted);
         }
@@ -4345,6 +4358,7 @@ private final class LiveToolRow : Widget
 private final class ActivityRow : Widget
 {
     private string _label;
+    private bool _showElapsed = true;
     private double _elapsed = 0;
     private bool _live;
 
@@ -4361,10 +4375,11 @@ private final class ActivityRow : Widget
     /// Set the phase label. The elapsed clock keeps running across phase
     /// changes so the seconds describe how long the assistant has been working
     /// on the request, not just the current phase.
-    void setLabel(string label)
+    void setLabel(string label, bool showElapsed = true)
     {
-        if (_label == label) return;
+        if (_label == label && _showElapsed == showElapsed) return;
         _label = label;
+        _showElapsed = showElapsed;
         invalidate();
     }
 
@@ -4389,7 +4404,7 @@ private final class ActivityRow : Widget
     private string displayText() const
     {
         const seconds = cast(int) _elapsed;
-        return _label ~ (seconds >= 1
+        return _label ~ (_showElapsed && seconds >= 1
             ? "  " ~ to!string(seconds) ~ "s" : "");
     }
 
@@ -8757,6 +8772,9 @@ private final class ConversationRuntime
     OpenCodeToolCall[] liveToolCalls;
     OpenCodeToolCall[] preparingToolCalls;
     MonoTime[string] liveToolStartedAt;
+    string[string] liveToolOutputs;
+    MonoTime lastStreamOutputAt;
+    int lastStreamSilenceSeconds = -1;
     int toolRounds;
     bool finalAnswerRequested;
     bool toolContinuationPaused;
@@ -9042,6 +9060,11 @@ public final class OpenCodeRoot : VBox
     // large payload (a whole file for `write`) does not look like a stall.
     private OpenCodeToolCall[] _preparingToolCalls;
     private MonoTime[string] _liveToolStartedAt;
+    private string[string] _liveToolOutputs;
+    private MonoTime _lastStreamOutputAt;
+    private int _lastStreamSilenceSeconds = -1;
+    private bool _composerWasBusy;
+    private double _usageRefreshAccum = 0;
     // When the current "Preparing tools…" phase began and how many argument
     // bytes have streamed so far. A large payload (a long `type` or a multi-step
     // batch) can stream for a while; showing the age and a growing byte count
@@ -9366,6 +9389,9 @@ public final class OpenCodeRoot : VBox
         rt.liveToolCalls = _liveToolCalls;
         rt.preparingToolCalls = _preparingToolCalls;
         rt.liveToolStartedAt = _liveToolStartedAt;
+        rt.liveToolOutputs = _liveToolOutputs;
+        rt.lastStreamOutputAt = _lastStreamOutputAt;
+        rt.lastStreamSilenceSeconds = _lastStreamSilenceSeconds;
         rt.toolRounds = _toolRounds;
         rt.finalAnswerRequested = _finalAnswerRequested;
         rt.toolContinuationPaused = _toolContinuationPaused;
@@ -9420,6 +9446,9 @@ public final class OpenCodeRoot : VBox
         _liveToolCalls = rt.liveToolCalls;
         _preparingToolCalls = rt.preparingToolCalls;
         _liveToolStartedAt = rt.liveToolStartedAt;
+        _liveToolOutputs = rt.liveToolOutputs;
+        _lastStreamOutputAt = rt.lastStreamOutputAt;
+        _lastStreamSilenceSeconds = rt.lastStreamSilenceSeconds;
         _toolRounds = rt.toolRounds;
         _finalAnswerRequested = rt.finalAnswerRequested;
         _toolContinuationPaused = rt.toolContinuationPaused;
@@ -13015,6 +13044,7 @@ public final class OpenCodeRoot : VBox
         bool running)
     {
         auto row = new LiveToolRow();
+        row._callId = call.id;
         const key = call.id.length > 0 ? call.id : call.name;
         if (auto started = key in _liveToolStartedAt)
             row._started = *started;
@@ -13027,7 +13057,12 @@ public final class OpenCodeRoot : VBox
         int additions, deletions;
         if (previewToolDiff(call.name, call.arguments, additions, deletions))
             row.setDiff(additions, deletions);
-        row.setDetail(humanToolDetail(call.name, call.arguments));
+        if (auto output = call.id in _liveToolOutputs)
+        {
+            row._outputPreview = true;
+            row.setDetail(*output);
+        }
+        else row.setDetail(humanToolDetail(call.name, call.arguments));
         return row;
     }
 
@@ -13715,6 +13750,11 @@ public final class OpenCodeRoot : VBox
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
+        _lastStreamOutputAt = MonoTime.currTime;
+        if (_lastStreamSilenceSeconds >= 30)
+            updateStatus("Generating…");
+        _lastStreamSilenceSeconds = -1;
+        if (_streamBubble !is null) _streamBubble.setStatusLabel("");
         if (!_receivedFirstDelta)
         {
             _receivedFirstDelta = true;
@@ -14193,6 +14233,7 @@ public final class OpenCodeRoot : VBox
         setTurnInFlight(false);
         const hadLiveRows = _preparingToolCalls.length > 0 ||
             _liveToolCalls.length > 0;
+        _liveToolOutputs = null;
         _pendingToolCalls.length = 0;
         _pendingToolImages.length = 0;
         _liveToolCalls.length = 0;
@@ -14218,11 +14259,11 @@ public final class OpenCodeRoot : VBox
     /// happening, so the row is suppressed rather than duplicating them. A
     /// non-empty label pins the row to the end of the column; an empty one
     /// removes it.
-    private void setActivity(string label)
+    private void setActivity(string label, bool showElapsed = true)
     {
         if (_activityRow is null) _activityRow = new ActivityRow();
         const wasPresent = _activityRow.parent() !is null;
-        _activityRow.setLabel(label);
+        _activityRow.setLabel(label, showElapsed);
         _activityRow.setLive(label.length > 0);
         // The live reply mirrors the phase so an empty in-progress bubble says
         // what is happening instead of rendering as a blank block.
@@ -14782,6 +14823,7 @@ public final class OpenCodeRoot : VBox
         // Publish the running calls before the rebuild: it must already show the
         // live rows, otherwise they blink out for one frame.
         _pendingToolCalls = calls.dup;
+        _liveToolOutputs = null;
         _pendingToolImages.length = 0;
         _reportedToolCallIds = null;
         _liveToolCalls = calls.dup;
@@ -14799,10 +14841,9 @@ public final class OpenCodeRoot : VBox
         ChangeContext changeContext;
         changeContext.conversationId = _sessions[sessionIndex].id;
         changeContext.turnId = to!string(requestId);
-        // Reset before the worker is visible to the UI. A Stop click can only
-        // occur after this handler returns, so the worker can no longer clear a
-        // cancellation that the user just requested.
-        _toolCancellation.reset();
+        // Never reset a token held by an abandoned worker. Stop remains latched
+        // for that batch even when the user immediately starts another turn.
+        _toolCancellation = new ToolCancellation();
         // The UI may clear/replace its live arrays as soon as the user cancels
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
@@ -14810,11 +14851,19 @@ public final class OpenCodeRoot : VBox
         auto client = _client;
         auto cancellation = _toolCancellation;
         auto worker = new Thread({
-            runToolWorker(client, sessionIndex, requestId,
+            try runToolWorker(client, sessionIndex, requestId,
                 workerCalls, workspace, cancellation, changeContext);
+            catch (Exception error)
+                foreach (call; workerCalls)
+                    publishToolResult(client, call, ToolExecution(call.name,
+                        "Error: tool worker failed: " ~ error.msg, true), requestId);
         });
         worker.isDaemon = true;
-        worker.start();
+        try worker.start();
+        catch (Exception error)
+            foreach (call; workerCalls)
+                publishToolResult(client, call, ToolExecution(call.name,
+                    "Error: could not start tool worker: " ~ error.msg, true), requestId);
     }
 
     /// A stable signature for a batch of tool calls (name + arguments), used
@@ -14831,9 +14880,8 @@ public final class OpenCodeRoot : VBox
     /// Worker thread body: execute each tool in the batch and push the results
     /// back into the client event queue, which the UI drains on the next tick.
     /// Consecutive read-only calls run together; mutating or process-launching
-    /// calls are exclusive and retain model order. Results are also published
-    /// in model order, not completion order, so parallelism cannot reshuffle
-    /// the transcript.
+    /// calls are exclusive and retain model order. Read results are published
+    /// as they finish; the transcript renders them in original request order.
     private static void runToolWorker(OpenCodeClient client, int sessionIndex,
         ulong requestId, const(OpenCodeToolCall)[] calls, string workspace,
         ToolCancellation cancellation, ChangeContext changeContext)
@@ -14845,7 +14893,8 @@ public final class OpenCodeRoot : VBox
             {
                 publishToolResult(client, calls[slot],
                     executeTool(calls[slot], workspace, cancellation,
-                        changeContext), requestId);
+                        changeContext, toolOutputObserver(client, calls[slot],
+                            requestId)), requestId);
                 ++slot;
                 continue;
             }
@@ -14864,22 +14913,22 @@ public final class OpenCodeRoot : VBox
             {
                 const waveEnd = wave + maxParallelToolWorkers < end
                     ? wave + maxParallelToolWorkers : end;
-                ParallelToolJob[] jobs;
                 Thread[] workers;
                 foreach (call; calls[wave .. waveEnd])
                 {
                     auto job = new ParallelToolJob(call, workspace,
-                        cancellation);
-                    jobs ~= job;
+                        cancellation, client, requestId);
                     auto worker = new Thread(&job.run);
                     worker.isDaemon = true;
                     workers ~= worker;
-                    worker.start();
+                    try worker.start();
+                    catch (Exception)
+                    {
+                        workers.length--;
+                        job.run();
+                    }
                 }
                 foreach (worker; workers) worker.join();
-                foreach (job; jobs)
-                    publishToolResult(client, job.call, job.execution,
-                        requestId);
                 wave = waveEnd;
             }
             slot = end;
@@ -14903,19 +14952,63 @@ public final class OpenCodeRoot : VBox
         string workspace;
         ToolExecution execution;
         ToolCancellation cancellation;
+        OpenCodeClient client;
+        ulong requestId;
 
         this(const ref OpenCodeToolCall source, string workspace,
-            ToolCancellation cancellation)
+            ToolCancellation cancellation, OpenCodeClient client, ulong requestId)
         {
             this.call = source;
             this.workspace = workspace;
             this.cancellation = cancellation;
+            this.client = client;
+            this.requestId = requestId;
         }
 
         void run()
         {
             execution = executeTool(call, workspace, cancellation);
+            publishToolResult(client, call, execution, requestId);
         }
+    }
+
+    private static void delegate(string) toolOutputObserver(OpenCodeClient client,
+        OpenCodeToolCall call, ulong requestId)
+    {
+        return delegate(string output)
+        {
+            OpenCodeEvent progress;
+            progress.kind = OpenCodeEventKind.toolResult;
+            progress.toolRunning = true;
+            progress.toolCallId = call.id;
+            progress.toolName = call.name;
+            progress.requestId = requestId;
+            progress.text = output;
+            client.pushLocalEvent(progress);
+        };
+    }
+
+    private void applyToolOutput(const OpenCodeEvent event)
+    {
+        if (_turnCancelled || event.toolCallId in _reportedToolCallIds) return;
+        bool recognized;
+        foreach (call; _liveToolCalls)
+            if (call.id == event.toolCallId) { recognized = true; break; }
+        if (!recognized) return;
+        _liveToolOutputs[event.toolCallId] = event.text;
+        if (!viewingTurnOwner()) return;
+        void updateRows(Widget widget)
+        {
+            if (auto row = cast(LiveToolRow) widget)
+                if (row._callId == event.toolCallId)
+                {
+                    row._outputPreview = true;
+                    row.setDetail(event.text);
+                }
+            foreach (child; widget.children()) updateRows(child);
+        }
+        updateRows(_messageColumn);
+        _messagesScroll.invalidate();
     }
 
     private static void publishToolResult(OpenCodeClient client,
@@ -14965,6 +15058,7 @@ public final class OpenCodeRoot : VBox
         }
         if (!recognized) return;
         _reportedToolCallIds[event.toolCallId] = true;
+        _liveToolOutputs.remove(event.toolCallId);
         // Drop the reported call from the live set so the "Exploring" row only
         // counts the context tools that are still running.
         foreach (i, call; _liveToolCalls)
@@ -17667,6 +17761,8 @@ public final class OpenCodeRoot : VBox
     private void tickAutoResend()
     {
         if (!_autoResendPending) return;
+        if (_processingRuntimeSession >= 0 &&
+            _processingRuntimeSession != _autoResendSession) return;
         if (_client.busy() || _turnTiming) return;
         // A conversation the user has left must not start a turn behind their
         // back, and a spent budget means the reason in the transcript is the
@@ -20010,6 +20106,13 @@ public final class OpenCodeRoot : VBox
         _sendButton.setText(_stopPending ? "Stopping…" : busy ? "Stop" : "Send");
         _sendButton.setEnabled(!_stopPending);
         _sendButton.setAccent(!busy);
+        if (_composerWasBusy != busy)
+        {
+            _composerWasBusy = busy;
+            _input.setPlaceholder(busy
+                ? "Guide this task…  Enter applies at the next step · Alt+Enter queues a follow-up"
+                : "Ask anything…  @file · /btw · /review");
+        }
     }
 
     // -- context usage meter ---------------------------------------------
@@ -23415,6 +23518,18 @@ public final class OpenCodeRoot : VBox
             if (runtimeId != _loadedRuntimeId &&
                 (runtimeId in _conversationRuntimes) is null)
                 continue;
+            // Idle background conversations have no work to service. Avoid
+            // swapping all their handler fields and taking every client mutex
+            // every frame, but always drain late/local events and title jobs.
+            if (cast(int) runtimeIndex != selectedRuntimeSession)
+            {
+                auto runtime = runtimeForSession(cast(int) runtimeIndex);
+                if (!runtime.busy() && !runtime.titlePending &&
+                    runtime.titleClient is null && !runtime.client.hasPendingEvents() &&
+                    !(_autoResendPending && _autoResendSession == cast(int) runtimeIndex) &&
+                    _interruptSendSession != cast(int) runtimeIndex)
+                    continue;
+            }
             _processingRuntimeSession = cast(int) runtimeIndex;
             loadRuntime(cast(int) runtimeIndex);
         pollModelCompaction(cast(int) runtimeIndex);
@@ -23532,7 +23647,8 @@ public final class OpenCodeRoot : VBox
                     handleToolCalls(*event);
                     break;
                 case OpenCodeEventKind.toolResult:
-                    applyToolResult(*event);
+                    if (event.toolRunning) applyToolOutput(*event);
+                    else applyToolResult(*event);
                     break;
                 case OpenCodeEventKind.done:
                     if (!event.cancelled) _autoResendCount = 0;
@@ -23637,6 +23753,7 @@ public final class OpenCodeRoot : VBox
                 _lastRetryStatusSeconds = seconds;
                 updateStatus("The model provider is busy — retrying… " ~
                     to!string(seconds) ~ "s (Stop to cancel)");
+                setActivity("Provider busy · retrying · " ~ to!string(seconds) ~ "s", false);
             }
         }
         // The upstream model can take several seconds to return its first
@@ -23673,6 +23790,22 @@ public final class OpenCodeRoot : VBox
                     stage = " — response headers received, waiting for output";
                 updateStatus("Waiting for the model… " ~
                     to!string(seconds) ~ "s" ~ stage);
+                setActivity("Waiting for the model · " ~ to!string(seconds) ~ "s", false);
+            }
+        }
+
+        if (_client.busy() && _receivedFirstDelta &&
+            !_client.retryingTransient() && _preparingToolCalls.length == 0)
+        {
+            const quietSeconds = cast(int) (MonoTime.currTime -
+                _lastStreamOutputAt).total!"seconds";
+            if (quietSeconds >= 30 && quietSeconds != _lastStreamSilenceSeconds)
+            {
+                _lastStreamSilenceSeconds = quietSeconds;
+                const label = "No new output for " ~
+                    to!string(quietSeconds) ~ "s · Stop is available";
+                updateStatus(label);
+                setActivity(label, false);
             }
         }
 
@@ -23705,7 +23838,12 @@ public final class OpenCodeRoot : VBox
             loadRuntime(selectedRuntimeSession);
             // A background runtime may have updated the shared usage widget;
             // restore the selected chat's durable usage before painting.
-            refreshUsageBadge();
+            _usageRefreshAccum += deltaSeconds;
+            if (_usageRefreshAccum >= 0.2)
+            {
+                _usageRefreshAccum = 0;
+                refreshUsageBadge();
+            }
         }
 
         if (_sessionsRatioDirty)
@@ -25530,6 +25668,11 @@ public final class OpenCodeRoot : VBox
         return _streamBubble is null ? "" : _streamBubble.statusLabelForTesting();
     }
 
+    public void ageStreamOutputForTesting(int seconds)
+    {
+        _lastStreamOutputAt = MonoTime.currTime - msecs(seconds * 1000);
+    }
+
     /// Test-only: the live activity row's rendered text including the elapsed
     /// suffix ("…  3s"), so a smoke test can prove the clock advances.
     public string activityDisplayTextForTesting()
@@ -25550,6 +25693,7 @@ public final class OpenCodeRoot : VBox
     /// without a real network round-trip.
     public void startTurnClockForTesting()
     {
+        _turnCancelled = false;
         _activeRequestSession = _current;
         beginTurnTiming(_current);
         setTurnInFlight(true);

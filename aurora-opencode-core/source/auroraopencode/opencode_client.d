@@ -52,6 +52,8 @@ struct OpenCodeEvent
     string toolName;
     string toolCallId;
     bool toolFailed;
+    // A bounded output snapshot from an executing tool, not a terminal result.
+    bool toolRunning;
     int diffAdditions;
     int diffDeletions;
     string diffText;
@@ -815,6 +817,13 @@ final class OpenCodeClient
         output = _pending;
         _pending = reusable;
         _pending.length = 0;
+    }
+
+    bool hasPendingEvents()
+    {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
+        return _pending.length > 0;
     }
 
     /**

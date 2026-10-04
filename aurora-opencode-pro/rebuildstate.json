@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply verified chat streaming, recovery, UI and performance improvements",
-  "command": "dub build --build=release --force",
+  "reason": "Apply verified wait-notice clarity correction",
+  "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-04 22:03:20.5859749",
-  "finishedAt": "2026-10-04 22:05:06.422636",
-  "durationMs": 105836,
+  "startedAt": "2026-10-04 22:38:54.7794819",
+  "finishedAt": "2026-10-04 22:40:17.4894711",
+  "durationMs": 82709,
   "exitCode": 0,
   "errors": []
 }
