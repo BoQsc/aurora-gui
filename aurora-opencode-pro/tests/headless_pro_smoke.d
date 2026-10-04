@@ -38,6 +38,21 @@ import std.process : environment;
 import std.string : indexOf, join;
 import std.utf : toUTF32;
 
+/// Parse the `NN.N t/s` figure out of a Thinking header line, in tenths of a
+/// token per second (0 when the line carries no throughput). Lets a test read
+/// the rate a bubble actually renders without a dedicated accessor.
+private int headerRateTenths(string header)
+{
+    const int at = cast(int) header.indexOf(" t/s");
+    if (at < 0) return 0;
+    int start = at - 1;
+    while (start >= 0 && header[start] != ' ') --start;
+    const num = header[start + 1 .. at];
+    const dot = num.indexOf(".");
+    if (dot < 0) return cast(int) (to!double(num) * 10 + 0.5);
+    return to!int(num[0 .. dot]) * 10 + to!int(num[dot + 1 .. $]);
+}
+
 /// Guard against the experimental TrueType `natural` hinter, whose grid
 /// fitting rewrote real glyph outlines (Consolas `X` lost its lower-left arm
 /// at 17px). The app must render with hinting off plus the contrast curve.
@@ -4118,6 +4133,52 @@ int main(string[] args)
             settledHeader);
         root.clickSendButtonForTesting();
         writeln("Tool-call transition preserves Thinking token throughput");
+    }
+
+    // The running throughput readout uses a short recent window, but the
+    // settled reply must store the fair whole-turn decode mean. A deliberate
+    // stall makes the two genuinely different, so the split is enforced by a
+    // check rather than the assumption that "the live number is the turn rate".
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Measure decode throughput"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        root.streamReasoningForTesting(
+            "Open the throughput clock before emitting the answer.");
+        Thread.sleep(140.msecs);
+        root.streamContentForTesting("the first burst of answer tokens");
+        Thread.sleep(120.msecs);
+        // Stall far longer than the live window: the whole-turn mean is dragged
+        // down, while the recent window is reset and next sees only the burst.
+        Thread.sleep(1400.msecs);
+        root.streamContentForTesting("fast");
+        Thread.sleep(140.msecs);
+        root.streamContentForTesting("burst burst burst burst burst burst");
+        const int live = root.liveTokenRateTenthsForTesting();
+        const int turnBeforeFinish = root.turnTokenRateTenthsForTesting();
+        assert(live > 0 && turnBeforeFinish > 0,
+            "throughput never established: live=" ~ to!string(live) ~
+            " turn=" ~ to!string(turnBeforeFinish));
+        assert(live > turnBeforeFinish,
+            "the live readout must follow the fast recent window, above the " ~
+            "stalled whole-turn mean: live=" ~ to!string(live) ~
+            " turn=" ~ to!string(turnBeforeFinish));
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+        const int settled = headerRateTenths(
+            root.lastAssistantThinkingHeaderTextForTesting());
+        const int turnAfterFinish = root.turnTokenRateTenthsForTesting();
+        assert(turnAfterFinish > 0 && settled == turnAfterFinish,
+            "the settled reply must store the whole-turn mean, not the recent " ~
+            "window: settled=" ~ to!string(settled) ~
+            " turn=" ~ to!string(turnAfterFinish));
+        assert(settled < live,
+            "settling must not promote the recent-window burst to the stored " ~
+            "rate: settled=" ~ to!string(settled) ~
+            " live=" ~ to!string(live));
+        writeln(
+            "Settled throughput is the whole-turn mean; live readout the window");
     }
 
     // A tool-only round starts with a durable but empty assistant slot. That

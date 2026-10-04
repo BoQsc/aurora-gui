@@ -259,6 +259,13 @@ private string formatTokenRate(int tenths)
     return to!string(tenths / 10) ~ "." ~ to!string(tenths % 10) ~ " t/s";
 }
 
+/// Window for the LIVE decode-speed readout while a reply streams. The settled
+/// figure stored on the turn stays the whole-turn mean (the honest, benchmark-
+/// comparable throughput); this window only drives the running readout, so a
+/// single stall cannot pin it low for the rest of the turn and fast stretches
+/// (e.g. 400 t/s) are visible as they happen.
+private enum int liveTokenRateWindowMs = 1_000;
+
 /// Compact wall-clock duration for a tool run: `340ms`, `1.5s`, `2m03s`.
 /// Negative or zero durations return "" so an unknown/instant time shows
 /// nothing rather than a misleading `0ms`.
@@ -8792,6 +8799,9 @@ private final class ConversationRuntime
     long tokenRateBaseTokens;
     MonoTime tokenRateStartedAt;
     bool tokenRateStarted;
+    MonoTime rateWindowStartedAt;
+    long rateWindowBaseTokens;
+    int turnTokenRateTenths;
     int liveTotalTokens;
     bool suppressDoneStatus;
     MessageBubble streamBubble;
@@ -8946,6 +8956,9 @@ public final class OpenCodeRoot : VBox
     private long _tokenRateBaseTokens;
     private MonoTime _tokenRateStartedAt;
     private bool _tokenRateStarted;
+    private MonoTime _rateWindowStartedAt;
+    private long _rateWindowBaseTokens;
+    private int _turnTokenRateTenths;
     private int _liveTotalTokens;
     private bool _suppressDoneStatus;
     // Index (into the current session's `messages`) of a user prompt the user
@@ -9417,6 +9430,9 @@ public final class OpenCodeRoot : VBox
         rt.tokenRateBaseTokens = _tokenRateBaseTokens;
         rt.tokenRateStartedAt = _tokenRateStartedAt;
         rt.tokenRateStarted = _tokenRateStarted;
+        rt.rateWindowStartedAt = _rateWindowStartedAt;
+        rt.rateWindowBaseTokens = _rateWindowBaseTokens;
+        rt.turnTokenRateTenths = _turnTokenRateTenths;
         rt.liveTotalTokens = _liveTotalTokens;
         rt.suppressDoneStatus = _suppressDoneStatus;
         rt.streamBubble = _streamBubble;
@@ -9474,6 +9490,9 @@ public final class OpenCodeRoot : VBox
         _tokenRateBaseTokens = rt.tokenRateBaseTokens;
         _tokenRateStartedAt = rt.tokenRateStartedAt;
         _tokenRateStarted = rt.tokenRateStarted;
+        _rateWindowStartedAt = rt.rateWindowStartedAt;
+        _rateWindowBaseTokens = rt.rateWindowBaseTokens;
+        _turnTokenRateTenths = rt.turnTokenRateTenths;
         _liveTotalTokens = rt.liveTotalTokens;
         _suppressDoneStatus = rt.suppressDoneStatus;
         _streamBubble = rt.streamBubble;
@@ -13709,6 +13728,8 @@ public final class OpenCodeRoot : VBox
         _liveTokenRateTenths = 0;
         _tokenRateBaseTokens = 0;
         _tokenRateStarted = false;
+        _rateWindowBaseTokens = 0;
+        _turnTokenRateTenths = 0;
         _liveTotalTokens = 0;
         auto session = &_sessions[sessionIndex];
         ChatMessage message;
@@ -13840,7 +13861,12 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Decode throughput begins at the first observed token sample, excluding
-    /// request/connection/model cold-start latency (time-to-first-token).
+    /// request/connection/model cold-start latency (time-to-first-token). Two
+    /// figures are kept:
+    ///  - the whole-turn mean, stored on the settled message (fair, comparable
+    ///    to an independent measurement of the turn's decode rate);
+    ///  - the recent-window mean, shown only in the live readout while the
+    ///    reply streams, so the running number reflects the current speed.
     private void updateLiveTokenRate()
     {
         const now = MonoTime.currTime;
@@ -13849,13 +13875,27 @@ public final class OpenCodeRoot : VBox
             _tokenRateStarted = true;
             _tokenRateStartedAt = now;
             _tokenRateBaseTokens = _liveOutputTokens;
+            _rateWindowStartedAt = now;
+            _rateWindowBaseTokens = _liveOutputTokens;
             return;
         }
-        const elapsedMs = (now - _tokenRateStartedAt).total!"msecs";
-        const produced = _liveOutputTokens - _tokenRateBaseTokens;
-        if (elapsedMs >= 100 && produced > 0)
+        const turnElapsedMs = (now - _tokenRateStartedAt).total!"msecs";
+        const turnProduced = _liveOutputTokens - _tokenRateBaseTokens;
+        if (turnElapsedMs >= 100 && turnProduced > 0)
+            _turnTokenRateTenths = cast(int)
+                ((turnProduced * 10_000 + turnElapsedMs / 2) / turnElapsedMs);
+        const winElapsedMs = (now - _rateWindowStartedAt).total!"msecs";
+        const winProduced = _liveOutputTokens - _rateWindowBaseTokens;
+        if (winElapsedMs >= 100 && winProduced > 0)
             _liveTokenRateTenths = cast(int)
-                ((produced * 10_000 + elapsedMs / 2) / elapsedMs);
+                ((winProduced * 10_000 + winElapsedMs / 2) / winElapsedMs);
+        // Once the window is full, drop everything older than it so no past
+        // stall keeps pulling the live readout down.
+        if (winElapsedMs >= liveTokenRateWindowMs)
+        {
+            _rateWindowStartedAt = now;
+            _rateWindowBaseTokens = _liveOutputTokens;
+        }
     }
 
     private string liveTokenStatsText() const
@@ -13913,7 +13953,7 @@ public final class OpenCodeRoot : VBox
                 _liveOutputTokens = completionTokens;
             updateLiveTokenRate();
             _streamBubble.setLiveTokens(_liveOutputTokens, false);
-            _streamBubble.setTokenRate(_liveTokenRateTenths);
+            _streamBubble.setTokenRate(_turnTokenRateTenths);
             _streamBubble.setThinkingLive(false);
             _streamBubble.setStreaming(false);
             _streamBubble = null;
@@ -13939,7 +13979,7 @@ public final class OpenCodeRoot : VBox
             if (!cancelled)
                 recordTurnUsage(*message, totalTokens, promptTokens,
                     completionTokens, requestId);
-            message.tokensPerSecondTenths = _liveTokenRateTenths;
+            message.tokensPerSecondTenths = _turnTokenRateTenths;
             publishMessageEvent(AgentEventKind.itemUpdated,
                 _sessions[sessionIndex], *message);
         }
@@ -14096,7 +14136,12 @@ public final class OpenCodeRoot : VBox
          // still unfinished, bounded per user turn. This is what stops the app
          // from silently dropping a pending step; the model still owns the plan
          // and may mark it complete to end the turn early.
-         if ((hasIncompleteTaskSteps(*session) ||
+         // A distinct follow-up is already queued to open the next user turn, so
+         // it will carry the unfinished work forward. Auto-continuing here as
+         // well would manufacture a redundant model request that only re-sends
+         // the history, inflating the re-sent (uncached) input the user pays for.
+         if (session.queuedFollowUps.length == 0 &&
+             (hasIncompleteTaskSteps(*session) ||
              session.verificationStatus == "required") &&
              planContinuationCount(*session) < planContinuationLimit)
          {
@@ -14158,8 +14203,12 @@ public final class OpenCodeRoot : VBox
         // Keep working while the recorded work is provably unfinished, bounded
         // so a stuck model cannot loop forever. The budget is derived from the
         // turn's marker messages, so a new user turn starts over implicitly.
-        const unfinished = hasIncompleteTaskSteps(session) ||
-            session.verificationStatus == "required";
+        // An already-queued follow-up owns the next turn, so it continues the
+        // work itself; auto-continuing here would add a redundant request that
+        // re-sends the whole history for no new progress.
+        const unfinished = session.queuedFollowUps.length == 0 &&
+            (hasIncompleteTaskSteps(session) ||
+            session.verificationStatus == "required");
         return unfinished && planContinuationCount(session) < planContinuationLimit;
     }
 
@@ -14846,8 +14895,8 @@ public final class OpenCodeRoot : VBox
         if (event.completionTokens == 0 && _liveOutputTokens > 0 &&
             message.completionTokens < cast(int) _liveOutputTokens)
             message.completionTokens = cast(int) _liveOutputTokens;
-        if (_liveTokenRateTenths > 0)
-            message.tokensPerSecondTenths = _liveTokenRateTenths;
+        if (_turnTokenRateTenths > 0)
+            message.tokensPerSecondTenths = _turnTokenRateTenths;
         publishMessageEvent(AgentEventKind.itemUpdated, *session, *message);
         if (_streamBubble !is null)
         {
@@ -25999,6 +26048,21 @@ public final class OpenCodeRoot : VBox
     {
         auto bubble = lastAssistantBubbleForTesting();
         return bubble is null ? "" : bubble.thinkingHeaderTextForTesting();
+    }
+
+    /// Test-only: the recent-window decode rate (tenths of a token per second)
+    /// that the live readout shows while a reply streams. Distinct from the
+    /// settled value so a test can prove the two are not conflated.
+    public int liveTokenRateTenthsForTesting() const
+    {
+        return _liveTokenRateTenths;
+    }
+
+    /// Test-only: the whole-turn decode rate (tenths of a token per second)
+    /// that a settled reply stores - the fair mean, not the recent window.
+    public int turnTokenRateTenthsForTesting() const
+    {
+        return _turnTokenRateTenths;
     }
 
     /// Test-only: visual index of the live activity row in the flattened

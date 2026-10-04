@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply plan-first gate (handleToolCalls) and bounded turn-continuation (taskContinuesAfterDone/continueOrCompleteTask) added to appui.d; need compiler verification.",
+  "reason": "Ship test-only decode-rate accessors (liveTokenRateTenthsForTesting / turnTokenRateTenthsForTesting) added to appui.d alongside the enforcing split-t/s regression test.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 01:21:42.0169022",
-  "finishedAt": "2026-10-05 01:22:21.5665691",
-  "durationMs": 39549,
+  "startedAt": "2026-10-05 01:54:05.0489628",
+  "finishedAt": "2026-10-05 01:54:46.3813005",
+  "durationMs": 41332,
   "exitCode": 0,
   "errors": []
 }
