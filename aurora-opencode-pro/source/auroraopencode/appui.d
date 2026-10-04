@@ -14296,6 +14296,27 @@ public final class OpenCodeRoot : VBox
             _preparingToolCalls.length == 0 && _liveToolCalls.length == 0;
     }
 
+    /// Whether the transcript currently shows *some* live "what is happening"
+    /// line for the viewed turn. A busy turn must always satisfy this: several
+    /// transitions (the first streamed fragment, a tool round) clear the phase
+    /// row and hide the live reply, and if a stall or a late event leaves
+    /// nothing in their place the chat looks frozen behind the Stop button even
+    /// though the turn is still running.
+    private bool liveProgressVisible()
+    {
+        if (_activityRow !is null && _activityRow.parent() !is null &&
+            _activityRow.hasLabel())
+            return true;
+        // In-flight tool rows speak for themselves; they are rebuilt for every
+        // view of the live host (or appended at the end when there is no host).
+        if (_preparingToolCalls.length > 0 || _liveToolCalls.length > 0)
+            return true;
+        // A visible live reply with text or reasoning is its own indicator.
+        return _streamBubble !is null && !_streamBubble.hiddenForTesting() &&
+            (_streamBubble.contentLengthForTesting() > 0 ||
+             _streamBubble.hasThinkingForTesting());
+    }
+
     /// Remove the in-flow activity row (reply finished, failed or cancelled).
     private void clearActivity()
     {
@@ -14937,9 +14958,8 @@ public final class OpenCodeRoot : VBox
 
     /// Explicit allow-list, like Codex's per-tool `supports_parallel` metadata.
     /// Unknown tools default to exclusive. `dshell` only exposes where/list/
-    /// info (read-only) plus a bounded sleep that touches nothing, so it is
-    /// parallel-safe; process execution and all file-changing tools
-    /// deliberately stay out of this list.
+    /// info and is therefore read-only; process execution and all file-changing
+    /// tools deliberately stay out of this list.
     private static bool toolSupportsParallel(const ref OpenCodeToolCall call)
     {
         return call.name == "read" || call.name == "glob" ||
@@ -23825,6 +23845,16 @@ public final class OpenCodeRoot : VBox
                     to!string(seconds) ~ "s");
             }
         }
+
+        // Invariant: while the viewed conversation owns a busy turn, the
+        // transcript must always show at least one line of "what is
+        // happening". Some phase transitions (the first streamed fragment, a
+        // tool round) clear the phase row and hide the live reply; if a stall,
+        // a late event, or crash recovery leaves nothing in their place, the
+        // chat reads as frozen behind the Stop button. Re-arm a generic row so
+        // the reader is never left guessing what the turn is doing.
+        if (viewingTurnOwner() && turnIsBusy() && !liveProgressVisible())
+            setActivity("Working…");
 
         // Animate the pulsing "Thinking…" indicator while reasoning streams.
         if (_streamBubble !is null)

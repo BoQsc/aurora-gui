@@ -3846,6 +3846,39 @@ int main(string[] args)
         writeln("Live phase row shows only when no live tool row does");
     }
 
+    // Regression: a busy turn must never leave the transcript with no live
+    // "what is happening" row. The activity row is dropped when the first
+    // streamed fragment arrives and the reply's own header takes over, but if
+    // that fragment never renders (a stall, a cleared phase row, or crash
+    // recovery) the chat looked frozen behind the Stop button. The tick must
+    // re-arm a generic phase row so the reader is never left guessing.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["keep working"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        // Drop the phase row while the reply is still empty and hidden, exactly
+        // the window that used to render nothing while Stop stayed visible.
+        root.clearActivityForTesting();
+        assert(root.turnBusyForTesting(),
+            "the turn was not busy after clearing the phase row");
+        assert(!root.activityVisibleForTesting(),
+            "the phase row was not actually cleared for the test");
+        root.tickTree(0.02);
+        assert(root.activityVisibleForTesting(),
+            "a busy turn with no visible progress left the transcript blank");
+        assert(root.activityTextForTesting().length > 0,
+            "the re-armed phase row carried no label");
+        // Real streamed content must yield the generic row back to the reply.
+        root.streamContentForTesting("Here is the answer.");
+        root.tickTree(0.02);
+        assert(!root.activityVisibleForTesting(),
+            "the generic row stayed after the reply started streaming");
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+        writeln("A busy turn always shows a live progress row");
+    }
+
     // A filename commonly completes well before the rest of a large edit's
     // streamed JSON. Discovering it must refresh the already-created nested
     // row immediately, even when both fragments are in the same 512-byte

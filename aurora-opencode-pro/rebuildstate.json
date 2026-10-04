@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Recompile after fixing backtick-in-string compile error in dshell schema.",
+  "reason": "Show a live progress row whenever the viewed conversation owns a busy turn, so the transcript is never blank behind the Stop button.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 00:17:15.9815617",
-  "finishedAt": "2026-10-05 00:17:55.4381057",
-  "durationMs": 39456,
+  "startedAt": "2026-10-05 00:58:42.5577281",
+  "finishedAt": "2026-10-05 00:59:23.591716",
+  "durationMs": 41034,
   "exitCode": 0,
   "errors": []
 }
