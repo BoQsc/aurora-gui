@@ -133,6 +133,18 @@ int main()
     auto ambiguousEdit = executeTool(makeCall("edit",
         `{"filePath":"dup.txt","oldString":"\talpha","newString":"beta"}`), dir);
     assert(ambiguousEdit.failed, "ambiguous fuzzy edit should fail");
+
+    // A whitespace-only anchor that only matches an empty line used to yield an
+    // empty fuzzy candidate. An empty needle matches at offset 0 forever, so the
+    // occurrence scan never advanced and the edit tool spun (100% CPU) without
+    // ever reporting a result, leaving the turn's live "Editing" rows stuck
+    // forever. It must fail cleanly and quickly instead.
+    write(buildPath(dir, "blank.txt"), "alpha\n\nbeta\n");
+    auto blankEdit = executeTool(makeCall("edit",
+        `{"filePath":"blank.txt","oldString":"   ","newString":"gamma"}`), dir);
+    assert(blankEdit.failed, "whitespace-only anchor should fail, not hang");
+    assert(readText(buildPath(dir, "blank.txt")).indexOf("gamma") < 0,
+        "whitespace-only anchor must not mutate the file");
     writeln("edit tolerates indentation drift but rejects ambiguity");
 
     // write a new file then read it back

@@ -2999,6 +2999,12 @@ private ToolExecution runEdit(string args, string workspace)
         string[] candidates;
         foreach (candidate; lineTrimmedEditMatches(previous, oldString))
         {
+            // A whitespace-only anchor can yield an empty candidate. An empty
+            // needle always "matches" at offset 0, so the occurrence loop below
+            // would never advance and spin forever, wedging the tool worker and
+            // leaving the turn's live tool rows stuck. Such a candidate is not a
+            // usable anchor, so drop it.
+            if (candidate.length == 0) continue;
             if (previous.indexOf(candidate) < 0) continue;
             bool duplicate;
             foreach (seen; candidates)
@@ -3018,7 +3024,9 @@ private ToolExecution runEdit(string args, string workspace)
                 const at = previous.indexOf(candidate, from);
                 if (at < 0) break;
                 ++matchesInFile;
-                from = at + candidate.length;
+                // Always advance: a zero-length needle would otherwise return
+                // the same offset every iteration.
+                from = at + (candidate.length > 0 ? candidate.length : 1);
             }
         }
         if (matchesInFile == 0)
