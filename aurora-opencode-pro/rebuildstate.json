@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply stage-1 tracked plan mode (planmode.d flag, optional update_plan kind/done, prompt block, Settings toggle, core.d field).",
+  "reason": "Apply plan-first gate (handleToolCalls) and bounded turn-continuation (taskContinuesAfterDone/continueOrCompleteTask) added to appui.d; need compiler verification.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 01:06:17.7516151",
-  "finishedAt": "2026-10-05 01:07:19.396907",
-  "durationMs": 61644,
+  "startedAt": "2026-10-05 01:21:42.0169022",
+  "finishedAt": "2026-10-05 01:22:21.5665691",
+  "durationMs": 39549,
   "exitCode": 0,
   "errors": []
 }

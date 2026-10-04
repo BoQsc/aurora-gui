@@ -9104,6 +9104,10 @@ public final class OpenCodeRoot : VBox
     // single unrefreshed plan produces a bounded number of nudges instead of
     // one on every tool round.
     private int[string] _planNudgedAt;
+    // Plan-first gate: at most one skipped mutating round per user turn while
+    // tracked plan mode is on, so an unplanned edit is nudged but never
+    // deadlocks. Keyed by session id; cleared when a new user turn starts.
+    private bool[string] _planGateFired;
     // Experimental computer use: a settled reply that requested no tools would
     // leave the agent idle mid-task (it looks "stuck"). We resume it
     // automatically, bounded per user turn, so a computer-use loop keeps acting
@@ -9131,6 +9135,10 @@ public final class OpenCodeRoot : VBox
     // update_plan call, the checklist has drifted from the actual work; nudge
     // the model to refresh it before continuing.
     private static immutable int planRefreshNudgeCalls = 8;
+    // How many times one user turn may be auto-continued because the recorded
+    // checklist or verification is still unfinished before the turn is allowed
+    // to settle. Bounds a stuck model without dropping the work silently.
+    private static immutable int planContinuationLimit = 4;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -14081,10 +14089,37 @@ public final class OpenCodeRoot : VBox
             setTurnActiveMarker(true, session.id);
             setTurnInFlight(true);
             updateStatus("Reconciling the plan…");
-            startChatRequest(sessionIndex, false);
-            return;
-        }
-        if (hasIncompleteTaskSteps(*session))
+             startChatRequest(sessionIndex, false);
+             return;
+         }
+         // Hold the turn open while the recorded checklist or verification is
+         // still unfinished, bounded per user turn. This is what stops the app
+         // from silently dropping a pending step; the model still owns the plan
+         // and may mark it complete to end the turn early.
+         if ((hasIncompleteTaskSteps(*session) ||
+             session.verificationStatus == "required") &&
+             planContinuationCount(*session) < planContinuationLimit)
+         {
+             ChatMessage continuation;
+             continuation.role = "user";
+             continuation.internal = true;
+             continuation.content = planContinuationMarker ~
+                 (session.verificationStatus == "required"
+                     ? " and verification is still required" : "") ~
+                 ". Continue the next concrete step now, and call update_plan " ~
+                 "as steps finish so the checklist reflects the work.";
+             appendMessage(*session, continuation);
+             session.turnStatus = "running";
+             session.taskStatus = "active";
+             setTurnActiveMarker(true, session.id);
+             setTurnInFlight(true);
+             updateStatus("Continuing unfinished checklist…");
+             publishThreadUpdated(*session);
+             markDirty();
+             startChatRequest(sessionIndex, false);
+             return;
+         }
+         if (hasIncompleteTaskSteps(*session))
         {
             session.turnStatus = "completed";
             session.taskStatus = "active";
@@ -14118,8 +14153,14 @@ public final class OpenCodeRoot : VBox
         if (cancelled || sessionIndex < 0 ||
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
-        return session.queuedGuidance.length > 0 ||
-            planNeedsCompletionReview(session);
+        if (session.queuedGuidance.length > 0 ||
+            planNeedsCompletionReview(session)) return true;
+        // Keep working while the recorded work is provably unfinished, bounded
+        // so a stuck model cannot loop forever. The budget is derived from the
+        // turn's marker messages, so a new user turn starts over implicitly.
+        const unfinished = hasIncompleteTaskSteps(session) ||
+            session.verificationStatus == "required";
+        return unfinished && planContinuationCount(session) < planContinuationLimit;
     }
 
     /// Give the model one chance per real user turn to reconcile an unfinished
@@ -14140,6 +14181,27 @@ public final class OpenCodeRoot : VBox
                 reviewed = true;
         }
         return !reviewed;
+    }
+
+    /// Prefix of the internal message that opens a bounded auto-continuation
+    /// while the recorded work is still unfinished.
+    private enum planContinuationMarker = "Continuation: the checklist is not complete";
+
+    /// How many unfinished-work continuations this user turn already opened.
+    /// Counting the marker messages (rather than external state) makes the bound
+    /// survive compaction/restart and keeps `taskContinuesAfterDone` const-safe.
+    private static int planContinuationCount(const ref ChatSession session)
+    {
+        int count;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal) count = 0;
+            if (message.role == "user" && message.internal &&
+                message.content.startsWith(planContinuationMarker))
+                ++count;
+        }
+        return count;
     }
 
     private string clarifyProviderRequestError(string error) const
@@ -14606,6 +14668,36 @@ public final class OpenCodeRoot : VBox
         return count;
     }
 
+    /// True when the model recorded a durable plan since the current real user
+    /// turn began. A new real user message resets the requirement, so the
+    /// plan-first gate only demands a plan once per turn.
+    private static bool planRecordedThisTurn(const ref ChatSession session)
+    {
+        bool recorded;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal)
+            {
+                recorded = false;
+                continue;
+            }
+            if (message.role == "tool" &&
+                (message.toolName == "update_plan" ||
+                message.toolName == "update_subplan"))
+                recorded = true;
+        }
+        return recorded;
+    }
+
+    /// Index of the first mutating call in the batch, or -1 when none exists.
+    private static int firstMutatingCall(const(OpenCodeToolCall)[] calls)
+    {
+        foreach (index, call; calls)
+            if (isMutatingTool(call.name)) return cast(int) index;
+        return -1;
+    }
+
     /// Add orchestration guidance only after the current assistant tool_calls
     /// has received every tool result. This preserves strict tool pairing and
     /// keeps the note hidden from the user-facing transcript.
@@ -14822,6 +14914,40 @@ public final class OpenCodeRoot : VBox
                 startChatRequest(sessionIndex, false);
             return;
         }
+        // experimental: planmode - plan-first gate. With tracked plan mode on,
+        // a mutating edit must not begin before a durable plan exists for this
+        // user turn. The batch is skipped once (synthetic results plus an
+        // internal nudge) so the next model round records the plan; the gate
+        // never fires twice in a turn, so a model that refuses to plan cannot
+        // deadlock the edit.
+        if (experimentalStrictPlanEnabled() &&
+            firstMutatingCall(calls) >= 0 &&
+            session.taskSteps.length == 0 &&
+            !planRecordedThisTurn(*session) &&
+            !(session.id in _planGateFired ? _planGateFired[session.id] : false))
+        {
+            _planGateFired[session.id] = true;
+            appendSkippedToolResults(*session, calls,
+                "Tool call skipped: no durable plan recorded for this turn. " ~
+                "Call update_plan first with the concrete remaining steps, " ~
+                "then repeat the edit.");
+            ChatMessage planGate;
+            planGate.role = "user";
+            planGate.internal = true;
+            planGate.content = "Plan-first gate: record the durable plan with " ~
+                "one update_plan call (the concrete remaining steps and their " ~
+                "statuses) before making changes. The edit call will then run.";
+            appendMessage(*session, planGate);
+            session.turnStatus = "running";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            markDirty();
+            if (_current == sessionIndex) rebuildMessageColumn();
+            updateStatus("Recording the plan before the first edit…");
+            if (!_toolContinuationPaused) startChatRequest(sessionIndex, false);
+            return;
+        }
+
         ++_toolRounds;
 
         // Repeated calls still execute. On the third consecutive identical
@@ -17438,6 +17564,11 @@ public final class OpenCodeRoot : VBox
         }
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
+        if (userTurn)
+        {
+            // A fresh user request clears the once-per-turn plan-first nudge.
+            _planGateFired[_sessions[sessionIndex].id] = false;
+        }
         // A turn is about to read and extend this conversation's transcript.
         ensureThreadLoaded(sessionIndex);
         auto session = &_sessions[sessionIndex];
