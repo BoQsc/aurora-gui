@@ -9689,6 +9689,29 @@ public final class OpenCodeRoot : VBox
         }
     }
 
+    /// Maintain the shared active-turn marker as one conversation's turn
+    /// settles. Several chats can run at once, so a chat finishing must not
+    /// delete the marker while another still works: the supervisor writes its
+    /// crash resume note only when this marker survives an interrupted turn, so
+    /// clearing it early would make an unexpected close resume nothing. While
+    /// work remains, re-point the marker at a still-running chat so a crash
+    /// names a live thread; only the last turn to settle removes it.
+    private void refreshTurnActiveMarker(int settledIndex)
+    {
+        int busy = -1;
+        foreach (i, session; _sessions)
+            if (cast(int) i != settledIndex && session.id.length > 0 &&
+                sessionIsBusy(cast(int) i))
+            {
+                busy = cast(int) i;
+                break;
+            }
+        if (busy >= 0)
+            setTurnActiveMarker(true, _sessions[busy].id);
+        else
+            setTurnActiveMarker(false);
+    }
+
     /**
      * Continue the conversation after an unexpected shutdown.
      *
@@ -10496,7 +10519,9 @@ public final class OpenCodeRoot : VBox
     {
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
         if (exists(path)) return;
-        if (!turnIsBusy()) return;
+        // Any conversation, not only the loaded one: a background chat may be
+        // the one a rebuild interrupts, and it must still be resumed.
+        if (!anyTurnIsBusy()) return;
         const sessionId = resumeOwnerSessionId();
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
         writeResumeNoteForRebuild(
@@ -13935,7 +13960,7 @@ public final class OpenCodeRoot : VBox
         recordRequestTokenUsage(requestId, totalTokens, promptTokens,
             completionTokens);
         const sessionIndex = turnOwnerSessionIndex();
-        if (terminal || cancelled) setTurnActiveMarker(false);
+        if (terminal || cancelled) refreshTurnActiveMarker(sessionIndex);
         setTurnInFlight(false);
         _preparingToolCalls.length = 0;
         clearActivity();
@@ -14269,7 +14294,7 @@ public final class OpenCodeRoot : VBox
     {
         error = clarifyProviderRequestError(error);
         const sessionIndex = turnOwnerSessionIndex();
-        setTurnActiveMarker(false);
+        refreshTurnActiveMarker(sessionIndex);
         setTurnInFlight(false);
         _preparingToolCalls.length = 0;
         freezeTurnTiming();
@@ -14346,7 +14371,16 @@ public final class OpenCodeRoot : VBox
                 (*runtime).compactionClient = null;
                 (*runtime).compactionOutput = "";
             }
-        setTurnActiveMarker(false);
+        // The abandoned turn is the loaded conversation's; other chats may
+        // still be working, so only this one is excluded from the marker check.
+        int settled = -1;
+        foreach (i, session; _sessions)
+            if (session.id == _loadedRuntimeId)
+            {
+                settled = cast(int) i;
+                break;
+            }
+        refreshTurnActiveMarker(settled);
         setTurnInFlight(false);
         const hadLiveRows = _preparingToolCalls.length > 0 ||
             _liveToolCalls.length > 0;
@@ -24626,7 +24660,7 @@ public final class OpenCodeRoot : VBox
     {
         _activeRequestId = 0;
         _activeRequestSession = -1;
-        setTurnActiveMarker(false);
+        refreshTurnActiveMarker(_current);
         setTurnInFlight(false);
         freezeTurnTiming();
         continueOrCompleteTask(false);

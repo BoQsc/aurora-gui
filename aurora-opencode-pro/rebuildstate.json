@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Ship test-only decode-rate accessors (liveTokenRateTenthsForTesting / turnTokenRateTenthsForTesting) added to appui.d alongside the enforcing split-t/s regression test.",
+  "reason": "Fix multi-chat resume after rebuild/unexpected close: keep the shared turn-active marker while any chat still runs, and write the rebuild resume note when any chat is busy.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 01:54:05.0489628",
-  "finishedAt": "2026-10-05 01:54:46.3813005",
-  "durationMs": 41332,
+  "startedAt": "2026-10-05 02:04:56.8347321",
+  "finishedAt": "2026-10-05 02:05:34.9400622",
+  "durationMs": 38105,
   "exitCode": 0,
   "errors": []
 }

@@ -1384,6 +1384,36 @@ int main(string[] args)
         writeln("A rebuild resumes the conversation that requested it");
     }
 
+    // Several chats can run at once, and a rebuild or unexpected close must
+    // resume all of them. The supervisor writes its crash note only while the
+    // shared `turn-active` marker exists, so one of several running chats
+    // settling must not delete it. Before this, finishing a single chat cleared
+    // the marker and an unexpected close silently resumed nothing.
+    {
+        root.newChatForTesting();
+        const markerA = root.currentSessionForTesting();
+        root.addConversationForTesting(["user"], ["work in chat A"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        root.newChatForTesting();
+        const markerB = root.currentSessionForTesting();
+        root.addConversationForTesting(["user"], ["work in chat B"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        const markerPath = buildPath(stateDir, "turn-active");
+        write(markerPath, root.sessionIdForTesting(markerB) ~ "\n");
+        // Chat A settles while B keeps running: the marker must survive so an
+        // unexpected close still leaves a resume note for B.
+        root.finishStreamInSessionForTesting(markerA);
+        assert(exists(markerPath),
+            "one of several running chats settling deleted the crash-resume marker");
+        // The last chat to settle clears it, so an idle crash stays silent.
+        root.finishStreamInSessionForTesting(markerB);
+        assert(!exists(markerPath),
+            "the crash-resume marker outlived the last running chat");
+        writeln("The crash-resume marker survives until the last chat settles");
+    }
+
     // A turn that finishes while the user is viewing another conversation is
     // flagged "done, unread" in the sidebar, and opening that conversation
     // clears the flag. This is the "the chat is done but I never looked at it"
