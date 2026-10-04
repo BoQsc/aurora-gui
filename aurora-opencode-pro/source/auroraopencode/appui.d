@@ -53,6 +53,9 @@ import auroraopencode.orchestrator : setOrchestratorSetting,
     experimentalOrchestratorTakePendingTask,
     experimentalOrchestratorTakePendingHalt,
     experimentalOrchestratorTakePendingStatus;
+// experimental: planmode - delete with source/auroraopencode/planmode.d
+import auroraopencode.planmode : experimentalStrictPlanEnabled,
+    setStrictPlanSetting, trackedPlanPromptBlock;
 import auroraopencode.requestintent : explanationOnlyRequest;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
@@ -9516,6 +9519,9 @@ public final class OpenCodeRoot : VBox
         // experimental: orchestrator - apply the persisted switch before any
         // toolset/prompt build.
         setOrchestratorSetting(_settings.experimentalOrchestrator);
+        // experimental: planmode - apply the persisted switch before any
+        // prompt build.
+        setStrictPlanSetting(_settings.experimentalStrictPlan);
         // The subagent action needs the provider; hand it over with the switch.
         setComputerUseProvider(_settings.baseUrl, _settings.apiKey,
             _settings.model);
@@ -17488,6 +17494,8 @@ public final class OpenCodeRoot : VBox
                         "parent_step. This adds one collapsible level without " ~
                         "replacing the main plan. Keep the parent step " ~
                     "in_progress until its outcome is complete.\n";
+                // experimental: planmode - invariants only, no step template.
+                systemPrompt.content ~= trackedPlanPromptBlock();
             }
             if (experimentalOrchestratorEnabled() &&
                 orchestratorSpeaker.length > 0)
@@ -17501,6 +17509,7 @@ public final class OpenCodeRoot : VBox
             // selected response style in it.
             const taskPrompt = durableTaskPrompt(*session,
                 _settings.experimentalNestedPlans) ~
+                trackedPlanPromptBlock() ~
                 promptVerbosityDirective(_settings.verbosity);
             if (taskPrompt.length > 0)
             {
@@ -19446,6 +19455,24 @@ public final class OpenCodeRoot : VBox
         nestedRow.add(nestedCheck);
         optionsBody.add(nestedRow);
 
+        // experimental: planmode - stricter, non-templating checklist upkeep.
+        // Off by default; the invariants never force a research step.
+        auto strictPlanRow = new HBox(8);
+        strictPlanRow.layoutHints().preferredHeight = 32;
+        auto strictPlanCheck =
+            new CheckBox("Tracked plan mode (stricter checklist)");
+        strictPlanCheck.setId("oc-strictplan");
+        strictPlanCheck.setChecked(_settings.experimentalStrictPlan, false);
+        strictPlanCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalStrictPlan = value;
+            setStrictPlanSetting(value);
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        strictPlanRow.add(strictPlanCheck);
+        optionsBody.add(strictPlanRow);
+
         // experimental: computer use - delete with
         // source/auroraopencode/computeruse.d. Highly experimental and off by
         // default: exposes a `computer` tool that drives the local desktop.
@@ -19946,6 +19973,7 @@ public final class OpenCodeRoot : VBox
                 "one collapsible level without replacing the main plan. " ~
                 "Keep the parent step in_progress until its outcome is " ~
                 "complete.\n";
+        prompt ~= trackedPlanPromptBlock();
         if (_current >= 0) prompt ~= durableTaskPrompt(_sessions[_current],
             _settings.experimentalNestedPlans);
 
@@ -26227,6 +26255,13 @@ public final class OpenCodeRoot : VBox
     public void setExperimentalNestedPlansForTesting(bool value)
     {
         _settings.experimentalNestedPlans = value;
+        if (_current >= 0) rebuildMessageColumn();
+    }
+
+    public void setExperimentalStrictPlanForTesting(bool value)
+    {
+        _settings.experimentalStrictPlan = value;
+        setStrictPlanSetting(value);
         if (_current >= 0) rebuildMessageColumn();
     }
 

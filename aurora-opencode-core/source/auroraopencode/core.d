@@ -1119,6 +1119,9 @@ public struct Settings
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
     bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
+    // experimental: planmode - stricter, non-templating plan upkeep. Off by
+    // default; the Settings dialog owns this switch.
+    bool experimentalStrictPlan; // opt-in tracked-plan checklists
     // Highly experimental opt-in: expose the `computer` tool that drives the
     // local desktop (screen/click/type/key/scroll). Off by default; the Settings
     // dialog owns this switch.
@@ -1479,6 +1482,10 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalNestedPlans =
                             found.type == JSONType.true_;
+                if (auto found = "experimentalStrictPlan" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalStrictPlan =
+                            found.type == JSONType.true_;
                 if (auto found = "experimentalComputerUse" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalComputerUse =
@@ -1763,6 +1770,7 @@ public void saveSettings(const ref Settings settings)
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
+    root["experimentalStrictPlan"] = settings.experimentalStrictPlan;
     root["experimentalComputerUse"] = settings.experimentalComputerUse;
     root["experimentalComputerUseVirtualPointer"] =
         settings.experimentalComputerUseVirtualPointer;

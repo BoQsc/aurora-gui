@@ -179,8 +179,10 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "only when the user explicitly asks to discard the existing plan. " ~
         "Also set `objective` to a concise, rewritten one-line goal for the " ~
         "task in your own words, not a copy of the user's message or the " ~
-        "chat title.",
-        `{"type":"object","properties":{"objective":{"type":"string","description":"A concise, rewritten statement of the task's goal in your own words, not a copy of the user's message or the chat title"},"explanation":{"type":"string","description":"Optional explanation for this plan update"},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"}},"required":["step","status"]},"description":"The full checklist, including existing steps"}},"required":["plan"]}`
+        "chat title. Each item may optionally carry `kind` " ~
+        "(research|edit|verify|answer|other) and `done` (how completion is " ~
+        "proven); neither is required and no step order is imposed.",
+        `{"type":"object","properties":{"objective":{"type":"string","description":"A concise, rewritten statement of the task's goal in your own words, not a copy of the user's message or the chat title"},"explanation":{"type":"string","description":"Optional explanation for this plan update"},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"},"kind":{"type":"string","enum":["research","edit","verify","answer","other"],"description":"Optional step category; informational only, never required"},"done":{"type":"string","description":"Optional: the condition that proves this step complete"}},"required":["step","status"]},"description":"The full checklist, including existing steps"}},"required":["plan"]}`
     );
 }
 
@@ -245,7 +247,7 @@ private OpenCodeToolDef updateSubplanToolDefinition()
         "1-based number of that step. The plan array replaces only that " ~
         "step's substeps. Use this only when the user enabled experimental " ~
         "nested plans and a real step needs more detail. One level only.",
-        `{"type":"object","properties":{"parent_step":{"type":"integer","minimum":1,"description":"1-based top-level step number"},"explanation":{"type":"string","description":"Optional explanation"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"]}}},"required":["parent_step","plan"]}`
+        `{"type":"object","properties":{"parent_step":{"type":"integer","minimum":1,"description":"1-based top-level step number"},"explanation":{"type":"string","description":"Optional explanation"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"kind":{"type":"string","enum":["research","edit","verify","answer","other"]},"done":{"type":"string","description":"Condition that proves the substep complete"}},"required":["step","status"]}}},"required":["parent_step","plan"]}`
     );
 }
 
@@ -3684,6 +3686,23 @@ private ToolExecution runUpdatePlan(string args, string workspace)
         if (auto field = "status" in item.object)
             if (field.type == JSONType.string)
                 status = field.str;
+        string kind;
+        if (auto field = "kind" in item.object)
+            if (field.type == JSONType.string)
+                kind = field.str;
+        if (kind.length > 0)
+            switch (kind)
+            {
+                case "research", "edit", "verify", "answer", "other": break;
+                default:
+                    return ToolExecution("update_plan",
+                        "Error: invalid kind '" ~ kind ~ "' (use research, " ~
+                        "edit, verify, answer or other).", true);
+            }
+        string done;
+        if (auto field = "done" in item.object)
+            if (field.type == JSONType.string)
+                done = field.str;
         if (step.length == 0)
             return ToolExecution("update_plan",
                 "Error: every plan step needs non-empty `step` text.", true);
@@ -3698,7 +3717,8 @@ private ToolExecution runUpdatePlan(string args, string workspace)
                     "Error: invalid status '" ~ status ~
                     "' (use pending, in_progress or completed).", true);
         }
-        rendered ~= to!string(index + 1) ~ ". " ~ marker ~ " " ~ step;
+        rendered ~= to!string(index + 1) ~ ". " ~ marker ~ " " ~ step ~
+            (done.length > 0 ? " (done: " ~ done ~ ")" : "");
     }
     if (inProgress > 1)
         return ToolExecution("update_plan",
