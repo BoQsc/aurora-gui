@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Keep latest chat activity visible and preserve tool order and scrolling",
+  "reason": "Apply the new generic Local llama.cpp provider preset, model-aware provider label, and blank local key handling to the running pro app.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-03 08:04:35.9242391",
-  "finishedAt": "2026-10-03 08:05:14.0870292",
-  "durationMs": 38163,
+  "startedAt": "2026-10-03 22:56:17.9294781",
+  "finishedAt": "2026-10-03 22:57:30.0681725",
+  "durationMs": 72138,
   "exitCode": 0,
   "errors": []
 }

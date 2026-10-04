@@ -93,7 +93,12 @@ public immutable ProviderPreset[] providerPresets = [
     ProviderPreset("commandcode", "CommandCode", commandcodeBaseUrl,
         "deepseek/deepseek-v4.1-flash"),
     ProviderPreset("qwen", "Qwen 3.8 27B", "http://127.0.0.1:8080/v1",
-        "Qwen/Qwen3.8-27B")
+        "Qwen/Qwen3.8-27B"),
+    // Generic local llama.cpp (or any OpenAI-compatible) server. The empty
+    // model means "no preferred alias": `/models` discovery fills in whatever
+    // the server has loaded. It shares the Qwen preset's endpoint, so the two
+    // are told apart by their default model (see `providerPresetLabel`).
+    ProviderPreset("llama", "Local llama.cpp", "http://127.0.0.1:8080/v1", "")
 ];
 
 /// Lowercased, whitespace-trimmed base URL with any trailing slashes removed,
@@ -117,17 +122,32 @@ public int providerPresetIndexForBaseUrl(string baseUrl)
 }
 
 /// Display label of the provider serving `baseUrl` ("Custom" when edited).
-public string providerPresetLabel(string baseUrl)
+/// `model` disambiguates presets that share one endpoint: the exact default
+/// model wins, otherwise the endpoint's model-agnostic preset (the generic
+/// local llama.cpp entry) is preferred over a model-specific one.
+public string providerPresetLabel(string baseUrl, string model = "")
 {
-    const index = providerPresetIndexForBaseUrl(baseUrl);
-    return index >= 0 ? providerPresets[cast(size_t) index].name : "Custom";
+    const wanted = normalizedBaseUrl(baseUrl);
+    int fallback = -1;
+    int generic = -1;
+    foreach (index, preset; providerPresets)
+    {
+        if (normalizedBaseUrl(preset.baseUrl) != wanted) continue;
+        if (fallback < 0) fallback = cast(int) index;
+        if (preset.model.length == 0 && generic < 0) generic = cast(int) index;
+        if (model.length > 0 && preset.model.length > 0 &&
+            normalizedModelId(preset.model) == normalizedModelId(model))
+            return preset.name;
+    }
+    const pick = generic >= 0 ? generic : fallback;
+    return pick >= 0 ? providerPresets[cast(size_t) pick].name : "Custom";
 }
 
 unittest
 {
     // The preset table drives both the Settings dropdown and the per-provider
     // key resolution, so its contents and matching must stay stable.
-    assert(providerPresets.length == 3);
+    assert(providerPresets.length == 4);
     assert(providerPresetIndexForBaseUrl(opencodeGoBaseUrl) == 0);
     assert(providerPresetIndexForBaseUrl(commandcodeBaseUrl) == 1);
     assert(providerPresetIndexForBaseUrl("http://127.0.0.1:8080/v1") == 2);
@@ -137,8 +157,17 @@ unittest
     assert(providerPresetLabel(opencodeGoBaseUrl) == "OpenCode");
     assert(providerPresetLabel(commandcodeBaseUrl) == "CommandCode");
     assert(providerPresetLabel("https://example.com/v1") == "Custom");
+    // The Qwen and generic llama.cpp presets share one endpoint; the model
+    // selects the label (the generic preset is the model-agnostic fallback).
+    const localUrl = "http://127.0.0.1:8080/v1";
+    assert(providerPresetLabel(localUrl, "Qwen/Qwen3.8-27B") ==
+        "Qwen 3.8 27B");
+    assert(providerPresetLabel(localUrl, "some-local.gguf") ==
+        "Local llama.cpp");
+    assert(providerPresetLabel(localUrl) == "Local llama.cpp");
     // A local preset never borrows a cloud credential.
     assert(readProviderKey("qwen") == "");
+    assert(readProviderKey("llama") == "");
 }
 
 /// The OpenCode Go catalog serves a few models over the Anthropic `/messages`
@@ -1253,9 +1282,9 @@ private string readAuthProviderKey(string provider)
 /**
  * Best-known API key for a provider preset id.
  *
- * A local endpoint (qwen) usually needs no key, so this returns "" for it
- * rather than borrowing an unrelated cloud credential. CommandCode also checks
- * the opencode CLI's `~/.config/opencode/commandcode.key` file.
+ * A local endpoint (qwen / llama.cpp) usually needs no key, so this returns
+ * "" for it rather than borrowing an unrelated cloud credential. CommandCode
+ * also checks the opencode CLI's `~/.config/opencode/commandcode.key` file.
  */
 public string readProviderKey(string providerId)
 {
@@ -1283,6 +1312,7 @@ public string readProviderKey(string providerId)
             return readDefaultKeyFile();
         }
         case "qwen":
+        case "llama":
             return "";
         case "opencode":
         default:

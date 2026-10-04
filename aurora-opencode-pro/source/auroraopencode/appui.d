@@ -18334,7 +18334,7 @@ public final class OpenCodeRoot : VBox
     /// "Custom", so two different hosts never share a monthly total.
     private string providerUsageLabel()
     {
-        const label = providerPresetLabel(_settings.baseUrl);
+        const label = providerPresetLabel(_settings.baseUrl, _settings.model);
         if (label != "Custom") return label;
         const owner = apiKeyOwnerForBaseUrl(_settings.baseUrl);
         return owner.length > 0 ? owner : "Custom";
@@ -19144,7 +19144,7 @@ public final class OpenCodeRoot : VBox
         providerLabel.layoutHints().preferredWidth = 110;
         providerLabel.setScale(1);
         auto providerButton = providerRow.add(
-            new Button(providerPresetLabel(_settings.baseUrl)));
+            new Button(providerPresetLabel(_settings.baseUrl, _settings.model)));
         providerButton.setId("oc-provider");
         providerButton.layoutHints().flex = 1.0;
         providerButton.onClick = delegate()

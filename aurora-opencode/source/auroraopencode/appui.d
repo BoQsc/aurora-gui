@@ -840,7 +840,7 @@ public final class OpenCodeRoot : VBox
         providerLabel.layoutHints().preferredWidth = 110;
         providerLabel.setScale(1);
         auto providerButton = providerRow.add(
-            new Button(providerPresetLabel(_settings.baseUrl)));
+            new Button(providerPresetLabel(_settings.baseUrl, _settings.model)));
         providerButton.setId("oc-provider");
         providerButton.layoutHints().flex = 1.0;
         providerButton.onClick = delegate()

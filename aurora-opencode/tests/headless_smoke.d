@@ -211,7 +211,7 @@ int main(string[] args)
     // Provider selector: Settings offers OpenCode / CommandCode / Qwen 3.8
     // 27B and fills the editable base URL + model for each.
     const providerNames = root.providerPresetNamesForTesting();
-    assert(providerNames.length == 3, "Expected three provider presets");
+    assert(providerNames.length == 4, "Expected four provider presets");
     assert(root.providerSelectorPresentForTesting(),
         "Settings dialog missing the Provider picker");
     assert(root.selectProviderForTesting(0) ==

@@ -3012,12 +3012,13 @@ int main(string[] args)
     writeln("Legacy tools checkbox + tooltip present in Settings");
 
     // Provider selector: Settings offers OpenCode / CommandCode / Qwen 3.8
-    // 27B and fills the editable base URL + model for each.
+    // 27B / Local llama.cpp and fills the editable base URL + model for each.
     const providerNames = root.providerPresetNamesForTesting();
-    assert(providerNames.length == 3, "Expected three provider presets");
+    assert(providerNames.length == 4, "Expected four provider presets");
     assert(providerNames[0] == "OpenCode" &&
         providerNames[1] == "CommandCode" &&
-        providerNames[2] == "Qwen 3.8 27B",
+        providerNames[2] == "Qwen 3.8 27B" &&
+        providerNames[3] == "Local llama.cpp",
         "Unexpected provider preset names");
     assert(root.providerSelectorPresentForTesting(),
         "Settings dialog missing the Provider picker");
@@ -3033,11 +3034,17 @@ int main(string[] args)
     const qwenSelection = root.selectProviderForTesting(2);
     assert(qwenSelection == "http://127.0.0.1:8080/v1\nQwen/Qwen3.8-27B",
         "Qwen preset filled the wrong endpoint/model: " ~ qwenSelection);
+    // The generic local llama.cpp preset leaves the model blank so `/models`
+    // discovery picks whatever the server actually has loaded.
+    const llamaSelection = root.selectProviderForTesting(3);
+    assert(llamaSelection == "http://127.0.0.1:8080/v1\n",
+        "Local llama.cpp preset should leave the model blank: " ~
+        llamaSelection);
     // Exercise the real dropdown wiring: opening the Provider context menu
     // must keep the Settings dialog alive and its item action must fill the
     // fields (showContextMenuBelow would have closed the dialog).
-    assert(root.providerMenuCountForTesting() == 3,
-        "Provider dropdown should offer three presets");
+    assert(root.providerMenuCountForTesting() == 4,
+        "Provider dropdown should offer four presets");
     const fromMenu = root.chooseProviderFromMenuForTesting(1);
     assert(fromMenu ==
         "https://api.commandcode.ai/provider/v1\ndeepseek/deepseek-v4.1-flash",
@@ -3058,8 +3065,8 @@ int main(string[] args)
     auto providerMenu = cast(ContextMenu) currentTransientPopup(root);
     assert(providerMenu !is null,
         "Clicking the Provider button did not open its dropdown");
-    assert(providerMenu.items().length == 3,
-        "Provider dropdown should offer three presets");
+    assert(providerMenu.items().length == 4,
+        "Provider dropdown should offer four presets");
     assert(findById(root, "oc-settings-base") !is null,
         "Provider dropdown dismissed the Settings dialog");
     writeln("Provider dropdown opens on a real click and keeps Settings open");
