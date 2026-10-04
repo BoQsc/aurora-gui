@@ -90,7 +90,8 @@ private string shellUsageNotes(string shell)
 /// The D-native `dshell` tool definition. It exposes short natural-English
 /// operations while legacy abbreviations remain accepted by the dispatcher for
 /// saved conversations. `list` also supports recursive and filtered discovery,
-/// making dshell the one primary model-facing workspace navigator.
+/// and `sleep` pauses the conversation for a bounded time, making dshell the
+/// one primary model-facing workspace navigator.
 private OpenCodeToolDef dshellToolDefinition()
 {
     return OpenCodeToolDef(
@@ -98,11 +99,11 @@ private OpenCodeToolDef dshellToolDefinition()
         "A tiny shell implemented natively in this application (no external " ~
         "shell). `where` prints the workspace path when specifically needed, " ~
         "`list` discovers files and " ~
-        "directories (optionally recursively or by glob pattern), and `info` " ~
-        "shows metadata. `list` and `info` already return their resolved path, " ~
-        "so do not pair them with `where`. This is the primary tool for " ~
-        "navigating a workspace.",
-        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info"],"description":"Operation: where (workspace path), list (directory discovery), or info (metadata)"},"path":{"type":"string","description":"Optional path, relative to the workspace or absolute; defaults to the workspace"},"recursive":{"type":"boolean","description":"For list: descend into subdirectories"},"pattern":{"type":"string","description":"For list: optional glob matched against paths relative to the listed directory, e.g. **/*.d"}},"required":["command"]}`
+        "directories (optionally recursively or by glob pattern), `info` " ~
+        "shows metadata, and `sleep` pauses for a number of seconds. `list` " ~
+        "and `info` already return their resolved path, so do not pair them " ~
+        "with `where`. This is the primary tool for navigating a workspace.",
+        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info","sleep","wait"],"description":"Operation: where (workspace path), list (directory discovery), info (metadata), or sleep/wait (pause seconds)"},"path":{"type":"string","description":"Optional path, relative to the workspace or absolute; defaults to the workspace"},"recursive":{"type":"boolean","description":"For list: descend into subdirectories"},"pattern":{"type":"string","description":"For list: optional glob matched against paths relative to the listed directory, e.g. **/*.d"},"seconds":{"type":"number","description":"For sleep/wait: seconds to pause, fractional allowed; defaults to 1 and is capped at 300"}},"required":["command"]}`
     );
 }
 
@@ -4964,7 +4965,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "process":
             return runProcessTool(call.arguments);
         case "dshell":
-            return runDshell(call.arguments, workspace);
+            return runDshell(call.arguments, workspace, cancellation);
         case "open":
             return runOpenTool(call.arguments, workspace);
         case "read":
@@ -5209,7 +5210,8 @@ public string previewToolDiffText(string toolName, string argsJson)
 /// The D-native `dshell` tool: a tiny shell implemented in D that covers the
 /// commands the model most often reaches for (pwd, ls/dir, stat) so it never
 /// needs to invoke bash/cmd/powershell for plain directory introspection.
-private ToolExecution runDshell(string args, string workspace)
+private ToolExecution runDshell(string args, string workspace,
+    ToolCancellation cancellation = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -5218,6 +5220,7 @@ private ToolExecution runDshell(string args, string workspace)
     string path;
     bool recursive;
     string pattern;
+    double seconds = 1.0;
     if (value.type == JSONType.object)
     {
         if (auto field = "command" in value.object)
@@ -5232,10 +5235,22 @@ private ToolExecution runDshell(string args, string workspace)
         if (auto field = "pattern" in value.object)
             if (field.type == JSONType.string)
                 pattern = field.str;
+        if (auto field = "seconds" in value.object)
+        {
+            if (field.type == JSONType.float_)
+                seconds = field.floating;
+            else if (field.type == JSONType.integer)
+                seconds = cast(double) field.integer;
+            else if (field.type == JSONType.string)
+            {
+                try seconds = to!double(field.str);
+                catch (Exception) {}
+            }
+        }
     }
     if (command.length == 0)
         return ToolExecution("dshell",
-            "Error: dshell requires a `command` (where, list, or info).",
+            "Error: dshell requires a `command` (where, list, info, or sleep).",
             true);
 
     const resolved = path.length > 0
@@ -5254,11 +5269,56 @@ private ToolExecution runDshell(string args, string workspace)
         case "info":
         case "stat":
             return dshellStat(resolved, workspace);
+        case "sleep":
+        case "wait":
+            return dshellSleep(seconds, cancellation);
         default:
             return ToolExecution("dshell",
                 "Error: unknown dshell command '" ~ command ~
-                "' (expected where, list, or info).", true);
+                "' (expected where, list, info, or sleep).", true);
     }
+}
+
+/// Upper bound on a single `sleep`/`wait`, so a stray or runaway duration cannot
+/// wedge the conversation. Polling the cancellation token below bounds the wait
+/// further: a stop request during the pause returns promptly.
+private enum double dshellSleepMaxSeconds = 300.0;
+
+/// `dshell sleep`/`wait`: pause for the requested number of seconds. Worked in
+/// 100 ms slices so a cancelled conversation stops waiting instead of blocking
+/// until the full duration elapses.
+private ToolExecution dshellSleep(double seconds, ToolCancellation cancellation)
+{
+    auto builder = appender!string();
+    if (seconds <= 0)
+        return ToolExecution("dshell", "Slept 0s; nothing to wait for.", false);
+    const requested = seconds;
+    const capped = seconds > dshellSleepMaxSeconds
+        ? dshellSleepMaxSeconds : seconds;
+    const totalMs = cast(long) (capped * 1000.0 + 0.5);
+    long sleptMs;
+    while (sleptMs < totalMs)
+    {
+        if (cancellation !is null && cancellation.cancelled())
+            return ToolExecution("dshell",
+                "Sleep interrupted after " ~ formatSleepSeconds(sleptMs) ~ ".", true);
+        const step = totalMs - sleptMs < 100 ? totalMs - sleptMs : 100;
+        Thread.sleep(msecs(step));
+        sleptMs += step;
+    }
+    builder.put("Slept " ~ formatSleepSeconds(totalMs));
+    if (requested > dshellSleepMaxSeconds)
+        builder.put(" (requested " ~ to!string(requested) ~ "s, capped at " ~
+            to!string(dshellSleepMaxSeconds) ~ "s)");
+    builder.put(".");
+    return ToolExecution("dshell", builder.data, false);
+}
+
+/// Render a millisecond count as a compact seconds string for sleep output
+/// (`0.1s`, `1.5s`, `300s`).
+private string formatSleepSeconds(long milliseconds)
+{
+    return to!string(milliseconds / 1000.0) ~ "s";
 }
 
 private struct DshellListEntry

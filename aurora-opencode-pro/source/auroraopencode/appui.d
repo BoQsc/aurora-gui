@@ -14937,8 +14937,9 @@ public final class OpenCodeRoot : VBox
 
     /// Explicit allow-list, like Codex's per-tool `supports_parallel` metadata.
     /// Unknown tools default to exclusive. `dshell` only exposes where/list/
-    /// info and is therefore read-only; process execution and all file-changing
-    /// tools deliberately stay out of this list.
+    /// info (read-only) plus a bounded sleep that touches nothing, so it is
+    /// parallel-safe; process execution and all file-changing tools
+    /// deliberately stay out of this list.
     private static bool toolSupportsParallel(const ref OpenCodeToolCall call)
     {
         return call.name == "read" || call.name == "glob" ||

@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply verified wait-notice clarity correction",
+  "reason": "Recompile after fixing backtick-in-string compile error in dshell schema.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-04 22:38:54.7794819",
-  "finishedAt": "2026-10-04 22:40:17.4894711",
-  "durationMs": 82709,
+  "startedAt": "2026-10-05 00:17:15.9815617",
+  "finishedAt": "2026-10-05 00:17:55.4381057",
+  "durationMs": 39456,
   "exitCode": 0,
   "errors": []
 }
