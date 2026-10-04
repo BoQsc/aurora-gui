@@ -1,0 +1,39 @@
+{
+  "verified_at_utc": "2026-10-04T19:06:12.408803+00:00",
+  "checks": {
+    "shared_unittest_modules_passed": 41,
+    "sse_parser": "passed",
+    "baseline_chat_flow": "passed",
+    "baseline_existing_smoke": "passed",
+    "pro_full_smoke": "passed",
+    "actual_wininet_local_http": "passed",
+    "visual_inspection": [
+      "baseline-transcript.png",
+      "baseline-narrow.png",
+      "pro-tools.png",
+      "pro-tool-rounds.png"
+    ]
+  },
+  "release_builds": {
+    "aurora-opencode": {
+      "executable": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode\\aurora-opencode.exe",
+      "newer_than_sources": true,
+      "built_at_utc": "2026-10-04T19:03:04.956066+00:00"
+    },
+    "aurora-opencode-pro": {
+      "executable": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+      "newer_than_sources": true,
+      "built_at_utc": "2026-10-04T19:05:05.221842+00:00"
+    }
+  },
+  "pro_rebuild": {
+    "exit_code": 0,
+    "duration_ms": 105836,
+    "new_pid": 14328,
+    "visible_window_count": 2
+  },
+  "limits": [
+    "Hosted-provider end-to-end quality and latency were not benchmarked.",
+    "Copy interaction tests run with isolated headless clipboards; native owner fix verified against Windows API requirements and release compilation."
+  ]
+}

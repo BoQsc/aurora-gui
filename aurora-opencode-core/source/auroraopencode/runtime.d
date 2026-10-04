@@ -531,6 +531,12 @@ private void applyThreadPayload(ref ChatSession session, JSONValue payload)
     if (payload.type != JSONType.object) return;
     if (auto f = "title" in payload.object)
         if (f.type == JSONType.string) session.title = f.str;
+    if (auto f = "draft" in payload.object)
+        if (f.type == JSONType.string)
+        {
+            session.draft = f.str;
+            session.draftRecorded = true;
+        }
     if (auto f = "model" in payload.object)
         if (f.type == JSONType.string) session.model = f.str;
     if (auto f = "thinking" in payload.object)
@@ -599,6 +605,8 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
         if (f.type == JSONType.string) message.time = f.str;
     if (auto f = "failed" in payload.object)
         message.failed = f.type == JSONType.true_;
+    if (auto f = "error" in payload.object)
+        if (f.type == JSONType.string) message.error = f.str;
     if (auto f = "finishReason" in payload.object)
         if (f.type == JSONType.string) message.finishReason = f.str;
     if (auto f = "internal" in payload.object)
@@ -810,4 +818,23 @@ unittest
     // A fresh runtime resumes numbering from the last record on disk.
     auto resumed = new DurableAgentRuntime(path);
     assert(resumed.latestSequence() == 2);
+}
+
+unittest
+{
+    AgentRuntimeEvent started;
+    started.threadId = "recovery-check";
+    started.kind = AgentEventKind.threadStarted;
+    started.payloadJson = `{"draft":"unsent"}`;
+    auto cleared = started;
+    cleared.kind = AgentEventKind.threadUpdated;
+    cleared.payloadJson = `{"draft":""}`;
+    auto failed = started;
+    failed.kind = AgentEventKind.itemAdded;
+    failed.itemId = "reply";
+    failed.payloadJson = `{"role":"assistant","content":"partial","failed":true,"error":"connection interrupted"}`;
+    auto sessions = projectAgentRuntimeEvents([started, cleared, failed]);
+    assert(sessions.length == 1 && sessions[0].draftRecorded && sessions[0].draft.length == 0);
+    assert(sessions[0].messages.length == 1 && sessions[0].messages[0].content == "partial");
+    assert(sessions[0].messages[0].error == "connection interrupted");
 }

@@ -90,7 +90,7 @@ version (Windows)
 {
     pragma(lib, "user32");
     import core.sys.windows.windows : CF_UNICODETEXT, CloseClipboard,
-        EmptyClipboard, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
+        EmptyClipboard, GetActiveWindow, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
         GMEM_MOVEABLE, HWND, OpenClipboard, SetClipboardData;
     import core.sys.windows.shellapi : ShellExecuteW;
     import std.utf : toUTF16;
@@ -114,7 +114,8 @@ private immutable Color diffCardBorder = Color.fromHex(0x2b2b35);
 version (Windows)
 private bool writeSystemClipboardText(const(dchar)[] value)
 {
-    if (!OpenClipboard(null)) return false;
+    auto owner = GetActiveWindow();
+    if (owner is null || !OpenClipboard(owner)) return false;
     scope (exit) CloseClipboard();
     if (!EmptyClipboard()) return false;
 
@@ -637,7 +638,7 @@ private final class MessageBubble : Widget
     private bool _thinkingCollapsed = true;
     private Rect _thinkingRect;
     private bool _thinkingHover;
-    private double _thinkingElapsed;
+    private double _thinkingElapsed = 0;
     private bool _thinkingLive;
 
     /// Diagnostic: total number of text shapes performed by all bubbles.
@@ -4084,7 +4085,7 @@ private final class LiveToolRow : Widget
     private long _lastBucket = -1;
     // Paces the "still working" dot. Advanced by onTick (not the wall clock)
     // so the animation is driven by the frame loop and stays testable.
-    private double _pulseElapsed;
+    private double _pulseElapsed = 0;
 
     void delegate() onSizeChanged;
 
@@ -4344,7 +4345,7 @@ private final class LiveToolRow : Widget
 private final class ActivityRow : Widget
 {
     private string _label;
-    private double _elapsed;
+    private double _elapsed = 0;
     private bool _live;
 
     // Same insets as every other transcript row so the gap above and below a
@@ -5632,7 +5633,7 @@ private final class ToolGroupBubble : Widget
 
     private long _elapsedBucket = -1;
     // Paces the header's live "still working" dot (see pulseStep).
-    private double _pulseElapsed;
+    private double _pulseElapsed = 0;
 
     protected override Size onMeasure(Size available)
     {
@@ -6513,7 +6514,7 @@ private struct ButtonTooltipBinding
     // Place the panel over the anchor instead of under it (the composer's
     // Send button sits at the bottom edge, where "under" is off-screen).
     bool above;
-    double hoverSeconds;
+    double hoverSeconds = 0;
     // Last text handed to the panel, so a live provider only re-lays it out
     // when the wording actually changed.
     string shownText;
@@ -7716,7 +7717,7 @@ private final class IntroOverlay : Widget
     // such as a prompt naming the app's own source path. When shorter than
     // `_suggestions` (or absent) the label itself is inserted.
     private string[] _prompts;
-    private double _fade;
+    private double _fade = 0;
     private int _hover = -1;
     // Pill geometry is recorded during paint (like MessageBubble's copy/link
     // targets) so hover and click map a point back to the right suggestion
@@ -8123,7 +8124,7 @@ public final class SessionListView : ListView
     // List indices whose conversation is actively working. A small pulsing
     // bar is drawn before their title while `_activityAnimating` drives it.
     private int[] _activityRows;
-    private double _activityElapsed;
+    private double _activityElapsed = 0;
     private bool _activityAnimating;
     // Per-row status flags aligned with `items()`. `_incompleteRows` marks a
     // conversation whose last turn stopped without completing (needs continue);
@@ -8894,7 +8895,7 @@ public final class OpenCodeRoot : VBox
     private MiniChatHost _miniChat;
     // Throttles the snapshot publish so the overlay is refreshed a few times a
     // second instead of on every frame.
-    private double _miniChatAccum;
+    private double _miniChatAccum = 0;
     private Button _modelButton;
     private ThinkingControl _thinkingBox;
     private CheckBox _toolsBox;
@@ -9120,6 +9121,8 @@ public final class OpenCodeRoot : VBox
     // Session persistence is intentionally off the mutation hot path. Bursts of
     // tool results collapse to one save, while shutdown/restart still flushes.
     private bool _stateDirty;
+    private bool[string] _draftsDirty;
+    private MonoTime _draftPersistDue;
     private MonoTime _persistDue;
     private static immutable int persistDebounceMs = 5_000;
     // True while the debounced snapshot is being serialized and written on a
@@ -9160,7 +9163,7 @@ public final class OpenCodeRoot : VBox
     // Hover-intent delay so the tooltip does not flash open just because the
     // pointer swept across the badge on its way to the send button.
     private bool _usageTooltipPending;
-    private double _usageTooltipHoverSeconds;
+    private double _usageTooltipHoverSeconds = 0;
     private static immutable double usageTooltipDelaySeconds = 0.45;
 
     // Hover tooltips for the common toolbar, rail, sidebar, and Send buttons.
@@ -10872,7 +10875,12 @@ public final class OpenCodeRoot : VBox
         _input.setPadding(6);
         _input.setWordWrap(true);
         _input.setPlaceholder("Ask anything…  @file · /btw · /review");
-        _input.onSendRequested = delegate() { sendMessage(); };
+        _input.onSendRequested = delegate()
+        {
+            if (_input.textUtf8().strip().length == 0 &&
+                _pendingAttachments.length == 0) return;
+            sendMessage();
+        };
         _input.onQueueRequested = delegate() { queueFollowUp(); };
         // experimental: attachments - turn a large paste into a text chip.
         _input.onLargePaste = delegate(string before, string after)
@@ -10883,7 +10891,21 @@ public final class OpenCodeRoot : VBox
         // Keep the intro highlight honest: if the composer text stops carrying
         // the pill's insertion (the user edited or cleared it), drop the
         // highlight so a later press starts a fresh selection.
-        _input.onChanged = delegate() { syncIntroSelection(); };
+        _input.onChanged = delegate()
+        {
+            syncIntroSelection();
+            if (!_startupLoadPending)
+            {
+                syncComposerDraft();
+                if (_current >= 0 && _sessions[_current].id.length > 0)
+                {
+                    if (_draftsDirty.length == 0)
+                        _draftPersistDue = MonoTime.currTime + msecs(750);
+                    _draftsDirty[_sessions[_current].id] = true;
+                }
+                markDirty();
+            }
+        };
         _sendButton = new ChatSendButton();
         _sendButton.setId("oc-send");
         _sendButton.onClick = delegate()
@@ -11566,9 +11588,6 @@ public final class OpenCodeRoot : VBox
         _sessions[index].model = _settings.model;
         _settings.thinking = _sessions[index].thinking;
         _modelButton.setText(_settings.model);
-        // See the picker's switch: a per-model discovery entry must not survive
-        // a change of model.
-        _providerContextLimits = null;
         refreshThinkingControl();
         markDirty();
         updateStatus("");
@@ -11609,6 +11628,7 @@ public final class OpenCodeRoot : VBox
     {
         JSONValue payload;
         payload["title"] = session.title;
+        payload["draft"] = session.draft;
         payload["model"] = session.model;
         payload["thinking"] = session.thinking;
         payload["projectId"] = session.projectId;
@@ -11769,6 +11789,7 @@ public final class OpenCodeRoot : VBox
             payload["reasoning"] = message.reasoning;
         if (message.time.length > 0) payload["time"] = message.time;
         if (message.failed) payload["failed"] = true;
+        if (message.error.length > 0) payload["error"] = message.error;
         if (message.finishReason.length > 0)
             payload["finishReason"] = message.finishReason;
         if (message.internal) payload["internal"] = true;
@@ -13216,7 +13237,7 @@ public final class OpenCodeRoot : VBox
         bubble.setContent(message.content);
         // Local file/folder paths in the message open against the workspace the
         // message was written in.
-        bubble.setWorkspace(workspaceForSession(cast(int) index));
+        bubble.setWorkspace(workspaceForSession(_current));
         if (message.role == "user" && message.images.length > 0)
             bubble.setImages(message.images);
         // A tool-call wrapper with no prose and no reasoning to show is not a
@@ -13290,7 +13311,14 @@ public final class OpenCodeRoot : VBox
         if (message.time.length > 0)
             bubble.setTime(message.time);
         if (message.failed)
+        {
             bubble.setFailed("");
+            if (message.error.length > 0)
+                bubble.setContent(message.content ~
+                    (message.content.length > 0 ? "\n\n" : "") ~
+                    "Request failed:\n\n```text\n" ~
+                    message.error.replace("```", "`` `") ~ "\n```");
+        }
         bubble.onContextMenuRequested =
             delegate(int messageIndex, Point globalPosition, string linkTarget,
                 Point localPosition)
@@ -14125,9 +14153,7 @@ public final class OpenCodeRoot : VBox
         }
         clearActivity();
         auto message = &session.messages[replyIndex];
-        message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
-            "Error:\n\n```text\n" ~
-            error.replace("```", "`` `") ~ "\n```";
+        message.error = error;
         message.failed = true;
         session.turnStatus = "failed";
         session.taskStatus = "blocked";
@@ -15547,8 +15573,7 @@ public final class OpenCodeRoot : VBox
         auto session = &_sessions[_current];
         if (session.title == "New chat" || session.title.length == 0)
         {
-            session.title = baseText.length > 60
-                ? baseText[0 .. 60] ~ "…" : baseText;
+            session.title = chatTitle(baseText);
             updateSessionList();
         }
         session.model = _settings.model;
@@ -15949,7 +15974,7 @@ public final class OpenCodeRoot : VBox
         userMessage.content = text;
         userMessage.time = currentTimestamp();
         appendMessage(*session, userMessage);
-        appendComposerContext(*session, text, workspaceForSession(_current));
+        appendComposerContext(*session, text, workspaceForSession(sessionIndex));
         session.taskStatus = "active";
         session.turnStatus = "running";
         publishThreadUpdated(*session);
@@ -18046,10 +18071,8 @@ public final class OpenCodeRoot : VBox
                 _settings.model = _models[cast(size_t) index];
                 if (_current >= 0) _sessions[_current].model = _settings.model;
                 _modelButton.setText(_settings.model);
-                // A discovered window belongs to the model it was fetched for.
-                // Keeping the map across a switch lets one model's limit meter
-                // a different model, which read as a false "100% context".
-                _providerContextLimits = null;
+                // Discovery is keyed by model and provider. Retain it so returning
+                // to a model keeps the server's configured context window.
                 saveSettingsSoon();
                 markDirty();
                 refreshUsageBadge();
@@ -18064,6 +18087,7 @@ public final class OpenCodeRoot : VBox
         // be clamped over the conversation).
         popup.setAnchor(Rect(origin.x, origin.y, _modelButton.size().width,
             _modelButton.size().height), PopupPlacement.above);
+        popup.setConsumeAnchorPress(_modelButton);
         popup.setBackdrop(Color.rgba(0, 0, 0, 90));
         popup.onDismissed = delegate()
         {
@@ -19155,9 +19179,10 @@ public final class OpenCodeRoot : VBox
             const origin = providerButton.globalOrigin();
             // Keep the Settings dialog open: showContextMenuBelow dismisses
             // every transient popup, including this dialog.
-            showContextMenuKeepPopups(providerButton,
+            auto menu = showContextMenuKeepPopups(providerButton,
                 Point(origin.x, origin.y + providerButton.size().height),
                 items);
+            if (menu !is null) menu.setConsumeAnchorPress(providerButton);
         };
         _settingsProviderButton = providerButton;
 
@@ -20571,11 +20596,16 @@ public final class OpenCodeRoot : VBox
                     _keyUsageFailedAt = 0;
                     _keyUsageTooltip.setStatus("Updated just now", opencodeKeyOk);
                 }
-                else if (_keyUsageShowingCached)
+                else
                 {
+                    _keyUsageShowingCached = (requestId in _keyUsageCache) !is null;
                     _keyUsageFailedAt = Clock.currTime.toUnixTime();
-                    _keyUsageTooltip.setStatus(
-                        "Update failed · showing cached values", opencodeWarning);
+                    if (!_keyUsageShowingCached)
+                        _keyUsageTooltip.setContent("Usage limits",
+                            ["Could not load usage limits. Try again later."]);
+                    _keyUsageTooltip.setStatus(_keyUsageShowingCached ?
+                        "Update failed · showing cached values" : "Update failed",
+                        opencodeWarning);
                 }
                 setStatusIndicator(_keyUsageTooltip);
                 _keyUsageTooltip.setExtraRows(
@@ -21245,12 +21275,10 @@ public final class OpenCodeRoot : VBox
         if (localTarget.length == 0)
             localTarget = messageLocalPath(message, workspace);
         // A selection does NOT hide the path items: the reader can select a path
-        // and still open it. The single exception is a deliberate selection of
-        // the path text itself, where "Open file" would be redundant with the
-        // link target already offered.
-        const selectedPath = hasSelection && sourceBubble !is null &&
-            selectionNamesPath(sourceBubble.selectedText());
-        if (localTarget.length > 0 && !selectedPath)
+        // and still open it. Selecting path text must not make its file/folder
+        // actions disappear.
+        // Copy selection and opening the message's target are independent actions.
+        if (localTarget.length > 0)
         {
             // The path itself, if it is still on disk.
             if (exists(localTarget))
@@ -21625,6 +21653,17 @@ public final class OpenCodeRoot : VBox
         _sessions[_current].draft = _input.textUtf8();
     }
 
+    private void flushDraftCheckpoints()
+    {
+        if (_draftsDirty.length == 0) return;
+        // Drafts must be recoverable while any chat is running. Writing only
+        // thread metadata avoids rebuilding the full transcript snapshot.
+        foreach (ref session; _sessions)
+            if ((session.id in _draftsDirty) !is null)
+                publishThreadUpdated(session);
+        _draftsDirty = null;
+    }
+
     private void saveSettingsNow()
     {
         saveSettings(_settings);
@@ -21687,6 +21726,7 @@ public final class OpenCodeRoot : VBox
 
     private void persistState()
     {
+        flushDraftCheckpoints();
         // Shutdown and tests call this synchronously. If the background
         // snapshot writer is still running, wait for it so the two never write
         // the same files at once. The wait only happens on the way out, where a
@@ -21743,11 +21783,9 @@ public final class OpenCodeRoot : VBox
         _stateDirty = false;
         // Fold the live composer into this snapshot like `persistState` does.
         syncComposerDraft();
-        // `ChatSession` is a value type, so `dup` copies the struct array. The
-        // worker reads its own copies of every slice header; message content is
-        // appended by allocating a fresh slice (never mutated in place), and no
-        // turn is busy while a snapshot is queued, so the read is consistent.
-        auto sessions = _sessions.dup;
+        // A new turn or edit can begin while this worker writes. Copy message
+        // structs and mutable plan/queue arrays as well as session headers.
+        auto sessions = snapshotChatSessions(_sessions);
         const currentIndex = _current;
         // Own copy of the loaded flags: the worker must not read the live map,
         // which the UI thread mutates as conversations are opened.
@@ -21799,7 +21837,7 @@ public final class OpenCodeRoot : VBox
             if (_persistWriteInFlight) return;
             _persistWriteInFlight = true;
         }
-        auto sessions = _sessions.dup;
+        auto sessions = snapshotChatSessions(_sessions);
         const currentIndex = _current;
         auto worker = new Thread({
             scope (exit)
@@ -22011,6 +22049,7 @@ public final class OpenCodeRoot : VBox
             messageJson["time"] = message.time;
         if (message.failed)
             messageJson["failed"] = true;
+        if (message.error.length > 0) messageJson["error"] = message.error;
         if (message.finishReason.length > 0)
             messageJson["finishReason"] = message.finishReason;
         if (message.internal)
@@ -22428,6 +22467,8 @@ public final class OpenCodeRoot : VBox
                 message.time = f.str;
             if (auto f = "failed" in messageValue.object)
                 message.failed = f.type == JSONType.true_;
+            if (auto f = "error" in messageValue.object)
+                if (f.type == JSONType.string) message.error = f.str;
             if (auto f = "finishReason" in messageValue.object)
                 if (f.type == JSONType.string) message.finishReason = f.str;
             if (auto f = "internal" in messageValue.object)
@@ -22889,6 +22930,8 @@ public final class OpenCodeRoot : VBox
                                         message.time = f.str;
                                     if (auto f = "failed" in messageValue.object)
                                         message.failed = f.type == JSONType.true_;
+                                    if (auto f = "error" in messageValue.object)
+                                        if (f.type == JSONType.string) message.error = f.str;
                                     if (auto f = "finishReason" in
                                         messageValue.object)
                                         if (f.type == JSONType.string)
@@ -23113,22 +23156,10 @@ public final class OpenCodeRoot : VBox
         if (_contextLimitsBaseUrl == _settings.baseUrl)
             if (auto discovered = model in _providerContextLimits)
             {
-                // A discovered window is trusted only when it is believable
-                // against what the catalog says the model supports: the
-                // provider may report a window below the catalog (and may be
-                // right), but a value far below it is a bogus default, not a
-                // real cap. The gateway's /models response carries no context
-                // field at all, so a stored entry can be a stray fallback that
-                // would shrink a 1M model to 128k and make the usage meter read
-                // 100% whenever that model is selected; the same stale entry
-                // would also silently cap a 1M model's compaction budget at
-                // 128k. Reject a window that is less than half the catalog
-                // value and fall back to the catalog. A provider that doubles a
-                // window (a real 256k entry against a 128k catalog) is still
-                // accepted, as is an exact match.
-                const catalog = contextLimitForModel(model);
-                if (catalog <= 0 || *discovered * 2 >= catalog)
-                    limit = *discovered;
+                // A server's configured window may be much smaller than the
+                // model's advertised maximum. Positive provider metadata and
+                // learned overflow limits take precedence over the catalog.
+                if (*discovered > 0) limit = *discovered;
             }
         return limit;
     }
@@ -23228,6 +23259,11 @@ public final class OpenCodeRoot : VBox
             }
             existing.queuedGuidance = recovered.queuedGuidance.dup;
             existing.queuedFollowUps = recovered.queuedFollowUps.dup;
+            if (recovered.draftRecorded)
+            {
+                existing.draft = recovered.draft;
+                existing.draftRecorded = true;
+            }
             foreach (message; recovered.messages)
             {
                 bool found;
@@ -23678,6 +23714,8 @@ public final class OpenCodeRoot : VBox
             saveProjects(_projectState);
         }
 
+        if (_draftsDirty.length > 0 && MonoTime.currTime >= _draftPersistDue)
+            flushDraftCheckpoints();
         if (_stateDirty && MonoTime.currTime >= _persistDue &&
             !anyTurnIsBusy())
             persistStateAsync();
@@ -24209,6 +24247,8 @@ public final class OpenCodeRoot : VBox
 
     public void settleTaskAfterDoneForTesting()
     {
+        _activeRequestId = 0;
+        _activeRequestSession = -1;
         setTurnActiveMarker(false);
         setTurnInFlight(false);
         freezeTurnTiming();
@@ -24794,6 +24834,29 @@ public final class OpenCodeRoot : VBox
     public void setInputForTesting(string text)
     {
         _input.setText(text);
+    }
+
+    public void flushDraftsForTesting()
+    {
+        flushDraftCheckpoints();
+    }
+
+    public string lastAssistantErrorForTesting()
+    {
+        if (_current < 0) return "";
+        const path = activeMessagePath(_sessions[_current]);
+        foreach_reverse (index; path)
+            if (_sessions[_current].messages[index].role == "assistant")
+                return _sessions[_current].messages[index].error;
+        return "";
+    }
+
+    public string journalDraftForTesting()
+    {
+        const id = _sessions[_current].id;
+        foreach (session; projectAgentRuntimeEvents(_runtime.history()))
+            if (session.id == id && session.draftRecorded) return session.draft;
+        return "<missing draft checkpoint>";
     }
 
     public void sendForTesting()
@@ -26207,7 +26270,7 @@ public final class OpenCodeRoot : VBox
     public void seedKeyUsageForTesting(string provider, string key,
         UsageLimitsResult result)
     {
-        const requestId = provider ~ ":" ~ key;
+        const requestId = provider ~ ":" ~ apiTokenUsageKeyId(key);
         _keyUsageCache[requestId] = result;
         _keyUsageCacheAt[requestId] = Clock.currTime.toUnixTime();
     }
@@ -26225,7 +26288,7 @@ public final class OpenCodeRoot : VBox
     public void applyKeyUsageFetchForTesting(string provider, string key,
         UsageLimitsResult result)
     {
-        const requestId = provider ~ ":" ~ key;
+        const requestId = provider ~ ":" ~ apiTokenUsageKeyId(key);
         synchronized (this) _keyUsageReady[requestId] = result;
         drainKeyUsageResults();
     }
@@ -26234,7 +26297,7 @@ public final class OpenCodeRoot : VBox
     /// does before starting the worker (keeps the network out of the test).
     public void markKeyUsageFetchingForTesting(string provider, string key)
     {
-        _keyUsageFetching[provider ~ ":" ~ key] = true;
+        _keyUsageFetching[provider ~ ":" ~ apiTokenUsageKeyId(key)] = true;
     }
 
     /// Test-only: whether the key badge currently wears the "refreshing" accent.
@@ -26529,6 +26592,17 @@ public final class OpenCodeRoot : VBox
         auto session = &_sessions[_current];
         foreach_reverse (index; activeMessagePath(*session))
             if (session.messages[index].role == "user")
+                return session.messages[index].content;
+        return "";
+    }
+
+    public string lastSubmittedUserMessageForTesting()
+    {
+        if (_current < 0) return "";
+        auto session = &_sessions[_current];
+        foreach_reverse (index; activeMessagePath(*session))
+            if (session.messages[index].role == "user" &&
+                !session.messages[index].internal)
                 return session.messages[index].content;
         return "";
     }

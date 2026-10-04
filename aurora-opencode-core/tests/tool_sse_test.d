@@ -97,16 +97,17 @@ private void assertFinalLineWithoutNewline()
         `data: {"choices":[{"delta":{"content":"Z"}}]}`);
     const events = client.finishStreamForTesting();
     bool sawDelta;
-    bool sawDone;
+    bool sawIncomplete;
     foreach (event; events)
     {
         if (event.kind == OpenCodeEventKind.delta && event.text == "Z")
             sawDelta = true;
-        if (event.kind == OpenCodeEventKind.done && event.text == "Z")
-            sawDone = true;
+        if (event.kind == OpenCodeEventKind.error &&
+            event.text.indexOf("before the reply finished") >= 0)
+            sawIncomplete = true;
     }
-    assert(sawDelta && sawDone,
-        "an unterminated final SSE line lost the last content character");
+    assert(sawDelta && sawIncomplete,
+        "an unterminated final SSE line lost content or hid incomplete EOF");
     writeln("Final SSE content survives EOF without a trailing newline");
     client.closeSession();
 }
@@ -263,8 +264,8 @@ private void assertPlainBody()
     assert(("tools" in value.object) is null, "Plain chat sent tools");
     assert(("parallel_tool_calls" in value.object) is null,
         "Plain chat sent a tool-only request option");
-    assert(value.object["reasoning_effort"].str == "low",
-        "Thinking=on with no effort selection should default to low");
+    assert(value.object["reasoning_effort"].str == "high",
+        "DeepSeek 4.1 Flash should preserve its high reasoning default");
     auto thinkingOff = parseJSON(client.buildBodyForTesting([user], null,
         "deepseek/deepseek-v4.1-flash", false));
     assert(("reasoning_effort" in thinkingOff.object) is null,
@@ -450,6 +451,7 @@ private void assertLlamaServerCompatibility()
 
 int main()
 {
+    assertStreamFailures();
     assertReasoningReplayRecovery();
     assertPromptCacheUsage();
     assertExactInputTokenCountResponse();
@@ -549,4 +551,41 @@ int main()
     assertLlamaServerCompatibility();
     writeln("aurora-opencode-core tool SSE tests passed.");
     return 0;
+}
+
+private void assertStreamFailures()
+{
+    auto client = new OpenCodeClient("http://127.0.0.1:1/v1", "");
+    scope (exit) client.closeSession();
+    auto terminal = delegate(string payload)
+    {
+        client.resetStreamStateForTesting();
+        client.feedSseEofForTesting(payload);
+        auto events = client.finishStreamForTesting();
+        return events[$ - 1];
+    };
+    auto event = terminal(
+        `data: {"choices":[{"delta":{"content":"complete"}}]}` ~ "\r\n\r\n" ~
+        "data: [DONE]\r\n\r\n" ~
+        `data: {"choices":[{"delta":{"content":"ignored"}}]}` ~ "\n");
+    assert(event.kind == OpenCodeEventKind.done && event.text == "complete",
+        "DONE must end the stream and reject trailing records");
+    event = terminal(`data: {"choices":[{"delta":null,"finish_reason":"stop"}],` ~
+        `"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`);
+    assert(event.kind == OpenCodeEventKind.done && event.finishReason == "stop" &&
+        event.totalTokens == 15, "null delta lost completion metadata");
+    event = terminal(`data: {"error":{"message":"quota exhausted"}}`);
+    assert(event.kind == OpenCodeEventKind.error && event.text.indexOf("quota exhausted") >= 0);
+    event = terminal("data: {broken json}\n");
+    assert(event.kind == OpenCodeEventKind.error);
+    event = terminal(`data: {"choices":[{"delta":{"tool_calls":[{"index":-1}]}}]}`);
+    assert(event.kind == OpenCodeEventKind.error);
+    event = terminal(`data: {"choices":[{"delta":{"tool_calls":[{"index":2147483647}]}}]}`);
+    assert(event.kind == OpenCodeEventKind.error);
+    event = terminal(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,` ~
+        `"id":"call","function":{"name":"write","arguments":"{"}}]}}]}` ~ "\n" ~
+        `data: {"choices":[{"delta":{},"finish_reason":"length"}]}` ~ "\n" ~
+        "data: [DONE]\n");
+    assert(event.kind == OpenCodeEventKind.error, "Truncated tools must not execute");
+    writeln("Streaming completion, provider errors, malformed tools and incomplete EOF OK");
 }

@@ -391,7 +391,22 @@ private InlineRun[] parseRuns(dstring text, size_t start, size_t end)
     while (i < end)
     {
         const c = text[i];
-        if (c == '\\' && i + 1 < end)
+        // Recognize paths before interpreting escapes or underscores. Otherwise
+        // C:\Users\... loses its separators before the autolinker sees it.
+        size_t pathEnd;
+        if (localPathToken(text, i, pathEnd) && pathEnd <= end)
+        {
+            flush();
+            auto path = text[i .. pathEnd];
+            result ~= InlineRun(InlineStyle.link, path, path);
+            i = pathEnd;
+            continue;
+        }
+        if (c == '\\' && i + 1 < end &&
+            ((text[i + 1] >= '!' && text[i + 1] <= '/') ||
+             (text[i + 1] >= ':' && text[i + 1] <= '@') ||
+             (text[i + 1] >= '[' && text[i + 1] <= '`') ||
+             (text[i + 1] >= '{' && text[i + 1] <= '~')))
         {
             buf ~= text[i + 1];
             i += 2;
@@ -532,6 +547,22 @@ private InlineRun[] parseRuns(dstring text, size_t start, size_t end)
     }
     flush();
     return autolinkLocalPaths(result);
+}
+
+unittest
+{
+    const path = `C:\Users\WINDOW~2\work\pro_path_probe.d`d;
+    auto blocks = parseMarkdown("It lives in "d ~ path ~ " right now."d);
+    bool found;
+    foreach (block; blocks)
+        foreach (run; block.runs)
+            if (run.target == path && run.text == path) found = true;
+    assert(found, "Windows paths must retain backslashes and link targets");
+    blocks = parseMarkdown(`Preserve \q and escape \*literally\*.`d);
+    dstring visible;
+    foreach (block; blocks)
+        foreach (run; block.runs) visible ~= run.text;
+    assert(visible == `Preserve \q and escape *literally*.`d);
 }
 
 /// Whether `c` can appear inside a filesystem path token.

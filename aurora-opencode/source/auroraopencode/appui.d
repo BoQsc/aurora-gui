@@ -9,12 +9,13 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import core.time : MonoTime, msecs;
 import std.conv : to;
+import std.array : appender;
 import std.datetime : Clock;
-import std.file : exists, readText, write;
+import std.file : exists, readText, write, rename;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
 import std.string : strip;
-import std.utf : toUTF32;
+import std.utf : toUTF32, toUTF8;
 
 private string currentTimestamp()
 {
@@ -42,6 +43,29 @@ private final class MessageBubble : Widget
     private bool _streaming;
     private bool _failed;
     private string _error;
+    private bool _thinkingExpanded;
+    private TextLayout _errorLayout;
+    private int _errorWidth = -1;
+    private Button _copyButton;
+    private string _copiedText;
+
+    this()
+    {
+        _copyButton = add(new Button("Copy"));
+        _copyButton.setId("oc-copy");
+        _copyButton.onClick = delegate()
+        {
+            _copiedText = toUTF8(_content);
+            version (AuroraHeadless) {}
+            else
+            {
+                auto clipboard = new TextArea(_copiedText);
+                clipboard.selectAll();
+                clipboard.copyToClipboard();
+            }
+            _copyButton.setText("Copied");
+        };
+    }
 
     // Shaped text is expensive and wrapped layouts are never cached by the
     // text engine, so each bubble caches its own layout and reuses it across
@@ -88,6 +112,7 @@ private final class MessageBubble : Widget
         _content = toUTF32(value);
         ++_contentGen;
         _contentCacheCount = 0;
+        _copyButton.setText("Copy");
         invalidate();
     }
 
@@ -103,6 +128,7 @@ private final class MessageBubble : Widget
         _content ~= toUTF32(chunk);
         ++_contentGen;
         _contentCacheCount = 0;
+        _copyButton.setText("Copy");
         invalidate();
     }
 
@@ -110,6 +136,7 @@ private final class MessageBubble : Widget
     {
         _failed = true;
         _error = error;
+        _errorLayout = null;
         invalidate();
     }
 
@@ -210,9 +237,13 @@ private final class MessageBubble : Widget
     {
         const innerWidth = maxInt(24, available.width - 2 * padH);
         const pixelSize = opencodeFontBase;
-        int height = 2 * padV;
+        int height = 2 * padV + 22;
         if (_thinking.length > 0)
-            height += shapedThinking(innerWidth).measuredSize().height + gap;
+        {
+            height += 22;
+            if (_thinkingExpanded)
+                height += shapedThinking(innerWidth).measuredSize().height + gap;
+        }
         if (_role == "assistant")
         {
             if (_content.length > 0)
@@ -228,7 +259,7 @@ private final class MessageBubble : Widget
                 height += pixelSize + 2;
         }
         if (_failed)
-            height += fontPixelSize(1) + 4;
+            height += shapedError(innerWidth).measuredSize().height + gap;
         const measuredWidth = maxInt(innerWidth + 2 * padH, 64);
         const result = Size(minInt(measuredWidth, available.width), height);
         // VBox layout sizes children from layoutHints, not from the intrinsic
@@ -237,6 +268,13 @@ private final class MessageBubble : Widget
         layoutHints().preferredWidth = result.width;
         layoutHints().preferredHeight = result.height;
         return result;
+    }
+
+    protected override void onLayout()
+    {
+        _copyButton.setVisible(_content.length > 0);
+        _copyButton.setBounds(Rect(maxInt(padH, bounds().width - padH - 54),
+            2, 54, 22));
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -263,12 +301,25 @@ private final class MessageBubble : Widget
 
         const innerWidth = maxInt(1, width - 2 * padH);
         int y = padV;
+        auto heading = canvas.layoutText(_role == "user" ? "You"d : "Aurora"d,
+            1, FontRole.ui, cast(FontFace) palette.uiFont, innerWidth, false);
+        canvas.drawLayout(Point(padH, y), heading, opencodeMuted);
+        y += 22;
 
         if (_thinking.length > 0)
         {
-            auto layout = shapedThinking(innerWidth);
-            canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
-            y += layout.measuredSize().height + gap;
+            auto headingText = _thinkingExpanded ? "▾ Thinking"d :
+                (_streaming ? "▸ Thinking…"d : "▸ Thinking"d);
+            auto thinkingHeading = canvas.layoutText(headingText, 1, FontRole.ui,
+                cast(FontFace) palette.uiFont, innerWidth, false);
+            canvas.drawLayout(Point(padH, y), thinkingHeading, opencodeThinkingText);
+            y += 22;
+            if (_thinkingExpanded)
+            {
+                auto layout = shapedThinking(innerWidth);
+                canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
+                y += layout.measuredSize().height + gap;
+            }
         }
 
         if (_content.length > 0 || _streaming)
@@ -279,6 +330,7 @@ private final class MessageBubble : Widget
                 if (composition.items.length > 0)
                 {
                     paintMarkdown(canvas, composition, padH, y);
+                    y += cast(int) composition.height;
                 }
                 else if (_streaming)
                 {
@@ -291,15 +343,41 @@ private final class MessageBubble : Widget
             {
                 auto layout = shapedContent(innerWidth);
                 canvas.drawLayout(Point(padH, y), layout, opencodeText);
+                y += layout.measuredSize().height;
             }
         }
 
         if (_failed && _error.length > 0)
         {
-            auto layout = canvas.layoutText(toUTF32(_error), 1, FontRole.ui,
-                cast(FontFace) palette.uiFont, innerWidth, true);
+            auto layout = shapedError(innerWidth);
             canvas.drawLayout(Point(padH, y + 4), layout, opencodeErrorRed);
         }
+    }
+
+    private TextLayout shapedError(int width)
+    {
+        if (_errorLayout is null || _errorWidth != width)
+        {
+            _errorLayout = shape(toUTF32(_error), width);
+            _errorWidth = width;
+        }
+        return _errorLayout;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left || _thinking.length == 0 ||
+            event.position.y < padV + 22 || event.position.y >= padV + 44)
+            return false;
+        _thinkingExpanded = !_thinkingExpanded;
+        invalidate();
+        for (auto ancestor = parent(); ancestor !is null; ancestor = ancestor.parent())
+            if (auto scroll = cast(ChatScrollView) ancestor)
+            {
+                scroll.holdPosition();
+                break;
+            }
+        return true;
     }
 }
 
@@ -334,6 +412,24 @@ private final class ChatInput : TextArea
 private final class ChatScrollView : ScrollView
 {
     bool follow = true;
+    private bool _layoutScrollChange;
+    private bool _holdPosition;
+
+    void holdPosition()
+    {
+        _holdPosition = true;
+        invalidate();
+    }
+
+    void resumeFollow()
+    {
+        follow = true;
+        _holdPosition = false;
+        _layoutScrollChange = true;
+        setScrollY(maxScroll());
+        _layoutScrollChange = false;
+        invalidate();
+    }
 
     this(Widget content)
     {
@@ -342,17 +438,55 @@ private final class ChatScrollView : ScrollView
 
     protected override void onLayout()
     {
+        const previousY = scrollY();
+        _layoutScrollChange = true;
+        scope (exit) _layoutScrollChange = false;
         super.onLayout();
-        if (follow) setScrollY(maxScroll());
+        if (_holdPosition)
+        {
+            _holdPosition = false;
+            setScrollY(previousY);
+            follow = scrollY() >= maxScroll() - 4;
+        }
+        else if (follow) setScrollY(maxScroll());
     }
 
     protected override void onScrollChanged()
     {
+        if (_layoutScrollChange) return;
         // Any user scroll (thumb drag, track click, wheel, keys) moves away
         // from the auto-follow position. Re-engage follow only once the view
         // is back at the bottom; otherwise onLayout keeps snapping the
         // scrollbar back down and the user cannot scroll up at all.
         follow = scrollY() >= maxScroll() - 4;
+    }
+}
+
+/// Keep the composer and transcript on the same readable column at any width.
+private final class ReadingColumn : Widget
+{
+    private Widget _content;
+    this(Widget content)
+    {
+        _content = content;
+        layoutHints().preferredHeight = content.layoutHints().preferredHeight;
+        add(content);
+    }
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        auto measured = _content.measure(Size(minInt(width, opencodeContentMaxWidth),
+            available.height));
+        const height = _content.layoutHints().preferredHeight >= 0 ?
+            _content.layoutHints().preferredHeight : measured.height;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+    protected override void onLayout()
+    {
+        const width = minInt(bounds().width, opencodeContentMaxWidth);
+        _content.setBounds(Rect(maxInt(0, (bounds().width - width) / 2), 0,
+            width, bounds().height));
     }
 }
 
@@ -458,6 +592,17 @@ public final class OpenCodeRoot : VBox
     private CheckBox _thinkingBox;
     private Label _keyBadge;
     private Label _status;
+    private Button _latestButton;
+    private Button _retryButton;
+    private Button _queueButton;
+    private int _queueReadySession = -1;
+    private int _requestSession = -1;
+    private int _requestMessage = -1;
+    private ulong _activeRequestId;
+    private ulong _nextRequestId;
+    private OpenCodeEvent[] _eventScratch;
+    private bool _stateDirty;
+    private MonoTime _persistDue;
 
     private MessageBubble _streamBubble;
     private PopupOverlay _activePopup;
@@ -473,7 +618,7 @@ public final class OpenCodeRoot : VBox
     private bool _receivedFirstDelta;
     private int _lastColdStartSeconds = -1;
 
-    this(GuiWindow window)
+    this(GuiWindow window, bool fetchModels = true)
     {
         super(0);
         _window = window;
@@ -488,13 +633,15 @@ public final class OpenCodeRoot : VBox
         updateSessionList(false);
         updateKeyBadge();
         updateSendButton();
-        _client.fetchModels();
+        if (fetchModels) _client.fetchModels();
         _input.requestFocus();
     }
 
     /// Test-only / shutdown hook: release the shared network session.
     public void shutdownClient()
     {
+        syncDraft();
+        persistState();
         _client.closeSession();
     }
 
@@ -551,28 +698,62 @@ public final class OpenCodeRoot : VBox
         auto chatPanel = new VBox(0);
         chatPanel.layoutHints().flex = 1.0;
 
-        _messageColumn = new VBox(4, Insets(8));
+        _messageColumn = new VBox(14, Insets(16));
         _messageColumn.setId("oc-messages");
-        _messagesScroll = new ChatScrollView(_messageColumn);
+        _messagesScroll = new ChatScrollView(new ReadingColumn(_messageColumn));
         _messagesScroll.setId("oc-scroll");
         _messagesScroll.layoutHints().flex = 1.0;
 
         auto inputRow = new HBox(6, Insets(8, 4));
-        inputRow.layoutHints().preferredHeight = 58;
+        inputRow.layoutHints().preferredHeight = 96;
         _input = new ChatInput();
         _input.setId("oc-input");
         _input.layoutHints().flex = 1.0;
+        _input.setWordWrap(true);
+        _input.setPlaceholder("Message Aurora…  Enter to send · Shift+Enter for a new line");
+        _input.onChanged = delegate()
+        {
+            if (_current < 0 && _input.textUtf8().strip().length > 0)
+            {
+                const draft = _input.textUtf8();
+                newChat();
+                _input.setText(draft, false);
+            }
+            syncDraft();
+            markDirty();
+        };
         _input.onSendRequested = delegate() { sendMessage(); };
         _sendButton = new Button("Send");
         _sendButton.setId("oc-send");
         _sendButton.setAccent(true);
-        _sendButton.onClick = delegate() { sendMessage(); };
+        _sendButton.layoutHints().preferredHeight = 32;
+        _sendButton.layoutHints().fillCrossAxis = false;
+        _sendButton.onClick = delegate()
+        {
+            if (_requestSession >= 0) stopRequest();
+            else sendMessage();
+        };
 
         inputRow.add(_input);
         inputRow.add(_sendButton);
 
         chatPanel.add(_messagesScroll);
-        chatPanel.add(inputRow);
+        chatPanel.add(new ReadingColumn(inputRow));
+        auto chatActions = chatPanel.add(new HBox(6, Insets(8, 2)));
+        chatActions.layoutHints().preferredHeight = 30;
+        chatActions.add(new Spacer());
+        _retryButton = chatActions.add(new Button("Retry reply"));
+        _retryButton.setId("oc-retry");
+        _retryButton.onClick = delegate() { retryReply(); };
+        _retryButton.setVisible(false);
+        _latestButton = chatActions.add(new Button("Jump to latest"));
+        _latestButton.setId("oc-latest");
+        _latestButton.onClick = delegate() { _messagesScroll.resumeFollow(); };
+        _latestButton.setVisible(false);
+        _queueButton = chatActions.add(new Button("Send queued"));
+        _queueButton.setId("oc-queue");
+        _queueButton.onClick = delegate() { sendQueuedFollowUp(); };
+        _queueButton.setVisible(false);
 
         body.add(sidebar);
         body.add(chatPanel);
@@ -581,18 +762,22 @@ public final class OpenCodeRoot : VBox
         _status.setId("oc-status");
         _status.layoutHints().preferredHeight = 22;
         _status.setScale(1);
+        rebuildMessageColumn();
     }
 
     // -- sessions ---------------------------------------------------------
 
     private void newChat()
     {
+        syncDraft();
         ChatSession session;
+        session.id = newSessionId();
         session.title = "New chat";
         session.model = _settings.model;
         session.thinking = _settings.thinking;
         _sessions ~= session;
         _current = cast(int) _sessions.length - 1;
+        _input.setText("", false);
         _streamBubble = null;
         rebuildMessageColumn();
         updateSessionList();
@@ -604,7 +789,10 @@ public final class OpenCodeRoot : VBox
     private void selectSession(int index)
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
+        if (index == _current) return;
+        syncDraft();
         _current = index;
+        _input.setText(_sessions[index].draft, false);
         _streamBubble = null;
         rebuildMessageColumn();
         _settings.model = _sessions[index].model;
@@ -612,21 +800,38 @@ public final class OpenCodeRoot : VBox
         _modelButton.setText(_settings.model);
         _thinkingBox.setChecked(_settings.thinking, false);
         markDirty();
-        updateStatus("");
+        updateStatus(index == _requestSession ? "Generating…" : "Ready");
     }
 
     private void rebuildMessageColumn()
     {
         _messageColumn.clearChildren();
-        if (_current < 0) return;
+        _streamBubble = null;
+        if (_current < 0 || _sessions[_current].messages.length == 0)
+        {
+            auto welcome = _messageColumn.add(new Label("Start a conversation"));
+            welcome.setScale(2);
+            auto hint = _messageColumn.add(new Label(
+                "Ask a question, paste code, or describe what you want to build."));
+            hint.setColor(opencodeMuted);
+            _messagesScroll.follow = true;
+            _messagesScroll.invalidate();
+            return;
+        }
         const session = &_sessions[_current];
-        foreach (message; session.messages)
+        foreach (index, message; session.messages)
         {
             auto bubble = new MessageBubble();
             bubble.setRole(message.role);
             bubble.setContent(message.content);
             if (message.reasoning.length > 0)
                 bubble.setThinking(message.reasoning);
+            if (message.failed) bubble.setFailed(message.error);
+            if (_current == _requestSession && cast(int) index == _requestMessage)
+            {
+                bubble.setStreaming(true);
+                _streamBubble = bubble;
+            }
             _messageColumn.add(bubble);
         }
         _messagesScroll.follow = true;
@@ -638,6 +843,8 @@ public final class OpenCodeRoot : VBox
 
     private void addUserBubble(string text)
     {
+        if (_current >= 0 && _sessions[_current].messages.length == 1)
+            _messageColumn.clearChildren();
         auto bubble = new MessageBubble();
         bubble.setRole("user");
         bubble.setContent(text);
@@ -648,83 +855,90 @@ public final class OpenCodeRoot : VBox
 
     private void beginAssistantMessage()
     {
-        if (_current < 0) return;
-        auto session = &_sessions[_current];
+        if (_requestSession < 0 || _requestMessage >= 0) return;
+        auto session = &_sessions[_requestSession];
         ChatMessage message;
         message.role = "assistant";
         message.time = currentTimestamp();
         session.messages ~= message;
+        _requestMessage = cast(int) session.messages.length - 1;
+        if (_current != _requestSession) return;
 
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
         _streamBubble.setStreaming(true);
         _messageColumn.add(_streamBubble);
-        _messagesScroll.follow = true;
         _messagesScroll.invalidate();
     }
 
     private void appendStreamDelta(string text, bool reasoning)
     {
-        if (_current < 0 || _streamBubble is null) return;
+        if (_requestSession < 0) return;
+        if (_requestMessage < 0) beginAssistantMessage();
         if (!_receivedFirstDelta)
         {
             _receivedFirstDelta = true;
-            updateStatus("Generating…");
+            if (_current == _requestSession) updateStatus("Generating…");
         }
-        auto session = &_sessions[_current];
-        if (session.messages.length == 0) return;
-        auto message = &session.messages[$ - 1];
+        auto message = &_sessions[_requestSession].messages[_requestMessage];
         if (reasoning)
         {
             message.reasoning ~= text;
-            _streamBubble.appendThinking(text);
+            if (_streamBubble !is null) _streamBubble.appendThinking(text);
         }
         else
         {
             message.content ~= text;
-            _streamBubble.appendContent(text);
+            if (_streamBubble !is null) _streamBubble.appendContent(text);
         }
         // The streamed text changes the bubble height, so the ScrollView must
         // re-measure to keep auto-follow at the bottom as the reply grows.
-        _messagesScroll.invalidate();
+        if (_current == _requestSession) _messagesScroll.invalidate();
+        markDirty();
     }
 
-    private void finishAssistantMessage(bool cancelled)
+    private void finishAssistantMessage(bool cancelled, string finishReason = "")
     {
+        if (_requestSession < 0) return;
+        if (_requestMessage < 0) beginAssistantMessage();
+        if (_requestMessage >= 0)
+            _sessions[_requestSession].messages[_requestMessage].finishReason =
+                cancelled ? "cancelled" : finishReason;
         if (_streamBubble !is null)
         {
             _streamBubble.setStreaming(false);
             _streamBubble = null;
         }
-        updateStatus(cancelled ? "Stopped." : "Done.");
+        if (_current == _requestSession)
+            updateStatus(cancelled ? "Stopped. Your partial reply is preserved." :
+                (finishReason == "length" ? "Reply reached the output limit." : "Done."));
+        _queueReadySession = cancelled ? -1 : _requestSession;
+        _requestSession = -1;
+        _requestMessage = -1;
+        _activeRequestId = 0;
         _messagesScroll.invalidate();
         markDirty();
     }
 
     private void failAssistantMessage(string error)
     {
-        if (_current < 0)
+        if (_requestSession < 0) return;
+        if (_requestMessage < 0) beginAssistantMessage();
+        auto message = &_sessions[_requestSession].messages[_requestMessage];
+        message.failed = true;
+        message.error = error;
+        if (_streamBubble !is null)
         {
-            updateStatus("Error: " ~ error);
-            return;
+            _streamBubble.setStreaming(false);
+            _streamBubble.setFailed(error);
         }
-        auto session = &_sessions[_current];
-        if (session.messages.length == 0)
-            beginAssistantMessage();
-        auto message = &session.messages[$ - 1];
-        message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
-            "Error: " ~ error;
-        if (_streamBubble is null)
-        {
-            _streamBubble = new MessageBubble();
-            _streamBubble.setRole("assistant");
-            _messageColumn.add(_streamBubble);
-        }
-        _streamBubble.setStreaming(false);
-        _streamBubble.setFailed(error);
         _streamBubble = null;
+        if (_current == _requestSession) updateStatus("Request failed. Retry when ready.");
+        _queueReadySession = -1;
+        _requestSession = -1;
+        _requestMessage = -1;
+        _activeRequestId = 0;
         _messagesScroll.invalidate();
-        updateStatus("Error: " ~ error);
         markDirty();
     }
 
@@ -732,21 +946,34 @@ public final class OpenCodeRoot : VBox
 
     private void sendMessage()
     {
-        if (_client.busy())
+        const text = _input.textUtf8().strip();
+        if (text.length == 0) return;
+        if (_requestSession >= 0 || _client.busy())
         {
-            _client.cancel();
-            updateStatus("Stopping…");
+            if (_current != _requestSession)
+            {
+                updateStatus("Another conversation is replying. Your draft is preserved.");
+                return;
+            }
+            _sessions[_current].queuedFollowUps ~= text;
+            _input.setText("");
+            updateStatus("Follow-up queued. It will send after this reply.");
+            markDirty();
             return;
         }
 
-        const text = _input.textUtf8().strip();
-        if (text.length == 0) return;
+        submitMessage(text, true);
+    }
+
+    private void submitMessage(string text, bool clearDraft)
+    {
+        _pauseQueue = false;
 
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
         if (session.title == "New chat" || session.title.length == 0)
         {
-            session.title = text.length > 60 ? text[0 .. 60] ~ "…" : text;
+            session.title = chatTitle(text);
             updateSessionList();
         }
         session.model = _settings.model;
@@ -759,23 +986,82 @@ public final class OpenCodeRoot : VBox
         session.messages ~= userMessage;
         updateSessionList();
         addUserBubble(text);
-        _input.setText("");
+        if (clearDraft) _input.setText("");
 
-        string[] roles;
-        string[] contents;
-        foreach (message; session.messages)
+        startRequest();
+    }
+
+    private void startRequest(size_t historyEnd = size_t.max)
+    {
+        auto session = &_sessions[_current];
+        ChatRequestMessage[] messages;
+        const count = historyEnd < session.messages.length ? historyEnd : session.messages.length;
+        foreach (message; session.messages[0 .. count])
         {
-            roles ~= message.role;
-            contents ~= message.content;
+            if (message.role == "assistant" && message.content.length == 0) continue;
+            ChatRequestMessage requestMessage;
+            requestMessage.role = message.role;
+            requestMessage.content = message.content;
+            requestMessage.reasoningContent = message.reasoning;
+            messages ~= requestMessage;
         }
-
-        _client.startChat(roles, contents, _settings.model, _settings.thinking);
+        _requestSession = _current;
+        _requestMessage = -1;
+        _activeRequestId = ++_nextRequestId;
+        _client.setOpenCodeSession(session.id);
+        _client.startChatMessages(messages, null, session.model, session.thinking,
+            _activeRequestId);
         _chatStartedAt = MonoTime.currTime;
         _receivedFirstDelta = false;
         _lastColdStartSeconds = -1;
         markDirty();
         updateStatus("Generating…");
         updateSendButton();
+    }
+
+    private void stopRequest()
+    {
+        if (_requestSession < 0) return;
+        _client.cancel();
+        // Keep queued prompts durable, but require an explicit send after Stop.
+        _pauseQueue = true;
+        updateStatus("Stopping… Queued follow-ups are preserved.");
+    }
+
+    private bool _pauseQueue;
+
+    private void retryReply()
+    {
+        if (_requestSession >= 0 || _client.busy() || _current < 0) return;
+        auto session = &_sessions[_current];
+        if (session.messages.length == 0 || session.messages[$ - 1].role != "assistant") return;
+        const end = retryHistoryEnd();
+        if (end > 0) startRequest(end);
+    }
+
+    private size_t retryHistoryEnd() const
+    {
+        if (_current < 0) return 0;
+        const messages = _sessions[_current].messages;
+        for (size_t i = messages.length; i > 0; --i)
+            if (messages[i - 1].role == "user") return i;
+        return 0;
+    }
+
+    private void sendQueuedFollowUp()
+    {
+        if (_current < 0 || _requestSession >= 0 || _client.busy()) return;
+        auto session = &_sessions[_current];
+        if (session.queuedFollowUps.length == 0) return;
+        const text = session.queuedFollowUps[0];
+        session.queuedFollowUps = session.queuedFollowUps[1 .. $].dup;
+        submitMessage(text, false);
+    }
+
+    private void syncDraft()
+    {
+        if (_input !is null && _current >= 0)
+            _sessions[_current].draft = _input.textUtf8();
     }
 
     // -- model picker -----------------------------------------------------
@@ -787,6 +1073,8 @@ public final class OpenCodeRoot : VBox
         auto content = new VBox(4, Insets(6));
         content.layoutHints().preferredWidth = 280;
         auto list = content.add(new ListView());
+        list.setId("oc-model-picker");
+        list.setActivateOnSingleClick(true);
         list.layoutHints().preferredHeight = 340;
         ListItem[] items;
         foreach (model; _models)
@@ -815,9 +1103,12 @@ public final class OpenCodeRoot : VBox
         const origin = _modelButton.globalOrigin();
         popup.setAnchor(Rect(origin.x, origin.y, _modelButton.size().width,
             _modelButton.size().height), PopupPlacement.below);
+        popup.setConsumeAnchorPress(_modelButton);
         popup.setBackdrop(Color.rgba(0, 0, 0, 90));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);
+        popup.layoutTree();
+        list.revealSelection();
     }
 
     // -- settings dialog --------------------------------------------------
@@ -1040,9 +1331,21 @@ public final class OpenCodeRoot : VBox
 
     private void updateSendButton()
     {
-        const busy = _client.busy();
-        _sendButton.setText(busy ? "Stop" : "Send");
+        const busy = _requestSession >= 0 || _client.busy();
+        _sendButton.setText(busy ?
+            (_requestSession != _current ? "Stop active reply" : "Stop") : "Send");
         _sendButton.setAccent(!busy);
+        _latestButton.setVisible(!_messagesScroll.follow && _messagesScroll.maxScroll() > 0);
+        const hasMessages = _current >= 0 && _sessions[_current].messages.length > 0;
+        const retryable = hasMessages &&
+            (_sessions[_current].messages[$ - 1].failed ||
+             _sessions[_current].messages[$ - 1].finishReason == "cancelled" ||
+             _sessions[_current].messages[$ - 1].finishReason == "length");
+        _retryButton.setVisible(!busy && retryable);
+        const queued = _current >= 0 ? _sessions[_current].queuedFollowUps.length : 0;
+        _queueButton.setVisible(queued > 0);
+        _queueButton.setText("Send queued (" ~ to!string(queued) ~ ")");
+        _queueButton.setEnabled(!busy);
     }
 
     private void updateSessionList(bool revealCurrent = true)
@@ -1065,7 +1368,8 @@ public final class OpenCodeRoot : VBox
 
     private void markDirty()
     {
-        persistState();
+        if (!_stateDirty) _persistDue = MonoTime.currTime + msecs(750);
+        _stateDirty = true;
     }
 
     private void saveSettingsNow()
@@ -1075,6 +1379,7 @@ public final class OpenCodeRoot : VBox
 
     private void persistState()
     {
+        syncDraft();
         saveSettings(_settings);
         ensureStateDirectory();
         JSONValue root;
@@ -1083,8 +1388,13 @@ public final class OpenCodeRoot : VBox
             list.array ~= sessionToJson(session);
         root["sessions"] = list;
         root["current"] = _current;
-        try write(buildPath(opencodeStateDirectory(), "sessions.json"),
-            root.toString());
+        try
+        {
+            const path = buildPath(opencodeStateDirectory(), "sessions.json");
+            write(path ~ ".tmp", root.toString());
+            rename(path ~ ".tmp", path);
+            _stateDirty = false;
+        }
         catch (Exception error)
         {
             logError("persist sessions failed: " ~ error.msg);
@@ -1095,8 +1405,12 @@ public final class OpenCodeRoot : VBox
     {
         JSONValue root;
         root["title"] = session.title;
+        root["id"] = session.id;
         root["model"] = session.model;
         root["thinking"] = session.thinking;
+        if (session.draft.length > 0) root["draft"] = session.draft;
+        if (session.queuedFollowUps.length > 0)
+            root["queuedFollowUps"] = JSONValue(session.queuedFollowUps);
         // Preserve the owning project even though the baseline client has no
         // project UI: the Pro client shares this sessions.json and would lose
         // every assignment if the baseline dropped the field.
@@ -1108,6 +1422,10 @@ public final class OpenCodeRoot : VBox
             JSONValue messageJson;
             messageJson["role"] = message.role;
             messageJson["content"] = message.content;
+            if (message.failed) messageJson["failed"] = true;
+            if (message.error.length > 0) messageJson["error"] = message.error;
+            if (message.finishReason.length > 0)
+                messageJson["finishReason"] = message.finishReason;
             if (message.time.length > 0)
                 messageJson["time"] = message.time;
             if (message.reasoning.length > 0)
@@ -1135,6 +1453,17 @@ public final class OpenCodeRoot : VBox
                     {
                         if (sessionValue.type != JSONType.object) continue;
                         ChatSession session;
+                        session.id = newSessionId();
+                        if (auto field = "id" in sessionValue.object)
+                            if (field.type == JSONType.string && field.str.length > 0)
+                                session.id = field.str;
+                        if (auto field = "draft" in sessionValue.object)
+                            if (field.type == JSONType.string) session.draft = field.str;
+                        if (auto field = "queuedFollowUps" in sessionValue.object)
+                            if (field.type == JSONType.array)
+                                foreach (entry; field.array)
+                                    if (entry.type == JSONType.string)
+                                        session.queuedFollowUps ~= entry.str;
                         if (auto field = "title" in sessionValue.object)
                             session.title = field.str;
                         if (auto field = "model" in sessionValue.object)
@@ -1153,6 +1482,12 @@ public final class OpenCodeRoot : VBox
                                     if (messageValue.type != JSONType.object)
                                         continue;
                                     ChatMessage message;
+                                    if (auto f = "failed" in messageValue.object)
+                                        message.failed = f.type == JSONType.true_;
+                                    if (auto f = "error" in messageValue.object)
+                                        if (f.type == JSONType.string) message.error = f.str;
+                                    if (auto f = "finishReason" in messageValue.object)
+                                        if (f.type == JSONType.string) message.finishReason = f.str;
                                     if (auto f = "role" in messageValue.object)
                                         message.role = f.str;
                                     if (auto f = "content" in messageValue.object)
@@ -1182,6 +1517,7 @@ public final class OpenCodeRoot : VBox
                 _settings.thinking = _sessions[_current].thinking;
                 _modelButton.setText(_settings.model);
                 _thinkingBox.setChecked(_settings.thinking, false);
+                _input.setText(_sessions[_current].draft, false);
                 rebuildMessageColumn();
             }
         }
@@ -1197,17 +1533,33 @@ public final class OpenCodeRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
-        OpenCodeEvent[] events;
-        _client.drain(events);
-        foreach (event; events)
+        _client.drain(_eventScratch);
+        size_t eventIndex;
+        while (eventIndex < _eventScratch.length)
         {
+            auto event = _eventScratch[eventIndex++];
+            if (event.kind != OpenCodeEventKind.models &&
+                event.kind != OpenCodeEventKind.modelsError &&
+                (_requestSession < 0 || event.requestId != _activeRequestId)) continue;
+            if (event.kind == OpenCodeEventKind.delta)
+            {
+                auto merged = appender!string();
+                merged.put(event.text);
+                while (eventIndex < _eventScratch.length &&
+                    _eventScratch[eventIndex].kind == OpenCodeEventKind.delta &&
+                    _eventScratch[eventIndex].reasoning == event.reasoning &&
+                    _eventScratch[eventIndex].requestId == event.requestId)
+                    merged.put(_eventScratch[eventIndex++].text);
+                appendStreamDelta(merged.data, event.reasoning);
+                continue;
+            }
             final switch (event.kind)
             {
                 case OpenCodeEventKind.chatBegin:
                     beginAssistantMessage();
                     break;
                 case OpenCodeEventKind.delta:
-                    appendStreamDelta(event.text, event.reasoning);
+                    assert(false, "deltas handled by the batching path");
                     break;
                 case OpenCodeEventKind.usage:
                     // Live usage updates; the final totals arrive with `done`.
@@ -1219,12 +1571,13 @@ public final class OpenCodeRoot : VBox
                     // tools so the model cannot request them.
                     break;
                 case OpenCodeEventKind.done:
-                    finishAssistantMessage(event.cancelled);
+                    finishAssistantMessage(event.cancelled, event.finishReason);
                     break;
                 case OpenCodeEventKind.error:
                     failAssistantMessage(event.text);
                     break;
                 case OpenCodeEventKind.models:
+                    if (event.text.length > 0 && event.text != _settings.baseUrl) break;
                     applyModels(event.modelIds);
                     break;
                 case OpenCodeEventKind.modelsError:
@@ -1238,24 +1591,36 @@ public final class OpenCodeRoot : VBox
         // token (cold start). Surface that as a live countdown so the UI
         // never looks frozen, and switch back to a normal status the moment
         // the first streamed fragment arrives.
-        if (_client.busy() && !_receivedFirstDelta)
+        if (_requestSession == _current && _client.busy() && !_receivedFirstDelta)
         {
             const elapsed = MonoTime.currTime - _chatStartedAt;
             const seconds = cast(int) elapsed.total!"seconds";
             if (seconds >= 2 && seconds != _lastColdStartSeconds)
             {
                 _lastColdStartSeconds = seconds;
-                updateStatus("Cold-starting the model… " ~
-                    to!string(seconds) ~ "s — first reply can take a while");
+                updateStatus((_client.retryingTransient() ? "Provider busy, retrying… " :
+                    "Waiting for the model… ") ~ to!string(seconds) ~ "s");
             }
         }
 
+        if (_queueReadySession >= 0 && !_client.busy() && _requestSession < 0)
+        {
+            const owner = _queueReadySession;
+            _queueReadySession = -1;
+            if (!_pauseQueue && owner == _current) sendQueuedFollowUp();
+        }
+        if (_stateDirty && MonoTime.currTime >= _persistDue) persistState();
         updateSendButton();
     }
 
     override bool onKeyDown(ref Event event)
     {
         const shortcut = event.control() || event.meta();
+        if (event.key == Key.escape && _activePopup is null && _requestSession >= 0)
+        {
+            stopRequest();
+            return true;
+        }
         if (shortcut && event.key == Key.n)
         {
             newChat();
@@ -1273,6 +1638,37 @@ public final class OpenCodeRoot : VBox
     }
 
     // -- test accessors ---------------------------------------------------
+
+    public ChatSession[] conversationsForTesting()
+    {
+        syncDraft();
+        return snapshotChatSessions(_sessions);
+    }
+
+    public size_t retryHistoryEndForTesting() const { return retryHistoryEnd(); }
+
+    public string copiedTextForTesting()
+    {
+        foreach (child; _messageColumn.children())
+            if (auto bubble = cast(MessageBubble) child)
+                if (bubble._copiedText.length > 0) return bubble._copiedText;
+        return "";
+    }
+
+    public ulong beginRequestForTesting()
+    {
+        _requestSession = _current;
+        _requestMessage = -1;
+        _activeRequestId = ++_nextRequestId;
+        _chatStartedAt = MonoTime.currTime;
+        _receivedFirstDelta = false;
+        return _activeRequestId;
+    }
+
+    public void queueEventForTesting(OpenCodeEvent event)
+    {
+        _client.pushLocalEvent(event);
+    }
 
     /// Test-only: full text of the latest assistant message in the current session.
     public string lastAssistantContentForTesting()

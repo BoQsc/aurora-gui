@@ -1,0 +1,23 @@
+{
+  "baseline_commit": "8aac665ed1f9804d114f7d0ba2c08318e097cac6",
+  "payload_bytes": 25165824,
+  "trials": 3,
+  "scope": "UI-thread request snapshot, excluding provider/network latency",
+  "before": {
+    "samples_ms": [
+      12.4,
+      7.018,
+      8.223
+    ],
+    "median_ms": 8.223
+  },
+  "after": {
+    "samples_ms": [
+      0.108,
+      0.082,
+      0.091
+    ],
+    "median_ms": 0.091
+  },
+  "speedup": 90.36263736263737
+}

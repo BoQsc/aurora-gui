@@ -479,7 +479,7 @@ int main(string[] args)
                 i < groupChildren.length ? groupChildren[i] : "(none)");
         assert(groups.length == 3,
             "expected three same-action groups, got " ~ to!string(groups));
-        assert(groups[0].indexOf("explored") >= 0 && groups[0].indexOf("3") >= 0,
+        assert(groups[0].indexOf("Explored") >= 0 && groups[0].indexOf("3") >= 0,
             "first group should be the explored run: " ~ groups[0]);
         assert(groups[1].indexOf("Edited a file") >= 0,
             "second group should be the edited run: " ~ groups[1]);
@@ -1426,6 +1426,10 @@ int main(string[] args)
     // on, never render as an empty block.
     assert(root.liveReplyStatusForTesting().length > 0,
         "Empty live reply did not show a phase placeholder");
+    root.setInputForTesting("");
+    requireWidget!TextArea(root, "oc-input").requestFocus();
+    driver.pressKey(Key.enter);
+    assert(root.turnBusyForTesting(), "Blank Enter stopped the active reply");
     root.streamReasoningForTesting("still working");
     // Regression: streamed reasoning lands in the bubble's append buffer, so the
     // Thinking header must be gated on buffered text too, or the live
@@ -1468,6 +1472,24 @@ int main(string[] args)
             "unsent composer draft did not survive a save + reload");
         writeln("Unsent composer draft survives a save + reload");
     }
+
+    // Active turns defer transcript snapshots. Draft metadata still needs a
+    // durable checkpoint, including an explicit clear so old text cannot return.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["keep running"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    root.setInputForTesting("journal-only draft while the model works");
+    root.flushDraftsForTesting();
+    assert(root.journalDraftForTesting() ==
+        "journal-only draft while the model works",
+        "Draft did not survive journal-only recovery during an active turn");
+    root.setInputForTesting("");
+    root.flushDraftsForTesting();
+    assert(root.journalDraftForTesting().length == 0,
+        "Cleared draft reappeared after journal recovery");
+    root.clickSendButtonForTesting();
+    writeln("Draft checkpoints survive active turns and preserve explicit clearing");
 
 
     // Text that was explicitly submitted during a live turn is different from
@@ -1939,7 +1961,7 @@ int main(string[] args)
         // The terminal event still carries the completed tool call.
         client.feedSseForTesting(
             `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}}"}}]}}]}` ~
-            "\n");
+            "\n" ~ "data: [DONE]\n");
         auto finalEvents = client.finishStreamForTesting();
         bool sawFinal;
         foreach (e; finalEvents)
@@ -2211,10 +2233,6 @@ int main(string[] args)
         assert(root.requestContextBudgetForTesting(
             "deepseek-v4.1-flash") == 500_000,
             "500K target should lower the request budget");
-        assert(root.contextLimitForTesting() == 1_000_000,
-            "Without a target the meter falls back to the provider window");
-        assert(root.contextUsageTextForTesting() == "24%",
-            "Without a target the meter measures the provider window");
         assert(root.contextLimitForTesting() == 500_000,
             "The meter must measure against the selected context target");
         assert(root.contextUsageTextForTesting() == "48%",
@@ -2297,14 +2315,11 @@ int main(string[] args)
             root.contextLimitForTesting() == 200_000,
             "The selected target must be what the meter measures against");
         root.setContextBudgetForTesting(0);
-        // A provider entry well below the catalog window is a bogus fallback
-        // (the gateway's /models lists no context field, and a 1M model must
-        // not display as 128k whenever it is selected). It is rejected in favor
-        // of the catalog window.
+        // Configured provider windows can be much smaller than the catalog.
         root.setProviderContextLimitForTesting(
             "deepseek-v4.1-flash", 128_000);
-        assert(root.contextLimitForTesting() == 1_000_000,
-            "A provider window far below the catalog must be ignored");
+        assert(root.contextLimitForTesting() == 128_000,
+            "A smaller configured provider window must be respected");
         // A smaller-but-believable window (at least half the catalog) is
         // accepted: the provider may really cap the model lower.
         root.setProviderContextLimitForTesting(
@@ -2359,7 +2374,7 @@ int main(string[] args)
     // restored chats. Creating, switching, persisting, and removing projects
     // must all keep each project's conversation list separate.
     auto projects = requireWidget!ListView(root, "oc-projects");
-    const sandboxVisible = root.visibleSessionCountForTesting();
+    auto sandboxVisible = root.visibleSessionCountForTesting();
     assert(root.projectCountForTesting() == 1,
         "Expected only the sandbox project");
     assert(root.projectNamesForTesting()[0] == "sandbox 1",
@@ -2559,6 +2574,8 @@ int main(string[] args)
     }
 
     verifyToolHeaderContextMenu(root, driver, stateDir);
+    // The tool-header fixture creates two sandbox conversations of its own.
+    sandboxVisible = root.visibleSessionCountForTesting();
 
     // "New project" adds a fresh numbered sandbox with no folder dialog:
     // sandbox 1 is the default, so the first created project is sandbox 2 in
@@ -3229,8 +3246,8 @@ int main(string[] args)
     writeln("Settings keeps a second API key per provider and toggles the active one");
 
     // The toolbar key badge shows the same API usage breakdown on hover, plus
-    // the active provider's running monthly token total, which folds in the
-    // in-flight reply's live count and refreshes while the tooltip stays open.
+    // the active credential's actual usage. Display-only streaming estimates
+    // must not be counted as provider-reported tokens in its ledger.
     {
         auto badge = requireWidget!Widget(root, "oc-key");
         driver.moveTo(globalCenter(badge));
@@ -3242,15 +3259,17 @@ int main(string[] args)
         assert(badgeTooltip.indexOf("5 hours: 76% used") >= 0 &&
             badgeTooltip.indexOf("Service account: Legacy: person@example.com") >= 0,
             "Key badge hover did not show the API usage limits: " ~ badgeTooltip);
-        assert(badgeTooltip.indexOf("This month") >= 0 &&
-            badgeTooltip.indexOf("tokens") >= 0,
-            "Key badge tooltip lacks the monthly token total: " ~ badgeTooltip);
+        assert(badgeTooltip.indexOf("Last 5 hours:") >= 0 &&
+            badgeTooltip.indexOf("Last 7 days:") >= 0 &&
+            badgeTooltip.indexOf("Last 30 days:") >= 0 &&
+            badgeTooltip.indexOf("total (in ") >= 0,
+            "Key badge tooltip lacks the per-key token totals: " ~ badgeTooltip);
         const monthlyBefore = badgeTooltip;
         root.feedUsageForTesting(100, 123, 223);
         root.refreshKeyBadgeTooltipForTesting();
         const monthlyAfter = root.keyUsageTooltipTextForTesting();
-        assert(monthlyAfter != monthlyBefore,
-            "Key badge monthly total did not update with the live reply");
+        assert(monthlyAfter == monthlyBefore,
+            "Display-only live estimates changed the actual usage ledger");
         // The panel must say where its numbers come from: cached on hover, then
         // "updated" on a successful refresh, then a warning when a refresh fails
         // and the cached value is all there is.
@@ -3278,7 +3297,7 @@ int main(string[] args)
             "Key badge tooltip stayed open after pointer leave");
         assert(!root.keyBadgeBusyForTesting(),
             "Key badge kept the refreshing indicator after the tooltip closed");
-        writeln("Toolbar key badge shows API usage and live monthly tokens");
+        writeln("Toolbar key badge shows provider limits and per-key actual tokens");
     }
 
     // Settings exposes the concise system prompt. Tool-specific syntax remains
@@ -3444,7 +3463,7 @@ int main(string[] args)
         "the explored group should contain the read and grep parts");
     auto groupHeaders = root.toolGroupHeaderTextsForTesting();
     assert(groupHeaders.length == 2 &&
-        groupHeaders[0].indexOf("explored 2 files") >= 0 &&
+        groupHeaders[0].indexOf("Explored 2 files") >= 0 &&
         groupHeaders[1].indexOf("Ran a command") >= 0,
         "action group headers should split by action: " ~
         (groupHeaders.length ? groupHeaders[0] : "<none>"));
@@ -4145,9 +4164,9 @@ int main(string[] args)
         // The three calls split by kind: dshel, then write, then read.
         auto liveHeaders = root.toolGroupHeaderTextsForTesting();
         assert(liveHeaders.length == 3 &&
-            liveHeaders[0].indexOf("running a command") >= 0 &&
+            liveHeaders[0].indexOf("Running a command") >= 0 &&
             liveHeaders[1].indexOf("Editing a file") >= 0 &&
-            liveHeaders[2].indexOf("exploring a file") >= 0,
+            liveHeaders[2].indexOf("Exploring a file") >= 0,
             "Live action group headers are wrong: " ~
             (liveHeaders.length ? liveHeaders[0] : "(none)"));
         auto diffs = root.liveToolRowDiffTextsForTesting();
@@ -4297,13 +4316,15 @@ int main(string[] args)
             root.messageContentForTesting(0));
         assert(root.messageRoleForTesting(1) == "assistant",
             "The error was not attached to an assistant reply");
-        assert(root.lastAssistantContentForTesting().indexOf("Error:") >= 0,
-            "The error text is missing from the reply: " ~
-            root.lastAssistantContentForTesting());
-        assert(root.lastAssistantContentForTesting().indexOf(
-            "```text\nHTTP 500:\nraise_exception") >= 0,
+        assert(root.lastAssistantContentForTesting().length == 0,
+            "Provider error became assistant response text");
+        assert(root.lastAssistantErrorForTesting().indexOf(
+            "HTTP 500:\nraise_exception") >= 0,
             "Provider error formatting corrupted newlines/underscores: " ~
-            root.lastAssistantContentForTesting());
+            root.lastAssistantErrorForTesting());
+        foreach (requestMessage; root.requestMessagesForTesting())
+            assert(requestMessage.content.indexOf("raise_exception") < 0,
+                "Provider diagnostics leaked into model context");
         // A later failure after a reply already exists must not add a phantom
         // extra assistant turn on top of it.
         root.failAssistantMessageForTesting("second failure");
@@ -4326,6 +4347,8 @@ int main(string[] args)
             ["Retry me.", "First attempt."]);
         // First failure attaches to the existing reply and offers Retry.
         root.failAssistantMessageForTesting("HTTP 429: provider busy");
+        assert(root.lastAssistantContentForTesting() == "First attempt.",
+            "Provider failure corrupted the partial answer");
         assert(root.lastBubbleActionForTesting() == "Retry",
             "A failed reply must offer Retry, got " ~
             root.lastBubbleActionForTesting());
@@ -4341,9 +4364,9 @@ int main(string[] args)
         assert(root.messageRoleForTesting(
             root.totalMessageCountForTesting() - 1) == "assistant",
             "The active branch tip after a failed retry is not a reply");
-        assert(root.lastAssistantContentForTesting().indexOf("busy again") >= 0,
+        assert(root.lastAssistantErrorForTesting().indexOf("busy again") >= 0,
             "The retry's error is missing from the visible branch: " ~
-            root.lastAssistantContentForTesting());
+            root.lastAssistantErrorForTesting());
         assert(root.lastBubbleActionForTesting() == "Retry",
             "A failed retry must still offer Retry, got " ~
             root.lastBubbleActionForTesting());
@@ -5982,8 +6005,12 @@ int main(string[] args)
             root.turnStatusForTesting() == "running" &&
             root.turnBusyForTesting() &&
             root.queuedFollowUpCountForTesting() == 0 &&
-            root.lastUserMessageForTesting() == "Run one final review",
-            "an explicit follow-up did not start as a distinct next turn");
+            root.lastSubmittedUserMessageForTesting() == "Run one final review",
+            "an explicit follow-up did not start as a distinct next turn: " ~
+            root.taskStatusForTesting() ~ "/" ~ root.turnStatusForTesting() ~
+            " busy=" ~ to!string(root.turnBusyForTesting()) ~
+            " queue=" ~ to!string(root.queuedFollowUpCountForTesting()) ~
+            " user=" ~ root.lastSubmittedUserMessageForTesting());
         root.clickSendButtonForTesting();
         root.setTaskStateForTesting("Build durable recovery", "active",
             "not_required");

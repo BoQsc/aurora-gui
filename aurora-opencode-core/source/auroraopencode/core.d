@@ -642,6 +642,7 @@ public struct ChatMessage
     string reasoning;
     string time;       // "HH:MM" local wall-clock, empty when unknown
     bool failed;       // assistant reply that ended in an error
+    string error;      // display-only failure; never replayed as assistant prose
     string finishReason; // provider stop reason; identifies truncated replies
     int promptTokens;  // usage the API reported for the reply (0 = unknown)
     int completionTokens;
@@ -655,7 +656,7 @@ public struct ChatMessage
     int diffDeletions;  // file-mutating tools: removed line count (-M)
     string toolDiff;    // file-mutating tools: unified diff for the expanded view
     long toolElapsedMs; // wall-clock tool duration in ms; 0 hides the label
-    double workedSeconds; // user turns: assistant working seconds for this turn
+    double workedSeconds = 0; // user turns: assistant working seconds for this turn
     // Images the user dropped or pasted with this turn. Persisted with the
     // session so a continued or replayed conversation still reaches the model
     // as a vision request instead of silently degrading to text.
@@ -813,6 +814,7 @@ public struct ChatSession
     // prompt survives a restart or a rebuild-and-relaunch instead of vanishing
     // with the process. Empty once the prompt is sent.
     string draft;
+    bool draftRecorded; // recovery explicitly specified a draft, including clearing it
     // Experimental multi-agent roster. Empty means the ordinary single-agent
     // conversation. `activeAgentId` is who speaks next; `nextSpeakerId` is set
     // by a routing tool (assign) and consumed at the next turn boundary.
@@ -849,6 +851,68 @@ public string newMessageId()
 public string newSessionId()
 {
     return "t-" ~ newMessageId();
+}
+
+/// Titles must end at a code-point boundary, including emoji and CJK prompts.
+public string chatTitle(string text, size_t maxCharacters = 60)
+{
+    import std.utf : decode;
+    size_t end;
+    size_t count;
+    while (end < text.length && count < maxCharacters)
+    {
+        decode(text, end);
+        ++count;
+    }
+    return end < text.length ? text[0 .. end] ~ "…" : text;
+}
+
+/// Detach mutable arrays before the background writer reads a conversation.
+/// Immutable strings and image bytes can be shared without copying their payload.
+public ChatSession[] snapshotChatSessions(ChatSession[] source)
+{
+    ChatSession[] result;
+    foreach (original; source)
+    {
+        auto session = original;
+        session.messages = original.messages.dup;
+        foreach (i, message; original.messages)
+        {
+            session.messages[i].toolCalls = message.toolCalls.dup;
+            session.messages[i].images = message.images.dup;
+        }
+        session.taskSteps = original.taskSteps.dup;
+        session.nestedPlans = original.nestedPlans.dup;
+        foreach (i, plan; original.nestedPlans)
+            session.nestedPlans[i].steps = plan.steps.dup;
+        session.queuedGuidance = original.queuedGuidance.dup;
+        session.queuedFollowUps = original.queuedFollowUps.dup;
+        session.agents = original.agents.dup;
+        result ~= session;
+    }
+    return result;
+}
+
+unittest
+{
+    assert(chatTitle("hello") == "hello");
+    assert(chatTitle("你好世界", 2) == "你好…");
+    assert(chatTitle("😀😀😀", 2) == "😀😀…");
+    ChatSession session;
+    session.messages ~= ChatMessage.init;
+    session.messages[0].content = "partial";
+    session.messages[0].toolCalls ~= OpenCodeToolCall("call", "read", "{}");
+    session.taskSteps ~= TaskStep("work", "pending");
+    session.nestedPlans ~= NestedPlan(1, [TaskStep("nested", "pending")]);
+    auto snapshot = snapshotChatSessions([session]);
+    session.messages[0].content = "finished";
+    session.messages[0].toolCalls[0].arguments = "changed";
+    session.taskSteps[0].status = "completed";
+    session.nestedPlans[0].steps[0].status = "completed";
+    assert(snapshot[0].messages[0].content == "partial");
+    assert(snapshot[0].messages[0].toolCalls[0].arguments == "{}");
+    assert(snapshot[0].taskSteps[0].status == "pending");
+    assert(snapshot[0].nestedPlans[0].steps[0].status == "pending");
 }
 
 /**

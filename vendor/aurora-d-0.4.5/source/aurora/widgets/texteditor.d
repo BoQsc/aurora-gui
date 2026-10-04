@@ -26,7 +26,7 @@ version (Windows)
 {
     pragma(lib, "user32");
     import core.sys.windows.windows : CF_UNICODETEXT, CloseClipboard,
-        EmptyClipboard, GetClipboardData, GlobalAlloc, GlobalFree,
+        EmptyClipboard, GetActiveWindow, GetClipboardData, GlobalAlloc, GlobalFree,
         GlobalLock, GlobalUnlock, GMEM_MOVEABLE, HGLOBAL,
         IsClipboardFormatAvailable, OpenClipboard, SetClipboardData;
     import std.string : fromStringz;
@@ -54,7 +54,9 @@ private dchar[] readSystemClipboardText()
 version (Windows)
 private bool writeSystemClipboardText(const(dchar)[] value)
 {
-    if (!OpenClipboard(null)) return false;
+    // EmptyClipboard needs a window owner for SetClipboardData to succeed.
+    auto owner = GetActiveWindow();
+    if (owner is null || !OpenClipboard(owner)) return false;
     scope (exit) CloseClipboard();
     if (!EmptyClipboard()) return false;
 
@@ -83,13 +85,14 @@ private bool writeSystemClipboardText(const(dchar)[] value)
 private void writeClipboardText(const(dchar)[] value)
 {
     processClipboard = value.dup;
-    version (Windows)
-        writeSystemClipboardText(value);
+    version (AuroraHeadless) {}
+    else version (Windows) writeSystemClipboardText(value);
 }
 
 private dchar[] readClipboardText()
 {
-    version (Windows)
+    version (AuroraHeadless) {}
+    else version (Windows)
     {
         auto systemText = readSystemClipboardText();
         if (systemText.length > 0) return systemText;

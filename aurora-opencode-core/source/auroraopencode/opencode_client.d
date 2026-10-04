@@ -12,6 +12,7 @@ import core.sys.windows.wininet : ERROR_INTERNET_OPERATION_CANCELLED,
     INTERNET_OPTION_CONNECT_TIMEOUT, INTERNET_OPTION_RECEIVE_TIMEOUT,
     INTERNET_OPTION_SEND_TIMEOUT, INTERNET_SERVICE_HTTP, InternetCloseHandle,
     InternetConnectW, InternetOpenW, InternetOpenUrlW, InternetReadFile,
+    InternetQueryDataAvailable,
     InternetSetOptionW, InternetSetStatusCallback, INTERNET_STATUS_REQUEST_SENT;
 import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -473,10 +474,12 @@ final class OpenCodeClient
     // of leaving a retrying request looking frozen.
     private bool _transientRetrying;
     private bool _modelsBusy;
+    private bool _modelsRefreshQueued;
     private bool _cancel;
     private HINTERNET _chatHandle;
     private HINTERNET _modelsHandle;
     private HINTERNET _session;
+    private HINTERNET _retiredSession;
     private bool _sessionClosed;
     private string _baseUrl;
     private string _apiKey;
@@ -502,6 +505,11 @@ final class OpenCodeClient
     private size_t _streamToolArgBytes;
     private bool _streamWantedTools;
     private string _streamFinishReason;
+    private bool _streamDone;
+    private string _streamError;
+    private bool _deferStreamEnd;
+    private bool _hasStreamEnd;
+    private OpenCodeEvent _streamEnd;
     private int _lastPromptTokens;
     private int _lastCompletionTokens;
     private int _lastTotalTokens;
@@ -551,6 +559,8 @@ final class OpenCodeClient
 
     void setCredentials(string baseUrl, string apiKey)
     {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
         _baseUrl = baseUrl;
         _apiKey = apiKey;
     }
@@ -560,6 +570,8 @@ final class OpenCodeClient
     /// keeps the constructor's per-run id.
     void setOpenCodeSession(string value)
     {
+        _mutex.lock();
+        scope (exit) _mutex.unlock();
         if (value.length > 0) _opencodeSession = value;
     }
 
@@ -662,7 +674,7 @@ final class OpenCodeClient
         int thinkingBudgetTokens = 0, bool llamaCppServer = false)
     {
         _mutex.lock();
-        if (_chatBusy)
+        if (_chatBusy || _sessionClosed)
         {
             _mutex.unlock();
             return;
@@ -670,30 +682,36 @@ final class OpenCodeClient
         _chatBusy = true;
         _cancel = false;
         _chatHandle = null;
+        const requestBaseUrl = _baseUrl;
+        const requestApiKey = _apiKey;
+        const requestSession = _opencodeSession;
         _mutex.unlock();
 
         ChatRequestMessage[] messageCopy;
         foreach (message; messages)
         {
             ChatRequestMessage copy;
-            copy.role = message.role.dup;
-            copy.content = message.content.dup;
-            copy.reasoningContent = message.reasoningContent.dup;
-            copy.toolCallId = message.toolCallId.dup;
+            // Strings are immutable in D. Share their payloads while detaching
+            // the mutable structs/arrays; copying the whole history and base64
+            // images here blocked the UI before the worker could even start.
+            copy.role = message.role;
+            copy.content = message.content;
+            copy.reasoningContent = message.reasoningContent;
+            copy.toolCallId = message.toolCallId;
             foreach (image; message.images)
             {
                 ChatImageAttachment imageCopy;
-                imageCopy.mimeType = image.mimeType.dup;
-                imageCopy.base64Data = image.base64Data.dup;
-                imageCopy.name = image.name.dup;
+                imageCopy.mimeType = image.mimeType;
+                imageCopy.base64Data = image.base64Data;
+                imageCopy.name = image.name;
                 copy.images ~= imageCopy;
             }
             foreach (call; message.toolCalls)
             {
                 OpenCodeToolCall callCopy;
-                callCopy.id = call.id.dup;
-                callCopy.name = call.name.dup;
-                callCopy.arguments = call.arguments.dup;
+                callCopy.id = call.id;
+                callCopy.name = call.name;
+                callCopy.arguments = call.arguments;
                 copy.toolCalls ~= callCopy;
             }
             messageCopy ~= copy;
@@ -703,15 +721,16 @@ final class OpenCodeClient
         foreach (tool; tools)
         {
             OpenCodeToolDef copy;
-            copy.name = tool.name.dup;
-            copy.description = tool.description.dup;
-            copy.parametersJson = tool.parametersJson.dup;
+            copy.name = tool.name;
+            copy.description = tool.description;
+            copy.parametersJson = tool.parametersJson;
             toolCopy ~= copy;
         }
 
         auto worker = new Thread({
             runChatRequest(messageCopy, toolCopy, model, thinking, requestId,
-                reasoningEffort, thinkingBudgetTokens, llamaCppServer);
+                reasoningEffort, thinkingBudgetTokens, llamaCppServer,
+                requestBaseUrl, requestApiKey, requestSession);
         });
         worker.isDaemon = true;
         worker.start();
@@ -734,16 +753,21 @@ final class OpenCodeClient
     void fetchModels()
     {
         _mutex.lock();
-        if (_modelsBusy)
+        if (_modelsBusy || _sessionClosed)
         {
+            if (!_sessionClosed) _modelsRefreshQueued = true;
             _mutex.unlock();
             return;
         }
         _modelsBusy = true;
         _modelsHandle = null;
+        const requestBaseUrl = _baseUrl;
+        const requestApiKey = _apiKey;
+        const requestSession = _opencodeSession;
         _mutex.unlock();
 
-        auto worker = new Thread({ runModelsRequest(); });
+        auto worker = new Thread({ runModelsRequest(requestBaseUrl,
+            requestApiKey, requestSession); });
         worker.isDaemon = true;
         worker.start();
     }
@@ -753,9 +777,23 @@ final class OpenCodeClient
     {
         _mutex.lock();
         _sessionClosed = true;
+        _cancel = true;
         auto session = _session;
+        auto chatHandle = _chatHandle;
+        auto modelsHandle = _modelsHandle;
         _session = null;
+        _chatHandle = null;
+        _modelsHandle = null;
+        // Workers still own connection handles below this session. Closing the
+        // parent now invalidates them before their cleanup can release them.
+        if (session !is null && (_chatBusy || _modelsBusy))
+        {
+            _retiredSession = session;
+            session = null;
+        }
         _mutex.unlock();
+        if (chatHandle !is null) InternetCloseHandle(chatHandle);
+        if (modelsHandle !is null) InternetCloseHandle(modelsHandle);
         if (session !is null)
         {
             try InternetCloseHandle(session);
@@ -809,7 +847,8 @@ final class OpenCodeClient
         if (_pending.length > 0 &&
             (event.kind == OpenCodeEventKind.toolCallDelta ||
              event.kind == OpenCodeEventKind.usage) &&
-            _pending[$ - 1].kind == event.kind)
+            _pending[$ - 1].kind == event.kind &&
+            _pending[$ - 1].requestId == event.requestId)
         {
             _pending[$ - 1] = event;
             return;
@@ -822,11 +861,20 @@ final class OpenCodeClient
     private void pushStreamEvent(OpenCodeEvent event)
     {
         event.requestId = _streamRequestId;
+        if (_deferStreamEnd && (event.kind == OpenCodeEventKind.done ||
+            event.kind == OpenCodeEventKind.error || event.kind == OpenCodeEventKind.toolCalls))
+        {
+            _streamEnd = event;
+            _hasStreamEnd = true;
+            return;
+        }
         pushEvent(event);
     }
 
     private void finishWorker(bool chat)
     {
+        HINTERNET retired;
+        bool refreshModels;
         _mutex.lock();
         if (chat)
         {
@@ -837,8 +885,17 @@ final class OpenCodeClient
         {
             _modelsBusy = false;
             _modelsHandle = null;
+            refreshModels = _modelsRefreshQueued && !_sessionClosed;
+            _modelsRefreshQueued = false;
+        }
+        if (_sessionClosed && !_chatBusy && !_modelsBusy)
+        {
+            retired = _retiredSession;
+            _retiredSession = null;
         }
         _mutex.unlock();
+        if (retired !is null) InternetCloseHandle(retired);
+        if (refreshModels) fetchModels();
     }
 
     private HINTERNET openSession()
@@ -910,7 +967,7 @@ final class OpenCodeClient
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
-        if (_cancel && chat)
+        if (_sessionClosed || (_cancel && chat))
         {
             _chatHandle = null;
             return null;
@@ -920,29 +977,52 @@ final class OpenCodeClient
         return handle;
     }
 
-    private void unregisterRequest(HINTERNET handle, bool chat)
+    private bool unregisterRequest(HINTERNET handle, bool chat)
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
-        if (chat && _chatHandle is handle) _chatHandle = null;
-        else if (!chat && _modelsHandle is handle) _modelsHandle = null;
+        if (chat && _chatHandle is handle)
+        {
+            _chatHandle = null;
+            return true;
+        }
+        if (!chat && _modelsHandle is handle)
+        {
+            _modelsHandle = null;
+            return true;
+        }
+        // Cancellation/shutdown already took ownership and closed the handle.
+        return false;
     }
 
     private void runChatRequest(ChatRequestMessage[] messages,
         OpenCodeToolDef[] tools, string model, bool thinking, ulong requestId,
-        string reasoningEffort, int thinkingBudgetTokens, bool llamaCppServer)
+        string reasoningEffort, int thinkingBudgetTokens, bool llamaCppServer,
+        string requestBaseUrl, string requestApiKey, string requestSession)
     {
+        _streamRequestId = requestId;
+        _deferStreamEnd = true;
+        _hasStreamEnd = false;
         scope (exit)
         {
-            finishWorker(true);
+            const hasEnd = _hasStreamEnd;
+            auto end = _streamEnd;
+            _streamEnd = OpenCodeEvent.init;
+            _hasStreamEnd = false;
+            _deferStreamEnd = false;
             _streamActive = false;
+            finishWorker(true);
+            // A terminal event is permission for the UI to send the next tool
+            // round/follow-up. Release this worker before publishing it, or a
+            // fast continuation can be silently rejected by the busy guard.
+            if (hasEnd) pushEvent(end);
         }
 
         bool cancelled;
 
         try
         {
-            const target = parseHttpTarget(_baseUrl, "/chat/completions");
+            const target = parseHttpTarget(requestBaseUrl, "/chat/completions");
             // Request-shape recovery state. A thinking-mode provider can reject
             // the payload because the assistant's reasoning was not replayed
             // (first recovery) and, if it still refuses, because hosted
@@ -950,7 +1030,7 @@ final class OpenCodeClient
             bool replayReasoning;
             bool droppedReasoning;
             string body = buildChatBody(messages, tools, model, thinking,
-                _baseUrl, false, reasoningEffort, thinkingBudgetTokens,
+                requestBaseUrl, false, reasoningEffort, thinkingBudgetTokens,
                 llamaCppServer);
             _streamReasoning = "";
             _streamContent = "";
@@ -961,6 +1041,8 @@ final class OpenCodeClient
             _lastToolProgressTime = MonoTime.currTime;
             _streamWantedTools = false;
             _streamFinishReason = "";
+            _streamDone = false;
+            _streamError = "";
             _lastPromptTokens = 0;
             _lastCompletionTokens = 0;
             _lastTotalTokens = 0;
@@ -982,18 +1064,18 @@ final class OpenCodeClient
             _waitFirstByteMs = _waitFirstTokenMs = -1;
             _lastRequestBytes = _lastRequestImages = 0;
 
-            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
-            if (_apiKey.length > 0)
-                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
-            if (isOpenCodeApiBaseUrl(_baseUrl))
-                headers ~= "x-opencode-session: " ~ _opencodeSession ~ "\r\n";
+            string headers = "User-Agent: " ~ userAgentFor(requestBaseUrl) ~ "\r\n";
+            if (requestApiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ requestApiKey ~ "\r\n";
+            if (isOpenCodeApiBaseUrl(requestBaseUrl))
+                headers ~= "x-opencode-session: " ~ requestSession ~ "\r\n";
             headers ~= "Content-Type: application/json\r\n" ~
                 "Accept: text/event-stream\r\n";
             // Log the request shape once per turn. Without it, a request that
             // carries inline images is indistinguishable from a text-only one
             // in the log, and "the model did not answer about the image" cannot
             // be separated from "the image never left the app".
-            logRequestShape(messages, model, _baseUrl, llamaCppServer);
+            logRequestShape(messages, model, requestBaseUrl, llamaCppServer);
             auto session = openSession();
             // Ask the same local server that will run inference to apply the
             // loaded model's tokenizer and chat template to the exact request
@@ -1004,7 +1086,8 @@ final class OpenCodeClient
             // authoritative count.
             if (llamaCppServer)
             {
-                _preflightPromptTokens = countChatInputTokens(session, body);
+                _preflightPromptTokens = countChatInputTokens(session, body,
+                    requestBaseUrl, requestApiKey);
                 if (_preflightPromptTokens > 0)
                 {
                     _lastPromptTokens = _preflightPromptTokens;
@@ -1033,7 +1116,7 @@ final class OpenCodeClient
             {
                 if (replayReasoning || droppedReasoning)
                     body = buildChatBody(messages, tools, model,
-                        droppedReasoning ? false : thinking, _baseUrl,
+                        droppedReasoning ? false : thinking, requestBaseUrl,
                         replayReasoning, reasoningEffort,
                         droppedReasoning ? 0 : thinkingBudgetTokens,
                         llamaCppServer);
@@ -1042,6 +1125,7 @@ final class OpenCodeClient
                 _lastRequestImages = countInlineImages(messages);
                 HINTERNET connection;
                 HINTERNET request;
+                bool requestRegistered;
                 bool retry;
                 DWORD retryStatus;
                 string retryNote;
@@ -1063,6 +1147,7 @@ final class OpenCodeClient
                         throw new Exception("Could not create the chat request.");
                     if (registerRequest(request, true) is null)
                         throw new Exception("Chat request cancelled.");
+                    requestRegistered = true;
 
                     InternetSetStatusCallback(request, &chatRequestStatus);
                     _mutex.lock();
@@ -1154,11 +1239,21 @@ final class OpenCodeClient
 
                         ubyte[8192] buffer;
                         string lineBuffer;
-                        while (!_cancel)
+                        while (!shuttingDown() && !_streamDone &&
+                            _streamError.length == 0)
                         {
                             DWORD readBytes;
-                            if (!InternetReadFile(request, buffer.ptr,
-                                cast(DWORD) buffer.length, &readBytes))
+                            // A full-size synchronous read can wait to fill the
+                            // buffer. Read only bytes already available so short
+                            // token chunks and [DONE] reach the UI immediately.
+                            DWORD availableBytes;
+                            bool readSucceeded = InternetQueryDataAvailable(
+                                request, &availableBytes, 0, 0) != FALSE;
+                            if (readSucceeded && availableBytes > 0)
+                                readSucceeded = InternetReadFile(request, buffer.ptr,
+                                    availableBytes < buffer.length ? availableBytes :
+                                        cast(DWORD) buffer.length, &readBytes) != FALSE;
+                            if (!readSucceeded)
                             {
                                 const errorCode = GetLastError();
                                 if (_cancel ||
@@ -1188,7 +1283,8 @@ final class OpenCodeClient
                         // but compatible local/proxy servers sometimes close
                         // immediately after their last JSON event. Do not drop
                         // that final (occasionally one-character) content chunk.
-                        if (!_cancel && lineBuffer.length > 0)
+                        if (shuttingDown()) cancelled = true;
+                        if (!cancelled && lineBuffer.length > 0)
                             processSseLine(lineBuffer);
                     }
                 }
@@ -1196,8 +1292,8 @@ final class OpenCodeClient
                 {
                     if (request !is null)
                     {
-                        unregisterRequest(request, true);
-                        InternetCloseHandle(request);
+                        if (!requestRegistered || unregisterRequest(request, true))
+                            InternetCloseHandle(request);
                     }
                     if (connection !is null)
                         InternetCloseHandle(connection);
@@ -1259,6 +1355,24 @@ final class OpenCodeClient
     /// toolCalls event when the model requested tools, otherwise done.
     private void pushStreamEnd()
     {
+        if (_streamError.length > 0 ||
+            (!_streamDone && _streamFinishReason.length == 0))
+        {
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.error,
+                _streamError.length > 0 ? _streamError :
+                    "The connection closed before the reply finished. " ~
+                    "Your partial reply has been preserved; try again."));
+            return;
+        }
+        // Never execute tool arguments cut off by the output limit.
+        if (_streamWantedTools && (_streamFinishReason == "length" ||
+            _streamFinishReason == "max_tokens"))
+        {
+            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.error,
+                "The model reached its output limit while preparing tools. " ~
+                "No incomplete tool calls were executed. Try a smaller request."));
+            return;
+        }
         OpenCodeEvent event;
         if (_streamWantedTools)
             event = OpenCodeEvent(OpenCodeEventKind.toolCalls,
@@ -1314,6 +1428,8 @@ final class OpenCodeClient
         _lastToolProgressTime = MonoTime.currTime;
         _streamWantedTools = false;
         _streamFinishReason = "";
+        _streamDone = false;
+        _streamError = "";
         _lastPromptTokens = 0;
         _lastCompletionTokens = 0;
         _lastTotalTokens = 0;
@@ -1359,13 +1475,14 @@ final class OpenCodeClient
         return parseHttpTarget(baseUrl, "/models").secure;
     }
 
-    private void runModelsRequest()
+    private void runModelsRequest(string requestBaseUrl, string requestApiKey,
+        string requestSession)
     {
         scope (exit) finishWorker(false);
 
         try
         {
-            const target = parseHttpTarget(_baseUrl, "/models");
+            const target = parseHttpTarget(requestBaseUrl, "/models");
             auto session = openSession();
 
             auto connection = InternetConnectW(session, toUTF16z(target.host),
@@ -1386,15 +1503,14 @@ final class OpenCodeClient
             }
             scope (exit)
             {
-                unregisterRequest(request, false);
-                InternetCloseHandle(request);
+                if (unregisterRequest(request, false)) InternetCloseHandle(request);
             }
 
-            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
-            if (_apiKey.length > 0)
-                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
-            if (isOpenCodeApiBaseUrl(_baseUrl))
-                headers ~= "x-opencode-session: " ~ _opencodeSession ~ "\r\n";
+            string headers = "User-Agent: " ~ userAgentFor(requestBaseUrl) ~ "\r\n";
+            if (requestApiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ requestApiKey ~ "\r\n";
+            if (isOpenCodeApiBaseUrl(requestBaseUrl))
+                headers ~= "x-opencode-session: " ~ requestSession ~ "\r\n";
             if (!HttpSendRequestW(request, toUTF16z(headers), -1, null, 0))
                 throw new Exception("Could not open the models URL (" ~
                     wininetErrorText(GetLastError()) ~ ").");
@@ -1446,7 +1562,8 @@ final class OpenCodeClient
             // model catalog does not identify them as llama.cpp.
             if (ids.length == 1)
             {
-                const runtimeLimit = llamaRuntimeContextLimit(session, target);
+                const runtimeLimit = llamaRuntimeContextLimit(session, target,
+                    requestBaseUrl, requestApiKey);
                 if (runtimeLimit > 0)
                 {
                     contextLimits[ids[0]] = runtimeLimit;
@@ -1455,7 +1572,7 @@ final class OpenCodeClient
             }
             OpenCodeEvent event;
             event.kind = OpenCodeEventKind.models;
-            event.text = _baseUrl;
+            event.text = requestBaseUrl;
             event.modelIds = ids;
             event.modelContextLimits = contextLimits;
             event.llamaCppServer = llamaCppServer;
@@ -1471,7 +1588,8 @@ final class OpenCodeClient
     }
 
     private int llamaRuntimeContextLimit(HINTERNET session,
-        const ref HttpTarget modelsTarget)
+        const ref HttpTarget modelsTarget, string requestBaseUrl,
+        string requestApiKey)
     {
         try
         {
@@ -1487,9 +1605,9 @@ final class OpenCodeClient
                 requestFlags(propsTarget), 0);
             if (request is null) return 0;
             scope (exit) InternetCloseHandle(request);
-            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
-            if (_apiKey.length > 0)
-                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            string headers = "User-Agent: " ~ userAgentFor(requestBaseUrl) ~ "\r\n";
+            if (requestApiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ requestApiKey ~ "\r\n";
             if (!HttpSendRequestW(request, toUTF16z(headers), -1,
                     null, 0)) return 0;
             DWORD statusCode;
@@ -1789,13 +1907,15 @@ final class OpenCodeClient
      * included. The endpoint performs no generation and does not consume the
      * model's KV prefix cache.
      */
-    private int countChatInputTokens(HINTERNET session, string body)
+    private int countChatInputTokens(HINTERNET session, string body,
+        string requestBaseUrl, string requestApiKey)
     {
         HINTERNET connection;
         HINTERNET request;
+        bool requestRegistered;
         try
         {
-            const target = parseHttpTarget(_baseUrl,
+            const target = parseHttpTarget(requestBaseUrl,
                 "/chat/completions/input_tokens");
             connection = InternetConnectW(session, toUTF16z(target.host),
                 target.port, null, null, INTERNET_SERVICE_HTTP, 0, 0);
@@ -1805,10 +1925,11 @@ final class OpenCodeClient
                 requestFlags(target), 0);
             if (request is null || registerRequest(request, true) is null)
                 return 0;
+            requestRegistered = true;
 
-            string headers = "User-Agent: " ~ userAgentFor(_baseUrl) ~ "\r\n";
-            if (_apiKey.length > 0)
-                headers ~= "Authorization: Bearer " ~ _apiKey ~ "\r\n";
+            string headers = "User-Agent: " ~ userAgentFor(requestBaseUrl) ~ "\r\n";
+            if (requestApiKey.length > 0)
+                headers ~= "Authorization: Bearer " ~ requestApiKey ~ "\r\n";
             headers ~= "Content-Type: application/json\r\n" ~
                 "Accept: application/json\r\n";
             auto bytes = cast(ubyte[]) body.dup;
@@ -1842,8 +1963,8 @@ final class OpenCodeClient
         {
             if (request !is null)
             {
-                unregisterRequest(request, true);
-                InternetCloseHandle(request);
+                if (!requestRegistered || unregisterRequest(request, true))
+                    InternetCloseHandle(request);
             }
             if (connection !is null) InternetCloseHandle(connection);
         }
@@ -2057,17 +2178,37 @@ final class OpenCodeClient
 
     private void processSseLine(string line)
     {
+        if (_streamDone || _streamError.length > 0) return;
         if (line.length > 0 && line[$ - 1] == '\r')
             line = line[0 .. $ - 1];
         if (!startsWithAscii(line, "data:")) return;
         const payload = line[5 .. $];
         if (payload.length == 0) return;
-        if (payload == "[DONE]") return;
+        if (payload.strip() == "[DONE]")
+        {
+            _streamDone = true;
+            return;
+        }
 
         JSONValue value;
         try value = parseJSON(payload);
-        catch (Exception) return;
+        catch (Exception)
+        {
+            _streamError = "The provider sent an invalid streaming response. " ~
+                "Your partial reply has been preserved; try again.";
+            return;
+        }
         if (value.type != JSONType.object) return;
+
+        if (auto error = "error" in value.object)
+        {
+            if (error.type != JSONType.null_)
+            {
+                _streamError = "Provider error: " ~ formatHttpErrorDetail(payload);
+                return;
+            }
+        }
+        captureUsage(value);
 
         auto choices = "choices" in value.object;
         if (choices is null || choices.type != JSONType.array ||
@@ -2075,14 +2216,10 @@ final class OpenCodeClient
         {
             // Some providers deliver the usage summary in a chunk with empty
             // choices just before [DONE].
-            captureUsage(value);
             return;
         }
         const choice = choices.array[0];
         if (choice.type != JSONType.object) return;
-        auto delta = "delta" in choice.object;
-        if (delta is null || delta.type != JSONType.object) return;
-        captureUsage(value);
 
         // Some providers signal tool-call completion through the chunk's
         // finish_reason before [DONE]; others only through the delta shape.
@@ -2092,6 +2229,9 @@ final class OpenCodeClient
                 _streamFinishReason = found.str;
                 if (found.str == "tool_calls") _streamWantedTools = true;
             }
+
+        auto delta = "delta" in choice.object;
+        if (delta is null || delta.type != JSONType.object) return;
 
         if (auto found = "tool_calls" in delta.object)
         {
@@ -2103,7 +2243,14 @@ final class OpenCodeClient
                     int index = 0;
                     if (auto field = "index" in entry.object)
                         if (field.type == JSONType.integer)
+                        {
+                            if (field.integer < 0 || field.integer >= 128)
+                            {
+                                _streamError = "The provider sent an invalid tool-call index.";
+                                return;
+                            }
                             index = cast(int) field.integer;
+                        }
                     while (_streamToolCalls.length <= cast(size_t) index)
                         _streamToolCalls ~= OpenCodeToolCall.init;
                     if (auto field = "id" in entry.object)
