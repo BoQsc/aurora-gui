@@ -204,7 +204,14 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "evidence already established, name the remaining unknown, and choose " ~
         "the lookup or mutation that resolves it. Changing search terms alone " ~
         "is not progress, but legitimate validation and rereading after a " ~
-        "change remain available.\n";
+        "change remain available.\n" ~
+        "- Never idle, sleep, or wait as a substitute for work. When a " ~
+        "command, build, or test is still running, keep making progress: do " ~
+        "the next independent step, or inspect the run with `process` for " ~
+        "elapsed time, status, and partial output, then continue. Do not end " ~
+        "a turn merely to wait, and never call a sleep/delay tool to pass the " ~
+        "time; only pause for a wait that is genuinely required to observe an " ~
+        "external result, and inspect instead of sleeping whenever you can.\n";
 }
 
 private string executionLoopSection(in SystemPromptContext ctx)
