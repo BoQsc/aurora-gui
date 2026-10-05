@@ -211,7 +211,11 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "elapsed time, status, and partial output, then continue. Do not end " ~
         "a turn merely to wait, and never call a sleep/delay tool to pass the " ~
         "time; only pause for a wait that is genuinely required to observe an " ~
-        "external result, and inspect instead of sleeping whenever you can.\n";
+         "external result, and inspect instead of sleeping whenever you can. " ~
+         "The native dshell `sleep`/`wait` is discouraged, but when a pause " ~
+         "is truly required it is the only acceptable way to wait: use it " ~
+         "instead of shell or other nonstandard pauses such as `timeout`, " ~
+         "`bash -c sleep`, or a `ping`/`curl` delay.\n";
 }
 
 private string executionLoopSection(in SystemPromptContext ctx)

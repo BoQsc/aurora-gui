@@ -103,10 +103,15 @@ private OpenCodeToolDef dshellToolDefinition()
         "shell). `where` prints the workspace path when specifically needed, " ~
         "`list` discovers files and " ~
         "directories (optionally recursively or by glob pattern), `info` " ~
-        "shows metadata, and `sleep` pauses for a number of seconds. `list` " ~
-        "and `info` already return their resolved path, so do not pair them " ~
-        "with `where`. This is the primary tool for navigating a workspace.",
-        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info","sleep","wait"],"description":"Operation: where (workspace path), list (directory discovery), info (metadata), or sleep/wait (pause seconds)"},"path":{"type":"string","description":"Optional path, relative to the workspace or absolute; defaults to the workspace"},"recursive":{"type":"boolean","description":"For list: descend into subdirectories"},"pattern":{"type":"string","description":"For list: optional glob matched against paths relative to the listed directory, e.g. **/*.d"},"seconds":{"type":"number","description":"For sleep/wait: seconds to pause, fractional allowed; defaults to 1 and is capped at 300"}},"required":["command"]}`
+         "shows metadata, and `sleep` pauses for a number of seconds. Do not " ~
+         "reach for `sleep`/`wait` to pass time: it rarely helps, so make the " ~
+         "next independent step or inspect a running command with `process` " ~
+         "instead. Reserve it for a pause genuinely required to observe an " ~
+         "external result, and use it here rather than a shell or other " ~
+         "nonstandard waiting command. `list` " ~
+         "and `info` already return their resolved path, so do not pair them " ~
+         "with `where`. This is the primary tool for navigating a workspace.",
+        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info","sleep","wait"],"description":"Operation: where (workspace path), list (directory discovery), info (metadata), or sleep/wait (pause seconds; discouraged - prefer making progress or inspecting with process, and if a pause is truly required use this native pause rather than a shell wait command)"},"path":{"type":"string","description":"Optional path, relative to the workspace or absolute; defaults to the workspace"},"recursive":{"type":"boolean","description":"For list: descend into subdirectories"},"pattern":{"type":"string","description":"For list: optional glob matched against paths relative to the listed directory, e.g. **/*.d"},"seconds":{"type":"number","description":"For sleep/wait: seconds to pause, fractional allowed; defaults to 1 and is capped at 300"}},"required":["command"]}`
     );
 }
 
