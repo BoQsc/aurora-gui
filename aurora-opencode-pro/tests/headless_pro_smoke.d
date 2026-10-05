@@ -5034,6 +5034,38 @@ int main(string[] args)
         "substantive mutation reset the request-wide exploration budget");
     writeln("Exploration checkpoint guides action without disabling inspection");
 
+    // Tracked plan mode must not let a turn spend its read-only inspection
+    // budget without ever recording a plan. The exploration checkpoint only
+    // nudges once and a model can ignore it for many more rounds (the observed
+    // failure: ~56 inspection rounds before the first update_plan). Once the
+    // budget is spent and no plan exists, the next read-only batch is skipped
+    // until update_plan runs, so the plan is recorded before work continues.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"],
+            ["Add a delayed tooltip to the conversation sidebar"]);
+        root.addConversationForTesting(["assistant"], [""]);
+        foreach (i; 0 .. 12)
+            root.injectToolResultForTesting("read", "file " ~ to!string(i),
+                false, `{"filePath":"src/file` ~ to!string(i) ~ `.d"}`);
+        assert(root.explorationCountForTesting() == 12,
+            "the plan-gate fixture did not build enough exploration: " ~
+            to!string(root.explorationCountForTesting()));
+        root.setStrictPlanEnabledForTesting(true);
+        root.addConversationForTesting(["assistant"], [""]);
+        OpenCodeToolCall readWithoutPlan;
+        readWithoutPlan.id = "call_gate_read";
+        readWithoutPlan.name = "read";
+        readWithoutPlan.arguments = `{"filePath":"src/extra.d"}`;
+        root.injectToolCallsForTesting([readWithoutPlan]);
+        assert(root.lastToolResultForTesting().indexOf(
+            "no durable plan recorded") >= 0,
+            "tracked plan mode did not gate exploration that ran without a " ~
+            "plan: " ~ root.lastToolResultForTesting());
+        root.setStrictPlanEnabledForTesting(false);
+        writeln("Tracked plan mode gates exploration that ran without a plan");
+    }
+
     // A recorded plan the model stops refreshing must not silently drift: the
     // checklist would keep showing finished work as pending/in_progress. Once a
     // plan with unfinished steps goes unrefreshed for enough tool results, the

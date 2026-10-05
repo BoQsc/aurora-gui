@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply delayed full-title hover tooltip for conversation rows in the sidebar.",
+  "reason": "Apply tracked-plan-mode fix: enforce a plan before extended read-only exploration, not only before edits.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 07:45:57.1212932",
-  "finishedAt": "2026-10-05 07:46:39.2033785",
-  "durationMs": 42082,
+  "startedAt": "2026-10-05 08:02:30.7194363",
+  "finishedAt": "2026-10-05 08:03:09.2660204",
+  "durationMs": 38547,
   "exitCode": 0,
   "errors": []
 }

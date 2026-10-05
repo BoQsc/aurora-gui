@@ -15121,13 +15121,21 @@ public final class OpenCodeRoot : VBox
             return;
         }
         // experimental: planmode - plan-first gate. With tracked plan mode on,
-        // a mutating edit must not begin before a durable plan exists for this
-        // user turn. The batch is skipped once (synthetic results plus an
-        // internal nudge) so the next model round records the plan; the gate
-        // never fires twice in a turn, so a model that refuses to plan cannot
-        // deadlock the edit.
+        // a durable plan must exist before the turn commits to either a
+        // mutating edit or an extended read-only exploration. The mutation
+        // case stops an unplanned edit; the exploration case stops the prior
+        // failure where a model inspected dozens of files and only recorded a
+        // plan just before its first edit (if at all). The advisory checkpoint
+        // at `explorationCheckpointCalls` was a single nudge the model could
+        // ignore, so nothing forced the plan. The batch is skipped once
+        // (synthetic results plus an internal nudge) so the next model round
+        // records the plan; the gate never fires twice in a turn, so a model
+        // that refuses to plan cannot deadlock the work.
+        const mutatingPending = firstMutatingCall(calls) >= 0;
+        const explorationExhausted = !mutatingPending &&
+            readOnlyExplorationCount(*session) >= explorationCheckpointCalls;
         if (experimentalStrictPlanEnabled() &&
-            firstMutatingCall(calls) >= 0 &&
+            (mutatingPending || explorationExhausted) &&
             session.taskSteps.length == 0 &&
             !planRecordedThisTurn(*session) &&
             !(session.id in _planGateFired ? _planGateFired[session.id] : false))
@@ -15136,20 +15144,28 @@ public final class OpenCodeRoot : VBox
             appendSkippedToolResults(*session, calls,
                 "Tool call skipped: no durable plan recorded for this turn. " ~
                 "Call update_plan first with the concrete remaining steps, " ~
-                "then repeat the edit.");
+                "then repeat the call.");
             ChatMessage planGate;
             planGate.role = "user";
             planGate.internal = true;
-            planGate.content = "Plan-first gate: record the durable plan with " ~
-                "one update_plan call (the concrete remaining steps and their " ~
-                "statuses) before making changes. The edit call will then run.";
+            planGate.content = mutatingPending
+                ? "Plan-first gate: record the durable plan with one " ~
+                    "update_plan call (the concrete remaining steps and their " ~
+                    "statuses) before making changes. The edit call will then run."
+                : "Plan-first gate: this turn has already spent its read-only " ~
+                    "inspection budget without recording a plan. Record the " ~
+                    "durable plan with one update_plan call (the concrete " ~
+                    "remaining steps and their statuses) before continuing to " ~
+                    "inspect. The next inspection call will then run.";
             appendMessage(*session, planGate);
             session.turnStatus = "running";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
             markDirty();
             if (_current == sessionIndex) rebuildMessageColumn();
-            updateStatus("Recording the plan before the first edit…");
+            updateStatus(mutatingPending
+                ? "Recording the plan before the first edit…"
+                : "Recording the plan before further exploration…");
             if (!_toolContinuationPaused) startChatRequest(sessionIndex, false);
             return;
         }
@@ -24822,6 +24838,14 @@ public final class OpenCodeRoot : VBox
     public bool queueStalePlanGuidanceForTesting()
     {
         return _current >= 0 && queueStalePlanGuidance(_sessions[_current]);
+    }
+
+    /// Test-only: toggle tracked plan mode (the persisted Settings switch) so a
+    /// test can exercise the plan-first gate without opening the Settings
+    /// dialog. Restore it to false when the test ends.
+    public void setStrictPlanEnabledForTesting(bool value)
+    {
+        setStrictPlanSetting(value);
     }
 
     /// Discard the compatibility snapshot in memory and replay only the durable

@@ -331,6 +331,7 @@ private int catalogContextLimitForModel(string model)
     {
         // CommandCode provider catalog (context_length from /models).
         case "deepseek/deepseek-v4.1-flash":       return 1_000_000;
+        case "deepseek/deepseek-v4.1-flash-fast":  return 1_000_000;
         case "deepseek/deepseek-v4-flash":         return 1_000_000;
         case "deepseek/deepseek-v4-flash-fast":    return 1_000_000;
         case "deepseek/deepseek-v4-flash-vision-exp": return 1_000_000;
@@ -451,6 +452,8 @@ unittest
     assert(contextLimitForModel("deepseek/deepseek-v4.1-flash") == 1_000_000);
     assert(contextLimitForModel("deepseek/deepseek-v4.1-flash", true) == 500_000);
     assert(contextLimitForModel("deepseek-v4.1-flash", true) == 500_000);
+    assert(contextLimitForModel("deepseek/deepseek-v4.1-flash-fast") == 1_000_000);
+    assert(contextLimitForModel("deepseek/deepseek-v4.1-flash-fast", true) == 500_000);
     assert(contextLimitForModel("deepseek/deepseek-v4-pro", true) == 1_000_000);
     assert(contextLimitForModel("gpt-5.5", true) == 400_000);
 }
