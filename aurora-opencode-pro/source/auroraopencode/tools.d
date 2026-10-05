@@ -2420,9 +2420,24 @@ private void killProcessTree(Pid pid)
         try kill(pid);
         catch (Exception) {}
     }
-    try wait(pid);
-    catch (Exception) {}
+    // Reap the direct child, but never block forever. A process wedged in an
+    // uninterruptible kernel wait cannot be terminated promptly, and the
+    // blocking `std.process.wait` would then park this worker thread for good:
+    // the tool would never report, its live row would spin "forever", and the
+    // turn could not continue even though the deadline had already fired. Poll
+    // with a deadline so the timeout/cancel path always returns; the OS reaps
+    // the handle on its own once the stuck process finally exits.
+    const reapDeadline = MonoTime.currTime + msecs(5000);
+    while (MonoTime.currTime < reapDeadline)
+    {
+        try
+        {
+            if (waitTimeout(pid, msecs(200)).terminated) return;
+        }
+        catch (Exception) return;
+    }
 }
+
 
 version (Windows)
 {

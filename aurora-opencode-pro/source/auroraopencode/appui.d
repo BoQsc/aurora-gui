@@ -15402,7 +15402,12 @@ public final class OpenCodeRoot : VBox
         auto worker = new Thread({
             try runToolWorker(client, sessionIndex, requestId,
                 workerCalls, workspace, cancellation, changeContext);
-            catch (Exception error)
+            // Catch Throwable, not just Exception: a tool that trips an Error
+            // (RangeError, AssertError, ...) would otherwise kill this thread
+            // before any result is published, leaving the batch's live rows
+            // spinning with no path forward. Every call still gets a terminal
+            // result, so the turn can always continue.
+            catch (Throwable error)
                 foreach (call; workerCalls)
                     publishToolResult(client, call, ToolExecution(call.name,
                         "Error: tool worker failed: " ~ error.msg, true), requestId);
@@ -15517,8 +15522,18 @@ public final class OpenCodeRoot : VBox
 
         void run()
         {
-            execution = executeTool(call, workspace, cancellation);
-            publishToolResult(client, call, execution, requestId);
+            // A parallel job runs on its own thread; an uncaught Throwable here
+            // would end the thread with the result dropped, so the lane's
+            // `join` would still return and its live row would spin forever.
+            // Publish a terminal result for any failure so the batch can finish.
+            try
+            {
+                execution = executeTool(call, workspace, cancellation);
+                publishToolResult(client, call, execution, requestId);
+            }
+            catch (Throwable error)
+                publishToolResult(client, call, ToolExecution(call.name,
+                    "Error: tool failed: " ~ error.msg, true), requestId);
         }
     }
 
@@ -22011,67 +22026,65 @@ public final class OpenCodeRoot : VBox
         refreshTimerBadge(true);
     }
 
-    /// True when a conversation carries a model-visible compaction checkpoint on
-    /// its active branch: its older context has been rolled into a summary and
-    /// that summary is what the next request would send. That is the state a
-    /// sufficiently long chat reaches, and the only one a fresh conversation can
-    /// inherit without dragging the full transcript along.
-    private static bool sessionHasCompactionCheckpoint(
-        const ref ChatSession session)
-    {
-        return session.compactionSummary.length > 0 &&
-            session.compactedThroughMessageId.length > 0 &&
-            checkpointOnActivePath(session);
-    }
-
-    /// Start a fresh conversation that inherits only the compacted work state of
-    /// `sessionIndex`: its checkpoint summary, objective and plan. The original
-    /// transcript is left intact. A single hidden anchor message marks the
-    /// boundary, so the new thread reaches the model with the checkpoint as its
-    /// opening context and an empty transcript rather than the full history.
-    private void forkSessionFromCompaction(int sessionIndex)
+    /// Start a fresh conversation that duplicates `sessionIndex` and then
+    /// compacts it: the full transcript is copied into the new chat, and the
+    /// summarizer rolls the copy's whole history into one checkpoint, so the new
+    /// thread reaches the model with the compacted work state instead of the
+    /// full history. The original conversation is left untouched.
+    private void duplicateSessionCompacted(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         ensureThreadLoaded(sessionIndex);
         saveLoadedRuntime();
         auto source = _sessions[sessionIndex];
-        if (source.compactionSummary.length == 0 ||
-            source.compactedThroughMessageId.length == 0)
-            return;
         ChatSession copy;
         copy.id = newSessionId();
         const baseTitle = source.title.length > 0 ? source.title : "Conversation";
-        copy.title = baseTitle ~ " (continued)";
+        copy.title = baseTitle ~ " (compacted)";
         copy.model = source.model;
         copy.thinking = source.thinking;
         copy.projectId = source.projectId;
         copy.objective = source.objective;
         copy.taskStatus = source.taskStatus;
-        copy.turnStatus = source.turnStatus;
+        // The copy starts idle: the compaction request below must not resume a
+        // turn the source happened to leave running.
+        copy.turnStatus = "idle";
         copy.verificationStatus = source.verificationStatus;
         copy.taskSteps = source.taskSteps.dup;
         copy.nestedPlans = source.nestedPlans.dup;
         copy.queuedGuidance = source.queuedGuidance;
         copy.queuedFollowUps = source.queuedFollowUps;
-        // A fresh conversation is new work the reader has not seen yet; it
-        // starts read.
         copy.unread = false;
         copy.updatedAt = Clock.currTime.toUnixTime();
-        // The hidden anchor is the compaction boundary: the new branch's request
-        // is the checkpoint note alone, and the transcript draws the compacted
-        // -context notice instead of a fake user bubble.
-        ChatMessage seed;
-        seed.id = newMessageId();
-        seed.role = "user";
-        seed.internal = true;
-        seed.contextCompacted = true;
-        seed.content = "Context checkpoint carried over from a previous " ~
-            "conversation.";
-        copy.messages ~= seed;
-        copy.activeLeafId = seed.id;
-        copy.compactionSummary = source.compactionSummary;
-        copy.compactedThroughMessageId = seed.id;
+        // Copy the whole message graph, re-keying ids in one pass, then remap
+        // parents - a parent may appear before or after its child.
+        string[string] idMap;
+        foreach (message; source.messages)
+        {
+            ChatMessage clone = message;
+            const freshId = newMessageId();
+            if (clone.id.length > 0) idMap[clone.id] = freshId;
+            clone.id = freshId;
+            copy.messages ~= clone;
+        }
+        foreach (ref message; copy.messages)
+        {
+            if (message.parentId.length == 0) continue;
+            if (auto mapped = message.parentId in idMap)
+                message.parentId = *mapped;
+            else
+                message.parentId = "";
+        }
+        if (auto leaf = source.activeLeafId in idMap)
+            copy.activeLeafId = *leaf;
+        else
+            copy.activeLeafId = copy.messages.length > 0
+                ? copy.messages[$ - 1].id : "";
+        // Mark the whole copy as the compaction range so the summarizer covers
+        // the entire transcript; the checkpoint note then replaces the history
+        // for the model while the transcript stays on screen.
+        copy.compactedThroughMessageId = copy.activeLeafId;
         // Insert below the source and shift the indices of everything after it,
         // exactly as duplicateSession shifts the other way.
         const insertAt = sessionIndex + 1;
@@ -22086,7 +22099,7 @@ public final class OpenCodeRoot : VBox
         if (_current >= insertAt) ++_current;
         publishRuntimeEvent(AgentEventKind.threadStarted, copy,
             "", "", "", runtimeThreadPayload(copy));
-        // Show the new conversation so the fork is immediately visible.
+        // Show the new conversation so the copy is immediately visible.
         _current = insertAt;
         loadRuntime(_current);
         _visibleMessageLimit = messageHistoryPageSize;
@@ -22101,9 +22114,31 @@ public final class OpenCodeRoot : VBox
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
-        updateStatus("New conversation started from the compacted checkpoint.");
         refreshUsageBadge();
         refreshTimerBadge(true);
+        // Roll the copy's whole history into a checkpoint. A live provider gets
+        // a real model summary; without one, fall back to the extractive
+        // checkpoint so the new chat is still compacted offline.
+        if (copy.activeLeafId.length > 0 &&
+            activeApiKey(_settings).length > 0 &&
+            startModelCompaction(_current, "", "",
+                requestContextBudget(copy.model)))
+        {
+            updateStatus("Compacting the new conversation…");
+            setActivity("Summarizing the copied conversation…");
+            updateSendButton();
+            return;
+        }
+        _sessions[_current].compactedThroughMessageId = "";
+        if (rollCompactionCheckpoint(_sessions[_current],
+                requestContextBudget(_sessions[_current].model), 0))
+        {
+            markDirty();
+            rebuildMessageColumn();
+            updateStatus("Started a compacted copy of the conversation.");
+        }
+        else
+            updateStatus("Started a copy of the conversation.");
     }
 
     private void showMessageContextMenu(int messageIndex, Point globalPosition,
@@ -22262,15 +22297,14 @@ public final class OpenCodeRoot : VBox
                 deleteSession(sessionIndex);
             }, "Del"),
         ];
-        // A conversation that has rolled its older context into a checkpoint can
-        // seed a fresh one: the new chat opens with only that compacted work
-        // state, so a long thread never has to keep carrying its full history.
-        if (sessionHasCompactionCheckpoint(_sessions[sessionIndex]))
-            items ~= ContextMenuItem.command("New chat from checkpoint",
-                IconKind.newDocument, delegate()
-                {
-                    forkSessionFromCompaction(sessionIndex);
-                });
+        // Copy this conversation into a fresh chat and compact the copy, so a
+        // long thread can keep going under a checkpoint without carrying its
+        // full history. Offered for every conversation.
+        items ~= ContextMenuItem.command("Copy & compact into new chat",
+            IconKind.newDocument, delegate()
+            {
+                duplicateSessionCompacted(sessionIndex);
+            });
         showContextMenu(_sessionList, globalPosition, items);
     }
 

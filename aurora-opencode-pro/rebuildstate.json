@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply the fix: the `run` tool now refuses `dub build`/`dub run` against Aurora's own package and steers to the `rebuild` tool, and AGENTS.md no longer tells the agent to recompile the exe.",
+  "reason": "Fix forever-stuck tool calls: bound the post-kill reap in killProcessTree and make the tool worker/parallel jobs catch Throwable so no tool can strand its live rows.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 10:36:59.8700951",
-  "finishedAt": "2026-10-05 10:37:57.5235597",
-  "durationMs": 57653,
+  "startedAt": "2026-10-05 12:43:43.2519974",
+  "finishedAt": "2026-10-05 12:44:22.2429241",
+  "durationMs": 38990,
   "exitCode": 0,
   "errors": []
 }
