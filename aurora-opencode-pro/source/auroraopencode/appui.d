@@ -8192,6 +8192,16 @@ public final class SessionListView : ListView
     private Point _pressPosition;
     private DragIntent _dragIntent;
 
+    // Delayed hover tooltip revealing a conversation's full title when the row
+    // is too narrow to show all of it. Whether the hovered row's title is
+    // clipped is recomputed during paint; `_titleTipSeconds` counts hover time
+    // and opens the panel after `titleTooltipDelaySeconds`.
+    private HoverTooltip _titleTip;
+    private bool _titleTipOpen;
+    private double _titleTipSeconds = 0;
+    private bool _hoverTitleClipped;
+    private static immutable double titleTooltipDelaySeconds = 0.45;
+
     this()
     {
         super();
@@ -8372,6 +8382,7 @@ public final class SessionListView : ListView
     // so an idle list costs nothing.
     protected override void onTick(double deltaSeconds)
     {
+        updateTitleTooltip(deltaSeconds);
         if (!_activityAnimating) return;
         const before = activityPulseStep();
         _activityElapsed += deltaSeconds;
@@ -8383,6 +8394,7 @@ public final class SessionListView : ListView
     // message count, or per-row icon (every row shared the same one).
     protected override void onPaint(ref Canvas canvas)
     {
+        _hoverTitleClipped = false;
         const width = bounds().width;
         const height = bounds().height;
         if (width <= 0 || height <= 0) return;
@@ -8479,6 +8491,10 @@ public final class SessionListView : ListView
             content.drawTextInRect(Rect(textLeft, y, textWidth, rowHeight),
                 item.text, titleColor, theme().fontScale,
                 HorizontalAlign.left, VerticalAlign.middle, true);
+            if (index == _hoverRow)
+                _hoverTitleClipped = item.text.length > 0 &&
+                    content.measureText(item.text, theme().fontScale).width >
+                        textWidth;
         }
 
         // An accent-tinted divider under the pinned group separates it from the
@@ -8535,6 +8551,9 @@ public final class SessionListView : ListView
         if (next != _hoverRow)
         {
             _hoverRow = next;
+            _hoverTitleClipped = false;
+            _titleTipSeconds = 0;
+            if (_titleTipOpen) closeTitleTooltip();
             invalidate();
         }
         if (_pressing && _pressRow >= 0)
@@ -8579,9 +8598,113 @@ public final class SessionListView : ListView
         if (onDragGhost !is null) onDragGhost(false, "", "", _pressPosition);
     }
 
+    // -- Full-title hover tooltip ---------------------------------------
+
+    // A conversation row clips its title to the row width, so hovering a row
+    // whose name does not fit shows the whole name in a delayed panel. The
+    // clip test is recomputed during paint, so a rename or resize opens or
+    // closes the panel without the pointer moving; the delay keeps it from
+    // flashing open as the pointer sweeps the list.
+    private void updateTitleTooltip(double deltaSeconds)
+    {
+        const count = cast(int) items().length;
+        const row = _hoverRow;
+        const want = row >= 0 && row < count && _hoverTitleClipped;
+        if (!want)
+        {
+            _titleTipSeconds = 0;
+            if (_titleTipOpen) closeTitleTooltip();
+            return;
+        }
+        if (_titleTipOpen)
+        {
+            // Re-anchor in case the row scrolled under a stationary pointer.
+            positionTitleTooltip(row);
+            return;
+        }
+        _titleTipSeconds += deltaSeconds;
+        if (_titleTipSeconds >= titleTooltipDelaySeconds)
+            showTitleTooltip(row);
+    }
+
+    private void showTitleTooltip(int row)
+    {
+        if (_titleTip is null)
+        {
+            _titleTip = new HoverTooltip(this);
+            _titleTip.setWrap(true);
+            _titleTip.setCompact(true);
+        }
+        _titleTip.setText(toUTF8(items()[cast(size_t) row].text));
+        if (_titleTip.parent() is null) popupRoot(this).add(_titleTip);
+        positionTitleTooltip(row);
+        _titleTipOpen = true;
+    }
+
+    private void closeTitleTooltip()
+    {
+        _titleTipOpen = false;
+        if (_titleTip !is null && _titleTip.parent() !is null)
+            _titleTip.parent().remove(_titleTip);
+    }
+
+    // Sit the panel beside the hovered row, preferring the right edge of the
+    // narrow sidebar and clamping it inside the window.
+    private void positionTitleTooltip(int row)
+    {
+        if (_titleTip is null) return;
+        const rh = rowHeight();
+        if (rh <= 0) return;
+        const topPad = listTopPad();
+        const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
+        const y = topPad + row * rh - scrollOffset() +
+            (row >= _pinnedRows ? gap : 0);
+        const origin = localToGlobal(Point(0, y));
+        const measured = _titleTip.measure(Size(int.max, int.max));
+        auto root = popupRoot(this);
+        const rootWidth = root is null ? origin.x + bounds().width
+            : root.bounds().width;
+        const rootHeight = root is null ? origin.y + bounds().height
+            : root.bounds().height;
+        enum tooltipGap = 8;
+        enum edgePad = 8;
+        int x = origin.x + bounds().width + tooltipGap;
+        if (x + measured.width > rootWidth - edgePad)
+            x = origin.x - measured.width - tooltipGap;
+        x = clampInt(x, edgePad,
+            maxInt(edgePad, rootWidth - measured.width - edgePad));
+        int tipY = origin.y + (rh - measured.height) / 2;
+        tipY = clampInt(tipY, edgePad,
+            maxInt(edgePad, rootHeight - measured.height - edgePad));
+        _titleTip.setBounds(Rect(x, tipY, measured.width, measured.height));
+    }
+
+    /// Test-only: whether the full-title hover tooltip is open.
+    public bool titleTooltipOpenForTesting() const { return _titleTipOpen; }
+
+    /// Test-only: the open full-title hover tooltip's text ("" when closed).
+    public string titleTooltipTextForTesting()
+    {
+        return _titleTip is null ? "" : _titleTip.textForTesting();
+    }
+
+    /// Test-only: global center of a conversation row, so a test can hover it
+    /// without duplicating the pinned-divider offset math.
+    public Point rowCenterForTesting(int index)
+    {
+        const rh = rowHeight();
+        const topPad = listTopPad();
+        const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
+        const y = topPad + index * rh - scrollOffset() +
+            (index >= _pinnedRows ? gap : 0);
+        return localToGlobal(Point(bounds().width / 2, y + rh / 2));
+    }
+
     override void onMouseLeave()
     {
         _hoverRow = -1;
+        _titleTipSeconds = 0;
+        if (_titleTipOpen) closeTitleTooltip();
         setCursor(CursorKind.arrow);
     }
 
