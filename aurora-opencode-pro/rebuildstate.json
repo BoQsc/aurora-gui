@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply tracked-plan-mode fix: enforce a plan before extended read-only exploration, not only before edits.",
+  "reason": "Reverted the hover-expand padding and kept only the left collapse-handle padding; rebuild so the running app matches the committed source.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 08:02:30.7194363",
-  "finishedAt": "2026-10-05 08:03:09.2660204",
-  "durationMs": 38547,
+  "startedAt": "2026-10-05 09:34:55.92941",
+  "finishedAt": "2026-10-05 09:35:34.2461754",
+  "durationMs": 38316,
   "exitCode": 0,
   "errors": []
 }

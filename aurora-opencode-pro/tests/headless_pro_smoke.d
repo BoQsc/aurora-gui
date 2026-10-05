@@ -427,6 +427,101 @@ private void verifyToolHeaderContextMenu(OpenCodeRoot root,
         "their file");
 }
 
+/// Regression for the "previous content vanished after a restart / rebuild"
+/// report. A conversation left mid-turn in the BACKGROUND is not the restored
+/// selection, so after a reload the lazy per-thread store has no messages for
+/// it in memory. The restart resume/marking scan is messages-based, so without
+/// materializing those running chats first the background conversation is
+/// invisible: it is neither continued nor flagged, and opening it looks empty.
+/// Stop is not the culprit - the end of a turn is persisted and reloaded fine;
+/// it is the restart scan that dropped background chats.
+private void verifyRestartMaterializesBackgroundChat(OpenCodeRoot root,
+    UiTestDriver driver, string stateDir)
+{
+    root.newChatForTesting();
+    const lazyOwner = root.currentSessionForTesting();
+    const lazyOwnerId = root.sessionIdForTesting(lazyOwner);
+    root.addConversationForTesting(["user"], ["background work"]);
+    // A different chat is the restored selection, so the owner above is
+    // background and lazily loaded after the reload below.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["restored selection"]);
+    root.setSessionTurnStatusForTesting(lazyOwner, "running");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+
+    int lazyIndex = -1;
+    foreach (i; 0 .. cast(int) root.sessionCountForTesting())
+        if (root.sessionIdForTesting(i) == lazyOwnerId) lazyIndex = i;
+    assert(lazyIndex >= 0, "the background conversation vanished across a reload");
+    // Lazily loaded: no messages in memory yet, so a messages-based scan cannot
+    // see it - this is the state that used to drop the chat on the floor.
+    assert(root.totalMessageCountForTesting() >= 0,
+        "the reload did not leave a valid transcript");
+
+    // The startup scan must materialize the running background chat, then flag
+    // it, even though it is not the visible conversation.
+    root.prepareResumeForTesting();
+    root.clearPendingResumeForTesting();
+    assert(root.sessionIncompleteForTesting(lazyIndex),
+        "the restart scan did not flag the background running chat");
+    root.selectSessionForTesting(lazyIndex);
+    root.tickTree(0.02);
+    assert(driver.paint(), "the materialized background chat did not paint");
+    assert(root.totalMessageCountForTesting() >= 1 &&
+        root.messageContentForTesting(0) == "background work",
+        "the materialized background chat lost its transcript");
+    writeln("A restart materializes background running chats before flagging them");
+}
+
+/// Regression for the user's report: "the previous thing disappears when I
+/// press the chat Stop button". Stop must end the turn, never erase the
+/// transcript. The earlier turns and the streamed partial reply stay put, and
+/// they survive a save + reload, because the durable `session.messages` is the
+/// source of truth - stopping only drops the transient live bubble.
+private void verifyStopPreservesTranscript(OpenCodeRoot root,
+    UiTestDriver driver, string stateDir)
+{
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["first question", "first answer"]);
+    // A fresh prompt whose reply is streaming when Stop is pressed.
+    root.setInputForTesting("second question");
+    requireWidget!TextArea(root, "oc-input").requestFocus();
+    driver.pressKey(Key.enter);
+    root.tickTree(0.02);
+    root.beginStreamForTesting();
+    root.streamContentForTesting("partial second answer");
+    root.tickTree(0.02);
+    assert(root.lastAssistantContentForTesting() == "partial second answer",
+        "the streamed reply was not recorded before stopping: " ~
+        root.lastAssistantContentForTesting());
+    const beforeStop = root.totalMessageCountForTesting();
+
+    root.clickSendButtonForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "the stopped transcript did not paint");
+
+    // Stop ends the turn but drops nothing: same message count, previous
+    // answer intact, streamed partial answer intact.
+    assert(root.totalMessageCountForTesting() == beforeStop,
+        "Stop dropped a message: " ~ to!string(beforeStop) ~ " -> " ~
+        to!string(root.totalMessageCountForTesting()));
+    assert(root.messageContentForTesting(1) == "first answer",
+        "Stop erased the previous assistant reply");
+    assert(root.lastAssistantContentForTesting() == "partial second answer",
+        "Stop erased the streamed partial reply: " ~
+        root.lastAssistantContentForTesting());
+
+    // The same transcript survives a save + reload.
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    assert(root.messageContentForTesting(1) == "first answer" &&
+        root.lastAssistantContentForTesting() == "partial second answer",
+        "the stopped transcript did not survive a save + reload");
+    writeln("Stop ends the turn without erasing the previous transcript");
+}
+
 int main(string[] args)
 {
     const stateDir = buildPath(tempDir(), "aurora-opencode-pro-smoke-state");
@@ -508,6 +603,20 @@ int main(string[] args)
         // Focused run for the tool-header context-menu fix: run alone so the
         // regression can be exercised without the rest of the suite.
         verifyToolHeaderContextMenu(root, driver, stateDir);
+        return 0;
+    }
+    if (args.length > 1 && args[$ - 1] == "--restart-resume-only")
+    {
+        // Focused run for the restart-materialization fix: run alone so the
+        // regression can be exercised without the rest of the suite.
+        verifyRestartMaterializesBackgroundChat(root, driver, stateDir);
+        return 0;
+    }
+    if (args.length > 1 && args[$ - 1] == "--stop-preserve-only")
+    {
+        // Focused run for the Stop-preserves-transcript regression: run alone
+        // so it can be exercised without the rest of the suite.
+        verifyStopPreservesTranscript(root, driver, stateDir);
         return 0;
     }
     // Git-independent Changes table is always available from the toolbar,

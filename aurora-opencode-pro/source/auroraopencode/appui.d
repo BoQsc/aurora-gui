@@ -70,6 +70,11 @@ import auroraopencode.clipboardimage : clipboardImagePng;
 // Optional floating mini chat overlay (always-on-top recent messages + input);
 // off by default. See source/auroraopencode/minichat.d.
 import auroraopencode.minichat : MiniChatHost, MiniChatLine, miniChatOneLine;
+// Emergency freeze detection + optional overseer (see emergency.d).
+import auroraopencode.emergency : emergencyHeartbeat,
+    emergencyLastReportPath, emergencySetContext, emergencyTakePendingFreeze,
+    emergencyTrigger, overseerStallSeconds, setEmergencyReportEnabled,
+    setOverseerEnabled, startEmergencyWatchdog;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.algorithm : canFind, max;
@@ -224,6 +229,30 @@ private string currentTimestamp()
         return value < 10 ? "0" ~ to!string(value) : to!string(value);
     }
     return pad(now.hour) ~ ":" ~ pad(now.minute);
+}
+
+/// Compact token count for the Aurora-usage readout: the exact number below a
+/// thousand, then a one-decimal `k` or `m` once the value crosses those
+/// thresholds (e.g. `12.3k`, `1.4m`).
+private string formatCompactCount(long value)
+{
+    if (value < 0) value = 0;
+    if (value < 1_000) return to!string(value);
+    long tenths;
+    string suffix;
+    if (value < 999_950)
+    {
+        tenths = (value + 50) / 100;
+        suffix = "k";
+    }
+    else
+    {
+        tenths = (value + 50_000) / 100_000;
+        suffix = "m";
+    }
+    return (tenths % 10 == 0
+        ? to!string(tenths / 10)
+        : to!string(tenths / 10) ~ "." ~ to!string(tenths % 10)) ~ suffix;
 }
 
 private string formatThousands(int value)
@@ -2608,6 +2637,32 @@ private final class MessageBubble : Widget
         _selAnchorChar = 0;
         _selFocusSeg = cast(int) _selSegments.length - 1;
         _selFocusChar = _selSegments[$ - 1].layout.text().length;
+        invalidate();
+    }
+
+    /// Owner hook: hand the current selection range to a transcript rebuild so
+    /// it can carry the reader's selection onto the freshly built bubble for
+    /// the same message. A rebuild recreates every settled bubble while a turn
+    /// streams, which would otherwise drop the highlight mid-turn.
+    public void exportSelection(out int anchorSeg, out size_t anchorChar,
+        out int focusSeg, out size_t focusChar)
+    {
+        anchorSeg = _selAnchorSeg;
+        anchorChar = _selAnchorChar;
+        focusSeg = _selFocusSeg;
+        focusChar = _selFocusChar;
+    }
+
+    /// Owner hook: re-apply a range captured by `exportSelection` onto the
+    /// rebuilt bubble. The rebuilt bubble holds the same content and width, so
+    /// its runs line up with the captured range.
+    public void restoreSelection(int anchorSeg, size_t anchorChar,
+        int focusSeg, size_t focusChar)
+    {
+        _selAnchorSeg = anchorSeg;
+        _selAnchorChar = anchorChar;
+        _selFocusSeg = focusSeg;
+        _selFocusChar = focusChar;
         invalidate();
     }
 
@@ -7702,6 +7757,10 @@ private immutable string[] defaultIntroSuggestions = [
     "Write a test",
     "Refactor a file",
     "Summarize the project",
+    // Trailing space so a click leaves a gap for the query: the composer reads
+    // "Search the web <query>". The label is trimmed for display, so the pill
+    // still reads "Search the web".
+    "Search the web ",
 ];
 
 /// Empty-state pill that points the agent at Aurora OpenCode's own source: its
@@ -9054,6 +9113,17 @@ public final class OpenCodeRoot : VBox
     // Throttles the snapshot publish so the overlay is refreshed a few times a
     // second instead of on every frame.
     private double _miniChatAccum = 0;
+    // Emergency freeze detection + overseer (see emergency.d). The context
+    // fields cache the last published heartbeat context so the per-frame hook
+    // does not rebuild an identical string.
+    private bool _emergencyContextBusy;
+    private int _emergencyContextOwner = -2;
+    private bool _emergencyStarting;
+    private long _emergencyChatsFired;
+    // Per-conversation time a turn has been continuously busy, so a conversation
+    // that never stops can be reported by the overseer.
+    private SysTime[string] _overseerBusySince;
+    private bool[string] _overseerReported;
     private Button _modelButton;
     private ThinkingControl _thinkingBox;
     private CheckBox _toolsBox;
@@ -9710,6 +9780,11 @@ public final class OpenCodeRoot : VBox
         rebuildRequestHandler = &onAgentRebuildRequested;
         // Optional floating mini chat overlay, off by default.
         setMiniChatEnabled(_settings.floatingMiniChat);
+        // Emergency freeze detection + optional overseer; mirror the persisted
+        // switches and start the watchdog so a stall during startup is seen too.
+        setEmergencyReportEnabled(_settings.emergencyReport);
+        setOverseerEnabled(_settings.overseerObserver);
+        startEmergencyWatchdog();
     }
 
     /// True until the deferred conversation load runs on the first tick.
@@ -9839,6 +9914,42 @@ public final class OpenCodeRoot : VBox
             setTurnActiveMarker(false);
     }
 
+    /// Materialize the threads of every conversation still marked `running`.
+    /// With the lazy per-thread store only the restored selection has its
+    /// messages in memory at startup, so a background chat a rebuild or crash
+    /// interrupted has an empty `messages` array and is invisible to the
+    /// messages-based restart scans below - it would be neither continued nor
+    /// flagged with the sidebar warning.
+    private void materializeRunningThreads()
+    {
+        foreach (i, session; _sessions)
+            if (session.turnStatus == "running")
+                ensureThreadLoaded(cast(int) i);
+    }
+
+    /// Flag conversations left `running` by a process that is gone. A fresh
+    /// launch owns no in-flight request, so any persisted `running` turn is
+    /// stale and must read as "stopped without completing" in the sidebar. Used
+    /// on a plain relaunch, where there is no resume note to drive the richer
+    /// resume path (that path marks its own leftover turns, after collecting
+    /// the ones it continues).
+    private void markStaleRunningTurns()
+    {
+        materializeRunningThreads();
+        bool changed;
+        foreach (ref session; _sessions)
+            if (session.messages.length > 0 && session.turnStatus == "running")
+            {
+                session.turnStatus = "interrupted";
+                logInfo("turn marked interrupted by restart (no resume note): " ~
+                    session.id);
+                changed = true;
+            }
+        if (!changed) return;
+        refreshSessionRowStatus();
+        markDirty();
+    }
+
     /**
      * Continue the conversation after an unexpected shutdown.
      *
@@ -9852,7 +9963,15 @@ public final class OpenCodeRoot : VBox
     private void prepareResumeAfterCrash()
     {
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
-        if (!exists(path)) return;
+        if (!exists(path))
+        {
+            // A plain relaunch has no resume note, but a `running` turn cannot
+            // have survived the process that owned it: flag those chats as
+            // interrupted so the sidebar still shows the "stopped without
+            // completing" warning instead of leaving them looking busy forever.
+            markStaleRunningTurns();
+            return;
+        }
         string cause;
         string reason;
         string noteSession;
@@ -9876,6 +9995,13 @@ public final class OpenCodeRoot : VBox
         // crash leaves the turn-active marker naming the working thread. Both
         // are authoritative over the sidebar selection, which is often a
         // brand-new empty chat the user opened while the last turn ran.
+        // The chats this restart cut short need not be the restored selection,
+        // and with the lazy per-thread store a conversation other than that
+        // selection has no messages in memory yet. The scans below skip a
+        // session with no messages, so without materializing them first every
+        // background chat would be neither resumed nor flagged. Load the
+        // threads of the leftover `running` turns now, before they are marked.
+        materializeRunningThreads();
         const target = resumeTargetIndex(noteSession);
         if (target >= 0)
             adoptResumeSession(target);
@@ -12226,6 +12352,26 @@ public final class OpenCodeRoot : VBox
         // drop the tooltip with it instead of leaving it floating over the
         // rebuilt transcript.
         closePathTooltip();
+        // An ongoing turn rebuilds the transcript many times, and each rebuild
+        // recreates every settled bubble. Capture the reader's selection (its
+        // message slot and range) now, while the outgoing bubble is still in
+        // the column, and re-apply it to the rebuilt bubble for that slot at
+        // the end so the highlight survives the next tool row or reply round.
+        bool hadSelection = false;
+        int selectedMessageIndex = -1;
+        int selectedAnchorSeg, selectedFocusSeg;
+        size_t selectedAnchorChar, selectedFocusChar;
+        foreach (child; messageColumnVisuals())
+        {
+            auto selected = cast(MessageBubble) child;
+            if (selected is null || !selected.hasSelection()) continue;
+            if (selected.messageIndex() < 0) continue;
+            selectedMessageIndex = selected.messageIndex();
+            selected.exportSelection(selectedAnchorSeg, selectedAnchorChar,
+                selectedFocusSeg, selectedFocusChar);
+            hadSelection = true;
+            break;
+        }
         // A rebuild discards the column's children; detach the two reused
         // widgets first so a nested parent (a turn container) does not leave
         // them attached and reporting visible after they are dropped.
@@ -12698,6 +12844,22 @@ public final class OpenCodeRoot : VBox
         // throttled tool-argument delta), and forcing follow each time yanked a
         // reader who had scrolled up back to the bottom. Callers that append a
         // new message already turn follow on when a jump is actually wanted.
+        // Carry the selection captured before the rebuild onto the freshly
+        // built bubble for the same message, so a live turn's frequent rebuilds
+        // no longer clear the reader's highlight.
+        if (hadSelection)
+            foreach (child; messageColumnVisuals())
+            {
+                auto rebuilt = cast(MessageBubble) child;
+                if (rebuilt !is null &&
+                    rebuilt.messageIndex() == selectedMessageIndex)
+                {
+                    rebuilt.restoreSelection(selectedAnchorSeg,
+                        selectedAnchorChar, selectedFocusSeg,
+                        selectedFocusChar);
+                    break;
+                }
+            }
         _messageColumn.invalidate();
         // The column is a retained layer; let the ScrollView re-measure and
         // update the content height / auto-follow after the message set changes.
@@ -15316,8 +15478,9 @@ public final class OpenCodeRoot : VBox
 
     /// Explicit allow-list, like Codex's per-tool `supports_parallel` metadata.
     /// Unknown tools default to exclusive. `dshell` only exposes where/list/
-    /// info and is therefore read-only; process execution and all file-changing
-    /// tools deliberately stay out of this list.
+    /// info (read-only) plus a bounded sleep that touches nothing, so it is
+    /// parallel-safe; process execution and all file-changing tools
+    /// deliberately stay out of this list.
     private static bool toolSupportsParallel(const ref OpenCodeToolCall call)
     {
         return call.name == "read" || call.name == "glob" ||
@@ -15965,6 +16128,121 @@ public final class OpenCodeRoot : VBox
         _input.setText(question);
         sendMessage();
         return true;
+    }
+
+    // -- emergency freeze detection + overseer ----------------------------
+
+    /// Publish the current UI activity to the watchdog without allocating a
+    /// string every frame: the busy flag and owning conversation index are
+    /// compared, and the text is rebuilt only when one of them changes.
+    private void updateEmergencyContext()
+    {
+        const busy = turnIsBusy();
+        const owner = turnOwnerSessionIndex();
+        if (busy == _emergencyContextBusy && owner == _emergencyContextOwner)
+            return;
+        _emergencyContextBusy = busy;
+        _emergencyContextOwner = owner;
+        emergencySetContext(busy
+            ? "turn running in session index " ~ to!string(owner)
+            : "idle");
+    }
+
+    /// Start an autonomous diagnostic chat for a stall the watchdog recorded,
+    /// once the UI is ticking again. Only when emergency reporting is on and a
+    /// DeepSeek model is configured.
+    private void drainEmergency()
+    {
+        string reason;
+        if (!emergencyTakePendingFreeze(reason)) return;
+        if (!_settings.emergencyReport) return;
+        if (!isDeepSeekModel(_settings.model))
+        {
+            logInfo("emergency: diagnostic chat skipped — DeepSeek not " ~
+                "configured (" ~ _settings.model ~ ")");
+            return;
+        }
+        if (_emergencyStarting) return;
+        fireEmergencyChat(reason);
+    }
+
+    /// Open a new conversation and ask the model to diagnose the emergency.
+    private void fireEmergencyChat(string reason)
+    {
+        // The restored history must be in place before a new chat is meaningful.
+        if (_startupLoadPending) return;
+        _emergencyStarting = true;
+        scope (exit) _emergencyStarting = false;
+        ++_emergencyChatsFired;
+        newChat();
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        const report = emergencyLastReportPath();
+        auto prompt = appender!string();
+        prompt.put("Automatic emergency report.\n\n");
+        prompt.put("Aurora OpenCode detected a problem and started this chat on ");
+        prompt.put("its own so we can find out what happened.\n\n");
+        prompt.put("Reason: ");
+        prompt.put(reason);
+        prompt.put("\n");
+        if (report.length > 0)
+        {
+            prompt.put("Report file: ");
+            prompt.put(report);
+            prompt.put("\n");
+        }
+        prompt.put("\nInvestigate this like a crash diagnostic. Read the log ");
+        prompt.put("files named above (and logs/errors.log), find the most ");
+        prompt.put("likely cause of the stall, and explain why it froze. If the ");
+        prompt.put("cause is a bug in Aurora OpenCode's own source, propose a ");
+        prompt.put("concrete fix (file and change). Be concise and specific.");
+        _input.setText(prompt.data);
+        sendMessage();
+        updateStatus("Emergency diagnostic chat started.");
+        logInfo("emergency: diagnostic chat started — " ~ reason);
+    }
+
+    /// Optional overseer: report a conversation that has stayed busy for
+    /// `overseerStallSeconds` without stopping, then fire the emergency chat.
+    private void runOverseer()
+    {
+        if (!_settings.overseerObserver) return;
+        const now = Clock.currTime;
+        foreach (id, runtime; _conversationRuntimes)
+        {
+            if (runtime is null) continue;
+            if (runtime.busy())
+            {
+                if (id !in _overseerBusySince)
+                {
+                    _overseerBusySince[id] = now;
+                    _overseerReported[id] = false;
+                }
+                const busySeconds = (now - _overseerBusySince[id]).total!"seconds";
+                if (!_overseerReported[id] &&
+                    busySeconds >= overseerStallSeconds)
+                {
+                    _overseerReported[id] = true;
+                    emergencyTrigger("overseer: conversation \"" ~
+                        sessionTitleForId(id) ~ "\" (" ~ id ~ ") has run for " ~
+                        to!string(busySeconds) ~
+                        " s without stopping; possible runaway turn.");
+                }
+            }
+            else
+            {
+                if (id in _overseerBusySince) _overseerBusySince.remove(id);
+                if (id in _overseerReported) _overseerReported.remove(id);
+            }
+        }
+    }
+
+    /// Title of a conversation by id, falling back to the id itself.
+    private string sessionTitleForId(string id)
+    {
+        foreach (session; _sessions)
+            if (session.id == id)
+                return session.title.length > 0 ? session.title : id;
+        return id;
     }
 
     private void sendMessage()
@@ -18970,16 +19248,7 @@ public final class OpenCodeRoot : VBox
         }
         string tokenCount(long value)
         {
-            if (value < 0) value = 0;
-            auto raw = to!string(value);
-            string formatted;
-            int digits;
-            for (int i = cast(int) raw.length; i > 0; --i)
-            {
-                formatted = raw[i - 1] ~ formatted;
-                if (++digits % 3 == 0 && i > 1) formatted = "," ~ formatted;
-            }
-            return formatted;
+            return formatCompactCount(value);
         }
         string periodRow(string period, size_t index)
         {
@@ -19903,6 +20172,42 @@ public final class OpenCodeRoot : VBox
         };
         miniChatRow.add(miniChatCheck);
         optionsBody.add(miniChatRow);
+
+        // Emergency freeze detection. On by default: a watchdog thread reports
+        // UI stalls to logs/ and, when a DeepSeek model is configured, starts an
+        // autonomous diagnostic chat. See source/auroraopencode/emergency.d.
+        auto emergencyRow = new HBox(8);
+        emergencyRow.layoutHints().preferredHeight = 32;
+        auto emergencyCheck =
+            new CheckBox("Emergency report (detect freezes, auto-diagnose)");
+        emergencyCheck.setId("oc-emergency");
+        emergencyCheck.setChecked(_settings.emergencyReport, false);
+        emergencyCheck.onChanged = delegate(bool value)
+        {
+            _settings.emergencyReport = value;
+            setEmergencyReportEnabled(value);
+            saveSettingsNow();
+        };
+        emergencyRow.add(emergencyCheck);
+        optionsBody.add(emergencyRow);
+
+        // Optional overseer: watch running conversations for one that never
+        // stops (a runaway turn) and fire the same emergency diagnostic.
+        // Off by default.
+        auto overseerRow = new HBox(8);
+        overseerRow.layoutHints().preferredHeight = 32;
+        auto overseerCheck =
+            new CheckBox("Overseer (report conversations that never stop)");
+        overseerCheck.setId("oc-overseer");
+        overseerCheck.setChecked(_settings.overseerObserver, false);
+        overseerCheck.onChanged = delegate(bool value)
+        {
+            _settings.overseerObserver = value;
+            setOverseerEnabled(value);
+            saveSettingsNow();
+        };
+        overseerRow.add(overseerCheck);
+        optionsBody.add(overseerRow);
 
         // Optional: rewrite a brand-new chat's name once with a tiny,
         // no-thinking request instead of the raw first message. Off by default.
@@ -23833,6 +24138,13 @@ public final class OpenCodeRoot : VBox
 
     protected override void onTick(double deltaSeconds)
     {
+        // Emergency freeze detection: stamp the frame, publish what the UI is
+        // doing, service any stall the watchdog reported while the UI was stuck,
+        // and (when enabled) let the overseer look for a runaway conversation.
+        emergencyHeartbeat();
+        updateEmergencyContext();
+        drainEmergency();
+        runOverseer();
         // Load the persisted conversations on demand: the window is already on
         // screen by the time a tick runs, so the multi-megabyte snapshot read
         // no longer holds up the first frame.

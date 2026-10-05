@@ -1148,6 +1148,15 @@ public struct Settings
     // How many recent user/assistant messages the mini chat shows (clamped
     // 1..10 when read).
     int floatingMiniChatLines = 3;
+    // Automatic freeze detection: the UI stamps a heartbeat every frame and a
+    // watchdog thread reports any stall to logs/ and, when a DeepSeek model is
+    // configured, starts an autonomous diagnostic chat. On by default; the
+    // Settings dialog owns the switch (see source/auroraopencode/emergency.d).
+    bool emergencyReport = true;
+    // Optional overseer: watch running conversations and report one that never
+    // stops (a runaway turn), then fire the same emergency diagnostic. Off by
+    // default; the Settings dialog owns the switch.
+    bool overseerObserver;
     // On a brand-new chat, rewrite the name once with a tiny no-thinking
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
@@ -1508,6 +1517,14 @@ public Settings loadSettings()
                     if (found.type == JSONType.integer &&
                         found.integer >= 1 && found.integer <= 10)
                         settings.floatingMiniChatLines = cast(int) found.integer;
+                if (auto found = "emergencyReport" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.emergencyReport = found.type == JSONType.true_;
+                if (auto found = "overseerObserver" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.overseerObserver = found.type == JSONType.true_;
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
@@ -1780,6 +1797,8 @@ public void saveSettings(const ref Settings settings)
     root["experimentalOrchestrator"] = settings.experimentalOrchestrator;
     root["floatingMiniChat"] = settings.floatingMiniChat;
     root["floatingMiniChatLines"] = settings.floatingMiniChatLines;
+    root["emergencyReport"] = settings.emergencyReport;
+    root["overseerObserver"] = settings.overseerObserver;
     JSONValue contextBudgets = JSONValue(string[].init);
     foreach (budget; settings.contextBudgets)
     {
