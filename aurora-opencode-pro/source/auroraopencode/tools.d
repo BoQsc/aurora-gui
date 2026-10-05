@@ -4229,6 +4229,52 @@ private bool isWorkspaceAncestor(string candidate, string workspace)
         project[0 .. root.length] == root && project[root.length] == '/';
 }
 
+/// Run `work` on a disposable daemon thread and wait at most `budget` for it,
+/// returning true when it finished in time.
+///
+/// The recursive scan tools check their deadline between lines and directory
+/// entries, but a *single* filesystem call can block well past it: a directory
+/// or file on a hung network share, a named pipe or device passed as `path`, or
+/// a wedged handle. That call never returns to a deadline check, so the tool
+/// ran forever and its live row spun until the app was restarted. Bounding the
+/// whole scan on its own thread lets the tool always report a terminal result;
+/// a genuinely wedged worker is abandoned as a daemon rather than joined.
+private bool runWithDeadline(void delegate() work, Duration budget)
+{
+    final class Flag
+    {
+        Mutex mutex;
+        bool done;
+        this() { mutex = new Mutex(); }
+    }
+    auto flag = new Flag();
+    auto worker = new Thread(
+    {
+        scope (exit)
+        {
+            synchronized (flag.mutex) flag.done = true;
+        }
+        work();
+    });
+    worker.isDaemon = true;
+    try worker.start();
+    catch (Exception)
+    {
+        // No thread available: run inline, matching the old behaviour.
+        work();
+        return true;
+    }
+    const deadline = MonoTime.currTime + budget;
+    while (true)
+    {
+        bool done;
+        synchronized (flag.mutex) done = flag.done;
+        if (done) return true;
+        if (MonoTime.currTime >= deadline) return false;
+        Thread.sleep(msecs(10));
+    }
+}
+
 private ToolExecution runGrep(string args, string workspace,
     ToolCancellation cancellation = null)
 {
@@ -4482,51 +4528,66 @@ private ToolExecution runGrep(string args, string workspace,
     // Models frequently pass the known target file as `path`. Treat that as a
     // precise one-file search instead of failing and provoking another tool
     // round just to remove the filename from the argument.
-    if (isFile(root))
-        scanFile(root, true);
-    else
+    void performScan()
     {
-        bool scanDirectory(string directory)
+        if (isFile(root))
+            scanFile(root, true);
+        else
         {
-            ++scannedDirectories;
-            if (MonoTime.currTime >= deadline)
+            bool scanDirectory(string directory)
             {
-                timedOut = true;
-                return true;
-            }
-            if (cancellation !is null && cancellation.cancelled())
-            {
-                stopped = true;
-                return true;
-            }
-            try
-            {
-                foreach (entry; dirEntries(directory, SpanMode.shallow))
+                ++scannedDirectories;
+                if (MonoTime.currTime >= deadline)
                 {
-                    if (MonoTime.currTime >= deadline)
-                    {
-                        timedOut = true;
-                        return true;
-                    }
-                    if (cancellation !is null && cancellation.cancelled())
-                    {
-                        stopped = true;
-                        return true;
-                    }
-                    if (entry.isDir)
-                    {
-                        if (!grepIgnoredDirectory(entry.name) &&
-                            scanDirectory(entry.name)) return true;
-                    }
-                    else if (entry.isFile && scanFile(entry.name))
-                        return true;
+                    timedOut = true;
+                    return true;
                 }
+                if (cancellation !is null && cancellation.cancelled())
+                {
+                    stopped = true;
+                    return true;
+                }
+                try
+                {
+                    foreach (entry; dirEntries(directory, SpanMode.shallow))
+                    {
+                        if (MonoTime.currTime >= deadline)
+                        {
+                            timedOut = true;
+                            return true;
+                        }
+                        if (cancellation !is null && cancellation.cancelled())
+                        {
+                            stopped = true;
+                            return true;
+                        }
+                        if (entry.isDir)
+                        {
+                            if (!grepIgnoredDirectory(entry.name) &&
+                                scanDirectory(entry.name)) return true;
+                        }
+                        else if (entry.isFile && scanFile(entry.name))
+                            return true;
+                    }
+                }
+                catch (Exception) {}
+                return false;
             }
-            catch (Exception) {}
-            return false;
+            scanDirectory(root);
         }
-        scanDirectory(root);
     }
+    // The inner checks only see time between lines and entries. A single
+    // blocked filesystem syscall never reaches one, so bound the whole scan and
+    // report a terminal result instead of leaving the live row spinning. The
+    // extra grace lets the inner soft deadline (which returns partial hits)
+    // finish first in the ordinary case.
+    if (!runWithDeadline(&performScan, timeoutMs.msecs + seconds(5)))
+        return ToolExecution("grep",
+            "Stopped: the search did not finish within its " ~
+            to!string(timeoutMs) ~ " ms deadline; a filesystem read appears "
+            ~ "to be blocked, so it was abandoned instead of hanging the " ~
+            "turn. Narrow `path` or `include`, or choose a different " ~
+            "directory.", true);
     if (timedOut)
     {
         auto report = appender!string();

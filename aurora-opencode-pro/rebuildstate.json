@@ -1,13 +1,13 @@
 {
-  "status": "ok",
-  "phase": "relaunching",
-  "reason": "Downscale/re-encode oversized user PNG attachments to JPEG under the inline cap so gateways accept the turn instead of producing no reply.",
+  "status": "running",
+  "phase": "building",
+  "reason": "Coalesce per-turn transcript rebuilds to once per tick and cut the rebuild-slot log flood, to prevent multi-second UI-thread stalls (emergency freeze report).",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 23:25:00.3171468",
-  "finishedAt": "2026-10-05 23:26:00.2361417",
-  "durationMs": 59919,
+  "startedAt": "2026-10-06 00:06:18.6862215",
+  "finishedAt": "2026-10-06 00:06:18.6862215",
+  "durationMs": 0,
   "exitCode": 0,
   "errors": []
 }

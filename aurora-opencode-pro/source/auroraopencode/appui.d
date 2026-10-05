@@ -9252,6 +9252,15 @@ public final class OpenCodeRoot : VBox
     // expensive full transcript reconstruction until the drained batch ends.
     private bool _batchingToolResults;
     private bool _toolTranscriptDirty;
+    // A live turn requests a transcript rebuild from many events (each tool
+    // result, each activity-row transition). Running each request synchronously
+    // destroyed and recreated every bubble several times a second, which stalled
+    // the UI thread past the freeze watchdog's threshold on a long transcript.
+    // While a turn is busy the requests now coalesce into a single rebuild per
+    // tick; `_buildingMessageColumn` marks the rebuild in progress so nested or
+    // tick-driven calls are not deferred or re-entered.
+    private bool _messageColumnRebuildQueued;
+    private bool _buildingMessageColumn;
 
     // Tool loop: the model may request tool calls, the app executes them, and
     // the enriched history is re-sent until the model answers with text.
@@ -12342,7 +12351,31 @@ public final class OpenCodeRoot : VBox
             int.max)).height;
     }
 
+    /// Request a transcript rebuild.
+    ///
+    /// While a turn is in flight this only queues the request; the rebuild runs
+    /// once per tick (see onTick). A live turn raises a rebuild from many events
+    /// per second, and rebuilding synchronously for each recreated every bubble
+    /// several times inside one frame — enough to stall the UI thread for
+    /// seconds on a long transcript and trip the freeze watchdog. When idle the
+    /// rebuild runs immediately, so menus, settings and tests observe the
+    /// change at once. `_buildingMessageColumn` makes nested requests a no-op.
     private void rebuildMessageColumn()
+    {
+        if (_buildingMessageColumn) return;
+        if (turnIsBusy())
+        {
+            _messageColumnRebuildQueued = true;
+            return;
+        }
+        _buildingMessageColumn = true;
+        scope (exit) _buildingMessageColumn = false;
+        rebuildMessageColumnNow();
+    }
+
+    /// The rebuild itself, bypassing the busy-turn coalescing so the tick that
+    /// owns a queued rebuild always runs it exactly once.
+    private void rebuildMessageColumnNow()
     {
         // The transcript only ever renders the current conversation, so make
         // sure its messages are in memory before rebuilding.
@@ -12581,9 +12614,10 @@ public final class OpenCodeRoot : VBox
             // with no `onPaint` after it, so death was in build/measure rather
             // than paint. Naming the slot and message here makes the last
             // recorded step the exact one that faulted.
-            // Sampling retains a useful crash breadcrumb without turning every
-            // rebuild of a 120-row page into 120 synchronous log writes.
-            if (slot == 0 || slot + 1 == path.length || slot % 20 == 0)
+            // Record only the page ends: enough of a crash breadcrumb to name
+            // the rebuild step, without turning a 120-row page into dozens of
+            // synchronous, flushed log writes per rebuild while a turn streams.
+            if (slot == 0 || slot + 1 == path.length)
                 noteActivity("rebuild slot=" ~ to!string(slot) ~ "/" ~
                     to!string(path.length) ~ " index=" ~ to!string(index) ~
                     " role=" ~ message.role ~ " toolCalls=" ~
@@ -24309,6 +24343,16 @@ public final class OpenCodeRoot : VBox
         updateEmergencyContext();
         drainEmergency();
         runOverseer();
+        // Run the transcript rebuild a busy turn coalesced into this tick (see
+        // rebuildMessageColumn). Doing it here caps a turn at one full rebuild
+        // per frame instead of several stacked inside one event, which is what
+        // stalled the UI thread for seconds on a long transcript.
+        if (_messageColumnRebuildQueued)
+        {
+            _messageColumnRebuildQueued = false;
+            if (_current >= 0)
+                rebuildMessageColumnNow();
+        }
         // Load the persisted conversations on demand: the window is already on
         // screen by the time a tick runs, so the multi-megabyte snapshot read
         // no longer holds up the first frame.
