@@ -1,13 +1,13 @@
 {
-  "status": "ok",
-  "phase": "relaunching",
-  "reason": "Apply sleep/wait discouragement changes in tools.d and systemprompt.d; compile and relaunch.",
+  "status": "running",
+  "phase": "building",
+  "reason": "Stop post-completion auto-continuation: verification-only continuation, limit 1, and one stale-plan nudge per cycle in appui.d.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 19:14:16.1314182",
-  "finishedAt": "2026-10-05 19:15:07.0358841",
-  "durationMs": 50904,
+  "startedAt": "2026-10-05 23:11:15.4226129",
+  "finishedAt": "2026-10-05 23:11:15.4226129",
+  "durationMs": 0,
   "exitCode": 0,
   "errors": []
 }

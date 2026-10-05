@@ -9346,9 +9346,13 @@ public final class OpenCodeRoot : VBox
     // the model to refresh it before continuing.
     private static immutable int planRefreshNudgeCalls = 8;
     // How many times one user turn may be auto-continued because the recorded
-    // checklist or verification is still unfinished before the turn is allowed
-    // to settle. Bounds a stuck model without dropping the work silently.
-    private static immutable int planContinuationLimit = 4;
+    // verification is still required before the turn is allowed to settle.
+    // The model's own checklist no longer forces a continuation: an unfinished
+    // model-owned checklist must not hold an ordinary turn open after a final
+    // answer (that was the endless "Continuing…" yapping). One reminder is
+    // enough to catch a genuinely skipped verification; past that the turn
+    // settles and the user decides whether to continue.
+    private static immutable int planContinuationLimit = 1;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -14454,33 +14458,33 @@ public final class OpenCodeRoot : VBox
              startChatRequest(sessionIndex, false);
              return;
          }
-         // Hold the turn open while the recorded checklist or verification is
-         // still unfinished, bounded per user turn. This is what stops the app
-         // from silently dropping a pending step; the model still owns the plan
-         // and may mark it complete to end the turn early.
+         // Hold the turn open only while verification of a recorded change is
+         // still required, bounded per user turn. The model's own checklist no
+         // longer re-opens the turn: a final answer settles it, and an
+         // unfinished checklist is shown to the user instead of manufacturing
+         // more model requests (the endless "Continuing…" yapping).
          // A distinct follow-up is already queued to open the next user turn, so
-         // it will carry the unfinished work forward. Auto-continuing here as
-         // well would manufacture a redundant model request that only re-sends
-         // the history, inflating the re-sent (uncached) input the user pays for.
+         // it will carry unfinished work forward. Auto-continuing here as well
+         // would manufacture a redundant model request that only re-sends the
+         // history, inflating the re-sent (uncached) input the user pays for.
          if (session.queuedFollowUps.length == 0 &&
-             (hasIncompleteTaskSteps(*session) ||
-             session.verificationStatus == "required") &&
+             session.verificationStatus == "required" &&
              planContinuationCount(*session) < planContinuationLimit)
          {
              ChatMessage continuation;
              continuation.role = "user";
              continuation.internal = true;
              continuation.content = planContinuationMarker ~
-                 (session.verificationStatus == "required"
-                     ? " and verification is still required" : "") ~
-                 ". Continue the next concrete step now, and call update_plan " ~
-                 "as steps finish so the checklist reflects the work.";
+                 ". Run the focused verification for the change already made " ~
+                 "(the same check that establishes it works), then report the " ~
+                 "result. If the change cannot be verified with a command, " ~
+                 "state that explicitly and settle the turn.";
              appendMessage(*session, continuation);
              session.turnStatus = "running";
              session.taskStatus = "active";
              setTurnActiveMarker(true, session.id);
              setTurnInFlight(true);
-             updateStatus("Continuing unfinished checklist…");
+             updateStatus("Continuing outstanding verification…");
              publishThreadUpdated(*session);
              markDirty();
              startChatRequest(sessionIndex, false);
@@ -14522,15 +14526,15 @@ public final class OpenCodeRoot : VBox
         const session = _sessions[sessionIndex];
         if (session.queuedGuidance.length > 0 ||
             planNeedsCompletionReview(session)) return true;
-        // Keep working while the recorded work is provably unfinished, bounded
-        // so a stuck model cannot loop forever. The budget is derived from the
-        // turn's marker messages, so a new user turn starts over implicitly.
-        // An already-queued follow-up owns the next turn, so it continues the
-        // work itself; auto-continuing here would add a redundant request that
-        // re-sends the whole history for no new progress.
+        // Keep working only while verification is still required, bounded so a
+        // stuck model cannot loop forever. The budget is derived from the turn's
+        // marker messages, so a new user turn starts over implicitly. An
+        // already-queued follow-up owns the next turn, so it continues the work
+        // itself; auto-continuing here would add a redundant request that
+        // re-sends the whole history for no new progress. The model's own
+        // unfinished checklist no longer holds the turn open by itself.
         const unfinished = session.queuedFollowUps.length == 0 &&
-            (hasIncompleteTaskSteps(session) ||
-            session.verificationStatus == "required");
+            session.verificationStatus == "required";
         return unfinished && planContinuationCount(session) < planContinuationLimit;
     }
 
@@ -14555,12 +14559,13 @@ public final class OpenCodeRoot : VBox
     }
 
     /// Prefix of the internal message that opens a bounded auto-continuation
-    /// while the recorded work is still unfinished.
-    private enum planContinuationMarker = "Continuation: the checklist is not complete";
+    /// while verification of the recorded work is still outstanding.
+    private enum planContinuationMarker = "Continuation: outstanding verification";
 
-    /// How many unfinished-work continuations this user turn already opened.
-    /// Counting the marker messages (rather than external state) makes the bound
-    /// survive compaction/restart and keeps `taskContinuesAfterDone` const-safe.
+    /// How many outstanding-verification continuations this user turn already
+    /// opened. Counting the marker messages (rather than external state) makes
+    /// the bound survive compaction/restart and keeps `taskContinuesAfterDone`
+    /// const-safe.
     private static int planContinuationCount(const ref ChatSession session)
     {
         int count;
@@ -15107,9 +15112,13 @@ public final class OpenCodeRoot : VBox
         if (!hasIncompleteTaskSteps(session)) return false;
         const since = toolResultsSincePlanUpdate(session);
         int lastNudged = session.id in _planNudgedAt ? _planNudgedAt[session.id] : 0;
-        if (since < lastNudged) lastNudged = 0; // the plan was refreshed
-        if (since < planRefreshNudgeCalls ||
-            since < lastNudged + planRefreshNudgeCalls) return false;
+        // A refreshed plan drops the tool-result counter below the last nudge
+        // point; only that may re-arm the reminder. Otherwise it fires once per
+        // plan-refresh cycle instead of repeating every few results, which was
+        // the endless "your checklist is stale" spam while a long run continued.
+        if (since < lastNudged) lastNudged = 0;
+        if (lastNudged > 0) return false;
+        if (since < planRefreshNudgeCalls) return false;
         _planNudgedAt[session.id] = since;
         if (_pendingProgressGuidance.length == 0)
             _pendingProgressGuidance = "Your durable checklist is stale: it " ~
