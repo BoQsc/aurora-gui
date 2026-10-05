@@ -797,10 +797,18 @@ private void runProgressWindowThread()
     definition.hbrBackground = null;
     RegisterClassW(&definition);
 
+    // Anchor the status window to the right edge of the screen: the default
+    // `CW_USEDEFAULT` left it in the top-left corner, where it read as part of
+    // the app the rebuild had just closed instead of a separate status display.
+    const int margin = 24;
+    int windowX = GetSystemMetrics(SM_CXSCREEN) - windowWidth - margin;
+    int windowY = margin;
+    if (windowX < margin) windowX = margin;
+
     const style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
     auto hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         classNameWide.ptr, windowTitleWide.ptr,
-        style, CW_USEDEFAULT, CW_USEDEFAULT, windowWidth, windowHeight,
+        style, windowX, windowY, windowWidth, windowHeight,
         null, null, instance, null);
     if (hwnd is null) return;
     _progressHwnd = hwnd;

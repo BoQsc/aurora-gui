@@ -4916,8 +4916,26 @@ int main(string[] args)
         assert(resumePill.height > 0 && resumeHeader.height > 0 &&
             resumePill.y >= resumeHeader.y + resumeHeader.height,
             "the resume pill must sit below the tip tool row, not above it");
+        // A SETTLED tool round KEEPS its Regenerate/Continue pill. A turn often
+        // ends on a tool result (a `finish` step, a rebuild request), so the
+        // active leaf is the tool result, not a prose reply. Requiring the turn
+        // to be incomplete suppressed the pill here, and after closing and
+        // reopening such a chat there was no visible way to act on the last
+        // reply - the reported "no continue and regenerate buttons".
+        root.setSessionTurnStatusForTesting(interrupted, "completed");
+        root.rebuildForTesting();
+        assert(root.tipIsToolGroupForTesting(),
+            "a settled tool round should still host the pill on the tip group");
+        assert(root.tipActionForTesting() == "Regenerate" &&
+            root.tipSecondaryActionForTesting() == "Continue",
+            "a settled tool round lost its Regenerate/Continue pill: " ~
+            root.tipActionForTesting() ~ "/" ~
+            root.tipSecondaryActionForTesting());
+        assert(driver.paint(), "settled tool-round repaint failed");
         // Continue from that wrapper (its tip is a tool result) must be
         // accepted and append the continuation, keeping the tool results.
+        root.setSessionTurnStatusForTesting(interrupted, "running");
+        root.rebuildForTesting();
         const beforeResume = root.totalMessageCountForTesting();
         assert(root.prepareContinueOnLastAssistantForTesting(),
             "Continue rejected an interrupted tool-round turn");
@@ -4926,12 +4944,13 @@ int main(string[] args)
         assert(root.messageRoleForTesting(
             root.totalMessageCountForTesting() - 1) == "user",
             "Continue did not append the continuation turn");
-        // Once the turn is no longer incomplete the resume pill is gone again.
+        // The appended continuation is a plain user prompt with no reply yet, so
+        // the resume pill is gone - a pending prompt is not a resume.
         root.setSessionTurnStatusForTesting(interrupted, "completed");
         root.rebuildForTesting();
         assert(root.tipActionForTesting() == "" &&
             root.tipSecondaryActionForTesting() == "",
-            "a settled tool round kept the resume pill");
+            "a pending continuation prompt kept the resume pill");
         writeln("An interrupted tool-round turn offers Continue/Regenerate");
     }
 

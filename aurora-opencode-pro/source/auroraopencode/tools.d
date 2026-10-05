@@ -13,6 +13,9 @@ import auroraopencode.computeruse : experimentalComputerUseExecute,
 // experimental: orchestrator - delete with source/auroraopencode/orchestrator.d
 import auroraopencode.orchestrator : experimentalOrchestratorExecute,
     experimentalOrchestratorTools;
+// Aurora's own source package detection, so the `run` tool never recompiles the
+// running app's executable instead of using the in-app `rebuild` flow.
+import rebuild : isAuroraProject;
 import std.file : dirEntries, exists, isFile, isDir, isSymlink, SpanMode, read,
     readText, write, mkdirRecurse, fileCopy = copy, remove, rename,
     rmdir, rmdirRecurse, tempDir, getSize,
@@ -1626,6 +1629,34 @@ private ToolExecution runProgramTool(string args, string workspace,
     // program works with either `app.exe` or `.\app.exe` on Windows.
     const resolvedWorkdir = workdir.length > 0
         ? resolveToolPath(workdir, workspace) : workspace;
+
+    // Working on Aurora OpenCode itself: a direct `dub build`/`dub run` is the
+    // wrong way to apply a source change. The running image is locked, so DUB
+    // cannot replace it - the command either fails or rewrites the executable
+    // while the old build keeps running, and the edit never goes live. The
+    // agent then repeats the build, which is the "keeps recompiling the .exe
+    // instead of triggering a rebuild" loop. When this app can rebuild itself
+    // and the target is Aurora's own package, refuse and point at `rebuild`.
+    if (rebuildRequestHandler !is null &&
+        (isAuroraProject(workspace) || isAuroraProject(resolvedWorkdir)))
+    {
+        const dubName = toLower(baseName(program));
+        if (dubName == "dub" || dubName == "dub.exe")
+            foreach (arg; argv)
+            {
+                const verb = toLower(strip(arg));
+                if (verb == "build" || verb == "run")
+                    return ToolExecution("run",
+                        "Refusing to run `dub " ~ verb ~ "`: that recompiles " ~
+                        "Aurora OpenCode's executable directly, which does not " ~
+                        "apply the change to the running app. Use the " ~
+                        "`rebuild` tool - it deploys the source change and " ~
+                        "relaunches the app. Use `dub test` (or another " ~
+                        "target with a separate output) for verification.",
+                        true);
+            }
+    }
+
     auto fullArgv = [program] ~ argv;
     if (!isAbsolute(program))
     {

@@ -13849,48 +13849,56 @@ public final class OpenCodeRoot : VBox
                 pillApplied = true;
             }
         }
-        // Resume affordance for an interrupted turn: when the tip is not a
-        // reply (the turn died during a tool round, so the leaf is a tool
-        // result or a tool-call wrapper), the tip tool group hosts the pill so
-        // Continue/Regenerate are the last row of the transcript. The last real
-        // reply on the active path supplies the target message for Regenerate;
-        // Continue appends at the current tip. A long single agent turn can
-        // leave EVERY assistant message on the path as a tool-call wrapper (no
-        // prose reply at all), so the tip-most visible assistant turn supplies
-        // the target instead — otherwise such a chat warned "needs continue" in
-        // the sidebar but offered no way to resume.
-        if (!pillApplied && !turnBusy && sessionTurnIncomplete(_current))
+        // Resume affordance for a settled turn whose tip is a tool result. A
+        // turn often ends on a tool result (a `finish` step, a rebuild
+        // request), so the active leaf is the tool result rather than a prose
+        // reply and the primary branch above - which requires the leaf to be
+        // the reply - never fires. The tip tool group then hosts the pill so
+        // Continue/Regenerate stay the last row of the transcript; the
+        // tip-most visible assistant reply on the active path supplies the
+        // Regenerate target, and Continue appends at the current tip.
+        //
+        // The gate is `sessionTurnIncomplete` (an interrupted turn, whose tip
+        // is a tool result or a tool-call wrapper) OR a settled turn whose tip
+        // is a tool result. Before the tool-result case was added, a
+        // conversation whose last turn COMPLETED on a tool result had no pill
+        // at all, so after closing and reopening it the chat looked like it had
+        // simply lost its Regenerate/Continue buttons. A trailing prompt with
+        // no reply yet is NOT covered: the reader is mid-send, not resuming.
+        size_t[] activePath;
+        if (!pillApplied && !turnBusy)
+            activePath = activeMessagePath(*session);
+        const bool tipIsToolResult = activePath.length > 0 &&
+            session.messages[activePath[$ - 1]].role == "tool";
+        if (!pillApplied && !turnBusy &&
+            (sessionTurnIncomplete(_current) || tipIsToolResult))
         {
             auto onPath = new bool[](session.messages.length);
-            foreach (index; activeMessagePath(*session))
+            foreach (index; activePath)
                 if (index < onPath.length) onPath[index] = true;
             MessageBubble resumable;
             int resumableIndex = -1;
-            // Pass one prefers a real reply; pass two accepts a tool-call
-            // wrapper so a turn that never produced prose still gets a pill.
-            foreach (bool allowToolWrapper; [false, true])
+            // The tip-most visible assistant message is the target. A hidden
+            // tool-call wrapper (prose-less) paints nothing, so it is skipped;
+            // a reply that also requested tools still counts as the reply the
+            // reader last saw.
+            foreach_reverse (child; children)
             {
-                foreach_reverse (child; children)
-                {
-                    auto bubble = cast(MessageBubble) child;
-                    if (bubble is null) continue;
-                    if (bubble.queued()) continue;
-                    if (bubble.hidden()) continue;
-                    if (_streamBubble !is null && bubble is _streamBubble) continue;
-                    const messageIndex = bubble.messageIndex();
-                    if (messageIndex < 0 ||
-                        messageIndex >= cast(int) session.messages.length)
-                        continue;
-                    if (!onPath[cast(size_t) messageIndex]) continue;
-                    const message = session.messages[cast(size_t) messageIndex];
-                    if (message.role != "assistant" || message.internal) continue;
-                    if (!allowToolWrapper && message.toolCalls.length > 0)
-                        continue;
-                    resumable = bubble;
-                    resumableIndex = messageIndex;
-                    break;
-                }
-                if (resumable !is null) break;
+                auto bubble = cast(MessageBubble) child;
+                if (bubble is null) continue;
+                if (bubble.queued()) continue;
+                if (bubble.hidden()) continue;
+                if (_streamBubble !is null && bubble is _streamBubble) continue;
+                const messageIndex = bubble.messageIndex();
+                if (messageIndex < 0 ||
+                    messageIndex >= cast(int) session.messages.length)
+                    continue;
+                if (!onPath[cast(size_t) messageIndex]) continue;
+                const message = session.messages[cast(size_t) messageIndex];
+                if (message.role != "assistant" || message.internal) continue;
+                resumable = bubble;
+                resumableIndex = messageIndex;
+                break;
             }
             if (resumable !is null)
             {
@@ -22003,6 +22011,101 @@ public final class OpenCodeRoot : VBox
         refreshTimerBadge(true);
     }
 
+    /// True when a conversation carries a model-visible compaction checkpoint on
+    /// its active branch: its older context has been rolled into a summary and
+    /// that summary is what the next request would send. That is the state a
+    /// sufficiently long chat reaches, and the only one a fresh conversation can
+    /// inherit without dragging the full transcript along.
+    private static bool sessionHasCompactionCheckpoint(
+        const ref ChatSession session)
+    {
+        return session.compactionSummary.length > 0 &&
+            session.compactedThroughMessageId.length > 0 &&
+            checkpointOnActivePath(session);
+    }
+
+    /// Start a fresh conversation that inherits only the compacted work state of
+    /// `sessionIndex`: its checkpoint summary, objective and plan. The original
+    /// transcript is left intact. A single hidden anchor message marks the
+    /// boundary, so the new thread reaches the model with the checkpoint as its
+    /// opening context and an empty transcript rather than the full history.
+    private void forkSessionFromCompaction(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        ensureThreadLoaded(sessionIndex);
+        saveLoadedRuntime();
+        auto source = _sessions[sessionIndex];
+        if (source.compactionSummary.length == 0 ||
+            source.compactedThroughMessageId.length == 0)
+            return;
+        ChatSession copy;
+        copy.id = newSessionId();
+        const baseTitle = source.title.length > 0 ? source.title : "Conversation";
+        copy.title = baseTitle ~ " (continued)";
+        copy.model = source.model;
+        copy.thinking = source.thinking;
+        copy.projectId = source.projectId;
+        copy.objective = source.objective;
+        copy.taskStatus = source.taskStatus;
+        copy.turnStatus = source.turnStatus;
+        copy.verificationStatus = source.verificationStatus;
+        copy.taskSteps = source.taskSteps.dup;
+        copy.nestedPlans = source.nestedPlans.dup;
+        copy.queuedGuidance = source.queuedGuidance;
+        copy.queuedFollowUps = source.queuedFollowUps;
+        // A fresh conversation is new work the reader has not seen yet; it
+        // starts read.
+        copy.unread = false;
+        copy.updatedAt = Clock.currTime.toUnixTime();
+        // The hidden anchor is the compaction boundary: the new branch's request
+        // is the checkpoint note alone, and the transcript draws the compacted
+        // -context notice instead of a fake user bubble.
+        ChatMessage seed;
+        seed.id = newMessageId();
+        seed.role = "user";
+        seed.internal = true;
+        seed.contextCompacted = true;
+        seed.content = "Context checkpoint carried over from a previous " ~
+            "conversation.";
+        copy.messages ~= seed;
+        copy.activeLeafId = seed.id;
+        copy.compactionSummary = source.compactionSummary;
+        copy.compactedThroughMessageId = seed.id;
+        // Insert below the source and shift the indices of everything after it,
+        // exactly as duplicateSession shifts the other way.
+        const insertAt = sessionIndex + 1;
+        _sessions = _sessions[0 .. insertAt] ~ copy ~ _sessions[insertAt .. $];
+        foreach (rt; _conversationRuntimes)
+        {
+            if (rt.activeRequestSession >= insertAt)
+                ++rt.activeRequestSession;
+            if (rt.turnSessionIndex >= insertAt)
+                ++rt.turnSessionIndex;
+        }
+        if (_current >= insertAt) ++_current;
+        publishRuntimeEvent(AgentEventKind.threadStarted, copy,
+            "", "", "", runtimeThreadPayload(copy));
+        // Show the new conversation so the fork is immediately visible.
+        _current = insertAt;
+        loadRuntime(_current);
+        _visibleMessageLimit = messageHistoryPageSize;
+        _editMessageIndex = -1;
+        _streamBubble = null;
+        if (_input !is null)
+        {
+            _input.setText("", false);
+            _input.requestFocus();
+        }
+        followNewestMessage();
+        rebuildMessageColumn();
+        updateSessionList();
+        markDirty();
+        updateStatus("New conversation started from the compacted checkpoint.");
+        refreshUsageBadge();
+        refreshTimerBadge(true);
+    }
+
     private void showMessageContextMenu(int messageIndex, Point globalPosition,
         MessageBubble sourceBubble = null, string linkTarget = "",
         Point localPosition = Point(-1, -1))
@@ -22159,6 +22262,15 @@ public final class OpenCodeRoot : VBox
                 deleteSession(sessionIndex);
             }, "Del"),
         ];
+        // A conversation that has rolled its older context into a checkpoint can
+        // seed a fresh one: the new chat opens with only that compacted work
+        // state, so a long thread never has to keep carrying its full history.
+        if (sessionHasCompactionCheckpoint(_sessions[sessionIndex]))
+            items ~= ContextMenuItem.command("New chat from checkpoint",
+                IconKind.newDocument, delegate()
+                {
+                    forkSessionFromCompaction(sessionIndex);
+                });
         showContextMenu(_sessionList, globalPosition, items);
     }
 

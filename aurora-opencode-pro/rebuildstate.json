@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Reverted the hover-expand padding and kept only the left collapse-handle padding; rebuild so the running app matches the committed source.",
+  "reason": "Apply the fix: the `run` tool now refuses `dub build`/`dub run` against Aurora's own package and steers to the `rebuild` tool, and AGENTS.md no longer tells the agent to recompile the exe.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 09:34:55.92941",
-  "finishedAt": "2026-10-05 09:35:34.2461754",
-  "durationMs": 38316,
+  "startedAt": "2026-10-05 10:36:59.8700951",
+  "finishedAt": "2026-10-05 10:37:57.5235597",
+  "durationMs": 57653,
   "exitCode": 0,
   "errors": []
 }

@@ -60,10 +60,16 @@ read-only and produce no side effects.
 
 ## Build
 
-- Run `dub build` from the repository root (release builds use
-  `--build=release`).
-- Do **not** build in a way that overwrites the live executable while it is
-  running. Use the rebuild/restart flow instead.
+- Apply a source change with the in-app **`rebuild` tool**, not a manual
+  `dub build`/`dub run`. The tool closes the app, runs `dub build --build=release`
+  in the package root, and relaunches it with the new build.
+- Do **not** run `dub build` or `dub run` while the app is running. The live
+  executable is locked, so DUB cannot replace it: the command either fails or
+  rewrites the file while the old build keeps running, the edit never goes live,
+  and the agent ends up recompiling the `.exe` over and over instead of
+  triggering a rebuild. The `run` tool refuses `dub build`/`dub run` in Aurora's
+  own package for exactly this reason. Use `dub test` (or a target with a
+  separate output) when a build-only check is genuinely needed.
 - Rebuild/restart flow: the app copies *itself* to a throwaway
   `bin/aurora-rebuild-helper-<pid>.exe`, spawns that copy as the agent, and then
   closes immediately; there is no separate helper executable to build or keep in
@@ -91,8 +97,8 @@ Do this **before** concluding any change is complete:
    tell you whether a rebuild is in flight, succeeded, or failed.
 3. **Staleness** — if any `.d` file is newer than the built binary, the running
    build is stale.
-4. **Exit code / output** — if you ran `dub build` yourself, confirm it exited 0
-   and that the binary is newer than the sources.
+4. **Tool refusal** — a `run` call that reported it refused `dub build`/`dub run`
+   means nothing was compiled: use the `rebuild` tool instead.
 
 If the build is stale or failed, say so explicitly and recommend a rebuild
 rather than claiming the change works.
@@ -100,7 +106,8 @@ rather than claiming the change works.
 ## Definition of done for a source change
 
 1. Edit the source.
-2. Build (`dub build`), or request the in-app rebuild.
+2. Request the in-app rebuild (`rebuild` tool). Do not run `dub build` yourself -
+   it cannot replace the running executable and only recompiles the file.
 3. Confirm the binary is newer than the edited sources.
 4. Confirm the rebuilt app was relaunched.
 5. Only then report the outcome, and state what was actually verified.
