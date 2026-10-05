@@ -180,8 +180,8 @@ public Attachment attachmentForFile(string path)
                 return attachment;
             }
             attachment.isImage = true;
-            attachment.image = attachmentImageForData(kind, attachment.name,
-                cast(ubyte[]) read(path));
+            attachment.image = attachmentImageForInlineData(kind,
+                attachment.name, cast(ubyte[]) read(path));
             attachment.body = "";
             return attachment;
         }
@@ -311,6 +311,44 @@ public ChatImageAttachment attachmentImageForData(string mimeType, string name,
     image.name = name;
     image.base64Data = base64Encode(data);
     return image;
+}
+
+/// Encoded bytes Aurora aims to keep one inline image under. Base64 inflates by
+/// a third, and many gateways reject a multi-megabyte body, which the user sees
+/// as a turn that produced no reply. Past this budget a PNG is downscaled and
+/// re-encoded instead of being sent at its original size.
+public immutable size_t attachmentImageInlineBytes = 1024 * 1024;
+
+/// The inline image payload for a user-supplied image, re-encoded when it is too
+/// large to send as-is. A PNG is decoded, downscaled and sent as JPEG (the same
+/// treatment saved screenshots get); other formats, and payloads already within
+/// budget, pass through unchanged. Never throws: on any failure the original
+/// bytes are used.
+public ChatImageAttachment attachmentImageForInlineData(string mimeType,
+    string name, in ubyte[] data)
+{
+    if (data.length > attachmentImageInlineBytes && mimeType == "image/png")
+    {
+        import auroraopencode.screenshotimage : pngToInlineJpeg;
+        try
+        {
+            const jpeg = pngToInlineJpeg(data);
+            if (jpeg !is null && jpeg.length > 0 && jpeg.length < data.length)
+                return attachmentImageForData("image/jpeg",
+                    inlineImageName(name), jpeg);
+        }
+        catch (Exception) {}
+    }
+    return attachmentImageForData(mimeType, name, data);
+}
+
+/// Rename an inline image whose bytes were re-encoded to JPEG so the data URL
+/// mime type and the chip label agree.
+private string inlineImageName(string name)
+{
+    import std.path : setExtension;
+    if (name.length == 0) return "image.jpg";
+    return setExtension(name, ".jpg");
 }
 
 /// Standard base64. Kept local so the pro app does not add a dependency for

@@ -26,6 +26,49 @@ public ubyte[] encodeScreenshotJpeg(int width, int height,
         throw new Exception("Screenshot JPEG encoding is unavailable.");
 }
 
+/// Longest edge Aurora sends inline. Vision models downscale to roughly this
+/// size anyway, so a bigger frame only inflates the request body and can push a
+/// gateway past its per-message limit.
+public enum int inlineImageMaxEdge = 1400;
+
+/// Decode a PNG, downscale it by whole-pixel steps until its longest edge fits
+/// `maxEdge`, and re-encode it as JPEG. Returns null when the bytes are not a
+/// PNG this build can decode, so the caller keeps the original payload instead
+/// of failing the attachment.
+public ubyte[] pngToInlineJpeg(const(ubyte)[] png,
+    int maxEdge = inlineImageMaxEdge)
+{
+    import aurora.image : decodePngImage, RgbaImage;
+    RgbaImage image;
+    try image = decodePngImage(png, "inline image");
+    catch (Exception) return null;
+    const width = image.width;
+    const height = image.height;
+    if (width <= 0 || height <= 0) return null;
+    const rgba = image.pixels;
+    const longest = width > height ? width : height;
+    int factor = 1;
+    if (maxEdge > 0 && longest > maxEdge)
+        factor = (longest + maxEdge - 1) / maxEdge;
+    const outWidth = (width + factor - 1) / factor;
+    const outHeight = (height + factor - 1) / factor;
+    auto rgb = new ubyte[cast(size_t) outWidth * outHeight * 3];
+    foreach (y; 0 .. outHeight)
+    {
+        const sy = y * factor < height ? y * factor : height - 1;
+        foreach (x; 0 .. outWidth)
+        {
+            const sx = x * factor < width ? x * factor : width - 1;
+            const src = (cast(size_t) sy * width + sx) * 4;
+            const dst = (cast(size_t) y * outWidth + x) * 3;
+            rgb[dst] = rgba[src];
+            rgb[dst + 1] = rgba[src + 1];
+            rgb[dst + 2] = rgba[src + 2];
+        }
+    }
+    return encodeScreenshotJpeg(outWidth, outHeight, rgb);
+}
+
 version (Windows)
 {
     import core.sys.windows.windows : LoadLibraryW, FreeLibrary, GetProcAddress;

@@ -60,7 +60,7 @@ import auroraopencode.requestintent : explanationOnlyRequest;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
-    attachmentForText, attachmentImageForData, attachmentImageMaxBytes,
+    attachmentForText, attachmentImageForInlineData, attachmentImageMaxBytes,
     attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
     attachmentStripHeight, attachmentVisibleSummary,
     attachmentsContainImage, experimentalAttachmentsEnabled;
@@ -16720,7 +16720,7 @@ public final class OpenCodeRoot : VBox
             attachment.name = "Pasted image.png";
             attachment.bytes = cast(long) png.length;
             attachment.isImage = true;
-            attachment.image = attachmentImageForData("image/png",
+            attachment.image = attachmentImageForInlineData("image/png",
                 attachment.name, png);
             _pendingAttachments ~= attachment;
             syncAttachments();

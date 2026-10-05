@@ -1,13 +1,13 @@
 {
-  "status": "running",
-  "phase": "building",
-  "reason": "Stop post-completion auto-continuation: verification-only continuation, limit 1, and one stale-plan nudge per cycle in appui.d.",
+  "status": "ok",
+  "phase": "relaunching",
+  "reason": "Downscale/re-encode oversized user PNG attachments to JPEG under the inline cap so gateways accept the turn instead of producing no reply.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 23:11:15.4226129",
-  "finishedAt": "2026-10-05 23:11:15.4226129",
-  "durationMs": 0,
+  "startedAt": "2026-10-05 23:25:00.3171468",
+  "finishedAt": "2026-10-05 23:26:00.2361417",
+  "durationMs": 59919,
   "exitCode": 0,
   "errors": []
 }
