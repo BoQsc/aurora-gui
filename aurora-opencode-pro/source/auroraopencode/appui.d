@@ -4672,6 +4672,10 @@ private final class PlanCard : Widget
     // panel parks the card against the right edge and this handle is what the
     // pointer clicks. `_railOnly` keeps just that handle on screen.
     private static immutable int handleWidth = 10;
+    // Interaction padding: the painted rail is thin, so the whole left strip up
+    // to this width counts as the handle. The extra room gives the border an
+    // easy click target to hide the plan without thickening what is drawn.
+    private static immutable int handleHitWidth = handleWidth + 10;
     private bool _railOnly;
     private bool _handleHot;
     private bool _hideHot;
@@ -5047,7 +5051,7 @@ private final class PlanCard : Widget
     override bool onMouseMove(ref Event event)
     {
         const onHandle = _railOnly || (event.position.x >= 0 &&
-            event.position.x < handleWidth);
+            event.position.x < handleHitWidth);
         const hot = onHandle && !_railOnly;
         if (hot != _handleHot)
         {
@@ -5097,7 +5101,7 @@ private final class PlanCard : Widget
         }
         // The whole collapsed tab is the handle; expanded, only the rail is.
         if (!_railOnly &&
-            (event.position.x < 0 || event.position.x >= handleWidth))
+            (event.position.x < 0 || event.position.x >= handleHitWidth))
         {
             const parent = nestedParentAt(event.position.y);
             if (parent == size_t.max) return false;

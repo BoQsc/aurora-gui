@@ -5973,6 +5973,55 @@ int main(string[] args)
         writeln("Plan minimizes to the right edge from a bent-arrow corner button");
     }
 
+    // The collapse handle carries interaction padding: the painted rail is only
+    // 10 px, but the whole left strip up to the padded width minimizes the plan,
+    // so a click a little inside the border still hides it while a click on the
+    // body does not.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Pad the plan border"]);
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"in_progress"}]}`);
+        root.rebuildForTesting();
+        driver.moveTo(Point(4, 700));
+        assert(driver.paint(), "the padding plan did not paint");
+        assert(root.detachedPlanVisibleForTesting(),
+            "the detached plan panel did not show for the padding check");
+        const panel = requireWidget!Widget(root, "oc-plan-panel");
+        const cardRect = root.detachedPlanRectForTesting();
+        assert(cardRect.width > 40 && cardRect.height > 16,
+            "the plan card was too small for the padding check: " ~
+            to!string(cardRect));
+        // A click on the body, clear of the padded handle, must not minimize.
+        driver.click(panel.localToGlobal(Point(cardRect.x + 40,
+            cardRect.y + 10)));
+        assert(driver.paint(), "clicking the plan body did not repaint");
+        assert(!root.detachedPlanCollapsedForTesting(),
+            "clicking the plan body beyond the padding minimized it");
+        // Move clear so the hover expansion settles back to rest first.
+        driver.moveTo(Point(4, 700));
+        assert(driver.paint(), "leaving the plan body did not repaint");
+        const restRect = root.detachedPlanRectForTesting();
+        // A click inside the padding (past the thin rail) still minimizes it.
+        driver.click(panel.localToGlobal(Point(restRect.x + 16,
+            restRect.y + 10)));
+        assert(driver.paint(), "clicking the plan padding did not repaint");
+        assert(root.detachedPlanCollapsedForTesting(),
+            "clicking the plan card's left padding did not minimize it");
+        // Restore so the checks that follow start from the expanded card.
+        const collapsedRect = root.detachedPlanRectForTesting();
+        driver.click(panel.localToGlobal(Point(
+            collapsedRect.x + collapsedRect.width / 2,
+            collapsedRect.y + collapsedRect.height / 2)));
+        assert(driver.paint(), "restoring the padded plan did not repaint");
+        assert(!root.detachedPlanCollapsedForTesting(),
+            "the padded plan stayed minimized after restore");
+        driver.moveTo(Point(4, 700));
+        assert(driver.paint(), "leaving the restored plan did not repaint");
+        writeln("Plan border interaction padding widens the minimize target");
+    }
+
     // Experimental substeps keep the parent checklist intact and can be
     // collapsed or hidden without losing their durable state.
     {
