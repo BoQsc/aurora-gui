@@ -22116,9 +22116,20 @@ public final class OpenCodeRoot : VBox
         markDirty();
         refreshUsageBadge();
         refreshTimerBadge(true);
-        // Roll the copy's whole history into a checkpoint. A live provider gets
-        // a real model summary; without one, fall back to the extractive
-        // checkpoint so the new chat is still compacted offline.
+        // Install the extractive checkpoint immediately so the new chat is
+        // compacted even without a provider. It is the same rolling checkpoint
+        // the app builds when older context has to be retired.
+        bool compacted;
+        if (copy.activeLeafId.length > 0)
+            compacted = rollCompactionCheckpoint(_sessions[_current],
+                requestContextBudget(_sessions[_current].model), 0);
+        if (compacted)
+        {
+            markDirty();
+            rebuildMessageColumn();
+        }
+        // With a live provider, refine that checkpoint with a real model
+        // summary; the checkpoint anchor is unchanged, only its text improves.
         if (copy.activeLeafId.length > 0 &&
             activeApiKey(_settings).length > 0 &&
             startModelCompaction(_current, "", "",
@@ -22129,16 +22140,9 @@ public final class OpenCodeRoot : VBox
             updateSendButton();
             return;
         }
-        _sessions[_current].compactedThroughMessageId = "";
-        if (rollCompactionCheckpoint(_sessions[_current],
-                requestContextBudget(_sessions[_current].model), 0))
-        {
-            markDirty();
-            rebuildMessageColumn();
-            updateStatus("Started a compacted copy of the conversation.");
-        }
-        else
-            updateStatus("Started a copy of the conversation.");
+        updateStatus(compacted
+            ? "Started a compacted copy of the conversation."
+            : "Started a copy of the conversation.");
     }
 
     private void showMessageContextMenu(int messageIndex, Point globalPosition,
@@ -22256,7 +22260,12 @@ public final class OpenCodeRoot : VBox
     private void showSessionContextMenu(int row, Point globalPosition)
     {
         if (row < 0 || row >= cast(int) _sessionIndices.length) return;
-        const sessionIndex = _sessionIndices[row];
+        showContextMenu(_sessionList, globalPosition,
+            sessionContextMenuItems(_sessionIndices[row]));
+    }
+
+    private ContextMenuItem[] sessionContextMenuItems(int sessionIndex)
+    {
         auto items = [
             ContextMenuItem.command("Open", IconKind.terminal, delegate()
             {
@@ -22305,7 +22314,7 @@ public final class OpenCodeRoot : VBox
             {
                 duplicateSessionCompacted(sessionIndex);
             });
-        showContextMenu(_sessionList, globalPosition, items);
+        return items;
     }
 
     // -- Pinned conversations --------------------------------------------
@@ -25325,6 +25334,55 @@ public final class OpenCodeRoot : VBox
     {
         if (index < 0 || index >= cast(int) _sessions.length) return "";
         return _sessions[index].title;
+    }
+
+    /// Test-only: the labels of the conversation context menu for a sidebar row.
+    public string[] sessionContextMenuLabelsForTesting(int row)
+    {
+        string[] labels;
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return labels;
+        foreach (item; sessionContextMenuItems(_sessionIndices[row]))
+            labels ~= to!string(item.label);
+        return labels;
+    }
+
+    /// Test-only: invoke the conversation context-menu item labeled `label` at a
+    /// sidebar row, exactly as a click would, and report whether it ran.
+    public bool invokeSessionContextMenuItemForTesting(int row, string label)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return false;
+        foreach (item; sessionContextMenuItems(_sessionIndices[row]))
+            if (to!string(item.label) == label && item.action !is null)
+            {
+                item.action();
+                return true;
+            }
+        return false;
+    }
+
+    /// Test-only: number of messages in a session (not only the open one).
+    public int sessionMessageCountForTesting(int index) const
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return -1;
+        return cast(int) _sessions[index].messages.length;
+    }
+
+    /// Test-only: whether a session carries a compaction checkpoint.
+    public bool sessionCompactedForTesting(int index) const
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return false;
+        return _sessions[index].compactionSummary.length > 0 &&
+            _sessions[index].compactedThroughMessageId.length > 0;
+    }
+
+    /// Test-only: one message's content in a session (not only the open one).
+    public string sessionMessageContentForTesting(int index, int messageIndex)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return "";
+        if (messageIndex < 0 ||
+            messageIndex >= cast(int) _sessions[index].messages.length)
+            return "";
+        return _sessions[index].messages[messageIndex].content;
     }
 
     /// Test-only: the session-array index shown at a visible list row

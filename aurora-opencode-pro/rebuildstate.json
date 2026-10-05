@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Fix forever-stuck tool calls: bound the post-kill reap in killProcessTree and make the tool worker/parallel jobs catch Throwable so no tool can strand its live rows.",
+  "reason": "Deploy verified copy+compact feature: roll-first checkpoint then optional model refinement, plus test hooks and tests/compact_copy_probe.d.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-05 12:43:43.2519974",
-  "finishedAt": "2026-10-05 12:44:22.2429241",
-  "durationMs": 38990,
+  "startedAt": "2026-10-05 13:13:53.1966261",
+  "finishedAt": "2026-10-05 13:14:40.6511369",
+  "durationMs": 47454,
   "exitCode": 0,
   "errors": []
 }
