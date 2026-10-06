@@ -1,13 +1,13 @@
 {
-  "status": "running",
-  "phase": "building",
-  "reason": "Coalesce per-turn transcript rebuilds to once per tick and cut the rebuild-slot log flood, to prevent multi-second UI-thread stalls (emergency freeze report).",
+  "status": "ok",
+  "phase": "relaunching",
+  "reason": "Add suspend/resume re-baseline guard to the freeze watchdog in emergency.d so system sleep no longer files a false 'UI froze for N s' report.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-06 00:06:18.6862215",
-  "finishedAt": "2026-10-06 00:06:18.6862215",
-  "durationMs": 0,
+  "startedAt": "2026-10-06 08:31:17.8993245",
+  "finishedAt": "2026-10-06 08:32:03.9170513",
+  "durationMs": 46017,
   "exitCode": 0,
   "errors": []
 }

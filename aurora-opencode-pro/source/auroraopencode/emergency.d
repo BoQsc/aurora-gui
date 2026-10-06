@@ -82,6 +82,12 @@ private __gshared SysTime function() _clock;
 
 private __gshared bool _watchdogStarted;
 private __gshared bool _freezeLogged;
+/// The watchdog's own previous wake time. If the gap between two of its own
+/// wakes is also long, the whole process was suspended (system sleep or
+/// hibernate), not just the UI thread, and the heartbeats must not be read as a
+/// freeze.
+private __gshared bool _haveWake;
+private __gshared SysTime _lastWake;
 private __gshared bool _haveTrigger;
 private __gshared SysTime _lastTriggerTime;
 private __gshared bool _pending;
@@ -234,6 +240,22 @@ private void watchdogMain()
                 continue;
             }
             const now = nowTime();
+            // A gap between our own wakes that already exceeds the freeze
+            // threshold cannot be a UI-thread hang: a hung UI still leaves this
+            // loop waking every second. It means the process (and this thread)
+            // was suspended - system sleep or hibernate - so the stale heartbeat
+            // is expected. Re-baseline and do not report a freeze.
+            if (_haveWake &&
+                (now - _lastWake).total!"seconds" > emergencyFreezeSeconds)
+            {
+                _lastWake = now;
+                _lastBeatTime = now;
+                _haveBeat = true;
+                _freezeLogged = false;
+                continue;
+            }
+            _lastWake = now;
+            _haveWake = true;
             const stalled = (now - _lastBeatTime).total!"seconds";
             if (stalled >= emergencyFreezeSeconds)
             {
