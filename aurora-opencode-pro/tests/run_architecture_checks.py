@@ -5,12 +5,13 @@ import tempfile
 import json
 import time
 import hashlib
+import os
 from pathlib import Path
 
 package = Path(__file__).resolve().parents[1]
 repo = package.parent
 parser = argparse.ArgumentParser()
-parser.add_argument('fixtures', nargs='*', default=['architecture_contracts', 'presentation_contracts', 'chat_consistency_smoke', 'headless_pro_smoke', 'tools_test', 'execution_ui_contracts'])
+parser.add_argument('fixtures', nargs='*', default=['architecture_contracts', 'presentation_contracts', 'chat_consistency_smoke', 'headless_pro_smoke', 'tools_test', 'execution_ui_contracts', 'flow_resilience_contracts'])
 args = parser.parse_args()
 # The rebuild-button fixture requires an executable beneath the package's
 # recipe. Each run still has a distinct filename and private artifact folder.
@@ -30,7 +31,8 @@ fingerprint = source_fingerprint()
 head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
 proof = {'sourceSha256': fingerprint, 'gitHead': head}
 print('ARTIFACTS', directory, 'SOURCE', fingerprint, flush=True)
-for fixture in args.fixtures:
+env = dict(os.environ)
+for fixture in ['filesystem_host', *args.fixtures]:
     executable = directory / (fixture + '.exe')
     result = subprocess.run([
         'dmd', '-i', '-verrors=20',
@@ -43,6 +45,9 @@ for fixture in args.fixtures:
     ], cwd=directory, timeout=120)
     if result.returncode:
         raise SystemExit(result.returncode)
+    if fixture == 'filesystem_host':
+        env['AURORA_FILESYSTEM_HOST'] = str(executable)
+        continue
     evidence = dict(proof, executableSha256=hashlib.sha256(executable.read_bytes()).hexdigest())
     print('RUN', fixture, flush=True)
     started = time.monotonic()
@@ -50,7 +55,7 @@ for fixture in args.fixtures:
     try:
         with log_path.open('w', encoding='utf-8') as log:
             result = subprocess.run([str(executable)], cwd=directory, timeout=120,
-                                    stdout=log, stderr=subprocess.STDOUT)
+                                    stdout=log, stderr=subprocess.STDOUT, env=env)
     except subprocess.TimeoutExpired:
         (directory / (fixture + '.result.json')).write_text(json.dumps({
             **evidence, 'fixture': fixture, 'status': 'timeout', 'seconds': time.monotonic() - started

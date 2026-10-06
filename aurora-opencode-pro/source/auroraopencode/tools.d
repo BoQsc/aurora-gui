@@ -47,6 +47,160 @@ import std.range : take;
 import std.typecons : Tuple;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import auroraopencode.workerbudget : WorkerBudget;
+
+private __gshared WorkerBudget _filesystemHosts;
+shared static this() { _filesystemHosts = new WorkerBudget(4); }
+public enum filesystemHelperFlag = "--aurora-filesystem-tool";
+
+private bool filesystemTool(string name)
+{
+    return name == "read" || name == "glob" || name == "grep" ||
+        name == "view_image" || name == "dshell";
+}
+
+/// This mode runs before GUI construction or settings restore. The host has
+/// no mutation tools, provider credentials, or conversation state.
+public int runFilesystemHelperMode(string[] args)
+{
+    if (args.length < 2 || args[1] != filesystemHelperFlag) return -1;
+    if (args.length != 3) return 2;
+    ToolExecution result;
+    try
+    {
+        auto request = parseJSON(readText(args[2]));
+        import auroraopencode.core : setOpencodeStateDirectoryForTesting;
+        setOpencodeStateDirectoryForTesting(request["stateDirectory"].str);
+        OpenCodeToolCall call;
+        call.name = request["name"].str;
+        call.arguments = request["arguments"].str;
+        if (!filesystemTool(call.name)) return 2;
+        result = dispatchTool(call, request["workspace"].str);
+    }
+    catch (Throwable error)
+    {
+        result.failed = true;
+        result.output = "Error: filesystem tool failed: " ~ error.msg;
+    }
+    JSONValue response;
+    response["output"] = result.output;
+    response["failed"] = result.failed;
+    response["images"] = JSONValue.emptyArray;
+    foreach (image; result.images)
+    {
+        JSONValue encoded;
+        encoded["mimeType"] = image.mimeType;
+        encoded["name"] = image.name;
+        encoded["base64Data"] = image.base64Data;
+        response["images"].array ~= encoded;
+    }
+    stdout.write(response.toString());
+    stdout.flush();
+    return 0;
+}
+
+private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
+    string workspace, ToolCancellation cancellation)
+{
+    import std.file : thisExePath;
+    import std.process : environment;
+    const started = MonoTime.currTime;
+    if (!_filesystemHosts.acquire())
+        return ToolExecution(call.name, "Error: filesystem tool hosts are at capacity; retry after running calls settle.", true);
+    scope (exit) _filesystemHosts.release();
+    long timeoutMs = call.name == "glob" || call.name == "grep" ? 10_000 : 30_000;
+    try
+    {
+        const args = parseJSON(call.arguments);
+        if (args.type == JSONType.object)
+        {
+            if (auto timeout = "timeout" in args.object)
+                if (timeout.type == JSONType.integer)
+                    timeoutMs = timeout.integer < 100 ? 100 :
+                        timeout.integer > 600_000 ? 600_000 : timeout.integer;
+            if (call.name == "dshell")
+                if (auto secondsArg = "seconds" in args.object)
+                    if (secondsArg.type == JSONType.integer || secondsArg.type == JSONType.float_)
+                    {
+                        const pause = secondsArg.type == JSONType.integer ?
+                            cast(double) secondsArg.integer : secondsArg.floating;
+                        if (pause > 0) timeoutMs = cast(long) ((pause > 300 ? 300 : pause) * 1000) + 3000;
+                    }
+        }
+    }
+    catch (Exception) {}
+    if (call.name == "grep") timeoutMs += 5000;
+    if (cancellation !is null && cancellation.cancelled())
+        return ToolExecution(call.name, "Stopped: filesystem tool cancelled before it started.", true);
+    // Short filenames avoid a potentially blocking write to a child stdin pipe.
+    const requestPath = buildPath(tempDir(), "aurora-filesystem-" ~ to!string(started.ticks) ~ ".json");
+    const outputPath = requestPath ~ ".out";
+    File input, output;
+    Pid pid;
+    bool running;
+    scope (exit)
+    {
+        if (running) killProcessTree(pid);
+        if (input.isOpen) collectException(input.close());
+        if (output.isOpen) collectException(output.close());
+        collectException(remove(requestPath));
+        collectException(remove(outputPath));
+    }
+    try
+    {
+        JSONValue request;
+        request["name"] = call.name;
+        request["arguments"] = call.arguments;
+        request["workspace"] = workspace;
+        request["stateDirectory"] = opencodeStateDirectory();
+        const encoded = request.toString();
+        if (encoded.length > 256 * 1024)
+            return ToolExecution(call.name, "Error: filesystem tool arguments exceed 256 KiB.", true);
+        write(requestPath, encoded);
+        input = openNullStdin();
+        output = File(outputPath, "wb");
+        // Test fixtures have a dedicated host; production uses this same image.
+        const executable = environment.get("AURORA_FILESYSTEM_HOST", thisExePath());
+        pid = spawnProcess([executable, filesystemHelperFlag, requestPath],
+            input, output, output, null, Config.suppressConsole);
+        running = true;
+        const deadline = started + timeoutMs.msecs;
+        while (true)
+        {
+            const status = waitTimeout(pid, 20.msecs);
+            if (status.terminated)
+            {
+                running = false;
+                if (status.status != 0)
+                    return ToolExecution(call.name, "Error: filesystem tool host exited with code " ~ to!string(status.status) ~ ".", true);
+                break;
+            }
+            if (cancellation !is null && cancellation.cancelled())
+                return ToolExecution(call.name, "Stopped: filesystem tool cancelled; its host was terminated.", true);
+            if (MonoTime.currTime >= deadline)
+                return ToolExecution(call.name, "Error: filesystem tool timed out after " ~ to!string(timeoutMs) ~ " ms; its host was terminated. Narrow the path or increase timeout.", true);
+        }
+        output.close();
+        if (getSize(outputPath) > attachmentImageMaxBytes * 2 + 256 * 1024)
+            return ToolExecution(call.name, "Error: filesystem tool host returned excessive output.", true);
+        const response = parseJSON(readText(outputPath));
+        ToolExecution result;
+        result.name = call.name;
+        result.output = response["output"].str;
+        result.failed = response["failed"].boolean;
+        foreach (imageJson; response["images"].array)
+        {
+            ChatImageAttachment image;
+            image.mimeType = imageJson["mimeType"].str;
+            image.name = imageJson["name"].str;
+            image.base64Data = imageJson["base64Data"].str;
+            result.images ~= image;
+        }
+        return result;
+    }
+    catch (Exception error)
+        return ToolExecution(call.name, "Error: filesystem tool host failed: " ~ error.msg, true);
+}
 
 // ---------------------------------------------------------------------------
 // Built-in tool definitions advertised to the model. The parameter schemas
@@ -4328,49 +4482,6 @@ private bool isWorkspaceAncestor(string candidate, string workspace)
 /// Run `work` on a disposable daemon thread and wait at most `budget` for it,
 /// returning true when it finished in time.
 ///
-/// The recursive scan tools check their deadline between lines and directory
-/// entries, but a *single* filesystem call can block well past it: a directory
-/// or file on a hung network share, a named pipe or device passed as `path`, or
-/// a wedged handle. That call never returns to a deadline check, so the tool
-/// ran forever and its live row spun until the app was restarted. Bounding the
-/// whole scan on its own thread lets the tool always report a terminal result;
-/// a genuinely wedged worker is abandoned as a daemon rather than joined.
-private bool runWithDeadline(void delegate() work, Duration budget)
-{
-    final class Flag
-    {
-        Mutex mutex;
-        bool done;
-        this() { mutex = new Mutex(); }
-    }
-    auto flag = new Flag();
-    auto worker = new Thread(
-    {
-        scope (exit)
-        {
-            synchronized (flag.mutex) flag.done = true;
-        }
-        work();
-    });
-    worker.isDaemon = true;
-    try worker.start();
-    catch (Exception)
-    {
-        // No thread available: run inline, matching the old behaviour.
-        work();
-        return true;
-    }
-    const deadline = MonoTime.currTime + budget;
-    while (true)
-    {
-        bool done;
-        synchronized (flag.mutex) done = flag.done;
-        if (done) return true;
-        if (MonoTime.currTime >= deadline) return false;
-        Thread.sleep(msecs(10));
-    }
-}
-
 private ToolExecution runGrep(string args, string workspace,
     ToolCancellation cancellation = null)
 {
@@ -4672,18 +4783,7 @@ private ToolExecution runGrep(string args, string workspace,
             scanDirectory(root);
         }
     }
-    // The inner checks only see time between lines and entries. A single
-    // blocked filesystem syscall never reaches one, so bound the whole scan and
-    // report a terminal result instead of leaving the live row spinning. The
-    // extra grace lets the inner soft deadline (which returns partial hits)
-    // finish first in the ordinary case.
-    if (!runWithDeadline(&performScan, timeoutMs.msecs + seconds(5)))
-        return ToolExecution("grep",
-            "Stopped: the search did not finish within its " ~
-            to!string(timeoutMs) ~ " ms deadline; a filesystem read appears "
-            ~ "to be blocked, so it was abandoned instead of hanging the " ~
-            "turn. Narrow `path` or `include`, or choose a different " ~
-            "directory.", true);
+    performScan(); // the supervised process owns the hard outer deadline
     if (timedOut)
     {
         auto report = appender!string();
@@ -4896,6 +4996,12 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     {
         if (cancellation !is null && cancellation.cancelled())
             return ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
+        if (filesystemTool(call.name))
+        {
+            auto hosted = runFilesystemTool(call, workspace, cancellation);
+            hosted.elapsedMs = (MonoTime.currTime - started).total!"msecs";
+            return hosted;
+        }
         if (call.name == "write" || call.name == "edit" ||
             call.name == "apply_patch" || call.name == "copy" ||
             call.name == "move" || call.name == "rename" ||

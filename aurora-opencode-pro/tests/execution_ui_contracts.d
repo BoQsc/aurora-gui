@@ -141,6 +141,13 @@ int main()
     mkdirRecurse(journal);
     root.setInputForTesting("Storage failure must not start this request");
     root.sendForTesting();
+    const failureDeadline = MonoTime.currTime + 3.seconds;
+    while (!root.storageBlockedForTesting() && MonoTime.currTime < failureDeadline)
+    {
+        window.onNativeService();
+        Thread.sleep(5.msecs);
+    }
+    window.onNativeService();
     assert(root.storageBlockedForTesting() && !root.turnBusyForTesting());
     assert(root.lastAssistantErrorForTesting().indexOf("not started") >= 0);
     rmdir(journal);

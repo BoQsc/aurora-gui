@@ -1,7 +1,7 @@
 module auroraopencode.opencode_client;
 
 import auroraopencode.provideradapter : buildChatBody, chatMessageToJson, normalizeSystemMessages,
-    providerImageDataUrl = chatImageDataUrl;
+    WireProjectionCache, providerImageDataUrl = chatImageDataUrl;
 import auroraopencode.workerbudget : WorkerBudget, providerWorkerBudget;
 import auroraopencode.httptransport : AsyncHttpRequest;
 import auroraopencode.latency : RequestLatency, LatencyStage;
@@ -1166,9 +1166,10 @@ final class OpenCodeClient
             bool droppedReasoning;
             string body = buildChatBody(messages, tools, model, thinking,
                 requestBaseUrl, false, reasoningEffort, thinkingBudgetTokens,
-                llamaCppServer);
+                llamaCppServer, wireProjectionCache());
             _latency.mark(LatencyStage.serialized);
             _latency.wire(body.length, useWinHttp ? "winhttp" : "wininet");
+            logPayloadComponents(messages, tools, body.length, requestId);
             _decoder._streamReasoning = "";
             _decoder._streamContent = "";
             _streamRequestId = requestId;
@@ -1257,7 +1258,7 @@ final class OpenCodeClient
                         droppedReasoning ? false : thinking, requestBaseUrl,
                         replayReasoning, reasoningEffort,
                         droppedReasoning ? 0 : thinkingBudgetTokens,
-                        llamaCppServer);
+                        llamaCppServer, wireProjectionCache());
                 // Both transports retain this immutable body through send.
                 // A second full copy is especially costly for inline images.
                 auto bodyBytes = cast(const(ubyte)[]) body;
@@ -1274,6 +1275,19 @@ final class OpenCodeClient
                 DWORD retryStatus;
                 string retryNote;
                 string retryReason;
+                const attemptStarted = MonoTime.currTime;
+                scope (exit) if (http !is null)
+                {
+                    const timing = http.timing();
+                    long elapsed(long ticks) { return ticks < 0 ? -1 :
+                        cast(long) (cast(double) (ticks - attemptStarted.ticks) * 1_000_000 / MonoTime.ticksPerSecond); }
+                    logInfo("transport attempt: id=" ~ to!string(requestId) ~
+                        " attempt=" ~ to!string(attempt + 1) ~
+                        " sendCompletedUs=" ~ to!string(elapsed(timing.sent)) ~
+                        " headersAvailableUs=" ~ to!string(elapsed(timing.headers)) ~
+                        " protocol=" ~ to!string(timing.protocol) ~
+                        " bytes=" ~ to!string(body.length));
+                }
                 try
                 {
                     DWORD statusCode;
@@ -1292,6 +1306,7 @@ final class OpenCodeClient
                         const timing = http.timing();
                         if (timing.connected >= 0) _latency.mark(LatencyStage.connected, timing.connected);
                         if (timing.sent >= 0) _latency.mark(LatencyStage.uploaded, timing.sent);
+                        if (timing.headers >= 0) _latency.mark(LatencyStage.headers, timing.headers);
                         _latency.wire(body.length, "winhttp", timing.protocol);
                         synchronized (_mutex)
                         {
@@ -1985,6 +2000,32 @@ final class OpenCodeClient
             " approxWireBytes=" ~ to!string(wireBytes) ~
             (isVisionModel(model) ? " vision=yes" : " vision=no") ~
             " [" ~ baseUrl ~ "]");
+    }
+
+    private WireProjectionCache _wireProjection;
+    private WireProjectionCache wireProjectionCache()
+    {
+        if (_wireProjection is null) _wireProjection = new WireProjectionCache();
+        return _wireProjection;
+    }
+
+    private static void logPayloadComponents(const(ChatRequestMessage)[] messages,
+        const(OpenCodeToolDef)[] tools, size_t bytes, ulong requestId)
+    {
+        size_t text, reasoning, toolOutput, images, schemas, arguments;
+        foreach (message; messages)
+        {
+            if (message.role == "tool") toolOutput += message.content.length;
+            else text += message.content.length;
+            reasoning += message.reasoningContent.length;
+            foreach (image; message.images) images += image.base64Data.length;
+            foreach (call; message.toolCalls) arguments += call.arguments.length;
+        }
+        foreach (tool; tools) schemas += tool.parametersJson.length + tool.description.length;
+        logInfo("request payload: id=" ~ to!string(requestId) ~ " wireBytes=" ~ to!string(bytes) ~
+            " textBytes=" ~ to!string(text) ~ " reasoningBytes=" ~ to!string(reasoning) ~
+            " toolOutputBytes=" ~ to!string(toolOutput) ~ " imageBase64Bytes=" ~ to!string(images) ~
+            " toolSchemaBytes=" ~ to!string(schemas) ~ " argumentBytes=" ~ to!string(arguments));
     }
 
     /// Milliseconds elapsed since `start`, rounded down. Used for the wait

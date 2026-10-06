@@ -78,6 +78,8 @@ public final class TranscriptPresenter : VBox
     private int[] _rowHeights;
     private int _totalHeight;
     private int _measuredTop = int.min;
+    private bool _projecting;
+    private Widget[] _projectedRows;
     private enum size_t virtualThreshold = 400;
     private enum int overscan = 700;
     bool delegate() following;
@@ -87,16 +89,47 @@ public final class TranscriptPresenter : VBox
 
     void beginProjection()
     {
-        foreach (row; _virtualHidden.keys) row.setVisible(true);
-        _virtualHidden = null;
+        assert(!_projecting);
+        _projecting = true;
+        _projectedRows = null;
     }
+
+    protected override void addChild(Widget child)
+    {
+        if (_projecting) _projectedRows ~= child;
+        else super.addChild(child);
+    }
+
+    override void clearChildren()
+    {
+        if (_projecting) _projectedRows = null;
+        else super.clearChildren();
+    }
+
+    override Widget[] children() @safe pure nothrow @nogc
+    { return _projecting ? _projectedRows : super.children(); }
+    override const(Widget)[] children() const @safe pure nothrow @nogc
+    { return _projecting ? _projectedRows : super.children(); }
 
     void endProjection()
     {
+        assert(_projecting);
+        _projecting = false;
+        reconcileChildren(_projectedRows);
+        _projectedRows = null;
         Height[Widget] kept;
+        bool[Widget] hidden;
         foreach (row; children())
+        {
             if (auto height = row in _heights) kept[row] = *height;
+            if (row in _virtualHidden)
+            {
+                if (children().length < virtualThreshold) row.setVisible(true);
+                else hidden[row] = true;
+            }
+        }
         _heights = kept;
+        _virtualHidden = hidden;
     }
 
     private ScrollView viewport()

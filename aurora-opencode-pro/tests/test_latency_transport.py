@@ -51,6 +51,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
         if model == "hold-headers":
             time.sleep(2.5)
             return
+        if model == "delayed-headers":
+            time.sleep(0.4)
         if model == "retry" and attempt == 1:
             payload = b'{"error":{"message":"brief unavailable"}}'
             self.send_response(503)

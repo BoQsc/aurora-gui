@@ -9163,6 +9163,7 @@ public final class OpenCodeRoot : VBox
     private string _loadedRuntimeId;
     private ConversationRuntime _execution;
     private ConversationRepository _repository;
+    private ConversationRepository _snapshotRepository;
     private bool[string] _dirtyThreads;
     private bool _persistFailed;
     private bool _durabilityBlocked;
@@ -9283,6 +9284,7 @@ public final class OpenCodeRoot : VBox
     }
     private StableRowCache!(MessageBubble, BubbleVersion) _bubbleCache;
     private StableRowCache!(DeferredTranscriptRow, BubbleVersion) _deferredRows;
+    private StableRowCache!(TurnNest, BubbleVersion[]) _settledNests;
     private IntroOverlay _introOverlay;
     // Exact text the currently highlighted intro pill inserted at the front of
     // the composer, kept so pressing the pill again removes precisely that and
@@ -9773,7 +9775,7 @@ public final class OpenCodeRoot : VBox
             _client.closeSession();
         foreach (rt; _conversationRuntimes)
         {
-            rt.cancellation.cancel();
+            rt.stop();
             rt.client.closeSession();
             if (rt.titleClient !is null) rt.titleClient.closeSession();
             if (rt.compactionClient !is null) rt.compactionClient.closeSession();
@@ -9799,8 +9801,10 @@ public final class OpenCodeRoot : VBox
         }
         setLogDirectory(buildPath(opencodeStateDirectory(), "logs"));
         _repository = new ConversationRepository();
+        _snapshotRepository = new ConversationRepository();
         _runtime = new RepositoryRuntime(_repository, buildPath(opencodeStateDirectory(),
             "runtime-events.jsonl"));
+        (cast(RepositoryRuntime) _runtime).setWake(_window.serviceWake());
         phase("journal runtime");
         _settings = loadSettings();
         _execution = new ConversationRuntime(_settings.baseUrl, activeApiKey(_settings));
@@ -10468,6 +10472,7 @@ public final class OpenCodeRoot : VBox
         persistState();
         closeRuntimeClients();
         _repository.close();
+        _snapshotRepository.close();
     }
 
     /// Test-only: whether a rebuild has been requested and the window is about
@@ -12037,7 +12042,8 @@ public final class OpenCodeRoot : VBox
         event.itemId = itemId;
         event.itemKind = itemKind;
         event.payloadJson = payloadJson;
-        if (!_runtime.publish(event))
+        auto journal = cast(RepositoryRuntime) _runtime;
+        if (!(journal !is null ? journal.enqueue(event) : _runtime.publish(event)))
         {
             _durabilityBlocked = true;
             ++_storageFailureGeneration;
@@ -12512,16 +12518,14 @@ public final class OpenCodeRoot : VBox
         // A rebuild discards the column's children; detach the two reused
         // widgets first so a nested parent (a turn container) does not leave
         // them attached and reporting visible after they are dropped.
-        if (_activityRow !is null && _activityRow.parent() !is null)
-            _activityRow.parent().remove(_activityRow);
-        if (_streamBubble !is null && _streamBubble.parent() !is null)
-            _streamBubble.parent().remove(_streamBubble);
         _messageColumn.beginProjection();
         if (_bubbleCache is null) _bubbleCache = new StableRowCache!(MessageBubble, BubbleVersion)();
         _bubbleCache.begin(_current >= 0 ? _sessions[_current].id : "");
         if (_deferredRows is null) _deferredRows = new StableRowCache!(DeferredTranscriptRow, BubbleVersion)();
         _deferredRows.begin(_current >= 0 ? _sessions[_current].id : "");
-        scope (exit) { _bubbleCache.end(); _deferredRows.end(); _messageColumn.endProjection(); }
+        if (_settledNests is null) _settledNests = new StableRowCache!(TurnNest, BubbleVersion[])();
+        _settledNests.begin(_current >= 0 ? _sessions[_current].id : "");
+        scope (exit) { _bubbleCache.end(); _deferredRows.end(); _settledNests.end(); _messageColumn.endProjection(); }
         _messageColumn.clearChildren();
         // The live rows just dropped; rebuild the id->row lookup as the column
         // is rebuilt (buildLiveToolRow repopulates it).
@@ -12645,6 +12649,26 @@ public final class OpenCodeRoot : VBox
         foreach (ref o; owner) o = size_t.max;
         size_t[size_t] slotOfIndex;
         foreach (slot, index; path) slotOfIndex[index] = slot;
+        size_t[][string] resultSlotsByCallId;
+        foreach (childSlot, index; path)
+        {
+            const candidate = session.messages[index];
+            if (candidate.role == "tool" && candidate.toolCallId.length)
+                resultSlotsByCallId[candidate.toolCallId] ~= childSlot;
+        }
+        size_t nextResultSlot(string id, size_t after)
+        {
+            auto matches = id in resultSlotsByCallId;
+            if (matches is null) return size_t.max;
+            size_t lower, upper = matches.length;
+            while (lower < upper)
+            {
+                const middle = lower + (upper - lower) / 2;
+                if ((*matches)[middle] <= after) lower = middle + 1;
+                else upper = middle;
+            }
+            return lower < matches.length ? (*matches)[lower] : size_t.max;
+        }
         foreach (slot, index; path)
         {
             const message = session.messages[index];
@@ -12653,16 +12677,8 @@ public final class OpenCodeRoot : VBox
             foreach (call; message.toolCalls)
             {
                 if (call.id.length == 0) continue;
-                foreach (childSlot; slot + 1 .. path.length)
-                {
-                    const candidate = session.messages[path[childSlot]];
-                    if (candidate.role == "tool" &&
-                        candidate.toolCallId == call.id)
-                    {
-                        owner[childSlot] = slot;
-                        break;
-                    }
-                }
+                const childSlot = nextResultSlot(call.id, slot);
+                if (childSlot != size_t.max) owner[childSlot] = slot;
             }
         }
         // Map every user turn to its last prose assistant message and remember
@@ -12822,17 +12838,13 @@ public final class OpenCodeRoot : VBox
                 foreach (call; message.toolCalls)
                 {
                     if (call.id.length == 0) continue;
-                    foreach (childSlot; slot + 1 .. path.length)
+                    const childSlot = nextResultSlot(call.id, slot);
+                    if (childSlot != size_t.max)
                     {
                         if (owner[childSlot] != slot) continue;
-                        if (session.messages[path[childSlot]].toolCallId ==
-                            call.id)
-                        {
-                            childSlots ~= childSlot;
-                            childIndices ~= path[childSlot];
-                            childMessages ~= session.messages[path[childSlot]];
-                            break;
-                        }
+                        childSlots ~= childSlot;
+                        childIndices ~= path[childSlot];
+                        childMessages ~= session.messages[path[childSlot]];
                     }
                 }
                 const followsCompactAction = childSlots.length > 0 ||
@@ -12842,10 +12854,23 @@ public final class OpenCodeRoot : VBox
                 {
                     Insets nestPad;
                     nestPad.left = toolNestIndent;
-                    auto nest = new TurnNest(nestPad);
-                    addRoundToolRows(nest, message, childMessages, childIndices,
-                        slot == liveHostSlot, *session, latestAssistantIndex,
-                        versionPositions, versionTotals);
+                    BubbleVersion[] nestVersion;
+                    nestVersion ~= bubblePresentation(index, message,
+                        latestAssistantIndex, versionPositions, versionTotals, "");
+                    foreach (i, child; childMessages)
+                        nestVersion ~= bubblePresentation(childIndices[i], child,
+                            latestAssistantIndex, versionPositions, versionTotals, "");
+                    auto nest = slot == liveHostSlot ? null :
+                        _settledNests.find(message.id, nestVersion);
+                    if (nest is null)
+                    {
+                        nest = new TurnNest(nestPad);
+                        addRoundToolRows(nest, message, childMessages, childIndices,
+                            slot == liveHostSlot, *session, latestAssistantIndex,
+                            versionPositions, versionTotals);
+                        if (slot != liveHostSlot)
+                            _settledNests.remember(message.id, nestVersion, nest);
+                    }
                     if (slot == liveHostSlot)
                     {
                         if (activityRowWanted()) nest.add(_activityRow);
@@ -15705,8 +15730,12 @@ public final class OpenCodeRoot : VBox
         const revisionKey = buildNormalizedPath(workspace).toLower();
         if (!(revisionKey in _observedWorkspaceRevisions))
             _observedWorkspaceRevisions[revisionKey] = toolWorkspaceRevision(workspace);
-        scheduleToolBatch(_client, requestId, workerCalls, workspace,
-            _toolCancellation, changeContext);
+        auto receiver = _client;
+        auto cancellation = _toolCancellation;
+        if (!_execution.dispatchAfterCommit(cast(RepositoryRuntime) _runtime, requestId,
+            delegate() { scheduleToolBatch(receiver, requestId, workerCalls, workspace,
+                cancellation, changeContext); }))
+            failAssistantMessage("Tool intent could not be queued. No tools were started; retry after storage recovers.");
     }
 
     /// A stable signature for a batch of tool calls (name + arguments), used
@@ -18502,15 +18531,29 @@ public final class OpenCodeRoot : VBox
         _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
             activeApiKey(_settings));
         _client.setEventWake(_window.serviceWake());
-        const started = _client.startChatMessages(messages, tools, orchestratorModel,
-            session.thinking, requestId, reasoningControl.effort,
-            llamaCpp ? reasoningControl.budgetTokens : 0, llamaCpp, preparationStartedTicks);
-        if (started != ChatStartResult.accepted)
+        auto receiver = _client;
+        const requestThinking = session.thinking;
+        const requestBudget = llamaCpp ? reasoningControl.budgetTokens : 0;
+        const queued = _execution.dispatchAfterCommit(cast(RepositoryRuntime) _runtime,
+            requestId, delegate() {
+                const started = receiver.startChatMessages(messages, tools, orchestratorModel,
+                    requestThinking, requestId, reasoningControl.effort,
+                    requestBudget, llamaCpp, preparationStartedTicks);
+                if (started != ChatStartResult.accepted)
+                {
+                    OpenCodeEvent failure;
+                    failure.kind = OpenCodeEventKind.error;
+                    failure.requestId = requestId;
+                    failure.text = started == ChatStartResult.capacity
+                        ? "Provider workers are at capacity. Retry when stopped requests finish closing."
+                        : "Request could not start: " ~ to!string(started);
+                    receiver.pushLocalEvent(failure);
+                }
+            });
+        if (!queued)
         {
             _requestTokenKeyIds.remove(requestId);
-            failAssistantMessage(started == ChatStartResult.capacity
-                ? "Provider workers are at capacity. Stopped requests are still closing; retry when they finish."
-                : "Request could not start: " ~ to!string(started));
+            failAssistantMessage("Request could not be queued. Retry after conversation storage recovers.");
             _activeRequestId = 0;
             _activeRequestSession = -1;
             refreshBubbleActions();
@@ -22891,6 +22934,7 @@ public final class OpenCodeRoot : VBox
         // The barrier is queued behind any earlier snapshot/checkpoint. A
         // timed-out competing writer can no longer overwrite shutdown state.
         _repository.flush();
+        _snapshotRepository.flush();
         _stateDirty = false;
         // Fold the live composer into the active conversation first, so a prompt
         // typed but not sent is written with the same snapshot as the messages.
@@ -22903,7 +22947,7 @@ public final class OpenCodeRoot : VBox
             auto loaded = _threadLoaded.dup;
             const sequence = _runtime.latestSequence();
             const bytes = _runtime.journalSize();
-            _repository.commit(delegate() {
+            _snapshotRepository.commit(delegate() {
                 writeThreadStore(sessions, current, loaded);
                 writeFoldedMarker(opencodeStateDirectory(), sequence, bytes);
             });
@@ -22956,23 +23000,29 @@ public final class OpenCodeRoot : VBox
         _dirtyThreads = null;
         _stateDirty = false;
         auto accepted = _repository.submit(delegate() {
-            scope (exit) { synchronized (this) _persistWriteInFlight = false; }
-            try
-            {
-                // This job follows the queued checkpoints. Capture their
-                // committed high-water mark here, without a UI-thread barrier.
-                const sequence = _runtime.latestSequence();
-                const bytes = _runtime.journalSize();
-                writeThreadStore(sessions, currentIndex, loaded);
-                writeFoldedMarker(opencodeStateDirectory(), sequence, bytes);
-                synchronized (this)
-                    _persistCommittedFailureGeneration = failureGeneration;
-            }
-            catch (Throwable error)
-            {
-                synchronized (this) _persistFailed = true;
-                logError("persist sessions failed: " ~ error.msg);
-            }
+            // Fence the detached snapshot against preceding journal records,
+            // then transfer its expensive serialization/write to another owner.
+            // Large caches never occupy the journal's intent/effect queue.
+            const sequence = _runtime.latestSequence();
+            const bytes = _runtime.journalSize();
+            const snapshotAccepted = _snapshotRepository.submit(delegate() {
+                scope (exit) { synchronized (this) _persistWriteInFlight = false; }
+                try
+                {
+                    writeThreadStore(sessions, currentIndex, loaded);
+                    writeFoldedMarker(opencodeStateDirectory(), sequence, bytes);
+                    (cast(RepositoryRuntime) _runtime).acknowledgeSnapshot();
+                    synchronized (this)
+                        _persistCommittedFailureGeneration = failureGeneration;
+                }
+                catch (Throwable error)
+                {
+                    synchronized (this) _persistFailed = true;
+                    logError("persist sessions failed: " ~ error.msg);
+                }
+            });
+            if (!snapshotAccepted)
+                synchronized (this) { _persistWriteInFlight = false; _persistFailed = true; }
         });
         if (!accepted)
         {
@@ -24633,6 +24683,7 @@ public final class OpenCodeRoot : VBox
                 _checkpointFailureSeen = failure.revision;
                 _durabilityBlocked = true;
                 ++_storageFailureGeneration;
+                ++_storageFailureGeneration;
                 foreach (rt; _conversationRuntimes)
                     rt.partialCheckpointBytes = 0;
                 foreach (session; _sessions) _dirtyThreads[session.id] = true;
@@ -24643,7 +24694,8 @@ public final class OpenCodeRoot : VBox
         ulong recoveredGeneration;
         synchronized (this) recoveredGeneration = _persistCommittedFailureGeneration;
         if (_durabilityBlocked && recoveredGeneration == _storageFailureGeneration &&
-            _runtime.lastError().length == 0)
+            _runtime.lastError().length == 0 &&
+            !(cast(RepositoryRuntime) _runtime).effectsBlocked())
         {
             _durabilityBlocked = false;
             _runtimeErrorReported = false;
@@ -25388,7 +25440,7 @@ public final class OpenCodeRoot : VBox
     {
         _execution.partialCheckpointAt = MonoTime.currTime - msecs(3000);
     }
-    public void flushRepositoryForTesting() { _repository.flush(); }
+    public void flushRepositoryForTesting() { _repository.flush(); _snapshotRepository.flush(); }
 
     public void selectSessionForTesting(int index)
     {

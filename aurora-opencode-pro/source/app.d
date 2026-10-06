@@ -288,6 +288,10 @@ private Widget findById(Widget widget, string requestedId)
 
 int main(string[] args)
 {
+    // Tool hosts dispatch before GUI, settings, restore, or crash supervision.
+    import auroraopencode.tools : runFilesystemHelperMode;
+    const filesystemCode = runFilesystemHelperMode(args);
+    if (filesystemCode >= 0) return filesystemCode;
     // The rebuild agent is a detached copy of this binary (see shared/rebuild.d)
     // and is selected before anything else runs, so it never builds a window.
     import rebuild : rebuildHelperFlag, runRebuildHelperMode;

@@ -102,6 +102,8 @@ public final class RepositoryRuntime : AgentRuntime
     private DurableAgentRuntime _journal;
     private ulong _checkpointFailureRevision;
     private string _checkpointError;
+    private bool _effectsBlocked;
+    private void delegate() _wake;
     public struct CheckpointFailure { ulong revision; string message; }
     CheckpointFailure checkpointFailure() const
     {
@@ -119,15 +121,51 @@ public final class RepositoryRuntime : AgentRuntime
         _repository.commit(delegate() { success = _journal.publish(event); });
         return success;
     }
+    void setWake(void delegate() wake) { synchronized (this) _wake = wake; }
+    private void recordFailure(string error)
+    {
+        void delegate() wake;
+        synchronized (this)
+        {
+            ++_checkpointFailureRevision;
+            _checkpointError = error;
+            _effectsBlocked = true;
+            wake = _wake;
+        }
+        if (wake !is null) wake();
+    }
+    /// The UI transfers an immutable event and returns immediately. Later
+    /// effects enter this same ordered owner only after preceding intents.
+    bool enqueue(AgentRuntimeEvent event)
+    {
+        const accepted = _repository.submit(delegate() {
+            if (!_journal.publish(event)) recordFailure(_journal.lastError());
+        });
+        if (!accepted) recordFailure("Conversation journal queue is at capacity or closed.");
+        return accepted;
+    }
+    bool afterCommitted(void delegate() effect, void delegate(string) failed)
+    {
+        return _repository.submit(delegate() {
+            string error;
+            synchronized (this) if (_effectsBlocked) error = _checkpointError;
+            if (error.length) { failed(error); return; }
+            try effect();
+            catch (Throwable failure) { failed(failure.msg); }
+        });
+    }
+    /// Called only after a detached snapshot and its fold marker are written.
+    void acknowledgeSnapshot()
+    {
+        synchronized (this)
+            if (_journal.lastError().length == 0) _effectsBlocked = false;
+    }
+    bool effectsBlocked() { synchronized (this) return _effectsBlocked; }
     bool checkpoint(AgentRuntimeEvent event)
     {
         return _repository.submit(delegate() {
             if (!_journal.publish(event))
-                synchronized (this)
-                {
-                    ++_checkpointFailureRevision;
-                    _checkpointError = _journal.lastError();
-                }
+                recordFailure(_journal.lastError());
         });
     }
     AgentRuntimeEvent[] history()

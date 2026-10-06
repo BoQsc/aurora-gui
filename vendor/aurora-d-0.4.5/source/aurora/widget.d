@@ -302,7 +302,12 @@ abstract class Widget
     T add(T)(T child) if (is(T : Widget))
     {
         if (child is null) return child;
-        Widget baseChild = child;
+        addChild(child);
+        return child;
+    }
+
+    protected void addChild(Widget baseChild)
+    {
         if (baseChild._parent !is null)
             baseChild._parent.remove(baseChild);
         baseChild._parent = this;
@@ -312,7 +317,37 @@ abstract class Widget
             _host.invalidateComposition();
         else
             invalidate();
-        return child;
+    }
+
+    /// Reconcile painter order without detaching retained subtrees. Focus,
+    /// selection, host state, and measured row identity survive a projection.
+    bool reconcileChildren(Widget[] desired)
+    {
+        if (_children == desired) return false;
+        bool[Widget] retained;
+        foreach (child; desired)
+        {
+            assert(child !is null && child !in retained, "Duplicate projected child");
+            retained[child] = true;
+        }
+        foreach (child; _children)
+            if (child !in retained)
+            {
+                if (child._host !is null) child._host.detachSubtree(child);
+                child.attachHost(null);
+                child._parent = null;
+            }
+        foreach (child; desired)
+            if (child._parent !is this)
+            {
+                if (child._parent !is null) child._parent.remove(child);
+                child._parent = this;
+                child.attachHost(_host);
+            }
+        _children = desired.dup;
+        invalidate();
+        if (_host !is null) _host.invalidateComposition();
+        return true;
     }
 
     bool remove(Widget child)

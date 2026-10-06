@@ -147,7 +147,7 @@ class AsyncHttpRequest
     private bool cancelled, closed, rooted;
     private DWORD completed, error, count;
     private string body;
-    private long connectedTicks = -1, sentTicks = -1;
+    private long connectedTicks = -1, sentTicks = -1, headersTicks = -1;
     private uint negotiatedProtocol;
 
     this(string host, ushort port, string path, bool secure, bool direct)
@@ -207,7 +207,9 @@ class AsyncHttpRequest
                 case WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER:
                     owner.connectedTicks = MonoTime.currTime.ticks; break;
                 case WINHTTP_CALLBACK_STATUS_REQUEST_SENT:
-                    owner.sentTicks = MonoTime.currTime.ticks; break;
+                    // Legacy progress notification: not a reliable body-upload
+                    // boundary on current WinHTTP, particularly HTTP/2.
+                    break;
                 case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR:
                     owner.error = (cast(WINHTTP_ASYNC_RESULT*) info).dwError; break;
                 case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
@@ -217,7 +219,10 @@ class AsyncHttpRequest
                     owner.count = *cast(DWORD*) info;
                     owner.completed = status; break;
                 case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+                    if (owner.sentTicks < 0) owner.sentTicks = MonoTime.currTime.ticks;
+                    owner.completed = status; break;
                 case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+                    if (owner.headersTicks < 0) owner.headersTicks = MonoTime.currTime.ticks;
                     owner.completed = status; break;
                 case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
                     owner.closed = true;
@@ -301,8 +306,8 @@ class AsyncHttpRequest
         return result;
     }
 
-    struct Timing { long connected, sent; uint protocol; }
-    Timing timing() { synchronized (mutex) return Timing(connectedTicks, sentTicks, negotiatedProtocol); }
+    struct Timing { long connected, sent, headers; uint protocol; }
+    Timing timing() { synchronized (mutex) return Timing(connectedTicks, sentTicks, headersTicks, negotiatedProtocol); }
 
     void cancel()
     {

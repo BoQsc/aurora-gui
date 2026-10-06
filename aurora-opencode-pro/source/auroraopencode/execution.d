@@ -3,6 +3,7 @@ module auroraopencode.execution;
 import auroraopencode.core : OpenCodeToolCall, ChatImageAttachment;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.tools : ToolCancellation;
+import auroraopencode.repository : RepositoryRuntime;
 import core.time : MonoTime;
 
 public import auroraopencode.executionstate : RequestPhase;
@@ -30,6 +31,8 @@ public class ThreadEngine
     bool titlePending;
     int titleAttempts;
     ToolCancellation cancellation;
+    private ToolCancellation _effectCancellation;
+    private ulong _effectRequestId;
     OpenCodeEvent[] eventScratch;
     private ExecutionState _protocol;
     ref inout(ulong) activeRequestId() inout @property { return _protocol.requestId; }
@@ -139,6 +142,34 @@ public class ThreadEngine
         _protocol = reduceExecution(_protocol, ExecutionCommand(ExecutionCommandKind.stop)).state;
         turnCancelled = true;
         cancellation.cancel();
+        if (_effectCancellation !is null) _effectCancellation.cancel();
+    }
+
+    /// Effects own detached inputs. The repository acknowledges all earlier
+    /// intents before launching them; a local Stop revokes queued admissions
+    /// immediately, including effects that have not reached a worker yet.
+    bool dispatchAfterCommit(RepositoryRuntime journal, ulong requestId,
+        void delegate() effect)
+    {
+        if (_effectCancellation is null || _effectRequestId != requestId)
+        {
+            _effectCancellation = new ToolCancellation();
+            _effectRequestId = requestId;
+        }
+        auto admission = _effectCancellation;
+        auto receiver = client;
+        void fail(string error)
+        {
+            if (admission.cancelled()) return;
+            OpenCodeEvent event;
+            event.kind = OpenCodeEventKind.error;
+            event.requestId = requestId;
+            event.text = "Request was not started: " ~ error;
+            receiver.pushLocalEvent(event);
+        }
+        return journal.afterCommitted(delegate() {
+            if (!admission.cancelled()) effect();
+        }, &fail);
     }
 
     struct ResultAdmission { bool accepted; string arguments; }

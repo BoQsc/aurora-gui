@@ -41,6 +41,58 @@ import auroraopencode.core : ChatRequestMessage, OpenCodeToolDef,
     ChatImageAttachment, defaultReasoningEffortForModel,
     isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl;
 import std.json : JSONValue, JSONType, parseJSON;
+import std.array : appender;
+import std.conv : to;
+
+/// Per-client cache of immutable wire projections, bounded by retained input
+/// plus encoded output. Keys use string identity; entries retain those strings
+/// so allocation reuse cannot alias an older message. Arrays are detached.
+public final class WireProjectionCache
+{
+    private struct Entry { ChatRequestMessage input; string json; }
+    private Entry[string] _messages;
+    private size_t _bytes;
+    private ulong _hits, _misses;
+    private enum size_t maxBytes = 8 * 1024 * 1024;
+    private static string identity(string value)
+    {
+        return to!string(cast(size_t) value.ptr) ~ ":" ~ to!string(value.length) ~ ";";
+    }
+    string message(const ref ChatRequestMessage input, bool reasoning)
+    {
+        string key = reasoning ? "1;" : "0;";
+        foreach (value; [input.role, input.content, input.reasoningContent, input.toolCallId])
+            key ~= identity(value);
+        key ~= "calls;" ~ to!string(input.toolCalls.length) ~ ";";
+        foreach (call; input.toolCalls)
+            key ~= identity(call.id) ~ identity(call.name) ~ identity(call.arguments);
+        key ~= "images;" ~ to!string(input.images.length) ~ ";";
+        foreach (image; input.images)
+            key ~= identity(image.mimeType) ~ identity(image.base64Data);
+        if (auto entry = key in _messages) { ++_hits; return entry.json; }
+        ++_misses;
+        const json = chatMessageToJson(input, reasoning).toString();
+        size_t size = json.length + key.length + input.content.length + input.reasoningContent.length;
+        foreach (call; input.toolCalls) size += call.id.length + call.name.length + call.arguments.length;
+        foreach (image; input.images) size += image.base64Data.length;
+        if (size <= maxBytes / 2)
+        {
+            if (_messages.length >= 512 || _bytes + size > maxBytes) { _messages = null; _bytes = 0; }
+            ChatRequestMessage copy;
+            copy.role = input.role;
+            copy.content = input.content;
+            copy.reasoningContent = input.reasoningContent;
+            copy.toolCallId = input.toolCallId;
+            copy.toolCalls = input.toolCalls.dup;
+            copy.images = input.images.dup;
+            _messages[key] = Entry(copy, json);
+            _bytes += size;
+        }
+        return json;
+    }
+    struct Stats { ulong hits, misses; size_t bytes, entries; }
+    Stats stats() { return Stats(_hits, _misses, _bytes, _messages.length); }
+}
 
 public JSONValue chatMessageToJson(
     const ref ChatRequestMessage message, bool forceReasoningReplay = false)
@@ -186,16 +238,23 @@ public string buildChatBody(const(ChatRequestMessage)[] messages,
     const(OpenCodeToolDef)[] tools, string model, bool thinking,
     string baseUrl, bool forceReasoningReplay = false,
     string reasoningEffort = "", int thinkingBudgetTokens = 0,
-    bool llamaCppServer = false)
+    bool llamaCppServer = false, WireProjectionCache cache = null)
 {
     JSONValue root;
     root["model"] = model;
-    JSONValue messageList = JSONValue(string[].init);
     const(ChatRequestMessage)[] projected = llamaCppServer
         ? normalizeSystemMessages(messages, true) : messages;
+    auto messageList = appender!string();
+    messageList.put("[");
+    bool first = true;
     foreach (message; projected)
-        messageList.array ~= chatMessageToJson(message, forceReasoningReplay);
-    root["messages"] = messageList;
+    {
+        if (!first) messageList.put(",");
+        first = false;
+        messageList.put(cache is null ? chatMessageToJson(message, forceReasoningReplay).toString()
+            : cache.message(message, forceReasoningReplay));
+    }
+    messageList.put("]");
     if (tools.length > 0)
     {
         JSONValue toolList = JSONValue(string[].init);
@@ -247,6 +306,9 @@ public string buildChatBody(const(ChatRequestMessage)[] messages,
     else if (llamaCppServer || isLoopbackApiBaseUrl(baseUrl) ||
         isOpenCodeApiBaseUrl(baseUrl))
         root["reasoning_effort"] = "none";
-    return root.toString();
+    // Assemble already escaped message fragments once. Never replace strings
+    // inside arbitrary JSON, where a schema or user text could match a marker.
+    const options = root.toString();
+    return options[0 .. $ - 1] ~ ",\"messages\":" ~ messageList.data ~ "}";
 }
 
