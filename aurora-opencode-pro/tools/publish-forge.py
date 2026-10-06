@@ -52,6 +52,10 @@ def main() -> int:
         print("Forge publish skipped: executable missing.")
         return 0
 
+    if os.environ.get("FORGE_PUBLISH_SKIP") == "1":
+        print("Forge publish skipped for this local rebuild.")
+        return 0
+
     try:
         config = {}
         # CI supplies the credential through the environment; a local build

@@ -100,6 +100,14 @@ public final class RepositoryRuntime : AgentRuntime
 {
     private ConversationRepository _repository;
     private DurableAgentRuntime _journal;
+    private ulong _checkpointFailureRevision;
+    private string _checkpointError;
+    public struct CheckpointFailure { ulong revision; string message; }
+    CheckpointFailure checkpointFailure() const
+    {
+        synchronized (cast(Object) this)
+            return CheckpointFailure(_checkpointFailureRevision, _checkpointError);
+    }
     this(ConversationRepository repository, string path)
     {
         _repository = repository;
@@ -113,7 +121,14 @@ public final class RepositoryRuntime : AgentRuntime
     }
     bool checkpoint(AgentRuntimeEvent event)
     {
-        return _repository.submit(delegate() { _journal.publish(event); });
+        return _repository.submit(delegate() {
+            if (!_journal.publish(event))
+                synchronized (this)
+                {
+                    ++_checkpointFailureRevision;
+                    _checkpointError = _journal.lastError();
+                }
+        });
     }
     AgentRuntimeEvent[] history()
     {

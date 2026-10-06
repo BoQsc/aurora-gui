@@ -1281,7 +1281,92 @@ public ChangeRecord[] listChangeRecords(string workspace)
 
 private void writeSnapshotBlob(string path, const(ubyte)[] bytes)
 {
-    write(path, bytes);
+    auto file = File(path, "wb");
+    scope (exit) file.close();
+    file.rawWrite(bytes);
+    file.flush();
+}
+
+/// Persist the before-images before touching a native mutation's targets.
+/// A surviving manifest means physical completion is uncertain; it is never
+/// interpreted as permission to replay or undo the operation automatically.
+private string persistNativeMutationIntent(const OpenCodeToolCall call,
+    string workspace, const ChangeContext context, const FileSnapshot[] before)
+{
+    synchronized (_changeJournalMutex)
+    {
+        const directory = buildPath(changeWorkspaceDirectory(workspace), "pending");
+        mkdirRecurse(directory);
+        const identity = to!string(Clock.currTime.stdTime) ~ "-" ~ to!string(++_changeSequence);
+        JSONValue intent;
+        intent["id"] = identity;
+        intent["conversationId"] = context.conversationId;
+        intent["turnId"] = context.turnId;
+        intent["toolCallId"] = call.id;
+        intent["toolName"] = call.name;
+        intent["workspace"] = buildNormalizedPath(workspace);
+        intent["arguments"] = call.arguments;
+        JSONValue files = JSONValue(string[].init);
+        foreach (index, item; before)
+        {
+            JSONValue file;
+            file["path"] = item.path;
+            file["exists"] = item.exists;
+            file["directory"] = item.directory;
+            file["hash"] = snapshotHash(item.exists, item.directory, item.bytes);
+            if (item.exists && !item.directory)
+            {
+                const blob = buildPath(directory, identity ~ "-" ~ to!string(index) ~ ".before");
+                writeSnapshotBlob(blob, item.bytes);
+                file["blob"] = blob;
+            }
+            files.array ~= file;
+        }
+        intent["before"] = files;
+        const path = buildPath(directory, identity ~ ".json");
+        const temporary = path ~ ".tmp";
+        auto file = File(temporary, "wb");
+        file.write(intent.toString());
+        file.flush();
+        file.close();
+        rename(temporary, path);
+        return path;
+    }
+}
+
+private void retireNativeMutationIntent(string path)
+{
+    const intent = parseJSON(readText(path));
+    // The completed change journal owns its own before/after blobs now.
+    remove(path);
+    if (auto files = "before" in intent.object)
+        foreach (file; files.array)
+            if (auto blob = "blob" in file.object)
+                if (dirName(blob.str) == dirName(path) && exists(blob.str))
+                    remove(blob.str);
+}
+
+public JSONValue[] pendingNativeMutationIntents(string workspace)
+{
+    synchronized (_changeJournalMutex)
+    {
+        const directory = buildPath(changeWorkspaceDirectory(workspace), "pending");
+        if (!exists(directory)) return null;
+        JSONValue[] result;
+        foreach (entry; dirEntries(directory, "*.json", SpanMode.shallow))
+            if (entry.isFile)
+                try result ~= parseJSON(readText(entry.name));
+                catch (Exception) {}
+        return result;
+    }
+}
+
+/// The same preparation boundary exposed to crash-injection fixtures.
+public string prepareNativeMutationIntentForTesting(const OpenCodeToolCall call,
+    string workspace, const ChangeContext context)
+{
+    return persistNativeMutationIntent(call, workspace, context,
+        snapshotTargets(mutationTargetPaths(call, workspace)));
 }
 
 private void recordMutation(const OpenCodeToolCall call, string workspace,
@@ -1685,12 +1770,14 @@ private ToolExecution runProgramTool(string args, string workspace,
     if (background)
         return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
             "run");
+    int exitCode = int.min;
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
-        cancellation, observer);
+        cancellation, observer, &exitCode);
     auto execution = ToolExecution("run", truncateOutput(result[0]), result[1]);
     execution.verification.check = verificationCheck(program, argv);
     execution.verification.workspace = resolvedWorkdir;
-    execution.verification.passed = !result[1] && execution.verification.check.length > 0;
+    execution.verification.exitCode = exitCode;
+    execution.verification.passed = !result[1] && exitCode == 0 && execution.verification.check.length > 0;
     return execution;
 }
 
@@ -2544,7 +2631,7 @@ private string processOutputTail(string path, ulong length, size_t cap = 8192)
 
 private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     int timeoutMs, string toolName, ToolCancellation cancellation = null,
-    ToolOutputObserver observer = null)
+    ToolOutputObserver observer = null, int* actualExitCode = null)
 {
     import std.typecons : tuple;
     import core.atomic : atomicLoad;
@@ -2692,6 +2779,8 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         output = (output.length > 0 ? output ~ "\n" : "") ~
             "Process exited with code " ~ to!string(exitCode) ~ ".";
     if (output.length == 0) output = "(no output)";
+    if (actualExitCode !is null)
+        *actualExitCode = timedOut || cancelled ? int.min : exitCode;
     return tuple(output, timedOut || cancelled || captureFailed || exitCode != 0);
 }
 
@@ -4841,6 +4930,9 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
                         "Error: could not create the safety snapshot: " ~
                         error.msg, true);
             }
+            string pendingIntent;
+            if (changeContext.conversationId.length)
+                pendingIntent = persistNativeMutationIntent(call, workspace, changeContext, before);
             result = dispatchTool(call, workspace, cancellation, observer);
             if (!result.failed && hookConfig.hooks.length > 0)
                 runPostEditHooks(hookConfig.hooks, workspace, journalTargets,
@@ -4854,6 +4946,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
                         to!string(Clock.currTime.stdTime);
                     recordMutation(call, workspace, changeContext, before, after,
                         transactionId);
+                    if (pendingIntent.length) retireNativeMutationIntent(pendingIntent);
                 }
                 catch (Exception error)
                     result.output ~= "\nWarning: the change was made, but its " ~

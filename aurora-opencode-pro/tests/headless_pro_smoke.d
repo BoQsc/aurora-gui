@@ -6311,6 +6311,7 @@ int main(string[] args)
         root.setInputForTesting("Keep it GUI-first");
         root.sendForTesting();
         root.stopTurnClockForTesting();
+        root.projectTranscriptForTesting();
         assert(root.taskStepCountForTesting() == 2,
             "update_plan was not captured as durable checklist state");
         assert(root.queuedGuidanceCountForTesting() == 1,
@@ -6324,6 +6325,7 @@ int main(string[] args)
             root.queuedPromptBubbleTextForTesting(0));
         assert(paintProjection(root, driver), "a queued prompt bubble did not paint");
         root.queueFollowUpForTesting("Run one final review");
+        root.projectTranscriptForTesting();
         assert(root.queuedFollowUpCountForTesting() == 1 &&
             root.queuedPromptBubbleCountForTesting() == 2,
             "explicit follow-up queue was conflated with steering");
@@ -6336,6 +6338,7 @@ int main(string[] args)
             "task objective/checklist/queues did not survive snapshot reload");
         assert(root.consumeGuidanceForTesting(),
             "queued guidance was not injected at a safe boundary");
+        root.projectTranscriptForTesting();
         assert(root.queuedGuidanceCountForTesting() == 0,
             "consumed guidance remained queued");
         assert(root.queuedPromptBubbleCountForTesting() == 1,

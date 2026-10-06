@@ -5,7 +5,9 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeE
 import auroraopencode.tools : ToolCancellation;
 import core.time : MonoTime;
 
-public enum RequestPhase { idle, waiting, streaming, executingTools, stopped, failed, completed }
+public import auroraopencode.executionstate : RequestPhase;
+import auroraopencode.executionstate : ExecutionState, ExecutionCommand,
+    ExecutionCommandKind, reduceExecution;
 
 /// A conversation is the sole owner of its mutable execution state. No fields
 /// are copied through a shared root when another conversation is serviced.
@@ -29,7 +31,8 @@ public class ThreadEngine
     int titleAttempts;
     ToolCancellation cancellation;
     OpenCodeEvent[] eventScratch;
-    ulong activeRequestId;
+    private ExecutionState _protocol;
+    ref inout(ulong) activeRequestId() inout @property { return _protocol.requestId; }
     int activeRequestSession = -1;
     bool batchingToolResults;
     bool toolTranscriptDirty;
@@ -69,6 +72,7 @@ public class ThreadEngine
     int autoContinuePendingSession = -1;
     MonoTime autoContinueRetryAt;
     int autoContinueRetries;
+    int autoContinueStreak;
     int lastColdStartSeconds = -1;
     MonoTime turnStartedAt;
     string turnUserId;
@@ -93,8 +97,11 @@ public class ThreadEngine
     bool autoResending;
     int lastAutoResendSeconds = -1;
 
-    RequestPhase phase;
-    ulong transitionRevision;
+    RequestPhase phase() const @property { return _protocol.phase; }
+    ulong transitionRevision() const @property { return _protocol.revision; }
+    bool verificationRecorded;
+    ulong verifiedWorkspaceRevision;
+    string verifiedWorkspace;
     ulong partialCheckpointBytes;
     MonoTime partialCheckpointAt;
 
@@ -106,24 +113,69 @@ public class ThreadEngine
 
     void acceptRequest(ulong requestId)
     {
-        activeRequestId = requestId;
-        phase = RequestPhase.waiting;
-        ++transitionRevision;
+        _protocol = reduceExecution(_protocol,
+            ExecutionCommand(ExecutionCommandKind.accept, requestId)).state;
     }
 
     void observe(const ref OpenCodeEvent event)
     {
-        if (event.requestId && event.requestId != activeRequestId) return;
+        ExecutionCommand command;
+        command.requestId = event.requestId;
+        command.cancelled = event.cancelled;
         switch (event.kind)
         {
             case OpenCodeEventKind.chatBegin:
-            case OpenCodeEventKind.delta: phase = RequestPhase.streaming; break;
-            case OpenCodeEventKind.toolCalls: phase = RequestPhase.executingTools; break;
-            case OpenCodeEventKind.done: phase = event.cancelled ? RequestPhase.stopped : RequestPhase.completed; break;
-            case OpenCodeEventKind.error: phase = RequestPhase.failed; break;
+            case OpenCodeEventKind.delta: command.kind = ExecutionCommandKind.delta; break;
+            case OpenCodeEventKind.toolCalls: command.kind = ExecutionCommandKind.toolsRequested; break;
+            case OpenCodeEventKind.done: command.kind = ExecutionCommandKind.complete; break;
+            case OpenCodeEventKind.error: command.kind = ExecutionCommandKind.fail; break;
             default: return;
         }
-        ++transitionRevision;
+        _protocol = reduceExecution(_protocol, command).state;
+    }
+
+    void stop()
+    {
+        _protocol = reduceExecution(_protocol, ExecutionCommand(ExecutionCommandKind.stop)).state;
+        turnCancelled = true;
+        cancellation.cancel();
+    }
+
+    struct ResultAdmission { bool accepted; string arguments; }
+    ResultAdmission admitToolResult(string id)
+    {
+        if (!id.length || id in reportedToolCallIds) return ResultAdmission.init;
+        foreach (call; pendingToolCalls)
+            if (call.id == id)
+            {
+                reportedToolCallIds[id] = true;
+                return ResultAdmission(true, call.arguments);
+            }
+        return ResultAdmission.init;
+    }
+
+    void remapSessionInsertion(int index)
+    {
+        foreach (slot; [&activeRequestSession, &turnSessionIndex,
+            &autoResendSession, &autoContinuePendingSession])
+            if (*slot >= index) ++*slot;
+    }
+
+    void remapSessionRemoval(int index)
+    {
+        foreach (slot; [&activeRequestSession, &turnSessionIndex,
+            &autoResendSession, &autoContinuePendingSession])
+            if (*slot == index) *slot = -1;
+            else if (*slot > index) --*slot;
+    }
+
+    void close()
+    {
+        stop();
+        client.closeSession();
+        foreach (agent; agentClients) agent.closeSession();
+        if (compactionClient !is null) compactionClient.closeSession();
+        if (titleClient !is null) titleClient.closeSession();
     }
 
     bool busy()

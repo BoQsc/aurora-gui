@@ -2,6 +2,38 @@ module auroraopencode.transcriptpresenter;
 
 import aurora : VBox, Widget, ScrollView, Size, Rect, Insets, maxInt;
 
+/// A cheap transcript descriptor. Expensive text/markdown widgets are created
+/// only when this row enters the measured viewport, and retained while visible.
+public final class DeferredTranscriptRow : Widget
+{
+    private Widget delegate() _factory;
+    private Widget _row;
+    bool delegate(Widget) allowRelease;
+    long messageIndex = -1;
+    this(Widget delegate() factory) { _factory = factory; }
+    Widget materialized() { return _row; }
+    Widget ensureMaterialized()
+    {
+        if (_row is null) { _row = _factory(); add(_row); }
+        return _row;
+    }
+    void release()
+    {
+        if (_row is null || (allowRelease !is null && !allowRelease(_row))) return;
+        clearChildren();
+        _row = null;
+    }
+    protected override Size onMeasure(Size available)
+    {
+        ensureMaterialized();
+        return _row.measure(available);
+    }
+    protected override void onLayout()
+    {
+        if (_row !is null) _row.setBounds(Rect(0, 0, bounds().width, bounds().height));
+    }
+}
+
 /// Retain row instances by item identity and presentation revision. The caller
 /// supplies the revision key; this cache owns no conversation execution state.
 public final class StableRowCache(T, Version)
@@ -32,6 +64,7 @@ public final class StableRowCache(T, Version)
         foreach (id, entry; _entries) if (entry.used != _projection) expired ~= id;
         foreach (id; expired) _entries.remove(id);
     }
+    void forget(string id) { _entries.remove(id); }
 }
 
 /// Long materialized pages lay out only the viewport plus overscan. Offscreen
@@ -44,6 +77,7 @@ public final class TranscriptPresenter : VBox
     private bool[Widget] _virtualHidden;
     private int[] _rowHeights;
     private int _totalHeight;
+    private int _measuredTop = int.min;
     private enum size_t virtualThreshold = 400;
     private enum int overscan = 700;
     bool delegate() following;
@@ -81,7 +115,15 @@ public final class TranscriptPresenter : VBox
         const page = view !is null ? maxInt(1, view.bounds().height) : 700;
         const top = view !is null ? view.scrollY() : 0;
         const follow = following !is null && following();
-        const estimatedBottom = maxInt(_totalHeight, cast(int) children().length * 64);
+        _measuredTop = top;
+        int estimatedBottom = pad.top + pad.bottom;
+        foreach (row; children())
+        {
+            if (!row.visible() && row !in _virtualHidden) continue;
+            auto indexed = row in _heights;
+            const pixels = indexed is null ? 64 : indexed.pixels;
+            estimatedBottom += pixels + (pixels > 0 ? spacing() : 0);
+        }
         const lower = follow ? maxInt(0, estimatedBottom - page - overscan) : maxInt(0, top - overscan);
         const upper = follow ? int.max : top + page + overscan;
         _rowHeights.length = children().length;
@@ -123,6 +165,14 @@ public final class TranscriptPresenter : VBox
         const top = view !is null ? view.scrollY() : 0;
         const page = view !is null ? view.bounds().height : 700;
         const pad = padding();
+        // ScrollView does not invalidate a child's measure cache when its
+        // offset changes. Measure the newly exposed range before laying it out.
+        if (top != _measuredTop)
+        {
+            const before = _totalHeight;
+            onMeasure(Size(bounds().width, int.max));
+            if (before != _totalHeight) invalidate();
+        }
         int cursor = pad.top;
         foreach (i, row; children())
         {
@@ -133,6 +183,8 @@ public final class TranscriptPresenter : VBox
                 if (row in _virtualHidden) { row.setVisible(true); _virtualHidden.remove(row); }
             }
             else if (row.visible()) { row.setVisible(false); _virtualHidden[row] = true; }
+            if (!visible)
+                if (auto deferred = cast(DeferredTranscriptRow) row) deferred.release();
             row.setBounds(Rect(pad.left, cursor,
                 maxInt(0, bounds().width - pad.left - pad.right), height));
             cursor += height + (height > 0 ? spacing() : 0);

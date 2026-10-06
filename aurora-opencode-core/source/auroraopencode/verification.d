@@ -9,6 +9,7 @@ public struct VerificationEvidence
     string workspace;
     ulong revision;
     bool passed;
+    int exitCode = int.min;
 }
 
 /// Identify an executed checker, never words in arbitrary command text.

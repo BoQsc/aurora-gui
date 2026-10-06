@@ -2,6 +2,8 @@ module auroraopencode.opencode_client;
 
 import auroraopencode.provideradapter : buildChatBody, chatMessageToJson, normalizeSystemMessages,
     providerImageDataUrl = chatImageDataUrl;
+import auroraopencode.workerbudget : WorkerBudget, providerWorkerBudget;
+import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
 import core.thread : Thread;
@@ -26,64 +28,8 @@ import auroraopencode.core : ChatImageAttachment, ChatRequestMessage,
     isLoopbackApiBaseUrl, isOpenCodeApiBaseUrl, isVisionModel;
 import auroraopencode.logging : logError, logInfo;
 
-/** Kinds of events the client delivers to the UI thread. */
-enum ChatStartResult { accepted, busy, closed, failed }
-
-enum OpenCodeEventKind
-{
-    chatBegin,   // assistant reply started (text = "")
-    delta,       // streaming fragment (text = fragment, reasoning = kind)
-    usage,       // live usage update while streaming (token fields populated)
-    toolCallDelta, // assistant is generating tool arguments (toolCalls = partial)
-    toolCalls,   // assistant finished requesting tools (text = content, toolCalls set)
-    toolResult,  // a tool execution finished (text = output, toolName/toolCallId set)
-    done,        // assistant reply finished (text = full content)
-    error,       // request failed (text = message)
-    models,      // model list refreshed (modelIds = ids)
-    modelsError, // model discovery failed; must not fail an active chat
-}
-
-struct OpenCodeEvent
-{
-    OpenCodeEventKind kind;
-    string text;
-    bool reasoning;
-    string[] modelIds;
-    bool cancelled;
-    int promptTokens;
-    int completionTokens;
-    int totalTokens;
-    OpenCodeToolCall[] toolCalls;
-    string toolName;
-    string toolCallId;
-    bool toolFailed;
-    string verificationCheck;
-    string verificationWorkspace;
-    ulong verificationRevision;
-    bool verificationPassed;
-    // A bounded output snapshot from an executing tool, not a terminal result.
-    bool toolRunning;
-    int diffAdditions;
-    int diffDeletions;
-    string diffText;
-    long elapsedMs; // tool wall-clock duration in ms, carried to the UI
-    // A local image-view tool carries pixels out-of-band from its textual tool
-    // result. The UI inserts them only after all tool results in the batch.
-    ChatImageAttachment[] images;
-    // Opaque UI-supplied identity for routing late events. Zero is reserved for
-    // standalone parser tests and callers that do not need request isolation.
-    ulong requestId;
-    // Provider terminal reason (`stop`, `length`, `max_tokens`, ...). Kept
-    // separate from cancellation so the UI can offer a safe continuation.
-    string finishReason;
-    int[string] modelContextLimits;
-    bool llamaCppServer;
-    // Provider-reported prompt-cache accounting. DeepSeek reports explicit
-    // hit/miss tokens, OpenAI reports cached prompt details, and Anthropic-style
-    // gateways report cache reads/creation. Zero means unavailable or none.
-    int cachedPromptTokens;
-    int uncachedPromptTokens;
-}
+public import auroraopencode.events;
+import auroraopencode.providerstream : ProviderStreamDecoder;
 
 private struct HttpTarget
 {
@@ -477,6 +423,8 @@ private string userAgentFor(string baseUrl)
 final class OpenCodeClient
 {
     private Mutex _mutex;
+    private ProviderRetryPolicy _retryPolicy;
+    private WorkerBudget _workerBudget;
     private Condition _queueSpace;
     private Thread _consumerThread;
     private OpenCodeEvent[] _pending;
@@ -485,7 +433,7 @@ final class OpenCodeClient
     private enum size_t queueEventBudget = 1024;
     private bool _chatBusy;
     // True while the worker is paused between replays of a transient upstream
-    // failure. A 429 is replayed until the provider answers, which can take a
+    // failure. A 429 is replayed within the configured outage budget, which can take a
     // minute or more, so the UI reads this to say the provider is busy instead
     // of leaving a retrying request looking frozen.
     private bool _transientRetrying;
@@ -503,47 +451,25 @@ final class OpenCodeClient
     // routing header. The UI updates it when the active conversation changes;
     // the constructor value covers requests made before any session exists.
     private string _opencodeSession;
-    private string _streamReasoning;
-    private string _streamContent;
+    private ProviderStreamDecoder _decoder;
     private ulong _streamRequestId;
-    private OpenCodeToolCall[] _streamToolCalls;
-    // How many of `_streamToolCalls` already had a name announced to the UI, so
+    // How many of `_decoder._streamToolCalls` already had a name announced to the UI, so
     // a progress event fires once per new tool call (not on every argument
     // fragment, which would flood the UI thread while a file body streams).
-    private size_t _streamToolNamesPushed;
     // While a tool's arguments stream, the UI wants periodic progress so the
     // live `+N -M` counters grow as the file body arrives. Emitting one event
     // per fragment would flood the UI thread, so progress is throttled to at
-    // most once per `_toolProgressIntervalMs` and only when the arguments
+    // most once per `_decoder._toolProgressIntervalMs` and only when the arguments
     // actually changed.
-    private int _toolProgressIntervalMs = 120;
-    private MonoTime _lastToolProgressTime;
-    private size_t _streamToolArgBytes;
-    private bool _streamWantedTools;
-    private string _streamFinishReason;
-    private bool _streamDone;
-    private string _streamError;
     private bool _deferStreamEnd;
     private bool _hasStreamEnd;
     private OpenCodeEvent _streamEnd;
-    private int _lastPromptTokens;
-    private int _lastCompletionTokens;
-    private int _lastTotalTokens;
-    private int _lastCachedPromptTokens;
-    private int _lastUncachedPromptTokens;
     // True once the prompt-cache split for the current request has been logged,
     // so the wait log carries the cache verdict exactly once per request.
     private bool _waitCacheLogged;
     // Exact count returned by llama.cpp's tokenizer-only endpoint before the
     // matching completion is sent. The final streamed usage is still parsed
     // independently and can expose a server regression if the two diverge.
-    private int _preflightPromptTokens;
-    private bool _streamActive;
-    private int _lastPushedPrompt;
-    private int _lastPushedCompletion;
-    private int _lastPushedTotal;
-    private int _lastPushedCachedPrompt;
-    private int _lastPushedUncachedPrompt;
 
     // "Waiting for the model…" latency breakdown. The UI shows one opaque wait
     // between Send and the first token; that wait is really several stages with
@@ -561,9 +487,22 @@ final class OpenCodeClient
     // can attribute the first token to the wait that preceded it.
     private MonoTime _waitStart;
 
-    this(string baseUrl, string apiKey)
+    this(string baseUrl, string apiKey,
+        ProviderRetryPolicy retryPolicy = configuredProviderRetryPolicy(),
+        WorkerBudget workerBudget = null)
     {
+        _workerBudget = workerBudget !is null ? workerBudget : providerWorkerBudget();
+        _decoder = new ProviderStreamDecoder();
+        _decoder.emit = &pushStreamEvent;
+        _decoder.onFirstToken = &recordFirstStreamToken;
+        _decoder.onUsage = &logPromptCache;
+        _decoder.formatError = &formatHttpErrorDetail;
+        _decoder.onTokenizerMismatch = delegate(int preflight, int streamed) {
+            logError("local tokenizer count mismatch: preflight=" ~ to!string(preflight) ~
+                ", streamed=" ~ to!string(streamed) ~ " [" ~ _baseUrl ~ "]");
+        };
         _mutex = new Mutex();
+        _retryPolicy = retryPolicy;
         _queueSpace = new Condition(_mutex);
         _consumerThread = Thread.getThis();
         _baseUrl = baseUrl;
@@ -698,6 +637,11 @@ final class OpenCodeClient
             _mutex.unlock();
             return result;
         }
+        if (!_workerBudget.acquire())
+        {
+            _mutex.unlock();
+            return ChatStartResult.capacity;
+        }
         _chatBusy = true;
         _cancel = false;
         _chatHandle = null;
@@ -749,6 +693,7 @@ final class OpenCodeClient
         }
 
         auto worker = new Thread({
+            scope (exit) _workerBudget.release();
             runChatRequest(messageCopy, toolCopy, model, thinking, requestId,
                 reasoningEffort, thinkingBudgetTokens, llamaCppServer,
                 requestBaseUrl, requestApiKey, requestSession);
@@ -760,6 +705,7 @@ final class OpenCodeClient
         catch (Exception error)
         {
             synchronized (_mutex) _chatBusy = false;
+            _workerBudget.release();
             return ChatStartResult.failed;
         }
     }
@@ -788,6 +734,13 @@ final class OpenCodeClient
             _mutex.unlock();
             return;
         }
+        if (!_workerBudget.acquire())
+        {
+            _mutex.unlock();
+            pushEvent(OpenCodeEvent(OpenCodeEventKind.modelsError,
+                "Provider workers are at capacity; model refresh can be retried."));
+            return;
+        }
         _modelsBusy = true;
         _modelsHandle = null;
         const requestBaseUrl = _baseUrl;
@@ -795,10 +748,22 @@ final class OpenCodeClient
         const requestSession = _opencodeSession;
         _mutex.unlock();
 
-        auto worker = new Thread({ runModelsRequest(requestBaseUrl,
-            requestApiKey, requestSession); });
-        worker.isDaemon = true;
-        worker.start();
+        try
+        {
+            auto worker = new Thread({
+                scope (exit) _workerBudget.release();
+                runModelsRequest(requestBaseUrl, requestApiKey, requestSession);
+            });
+            worker.isDaemon = true;
+            worker.start();
+        }
+        catch (Exception error)
+        {
+            synchronized (_mutex) _modelsBusy = false;
+            _workerBudget.release();
+            pushEvent(OpenCodeEvent(OpenCodeEventKind.modelsError,
+                "Model refresh could not start: " ~ error.msg));
+        }
     }
 
     /** Release the shared session. Call once on shutdown. */
@@ -866,11 +831,27 @@ final class OpenCodeClient
                 {
                     size_t cut = maxBytes - bytes;
                     while (cut && (cast(ubyte) event.text[cut] & 0xc0) == 0x80) --cut;
-                    if (!cut) break;
+                    // A positive budget smaller than one UTF-8 code point
+                    // still makes progress by admitting that indivisible unit.
+                    if (!cut)
+                    {
+                        if (output.length) break;
+                        cut = 1;
+                        while (cut < event.text.length &&
+                            (cast(ubyte) event.text[cut] & 0xc0) == 0x80) ++cut;
+                    }
                     event.text = event.text[0 .. cut];
                     output ~= event;
-                    _pending[taken].text = _pending[taken].text[cut .. $];
-                    _pendingBytes -= cut;
+                    if (cut == _pending[taken].text.length)
+                    {
+                        _pendingBytes -= cost;
+                        ++taken;
+                    }
+                    else
+                    {
+                        _pending[taken].text = _pending[taken].text[cut .. $];
+                        _pendingBytes -= cut;
+                    }
                     break;
                 }
                 if (output.length && cost > maxBytes - bytes) break;
@@ -1129,7 +1110,7 @@ final class OpenCodeClient
             _streamEnd = OpenCodeEvent.init;
             _hasStreamEnd = false;
             _deferStreamEnd = false;
-            _streamActive = false;
+            _decoder._streamActive = false;
             finishWorker(true);
             // A terminal event is permission for the UI to send the next tool
             // round/follow-up. Release this worker before publishing it, or a
@@ -1151,28 +1132,28 @@ final class OpenCodeClient
             string body = buildChatBody(messages, tools, model, thinking,
                 requestBaseUrl, false, reasoningEffort, thinkingBudgetTokens,
                 llamaCppServer);
-            _streamReasoning = "";
-            _streamContent = "";
+            _decoder._streamReasoning = "";
+            _decoder._streamContent = "";
             _streamRequestId = requestId;
-            _streamToolCalls.length = 0;
-            _streamToolNamesPushed = 0;
-            _streamToolArgBytes = 0;
-            _lastToolProgressTime = MonoTime.currTime;
-            _streamWantedTools = false;
-            _streamFinishReason = "";
-            _streamDone = false;
-            _streamError = "";
-            _lastPromptTokens = 0;
-            _lastCompletionTokens = 0;
-            _lastTotalTokens = 0;
-            _lastCachedPromptTokens = 0;
-            _lastUncachedPromptTokens = 0;
-            _preflightPromptTokens = 0;
-            _lastPushedPrompt = -1;
-            _lastPushedCompletion = -1;
-            _lastPushedTotal = -1;
-            _lastPushedCachedPrompt = -1;
-            _lastPushedUncachedPrompt = -1;
+            _decoder._streamToolCalls.length = 0;
+            _decoder._streamToolNamesPushed = 0;
+            _decoder._streamToolArgBytes = 0;
+            _decoder._lastToolProgressTime = MonoTime.currTime;
+            _decoder._streamWantedTools = false;
+            _decoder._streamFinishReason = "";
+            _decoder._streamDone = false;
+            _decoder._streamError = "";
+            _decoder._lastPromptTokens = 0;
+            _decoder._lastCompletionTokens = 0;
+            _decoder._lastTotalTokens = 0;
+            _decoder._lastCachedPromptTokens = 0;
+            _decoder._lastUncachedPromptTokens = 0;
+            _decoder._preflightPromptTokens = 0;
+            _decoder._lastPushedPrompt = -1;
+            _decoder._lastPushedCompletion = -1;
+            _decoder._lastPushedTotal = -1;
+            _decoder._lastPushedCachedPrompt = -1;
+            _decoder._lastPushedUncachedPrompt = -1;
             // Fresh wait breakdown for this request, plus the request size, so
             // the log can separate "big body / slow upload" from "fast upload,
             // slow provider".
@@ -1205,32 +1186,30 @@ final class OpenCodeClient
             // authoritative count.
             if (llamaCppServer)
             {
-                _preflightPromptTokens = countChatInputTokens(session, body,
+                _decoder._preflightPromptTokens = countChatInputTokens(session, body,
                     requestBaseUrl, requestApiKey);
-                if (_preflightPromptTokens > 0)
+                if (_decoder._preflightPromptTokens > 0)
                 {
-                    _lastPromptTokens = _preflightPromptTokens;
-                    _lastTotalTokens = _preflightPromptTokens;
+                    _decoder._lastPromptTokens = _decoder._preflightPromptTokens;
+                    _decoder._lastTotalTokens = _decoder._preflightPromptTokens;
                     OpenCodeEvent usage;
                     usage.kind = OpenCodeEventKind.usage;
-                    usage.promptTokens = _preflightPromptTokens;
-                    usage.totalTokens = _preflightPromptTokens;
+                    usage.promptTokens = _decoder._preflightPromptTokens;
+                    usage.totalTokens = _decoder._preflightPromptTokens;
                     pushStreamEvent(usage);
                 }
                 if (shuttingDown())
                 {
                     cancelled = true;
                     pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
-                        "", false, null, true, _lastPromptTokens, 0,
-                        _lastTotalTokens));
+                        "", false, null, true, _decoder._lastPromptTokens, 0,
+                        _decoder._lastTotalTokens));
                     return;
                 }
             }
             uint attempt;
-            // Deliberately no attempt ceiling: a 429 is replayed until the
-            // provider answers (see mayRetryTransientStatus). The only way out
-            // other than success or a fatal error is the backoff's shutdown
-            // poll, so Stop and a closing window both end the wait immediately.
+            // Provider outage recovery has a separate finite time budget.
+            // Useful streaming and tool work are not subject to this budget.
             while (true)
             {
                 if (replayReasoning || droppedReasoning)
@@ -1299,8 +1278,9 @@ final class OpenCodeClient
                         // words instead of retrying every few seconds for hours.
                         const quotaWall = statusCode == 429 &&
                             isPersistentRateLimit(detail);
-                        if (!quotaWall &&
-                            mayRetryTransientStatus(statusCode, attempt + 1))
+                        const recovery = _retryPolicy.decide(statusCode,
+                            attempt + 1, MonoTime.currTime - waitStart, quotaWall);
+                        if (recovery.retry)
                         {
                             retry = true;
                             retryStatus = statusCode;
@@ -1354,12 +1334,12 @@ final class OpenCodeClient
                         // provider has answered at all; from here on the wait is
                         // decoding tokens, not the provider.
                         pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.chatBegin));
-                        _streamActive = true;
+                        _decoder._streamActive = true;
 
                         ubyte[8192] buffer;
                         string lineBuffer;
-                        while (!shuttingDown() && !_streamDone &&
-                            _streamError.length == 0)
+                        while (!shuttingDown() && !_decoder._streamDone &&
+                            _decoder._streamError.length == 0)
                         {
                             DWORD readBytes;
                             // A full-size synchronous read can wait to fill the
@@ -1448,8 +1428,8 @@ final class OpenCodeClient
 
             if (cancelled)
                 pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
-                    _streamContent, false, null, true, _lastPromptTokens,
-                    _lastCompletionTokens, _lastTotalTokens));
+                    _decoder._streamContent, false, null, true, _decoder._lastPromptTokens,
+                    _decoder._lastCompletionTokens, _decoder._lastTotalTokens));
             else
                 pushStreamEnd();
         }
@@ -1463,8 +1443,8 @@ final class OpenCodeClient
             _mutex.unlock();
             if (cancelNow)
                 pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.done,
-                    _streamContent, false, null, true, _lastPromptTokens,
-                    _lastCompletionTokens, _lastTotalTokens));
+                    _decoder._streamContent, false, null, true, _decoder._lastPromptTokens,
+                    _decoder._lastCompletionTokens, _decoder._lastTotalTokens));
             else
                 pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
         }
@@ -1472,39 +1452,7 @@ final class OpenCodeClient
 
     /// Emit the terminal event for a stream that was not cancelled: a
     /// toolCalls event when the model requested tools, otherwise done.
-    private void pushStreamEnd()
-    {
-        if (_streamError.length > 0 ||
-            (!_streamDone && _streamFinishReason.length == 0))
-        {
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.error,
-                _streamError.length > 0 ? _streamError :
-                    "The connection closed before the reply finished. " ~
-                    "Your partial reply has been preserved; try again."));
-            return;
-        }
-        // Never execute tool arguments cut off by the output limit.
-        if (_streamWantedTools && (_streamFinishReason == "length" ||
-            _streamFinishReason == "max_tokens"))
-        {
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.error,
-                "The model reached its output limit while preparing tools. " ~
-                "No incomplete tool calls were executed. Try a smaller request."));
-            return;
-        }
-        OpenCodeEvent event;
-        if (_streamWantedTools)
-            event = OpenCodeEvent(OpenCodeEventKind.toolCalls,
-                _streamContent, false, null, false, _lastPromptTokens,
-                _lastCompletionTokens, _lastTotalTokens,
-                _streamToolCalls.dup);
-        else
-            event = OpenCodeEvent(OpenCodeEventKind.done,
-                _streamContent, false, null, false, _lastPromptTokens,
-                _lastCompletionTokens, _lastTotalTokens);
-        event.finishReason = _streamFinishReason;
-        pushStreamEvent(event);
-    }
+    private void pushStreamEnd() { _decoder.finish(); }
 
     // -- test hooks --------------------------------------------------------
 
@@ -1538,27 +1486,27 @@ final class OpenCodeClient
         _waitStart = MonoTime.currTime;
         _waitFirstTokenMs = -1;
         _waitCacheLogged = false;
-        _streamActive = true;
-        _streamReasoning = "";
-        _streamContent = "";
-        _streamToolCalls.length = 0;
-        _streamToolNamesPushed = 0;
-        _streamToolArgBytes = 0;
-        _lastToolProgressTime = MonoTime.currTime;
-        _streamWantedTools = false;
-        _streamFinishReason = "";
-        _streamDone = false;
-        _streamError = "";
-        _lastPromptTokens = 0;
-        _lastCompletionTokens = 0;
-        _lastTotalTokens = 0;
-        _lastCachedPromptTokens = 0;
-        _lastUncachedPromptTokens = 0;
-        _lastPushedPrompt = -1;
-        _lastPushedCompletion = -1;
-        _lastPushedTotal = -1;
-        _lastPushedCachedPrompt = -1;
-        _lastPushedUncachedPrompt = -1;
+        _decoder._streamActive = true;
+        _decoder._streamReasoning = "";
+        _decoder._streamContent = "";
+        _decoder._streamToolCalls.length = 0;
+        _decoder._streamToolNamesPushed = 0;
+        _decoder._streamToolArgBytes = 0;
+        _decoder._lastToolProgressTime = MonoTime.currTime;
+        _decoder._streamWantedTools = false;
+        _decoder._streamFinishReason = "";
+        _decoder._streamDone = false;
+        _decoder._streamError = "";
+        _decoder._lastPromptTokens = 0;
+        _decoder._lastCompletionTokens = 0;
+        _decoder._lastTotalTokens = 0;
+        _decoder._lastCachedPromptTokens = 0;
+        _decoder._lastUncachedPromptTokens = 0;
+        _decoder._lastPushedPrompt = -1;
+        _decoder._lastPushedCompletion = -1;
+        _decoder._lastPushedTotal = -1;
+        _decoder._lastPushedCachedPrompt = -1;
+        _decoder._lastPushedUncachedPrompt = -1;
     }
 
     /// Test-only: how many ms must pass between throttled tool-progress
@@ -1566,7 +1514,7 @@ final class OpenCodeClient
     /// the live counters without waiting on a clock.
     public void setToolProgressIntervalMsForTesting(int value)
     {
-        _toolProgressIntervalMs = value;
+        _decoder._toolProgressIntervalMs = value;
     }
 
     /// Test-only: build the request JSON body without sending anything.
@@ -2079,365 +2027,24 @@ final class OpenCodeClient
         client.closeSession();
     }
 
-    private string dispatchSseLines(string buffer)
-    {
-        size_t start;
-        while (true)
-        {
-            const newline = indexOf(buffer, '\n', start);
-            if (newline < 0) break;
-            const line = buffer[start .. cast(size_t) newline];
-            start = cast(size_t) newline + 1;
-            processSseLine(line);
-        }
-        return start >= buffer.length ? "" : buffer[start .. $];
-    }
-
-    /// Allocation-free test for the `[DONE]` sentinel, tolerating surrounding
-    /// ASCII spaces/tabs (some gateways send `data: [DONE]`). `strip()` copied
-    /// the payload on every non-empty chunk; this runs on the hottest path.
-    private static bool isDonePayload(string payload)
-    {
-        size_t start;
-        while (start < payload.length &&
-            (payload[start] == ' ' || payload[start] == '\t')) ++start;
-        size_t end = payload.length;
-        while (end > start &&
-            (payload[end - 1] == ' ' || payload[end - 1] == '\t')) --end;
-        const done = "[DONE]";
-        if (end - start != done.length) return false;
-        foreach (i; 0 .. done.length)
-            if (payload[start + i] != done[i]) return false;
-        return true;
-    }
-
-    private void processSseLine(string line)
-    {
-        if (_streamDone || _streamError.length > 0) return;
-        if (line.length > 0 && line[$ - 1] == '\r')
-            line = line[0 .. $ - 1];
-        if (!startsWithAscii(line, "data:")) return;
-        const payload = line[5 .. $];
-        if (payload.length == 0) return;
-        if (isDonePayload(payload))
-        {
-            _streamDone = true;
-            return;
-        }
-
-        JSONValue value;
-        try value = parseJSON(payload);
-        catch (Exception)
-        {
-            _streamError = "The provider sent an invalid streaming response. " ~
-                "Your partial reply has been preserved; try again.";
-            return;
-        }
-        if (value.type != JSONType.object) return;
-
-        if (auto error = "error" in value.object)
-        {
-            if (error.type != JSONType.null_)
-            {
-                _streamError = "Provider error: " ~ formatHttpErrorDetail(payload);
-                return;
-            }
-        }
-        captureUsage(value);
-
-        auto choices = "choices" in value.object;
-        if (choices is null || choices.type != JSONType.array ||
-            choices.array.length == 0)
-        {
-            // Some providers deliver the usage summary in a chunk with empty
-            // choices just before [DONE].
-            return;
-        }
-        const choice = choices.array[0];
-        if (choice.type != JSONType.object) return;
-
-        // Some providers signal tool-call completion through the chunk's
-        // finish_reason before [DONE]; others only through the delta shape.
-        if (auto found = "finish_reason" in choice.object)
-            if (found.type == JSONType.string)
-            {
-                _streamFinishReason = found.str;
-                if (found.str == "tool_calls") _streamWantedTools = true;
-            }
-
-        auto delta = "delta" in choice.object;
-        if (delta is null || delta.type != JSONType.object) return;
-
-        if (auto found = "tool_calls" in delta.object)
-        {
-            if (found.type == JSONType.array)
-            {
-                foreach (entry; found.array)
-                {
-                    if (entry.type != JSONType.object) continue;
-                    int index = 0;
-                    if (auto field = "index" in entry.object)
-                        if (field.type == JSONType.integer)
-                        {
-                            if (field.integer < 0 || field.integer >= 128)
-                            {
-                                _streamError = "The provider sent an invalid tool-call index.";
-                                return;
-                            }
-                            index = cast(int) field.integer;
-                        }
-                    while (_streamToolCalls.length <= cast(size_t) index)
-                        _streamToolCalls ~= OpenCodeToolCall.init;
-                    if (auto field = "id" in entry.object)
-                        if (field.type == JSONType.string &&
-                            field.str.length > 0)
-                            _streamToolCalls[cast(size_t) index].id =
-                                field.str;
-                    auto funcEntry = "function" in entry.object;
-                    if (funcEntry !is null && funcEntry.type == JSONType.object)
-                    {
-                        if (auto name = "name" in funcEntry.object)
-                            if (name.type == JSONType.string &&
-                                name.str.length > 0)
-                                _streamToolCalls[cast(size_t) index].name =
-                                    name.str;
-                        if (auto args = "arguments" in funcEntry.object)
-                            if (args.type == JSONType.string &&
-                                args.str.length > 0)
-                                _streamToolCalls[cast(size_t) index].arguments ~=
-                                    args.str;
-                    }
-                }
-                _streamWantedTools = true;
-                if (_streamToolCalls.length > 0)
-                    recordFirstStreamToken();
-                // Announce each tool as soon as its name is known so the UI can
-                // show "Writing foo.html ..." while the arguments (the whole file
-                // body) are still streaming. Without this the reply looks
-                // stalled between the assistant's text and the tool starting.
-                // While the arguments keep growing, push throttled updates too so
-                // the live `+N -M` counters advance with the streamed file body.
-                size_t named;
-                size_t argBytes;
-                foreach (call; _streamToolCalls)
-                {
-                    if (call.name.length > 0) ++named;
-                    argBytes += call.arguments.length;
-                }
-                const newName = named > _streamToolNamesPushed;
-                const argsChanged = argBytes != _streamToolArgBytes;
-                const due = (MonoTime.currTime -
-                    _lastToolProgressTime).total!"msecs" >= _toolProgressIntervalMs;
-                if (named > 0 && (newName || (argsChanged && due)))
-                {
-                    _streamToolNamesPushed = named;
-                    _streamToolArgBytes = argBytes;
-                    _lastToolProgressTime = MonoTime.currTime;
-                    pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.toolCallDelta,
-                        "", false, null, false, 0, 0, 0,
-                        _streamToolCalls.dup));
-                }
-            }
-        }
-
-        // A single chunk can carry BOTH the chain of thought and the start of
-        // the answer: gateways that stream the final reasoning record attach
-        // the answer's first token to it. Treating reasoning and content as one
-        // mutually exclusive `fragment` silently dropped that `content`, so the
-        // reply's first letter or word vanished ("I've made…" arrived as
-        // "'ve made…"). Extract the two channels independently and emit each.
-        string reasoningFragment;
-        if (auto found = "reasoning_content" in delta.object)
-        {
-            if (found.type == JSONType.string && found.str.length > 0)
-                reasoningFragment = found.str;
-        }
-        if (reasoningFragment.length == 0)
-        {
-            // CommandCode/DeepSeek-style gateways stream the chain of thought
-            // as `reasoning` (a plain string), usually next to a parallel
-            // `reasoning_details` array. Recognizing only `reasoning_content`
-            // silently dropped every reasoning chunk, so the app showed
-            // nothing (not even the cold-start countdown resetting) for the
-            // whole reasoning phase — often a minute or more on coding tasks.
-            if (auto found = "reasoning" in delta.object)
-            {
-                if (found.type == JSONType.string && found.str.length > 0)
-                    reasoningFragment = found.str;
-            }
-        }
-        if (reasoningFragment.length == 0)
-        {
-            if (auto details = "reasoning_details" in delta.object)
-            {
-                if (details.type == JSONType.array)
-                {
-                    foreach (entry; details.array)
-                    {
-                        if (entry.type != JSONType.object) continue;
-                        if (auto text = "text" in entry.object)
-                            if (text.type == JSONType.string)
-                                reasoningFragment ~= text.str;
-                    }
-                }
-            }
-        }
-
-        string contentFragment;
-        if (auto found = "content" in delta.object)
-        {
-            if (found.type == JSONType.string && found.str.length > 0)
-                contentFragment = found.str;
-        }
-
-        if (reasoningFragment.length == 0 && contentFragment.length == 0) return;
-        // The first token of any kind ends the opaque "Waiting for the model…"
-        // phase; record it once and log the full breakdown so the wait can be
-        // attributed (upload vs provider) instead of guessed at.
-        recordFirstStreamToken();
-        if (reasoningFragment.length > 0)
-        {
-            _streamReasoning ~= reasoningFragment;
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.delta,
-                reasoningFragment, true));
-        }
-        if (contentFragment.length > 0)
-        {
-            _streamContent ~= contentFragment;
-            pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.delta,
-                contentFragment, false));
-        }
-    }
-
-    private void captureUsage(const JSONValue value)
-    {
-        if (value.type != JSONType.object) return;
-        auto usage = "usage" in value.object;
-        // Responses-style streams nest the final usage object under response;
-        // Anthropic-compatible gateways use input_tokens/output_tokens.
-        if ((usage is null || usage.type != JSONType.object))
-        {
-            if (auto response = "response" in value.object)
-                if (response.type == JSONType.object)
-                    usage = "usage" in response.object;
-        }
-        if (usage is null || usage.type != JSONType.object) return;
-        auto prompt = "prompt_tokens" in usage.object;
-        const promptIsAnthropicInput = prompt is null;
-        if (prompt is null) prompt = "input_tokens" in usage.object;
-        if (prompt !is null && prompt.type == JSONType.integer)
-            _lastPromptTokens = cast(int) prompt.integer;
-        if (_preflightPromptTokens > 0 && _lastPromptTokens > 0 &&
-            _preflightPromptTokens != _lastPromptTokens)
-        {
-            logError("local tokenizer count mismatch: preflight=" ~
-                to!string(_preflightPromptTokens) ~ ", streamed=" ~
-                to!string(_lastPromptTokens) ~ " [" ~ _baseUrl ~ "]");
-            // Log once even when a provider repeats usage in several chunks.
-            _preflightPromptTokens = 0;
-        }
-        auto completion = "completion_tokens" in usage.object;
-        if (completion is null) completion = "output_tokens" in usage.object;
-        if (completion !is null && completion.type == JSONType.integer)
-            _lastCompletionTokens = cast(int) completion.integer;
-        if (auto field = "total_tokens" in usage.object)
-            if (field.type == JSONType.integer)
-                _lastTotalTokens = cast(int) field.integer;
-
-        // DeepSeek's disk cache exposes direct hit/miss counters.
-        if (auto field = "prompt_cache_hit_tokens" in usage.object)
-            if (field.type == JSONType.integer)
-            {
-                _lastCachedPromptTokens = cast(int) field.integer;
-            }
-        if (auto field = "prompt_cache_miss_tokens" in usage.object)
-            if (field.type == JSONType.integer)
-            {
-                _lastUncachedPromptTokens = cast(int) field.integer;
-            }
-
-        // OpenAI nests cached input under prompt_tokens_details. Derive the
-        // uncached portion from the authoritative prompt total.
-        if (auto details = "prompt_tokens_details" in usage.object)
-            if (details.type == JSONType.object)
-                if (auto field = "cached_tokens" in details.object)
-                    if (field.type == JSONType.integer)
-                    {
-                        _lastCachedPromptTokens = cast(int) field.integer;
-                        _lastUncachedPromptTokens = _lastPromptTokens >
-                            _lastCachedPromptTokens
-                            ? _lastPromptTokens - _lastCachedPromptTokens : 0;
-                    }
-
-        // Anthropic usage separates ordinary input, cache reads, and cache
-        // creation. Count cache creation as uncached work and include all three
-        // in prompt occupancy; `input_tokens` alone otherwise under-reports it.
-        int cacheRead;
-        int cacheCreation;
-        bool sawAnthropicCache;
-        if (auto field = "cache_read_input_tokens" in usage.object)
-            if (field.type == JSONType.integer)
-            {
-                cacheRead = cast(int) field.integer;
-                sawAnthropicCache = true;
-            }
-        if (auto field = "cache_creation_input_tokens" in usage.object)
-            if (field.type == JSONType.integer)
-            {
-                cacheCreation = cast(int) field.integer;
-                sawAnthropicCache = true;
-            }
-        if (sawAnthropicCache)
-        {
-            _lastCachedPromptTokens = cacheRead;
-            _lastUncachedPromptTokens = _lastPromptTokens + cacheCreation;
-            if (promptIsAnthropicInput)
-                _lastPromptTokens += cacheRead + cacheCreation;
-        }
-        if (_lastTotalTokens <= 0 &&
-            (_lastPromptTokens > 0 || _lastCompletionTokens > 0))
-            _lastTotalTokens = _lastPromptTokens + _lastCompletionTokens;
-        // Mirror the real opencode: surface exact provider usage live so the
-        // UI can meter context before the stream ends when the provider sends
-        // usage in intermediate chunks (many only send it in the final one).
-        if (_streamActive &&
-            (_lastPromptTokens != _lastPushedPrompt ||
-                _lastCompletionTokens != _lastPushedCompletion ||
-                _lastTotalTokens != _lastPushedTotal ||
-                _lastCachedPromptTokens != _lastPushedCachedPrompt ||
-                _lastUncachedPromptTokens != _lastPushedUncachedPrompt))
-        {
-            _lastPushedPrompt = _lastPromptTokens;
-            _lastPushedCompletion = _lastCompletionTokens;
-            _lastPushedTotal = _lastTotalTokens;
-            _lastPushedCachedPrompt = _lastCachedPromptTokens;
-            _lastPushedUncachedPrompt = _lastUncachedPromptTokens;
-            auto event = OpenCodeEvent(OpenCodeEventKind.usage, "", false, null,
-                false, _lastPromptTokens, _lastCompletionTokens,
-                _lastTotalTokens);
-            event.cachedPromptTokens = _lastCachedPromptTokens;
-            event.uncachedPromptTokens = _lastUncachedPromptTokens;
-            pushStreamEvent(event);
-        }
-
-        logPromptCache();
-    }
+    private string dispatchSseLines(string buffer) { return _decoder.feed(buffer); }
+    private void processSseLine(string line) { _decoder.feedLine(line); }
 
     private void logPromptCache()
     {
         // Correlation line: the wait breakdown says how long the first token
         // took; this says how much of that prompt the provider served from its
         // cache. High firstToken + low cache hits = prefill was paid in full.
-        if (!_waitCacheLogged && _streamActive && _waitFirstTokenMs >= 0 &&
-            (_lastCachedPromptTokens > 0 || _lastUncachedPromptTokens > 0))
+        if (!_waitCacheLogged && _decoder._streamActive && _waitFirstTokenMs >= 0 &&
+            (_decoder._lastCachedPromptTokens > 0 || _decoder._lastUncachedPromptTokens > 0))
         {
             _waitCacheLogged = true;
-            const total = _lastCachedPromptTokens + _lastUncachedPromptTokens;
+            const total = _decoder._lastCachedPromptTokens + _decoder._lastUncachedPromptTokens;
             const ratio = total > 0
-                ? (_lastCachedPromptTokens * 100 / total) : 0;
+                ? (_decoder._lastCachedPromptTokens * 100 / total) : 0;
             logInfo("prompt cache: cached=" ~
-                to!string(_lastCachedPromptTokens) ~ " uncached=" ~
-                to!string(_lastUncachedPromptTokens) ~ " (" ~
+                to!string(_decoder._lastCachedPromptTokens) ~ " uncached=" ~
+                to!string(_decoder._lastUncachedPromptTokens) ~ " (" ~
                 to!string(ratio) ~ "% hit) firstToken=" ~
                 to!string(_waitFirstTokenMs) ~ "ms [" ~ _baseUrl ~ "]");
         }

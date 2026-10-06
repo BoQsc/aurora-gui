@@ -72,6 +72,19 @@ public final class WorkScheduler
         synchronized (_mutex) return _pending.length;
     }
 
+    /// Drain accepted work, then release the worker threads. The caller must
+    /// cancel/release effects it owns before joining this standalone scheduler.
+    void close()
+    {
+        synchronized (_mutex)
+        {
+            if (_closed) return;
+            _closed = true;
+            _wake.notifyAll();
+        }
+        foreach (worker; _workers) worker.join();
+    }
+
     private static string key(string workspace)
     {
         auto normalized = buildNormalizedPath(workspace);

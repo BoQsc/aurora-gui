@@ -6,6 +6,7 @@ import std.file : exists, mkdirRecurse, readText, rename, remove;
 import std.json : JSONValue, JSONType;
 import std.path : buildPath;
 import std.stdio : File;
+import auroraopencode.logging : logError;
 
 /// Content-addressed immutable attachment data. References are committed only
 /// after their blob exists. Legacy inline image records remain readable.
@@ -17,7 +18,11 @@ public struct AttachmentStore
     {
         const digest = sha256Of(data).toHexString().idup;
         const target = buildPath(directory, digest ~ ".b64");
-        if (exists(target)) return digest;
+        if (exists(target))
+        {
+            if (get(digest) != data) throw new Exception("Attachment content mismatch");
+            return digest;
+        }
         mkdirRecurse(directory);
         const temporary = target ~ ".tmp";
         auto file = File(temporary, "wb");
@@ -52,7 +57,7 @@ public struct AttachmentStore
         else if (value.type == JSONType.object)
         {
             if (auto data = "base64Data" in value.object)
-                if (data.type == JSONType.string && "mimeType" in value.object)
+                if (data.type == JSONType.string && data.str.length && "mimeType" in value.object)
                 {
                     const digest = put(data.str);
                     value.object.remove("base64Data");
@@ -70,7 +75,17 @@ public struct AttachmentStore
         {
             if (auto blob = "blob" in value.object)
                 if (blob.type == JSONType.string && "mimeType" in value.object)
-                    value["base64Data"] = get(blob.str);
+                {
+                    try value["base64Data"] = get(blob.str);
+                    catch (Exception error)
+                    {
+                        // A damaged image must not discard the surrounding
+                        // message or the remainder of a conversation journal.
+                        value["attachmentError"] = error.msg;
+                        value["base64Data"] = "";
+                        logError("Attachment unavailable: " ~ blob.str ~ ": " ~ error.msg);
+                    }
+                }
             foreach (ref child; value.object) hydrate(child);
         }
     }

@@ -293,6 +293,11 @@ int main(string[] args)
     import rebuild : rebuildHelperFlag, runRebuildHelperMode;
     if (args.length >= 2 && args[1] == rebuildHelperFlag)
         return runRebuildHelperMode(args);
+    // A local-only rebuild flag belongs to its build process. Preserve the
+    // configured publisher behavior for subsequent in-app rebuilds.
+    import std.process : environment;
+    if (environment.get("FORGE_PUBLISH_SKIP", "") == "1")
+        environment.remove("FORGE_PUBLISH_SKIP");
     const updateCode = runUpdateHelperMode(args);
     if (updateCode >= 0) return updateCode;
     // Install before anything else so a crash during window/UI construction is

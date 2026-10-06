@@ -123,12 +123,22 @@ private final class ToolJob : WorkItem
 
     override void execute()
     {
+        if (batch.cancellation.cancelled())
+        {
+            result = ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
+            return;
+        }
+        // A failed exclusive effect may have changed files before reporting
+        // failure. Keep earlier evidence invalidated in that case.
+        changed = exclusive && call.name != "update_plan" && call.name != "update_subplan" &&
+            call.name != "open" && call.name != "webfetch" &&
+            call.name != "websearch" && call.name != "computer";
         auto previous = installComputerUseContext(batch.context.computer);
         scope (exit) installComputerUseContext(previous);
         try
         {
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
-            changed = exclusive && !result.failed &&
+            changed = exclusive &&
                 result.verification.check.length == 0 && call.name != "update_plan" &&
                 call.name != "update_subplan" && call.name != "open" && call.name != "webfetch" &&
                 call.name != "websearch" && call.name != "computer";
@@ -167,9 +177,13 @@ private final class ToolJob : WorkItem
         event.images = result.images.dup;
         event.requestId = batch.requestId;
         event.verificationCheck = result.verification.check;
-        event.verificationWorkspace = workspace;
+        event.verificationWorkspace = result.verification.workspace;
         event.verificationRevision = revision;
         event.verificationPassed = result.verification.passed;
+        event.verificationExitCode = result.verification.exitCode;
+        event.effectWorkspace = workspace;
+        event.effectRevision = revision;
+        event.workspaceChanged = changed;
         batch.client.pushLocalEvent(event);
     }
 }

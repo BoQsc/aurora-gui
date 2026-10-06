@@ -31,7 +31,7 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
     previewToolDiffText,
     rebuildRequestHandler, revertChangeRecord, ChangeContext, ChangeRecord,
-    ToolCancellation, ToolExecution;
+    ToolCancellation, ToolExecution, pendingNativeMutationIntents;
 import auroraopencode.systemprompt : promptVerbosityDirective,
     promptVerbosityLabel, promptVerbosityNames, rebuildModule,
     setSystemPromptModules, systemPromptGeneration;
@@ -63,7 +63,7 @@ import auroraopencode.requestintent : explanationOnlyRequest;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.requestbuilder : projectRequestMessages;
-import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache;
+import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 // experimental: attachments - drop a file or large paste as an attachment.
@@ -1050,7 +1050,8 @@ private final class MessageBubble : Widget
             Attachment attachment;
             attachment.isFile = true;
             attachment.isImage = true;
-            attachment.name = image.name.length > 0 ? image.name : "image";
+            attachment.name = (image.name.length > 0 ? image.name : "image") ~
+                (image.error.length ? " (unavailable)" : "");
             attachment.image = image;
             attachments ~= attachment;
         }
@@ -8977,6 +8978,11 @@ public final class OpenCodeRoot : VBox
     private ConversationRepository _repository;
     private bool[string] _dirtyThreads;
     private bool _persistFailed;
+    private bool _durabilityBlocked;
+    private ulong _storageFailureGeneration;
+    private ulong _persistCommittedFailureGeneration;
+    private ulong _checkpointFailureSeen;
+    private ulong[string] _observedWorkspaceRevisions;
     @property private ref inout(OpenCodeClient) _client() inout { return _execution.client; }
     @property private ref inout(ToolCancellation) _toolCancellation() inout { return _execution.cancellation; }
     @property private ref inout(OpenCodeEvent[]) _eventScratch() inout { return _execution.eventScratch; }
@@ -9084,10 +9090,12 @@ public final class OpenCodeRoot : VBox
     {
         ChatMessage message;
         size_t index, position, total;
+        int sessionIndex;
         bool latest, hideHunkHeaders;
         string thinking, search, workspace;
     }
     private StableRowCache!(MessageBubble, BubbleVersion) _bubbleCache;
+    private StableRowCache!(DeferredTranscriptRow, BubbleVersion) _deferredRows;
     private IntroOverlay _introOverlay;
     // Exact text the currently highlighted intro pill inserted at the front of
     // the composer, kept so pressing the pill again removes precisely that and
@@ -9316,7 +9324,7 @@ public final class OpenCodeRoot : VBox
     // automatically, bounded per user turn, so a computer-use loop keeps acting
     // instead of stopping until the user clicks Continue. Reset when the user
     // sends a message.
-    private int[int] _autoContinueStreak;
+    private ref inout(int) _autoContinueStreak() inout @property { return _execution.autoContinueStreak; }
     private static immutable int autoContinueLimit = 4;
     // A stall is sometimes only momentary: the turn settles while the client is
     // still winding down, so `prepareContinue` refuses once and the agent goes
@@ -9916,10 +9924,12 @@ public final class OpenCodeRoot : VBox
                      lower.canFind("relaunch") || lower.canFind("restart")))
                     step.status = "completed";
             }
+            // A successful application build is evidence for compilation,
+            // but does not satisfy unrelated task checks.
             if (session.verificationStatus == "required")
-                session.verificationStatus = "passed";
-            session.taskStatus = hasIncompleteTaskSteps(*session)
-                ? "active" : "completed";
+                session.taskStatus = "active";
+            session.taskStatus = hasIncompleteTaskSteps(*session) ||
+                session.verificationStatus == "required" ? "active" : "completed";
             session.turnStatus = "completed";
             publishThreadUpdated(*session);
             markDirty();
@@ -11828,11 +11838,17 @@ public final class OpenCodeRoot : VBox
         event.itemId = itemId;
         event.itemKind = itemKind;
         event.payloadJson = payloadJson;
-        if (!_runtime.publish(event) && !_runtimeErrorReported)
+        if (!_runtime.publish(event))
         {
-            _runtimeErrorReported = true;
-            logError("agent runtime journal unavailable: " ~
-                _runtime.lastError());
+            _durabilityBlocked = true;
+            ++_storageFailureGeneration;
+            if (!_runtimeErrorReported)
+            {
+                _runtimeErrorReported = true;
+                logError("agent runtime journal unavailable: " ~ _runtime.lastError());
+                updateStatus("Conversation storage is unavailable. New effects are paused while saving retries.");
+            }
+            markDirty();
         }
     }
 
@@ -12049,6 +12065,8 @@ public final class OpenCodeRoot : VBox
                 JSONValue value;
                 value["mimeType"] = image.mimeType;
                 value["base64Data"] = image.base64Data;
+                if (image.blob.length) value["blob"] = image.blob;
+                if (image.error.length) value["attachmentError"] = image.error;
                 if (image.name.length > 0) value["name"] = image.name;
                 images.array ~= value;
             }
@@ -12302,7 +12320,9 @@ public final class OpenCodeRoot : VBox
         _messageColumn.beginProjection();
         if (_bubbleCache is null) _bubbleCache = new StableRowCache!(MessageBubble, BubbleVersion)();
         _bubbleCache.begin(_current >= 0 ? _sessions[_current].id : "");
-        scope (exit) { _bubbleCache.end(); _messageColumn.endProjection(); }
+        if (_deferredRows is null) _deferredRows = new StableRowCache!(DeferredTranscriptRow, BubbleVersion)();
+        _deferredRows.begin(_current >= 0 ? _sessions[_current].id : "");
+        scope (exit) { _bubbleCache.end(); _deferredRows.end(); _messageColumn.endProjection(); }
         _messageColumn.clearChildren();
         // The live rows just dropped; rebuild the id->row lookup as the column
         // is rebuilt (buildLiveToolRow repopulates it).
@@ -12560,6 +12580,21 @@ public final class OpenCodeRoot : VBox
                         _messageColumn.add(
                             new TurnCompletionSeparator(*duration));
                 }
+                // Long pages materialize ordinary settled replies only near
+                // the viewport. Live replies and tool rounds remain concrete.
+                if (path.length >= 400 && message.toolCalls.length == 0 &&
+                    slot != liveHostSlot && cast(int) index != latestAssistantIndex &&
+                    (message.content.length || message.reasoning.length) &&
+                    (_streamBubble is null || _streamBubble.messageIndex() != cast(int) index))
+                {
+                    if (showAuthorHeader(message)) _messageColumn.add(authorHeaderWidget(message));
+                    _messageColumn.add(buildDeferredMessage(index, message,
+                        latestAssistantIndex, versionPositions, versionTotals, thinkingText[slot]));
+                    addPlanAfter(slot);
+                    if (message.contextCompacted) _messageColumn.add(new ContextCompactionNoticeRow());
+                    ++slot;
+                    continue;
+                }
                 MessageBubble replyBubble;
                 if (_streamBubble !is null &&
                     _streamBubble.messageIndex() == cast(int) index)
@@ -12697,9 +12732,12 @@ public final class OpenCodeRoot : VBox
             }
             if (showAuthorHeader(message))
                 _messageColumn.add(authorHeaderWidget(message));
-            _messageColumn.add(buildMessageBubble(index,
-                session.messages[index], latestAssistantIndex,
-                versionPositions, versionTotals));
+            if (path.length >= 400 && message.role == "user")
+                _messageColumn.add(buildDeferredMessage(index,
+                    session.messages[index], latestAssistantIndex, versionPositions, versionTotals));
+            else
+                _messageColumn.add(buildMessageBubble(index,
+                    session.messages[index], latestAssistantIndex, versionPositions, versionTotals));
             addPlanAfter(slot);
             if (message.contextCompacted)
                 _messageColumn.add(new ContextCompactionNoticeRow());
@@ -12977,7 +13015,9 @@ public final class OpenCodeRoot : VBox
         Widget[] result;
         foreach (child; _messageColumn.children())
         {
-            if (auto nest = cast(VBox) child)
+            if (auto deferred = cast(DeferredTranscriptRow) child)
+                result ~= deferred.materialized() !is null ? deferred.materialized() : child;
+            else if (auto nest = cast(VBox) child)
                 foreach (inner; nest.children()) result ~= inner;
             else
                 result ~= child;
@@ -13024,8 +13064,7 @@ public final class OpenCodeRoot : VBox
         updateStatus("");
     }
 
-    /// Type into the quick-search field: re-run the match pass over the rendered
-    /// transcript and highlight the result in every bubble.
+    /// Search the active conversation branch and reveal matches lazily.
     private void setChatSearchQuery(string query)
     {
         _searchQuery = query.strip();
@@ -13059,11 +13098,9 @@ public final class OpenCodeRoot : VBox
         {
             auto session = &_sessions[_current];
             const fullPath = activeMessagePath(*session);
-            // Only the rendered window: a match in a message hidden behind "Load
-            // older messages" could never be scrolled to.
-            const hiddenCount = fullPath.length > _visibleMessageLimit
-                ? fullPath.length - _visibleMessageLimit : 0;
-            foreach (index; fullPath[hiddenCount .. $])
+            // The height-indexed presenter can reveal an unloaded row without
+            // constructing the rest of the history's expensive widgets.
+            foreach (index; fullPath)
             {
                 const message = session.messages[index];
                 const reasoning = message.role == "assistant"
@@ -13120,7 +13157,21 @@ public final class OpenCodeRoot : VBox
             _searchCurrent >= cast(int) _searchMatchMessages.length) return;
         const slot = cast(size_t) _searchCurrent;
         const messageIndex = _searchMatchMessages[slot];
+        _messagesScroll.follow = false;
+        _pendingRevealMessage = messageIndex;
         auto bubble = bubbleForMessageIndex(messageIndex);
+        if (bubble is null && _current >= 0)
+        {
+            const path = activeMessagePath(_sessions[_current]);
+            foreach (position, index; path)
+                if (cast(int) index == messageIndex)
+                {
+                    _visibleMessageLimit = max(_visibleMessageLimit, path.length - position);
+                    rebuildMessageColumn();
+                    break;
+                }
+            return;
+        }
         if (bubble is null) return;
         if (_searchMatchInReasoning[slot])
             bubble.setThinkingCollapsed(false);
@@ -13149,9 +13200,24 @@ public final class OpenCodeRoot : VBox
     {
         if (_pendingRevealMessage < 0) return;
         const messageIndex = _pendingRevealMessage;
-        _pendingRevealMessage = -1;
         auto bubble = bubbleForMessageIndex(messageIndex);
         if (bubble is null) return;
+        if (auto descriptor = cast(DeferredTranscriptRow) bubble.parent())
+            if (bubble.bounds().height <= 0 || !descriptor.visible())
+            {
+                // Offscreen children are intentionally not measured/layouted.
+                // First reveal the descriptor's indexed estimate, then refine
+                // the scroll position after the actual row enters the viewport.
+                if (descriptor.bounds().height <= 0) return;
+                const point = _messageColumn.globalToLocal(descriptor.globalOrigin());
+                _messagesScroll.ensureVisible(Rect(point.x, point.y,
+                    descriptor.bounds().width, descriptor.bounds().height));
+                _messageColumn.invalidate();
+                _messagesScroll.invalidate();
+                return;
+            }
+        if (bubble.bounds().height <= 0) return;
+        _pendingRevealMessage = -1;
         // The row's bounds are in its parent's coordinates; map them onto the
         // scroll content so `ensureVisible` can place the row.
         const origin = bubble.localToGlobal(Point(0, 0));
@@ -13167,6 +13233,10 @@ public final class OpenCodeRoot : VBox
         collectMessageBubbles(_messageColumn, found);
         foreach (bubble; found)
             if (bubble.messageIndex() == messageIndex) return bubble;
+        foreach (child; _messageColumn.children())
+            if (auto deferred = cast(DeferredTranscriptRow) child)
+                if (deferred.messageIndex == messageIndex)
+                    return cast(MessageBubble) deferred.ensureMaterialized();
         return null;
     }
 
@@ -13533,14 +13603,14 @@ public final class OpenCodeRoot : VBox
     /// Build the retained bubble for one message, wiring its context menu,
     /// collapse callback and usage footer. Shared by the plain and grouped
     /// paths in rebuildMessageColumn.
-    private MessageBubble buildMessageBubble(size_t index,
-        ref const ChatMessage message, int latestAssistantIndex,
-        size_t[] versionPositions, size_t[] versionTotals,
-        string thinkingText = "")
+    private BubbleVersion bubblePresentation(size_t index, ref const ChatMessage message,
+        int latestAssistantIndex, size_t[] versionPositions, size_t[] versionTotals,
+        string thinkingText)
     {
         BubbleVersion presentation;
         presentation.message = cast(ChatMessage) message;
         presentation.index = index;
+        presentation.sessionIndex = _current;
         presentation.position = index < versionPositions.length ? versionPositions[index] : 0;
         presentation.total = index < versionTotals.length ? versionTotals[index] : 0;
         presentation.latest = cast(int) index == latestAssistantIndex;
@@ -13548,6 +13618,67 @@ public final class OpenCodeRoot : VBox
         presentation.thinking = thinkingText;
         presentation.search = _searchQuery;
         presentation.workspace = workspaceForSession(_current);
+        return presentation;
+    }
+
+    private final class BubbleRowFactory
+    {
+        OpenCodeRoot owner;
+        size_t index;
+        ChatMessage message;
+        int latest;
+        size_t[] positions, totals;
+        string thinking;
+        this(OpenCodeRoot owner, size_t index, ref const ChatMessage message,
+            int latest, size_t[] positions, size_t[] totals, string thinking)
+        {
+            this.owner = owner;
+            this.index = index;
+            this.message = cast(ChatMessage) message;
+            this.message.toolCalls = message.toolCalls.dup;
+            this.message.images = message.images.dup;
+            this.latest = latest;
+            this.positions = positions;
+            this.totals = totals;
+            this.thinking = thinking;
+        }
+        Widget create()
+        {
+            auto row = owner.buildMessageBubble(index, message, latest, positions, totals, thinking);
+            row.setCompactBottom(false);
+            return row;
+        }
+        bool allowRelease(Widget row)
+        {
+            auto bubble = cast(MessageBubble) row;
+            if (bubble !is null && bubble.hasSelection()) return false;
+            if (owner._pendingRevealMessage == cast(int) index) return false;
+            owner._bubbleCache.forget(message.id);
+            return true;
+        }
+    }
+
+    private DeferredTranscriptRow buildDeferredMessage(size_t index,
+        ref const ChatMessage message, int latest, size_t[] positions,
+        size_t[] totals, string thinking = "")
+    {
+        auto presentation = bubblePresentation(index, message, latest, positions, totals, thinking);
+        if (auto retained = _deferredRows.find(message.id, presentation)) return retained;
+        auto factory = new BubbleRowFactory(this, index, message, latest, positions, totals, thinking);
+        auto row = new DeferredTranscriptRow(&factory.create);
+        row.messageIndex = cast(long) index;
+        row.allowRelease = &factory.allowRelease;
+        _deferredRows.remember(message.id, presentation, row);
+        return row;
+    }
+
+    private MessageBubble buildMessageBubble(size_t index,
+        ref const ChatMessage message, int latestAssistantIndex,
+        size_t[] versionPositions, size_t[] versionTotals,
+        string thinkingText = "")
+    {
+        auto presentation = bubblePresentation(index, message, latestAssistantIndex,
+            versionPositions, versionTotals, thinkingText);
         if (_bubbleCache !is null)
             if (auto retained = _bubbleCache.find(message.id, presentation)) return retained;
         auto bubble = new MessageBubble();
@@ -13911,7 +14042,7 @@ public final class OpenCodeRoot : VBox
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        ensureThreadLoaded(sessionIndex);
+        if (!ensureThreadLoaded(sessionIndex)) return;
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 ||
             messageIndex >= cast(int) session.messages.length)
@@ -15358,6 +15489,15 @@ public final class OpenCodeRoot : VBox
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
         setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)));
+        if (_durabilityBlocked)
+        {
+            stopActiveTurn();
+            updateStatus("Tool intent could not be saved. No tools were started; retry after storage recovers.");
+            return;
+        }
+        const revisionKey = buildNormalizedPath(workspace).toLower();
+        if (!(revisionKey in _observedWorkspaceRevisions))
+            _observedWorkspaceRevisions[revisionKey] = toolWorkspaceRevision(workspace);
         scheduleToolBatch(_client, requestId, workerCalls, workspace,
             _toolCancellation, changeContext);
     }
@@ -15442,21 +15582,9 @@ public final class OpenCodeRoot : VBox
 
         // The command arguments come from the original tool call, matched by
         // its id, so the result bubble can show the full command.
-        if (event.toolCallId.length == 0 ||
-            event.toolCallId in _reportedToolCallIds) return;
-        string toolArgs;
-        bool recognized;
-        foreach (call; _pendingToolCalls)
-        {
-            if (call.id == event.toolCallId)
-            {
-                toolArgs = call.arguments;
-                recognized = true;
-                break;
-            }
-        }
-        if (!recognized) return;
-        _reportedToolCallIds[event.toolCallId] = true;
+        const admission = _execution.admitToolResult(event.toolCallId);
+        if (!admission.accepted) return;
+        const toolArgs = admission.arguments;
         _liveToolOutputs.remove(event.toolCallId);
         // Drop the reported call from the live set so the "Exploring" row only
         // counts the context tools that are still running.
@@ -15497,19 +15625,25 @@ public final class OpenCodeRoot : VBox
             applyDurablePlan(*session, toolArgs);
         if (!toolFailed && event.toolName == "update_subplan")
             applyNestedPlan(*session, toolArgs);
-        if (isSubstantiveMutation(event.toolName, toolFailed,
+        if (event.workspaceChanged || isSubstantiveMutation(event.toolName, toolFailed,
             event.diffAdditions, event.diffDeletions, event.diffText))
         {
             session.verificationStatus = "required";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
         }
-        else if (!toolFailed && event.verificationPassed &&
+        else if (!toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
             event.verificationCheck.length > 0 &&
             event.verificationWorkspace == workspaceForSession(sessionIndex) &&
             event.verificationRevision == toolWorkspaceRevision(event.verificationWorkspace) &&
             session.verificationStatus == "required")
         {
+            invalidateChangedWorkspaceEvidence();
+            const evidenceKey = buildNormalizedPath(event.verificationWorkspace).toLower();
+            _observedWorkspaceRevisions[evidenceKey] = event.verificationRevision;
+            _execution.verificationRecorded = true;
+            _execution.verifiedWorkspace = event.verificationWorkspace;
+            _execution.verifiedWorkspaceRevision = event.verificationRevision;
             session.verificationStatus = "passed";
             session.taskStatus = hasIncompleteTaskSteps(*session)
                 ? "active" : "completed";
@@ -15846,7 +15980,7 @@ public final class OpenCodeRoot : VBox
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
 
-        _turnCancelled = true;
+        _execution.stop();
         // Stop means stop: drop any auto-retry this turn had lined up.
         cancelAutoResend();
 
@@ -16112,15 +16246,16 @@ public final class OpenCodeRoot : VBox
         // Startup is still parsing the saved conversations off the UI thread.
         // Sending now would create a chat the restore then replaces, so keep
         // the typed prompt in the composer and ask the user to wait a moment.
-        if (_startupLoadPending || threadLoadPending(_current))
+        if (_startupLoadPending || threadLoadPending(_current) || threadHistoryUnavailable(_current))
         {
+            requestThreadLoad(_current);
             updateStatus("Loading conversation history — one moment…");
             return;
         }
         const composerText = _input.textUtf8().strip();
         // A real user instruction restarts the auto-continue budget.
         if (_current >= 0 && _current < cast(int) _sessions.length)
-            _autoContinueStreak.remove(_current);
+            _autoContinueStreak = 0;
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
         if (startSideQuestion(composerText)) return;
@@ -17888,7 +18023,7 @@ public final class OpenCodeRoot : VBox
             _planGateFired[_sessions[sessionIndex].id] = false;
         }
         // A turn is about to read and extend this conversation's transcript.
-        ensureThreadLoaded(sessionIndex);
+        if (!ensureThreadLoaded(sessionIndex)) return;
         auto session = &_sessions[sessionIndex];
         if (_settings.toolsEnabled)
             ensureDurableTaskCheckpoint(*session,
@@ -18128,6 +18263,11 @@ public final class OpenCodeRoot : VBox
             publishRuntimeEvent(AgentEventKind.turnStarted, *session,
                 _turnUserId, "", "", payload.toString());
         }
+        if (_durabilityBlocked)
+        {
+            failAssistantMessage("Conversation could not be saved. The request was not started; retry after storage recovers.");
+            return;
+        }
         if (checkpointCreated && startModelCompaction(sessionIndex,
             oldCompactionAnchor, oldCompactionSummary,
             requestContextBudget(orchestratorModel)))
@@ -18153,7 +18293,9 @@ public final class OpenCodeRoot : VBox
         if (started != ChatStartResult.accepted)
         {
             _requestTokenKeyIds.remove(requestId);
-            failAssistantMessage("Request could not start: " ~ to!string(started));
+            failAssistantMessage(started == ChatStartResult.capacity
+                ? "Provider workers are at capacity. Stopped requests are still closing; retry when they finish."
+                : "Request could not start: " ~ to!string(started));
             _activeRequestId = 0;
             _activeRequestSession = -1;
             refreshBubbleActions();
@@ -18358,13 +18500,7 @@ public final class OpenCodeRoot : VBox
     /// otherwise: this records why a resume did or did not happen.
     private void logAutoContinue(string message)
     {
-        try
-        {
-            const dir = environment.get("TEMP", ".");
-            append(dir ~ "/aurora-autocontinue.log",
-                currentTimestamp() ~ " " ~ message ~ "\n");
-        }
-        catch (Exception) {}
+        logInfo("auto-continue [" ~ _loadedRuntimeId ~ "]: " ~ message);
     }
 
     private void maybeAutoContinue(int sessionIndex)
@@ -18428,8 +18564,7 @@ public final class OpenCodeRoot : VBox
             logAutoContinue("skip: last message is not a plain reply");
             return;
         }
-        int streak = sessionIndex in _autoContinueStreak ?
-            _autoContinueStreak[sessionIndex] : 0;
+        const streak = _autoContinueStreak;
         if (streak >= autoContinueLimit)
         {
             logAutoContinue("skip: auto-continue budget exhausted (" ~
@@ -18463,7 +18598,7 @@ public final class OpenCodeRoot : VBox
         }
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
-        _autoContinueStreak[sessionIndex] = streak + 1;
+        _autoContinueStreak = streak + 1;
         logAutoContinue("fired: resuming (streak " ~
             to!string(streak + 1) ~ ")");
         startChatRequest(sessionIndex);
@@ -18574,7 +18709,7 @@ public final class OpenCodeRoot : VBox
         session.activeLeafId = message.parentId;
         publishThreadUpdated(*session);
         _streamBubble = null;
-        _editMessageIndex = -1;
+        if (sessionIndex == _current) _editMessageIndex = -1;
         rebuildMessageColumn();
         return true;
     }
@@ -19620,6 +19755,10 @@ public final class OpenCodeRoot : VBox
                 "No Aurora-managed file changes in this workspace." :
                 to!string(recordCount) ~ " recorded file change(s). " ~
                 "↶ means already reverted.");
+            const pending = pendingNativeMutationIntents(workspace);
+            if (pending.length)
+                status.setText(to!string(pending.length) ~
+                    " interrupted file operation(s) have preserved before-images. Inspect Changes/pending in the state folder before retrying.");
             updateButtons();
         }
         ChangeRecord selectedRecord()
@@ -20640,7 +20779,7 @@ public final class OpenCodeRoot : VBox
         // still working. `_turnTiming` spans the turn and survives those gaps.
         const busy = turnIsBusy();
         _sendButton.setText(_stopPending ? "Stopping…" : busy ? "Stop" : "Send");
-        _sendButton.setEnabled(!_stopPending && !threadLoadPending(_current));
+        _sendButton.setEnabled(!_stopPending && !threadLoadPending(_current) && !threadHistoryUnavailable(_current));
         _sendButton.setAccent(!busy);
         if (_composerWasBusy != busy)
         {
@@ -21456,6 +21595,9 @@ public final class OpenCodeRoot : VBox
     /// user opens or selects another chat while it works in the background.
     private int turnOwnerSessionIndex() const
     {
+        if (_loadedRuntimeId.length)
+            foreach (i, session; _sessions)
+                if (session.id == _loadedRuntimeId) return cast(int) i;
         const requestActive = _turnInFlight || _activeRequestId != 0;
         if (requestActive && _activeRequestSession >= 0 &&
             _activeRequestSession < cast(int) _sessions.length)
@@ -21696,6 +21838,7 @@ public final class OpenCodeRoot : VBox
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
 
+        const removedCurrent = _current == sessionIndex;
         const removedId = _sessions[sessionIndex].id;
         auto removedRuntime = removedId in _conversationRuntimes;
         if (removedRuntime !is null && (*removedRuntime).busy())
@@ -21717,7 +21860,7 @@ public final class OpenCodeRoot : VBox
             _sessions[sessionIndex + 1 .. $];
         if (removedRuntime !is null)
         {
-            (*removedRuntime).client.closeSession();
+            (*removedRuntime).close();
             _conversationRuntimes.remove(removedId);
         }
         if (_current == sessionIndex)
@@ -21727,16 +21870,20 @@ public final class OpenCodeRoot : VBox
         else if (_current > sessionIndex)
             --_current;
         foreach (rt; _conversationRuntimes)
-        {
-            if (rt.activeRequestSession > sessionIndex)
-                --rt.activeRequestSession;
-            if (rt.turnSessionIndex > sessionIndex)
-                --rt.turnSessionIndex;
-        }
+            rt.remapSessionRemoval(sessionIndex);
+        foreach (slot; [&_interruptSendSession, &_resumeTarget])
+            if (*slot == sessionIndex) *slot = -1;
+            else if (*slot > sessionIndex) --*slot;
+        foreach (ref target; _resumeTargets)
+            if (target == sessionIndex) target = -1;
+            else if (target > sessionIndex) --target;
         _loadedRuntimeId = "";
         if (_current >= 0) loadRuntime(_current);
-        _streamBubble = null;
-        _editMessageIndex = -1;
+        if (removedCurrent)
+        {
+            _streamBubble = null;
+            _editMessageIndex = -1;
+        }
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
@@ -21752,7 +21899,7 @@ public final class OpenCodeRoot : VBox
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        ensureThreadLoaded(sessionIndex);
+        if (!ensureThreadLoaded(sessionIndex)) return;
 
         auto source = _sessions[sessionIndex];
         ChatSession copy;
@@ -21803,12 +21950,11 @@ public final class OpenCodeRoot : VBox
         const insertAt = sessionIndex + 1;
         _sessions = _sessions[0 .. insertAt] ~ copy ~ _sessions[insertAt .. $];
         foreach (rt; _conversationRuntimes)
-        {
-            if (rt.activeRequestSession >= insertAt)
-                ++rt.activeRequestSession;
-            if (rt.turnSessionIndex >= insertAt)
-                ++rt.turnSessionIndex;
-        }
+            rt.remapSessionInsertion(insertAt);
+        foreach (slot; [&_interruptSendSession, &_resumeTarget])
+            if (*slot >= insertAt) ++*slot;
+        foreach (ref target; _resumeTargets)
+            if (target >= insertAt) ++target;
         if (_current >= insertAt) ++_current;
         publishRuntimeEvent(AgentEventKind.threadStarted, copy,
             "", "", "", runtimeThreadPayload(copy));
@@ -21891,12 +22037,11 @@ public final class OpenCodeRoot : VBox
         const insertAt = sessionIndex + 1;
         _sessions = _sessions[0 .. insertAt] ~ copy ~ _sessions[insertAt .. $];
         foreach (rt; _conversationRuntimes)
-        {
-            if (rt.activeRequestSession >= insertAt)
-                ++rt.activeRequestSession;
-            if (rt.turnSessionIndex >= insertAt)
-                ++rt.turnSessionIndex;
-        }
+            rt.remapSessionInsertion(insertAt);
+        foreach (slot; [&_interruptSendSession, &_resumeTarget])
+            if (*slot >= insertAt) ++*slot;
+        foreach (ref target; _resumeTargets)
+            if (target >= insertAt) ++target;
         if (_current >= insertAt) ++_current;
         publishRuntimeEvent(AgentEventKind.threadStarted, copy,
             "", "", "", runtimeThreadPayload(copy));
@@ -22566,17 +22711,21 @@ public final class OpenCodeRoot : VBox
         }
         auto sessions = snapshotChatSessions(headers);
         const currentIndex = _current;
-        _repository.flush();
-        const sequence = _runtime.latestSequence();
-        const bytes = _runtime.journalSize();
+        const failureGeneration = _storageFailureGeneration;
         _dirtyThreads = null;
         _stateDirty = false;
         auto accepted = _repository.submit(delegate() {
             scope (exit) { synchronized (this) _persistWriteInFlight = false; }
             try
             {
+                // This job follows the queued checkpoints. Capture their
+                // committed high-water mark here, without a UI-thread barrier.
+                const sequence = _runtime.latestSequence();
+                const bytes = _runtime.journalSize();
                 writeThreadStore(sessions, currentIndex, loaded);
                 writeFoldedMarker(opencodeStateDirectory(), sequence, bytes);
+                synchronized (this)
+                    _persistCommittedFailureGeneration = failureGeneration;
             }
             catch (Throwable error)
             {
@@ -22861,6 +23010,8 @@ public final class OpenCodeRoot : VBox
                 JSONValue imageJson;
                 imageJson["mimeType"] = image.mimeType;
                 imageJson["base64Data"] = image.base64Data;
+                if (image.blob.length) imageJson["blob"] = image.blob;
+                if (image.error.length) imageJson["attachmentError"] = image.error;
                 if (image.name.length > 0) imageJson["name"] = image.name;
                 images.array ~= imageJson;
             }
@@ -22990,6 +23141,7 @@ public final class OpenCodeRoot : VBox
     private bool[string] _threadLoaded;
     private bool _threadStoreActive;
     private bool[string] _threadLoadsPending;
+    private string[string] _threadLoadErrors;
     private struct HistoryResult { string id; ChatMessage[] messages; string error; }
     private HistoryResult[] _historyResults;
 
@@ -22997,6 +23149,14 @@ public final class OpenCodeRoot : VBox
     {
         return index >= 0 && index < cast(int) _sessions.length &&
             (_sessions[index].id in _threadLoadsPending) !is null;
+    }
+
+    private bool threadHistoryUnavailable(int index) const
+    {
+        if (index < 0 || index >= cast(int) _sessions.length || !_threadStoreActive)
+            return false;
+        auto flag = _sessions[index].id in _threadLoaded;
+        return flag !is null && !*flag && !_sessions[index].messages.length;
     }
 
     private void requestThreadLoad(int index)
@@ -23007,6 +23167,7 @@ public final class OpenCodeRoot : VBox
         if (!_threadStoreActive || loaded is null || *loaded ||
             _sessions[index].messages.length || id in _threadLoadsPending) return;
         const path = threadFilePath(id);
+        _threadLoadErrors.remove(id);
         _threadLoadsPending[id] = true;
         if (!_repository.submit(delegate() {
             HistoryResult result;
@@ -23015,7 +23176,7 @@ public final class OpenCodeRoot : VBox
             {
                 ChatSession detached;
                 detached.id = id;
-                if (exists(path))
+                if (!exists(path)) throw new Exception("Conversation file is missing");
                 {
                     auto value = parseJSON(readText(path));
                     if (value.type != JSONType.object)
@@ -23030,6 +23191,7 @@ public final class OpenCodeRoot : VBox
         }))
         {
             _threadLoadsPending.remove(id);
+            _threadLoadErrors[id] = "History loader queue is full";
             updateStatus("History loader is busy; select the conversation again to retry.");
         }
     }
@@ -23043,6 +23205,7 @@ public final class OpenCodeRoot : VBox
             _threadLoadsPending.remove(result.id);
             if (result.error.length)
             {
+                _threadLoadErrors[result.id] = result.error;
                 logError("Conversation history could not be loaded: " ~ result.error);
                 updateStatus("Conversation history could not be loaded; select it again to retry.");
                 continue;
@@ -23054,6 +23217,7 @@ public final class OpenCodeRoot : VBox
                     // meanwhile. A late read can never replace newer messages.
                     if (!session.messages.length) session.messages = result.messages;
                     _threadLoaded[result.id] = true;
+                    _threadLoadErrors.remove(result.id);
                     if (cast(int) i == _current)
                     {
                         rebuildMessageColumn();
@@ -23087,44 +23251,55 @@ public final class OpenCodeRoot : VBox
             (name.data.length > 0 ? name.data : "unnamed") ~ ".json");
     }
 
-    private void ensureThreadLoaded(int index)
+    private bool ensureThreadLoaded(int index)
     {
-        if (index < 0 || index >= cast(int) _sessions.length) return;
-        ensureThreadLoadedById(_sessions[index].id);
+        if (index < 0 || index >= cast(int) _sessions.length) return false;
+        return ensureThreadLoadedById(_sessions[index].id);
     }
 
-    private void ensureThreadLoadedById(string id)
+    private bool ensureThreadLoadedById(string id)
     {
-        if (id.length == 0) return;
+        if (!id.length) return false;
         auto flag = id in _threadLoaded;
-        if (flag is null || *flag) return;
-        *flag = true;
-        if (!_threadStoreActive) return;
+        if (flag is null || *flag || !_threadStoreActive) return true;
         foreach (ref session; _sessions)
             if (session.id == id)
             {
-                // A conversation that already has messages was materialized in
-                // memory (a new chat, or a journal merge); never overwrite it.
-                if (session.messages.length > 0) return;
-                loadThreadMessages(session);
-                return;
+                if (session.messages.length)
+                {
+                    *flag = true;
+                    return true;
+                }
+                if (!loadThreadMessages(session)) return false;
+                *flag = true;
+                return true;
             }
+        return false;
     }
 
-    private void loadThreadMessages(ref ChatSession session)
+    private bool loadThreadMessages(ref ChatSession session)
     {
-        const path = threadFilePath(session.id);
-        if (!exists(path)) return;
         try
         {
+            const path = threadFilePath(session.id);
+            if (!exists(path)) throw new Exception("Conversation file is missing");
             auto value = parseJSON(readText(path));
-            if (value.type != JSONType.object) return;
+            if (value.type != JSONType.object)
+                throw new Exception("Invalid conversation file");
+            ChatSession detached;
             if (auto messages = "messages" in value.object)
-                parseMessagesJson(*messages, session);
+                parseMessagesJson(*messages, detached);
+            session.messages = detached.messages;
+            _threadLoadErrors.remove(session.id);
+            return true;
         }
         catch (Exception error)
-            logError("could not read conversation " ~ session.id ~ ": " ~
-                error.msg);
+        {
+            _threadLoadErrors[session.id] = error.msg;
+            logError("could not read conversation " ~ session.id ~ ": " ~ error.msg);
+            updateStatus("Conversation history could not be loaded; select it again to retry.");
+            return false;
+        }
     }
 
     /// Read the metadata-only index, if present. Returns false when it is
@@ -23354,7 +23529,11 @@ public final class OpenCodeRoot : VBox
                             image.base64Data = g.str;
                         if (auto g = "name" in imageValue.object)
                             image.name = g.str;
-                        if (image.base64Data.length > 0)
+                        if (auto g = "blob" in imageValue.object)
+                            if (g.type == JSONType.string) image.blob = g.str;
+                        if (auto g = "attachmentError" in imageValue.object)
+                            if (g.type == JSONType.string) image.error = g.str;
+                        if (image.base64Data.length > 0 || image.blob.length > 0)
                             message.images ~= image;
                     }
             }
@@ -23829,7 +24008,11 @@ public final class OpenCodeRoot : VBox
                                                 if (auto g = "name" in
                                                     imageValue.object)
                                                     image.name = g.str;
-                                                if (image.base64Data.length > 0)
+                                                if (auto g = "blob" in imageValue.object)
+                                                    if (g.type == JSONType.string) image.blob = g.str;
+                                                if (auto g = "attachmentError" in imageValue.object)
+                                                    if (g.type == JSONType.string) image.error = g.str;
+                                                if (image.base64Data.length > 0 || image.blob.length > 0)
                                                     message.images ~= image;
                                             }
                                         }
@@ -24154,12 +24337,60 @@ public final class OpenCodeRoot : VBox
 
     private bool _executionServicedSinceTick;
     private bool _servicingExecution;
+    private size_t _executionServiceCursor;
+
+    private void invalidateChangedWorkspaceEvidence()
+    {
+        foreach (workspace, ref observed; _observedWorkspaceRevisions)
+        {
+            const currentRevision = toolWorkspaceRevision(workspace);
+            if (currentRevision == observed) continue;
+            observed = currentRevision;
+            foreach (i, ref session; _sessions)
+            {
+                if (session.verificationStatus != "passed" ||
+                    buildNormalizedPath(workspaceForSession(cast(int) i)).toLower() != workspace)
+                    continue;
+                if (auto runtime = session.id in _conversationRuntimes)
+                    if ((*runtime).verificationRecorded &&
+                        (*runtime).verifiedWorkspaceRevision >= currentRevision) continue;
+                session.verificationStatus = "required";
+                session.taskStatus = "active";
+                publishThreadUpdated(session);
+            }
+        }
+    }
 
     /// Serialized application service, independent of layout/paint ticks.
     /// Native timers keep it running during Win32's modal border resize loop.
     private void serviceExecution(double deltaSeconds)
     {
         if (_servicingExecution || _sessions.length == 0) return;
+        invalidateChangedWorkspaceEvidence();
+        if (auto journal = cast(RepositoryRuntime) _runtime)
+        {
+            const failure = journal.checkpointFailure();
+            if (failure.revision != _checkpointFailureSeen)
+            {
+                _checkpointFailureSeen = failure.revision;
+                _durabilityBlocked = true;
+                ++_storageFailureGeneration;
+                foreach (rt; _conversationRuntimes)
+                    rt.partialCheckpointBytes = 0;
+                foreach (session; _sessions) _dirtyThreads[session.id] = true;
+                markDirty();
+                updateStatus("Partial reply could not be saved. Retrying storage: " ~ failure.message);
+            }
+        }
+        ulong recoveredGeneration;
+        synchronized (this) recoveredGeneration = _persistCommittedFailureGeneration;
+        if (_durabilityBlocked && recoveredGeneration == _storageFailureGeneration &&
+            _runtime.lastError().length == 0)
+        {
+            _durabilityBlocked = false;
+            _runtimeErrorReported = false;
+            updateStatus("Conversation storage recovered. Retry the interrupted request.");
+        }
         _executionServicedSinceTick = true;
         _servicingExecution = true;
         scope (exit) _servicingExecution = false;
@@ -24167,9 +24398,24 @@ public final class OpenCodeRoot : VBox
         // all of them on every UI tick, then restore the selected context.
 
         const selectedRuntimeSession = _current;
-        foreach (runtimeIndex; 0 .. _sessions.length)
+        const serviceStarted = MonoTime.currTime;
+        const serviceStartIndex = _executionServiceCursor % _sessions.length;
+        foreach (offset; 0 .. _sessions.length)
         {
+            if (offset && (MonoTime.currTime - serviceStarted).total!"msecs" >= 6) break;
+            const runtimeIndex = (serviceStartIndex + offset) % _sessions.length;
+            _executionServiceCursor = (runtimeIndex + 1) % _sessions.length;
             const runtimeId = _sessions[runtimeIndex].id;
+            if (auto tracked = runtimeId in _conversationRuntimes)
+                if ((*tracked).verificationRecorded &&
+                    _sessions[runtimeIndex].verificationStatus == "passed" &&
+                    (*tracked).verifiedWorkspaceRevision !=
+                        toolWorkspaceRevision((*tracked).verifiedWorkspace))
+                {
+                    _sessions[runtimeIndex].verificationStatus = "required";
+                    _sessions[runtimeIndex].taskStatus = "active";
+                    publishThreadUpdated(_sessions[runtimeIndex]);
+                }
             if (runtimeId != _loadedRuntimeId &&
                 (runtimeId in _conversationRuntimes) is null)
                 continue;
@@ -24181,6 +24427,7 @@ public final class OpenCodeRoot : VBox
                 auto runtime = runtimeForSession(cast(int) runtimeIndex);
                 if (!runtime.busy() && !runtime.titlePending &&
                     runtime.titleClient is null && !runtime.client.hasPendingEvents() &&
+                    runtime.eventScratch.length == 0 &&
                     runtime.autoContinuePendingSession < 0 &&
                     !(runtime.autoResendPending && runtime.autoResendSession == cast(int) runtimeIndex) &&
                     _interruptSendSession != cast(int) runtimeIndex)
@@ -24191,11 +24438,12 @@ public final class OpenCodeRoot : VBox
         pollModelCompaction(cast(int) runtimeIndex);
         pollQuickTitle(cast(int) runtimeIndex);
         retryQuickTitle(cast(int) runtimeIndex);
-        _client.drain(_eventScratch, 64, 256 * 1024);
+        if (!_eventScratch.length) _client.drain(_eventScratch, 64, 256 * 1024);
         _batchingToolResults = true;
         size_t eventIndex;
         while (eventIndex < _eventScratch.length)
         {
+            if (eventIndex && (MonoTime.currTime - serviceStarted).total!"msecs" >= 6) break;
             auto event = &_eventScratch[eventIndex];
             // Cancellation, navigation, and a subsequent request can all race
             // with a worker's final queue push. Never attach those stale bytes
@@ -24363,6 +24611,7 @@ public final class OpenCodeRoot : VBox
                     break;
             }
         }
+        _eventScratch = _eventScratch[eventIndex .. $];
         _batchingToolResults = false;
         flushToolTranscriptChanges();
         const partialOwner = turnOwnerSessionIndex();
@@ -24590,7 +24839,7 @@ public final class OpenCodeRoot : VBox
                 // Each conversation owns its own runtime: load it so the
                 // request streams through that chat's client, not the visible
                 // chat's. The visible context is restored after the loop.
-                ensureThreadLoaded(index);
+                if (!ensureThreadLoaded(index)) continue;
                 loadRuntime(index);
                 appendQueuedGuidance(_sessions[index]);
                 ChatMessage recovery;
@@ -24830,6 +25079,43 @@ public final class OpenCodeRoot : VBox
         }
         return turnOwnerSessionIndex();
     }
+
+    public void deleteSessionForTesting(int index) { deleteSession(index); }
+    public bool historyUnavailableForTesting() const { return threadHistoryUnavailable(_current); }
+    public bool historyPendingForTesting() const { return threadLoadPending(_current); }
+    public bool startupPendingForTesting() const { return _startupLoadPending; }
+    public bool sendEnabledForTesting() const { return _sendButton.enabled(); }
+    public bool hasLiveBubbleForTesting() const { return _streamBubble !is null; }
+    public bool storageBlockedForTesting() const { return _durabilityBlocked; }
+    public size_t materializedTranscriptRowsForTesting()
+    {
+        size_t count;
+        foreach (child; _messageColumn.children())
+            if (auto deferred = cast(DeferredTranscriptRow) child)
+                count += deferred.materialized() !is null;
+            else if (cast(MessageBubble) child !is null) ++count;
+        return count;
+    }
+    public bool messageInViewportForTesting(int index)
+    {
+        auto bubble = bubbleForMessageIndex(index);
+        if (bubble is null) return false;
+        const point = bubble.globalOrigin();
+        const top = _messagesScroll.globalOrigin();
+        return point.y < top.y + _messagesScroll.bounds().height &&
+            point.y + bubble.bounds().height > top.y;
+    }
+
+    public void delayPartialCheckpointForTesting()
+    {
+        _execution.partialCheckpointBytes = 0;
+        _execution.partialCheckpointAt = MonoTime.currTime;
+    }
+    public void agePartialCheckpointForTesting()
+    {
+        _execution.partialCheckpointAt = MonoTime.currTime - msecs(3000);
+    }
+    public void flushRepositoryForTesting() { _repository.flush(); }
 
     public void selectSessionForTesting(int index)
     {
@@ -27537,6 +27823,7 @@ public final class OpenCodeRoot : VBox
         event.images = images.dup;
         event.verificationCheck = verifiedCheck;
         event.verificationPassed = verifiedCheck.length > 0 && !failed;
+        event.verificationExitCode = verifiedCheck.length ? 0 : int.min;
         event.verificationWorkspace = workspaceForSession(turnOwnerSessionIndex());
         event.verificationRevision = toolWorkspaceRevision(event.verificationWorkspace);
         applyToolResult(event);

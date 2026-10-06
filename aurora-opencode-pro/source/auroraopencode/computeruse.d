@@ -362,10 +362,9 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
 /// call druntime on a null object (`rt.monitor_.ensureMonitor(null)`), which
 /// faults. Never `synchronized` a possibly-null `__gshared` reference.
 private __gshared Mutex computerUseProcessMutex;
-/// Thread that currently owns `computerUseProcessMutex`, and its re-entry
-/// depth. D's `Mutex` is not recursive, and a `subagent`/`loop` action calls
-/// back into `experimentalComputerUseExecute` on the SAME thread, so the owner
-/// must be allowed to re-enter without re-locking (which would self-deadlock).
+/// Re-entry depth belongs to the current thread. Nested computer actions may
+/// enter again without re-locking the global desktop mutex; other threads
+/// acquire that mutex and never read or modify another thread's depth.
 
 private int computerUseMutexDepth;
 

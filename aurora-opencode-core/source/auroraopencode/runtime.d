@@ -679,7 +679,11 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
                     if (g.type == JSONType.string) image.base64Data = g.str;
                 if (auto g = "name" in imageValue.object)
                     if (g.type == JSONType.string) image.name = g.str;
-                if (image.base64Data.length > 0) images ~= image;
+                if (auto g = "blob" in imageValue.object)
+                    if (g.type == JSONType.string) image.blob = g.str;
+                if (auto g = "attachmentError" in imageValue.object)
+                    if (g.type == JSONType.string) image.error = g.str;
+                if (image.base64Data.length > 0 || image.blob.length > 0) images ~= image;
             }
             message.images = images;
         }

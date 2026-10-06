@@ -617,6 +617,8 @@ public struct ChatImageAttachment
     string mimeType;    // e.g. "image/png"
     string base64Data;  // base64 of the image bytes, no data-URL prefix
     string name;        // original file name, for display and diagnostics
+    string blob;        // durable reference, retained if the attachment is unavailable
+    string error;
 }
 
 /// One message sent in a chat request. Richer than the parallel role/content
