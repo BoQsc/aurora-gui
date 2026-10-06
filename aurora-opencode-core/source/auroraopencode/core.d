@@ -1001,8 +1001,37 @@ public void ensureMessageGraph(ref ChatSession session)
  */
 public size_t[] activeMessagePath(const ref ChatSession session)
 {
+    const n = session.messages.length;
+    if (n == 0) return null;
+    // Fast path: the overwhelmingly common append-only linear history. The
+    // active leaf is the last message and every message links to the previous
+    // one, so the visible path is simply 0..n-1. This function is called many
+    // times per turn, and the general path below builds an id->index hash map
+    // plus two arrays on every call.
+    if (session.messages[$ - 1].id.length > 0 &&
+        (session.activeLeafId.length == 0 ||
+         session.activeLeafId == session.messages[$ - 1].id))
+    {
+        bool linear = true;
+        foreach (i; 1 .. n)
+        {
+            if (session.messages[i - 1].id.length == 0 ||
+                session.messages[i].id.length == 0 ||
+                session.messages[i].parentId != session.messages[i - 1].id)
+            {
+                linear = false;
+                break;
+            }
+        }
+        if (linear)
+        {
+            size_t[] path;
+            path.length = n;
+            foreach (i; 0 .. n) path[i] = i;
+            return path;
+        }
+    }
     size_t[] path;
-    if (session.messages.length == 0) return path;
     size_t[string] indexById;
     foreach (index, message; session.messages)
         if (message.id.length > 0)
@@ -1020,11 +1049,15 @@ public size_t[] activeMessagePath(const ref ChatSession session)
         path ~= index;
         id = session.messages[index].parentId;
     }
-    size_t[] reversed;
-    reversed.length = path.length;
-    foreach (i, value; path)
-        reversed[path.length - 1 - i] = value;
-    return reversed;
+    // `path` is leaf-first; callers expect root-first. Reverse in place to
+    // avoid allocating a second array.
+    foreach (i; 0 .. path.length / 2)
+    {
+        auto tmp = path[i];
+        path[i] = path[$ - 1 - i];
+        path[$ - 1 - i] = tmp;
+    }
+    return path;
 }
 
 /// The index of the deepest message reachable from `startIndex` (following

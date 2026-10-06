@@ -850,6 +850,20 @@ final class OpenCodeClient
         _mutex.lock();
         scope (exit) _mutex.unlock();
 
+        // Adjacent fragments of the same stream channel merge into one queued
+        // event. The UI concatenates same-channel deltas anyway, so this is
+        // byte-identical output with far fewer queue entries when a provider
+        // emits many tiny chunks faster than the UI ticks. Ordering across
+        // reasoning/content/tools/usage is preserved because only a directly
+        // preceding event of the same kind and channel is merged.
+        if (event.kind == OpenCodeEventKind.delta && _pending.length > 0 &&
+            _pending[$ - 1].kind == OpenCodeEventKind.delta &&
+            _pending[$ - 1].requestId == event.requestId &&
+            _pending[$ - 1].reasoning == event.reasoning)
+        {
+            _pending[$ - 1].text ~= event.text;
+            return;
+        }
         // These are snapshots, not an ordered history. When the UI is slower
         // than a provider's fragment rate, retaining obsolete snapshots only
         // causes redundant transcript rebuilds and badge layout work.
@@ -2185,6 +2199,24 @@ final class OpenCodeClient
         return start >= buffer.length ? "" : buffer[start .. $];
     }
 
+    /// Allocation-free test for the `[DONE]` sentinel, tolerating surrounding
+    /// ASCII spaces/tabs (some gateways send `data: [DONE]`). `strip()` copied
+    /// the payload on every non-empty chunk; this runs on the hottest path.
+    private static bool isDonePayload(string payload)
+    {
+        size_t start;
+        while (start < payload.length &&
+            (payload[start] == ' ' || payload[start] == '\t')) ++start;
+        size_t end = payload.length;
+        while (end > start &&
+            (payload[end - 1] == ' ' || payload[end - 1] == '\t')) --end;
+        const done = "[DONE]";
+        if (end - start != done.length) return false;
+        foreach (i; 0 .. done.length)
+            if (payload[start + i] != done[i]) return false;
+        return true;
+    }
+
     private void processSseLine(string line)
     {
         if (_streamDone || _streamError.length > 0) return;
@@ -2193,7 +2225,7 @@ final class OpenCodeClient
         if (!startsWithAscii(line, "data:")) return;
         const payload = line[5 .. $];
         if (payload.length == 0) return;
-        if (payload.strip() == "[DONE]")
+        if (isDonePayload(payload))
         {
             _streamDone = true;
             return;

@@ -7775,6 +7775,12 @@ private immutable string selfFixSuggestion = "Fix Aurora OpenCode";
 /// hands over the path.
 private immutable string generalAuroraSuggestion = "Aurora project";
 
+/// Empty-state pill that hands the agent the running Aurora OpenCode program's
+/// own source path without asking for a fix, so a general question about the
+/// app starts from the right folder. Its click inserts a prompt naming that
+/// path; omitted when no source package is present.
+private immutable string generalAuroraOpencodeSuggestion = "General Aurora Opencode";
+
 /// Shown over the transcript while the active conversation still has no
 /// messages: a centered welcome block with tappable prompt suggestions that
 /// prefill the composer. It is an overlay child of the scroll view (full
@@ -9283,6 +9289,16 @@ public final class OpenCodeRoot : VBox
     private OpenCodeToolCall[] _preparingToolCalls;
     private MonoTime[string] _liveToolStartedAt;
     private string[string] _liveToolOutputs;
+    /// In-flight tool rows of the currently rendered transcript, keyed by call
+    /// id. Lets a streamed output update find the row in O(1) instead of
+    /// walking the whole message column on every throttled chunk.
+    private LiveToolRow[string] _liveToolRows;
+    /// Rendered system prompt and the inputs it was built from. `buildSystemPrompt`
+    /// composes a multi-kilobyte prompt on every request; it is served from this
+    /// cache until the workspace, tool mode, platform, verbosity, self-hosting
+    /// modules, or the local date change.
+    private string _systemPromptCacheKey;
+    private string _systemPromptCache;
     private MonoTime _lastStreamOutputAt;
     private int _lastStreamSilenceSeconds = -1;
     private bool _composerWasBusy;
@@ -12417,6 +12433,9 @@ public final class OpenCodeRoot : VBox
         if (_streamBubble !is null && _streamBubble.parent() !is null)
             _streamBubble.parent().remove(_streamBubble);
         _messageColumn.clearChildren();
+        // The live rows just dropped; rebuild the id->row lookup as the column
+        // is rebuilt (buildLiveToolRow repopulates it).
+        _liveToolRows = null;
         if (_current < 0)
         {
             updateIntroOverlay();
@@ -12993,6 +13012,10 @@ public final class OpenCodeRoot : VBox
             labels.put(selfFixSuggestion);
             prompts.put("Investigate and fix an issue in Aurora OpenCode. Its "
                 ~ "program source is at " ~ source ~ "\n\nWhat's wrong: ");
+            labels.put(generalAuroraOpencodeSuggestion);
+            // Trailing space so a click leaves a gap to keep typing after the
+            // inserted path (mirrors the "Search the web " pill).
+            prompts.put("Its program source is at " ~ source ~ " ");
         }
         const general = generalAuroraPath();
         if (general.length > 0)
@@ -13448,6 +13471,7 @@ public final class OpenCodeRoot : VBox
             row.setDetail(*output);
         }
         else row.setDetail(humanToolDetail(call.name, call.arguments));
+        if (call.id.length > 0) _liveToolRows[call.id] = row;
         return row;
     }
 
@@ -15505,29 +15529,48 @@ public final class OpenCodeRoot : VBox
             // Run the lane in bounded waves. Four concurrent filesystem reads
             // saturate typical laptop storage without creating an unbounded
             // collection of stacks and scheduler contention.
-            size_t wave = slot;
-            while (wave < end)
+            // Split the read-only lane into at most `maxParallelToolWorkers`
+            // contiguous chunks, one thread per chunk. Each thread walks its
+            // own calls sequentially, so concurrency stays bounded while the
+            // number of OS threads created for the lane is capped at one wave
+            // (previously ceil(lane / workers)), which cuts thread churn on
+            // large batches. Read results render in original request order
+            // regardless of completion order.
+            const laneLen = end - slot;
+            const threadCount = laneLen < maxParallelToolWorkers
+                ? laneLen : cast(size_t) maxParallelToolWorkers;
+            const perThread = (laneLen + threadCount - 1) / threadCount;
+            Thread[] workers;
+            size_t chunkStart = slot;
+            foreach (_; 0 .. threadCount)
             {
-                const waveEnd = wave + maxParallelToolWorkers < end
-                    ? wave + maxParallelToolWorkers : end;
-                Thread[] workers;
-                foreach (call; calls[wave .. waveEnd])
+                if (chunkStart >= end) break;
+                const chunkEnd = chunkStart + perThread < end
+                    ? chunkStart + perThread : end;
+                auto chunk = calls[chunkStart .. chunkEnd];
+                chunkStart = chunkEnd;
+                auto worker = new Thread(delegate()
+                {
+                    foreach (call; chunk)
+                    {
+                        auto job = new ParallelToolJob(call, workspace,
+                            cancellation, client, requestId);
+                        job.run();
+                    }
+                });
+                worker.isDaemon = true;
+                bool started;
+                try { worker.start(); started = true; }
+                catch (Exception) {}
+                if (started) workers ~= worker;
+                else foreach (call; chunk)
                 {
                     auto job = new ParallelToolJob(call, workspace,
                         cancellation, client, requestId);
-                    auto worker = new Thread(&job.run);
-                    worker.isDaemon = true;
-                    workers ~= worker;
-                    try worker.start();
-                    catch (Exception)
-                    {
-                        workers.length--;
-                        job.run();
-                    }
+                    job.run();
                 }
-                foreach (worker; workers) worker.join();
-                wave = waveEnd;
             }
+            foreach (worker; workers) worker.join();
             slot = end;
         }
     }
@@ -15605,17 +15648,15 @@ public final class OpenCodeRoot : VBox
         if (!recognized) return;
         _liveToolOutputs[event.toolCallId] = event.text;
         if (!viewingTurnOwner()) return;
-        void updateRows(Widget widget)
+        // The live row for this call was registered when the column was built,
+        // so the update is a single lookup instead of a full walk of the
+        // transcript tree (which previously ran for every throttled chunk).
+        if (auto found = event.toolCallId in _liveToolRows)
         {
-            if (auto row = cast(LiveToolRow) widget)
-                if (row._callId == event.toolCallId)
-                {
-                    row._outputPreview = true;
-                    row.setDetail(event.text);
-                }
-            foreach (child; widget.children()) updateRows(child);
+            auto row = *found;
+            row._outputPreview = true;
+            row.setDetail(event.text);
         }
-        updateRows(_messageColumn);
         _messagesScroll.invalidate();
     }
 
@@ -18121,6 +18162,38 @@ public final class OpenCodeRoot : VBox
         _timerBadge.setSeconds(total, running);
     }
 
+    /// Cached wrapper around `buildSystemPrompt`. The prompt is composed from
+    /// modules and is multi-kilobyte; its inputs only change with the
+    /// workspace, tool mode, platform, verbosity, self-hosting modules and the
+    /// local date. A tool-heavy turn otherwise re-renders the identical prompt
+    /// every round. Callers must have refreshed the prompt modules first (see
+    /// registerContextSystemPromptModules).
+    private string cachedSystemPrompt(bool nativeOnly, string workspace,
+        string platform, string verbosity)
+    {
+        import std.datetime : Clock;
+        const today = Clock.currTime.toLocalTime.toISOExtString()[0 .. 10];
+        auto key = appender!string();
+        key.put(nativeOnly ? "N" : "L");
+        key.put('|');
+        key.put(workspace);
+        key.put('|');
+        key.put(platform);
+        key.put('|');
+        key.put(verbosity);
+        key.put('|');
+        key.put(today);
+        key.put('|');
+        key.put(isSelfProjectWorkspace(workspace) ? "self" : "plain");
+        if (_systemPromptCache.length > 0 && key.data == _systemPromptCacheKey)
+            return _systemPromptCache;
+        const rendered = buildSystemPrompt(nativeOnly, workspace, platform,
+            verbosity);
+        _systemPromptCacheKey = key.data;
+        _systemPromptCache = rendered;
+        return rendered;
+    }
+
     private void startChatRequest(int sessionIndex, bool userTurn = true)
     {
         // Any new request supersedes a scheduled re-send. A request the user
@@ -18185,7 +18258,7 @@ public final class OpenCodeRoot : VBox
                 // Native tools are the main tool set; the legacy shell tool is
                 // an opt-in addition from Settings.
                 registerContextSystemPromptModules(workspace);
-                systemPrompt.content = buildSystemPrompt(
+                systemPrompt.content = cachedSystemPrompt(
                     !_settings.legacyTools, workspace, platform,
                     _settings.verbosity);
                 if (_settings.experimentalNestedPlans)
