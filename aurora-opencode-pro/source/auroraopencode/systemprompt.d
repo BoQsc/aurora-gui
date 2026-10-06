@@ -92,7 +92,7 @@ public struct SystemPromptModule
 
 alias SystemPromptRenderer = string delegate(in SystemPromptContext ctx);
 
-/// Optional modules appended after the built-ins. New capabilities (for
+/// Optional modules appended before the dynamic environment. New capabilities (for
 /// example rebuild awareness) register here instead of editing the core
 /// prompt text, so the stable prefix stays untouched.
 private SystemPromptModule[] _extraModules;
@@ -101,7 +101,7 @@ private ulong _promptGeneration;
 public ulong systemPromptGeneration() { return _promptGeneration; }
 
 /// Register an additional module. Registration order is preserved and the
-/// module renders after every built-in section. Registering a module whose
+/// module renders after stable built-in sections. Registering a module whose
 /// name is already present replaces it in place, so calling this once per
 /// context does not duplicate the section.
 public void registerSystemPromptModule(SystemPromptModule entry)
@@ -145,9 +145,10 @@ public string renderSystemPrompt(in SystemPromptContext ctx)
 
     auto builder = appender!string();
     foreach (ref entry; builtinModules())
-        builder.put(entry.render(ctx));
+        if (entry.name != "environment") builder.put(entry.render(ctx));
     foreach (ref entry; _extraModules)
         builder.put(entry.render(ctx));
+    builder.put(environmentSection(ctx));
     return builder.data;
 }
 

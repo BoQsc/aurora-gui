@@ -1,5 +1,7 @@
 module auroraopencode.appui;
 
+import auroraopencode.latency : RequestLatency, LatencyStage, LatencySnapshot;
+
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.computeruse : ComputerUseContext;
 
@@ -8216,6 +8218,11 @@ public final class SessionListView : ListView
 {
     void delegate(int index, Point globalPosition) onContextMenuRequested;
     void delegate(int index) onDeleteRequested;
+    // Fired when the hover archive button on a row is pressed.
+    void delegate(int index) onArchiveRequested;
+    // Wording for the hover archive button's tooltip, reflecting whether the
+    // row is already archived ("Unarchive conversation") or not.
+    string delegate(int index) archiveTooltipProvider;
     // Fired when a row is dropped onto the pinned group (pinned=true) or a
     // pinned row is dropped below it (pinned=false).
     void delegate(int row, bool pinned) onPinDropRequested;
@@ -8225,6 +8232,12 @@ public final class SessionListView : ListView
         onDragGhost;
 
     private int _hoverRow = -1;
+    // True while the pointer sits over the hovered row's archive button.
+    private bool _hoverArchive;
+    // Size of the hover archive button and the right gutter it lives in
+    // (matching the space the paint already leaves for the scrollbar).
+    private static immutable int archiveButtonSize = 16;
+    private enum int rowRightPad = 18;
     // List indices whose conversation is actively working. A small pulsing
     // bar is drawn before their title while `_activityAnimating` drives it.
     private int[] _activityRows;
@@ -8277,6 +8290,10 @@ public final class SessionListView : ListView
     // and opens the panel after `titleTooltipDelaySeconds`.
     private HoverTooltip _titleTip;
     private bool _titleTipOpen;
+    // Compact tooltip naming the hover archive button, shown while the pointer
+    // rests on it.
+    private HoverTooltip _archiveTip;
+    private bool _archiveTipOpen;
     private double _titleTipSeconds = 0;
     private bool _hoverTitleClipped;
     private static immutable double titleTooltipDelaySeconds = 0.45;
@@ -8452,6 +8469,46 @@ public final class SessionListView : ListView
             opencodeBackground);
     }
 
+    // The hover archive button for a row: a small square at the row's right
+    // edge, centered vertically, sitting in the gutter the paint already
+    // reserves for the scrollbar.
+    private Rect archiveButtonRect(int index)
+    {
+        const rh = rowHeight();
+        const topPad = listTopPad();
+        const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
+        const y = topPad + index * rh - scrollOffset() +
+            (index >= _pinnedRows ? gap : 0);
+        const size = archiveButtonSize;
+        return Rect(bounds().width - rowRightPad - size, y + (rh - size) / 2,
+            size, size);
+    }
+
+    // A tiny archive box: a lid bar over an open-fronted body with a handle,
+    // drawn from rects so it needs no glyph the font may lack (same approach
+    // as drawWarningGlyph).
+    private static void drawArchiveGlyph(Canvas canvas, Rect rect, Color color)
+    {
+        const w = rect.width;
+        const h = rect.height;
+        if (w <= 0 || h <= 0) return;
+        const lidH = maxInt(1, h / 5);
+        canvas.fillRect(Rect(rect.x, rect.y, w, lidH), color);
+        const bodyTop = rect.y + lidH + maxInt(1, h / 8);
+        const bodyH = rect.y + h - bodyTop;
+        if (bodyH <= 0) return;
+        const stroke = maxInt(1, w / 8);
+        canvas.fillRect(Rect(rect.x, bodyTop, stroke, bodyH), color);
+        canvas.fillRect(Rect(rect.x + w - stroke, bodyTop, stroke, bodyH),
+            color);
+        canvas.fillRect(Rect(rect.x, rect.y + h - stroke, w, stroke), color);
+        const handleW = maxInt(1, w / 2);
+        canvas.fillRect(
+            Rect(rect.x + (w - handleW) / 2, bodyTop + bodyH / 3, handleW,
+                stroke),
+            color);
+    }
+
     private int activityPulseStep() const
     {
         return cast(int) (_activityElapsed * 4) % 4;
@@ -8519,7 +8576,7 @@ public final class SessionListView : ListView
             // Leave a clear gutter between the right-aligned time and the
             // scrollbar, which sits flush against the panel edge
             // (setScrollbarInset(0) in the constructor).
-            enum rightPad = 18;
+            enum rightPad = rowRightPad;
             enum titleGap = 10;
             enum warnDotSize = 8;
             enum dotSize = 6;
@@ -8533,11 +8590,16 @@ public final class SessionListView : ListView
                 _incompleteRows[index];
             const unread = index < cast(int) _unreadRows.length &&
                 _unreadRows[index];
+            // While a row is hovered its archive button occupies the far right
+            // of the row, so the time and status dots shift left to make room
+            // instead of being painted over.
+            const hovered = index == _hoverRow;
+            const trailReserve = hovered ? archiveButtonSize + statusGap : 0;
             int statusWidth = 0;
             if (incomplete) statusWidth += warnDotSize;
             if (unread) statusWidth += (incomplete ? statusGap : 0) + dotSize;
-            const statusLeft = width - rightPad - statusWidth;
-            const timeRight = width - rightPad -
+            const statusLeft = width - rightPad - trailReserve - statusWidth;
+            const timeRight = width - rightPad - trailReserve -
                 (statusWidth > 0 ? statusWidth + statusGap : 0);
             int trailWidth = 0;
             if (item.secondary.length > 0)
@@ -8559,6 +8621,22 @@ public final class SessionListView : ListView
                 content.fillCircle(
                     Point(dotLeft + dotSize / 2, y + rowHeight / 2),
                     dotSize / 2, opencodeAccent);
+            }
+
+            // The hover archive button: a small box glyph at the row's right
+            // edge, highlighted under the pointer. Clicking it archives the
+            // conversation (see onMouseDown).
+            if (hovered)
+            {
+                const icon = archiveButtonRect(index);
+                if (_hoverArchive)
+                    content.fillRoundedRect(Rect(icon.x - 3, icon.y - 3,
+                        icon.width + 6, icon.height + 6), 5,
+                        opencodeSelection);
+                drawArchiveGlyph(content,
+                    Rect(icon.x + 1, icon.y + 2, icon.width - 2,
+                        icon.height - 4),
+                    _hoverArchive ? opencodeAccent : opencodeMuted);
             }
 
             const titleColor = item.disabled || item.dimmed ? opencodeMuted
@@ -8625,16 +8703,27 @@ public final class SessionListView : ListView
 
     override bool onMouseMove(ref Event event)
     {
-        setCursor(_dragging ? CursorKind.move : CursorKind.arrow);
         const next = indexAt(event.position);
-        if (next != _hoverRow)
+        const overArchive = next >= 0 &&
+            archiveButtonRect(next).contains(event.position);
+        if (next != _hoverRow || overArchive != _hoverArchive)
         {
+            if (next != _hoverRow)
+            {
+                _hoverTitleClipped = false;
+                _titleTipSeconds = 0;
+                if (_titleTipOpen) closeTitleTooltip();
+            }
             _hoverRow = next;
-            _hoverTitleClipped = false;
-            _titleTipSeconds = 0;
-            if (_titleTipOpen) closeTitleTooltip();
+            _hoverArchive = overArchive;
+            if (_hoverArchive)
+                updateArchiveTooltip();
+            else if (_archiveTipOpen)
+                closeArchiveTooltip();
             invalidate();
         }
+        setCursor(_dragging ? CursorKind.move
+            : (overArchive ? CursorKind.hand : CursorKind.arrow));
         if (_pressing && _pressRow >= 0)
         {
             int dx = event.position.x - _pressPosition.x;
@@ -8688,7 +8777,10 @@ public final class SessionListView : ListView
     {
         const count = cast(int) items().length;
         const row = _hoverRow;
-        const want = row >= 0 && row < count && _hoverTitleClipped;
+        // The archive button's own tooltip replaces the title tooltip while the
+        // pointer is on it, so the two panels never overlap.
+        const want = row >= 0 && row < count && _hoverTitleClipped &&
+            !_hoverArchive;
         if (!want)
         {
             _titleTipSeconds = 0;
@@ -8758,6 +8850,87 @@ public final class SessionListView : ListView
         _titleTip.setBounds(Rect(x, tipY, measured.width, measured.height));
     }
 
+    // -- Hover archive button tooltip -----------------------------------
+
+    // Name the hover archive button so its purpose is clear. Shown immediately
+    // (no delay) while the pointer rests on the small icon.
+    private void updateArchiveTooltip()
+    {
+        const row = _hoverRow;
+        if (row < 0 || row >= cast(int) items().length)
+        {
+            closeArchiveTooltip();
+            return;
+        }
+        if (!_archiveTipOpen) showArchiveTooltip(row);
+        else positionArchiveTooltip(row);
+    }
+
+    private void showArchiveTooltip(int row)
+    {
+        if (_archiveTip is null)
+        {
+            _archiveTip = new HoverTooltip(this);
+            _archiveTip.setWrap(true);
+            _archiveTip.setCompact(true);
+        }
+        _archiveTip.setText(archiveTooltipProvider !is null
+            ? archiveTooltipProvider(row) : "Archive conversation");
+        if (_archiveTip.parent() is null) popupRoot(this).add(_archiveTip);
+        positionArchiveTooltip(row);
+        _archiveTipOpen = true;
+    }
+
+    private void closeArchiveTooltip()
+    {
+        _archiveTipOpen = false;
+        if (_archiveTip !is null && _archiveTip.parent() !is null)
+            _archiveTip.parent().remove(_archiveTip);
+    }
+
+    // Sit the panel just left of the button, flipping to the right when the
+    // sidebar is too narrow, clamped inside the window like the title tooltip.
+    private void positionArchiveTooltip(int row)
+    {
+        if (_archiveTip is null) return;
+        const rh = rowHeight();
+        if (rh <= 0) return;
+        const button = archiveButtonRect(row);
+        const origin = localToGlobal(Point(button.x, button.y));
+        const measured = _archiveTip.measure(Size(int.max, int.max));
+        auto root = popupRoot(this);
+        const rootWidth = root is null ? origin.x + bounds().width
+            : root.bounds().width;
+        const rootHeight = root is null ? origin.y + bounds().height
+            : root.bounds().height;
+        enum tooltipGap = 8;
+        enum edgePad = 8;
+        int x = origin.x - measured.width - tooltipGap;
+        if (x < edgePad) x = origin.x + bounds().width + tooltipGap;
+        x = clampInt(x, edgePad,
+            maxInt(edgePad, rootWidth - measured.width - edgePad));
+        int tipY = origin.y + (rh - measured.height) / 2;
+        tipY = clampInt(tipY, edgePad,
+            maxInt(edgePad, rootHeight - measured.height - edgePad));
+        _archiveTip.setBounds(Rect(x, tipY, measured.width, measured.height));
+    }
+
+    /// Test-only: whether the archive-button hover tooltip is open.
+    public bool archiveTooltipOpenForTesting() const { return _archiveTipOpen; }
+
+    /// Test-only: the open archive-button tooltip's text ("" when closed).
+    public string archiveTooltipTextForTesting()
+    {
+        return _archiveTip is null ? "" : _archiveTip.textForTesting();
+    }
+
+    /// Test-only: global center of a row's hover archive button.
+    public Point archiveButtonCenterForTesting(int index)
+    {
+        const r = archiveButtonRect(index);
+        return localToGlobal(Point(r.x + r.width / 2, r.y + r.height / 2));
+    }
+
     /// Test-only: whether the full-title hover tooltip is open.
     public bool titleTooltipOpenForTesting() const { return _titleTipOpen; }
 
@@ -8782,8 +8955,10 @@ public final class SessionListView : ListView
     override void onMouseLeave()
     {
         _hoverRow = -1;
+        _hoverArchive = false;
         _titleTipSeconds = 0;
         if (_titleTipOpen) closeTitleTooltip();
+        if (_archiveTipOpen) closeArchiveTooltip();
         setCursor(CursorKind.arrow);
     }
 
@@ -8797,11 +8972,23 @@ public final class SessionListView : ListView
             return true;
         }
         if (event.button != MouseButton.left) return false;
+        // A left press on the hovered row's archive button archives the
+        // conversation instead of selecting or dragging it.
+        const row = indexAt(event.position);
+        if (row >= 0 && row == _hoverRow &&
+            archiveButtonRect(row).contains(event.position))
+        {
+            // The row list rebuilds under the action, so drop the hover state
+            // and its tooltip before the callback runs.
+            _hoverArchive = false;
+            closeArchiveTooltip();
+            if (onArchiveRequested !is null) onArchiveRequested(row);
+            return true;
+        }
         // Select through `indexAt` instead of the base handler: the pinned
         // divider shifts every row below it, so the base class's uniform row
         // math would mis-map clicks around the gap.
         requestFocus();
-        const row = indexAt(event.position);
         if (row >= 0 && !items()[cast(size_t) row].disabled)
         {
             setSelectedIndex(row);
@@ -9546,6 +9733,7 @@ public final class OpenCodeRoot : VBox
             return *existing;
         auto created = new ConversationRuntime(_settings.baseUrl,
             activeApiKey(_settings));
+        created.client.setEventWake(_window.serviceWake());
         // The headless harness can pause automatic continuations globally;
         // carry that test mode into chats created afterward.
         created.toolContinuationPaused = _toolContinuationPaused;
@@ -9566,6 +9754,7 @@ public final class OpenCodeRoot : VBox
         if (auto existing = agentId in rt.agentClients) return *existing;
         auto created = new OpenCodeClient(_settings.baseUrl,
             activeApiKey(_settings));
+        created.setEventWake(_window.serviceWake());
         rt.agentClients[agentId] = created;
         return created;
     }
@@ -9597,6 +9786,7 @@ public final class OpenCodeRoot : VBox
         super(0);
         _window = window;
         _window.applicationService = &serviceExecution;
+        _window.afterPaintSubmitted = &recordLatencyPaint;
         // Phase timing, so a slow start can be attributed to a specific step
         // rather than guessed at from the total.
         auto phaseMark = MonoTime.currTime;
@@ -9614,6 +9804,7 @@ public final class OpenCodeRoot : VBox
         phase("journal runtime");
         _settings = loadSettings();
         _execution = new ConversationRuntime(_settings.baseUrl, activeApiKey(_settings));
+        _client.setEventWake(_window.serviceWake());
         // experimental: computer use - mirror the persisted switch into the
         // toolset/prompt gate before any request or toolset build.
         setComputerUseSetting(_settings.experimentalComputerUse);
@@ -11001,6 +11192,14 @@ public final class OpenCodeRoot : VBox
         _sessionList.onPinDropRequested = delegate(int row, bool pinned)
         {
             setSessionPinnedAtRow(row, pinned);
+        };
+        _sessionList.onArchiveRequested = delegate(int row)
+        {
+            toggleSessionArchivedAtRow(row);
+        };
+        _sessionList.archiveTooltipProvider = delegate(int row)
+        {
+            return archiveTooltipForRow(row);
         };
 
         auto chatPanel = new VBox(0);
@@ -14186,6 +14385,14 @@ public final class OpenCodeRoot : VBox
 
     private void appendStreamDelta(string text, bool reasoning)
     {
+        auto trace = _client.latency();
+        scope(exit)
+        {
+            if (trace !is null && text.length && trace.mark(LatencyStage.applied) &&
+                viewingTurnOwner() && _messagesScroll.follow)
+                _pendingLatencyPaint[trace.snapshot().requestId] =
+                    PendingLatencyPaint(trace, _loadedRuntimeId);
+        }
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
@@ -15968,6 +16175,7 @@ public final class OpenCodeRoot : VBox
         retired.closeSession();
         _client = new OpenCodeClient(_settings.baseUrl,
             activeApiKey(_settings));
+        _client.setEventWake(_window.serviceWake());
     }
 
     /// Stop is a local state transition first and an I/O cancellation second.
@@ -16243,6 +16451,7 @@ public final class OpenCodeRoot : VBox
 
     private void sendMessage()
     {
+        const submittedTicks = MonoTime.currTime.ticks;
         // Startup is still parsing the saved conversations off the UI thread.
         // Sending now would create a chat the restore then replaces, so keep
         // the typed prompt in the composer and ask the user to wait a moment.
@@ -16398,7 +16607,7 @@ public final class OpenCodeRoot : VBox
         _preparingToolCalls.length = 0;
         _pendingToolResults = 0;
         _turnCancelled = false;
-        startChatRequest(_current);
+        startChatRequest(_current, true, submittedTicks);
     }
 
     /// Alt+Enter is an explicit next-turn queue. It never steers or interrupts
@@ -17513,6 +17722,7 @@ public final class OpenCodeRoot : VBox
         if (runtime.compactionClient !is null) return false;
         runtime.compactionClient = new OpenCodeClient(_settings.baseUrl,
             activeApiKey(_settings));
+        runtime.compactionClient.setEventWake(_window.serviceWake());
         runtime.compactionClient.setOpenCodeSession(sessionRoutingKey(*session));
         runtime.compactionOutput = "";
         runtime.compactionAnchor = session.compactedThroughMessageId;
@@ -17607,8 +17817,8 @@ public final class OpenCodeRoot : VBox
         return users == 1;
     }
 
-    /// Ask for one optional name rewrite: mark it pending and try immediately,
-    /// so the name appears fast without waiting for the first reply.
+    /// Queue the optional title behind foreground work so it cannot compete
+    /// with the user's first response for provider prefill or admission slots.
     private void scheduleQuickTitle(int sessionIndex)
     {
         if (!_settings.quickTitle) return;
@@ -17633,6 +17843,7 @@ public final class OpenCodeRoot : VBox
         auto runtime = runtimeForSession(sessionIndex);
         if (runtime is null || !runtime.titlePending ||
             runtime.titleClient !is null) return;
+        if (anyTurnIsBusy()) return;
         if (runtime.titleAttempts >= quickTitleMaxAttempts)
         {
             runtime.titlePending = false;
@@ -17658,6 +17869,7 @@ public final class OpenCodeRoot : VBox
             seed = seed[0 .. quickTitleSeedChars];
         runtime.titleClient = new OpenCodeClient(_settings.baseUrl,
             activeApiKey(_settings));
+        runtime.titleClient.setEventWake(_window.serviceWake());
         runtime.titleClient.setOpenCodeSession(
             sessionRoutingKey(*session) ~ "-title");
         runtime.titleSessionId = session.id;
@@ -18004,8 +18216,10 @@ public final class OpenCodeRoot : VBox
         return rendered;
     }
 
-    private void startChatRequest(int sessionIndex, bool userTurn = true)
+    private void startChatRequest(int sessionIndex, bool userTurn = true,
+        long submittedTicks = 0)
     {
+        const preparationStartedTicks = submittedTicks ? submittedTicks : MonoTime.currTime.ticks;
         // Any new request supersedes a scheduled re-send. A request the user
         // started (or a manual Retry) also starts the attempt budget over; an
         // automatic re-send keeps it, so its interval keeps widening.
@@ -18287,9 +18501,10 @@ public final class OpenCodeRoot : VBox
         const requestId = ++_nextRequestId;
         _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
             activeApiKey(_settings));
+        _client.setEventWake(_window.serviceWake());
         const started = _client.startChatMessages(messages, tools, orchestratorModel,
             session.thinking, requestId, reasoningControl.effort,
-            llamaCpp ? reasoningControl.budgetTokens : 0, llamaCpp);
+            llamaCpp ? reasoningControl.budgetTokens : 0, llamaCpp, preparationStartedTicks);
         if (started != ChatStartResult.accepted)
         {
             _requestTokenKeyIds.remove(requestId);
@@ -22285,6 +22500,32 @@ public final class OpenCodeRoot : VBox
         setSessionPinned(_sessionIndices[row], pinned);
     }
 
+    // Archive or unarchive the conversation shown at `row`. Mirrors the
+    // context-menu "Archive conversation" command so the hover button and the
+    // menu stay in step.
+    private void toggleSessionArchivedAtRow(int row)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length) return;
+        const sessionIndex = _sessionIndices[row];
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        setSessionArchived(sessionIndex,
+            !isSessionArchived(_sessions[sessionIndex].id));
+    }
+
+    // Tooltip wording for the hover archive button on `row`, matching the
+    // context-menu command.
+    private string archiveTooltipForRow(int row)
+    {
+        if (row < 0 || row >= cast(int) _sessionIndices.length)
+            return "Archive conversation";
+        const sessionIndex = _sessionIndices[row];
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return "Archive conversation";
+        return isSessionArchived(_sessions[sessionIndex].id)
+            ? "Unarchive conversation" : "Archive conversation";
+    }
+
     // Pin or unpin a conversation. Idempotent so a drag drop that matches the
     // current state does not rewrite the pins file.
     private void setSessionPinned(int sessionIndex, bool pinned)
@@ -24338,6 +24579,23 @@ public final class OpenCodeRoot : VBox
     private bool _executionServicedSinceTick;
     private bool _servicingExecution;
     private size_t _executionServiceCursor;
+    private struct PendingLatencyPaint { RequestLatency trace; string sessionId; }
+    private PendingLatencyPaint[ulong] _pendingLatencyPaint;
+    private LatencySnapshot _lastLatencyPaint;
+
+    private void recordLatencyPaint()
+    {
+        foreach (pending; _pendingLatencyPaint)
+            if (_current >= 0 && pending.sessionId == _sessions[_current].id &&
+                pending.trace.mark(LatencyStage.paintSubmitted))
+            {
+                _lastLatencyPaint = pending.trace.snapshot();
+                pending.trace.report("paintSubmitted");
+            }
+        _pendingLatencyPaint = null;
+    }
+
+    public LatencySnapshot latencyPaintForTesting() { return _lastLatencyPaint; }
 
     private void invalidateChangedWorkspaceEvidence()
     {
@@ -24393,7 +24651,22 @@ public final class OpenCodeRoot : VBox
         }
         _executionServicedSinceTick = true;
         _servicingExecution = true;
-        scope (exit) _servicingExecution = false;
+        scope (exit)
+        {
+            _servicingExecution = false;
+            // A bounded drain can leave work without a new empty-to-nonempty
+            // transition. Post one more service pass rather than waiting for
+            // the animation timer; the native loop paints between passes.
+            foreach (runtime; _conversationRuntimes)
+                if (runtime.eventScratch.length || runtime.client.hasPendingEvents() ||
+                    (runtime.compactionClient !is null && runtime.compactionClient.hasPendingEvents()) ||
+                    (runtime.titleClient !is null && runtime.titleClient.hasPendingEvents()))
+                {
+                    auto wake = _window.serviceWake();
+                    if (wake !is null) wake();
+                    break;
+                }
+        }
         // Each conversation owns a separate client and event queue. Service
         // all of them on every UI tick, then restore the selected context.
 

@@ -66,8 +66,30 @@ int main()
     window.onNativeEvent(resize);
     root.queueContentInSessionForTesting(owner, " resize owner");
     root.queueContentInSessionForTesting(other, " resize other");
-    // Only the native timer runs here; widget tick/layout is suspended.
-    foreach (_; 0 .. 4) window.onNativeTick(0.02);
+    // Deliver real posted notifications without dispatching timer messages.
+    // No widget tick is permitted to make these two streams progress.
+    version (AuroraHeadless)
+        foreach (_; 0 .. 4) window.onNativeService();
+    else version (Windows)
+    {
+        import core.sys.windows.windows : MSG, PeekMessageW, TranslateMessage,
+            DispatchMessageW, PM_REMOVE, WM_TIMER;
+        const wakeDeadline = MonoTime.currTime + 1.seconds;
+        while (root.lastMessageContentInSessionForTesting(other) != " resize other" &&
+            MonoTime.currTime < wakeDeadline)
+        {
+            MSG message;
+            while (PeekMessageW(&message, null, 0, 0, PM_REMOVE))
+                if (message.message != WM_TIMER)
+                {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            Thread.sleep(1.msecs);
+        }
+    }
+    else
+        foreach (_; 0 .. 4) window.onNativeService();
     assert(root.lastMessageContentInSessionForTesting(owner).indexOf("resize owner") >= 0);
     assert(root.lastMessageContentInSessionForTesting(other) == " resize other");
     root.flushRepositoryForTesting();

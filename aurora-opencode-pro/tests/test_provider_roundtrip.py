@@ -14,6 +14,7 @@ package = Path(__file__).resolve().parents[1]
 requests = []
 failures = []
 main_rounds = []
+title_after_rounds = []
 hold = threading.Event()
 
 def call(identity, name, arguments):
@@ -58,6 +59,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             hold.wait(20)
             return
         if not request.get("tools"):
+            title_after_rounds.append(len(main_rounds))
             rounds = [{"choices": [{"delta": {"content": "Fixture"}, "finish_reason": "stop"}]}]
         else:
             messages = request["messages"]
@@ -137,6 +139,8 @@ try:
         assert result.returncode == 0, "Desktop round trip failed"
     assert len(main_rounds) == 4, f"Unexpected continuation count: {len(main_rounds)}"
     assert not failures, failures
+    if "--production" not in sys.argv:
+        assert title_after_rounds == [4], f"Optional title competed with foreground work: {title_after_rounds}"
     print("PASS four real HTTP/SSE rounds, native tools, request pairing and final settlement", flush=True)
 finally:
     hold.set()

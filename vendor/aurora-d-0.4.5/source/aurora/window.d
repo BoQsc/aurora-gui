@@ -145,6 +145,15 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     bool delegate() onCloseRequested;
     /// Serialized non-rendering application work, including during live resize.
     void delegate(double) applicationService;
+    /** Completed render submission; this does not measure display scanout. */
+    void delegate() afterPaintSubmitted;
+
+    void delegate() serviceWake() { return _native.serviceWake(); }
+
+    override void onNativeService()
+    {
+        if (applicationService !is null) applicationService(0.0);
+    }
 
     this(WindowOptions options, Theme theme = Theme.light())
     {
@@ -730,6 +739,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         const exactResizeFrame = _resizeRenderExactNow;
         const renderStarted = MonoTime.currTime;
         const completed = renderSceneToNative(_scene);
+        if (completed && afterPaintSubmitted !is null) afterPaintSubmitted();
         const renderMicros = (MonoTime.currTime - renderStarted).total!"usecs";
         _lastSceneMicros = sceneMicros;
         _lastRenderMicros = renderMicros;

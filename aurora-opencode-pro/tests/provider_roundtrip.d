@@ -5,6 +5,7 @@ import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.opencode_client : OpenCodeClient, ChatStartResult, OpenCodeEvent;
 import auroraopencode.workerbudget : WorkerBudget;
 import auroraopencode.retrypolicy : ProviderRetryPolicy;
+import auroraopencode.latency : LatencyStage;
 import auroraopencode.core : Settings, saveSettings, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
 import core.thread : Thread;
@@ -32,6 +33,7 @@ int main()
     settings.workspace = workspace;
     settings.toolsEnabled = true;
     settings.legacyTools = false;
+    settings.quickTitle = true;
     saveSettings(settings);
     WindowOptions options;
     options.width = 1200;
@@ -66,6 +68,20 @@ int main()
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     assert(root.verificationStatusForTesting() == "passed");
     assert(root.taskStatusForTesting() == "completed");
+    const latency = root.latencyPaintForTesting();
+    assert(latency.microseconds[LatencyStage.firstToken] >= 0 &&
+        latency.microseconds[LatencyStage.applied] >= latency.microseconds[LatencyStage.firstToken] &&
+        latency.microseconds[LatencyStage.paintSubmitted] >= latency.microseconds[LatencyStage.applied],
+        "Request trace did not follow its first token into a completed render submission");
+    const titleDeadline = MonoTime.currTime + 3.seconds;
+    while (root.sessionTitleForTesting(root.currentSessionForTesting()) != "Fixture" &&
+        MonoTime.currTime < titleDeadline)
+    {
+        window.onNativeService();
+        Thread.sleep(5.msecs);
+    }
+    assert(root.sessionTitleForTesting(root.currentSessionForTesting()) == "Fixture",
+        "Deferred optional title did not run after foreground work completed");
     root.persistForTesting();
     root.reloadSessionsForTesting();
     assert(root.lastAssistantContentForTesting() == "READY");

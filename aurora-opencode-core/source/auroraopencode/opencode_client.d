@@ -3,6 +3,9 @@ module auroraopencode.opencode_client;
 import auroraopencode.provideradapter : buildChatBody, chatMessageToJson, normalizeSystemMessages,
     providerImageDataUrl = chatImageDataUrl;
 import auroraopencode.workerbudget : WorkerBudget, providerWorkerBudget;
+import auroraopencode.httptransport : AsyncHttpRequest;
+import auroraopencode.latency : RequestLatency, LatencyStage;
+import std.process : environment;
 import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
@@ -441,6 +444,9 @@ final class OpenCodeClient
     private bool _modelsRefreshQueued;
     private bool _cancel;
     private HINTERNET _chatHandle;
+    private AsyncHttpRequest _httpRequest;
+    private RequestLatency _latency;
+    private void delegate() _eventWake;
     private HINTERNET _modelsHandle;
     private HINTERNET _session;
     private HINTERNET _retiredSession;
@@ -475,7 +481,7 @@ final class OpenCodeClient
     // between Send and the first token; that wait is really several stages with
     // very different causes, so each is timed and reported (see WaitBreakdown).
     // All are milliseconds since the request began, or -1 when not reached.
-    private long _waitConnectMs = -1;    // until the TCP/TLS connection is open
+    private long _waitConnectMs = -1;    // actual WinHTTP callback, WinINet handle creation
     private long _waitSentMs = -1;       // until the request body (incl. images)
                                          // is fully uploaded
     private long _waitHeadersMs = -1;    // until the upstream status line arrives
@@ -502,6 +508,7 @@ final class OpenCodeClient
                 ", streamed=" ~ to!string(streamed) ~ " [" ~ _baseUrl ~ "]");
         };
         _mutex = new Mutex();
+        _latency = new RequestLatency(0);
         _retryPolicy = retryPolicy;
         _queueSpace = new Condition(_mutex);
         _consumerThread = Thread.getThis();
@@ -513,6 +520,13 @@ final class OpenCodeClient
 
     string baseUrl() const @safe pure nothrow @nogc { return _baseUrl; }
     string apiKey() const @safe pure nothrow @nogc { return _apiKey; }
+
+    void setEventWake(void delegate() wake)
+    {
+        synchronized (_mutex) _eventWake = wake;
+    }
+
+    RequestLatency latency() { synchronized (_mutex) return _latency; }
 
     void setCredentials(string baseUrl, string apiKey)
     {
@@ -604,7 +618,10 @@ final class OpenCodeClient
         // HttpSendRequest returns only after response headers arrive. The
         // request-sent notification is the actual end of the upload.
         if (client._chatHandle is handle)
+        {
             client._waitSentMs = elapsedMsSince(client._waitStart);
+            client._latency.mark(LatencyStage.uploaded);
+        }
         client._mutex.unlock();
     }
 
@@ -628,7 +645,8 @@ final class OpenCodeClient
     ChatStartResult startChatMessages(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking,
         ulong requestId = 0, string reasoningEffort = "",
-        int thinkingBudgetTokens = 0, bool llamaCppServer = false)
+        int thinkingBudgetTokens = 0, bool llamaCppServer = false,
+        long preparationStartedTicks = 0)
     {
         _mutex.lock();
         if (_chatBusy || _sessionClosed)
@@ -648,6 +666,10 @@ final class OpenCodeClient
         const requestBaseUrl = _baseUrl;
         const requestApiKey = _apiKey;
         const requestSession = _opencodeSession;
+        _latency = new RequestLatency(requestId, preparationStartedTicks);
+        _latency.mark(LatencyStage.accepted);
+        const exactPreflight = environment.get("AURORA_TOKEN_PREFLIGHT", "0") == "1";
+        const useWinHttp = environment.get("AURORA_HTTP_TRANSPORT", "winhttp") != "wininet";
         _mutex.unlock();
 
         try
@@ -696,7 +718,7 @@ final class OpenCodeClient
             scope (exit) _workerBudget.release();
             runChatRequest(messageCopy, toolCopy, model, thinking, requestId,
                 reasoningEffort, thinkingBudgetTokens, llamaCppServer,
-                requestBaseUrl, requestApiKey, requestSession);
+                requestBaseUrl, requestApiKey, requestSession, exactPreflight, useWinHttp);
         });
         worker.isDaemon = true;
         worker.start();
@@ -716,8 +738,10 @@ final class OpenCodeClient
         _cancel = true;
         _queueSpace.notifyAll();
         auto handle = _chatHandle;
+        auto http = _httpRequest;
         _chatHandle = null;
         _mutex.unlock();
+        if (http !is null) http.cancel();
         if (handle !is null)
         {
             try InternetCloseHandle(handle);
@@ -777,6 +801,7 @@ final class OpenCodeClient
         _queueSpace.notifyAll();
         auto session = _session;
         auto chatHandle = _chatHandle;
+        auto http = _httpRequest;
         auto modelsHandle = _modelsHandle;
         _session = null;
         _chatHandle = null;
@@ -789,6 +814,7 @@ final class OpenCodeClient
             session = null;
         }
         _mutex.unlock();
+        if (http !is null) http.cancel();
         if (chatHandle !is null) InternetCloseHandle(chatHandle);
         if (modelsHandle !is null) InternetCloseHandle(modelsHandle);
         if (session !is null)
@@ -909,8 +935,13 @@ final class OpenCodeClient
 
     private void pushEvent(OpenCodeEvent event)
     {
+        void delegate() wake;
         _mutex.lock();
-        scope (exit) _mutex.unlock();
+        scope (exit)
+        {
+            _mutex.unlock();
+            if (wake !is null) wake();
+        }
 
         const cost = eventBytes(event);
         // Backpressure belongs on producers. Control events generated on the
@@ -952,6 +983,7 @@ final class OpenCodeClient
             _pendingBytes += cost;
             return;
         }
+        if (!_pending.length) wake = _eventWake;
         _pending ~= event;
         _pendingBytes += cost;
     }
@@ -1098,7 +1130,8 @@ final class OpenCodeClient
     private void runChatRequest(ChatRequestMessage[] messages,
         OpenCodeToolDef[] tools, string model, bool thinking, ulong requestId,
         string reasoningEffort, int thinkingBudgetTokens, bool llamaCppServer,
-        string requestBaseUrl, string requestApiKey, string requestSession)
+        string requestBaseUrl, string requestApiKey, string requestSession,
+        bool exactPreflight, bool useWinHttp)
     {
         _streamRequestId = requestId;
         _deferStreamEnd = true;
@@ -1111,6 +1144,8 @@ final class OpenCodeClient
             _hasStreamEnd = false;
             _deferStreamEnd = false;
             _decoder._streamActive = false;
+            _latency.mark(LatencyStage.settled);
+            _latency.report("settled");
             finishWorker(true);
             // A terminal event is permission for the UI to send the next tool
             // round/follow-up. Release this worker before publishing it, or a
@@ -1132,6 +1167,8 @@ final class OpenCodeClient
             string body = buildChatBody(messages, tools, model, thinking,
                 requestBaseUrl, false, reasoningEffort, thinkingBudgetTokens,
                 llamaCppServer);
+            _latency.mark(LatencyStage.serialized);
+            _latency.wire(body.length, useWinHttp ? "winhttp" : "wininet");
             _decoder._streamReasoning = "";
             _decoder._streamContent = "";
             _streamRequestId = requestId;
@@ -1158,11 +1195,13 @@ final class OpenCodeClient
             // the log can separate "big body / slow upload" from "fast upload,
             // slow provider".
             const waitStart = MonoTime.currTime;
+            _mutex.lock();
             _waitStart = waitStart;
             _waitCacheLogged = false;
             _waitConnectMs = _waitSentMs = _waitHeadersMs = -1;
             _waitFirstByteMs = _waitFirstTokenMs = -1;
             _lastRequestBytes = _lastRequestImages = 0;
+            _mutex.unlock();
 
             string headers = "User-Agent: " ~ userAgentFor(requestBaseUrl) ~ "\r\n";
             if (requestApiKey.length > 0)
@@ -1176,7 +1215,8 @@ final class OpenCodeClient
             // in the log, and "the model did not answer about the image" cannot
             // be separated from "the image never left the app".
             logRequestShape(messages, model, requestBaseUrl, llamaCppServer);
-            auto session = openSession();
+            HINTERNET session;
+            if (!useWinHttp || (llamaCppServer && exactPreflight)) session = openSession();
             // Ask the same local server that will run inference to apply the
             // loaded model's tokenizer and chat template to the exact request
             // body. This is model-aware for Qwen, DeepSeek, or any other GGUF;
@@ -1184,7 +1224,7 @@ final class OpenCodeClient
             // tokens. Failure is non-fatal so older llama.cpp builds keep
             // working and their final streamed usage can still provide the
             // authoritative count.
-            if (llamaCppServer)
+            if (llamaCppServer && exactPreflight)
             {
                 _decoder._preflightPromptTokens = countChatInputTokens(session, body,
                     requestBaseUrl, requestApiKey);
@@ -1218,11 +1258,17 @@ final class OpenCodeClient
                         replayReasoning, reasoningEffort,
                         droppedReasoning ? 0 : thinkingBudgetTokens,
                         llamaCppServer);
-                auto bodyBytes = cast(ubyte[]) body.dup;
-                _lastRequestBytes = cast(long) bodyBytes.length;
-                _lastRequestImages = countInlineImages(messages);
+                // Both transports retain this immutable body through send.
+                // A second full copy is especially costly for inline images.
+                auto bodyBytes = cast(const(ubyte)[]) body;
+                synchronized (_mutex)
+                {
+                    _lastRequestBytes = cast(long) bodyBytes.length;
+                    _lastRequestImages = countInlineImages(messages);
+                }
                 HINTERNET connection;
                 HINTERNET request;
+                AsyncHttpRequest http;
                 bool requestRegistered;
                 bool retry;
                 DWORD retryStatus;
@@ -1230,12 +1276,39 @@ final class OpenCodeClient
                 string retryReason;
                 try
                 {
+                    DWORD statusCode;
+                    if (useWinHttp)
+                    {
+                        http = new AsyncHttpRequest(target.host, target.port, target.path,
+                            target.secure, isLoopbackApiBaseUrl(requestBaseUrl));
+                        bool stop;
+                        synchronized (_mutex)
+                        {
+                            stop = _cancel || _sessionClosed;
+                            _httpRequest = http;
+                        }
+                        if (stop) http.cancel();
+                        statusCode = http.send(headers, body);
+                        const timing = http.timing();
+                        if (timing.connected >= 0) _latency.mark(LatencyStage.connected, timing.connected);
+                        if (timing.sent >= 0) _latency.mark(LatencyStage.uploaded, timing.sent);
+                        _latency.wire(body.length, "winhttp", timing.protocol);
+                        synchronized (_mutex)
+                        {
+                            _waitConnectMs = timing.connected >= 0
+                                ? cast(long) (cast(double) (timing.connected - waitStart.ticks) * 1000 / MonoTime.ticksPerSecond) : -1;
+                            _waitSentMs = timing.sent >= 0
+                                ? cast(long) (cast(double) (timing.sent - waitStart.ticks) * 1000 / MonoTime.ticksPerSecond) : -1;
+                        }
+                    }
+                    else
+                    {
                     connection = InternetConnectW(session,
                         toUTF16z(target.host), target.port, null, null,
                         INTERNET_SERVICE_HTTP, 0, 0);
                     if (connection is null)
                         throw new Exception("Could not connect to " ~ target.host);
-                    _waitConnectMs = elapsedMsSince(waitStart);
+                    synchronized (_mutex) _waitConnectMs = elapsedMsSince(waitStart);
 
                     const flags = requestFlags(target);
                     request = HttpOpenRequestW(connection, "POST"w.ptr,
@@ -1255,20 +1328,20 @@ final class OpenCodeClient
                     // This call includes both upload and response-header wait.
                     // The status callback records the upload boundary separately.
                     if (!HttpSendRequestW(request, toUTF16z(headers), -1,
-                        bodyBytes.ptr, cast(DWORD) bodyBytes.length))
+                        cast(void*) bodyBytes.ptr, cast(DWORD) bodyBytes.length))
                         throw new Exception("Chat request failed (" ~
                             wininetErrorText(GetLastError()) ~ ").");
-                    _waitHeadersMs = elapsedMsSince(waitStart);
-
-
-                    DWORD statusCode;
                     DWORD statusLength = cast(DWORD) statusCode.sizeof;
-                    if (HttpQueryInfoW(request,
+                    if (!HttpQueryInfoW(request,
                             HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-                            &statusCode, &statusLength, null) &&
-                        statusCode != 200)
+                            &statusCode, &statusLength, null))
+                        throw new Exception("Could not read the HTTP status.");
+                    }
+                    synchronized (_mutex) _waitHeadersMs = elapsedMsSince(waitStart);
+                    _latency.mark(LatencyStage.headers);
+                    if (statusCode != 200)
                     {
-                        const detail = readAllAsUtf8(request);
+                        const detail = http !is null ? http.readError() : readAllAsUtf8(request);
                         const reasoningRejected =
                             isReasoningReplayRejection(detail);
                         // A 429 that names a usage limit with a reset time is a
@@ -1342,6 +1415,10 @@ final class OpenCodeClient
                             _decoder._streamError.length == 0)
                         {
                             DWORD readBytes;
+                            if (http !is null)
+                                readBytes = cast(DWORD) http.read(buffer);
+                            else
+                            {
                             // A full-size synchronous read can wait to fill the
                             // buffer. Read only bytes already available so short
                             // token chunks and [DONE] reach the UI immediately.
@@ -1364,10 +1441,12 @@ final class OpenCodeClient
                                 throw new Exception("Stream read failed (" ~
                                     wininetErrorText(errorCode) ~ ").");
                             }
+                            }
                             if (readBytes == 0) break;
 
-                            if (_waitFirstByteMs < 0)
-                                _waitFirstByteMs = elapsedMsSince(waitStart);
+                            synchronized (_mutex)
+                                if (_waitFirstByteMs < 0) _waitFirstByteMs = elapsedMsSince(waitStart);
+                            _latency.mark(LatencyStage.firstByte);
                             lineBuffer ~= cast(string)
                                 buffer[0 .. cast(size_t) readBytes];
                             lineBuffer = dispatchSseLines(lineBuffer);
@@ -1389,6 +1468,11 @@ final class OpenCodeClient
                 }
                 finally
                 {
+                    if (http !is null)
+                    {
+                        http.finish();
+                        synchronized (_mutex) if (_httpRequest is http) _httpRequest = null;
+                    }
                     if (request !is null)
                     {
                         if (!requestRegistered || unregisterRequest(request, true))
@@ -1876,7 +1960,8 @@ final class OpenCodeClient
     private static void logRequestShape(const(ChatRequestMessage)[] messages,
         string model, string baseUrl, bool llamaCppServer)
     {
-        auto normalized = normalizeSystemMessages(messages, llamaCppServer);
+        const(ChatRequestMessage)[] normalized = llamaCppServer
+            ? normalizeSystemMessages(messages, true) : messages;
         size_t images;
         size_t imageBytes;
         size_t requestBytes;
@@ -1939,8 +2024,12 @@ final class OpenCodeClient
 
     private void recordFirstStreamToken()
     {
-        if (_waitFirstTokenMs >= 0) return;
-        _waitFirstTokenMs = elapsedMsSince(_waitStart);
+        synchronized (_mutex)
+        {
+            if (_waitFirstTokenMs >= 0) return;
+            _waitFirstTokenMs = elapsedMsSince(_waitStart);
+        }
+        _latency.mark(LatencyStage.firstToken);
         logWaitBreakdown();
         logPromptCache();
     }

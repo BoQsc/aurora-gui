@@ -1,5 +1,40 @@
 module auroraopencode.provideradapter;
 
+import core.sync.mutex : Mutex;
+
+private __gshared Mutex schemaMutex;
+private __gshared JSONValue[string] schemaCache;
+private __gshared size_t schemaBytes;
+private __gshared ulong schemaParses;
+shared static this() { schemaMutex = new Mutex(); }
+
+/// Content identity includes every schema byte. Cached JSON is only read by
+/// serialization; callers cannot mutate it through the public string API.
+private JSONValue toolParameters(string json)
+{
+    synchronized (schemaMutex)
+    {
+        if (auto hit = json in schemaCache) return *hit;
+        JSONValue parsed;
+        try parsed = parseJSON(json);
+        catch (Exception) parsed = JSONValue.emptyObject;
+        ++schemaParses;
+        if (json.length <= 256 * 1024)
+        {
+            if (schemaCache.length >= 256 || schemaBytes + json.length > 4 * 1024 * 1024)
+            {
+                schemaCache = null;
+                schemaBytes = 0;
+            }
+            schemaCache[json] = parsed;
+            schemaBytes += json.length;
+        }
+        return parsed;
+    }
+}
+
+ulong toolSchemaParsesForTesting() { synchronized (schemaMutex) return schemaParses; }
+
 // Pure provider wire projection. Transport handles and conversation widgets
 // stay outside this boundary; captured requests can be replayed in fixtures.
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolDef,
@@ -156,7 +191,9 @@ public string buildChatBody(const(ChatRequestMessage)[] messages,
     JSONValue root;
     root["model"] = model;
     JSONValue messageList = JSONValue(string[].init);
-    foreach (message; normalizeSystemMessages(messages, llamaCppServer))
+    const(ChatRequestMessage)[] projected = llamaCppServer
+        ? normalizeSystemMessages(messages, true) : messages;
+    foreach (message; projected)
         messageList.array ~= chatMessageToJson(message, forceReasoningReplay);
     root["messages"] = messageList;
     if (tools.length > 0)
@@ -169,8 +206,7 @@ public string buildChatBody(const(ChatRequestMessage)[] messages,
             JSONValue funcDef;
             funcDef["name"] = tool.name;
             funcDef["description"] = tool.description;
-            try funcDef["parameters"] = parseJSON(tool.parametersJson);
-            catch (Exception) funcDef["parameters"] = JSONValue.emptyObject;
+            funcDef["parameters"] = toolParameters(tool.parametersJson);
             toolJson["function"] = funcDef;
             toolList.array ~= toolJson;
         }

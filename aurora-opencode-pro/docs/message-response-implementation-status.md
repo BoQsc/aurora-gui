@@ -3,11 +3,15 @@
 Updated 2026-10-06. The full migration in `message-response-architecture-review.md`
 is **not complete**. This is a verified hardening stage.
 
+The subsequent transport/startup latency stage is documented in
+`latency-improvements.md`, including its controls, timing evidence and deployment.
+
 ## Current path
 
 Composer and steering commands enter `OpenCodeRoot`. Each conversation directly
 owns its `ThreadEngine` execution state. Pure branch projection and the prompt
-cache prepare requests; `ProviderAdapter` serializes them. Bounded WinINet workers
+cache prepare requests; `ProviderAdapter` serializes them. Bounded provider workers
+use shared asynchronous WinHTTP requests (with a WinINet compatibility option) and
 feed a transport-independent `ProviderStreamDecoder`, then a bounded client queue.
 A serialized native application service applies events and schedules tools.
 Tool results return through the same queue. One repository owner orders journal
@@ -23,9 +27,9 @@ It still runs on the window thread: it is **not** an autonomous actor.
 | --- | --- |
 | Execution state | Direct per-chat ownership replaces save/load field copying. A scalar deterministic request reducer tracks phase/correlation. Stop rejects late output; unknown/duplicate tool results are rejected. Delayed operations survive chat insertion/deletion. |
 | Service | Round-robin native application service runs during resize, uses a soft six-millisecond budget and bounded drains, and retains unconsumed events in order. |
-| Provider | Wire projection and stream accumulation/usage interpretation have separate modules. Physically running requests have a configurable cap: `AURORA_PROVIDER_WORKERS`, default 16. A stopped worker retains its slot until it returns. Launch rejection is explicit. |
+| Provider | Wire projection and stream accumulation/usage interpretation have separate modules. Shared asynchronous WinHTTP connections, isolated request cancellation and optional exact token preflight improve startup. Physically running requests have a configurable cap: `AURORA_PROVIDER_WORKERS`, default 16. A stopped worker retains its slot until it returns. Launch rejection is explicit. |
 | Retry | Typed HTTP recovery has an outage budget: `AURORA_PROVIDER_OUTAGE_MS`, default 120 seconds; explicit zero means unlimited. Hard quota errors are distinguished. Root resend remains separate. |
-| Delivery | Soft 8 MiB / 1,024-event producer limits, cancellation wakeups and UTF-8-safe bounded drains. Text and terminal events are retained. An indivisible event or consumer control reserve can exceed the soft bound. |
+| Delivery | Native notifications service stream queues without widget ticks; remaining bounded-drain work is reposted and paint gets a turn between passes. Soft 8 MiB / 1,024-event producer limits, cancellation wakeups and UTF-8-safe drains retain text and terminal events. An indivisible event or consumer control reserve can exceed the soft bound. |
 | Tools | Shared four-worker scheduler, bounded pending queue, workspace read/write barriers and a global desktop lease. Captured computer routing is installed per worker. Leases remain held for physical effects. |
 | Verification | Recognized check identity, actual exit status, workspace and mutation generation. Command words alone cannot pass. Physical mutations invalidate older evidence even when Stop drops their late events. Rebuilding alone cannot satisfy unrelated checks. |
 | Storage | One ordered repository owner, dirty-thread snapshots and periodic partial-response checkpoints. Snapshot high-water marks are read on the owner without a UI-thread barrier. Durability failure gates new requests/tools and appears in status. |
@@ -95,7 +99,7 @@ elapsed time. Tests use private executables/state.
 Deployment evidence follows after the helper succeeds and the new image/process
 are verified. This report does not mark the full redesign complete.
 
-## Deployed stage
+## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.
 Duration: 118399 ms. New process: 29840.
@@ -104,6 +108,11 @@ Image SHA-256: `5f56b3721ce343cce93226520aa76c80a13467382024b39a009a0847631b730f
 The local publisher was skipped for this build; the new app clears that per-build flag.
 Evidence: `build/architecture-deploy.json`.
 The full actor/effect/presenter migration remains open.
+
+The subsequent latency stage was deployed and verified through the production
+executable. Its current transport path, controls and proof are recorded in
+`latency-improvements.md`; the image hash is
+`c1655d9002f904fc126cd398c593bc02372fbe163fc5a4864e423a6b0e853d0d`.
 
 The deployed binary also passed its own `--headless` real-widget entry point against the local provider.
 Four HTTP/SSE rounds performed native writes and a Python check, reached READY and persisted the final response.

@@ -79,6 +79,8 @@ interface NativeWindowSink
     void onNativeScrollTarget(PointF position);
     bool onNativePaint();
     void onNativeTick(double deltaSeconds);
+    /** Service a posted application event without advancing widget animations. */
+    void onNativeService();
     /** True while a pointer transform is actively captured (drag). Used by the
      *  platform loop to decide whether to busy-yield for every frame vs pace. */
     bool onNativeContinuousPointerFrames();
@@ -109,6 +111,8 @@ abstract class NativeWindow
     abstract void show();
     abstract int run();
     abstract void invalidate();
+    /** Thread-safe notification where supported; timers are the fallback. */
+    void delegate() serviceWake() { return null; }
     abstract void present(const(uint)[] pixels, int width, int height);
     /**
      * Present a cached framebuffer scaled to the current native framebuffer.

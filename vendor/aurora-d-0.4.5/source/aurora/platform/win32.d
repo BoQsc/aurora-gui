@@ -123,6 +123,7 @@ else version (Windows)
     private enum UINT wmDropFiles = 0x0233;
     private enum UINT dragQueryFileCount = 0xffff_ffff;
     private enum UINT wmAuroraWake = WM_APP + 0x31;
+    private enum UINT wmAuroraService = WM_APP + 0x32;
     private enum UINT_PTR liveResizeTimerId = 0xA304;
     private enum UINT_PTR iconRefreshTimerId = 0xA305;
     private enum uint maximumMessagesPerBatch = 64;
@@ -1217,6 +1218,9 @@ else version (Windows)
                     TranslateMessage(&message);
                     DispatchMessageW(&message);
                     if (_closed) break;
+                    // A stream producer must not keep the message pump busy
+                    // forever while a completed UI update waits for paint.
+                    if (message.message == wmAuroraService && _needsPaint) break;
 
                     // Repaint the newest pointer-driven state before an input
                     // stream can starve presentation of the frame it produced.
@@ -1331,6 +1335,12 @@ else version (Windows)
                 if (!PostMessageW(_hwnd, wmAuroraWake, 0, 0))
                     _wakePosted = false;
             }
+        }
+
+        override void delegate() serviceWake()
+        {
+            auto target = _hwnd;
+            return delegate() { if (target !is null) PostMessageW(target, wmAuroraService, 0, 0); };
         }
 
         override void present(const(uint)[] pixels, int width, int height)
@@ -2002,6 +2012,9 @@ else version (Windows)
                 case wmAuroraWake:
                     _wakePosted = false;
                     if (_inSizeMove) paintNow();
+                    return 0;
+                case wmAuroraService:
+                    if (!_closed) sink.onNativeService();
                     return 0;
                 case WM_ERASEBKGND:
                     paintStartupBackground(cast(HDC) wParam);

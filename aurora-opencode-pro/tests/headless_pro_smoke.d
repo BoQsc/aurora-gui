@@ -732,6 +732,57 @@ int main(string[] args)
     assert(sessions.items().length == 2, "Session list did not shrink after delete");
     writeln("Sessions after delete: ", root.sessionCountForTesting());
 
+    // Hovering the small archive button on a row names the action in a tooltip,
+    // and clicking it archives the chat (hidden, never destroyed). Turning the
+    // archived view on shows the same button offering to unarchive.
+    const archiveStartCount = root.sessionCountForTesting();
+    const archiveRow = cast(int) sessions.items().length - 1;
+    const archiveCenter = sessions.archiveButtonCenterForTesting(archiveRow);
+    driver.moveTo(archiveCenter);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Archive hover did not repaint");
+    assert(sessions.archiveTooltipOpenForTesting(),
+        "Hovering the row archive button did not open its tooltip");
+    assert(sessions.archiveTooltipTextForTesting() == "Archive conversation",
+        "Hover archive tooltip wording was '" ~
+        sessions.archiveTooltipTextForTesting() ~ "'");
+    driver.click(archiveCenter);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Archive click did not repaint");
+    assert(!sessions.archiveTooltipOpenForTesting(),
+        "Archive tooltip lingered after the click");
+    assert(sessions.items().length == archiveStartCount - 1,
+        "Archiving did not hide the row from the sidebar");
+    assert(root.sessionCountForTesting() == archiveStartCount,
+        "Archiving destroyed the conversation");
+    requireWidget!Button(root, "oc-archived-toggle").onClick();
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Show-archived did not repaint");
+    int archivedRow = -1;
+    foreach (row; 0 .. cast(int) sessions.items().length)
+        if (indexOf(to!string(sessions.items()[cast(size_t) row].text),
+            "(archived)") == 0)
+        {
+            archivedRow = row;
+            break;
+        }
+    assert(archivedRow >= 0, "Archived conversation missing from the archived view");
+    const unarchiveCenter = sessions.archiveButtonCenterForTesting(archivedRow);
+    driver.moveTo(unarchiveCenter);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Unarchive hover did not repaint");
+    assert(sessions.archiveTooltipTextForTesting() == "Unarchive conversation",
+        "Unarchive tooltip wording was '" ~
+        sessions.archiveTooltipTextForTesting() ~ "'");
+    driver.click(unarchiveCenter);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Unarchive click did not repaint");
+    assert(sessions.items().length == archiveStartCount,
+        "Unarchiving did not restore the row");
+    requireWidget!Button(root, "oc-archived-toggle").onClick();
+    root.tickTree(0.02);
+    writeln("Hover archive button archives and unarchives with a naming tooltip");
+
     // Duplicate a conversation via the sidebar context menu: the copy keeps the
     // transcript but is an independent conversation placed below its source.
     root.newChatForTesting();

@@ -1,13 +1,13 @@
 {
-  "status": "running",
-  "phase": "building",
-  "reason": "",
+  "status": "ok",
+  "phase": "relaunching",
+  "reason": "Deploy measured startup, shared asynchronous transport and stream-delivery latency improvements",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-06 14:30:38.692324",
-  "finishedAt": "2026-10-06 14:30:38.692324",
-  "durationMs": 0,
+  "startedAt": "2026-10-06 15:00:55.2845094",
+  "finishedAt": "2026-10-06 15:01:59.4356037",
+  "durationMs": 64150,
   "exitCode": 0,
   "errors": []
 }
