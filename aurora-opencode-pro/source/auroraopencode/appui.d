@@ -15547,28 +15547,16 @@ public final class OpenCodeRoot : VBox
                 if (chunkStart >= end) break;
                 const chunkEnd = chunkStart + perThread < end
                     ? chunkStart + perThread : end;
-                auto chunk = calls[chunkStart .. chunkEnd];
+                auto lane = new ParallelToolLane(calls[chunkStart .. chunkEnd],
+                    workspace, cancellation, client, requestId);
                 chunkStart = chunkEnd;
-                auto worker = new Thread(delegate()
-                {
-                    foreach (call; chunk)
-                    {
-                        auto job = new ParallelToolJob(call, workspace,
-                            cancellation, client, requestId);
-                        job.run();
-                    }
-                });
+                auto worker = new Thread(&lane.run);
                 worker.isDaemon = true;
                 bool started;
                 try { worker.start(); started = true; }
                 catch (Exception) {}
                 if (started) workers ~= worker;
-                else foreach (call; chunk)
-                {
-                    auto job = new ParallelToolJob(call, workspace,
-                        cancellation, client, requestId);
-                    job.run();
-                }
+                else lane.run();
             }
             foreach (worker; workers) worker.join();
             slot = end;
@@ -15585,6 +15573,38 @@ public final class OpenCodeRoot : VBox
         return call.name == "read" || call.name == "glob" ||
             call.name == "grep" || call.name == "dshell" ||
             call.name == "view_image";
+    }
+
+    // A loop-local captured by a delegate shares one closure across iterations
+    // in D. Give each thread a distinct receiver so a later chunk cannot replace
+    // its calls and silently drop earlier tool results.
+    private static final class ParallelToolLane
+    {
+        const(OpenCodeToolCall)[] calls;
+        string workspace;
+        ToolCancellation cancellation;
+        OpenCodeClient client;
+        ulong requestId;
+
+        this(const(OpenCodeToolCall)[] calls, string workspace,
+            ToolCancellation cancellation, OpenCodeClient client, ulong requestId)
+        {
+            this.calls = calls.dup;
+            this.workspace = workspace;
+            this.cancellation = cancellation;
+            this.client = client;
+            this.requestId = requestId;
+        }
+
+        void run()
+        {
+            foreach (call; calls)
+            {
+                auto job = new ParallelToolJob(call, workspace,
+                    cancellation, client, requestId);
+                job.run();
+            }
+        }
     }
 
     private static final class ParallelToolJob
@@ -27796,6 +27816,18 @@ public final class OpenCodeRoot : VBox
     public int pendingToolResultsForTesting() const
     {
         return _pendingToolResults;
+    }
+
+    /// Run the actual worker path without a provider or the user's chat state.
+    public static OpenCodeEvent[] executeToolBatchForTesting(
+        const(OpenCodeToolCall)[] calls, string workspace)
+    {
+        auto client = new OpenCodeClient("http://127.0.0.1", "fixture");
+        runToolWorker(client, 0, 123, calls, workspace,
+            new ToolCancellation(), ChangeContext.init);
+        OpenCodeEvent[] events;
+        client.drain(events);
+        return events;
     }
 
     /// Test-only: tool calls still marked "running" on the live row.
