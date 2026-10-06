@@ -155,10 +155,11 @@ public final class RepositoryRuntime : AgentRuntime
         });
     }
     /// Called only after a detached snapshot and its fold marker are written.
-    void acknowledgeSnapshot()
+    void acknowledgeSnapshot(ulong failureRevision)
     {
         synchronized (this)
-            if (_journal.lastError().length == 0) _effectsBlocked = false;
+            if (failureRevision == _checkpointFailureRevision &&
+                _journal.lastError().length == 0) _effectsBlocked = false;
     }
     bool effectsBlocked() { synchronized (this) return _effectsBlocked; }
     bool checkpoint(AgentRuntimeEvent event)

@@ -158,6 +158,13 @@ int main()
     assert(events.length == 1 && events[0].kind == OpenCodeEventKind.error && events[0].requestId == 102);
     rmdir(journalPath);
     rename(journalPath ~ ".backup", journalPath);
+    const failureRevision = journal.checkpointFailure().revision;
+    assert(journal.enqueue(intent));
+    repository.flush();
+    journal.acknowledgeSnapshot(failureRevision - 1);
+    assert(journal.effectsBlocked(), "An old snapshot acknowledged a newer failure");
+    journal.acknowledgeSnapshot(failureRevision);
+    assert(!journal.effectsBlocked());
     writeln("PASS nonblocking admission, Stop before acknowledgement, durable ordering, failed journal prevents effects");
 
     auto cache = new WireProjectionCache();

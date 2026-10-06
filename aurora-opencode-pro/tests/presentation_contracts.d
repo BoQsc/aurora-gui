@@ -44,6 +44,28 @@ int main()
     foreach (_; 0 .. 3) assert(driver.paint());
     assert(counters.created < 100 && counters.measured < 200,
         "First frame materialized rows outside its viewport");
+    auto retained = presenter.children().dup;
+    Widget focused;
+    foreach (row; retained)
+        if (auto materialized = (cast(DeferredTranscriptRow) row).materialized())
+        {
+            focused = materialized;
+            focused.setFocusable(true);
+            focused.requestFocus();
+            break;
+        }
+    assert(focused !is null && focused.focused());
+    const createdBeforeProjection = counters.created;
+    presenter.beginProjection();
+    presenter.clearChildren();
+    // Exercise the Widget-typed insertion path used by live transcript rows.
+    Widget basePresenter = presenter;
+    foreach (row; retained) basePresenter.add(row);
+    presenter.endProjection();
+    assert(presenter.children() == retained && focused.focused(),
+        "Unchanged projection detached retained rows and lost focus");
+    assert(driver.paint() && counters.created == createdBeforeProjection);
+    writeln("PASS unchanged transcript projection preserves row identity, focus and materialized widgets");
     foreach (offset; [150_000, 300_000, 450_000, 0])
     {
         view.setScrollY(offset);

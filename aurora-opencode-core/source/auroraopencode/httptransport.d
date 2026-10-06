@@ -144,6 +144,8 @@ class AsyncHttpRequest
     private Condition changed;
     private Connection connection;
     private HINTERNET handle;
+    private HINTERNET pendingClose;
+    private size_t nativeCalls;
     private bool cancelled, closed, rooted;
     private DWORD completed, error, count;
     private string body;
@@ -195,6 +197,10 @@ class AsyncHttpRequest
         DWORD status, void* info, DWORD length)
     {
         if (!context) return 0;
+        // Capture arrival before runtime attachment or the application mutex.
+        // A native operation can return synchronously while holding that mutex;
+        // recording after acquiring it would charge provider wait to upload.
+        const receivedTicks = MonoTime.currTime.ticks;
         const attach = Thread.getThis() is null;
         if (attach) thread_attachThis();
         scope(exit) if (attach) thread_detachThis();
@@ -205,7 +211,7 @@ class AsyncHttpRequest
             switch (status)
             {
                 case WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER:
-                    owner.connectedTicks = MonoTime.currTime.ticks; break;
+                    owner.connectedTicks = receivedTicks; break;
                 case WINHTTP_CALLBACK_STATUS_REQUEST_SENT:
                     // Legacy progress notification: not a reliable body-upload
                     // boundary on current WinHTTP, particularly HTTP/2.
@@ -219,10 +225,12 @@ class AsyncHttpRequest
                     owner.count = *cast(DWORD*) info;
                     owner.completed = status; break;
                 case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
-                    if (owner.sentTicks < 0) owner.sentTicks = MonoTime.currTime.ticks;
+                    owner.completed = status; break;
+                case WINHTTP_CALLBACK_STATUS_WRITE_COMPLETE:
+                    if (owner.sentTicks < 0) owner.sentTicks = receivedTicks;
                     owner.completed = status; break;
                 case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
-                    if (owner.headersTicks < 0) owner.headersTicks = MonoTime.currTime.ticks;
+                    if (owner.headersTicks < 0) owner.headersTicks = receivedTicks;
                     owner.completed = status; break;
                 case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
                     owner.closed = true;
@@ -249,48 +257,83 @@ class AsyncHttpRequest
         ensureOpen();
     }
 
+    // WinHTTP can deliver callbacks before an API returns. Keep the callback
+    // mutex free, and lease the native handle until the invocation returns so
+    // Stop cannot close/reuse it between capture and entry into the native API.
+    private void invoke(bool delegate(HINTERNET) operation, string label,
+        bool resetCompletion = false)
+    {
+        HINTERNET request;
+        synchronized (mutex)
+        {
+            ensureOpen();
+            if (resetCompletion) completed = 0;
+            request = handle;
+            ++nativeCalls;
+        }
+        scope(exit)
+        {
+            HINTERNET closing;
+            synchronized (mutex)
+            {
+                --nativeCalls;
+                if (!nativeCalls) { closing = pendingClose; pendingClose = null; }
+            }
+            if (closing !is null) WinHttpCloseHandle(closing);
+        }
+        if (!operation(request))
+            throw new Exception("WinHTTP " ~ label ~ " failed (" ~ to!string(GetLastError()) ~ ").");
+    }
+
+    private void waitForCompletion(DWORD status)
+    {
+        synchronized (mutex) awaitCompletion(status);
+    }
+
     uint send(string headers, string payload)
     {
         synchronized (mutex)
         {
             ensureOpen();
             body = payload; // WinHTTP may reference the upload until send completes.
-            completed = 0;
-            if (!WinHttpSendRequest(handle, toUTF16z(headers), cast(DWORD) -1,
-                cast(void*) body.ptr, cast(DWORD) body.length, cast(DWORD) body.length,
-                cast(DWORD_PTR) cast(void*) this))
-                throw new Exception("WinHTTP send failed (" ~ to!string(GetLastError()) ~ ").");
-            awaitCompletion(WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE);
-            completed = 0;
-            if (!WinHttpReceiveResponse(handle, null))
-                throw new Exception("WinHTTP response failed (" ~ to!string(GetLastError()) ~ ").");
-            awaitCompletion(WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE);
-            DWORD status, size = status.sizeof;
-            if (!WinHttpQueryHeaders(handle, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                null, &status, &size, null)) throw new Exception("Could not read the HTTP status.");
-            size = negotiatedProtocol.sizeof;
-            WinHttpQueryOption(handle, protocolUsed, &negotiatedProtocol, &size);
-            return status;
         }
+        invoke((request) => WinHttpSendRequest(request, toUTF16z(headers), cast(DWORD) -1,
+            null, 0, cast(DWORD) body.length,
+            cast(DWORD_PTR) cast(void*) this) != 0, "send", true);
+        waitForCompletion(WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE);
+        if (body.length)
+        {
+            invoke((request) => WinHttpWriteData(request, body.ptr,
+                cast(DWORD) body.length, null) != 0, "upload", true);
+            waitForCompletion(WINHTTP_CALLBACK_STATUS_WRITE_COMPLETE);
+        }
+        else synchronized (mutex) sentTicks = MonoTime.currTime.ticks;
+        invoke((request) => WinHttpReceiveResponse(request, null) != 0, "response", true);
+        waitForCompletion(WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE);
+        DWORD status, size = status.sizeof;
+        invoke((request) => WinHttpQueryHeaders(request,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            null, &status, &size, null) != 0, "status");
+        DWORD protocol;
+        size = protocol.sizeof;
+        invoke((request) { WinHttpQueryOption(request, protocolUsed, &protocol, &size); return true; }, "protocol");
+        synchronized (mutex) negotiatedProtocol = protocol;
+        return status;
     }
 
     size_t read(ubyte[] buffer)
     {
+        invoke((request) => WinHttpQueryDataAvailable(request, null) != 0, "availability", true);
+        waitForCompletion(WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE);
+        DWORD available;
         synchronized (mutex)
         {
-            ensureOpen();
-            completed = 0;
-            if (!WinHttpQueryDataAvailable(handle, null))
-                throw new Exception("WinHTTP availability failed (" ~ to!string(GetLastError()) ~ ").");
-            awaitCompletion(WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE);
             if (!count) return 0;
-            const available = count < buffer.length ? count : cast(DWORD) buffer.length;
-            completed = 0;
-            if (!WinHttpReadData(handle, buffer.ptr, available, null))
-                throw new Exception("WinHTTP read failed (" ~ to!string(GetLastError()) ~ ").");
-            awaitCompletion(WINHTTP_CALLBACK_STATUS_READ_COMPLETE);
-            return count;
+            available = count < buffer.length ? count : cast(DWORD) buffer.length;
         }
+        invoke((request) => WinHttpReadData(request, buffer.ptr, available, null) != 0, "read", true);
+        waitForCompletion(WINHTTP_CALLBACK_STATUS_READ_COMPLETE);
+        synchronized (mutex) return count;
     }
 
     string readError()
@@ -317,6 +360,7 @@ class AsyncHttpRequest
             cancelled = true;
             request = handle;
             handle = null;
+            if (nativeCalls && request !is null) { pendingClose = request; request = null; }
             changed.notifyAll();
         }
         if (request !is null) WinHttpCloseHandle(request);

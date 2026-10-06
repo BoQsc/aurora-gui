@@ -120,10 +120,12 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                         timeout.integer > 600_000 ? 600_000 : timeout.integer;
             if (call.name == "dshell")
                 if (auto secondsArg = "seconds" in args.object)
-                    if (secondsArg.type == JSONType.integer || secondsArg.type == JSONType.float_)
+                    if (secondsArg.type == JSONType.integer || secondsArg.type == JSONType.float_ ||
+                        secondsArg.type == JSONType.string)
                     {
                         const pause = secondsArg.type == JSONType.integer ?
-                            cast(double) secondsArg.integer : secondsArg.floating;
+                            cast(double) secondsArg.integer : secondsArg.type == JSONType.float_ ?
+                            secondsArg.floating : to!double(secondsArg.str);
                         if (pause > 0) timeoutMs = cast(long) ((pause > 300 ? 300 : pause) * 1000) + 3000;
                     }
         }

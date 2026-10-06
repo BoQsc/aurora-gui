@@ -67,6 +67,7 @@ int main()
     const fast = complete(base, "skip-count", 1001, true);
     const warm = complete(base, "warm", 1002);
     const delayed = complete(base, "delayed-headers", 1005);
+    writeln("delayed header trace: ", delayed.microseconds);
     assert(delayed.microseconds[LatencyStage.uploaded] >= 0 &&
         delayed.microseconds[LatencyStage.headers] - delayed.microseconds[LatencyStage.uploaded] >= 350_000,
         "Upload completion included the provider's response-header delay");

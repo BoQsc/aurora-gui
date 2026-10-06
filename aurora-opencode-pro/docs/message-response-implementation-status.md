@@ -1,3 +1,6 @@
+> Current bounded-stage update: [Chat flow hardening](chat-flow-hardening.md).
+> The broader migration below is deferred at the user's request.
+
 # Message-to-response migration status
 
 Updated 2026-10-06. The full migration in `message-response-architecture-review.md`

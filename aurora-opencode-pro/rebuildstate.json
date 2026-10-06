@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy measured startup, shared asynchronous transport and stream-delivery latency improvements",
+  "reason": "Deploy verified chat-flow hardening: bounded filesystem hosts, durable asynchronous admission, incremental projection and upload timing",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-06 15:00:55.2845094",
-  "finishedAt": "2026-10-06 15:01:59.4356037",
-  "durationMs": 64150,
+  "startedAt": "2026-10-06 19:54:36.0713024",
+  "finishedAt": "2026-10-06 19:56:28.2260952",
+  "durationMs": 112154,
   "exitCode": 0,
   "errors": []
 }

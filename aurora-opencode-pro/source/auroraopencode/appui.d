@@ -9279,7 +9279,7 @@ public final class OpenCodeRoot : VBox
         ChatMessage message;
         size_t index, position, total;
         int sessionIndex;
-        bool latest, hideHunkHeaders;
+        bool latest, hideHunkHeaders, groupSameAction;
         string thinking, search, workspace;
     }
     private StableRowCache!(MessageBubble, BubbleVersion) _bubbleCache;
@@ -12515,9 +12515,7 @@ public final class OpenCodeRoot : VBox
             hadSelection = true;
             break;
         }
-        // A rebuild discards the column's children; detach the two reused
-        // widgets first so a nested parent (a turn container) does not leave
-        // them attached and reporting visible after they are dropped.
+        // Stage the next painter order while retaining unchanged subtrees.
         _messageColumn.beginProjection();
         if (_bubbleCache is null) _bubbleCache = new StableRowCache!(MessageBubble, BubbleVersion)();
         _bubbleCache.begin(_current >= 0 ? _sessions[_current].id : "");
@@ -12525,7 +12523,18 @@ public final class OpenCodeRoot : VBox
         _deferredRows.begin(_current >= 0 ? _sessions[_current].id : "");
         if (_settledNests is null) _settledNests = new StableRowCache!(TurnNest, BubbleVersion[])();
         _settledNests.begin(_current >= 0 ? _sessions[_current].id : "");
-        scope (exit) { _bubbleCache.end(); _deferredRows.end(); _settledNests.end(); _messageColumn.endProjection(); }
+        scope (exit)
+        {
+            // An omitted nested row still names its detached old container.
+            // Keep activity presence accurate without detaching retained rows.
+            if (!activityRowWanted() && _activityRow !is null &&
+                _activityRow.parent() !is null)
+                _activityRow.parent().remove(_activityRow);
+            _bubbleCache.end();
+            _deferredRows.end();
+            _settledNests.end();
+            _messageColumn.endProjection();
+        }
         _messageColumn.clearChildren();
         // The live rows just dropped; rebuild the id->row lookup as the column
         // is rebuilt (buildLiveToolRow repopulates it).
@@ -12977,6 +12986,8 @@ public final class OpenCodeRoot : VBox
             addLiveToolRows(_messageColumn, "live");
         // Keep the newest concrete action discoverable after it finishes. Once
         // a newer prompt or reply exists, the old group returns to normal history.
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child) group.setShowTail(false);
         foreach_reverse (child; messageColumnVisuals())
         {
             if (auto group = cast(ToolGroupBubble) child)
@@ -13839,6 +13850,7 @@ public final class OpenCodeRoot : VBox
         presentation.total = index < versionTotals.length ? versionTotals[index] : 0;
         presentation.latest = cast(int) index == latestAssistantIndex;
         presentation.hideHunkHeaders = _settings.hideHunkHeaders;
+        presentation.groupSameAction = _settings.groupSameAction;
         presentation.thinking = thinkingText;
         presentation.search = _searchQuery;
         presentation.workspace = workspaceForSession(_current);
@@ -22997,6 +23009,7 @@ public final class OpenCodeRoot : VBox
         auto sessions = snapshotChatSessions(headers);
         const currentIndex = _current;
         const failureGeneration = _storageFailureGeneration;
+        const journalFailureRevision = (cast(RepositoryRuntime) _runtime).checkpointFailure().revision;
         _dirtyThreads = null;
         _stateDirty = false;
         auto accepted = _repository.submit(delegate() {
@@ -23011,7 +23024,7 @@ public final class OpenCodeRoot : VBox
                 {
                     writeThreadStore(sessions, currentIndex, loaded);
                     writeFoldedMarker(opencodeStateDirectory(), sequence, bytes);
-                    (cast(RepositoryRuntime) _runtime).acknowledgeSnapshot();
+                    (cast(RepositoryRuntime) _runtime).acknowledgeSnapshot(journalFailureRevision);
                     synchronized (this)
                         _persistCommittedFailureGeneration = failureGeneration;
                 }
@@ -24682,7 +24695,6 @@ public final class OpenCodeRoot : VBox
             {
                 _checkpointFailureSeen = failure.revision;
                 _durabilityBlocked = true;
-                ++_storageFailureGeneration;
                 ++_storageFailureGeneration;
                 foreach (rt; _conversationRuntimes)
                     rt.partialCheckpointBytes = 0;
@@ -28297,6 +28309,20 @@ public final class OpenCodeRoot : VBox
             if (message.role != "tool") continue;
             if (seen == n) return message.content;
             ++seen;
+        }
+        return "";
+    }
+
+    /// Test-only: find an exact result owner, independent of worker arrival order.
+    public string toolResultForTesting(string callId)
+    {
+        if (_current < 0) return "";
+        auto session = &_sessions[_current];
+        foreach (index; activeMessagePath(*session))
+        {
+            const message = session.messages[index];
+            if (message.role == "tool" && message.toolCallId == callId)
+                return message.content;
         }
         return "";
     }

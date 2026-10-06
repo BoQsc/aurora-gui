@@ -3596,6 +3596,17 @@ int main(string[] args)
 
     // Tool loop: with tools enabled and a workspace, an injected tool call is
     // executed locally and the result lands as a `tool` role message.
+    // Earlier bulk-history fixtures can overflow the bounded async journal.
+    // Refused intents require snapshot recovery before accepting new effects.
+    const storageDeadline = Clock.currTime + 7.seconds;
+    root.tickTree(0.02);
+    while (root.storageBlockedForTesting() && Clock.currTime < storageDeadline)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(20.msecs);
+    }
+    assert(!root.storageBlockedForTesting(),
+        "Bulk-history journal admission did not recover before the tool test");
     auto workspaceDir = buildPath(stateDir, "workspace");
     mkdirRecurse(workspaceDir);
     write(buildPath(workspaceDir, "notes.txt"), "hello tool world\n");
@@ -3632,19 +3643,21 @@ int main(string[] args)
         Thread.sleep(20.msecs);
     }
     assert(root.toolMessageCountForTesting() == 3,
-        "Tool results did not arrive as tool role messages");
-    assert(root.toolResultForTesting(0).indexOf("hello tool world") >= 0,
+        "Tool results did not arrive as tool role messages: " ~
+        to!string(root.toolMessageCountForTesting()) ~ "; " ~
+        root.lastAssistantContentForTesting());
+    assert(root.toolResultForTesting(readCall.id).indexOf("hello tool world") >= 0,
         "read tool did not return the file contents: " ~
-        root.toolResultForTesting(0));
-    assert(root.toolResultForTesting(0).indexOf("1: hello tool world") >= 0,
-        "read tool did not number lines: " ~ root.toolResultForTesting(0));
-    assert(root.toolResultForTesting(1).indexOf("notes.txt") >= 0,
+        root.toolResultForTesting(readCall.id));
+    assert(root.toolResultForTesting(readCall.id).indexOf("1: hello tool world") >= 0,
+        "read tool did not number lines: " ~ root.toolResultForTesting(readCall.id));
+    assert(root.toolResultForTesting(grepCall.id).indexOf("notes.txt") >= 0,
         "grep tool did not find the matching file");
-    assert(root.toolResultForTesting(1).indexOf("notes.txt:1: hello tool world") >= 0,
+    assert(root.toolResultForTesting(grepCall.id).indexOf("notes.txt:1: hello tool world") >= 0,
         "grep tool did not return a line-numbered snippet: " ~
-        root.toolResultForTesting(1));
-    assert(root.toolResultForTesting(2).indexOf("run-args-ok") >= 0,
-        "run tool did not execute: " ~ root.toolResultForTesting(2));
+        root.toolResultForTesting(grepCall.id));
+    assert(root.toolResultForTesting(runCall.id).indexOf("run-args-ok") >= 0,
+        "run tool did not execute: " ~ root.toolResultForTesting(runCall.id));
     // Regression: a JSON argv array must render as a readable command line,
     // not the old opaque `args=[…]`.
     assert(root.toolArgsDisplayForTesting(0).indexOf("filePath=notes.txt") >= 0,
