@@ -445,7 +445,39 @@ private void assertLlamaServerCompatibility()
             assert(message.object["role"].str != "system" &&
                 message.object["role"].str != "developer",
                 "llama-server payload still contains a later instruction");
-    writeln("llama-server HTTP and reasoning compatibility serialize correctly");
+
+    // Folding hidden guidance/checkpoint blocks out of their positions must not
+    // leave two assistant turns adjacent: Aurora appends those blocks between
+    // continuation rounds, and llama.cpp's prefill_assistant path rejects a
+    // request that ends with two assistant messages ("Cannot have 2 or more
+    // assistant messages at the end of the list"). Adjacent replies are
+    // coalesced into one turn, preserving their text.
+    ChatRequestMessage firstAnswer, guidance, secondAnswer, durable;
+    firstAnswer.role = "assistant";
+    firstAnswer.content = "First answer";
+    guidance.role = "system";
+    guidance.content = "Progress guidance";
+    secondAnswer.role = "assistant";
+    secondAnswer.content = "Second answer";
+    durable.role = "system";
+    durable.content = "Durable task state";
+    auto adjacent = parseJSON(client.buildBodyForTesting(
+        [user, firstAnswer, guidance, secondAnswer, durable], null,
+        "qwen-local", false, false, "", 0, true));
+    const adjacentMessages = adjacent.object["messages"].array;
+    assert(adjacentMessages.length == 3,
+        "adjacent assistant turns were not coalesced after folding");
+    assert(adjacentMessages[0].object["role"].str == "system" &&
+        adjacentMessages[0].object["content"].str ==
+        "Progress guidance\n\nDurable task state",
+        "folded instruction block is not the single leading message");
+    assert(adjacentMessages[1].object["role"].str == "user",
+        "the user prompt moved out of place");
+    assert(adjacentMessages[2].object["role"].str == "assistant" &&
+        adjacentMessages[2].object["content"].str ==
+        "First answer\n\nSecond answer",
+        "coalesced assistant turn lost or reordered text");
+    writeln("llama-server folding coalesces adjacent assistant turns");
     client.closeSession();
 }
 

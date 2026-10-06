@@ -180,6 +180,16 @@ public string chatImageDataUrl(const ref ChatImageAttachment image)
 /// single leading system message before serialization. Removing them from
 /// their old positions also preserves assistant tool_calls -> tool result
 /// adjacency for strict OpenAI-compatible validators.
+///
+/// Folding the instruction blocks out of their positions can, however, leave
+/// two assistant turns adjacent: Aurora appends hidden guidance, durable-task
+/// and compaction checkpoints between continuation rounds, so removing those
+/// system-role messages joins the replies they sat between. llama.cpp's Qwen
+/// template runs with `prefill_assistant`, which pops a trailing assistant and
+/// then rejects the request with "Cannot have 2 or more assistant messages at
+/// the end of the list." Coalesce every run of adjacent assistant turns into
+/// one (keeping their text, reasoning and tool calls) so the folded list never
+/// ends - or continues - with two assistant messages.
 public ChatRequestMessage[] normalizeSystemMessages(
     const(ChatRequestMessage)[] messages, bool strictSingleSystem)
 {
@@ -230,8 +240,34 @@ public ChatRequestMessage[] normalizeSystemMessages(
             ordinary ~= copy;
         }
     }
-    if (combined.content.length == 0) return ordinary;
-    return [combined] ~ ordinary;
+    ChatRequestMessage[] projected;
+    foreach (message; ordinary)
+    {
+        if (projected.length > 0 && projected[$ - 1].role == "assistant" &&
+            message.role == "assistant")
+        {
+            auto previous = &projected[$ - 1];
+            if (message.content.length > 0)
+            {
+                if (previous.content.length > 0) previous.content ~= "\n\n";
+                previous.content ~= message.content;
+            }
+            if (message.reasoningContent.length > 0)
+            {
+                if (previous.reasoningContent.length > 0)
+                    previous.reasoningContent ~= "\n\n";
+                previous.reasoningContent ~= message.reasoningContent;
+            }
+            if (message.toolCalls.length > 0)
+                previous.toolCalls ~= message.toolCalls;
+            if (message.images.length > 0)
+                previous.images ~= message.images;
+            continue;
+        }
+        projected ~= message;
+    }
+    if (combined.content.length == 0) return projected;
+    return [combined] ~ projected;
 }
 
 public string buildChatBody(const(ChatRequestMessage)[] messages,

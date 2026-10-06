@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy verified chat-flow hardening: bounded filesystem hosts, durable asynchronous admission, incremental projection and upload timing",
+  "reason": "Apply the llama.cpp/qwen fix so outgoing requests never end with two adjacent assistant messages after compaction",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\Windows10_new\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-06 19:54:36.0713024",
-  "finishedAt": "2026-10-06 19:56:28.2260952",
-  "durationMs": 112154,
+  "startedAt": "2026-10-06 23:24:01.1922556",
+  "finishedAt": "2026-10-06 23:25:19.9654963",
+  "durationMs": 78773,
   "exitCode": 0,
   "errors": []
 }
