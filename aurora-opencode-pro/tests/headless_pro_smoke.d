@@ -530,6 +530,9 @@ private bool paintProjection(OpenCodeRoot root, UiTestDriver driver)
 
 int main(string[] args)
 {
+    import auroraopencode.tools : runFilesystemHelperMode;
+    const helperCode = runFilesystemHelperMode(args);
+    if (helperCode >= 0) return helperCode;
     const stateDir = buildPath(tempDir(), "aurora-opencode-pro-smoke-state");
     if (exists(stateDir)) rmdirRecurse(stateDir);
     mkdirRecurse(stateDir);

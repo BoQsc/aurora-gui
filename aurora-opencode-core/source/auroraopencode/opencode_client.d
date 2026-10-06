@@ -33,6 +33,7 @@ import auroraopencode.logging : logError, logInfo;
 
 public import auroraopencode.events;
 import auroraopencode.providerstream : ProviderStreamDecoder;
+import auroraopencode.provideraudit : ProviderAudit;
 
 private struct HttpTarget
 {
@@ -1181,6 +1182,11 @@ final class OpenCodeClient
             _decoder._streamFinishReason = "";
             _decoder._streamDone = false;
             _decoder._streamError = "";
+            _decoder.outputIssue = "";
+            _decoder.nextGuardBytes = 512;
+            _decoder.guardToolNames = null;
+            foreach (tool; tools) _decoder.guardToolNames ~= tool.name;
+            _decoder.audit = new ProviderAudit(requestId, model, requestApiKey);
             _decoder._lastPromptTokens = 0;
             _decoder._lastCompletionTokens = 0;
             _decoder._lastTotalTokens = 0;
@@ -1260,6 +1266,7 @@ final class OpenCodeClient
                         droppedReasoning ? 0 : thinkingBudgetTokens,
                         llamaCppServer, wireProjectionCache());
                 // Both transports retain this immutable body through send.
+                _decoder.audit.record("request", body);
                 // A second full copy is especially costly for inline images.
                 auto bodyBytes = cast(const(ubyte)[]) body;
                 synchronized (_mutex)
@@ -1596,6 +1603,10 @@ final class OpenCodeClient
         _decoder._streamFinishReason = "";
         _decoder._streamDone = false;
         _decoder._streamError = "";
+        _decoder.outputIssue = "";
+        _decoder.nextGuardBytes = 512;
+        _decoder.guardToolNames = null;
+        _decoder.audit = null;
         _decoder._lastPromptTokens = 0;
         _decoder._lastCompletionTokens = 0;
         _decoder._lastTotalTokens = 0;
@@ -2112,8 +2123,9 @@ final class OpenCodeClient
 
     unittest
     {
-        // Snapshot events collapse, ordered deltas do not, and request identity
-        // survives the zero-copy drain. This exercises the hot queue without a
+        // Snapshots collapse and adjacent same-channel deltas merge without
+        // changing text order; request identity survives the zero-copy drain.
+        // This exercises the hot queue without a
         // provider or network connection.
         auto client = new OpenCodeClient("http://127.0.0.1:8080/v1", "");
         OpenCodeEvent usage;
@@ -2135,9 +2147,9 @@ final class OpenCodeClient
 
         OpenCodeEvent[] events;
         client.drain(events);
-        assert(events.length == 3);
+        assert(events.length == 2);
         assert(events[0].totalTokens == 20 && events[0].requestId == 7);
-        assert(events[1].text == "a" && events[2].text == "b");
+        assert(events[1].text == "ab" && events[1].requestId == 7);
 
         // A second cycle reuses the previous output allocation as the producer's
         // next queue rather than copying its contents under the mutex.

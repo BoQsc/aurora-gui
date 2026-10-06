@@ -2,6 +2,8 @@ module auroraopencode.requestbuilder;
 
 import auroraopencode.core : ChatSession, ChatRequestMessage, activeMessagePath;
 import auroraopencode.imagehistory : requestHistoryImages;
+import auroraopencode.outputguard : outputFailurePrefix;
+import std.string : startsWith;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
 public ChatRequestMessage[] projectRequestMessages(
@@ -23,6 +25,14 @@ public ChatRequestMessage[] projectRequestMessages(
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
+            // Keep failed output in the transcript, but do not teach recovery
+            // requests to imitate leaked XML or looping prose.
+            if (message.role == "assistant" && message.failed &&
+                message.error.startsWith(outputFailurePrefix))
+            {
+                ++slot;
+                continue;
+            }
             // experimental: orchestrator - the orchestrator does not read the
             // sub-agents' shared context (their tool rounds are a separate
             // "subchat"); it sees only each sub-agent's prose result. This keeps

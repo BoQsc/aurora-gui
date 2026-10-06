@@ -65,6 +65,8 @@ import auroraopencode.requestintent : explanationOnlyRequest;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.requestbuilder : projectRequestMessages;
+import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
+    outputIssueDescription;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
@@ -15281,10 +15283,9 @@ public final class OpenCodeRoot : VBox
         return true;
     }
 
-    /// Number of completed executions of one exact call on the active path.
-    /// Persisted history makes this survive turns and restarts, while checking
-    /// the currently requested calls avoids penalizing unrelated productive
-    /// work merely because some older call repeated.
+    /// Count executions against unchanged files since the latest real
+    /// instruction. A rebuild after an edit is a fresh experiment, even when
+    /// its command line is identical to an earlier build.
     private static int toolCallRunCount(const ref ChatSession session,
         const ref OpenCodeToolCall call)
     {
@@ -15293,6 +15294,16 @@ public final class OpenCodeRoot : VBox
         foreach (index; activeMessagePath(session))
         {
             const message = session.messages[index];
+            if ((message.role == "user" && !message.internal) ||
+                (message.role == "tool" && !message.failed &&
+                    isMutatingTool(message.toolName) &&
+                    (message.diffAdditions > 0 || message.diffDeletions > 0 ||
+                        message.toolDiff.length > 0 || isSubstantiveMutation(
+                            message.toolName, false, 0, 0, ""))))
+            {
+                count = 0;
+                continue;
+            }
             if (message.role != "tool" || message.toolName.length == 0)
                 continue;
             if (message.toolName ~ "|" ~ message.toolArgs == signature)
@@ -15308,6 +15319,97 @@ public final class OpenCodeRoot : VBox
             if (toolCallRunCount(session, call) >= cumulativeRepeatLimit)
                 return true;
         return false;
+    }
+
+    private static int outputRecoveryCount(const ref ChatSession session)
+    {
+        int count;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal) count = 0;
+            else if (message.internal && message.content.startsWith(outputRecoveryMarker))
+                ++count;
+        }
+        return count;
+    }
+
+    private static bool answerReplayed(const ref ChatSession session)
+    {
+        const path = activeMessagePath(session);
+        if (path.length < 2) return false;
+        const current = session.messages[path[$ - 1]];
+        if (current.role != "assistant" || current.content.length < 512)
+            return false;
+        foreach_reverse (index; path[0 .. $ - 1])
+        {
+            const previous = session.messages[index];
+            if (previous.role == "user" && !previous.internal) return false;
+            if (previous.role != "assistant" || previous.failed) continue;
+            return previous.toolCalls.length == 0 && previous.content.length >= 512 &&
+                current.content.startsWith(previous.content) &&
+                current.content.length - previous.content.length <=
+                    previous.content.length / 5;
+        }
+        return false;
+    }
+
+    /// One recovery per real user instruction, recorded in the active branch so
+    /// restarting the app cannot reset the budget. Never execute printed calls.
+    private void handleOutputFailure(const ref OpenCodeEvent event)
+    {
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        auto session = &_sessions[sessionIndex];
+        recordRequestTokenUsage(event.requestId, event.totalTokens,
+            event.promptTokens, event.completionTokens);
+        const path = activeMessagePath(*session);
+        if (path.length > 0 && session.messages[path[$ - 1]].role == "assistant")
+        {
+            auto reply = &session.messages[path[$ - 1]];
+            reply.promptTokens = event.promptTokens;
+            reply.completionTokens = event.completionTokens;
+            reply.totalTokens = event.totalTokens;
+            recordTurnUsage(*reply, event.totalTokens, event.promptTokens,
+                event.completionTokens, event.requestId);
+        }
+        const recover = _settings.toolsEnabled && !_stopPending &&
+            !computerUseAbortActive() && outputRecoveryCount(*session) == 0 &&
+            !explanationOnlyRequest(latestActualUserRequest(*session));
+        logInfo("agent-output request=" ~ to!string(event.requestId) ~
+            " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
+            " recovery=" ~ (recover ? "once" : "stopped"));
+        failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue));
+        dropAutoResendSchedule();
+        _autoContinuePendingSession = -1;
+        _autoContinueRetries = 0;
+        _activeRequestId = 0;
+        _activeRequestSession = -1;
+        if (!recover)
+        {
+            updateStatus("Stopped repeated agent output. See the conversation for details.");
+            refreshBubbleActions();
+            startNextQueuedFollowUp(sessionIndex);
+            return;
+        }
+        ChatMessage guidance;
+        guidance.role = "user";
+        guidance.internal = true;
+        guidance.content = outputRecoveryMarker ~
+            " the previous response failed to produce a usable action. Its text was " ~
+            "preserved for diagnosis and excluded from this request. Resume the latest " ~
+            "user instruction from the successful tool results. If an action is needed, " ~
+            "use the provided function-call channel and tool schemas; do not print XML " ~
+            "invocations or repeat earlier prose. Otherwise give a concise result or " ~
+            "specific blocker. This is the only automatic output-recovery attempt.";
+        appendMessage(*session, guidance);
+        session.turnStatus = "running";
+        session.taskStatus = "active";
+        publishThreadUpdated(*session);
+        markDirty();
+        rebuildMessageColumn();
+        updateStatus("Recovering agent output…");
+        if (!_toolContinuationPaused) startChatRequest(sessionIndex);
     }
 
     private static bool hasSubstantiveMutation(
@@ -15605,25 +15707,13 @@ public final class OpenCodeRoot : VBox
             appendSkippedToolResults(*session, calls,
                 "Tool call skipped: this exact call has already run " ~
                 to!string(cumulativeRepeatLimit) ~ " times in this " ~
-                "conversation. Tool access remains available for a different " ~
+                "unchanged task state. Tool access remains available for a different " ~
                 "action that can add new evidence.");
-            ChatMessage repeated;
-            repeated.role = "user";
-            repeated.internal = true;
-            repeated.content = "Repetition limit reached: the same tool call " ~
-                "has already run many times without new information. Continue " ~
-                "the task automatically with a different tool, different " ~
-                "arguments, or the evidence already gathered. Tool access is " ~
-                "still available and the task remains active.";
-            appendMessage(*session, repeated);
-            session.turnStatus = "running";
-            session.taskStatus = "active";
-            publishThreadUpdated(*session);
-            markDirty();
-            if (_current == sessionIndex) rebuildMessageColumn();
-            updateStatus("Repeated no-progress call skipped — continuing…");
-            if (!_toolContinuationPaused)
-                startChatRequest(sessionIndex, false);
+            OpenCodeEvent failure;
+            failure.kind = OpenCodeEventKind.error;
+            failure.requestId = event.requestId;
+            failure.outputIssue = "repeated_tool_call";
+            handleOutputFailure(failure);
             return;
         }
         // experimental: planmode - plan-first gate. With tracked plan mode on,
@@ -18801,6 +18891,14 @@ public final class OpenCodeRoot : VBox
         }
         auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0) return;
+        const path = activeMessagePath(*session);
+        if (path.length > 0 &&
+            session.messages[path[$ - 1]].error.startsWith(outputFailurePrefix))
+        {
+            _autoContinuePendingSession = -1;
+            logAutoContinue("skip: agent output recovery exhausted");
+            return;
+        }
         if (explanationOnlyRequest(latestActualUserRequest(*session)))
         {
             _autoContinuePendingSession = -1;
@@ -24894,6 +24992,15 @@ public final class OpenCodeRoot : VBox
                     else applyToolResult(*event);
                     break;
                 case OpenCodeEventKind.done:
+                    if (!event.cancelled && _settings.toolsEnabled &&
+                        !explanationOnlyRequest(latestActualUserRequest(_sessions[runtimeIndex])) &&
+                        answerReplayed(_sessions[runtimeIndex]))
+                    {
+                        auto failure = *event;
+                        failure.outputIssue = "replayed_prose";
+                        handleOutputFailure(failure);
+                        break;
+                    }
                     if (!event.cancelled) _autoResendCount = 0;
                     const completedRequestId = event.requestId;
                     const taskContinues = taskContinuesAfterDone(event.cancelled);
@@ -24910,6 +25017,11 @@ public final class OpenCodeRoot : VBox
                     }
                     break;
                 case OpenCodeEventKind.error:
+                    if (event.outputIssue.length > 0)
+                    {
+                        handleOutputFailure(*event);
+                        break;
+                    }
                     _requestTokenKeyIds.remove(event.requestId);
                     failAssistantMessage(event.text);
                     if (!scheduleContextOverflowRetry(event.text))
@@ -28128,6 +28240,17 @@ public final class OpenCodeRoot : VBox
     public int toolRepeatCountForTesting()
     {
         return _lastToolRepeatCount;
+    }
+
+    public int exactToolRunCountForTesting(string name, string arguments)
+    {
+        const call = OpenCodeToolCall("", name, arguments);
+        return toolCallRunCount(_sessions[_current], call);
+    }
+
+    public bool replayedAnswerForTesting()
+    {
+        return answerReplayed(_sessions[_current]);
     }
 
     /// Test-only: simulate a finished tool call with a given outcome, driving

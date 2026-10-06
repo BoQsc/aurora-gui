@@ -266,6 +266,19 @@ public ChatRequestMessage[] normalizeSystemMessages(
         }
         projected ~= message;
     }
+    // Folding a trailing control instruction must not turn the last answer
+    // into an assistant prefill. llama-server would continue that old text
+    // (and can replay it) rather than start the next action.
+    if (messages.length > 0 && projected.length > 0 &&
+        (messages[$ - 1].role == "system" || messages[$ - 1].role == "developer") &&
+        projected[$ - 1].role == "assistant")
+    {
+        ChatRequestMessage boundary;
+        boundary.role = "user";
+        boundary.content = "Application continuation: follow the system instructions " ~
+            "above and take the next concrete action. Do not repeat earlier assistant text.";
+        projected ~= boundary;
+    }
     if (combined.content.length == 0) return projected;
     return [combined] ~ projected;
 }

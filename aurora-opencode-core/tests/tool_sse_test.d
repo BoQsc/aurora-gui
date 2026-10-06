@@ -433,7 +433,7 @@ private void assertLlamaServerCompatibility()
         [user, initial, assistant, checkpoint, developer], null,
         "qwen-local", false, false, "", 0, true));
     const wireMessages = strict.object["messages"].array;
-    assert(wireMessages.length == 3,
+    assert(wireMessages.length == 4 && wireMessages[$ - 1]["role"].str == "user",
         "system/developer blocks were not folded into one message");
     assert(wireMessages[0].object["role"].str == "system",
         "merged system message is not first");
@@ -465,7 +465,7 @@ private void assertLlamaServerCompatibility()
         [user, firstAnswer, guidance, secondAnswer, durable], null,
         "qwen-local", false, false, "", 0, true));
     const adjacentMessages = adjacent.object["messages"].array;
-    assert(adjacentMessages.length == 3,
+    assert(adjacentMessages.length == 4 && adjacentMessages[$ - 1]["role"].str == "user",
         "adjacent assistant turns were not coalesced after folding");
     assert(adjacentMessages[0].object["role"].str == "system" &&
         adjacentMessages[0].object["content"].str ==

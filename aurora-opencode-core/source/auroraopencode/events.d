@@ -63,5 +63,7 @@ struct OpenCodeEvent
     string effectWorkspace;
     ulong effectRevision;
     bool workspaceChanged;
+    // A decoder-detected output loop, distinct from a network/provider outage.
+    string outputIssue;
 }
 

@@ -5,6 +5,9 @@ import auroraopencode.core : OpenCodeToolCall;
 import core.time : MonoTime;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.string : indexOf;
+import auroraopencode.outputguard : agentOutputIssue, outputFailurePrefix,
+    outputIssueDescription;
+import auroraopencode.provideraudit : ProviderAudit;
 
 /// One stream decoder owns provider accumulation and usage interpretation.
 /// It knows no HTTP handles, mutexes, widgets, files, or task continuation rules.
@@ -39,6 +42,10 @@ public final class ProviderStreamDecoder
     int _lastPushedTotal;
     int _lastPushedCachedPrompt;
     int _lastPushedUncachedPrompt;
+    string[] guardToolNames;
+    string outputIssue;
+    size_t nextGuardBytes = 512;
+    ProviderAudit audit;
 
     string feed(string buffer)
     {
@@ -95,6 +102,7 @@ public final class ProviderStreamDecoder
             return;
         }
         if (value.type != JSONType.object) return;
+        if (audit !is null) audit.record("sse", payload);
 
         if (auto error = "error" in value.object)
         {
@@ -267,7 +275,20 @@ public final class ProviderStreamDecoder
             _streamContent ~= contentFragment;
             emit(OpenCodeEvent(OpenCodeEventKind.delta,
                 contentFragment, false));
+            if (guardToolNames.length > 0 && _streamContent.length >= nextGuardBytes)
+            {
+                nextGuardBytes = _streamContent.length +
+                    (_streamContent.length < 64 * 1024 ? 512 : 8192);
+                rejectOutput(agentOutputIssue(_streamContent, guardToolNames));
+            }
         }
+    }
+
+    private void rejectOutput(string issue)
+    {
+        if (issue.length == 0) return;
+        outputIssue = issue;
+        _streamError = outputFailurePrefix ~ outputIssueDescription(issue);
     }
 
     private void captureUsage(const JSONValue value)
@@ -385,13 +406,20 @@ public final class ProviderStreamDecoder
 
     void finish()
     {
+        if (_streamError.length == 0 && guardToolNames.length > 0)
+            rejectOutput(agentOutputIssue(_streamContent, guardToolNames, true,
+                _streamToolCalls.length > 0));
         if (_streamError.length > 0 ||
             (!_streamDone && _streamFinishReason.length == 0))
         {
-            emit(OpenCodeEvent(OpenCodeEventKind.error,
+            auto event = OpenCodeEvent(OpenCodeEventKind.error,
                 _streamError.length > 0 ? _streamError :
                     "The connection closed before the reply finished. " ~
-                    "Your partial reply has been preserved; try again."));
+                    "Your partial reply has been preserved; try again.",
+                false, null, false, _lastPromptTokens, _lastCompletionTokens,
+                _lastTotalTokens);
+            event.outputIssue = outputIssue;
+            emit(event);
             return;
         }
         // Never execute tool arguments cut off by the output limit.
