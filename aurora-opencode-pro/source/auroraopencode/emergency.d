@@ -95,7 +95,7 @@ private __gshared string _pendingReason = "";
 private __gshared string _lastReportPath = "";
 private __gshared Mutex _mutex;
 
-static this()
+shared static this()
 {
     _mutex = new Mutex();
 }

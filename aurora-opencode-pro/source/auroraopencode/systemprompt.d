@@ -85,6 +85,9 @@ public struct SystemPromptModule
 {
     string name;
     string delegate(in SystemPromptContext ctx) render;
+    // Static modules identify their output, so re-registering identical text
+    // does not invalidate the prompt cache on every request.
+    string identity;
 }
 
 alias SystemPromptRenderer = string delegate(in SystemPromptContext ctx);
@@ -93,6 +96,9 @@ alias SystemPromptRenderer = string delegate(in SystemPromptContext ctx);
 /// example rebuild awareness) register here instead of editing the core
 /// prompt text, so the stable prefix stays untouched.
 private SystemPromptModule[] _extraModules;
+private ulong _promptGeneration;
+
+public ulong systemPromptGeneration() { return _promptGeneration; }
 
 /// Register an additional module. Registration order is preserved and the
 /// module renders after every built-in section. Registering a module whose
@@ -100,6 +106,7 @@ private SystemPromptModule[] _extraModules;
 /// context does not duplicate the section.
 public void registerSystemPromptModule(SystemPromptModule entry)
 {
+    ++_promptGeneration;
     foreach (ref existing; _extraModules)
         if (existing.name == entry.name)
         {
@@ -115,13 +122,19 @@ public void registerSystemPromptModule(SystemPromptModule entry)
 /// rebuild section, cannot leak into an unrelated prompt.
 public void setSystemPromptModules(SystemPromptModule[] modules)
 {
-    _extraModules = modules;
+    bool same = modules.length == _extraModules.length;
+    foreach (i, entry; modules)
+        if (!same || entry.identity.length == 0 || entry.name != _extraModules[i].name ||
+            entry.identity != _extraModules[i].identity) { same = false; break; }
+    if (same) return;
+    ++_promptGeneration;
+    _extraModules = modules.dup;
 }
 
 /// Convenience helper for modules that only expose static text.
 public SystemPromptModule textModule(string name, string text)
 {
-    return SystemPromptModule(name, (in SystemPromptContext) => text);
+    return SystemPromptModule(name, (in SystemPromptContext) => text, text);
 }
 
 /// Render the full system prompt by concatenating module sections in order.

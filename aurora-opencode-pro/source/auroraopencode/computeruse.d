@@ -198,6 +198,32 @@ public void stopComputerUseKillSwitch()
 // settings file itself.
 // ---------------------------------------------------------------------------
 
+/// Immutable identity/configuration captured when a conversation schedules work.
+public struct ComputerUseContext
+{
+    bool present;
+    string route, baseUrl, apiKey, model;
+    bool explanationOnly;
+    uint generation;
+}
+private ComputerUseContext _threadComputerContext;
+
+public ComputerUseContext installComputerUseContext(ComputerUseContext context)
+{
+    auto previous = _threadComputerContext;
+    _threadComputerContext = context;
+    return previous;
+}
+
+private string effectiveComputerBaseUrl()
+{ return _threadComputerContext.present ? _threadComputerContext.baseUrl : computerUseProviderBaseUrl; }
+private string effectiveComputerApiKey()
+{ return _threadComputerContext.present ? _threadComputerContext.apiKey : computerUseProviderApiKey; }
+private string effectiveComputerModel()
+{ return _threadComputerContext.present ? _threadComputerContext.model : computerUseProviderModel; }
+private uint effectiveComputerGeneration()
+{ return _threadComputerContext.present ? _threadComputerContext.generation : computerUseRequestGeneration; }
+
 public __gshared string computerUseProviderBaseUrl;
 public __gshared string computerUseProviderApiKey;
 public __gshared string computerUseProviderModel;
@@ -216,6 +242,7 @@ private __gshared bool _computerUseSessionSet;
 /// stable for the process (and can be overridden by the app for one conversation).
 public string computerUseRoutingSession()
 {
+    if (_threadComputerContext.present) return _threadComputerContext.route;
     if (!_computerUseSessionSet || _computerUseSession.length == 0)
     {
         _computerUseSession = "aurora-computer-use-" ~
@@ -339,10 +366,10 @@ private __gshared Mutex computerUseProcessMutex;
 /// depth. D's `Mutex` is not recursive, and a `subagent`/`loop` action calls
 /// back into `experimentalComputerUseExecute` on the SAME thread, so the owner
 /// must be allowed to re-enter without re-locking (which would self-deadlock).
-private __gshared size_t computerUseMutexOwner;
-private __gshared int computerUseMutexDepth;
 
-static this()
+private int computerUseMutexDepth;
+
+shared static this()
 {
     computerUseProcessMutex = new Mutex();
 }
@@ -352,14 +379,12 @@ static this()
 version (Windows)
 private void lockComputerUseProcess()
 {
-    const me = cast(size_t) GetCurrentThreadId();
-    if (computerUseMutexDepth > 0 && computerUseMutexOwner == me)
+    if (computerUseMutexDepth > 0)
     {
         ++computerUseMutexDepth;
         return;
     }
     computerUseProcessMutex.lock();
-    computerUseMutexOwner = me;
     computerUseMutexDepth = 1;
 }
 
@@ -369,7 +394,6 @@ private void unlockComputerUseProcess()
 {
     if (computerUseMutexDepth <= 0) return;
     if (--computerUseMutexDepth > 0) return;
-    computerUseMutexOwner = 0;
     computerUseProcessMutex.unlock();
 }
 
@@ -388,13 +412,13 @@ public ComputerUseResult experimentalComputerUseExecute(string args,
         // other's clicks and each would misread the other's actions as its own.
         lockComputerUseProcess();
         scope (exit) unlockComputerUseProcess();
-        if (computerUseObservedGeneration != computerUseRequestGeneration ||
-            computerUseProgressSession != _computerUseSession)
+        if (computerUseObservedGeneration != effectiveComputerGeneration() ||
+            computerUseProgressSession != computerUseRoutingSession())
         {
             desktopClickProgress.reset();
             desktopDragProgress.reset();
-            computerUseObservedGeneration = computerUseRequestGeneration;
-            computerUseProgressSession = _computerUseSession;
+            computerUseObservedGeneration = effectiveComputerGeneration();
+            computerUseProgressSession = computerUseRoutingSession();
         }
     }
     return experimentalComputerUseExecuteLocked(args, workspace);
@@ -2682,7 +2706,7 @@ version (Windows)
         string targetWindow = jsonString(value, "window");
         if (targetWindow.length == 0) targetWindow = jsonString(value, "title");
 
-        if (computerUseExplanationOnly && action != "screen")
+        if ((_threadComputerContext.present ? _threadComputerContext.explanationOnly : computerUseExplanationOnly) && action != "screen")
             return failedResult("Error: the latest user request asks for an explanation. " ~
                 "Desktop input is paused; answer that request without resuming the old task.");
         const lockedError = validateNestedAction(value);
@@ -3724,9 +3748,9 @@ version (Windows)
         const task = jsonString(value, "task");
         if (task.length == 0)
             return failedResult("Error: subagent requires `task`.");
-        if (computerUseProviderApiKey.length == 0 ||
-            computerUseProviderBaseUrl.length == 0 ||
-            computerUseProviderModel.length == 0)
+        if (effectiveComputerApiKey().length == 0 ||
+            effectiveComputerBaseUrl().length == 0 ||
+            effectiveComputerModel().length == 0)
             return failedResult("Error: subagent has no provider configured.");
         int maxSteps = cast(int) jsonInt(value, "max_steps", 4);
         if (maxSteps < 1) maxSteps = 1;
@@ -3737,7 +3761,7 @@ version (Windows)
         string frameScale = normalizeFrameScale(jsonString(value, "frame"));
         const frameFactor = frameFactorOf(frameScale);
         string loopModel = jsonString(value, "model");
-        if (loopModel.length == 0) loopModel = computerUseProviderModel;
+        if (loopModel.length == 0) loopModel = effectiveComputerModel();
         auto previousTarget = computerUseNestedTarget;
         scope (exit) computerUseNestedTarget = previousTarget;
         string targetWhy;
@@ -3763,7 +3787,7 @@ version (Windows)
         if (seconds < 5) seconds = 5;
         if (seconds > 300) seconds = 300;
         const deadline = MonoTime.currTime + msecs(seconds * 1000);
-        const endpoint = computerUseProviderBaseUrl ~ "/chat/completions";
+        const endpoint = effectiveComputerBaseUrl() ~ "/chat/completions";
         // One connection for the whole run: a fresh session + TLS handshake per
         // round would add ~0.3-0.6 s to every step.
         string httpError;
@@ -3989,7 +4013,7 @@ version (Windows)
             const modelStarted = MonoTime.currTime;
             string error;
             const response = httpPostJson(http, endpoint,
-                computerUseProviderApiKey, body, error);
+                effectiveComputerApiKey(), body, error);
             if (error !is null)
                 return failedResult("Error: subagent " ~ error);
             JSONValue parsed;

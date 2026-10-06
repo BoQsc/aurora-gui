@@ -49,11 +49,12 @@ int main()
     window.setRoot(root);
     root.isolateClipboardForTesting(true);
     root.pauseToolContinuationForTesting();
+    scope (exit) root.shutdownClient();
     auto driver = new UiTestDriver(window);
     foreach (i; 0 .. 30)
     {
         root.tickTree(0.02);
-        driver.paint();
+        root.tickTree(0.02); driver.paint();
         Thread.sleep(10.msecs);
     }
     auto view = cast(ScrollView) find(root, "oc-scroll");
@@ -67,15 +68,15 @@ int main()
         roles ~= "assistant"; bodies ~= "Reply " ~ to!string(i);
     }
     root.addConversationForTesting(roles, bodies);
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     root.beginStreamForTesting();
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assertVisible(find(root, "oc-activity"), view);
     foreach (i; 0 .. 12)
     {
         root.streamContentForTesting("Newest paragraph " ~ to!string(i) ~
             " with enough text to wrap across the chat column.\n\n");
-        driver.paint();
+        root.tickTree(0.02); driver.paint();
         assert(root.followForTesting() && view.scrollY() == view.maxScroll(),
             "Streaming lost the latest line");
         assert(root.transcriptRowsSequentialForTesting(), "Rows overlap");
@@ -83,12 +84,12 @@ int main()
     root.scrollTranscriptUpForTesting(200);
     const readerOffset = view.scrollY();
     root.streamContentForTesting("Another paragraph.\n\n");
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assert(!root.followForTesting() && view.scrollY() == readerOffset,
         "Streaming moved a reader looking at history");
     root.scrollToForTesting(int.max);
     root.finishStreamForTesting();
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assert(view.scrollY() == view.maxScroll(), "Completion hid the final line");
     writeln("Streaming and completion stay at the true bottom");
 
@@ -99,12 +100,12 @@ int main()
     OpenCodeToolCall second = OpenCodeToolCall("second", "write",
         `{"filePath":"second.txt","content":"hello"}`);
     root.injectToolProgressForTesting([first, second]);
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assertVisible(find(root, "oc-live-tool"), view);
     Thread.sleep(100.msecs);
     const elapsed = root.totalLiveToolElapsedMsForTesting();
     root.rebuildForTesting();
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assertVisible(find(root, "oc-live-tool"), view);
     assert(root.totalLiveToolElapsedMsForTesting() >= elapsed,
         "A transcript rebuild reset the active tool timer");
@@ -116,12 +117,12 @@ int main()
     root.appendToolRequestBatchForTesting([first, second]);
     root.seedPendingToolBatchForTesting([first, second]);
     root.rebuildForTesting();
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     root.toggleFirstToolGroupForTesting();
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assert(!root.firstToolGroupCollapsedForTesting());
     root.injectToolResultIdForTesting("second", "write");
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     auto groups = root.toolGroupChildNamesForTesting();
     assert(groups.length == 2 && groups[0] == "read" && groups[1] == "write",
         "A later completed call moved ahead of an earlier running call");
@@ -129,7 +130,7 @@ int main()
     assert(!root.firstToolGroupCollapsedForTesting(),
         "A partial result reset the group's expanded state");
     root.injectToolResultIdForTesting("first", "read");
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     groups = root.toolGroupChildNamesForTesting();
     assert(groups.length == 2 && groups[0] == "read" && groups[1] == "write",
         "Completed tools changed their request order");
@@ -144,14 +145,14 @@ int main()
     window.saveScreenshot("build/chat-consistency-completed.ppm");
     root.persistForTesting();
     root.reloadSessionsForTesting();
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     groups = root.toolGroupChildNamesForTesting();
     assert(groups.length == 2 && groups[0] == "read" && groups[1] == "write",
         "Restoring the chat changed tool order");
     assert(root.lastToolResultBoundsForTesting().height > 0,
         "Restore hid the newest completed action");
     root.addConversationForTesting(["assistant"], ["Finished the work."]);
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assert(root.lastToolResultBoundsForTesting().height == 0,
         "An older collapsed action stayed open after a newer reply arrived");
     writeln("Parallel tool completion preserves request order");
@@ -165,17 +166,17 @@ int main()
             " with text long enough to wrap in a narrow viewport and test anchoring.";
     }
     root.addConversationForTesting(roles, bodies);
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     root.scrollToForTesting(100);
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     const beforeY = view.content().bounds().y + root.bubbleBoundsForTesting(1).y;
     root.loadOlderHistoryForTesting();
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     const afterY = view.content().bounds().y + root.bubbleBoundsForTesting(121).y;
     assert(beforeY == afterY, "Loading history moved the reader's original row");
     assert(!root.followForTesting());
     root.scrollTranscriptUpForTesting(int.max);
-    driver.paint();
+    root.tickTree(0.02); driver.paint();
     assert(root.hiddenHistoryCountForTesting() == 0,
         "Returning to the top did not re-arm history loading");
     writeln("History paging preserves the reader's position");

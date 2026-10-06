@@ -522,6 +522,12 @@ private void verifyStopPreservesTranscript(OpenCodeRoot root,
     writeln("Stop ends the turn without erasing the previous transcript");
 }
 
+private bool paintProjection(OpenCodeRoot root, UiTestDriver driver)
+{
+    root.projectTranscriptForTesting();
+    return driver.paint();
+}
+
 int main(string[] args)
 {
     const stateDir = buildPath(tempDir(), "aurora-opencode-pro-smoke-state");
@@ -550,9 +556,9 @@ int main(string[] args)
     root.isolateClipboardForTesting(true);
 
     auto driver = new UiTestDriver(window);
-    assert(driver.paint(), "Initial pro paint failed");
+    assert(paintProjection(root, driver), "Initial pro paint failed");
     root.tickTree(0.02);
-    assert(driver.paint(), "Second pro paint failed");
+    assert(paintProjection(root, driver), "Second pro paint failed");
     writeln("[marker] smoke main entered");
     writeln("[marker] args: ", args);
     if (args.length > 1 && args[$ - 1] == "--group-only")
@@ -578,7 +584,7 @@ int main(string[] args)
             `{"program":"cmd.exe","args":["/d","/c","echo","hello"]}`);
         root.appendToolReplyForTesting("g-5", "hello\n");
         root.tickTree(0.02);
-        assert(driver.paint(), "Group-only paint failed");
+        assert(paintProjection(root, driver), "Group-only paint failed");
         auto groups = root.toolGroupHeaderTextsForTesting();
         auto groupChildren = root.toolGroupChildNamesForTesting();
         foreach (line; root.messageColumnDumpForTesting())
@@ -703,15 +709,15 @@ int main(string[] args)
     }
     assert(renamed, "Rename item missing from the context menu");
     root.tickTree(0.02);
-    assert(driver.paint(), "Rename dialog did not paint after opening");
+    assert(paintProjection(root, driver), "Rename dialog did not paint after opening");
     auto renameField = requireWidget!TextField(root, "oc-rename-field");
     renameField.setText("Renamed chat");
     root.tickTree(0.02);
-    assert(driver.paint(), "Rename field edit did not paint");
+    assert(paintProjection(root, driver), "Rename field edit did not paint");
     auto renameSave = requireWidget!Button(root, "oc-rename-save");
     driver.click(globalCenter(renameSave));
     root.tickTree(0.02);
-    assert(driver.paint(), "Rename dialog did not paint after save");
+    assert(paintProjection(root, driver), "Rename dialog did not paint after save");
     assert(root.sessionTitleForTesting(1) == "Renamed chat",
         "Rename did not update the session title");
     writeln("Renamed session title: ", root.sessionTitleForTesting(1));
@@ -721,7 +727,7 @@ int main(string[] args)
     // Delete a session via the list's Delete-key hook.
     sessions.onDeleteRequested(0);
     root.tickTree(0.02);
-    assert(driver.paint(), "Delete did not repaint");
+    assert(paintProjection(root, driver), "Delete did not repaint");
     assert(root.sessionCountForTesting() == 2, "Delete did not remove a session");
     assert(sessions.items().length == 2, "Session list did not shrink after delete");
     writeln("Sessions after delete: ", root.sessionCountForTesting());
@@ -759,7 +765,7 @@ int main(string[] args)
     }
     assert(duplicated, "Duplicate item missing from the context menu");
     root.tickTree(0.02);
-    assert(driver.paint(), "Duplicate did not repaint");
+    assert(paintProjection(root, driver), "Duplicate did not repaint");
     assert(root.sessionCountForTesting() == countBeforeDuplicate + 1,
         "Duplicate did not add a session");
     assert(root.currentSessionForTesting() == dupSource + 1,
@@ -779,7 +785,7 @@ int main(string[] args)
     root.addConversationForTesting(
         ["assistant"],
         ["```d\nimport std.stdio;\nvoid main() { writeln(\"hi\"); }\n```"]);
-    assert(driver.paint(), "Code bubble did not paint");
+    assert(paintProjection(root, driver), "Code bubble did not paint");
     writeln("Pro markdown bubble painted");
 
     // Thinking blocks: collapsed to a slim "Thinking" header by default (like
@@ -791,19 +797,19 @@ int main(string[] args)
         "Thinking block should start collapsed");
     root.toggleLastThinkingForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Expanded thinking did not repaint");
+    assert(paintProjection(root, driver), "Expanded thinking did not repaint");
     assert(!root.lastThinkingCollapsedForTesting(),
         "Thinking block did not expand on toggle");
     // Regression: a mid-stream rebuild must not snap the reasoning block shut
     // again (the column is rebuilt on every throttled stream event).
     root.rebuildForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Rebuild did not repaint after expanding thinking");
+    assert(paintProjection(root, driver), "Rebuild did not repaint after expanding thinking");
     assert(!root.lastThinkingCollapsedForTesting(),
         "A rebuild collapsed the thinking block the user expanded");
     root.toggleLastThinkingForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Collapsed thinking did not repaint");
+    assert(paintProjection(root, driver), "Collapsed thinking did not repaint");
     assert(root.lastThinkingCollapsedForTesting(),
         "Thinking block did not collapse again");
     writeln("Thinking blocks collapse by default and expand on click");
@@ -839,7 +845,7 @@ int main(string[] args)
     // Edit & resend the newest user message via the right-click context menu.
     root.openMessageContextMenuForTesting(countAfterRegenerate - 1);
     root.tickTree(0.02);
-    assert(driver.paint(), "Message context menu did not paint");
+    assert(paintProjection(root, driver), "Message context menu did not paint");
     auto messageMenu = cast(ContextMenu) currentTransientPopup(root);
     assert(messageMenu !is null, "Message context menu did not open");
     bool edited;
@@ -854,7 +860,7 @@ int main(string[] args)
     }
     assert(edited, "Edit & resend missing from the message context menu");
     root.tickTree(0.02);
-    assert(driver.paint(), "Edit & resend did not repaint");
+    assert(paintProjection(root, driver), "Edit & resend did not repaint");
     dismissContextMenus(root);
     root.tickTree(0.02);
     assert(root.messageCountForTesting() == countAfterRegenerate,
@@ -909,7 +915,7 @@ int main(string[] args)
         ["select this text", "trailing assistant reply"]);
     const selIndex = root.messageCountForTesting() - 2;
     root.tickTree(0.02);
-    assert(driver.paint(), "Selection test did not paint");
+    assert(paintProjection(root, driver), "Selection test did not paint");
 
     // Dragging across the user bubble selects its text.
     const selOrigin = root.messageTextOriginForTesting(selIndex);
@@ -923,7 +929,7 @@ int main(string[] args)
     // zero-width caret and nothing looked selected.
     driver.doubleClick(selOrigin);
     root.tickTree(0.02);
-    assert(driver.paint(), "Double-click selection did not repaint");
+    assert(paintProjection(root, driver), "Double-click selection did not repaint");
     assert(root.selectedMessageTextForTesting(selIndex) == "select",
         "Double-click did not select the word under the pointer: '" ~
         root.selectedMessageTextForTesting(selIndex) ~ "'");
@@ -936,14 +942,14 @@ int main(string[] args)
 
     driver.drag(selOrigin, selEnd);
     root.tickTree(0.02);
-    assert(driver.paint(), "Drag selection did not repaint");
+    assert(paintProjection(root, driver), "Drag selection did not repaint");
     assert(root.selectedMessageTextForTesting(selIndex) == "select this text",
         "Dragging across the message did not select its text");
 
     // Select all from the right-click menu, then Copy the selection.
     root.openMessageContextMenuForTesting(selIndex);
     root.tickTree(0.02);
-    assert(driver.paint(), "Selection context menu did not paint");
+    assert(paintProjection(root, driver), "Selection context menu did not paint");
     auto selMenu = cast(ContextMenu) currentTransientPopup(root);
     assert(selMenu !is null, "Selection context menu did not open");
     bool selectedAll;
@@ -984,7 +990,7 @@ int main(string[] args)
     {
         driver.drag(selOrigin, selEnd);
         root.tickTree(0.02);
-        assert(driver.paint(), "Keyboard-selection repaint failed");
+        assert(paintProjection(root, driver), "Keyboard-selection repaint failed");
         driver.pressKey(Key.c, cast(uint) KeyModifier.control);
         root.tickTree(0.02);
         assert(root.copiedMessageTextForTesting(selIndex) == "select this text",
@@ -1026,7 +1032,7 @@ int main(string[] args)
             "Attachment context did not carry the file body");
         // Layout runs on the next frame (invalidate marks the base dirty), so
         // paint once before reading the chip row's geometry.
-        assert(driver.paint(), "Attachment chip row did not repaint");
+        assert(paintProjection(root, driver), "Attachment chip row did not repaint");
         auto attachmentStrip = requireWidget!Widget(root, "oc-attachments");
         assert(attachmentStrip.visible() && attachmentStrip.bounds().height > 0,
             "Attachment chip row is not visible after a drop");
@@ -1047,7 +1053,7 @@ int main(string[] args)
             .indexOf("Pasted text") >= 0, "Large paste chip is missing");
 
         // Clicking a chip removes that attachment and only that one.
-        assert(driver.paint(), "Attachment chips did not relayout");
+        assert(paintProjection(root, driver), "Attachment chips did not relayout");
         driver.click(globalCenter(requireWidget!Button(root, "oc-attachment")));
         root.tickTree(0.02);
         assert(root.pendingAttachmentCountForTesting() == 1,
@@ -1056,12 +1062,12 @@ int main(string[] args)
         // Remove the rest so the composer returns to its resting height.
         while (root.pendingAttachmentCountForTesting() > 0)
         {
-            assert(driver.paint(), "Attachment layout did not refresh");
+            assert(paintProjection(root, driver), "Attachment layout did not refresh");
             driver.click(globalCenter(requireWidget!Button(root,
                 "oc-attachment")));
             root.tickTree(0.02);
         }
-        assert(driver.paint(), "Attachment clear did not repaint");
+        assert(paintProjection(root, driver), "Attachment clear did not repaint");
         assert(root.composerHeightForTesting() == opencodeComposerHeight,
             "Composer did not shrink back after clearing attachments");
         writeln("Large paste becomes a text attachment; chips remove cleanly");
@@ -1083,7 +1089,7 @@ int main(string[] args)
     // depends on the edit history built earlier in the smoke flow.
     root.newChatForTesting();
     root.addImageMessageForTesting("Review this image", "screenshot.png");
-    assert(driver.paint(), "Sent attachment pill did not repaint");
+    assert(paintProjection(root, driver), "Sent attachment pill did not repaint");
     assert(root.lastUserAttachmentPillCountForTesting() == 1,
         "Sent image did not retain an attachment pill");
     auto sentStrip = requireWidget!Widget(root, "oc-sent-attachments");
@@ -1263,7 +1269,7 @@ int main(string[] args)
     writeln("Branches survive a save + reload with version navigation intact");
     const branchShots = buildPath(tempDir(), "aurora-opencode-branch-shots");
     if (!exists(branchShots)) mkdirRecurse(branchShots);
-    assert(driver.paint(), "Branch viewer did not repaint");
+    assert(paintProjection(root, driver), "Branch viewer did not repaint");
     const branchNav = root.bubbleVersionNavBoundsForTesting(reloadedReply);
     const branchAction = root.bubbleActionBoundsForTesting(reloadedReply);
     assert(branchNav.width > 0 && branchAction.width > 0,
@@ -1585,6 +1591,7 @@ int main(string[] args)
     driver.pressKey(Key.enter);
     assert(root.turnBusyForTesting(), "Blank Enter stopped the active reply");
     root.streamReasoningForTesting("still working");
+    root.projectTranscriptForTesting();
     // Regression: streamed reasoning lands in the bubble's append buffer, so the
     // Thinking header must be gated on buffered text too, or the live
     // in-progress message renders no reasoning.
@@ -1751,6 +1758,7 @@ int main(string[] args)
         "the edited follow-up could not be queued again");
     assert(root.clickQueuedPromptRemoveForTesting(1),
         "Remove button did not fire");
+    root.projectTranscriptForTesting();
     assert(root.queuedFollowUpCountForTesting() == 1 &&
         root.queuedPromptBubbleTextForTesting(1).indexOf("follow one edited") >= 0,
         "Remove discarded the wrong follow-up");
@@ -1935,7 +1943,7 @@ int main(string[] args)
     root.markContextCompactionNoticeForTesting();
     assert(root.contextCompactionNoticeCountForTesting() == 1,
         "compaction should show one in-chat notice for the request");
-    assert(driver.paint(), "in-chat compaction notice did not paint");
+    assert(paintProjection(root, driver), "in-chat compaction notice did not paint");
     const afterNotice = root.requestMessagesForTesting();
     assert(afterNotice.length == beforeNotice.length &&
         afterNotice[$ - 1].content == beforeNotice[$ - 1].content,
@@ -2057,7 +2065,7 @@ int main(string[] args)
     // Scrolling up to the top uncollapses the older messages on its own: the
     // next page loads automatically instead of waiting for the loader click.
     root.tickTree(0.02);
-    assert(driver.paint(), "Paging transcript paint failed");
+    assert(paintProjection(root, driver), "Paging transcript paint failed");
     root.scrollToForTesting(int.max);
     root.tickTree(0.02);
     assert(root.scrollYForTesting() > 0,
@@ -2239,7 +2247,7 @@ int main(string[] args)
         `{"id":"hosted","owned_by":"remote-provider"}`));
     root.addConversationForTesting(["assistant"], ["A reply that used tokens."]);
     root.recordContextUsageForTesting(240000, 10000, 250000, 230000, 10000);
-    assert(driver.paint(), "Context badge did not paint after usage");
+    assert(paintProjection(root, driver), "Context badge did not paint after usage");
     assert(root.contextUsageTextForTesting() == "24%",
         "Badge should show 240000/1000000 = 24% input context");
     writeln("Context badge after usage: ", root.contextUsageTextForTesting());
@@ -2248,12 +2256,12 @@ int main(string[] args)
         "Tooltip must be closed before hovering the badge");
     driver.moveTo(globalCenter(usageBadge));
     root.tickTree(0.02);
-    assert(driver.paint(), "Repaint after hovering the badge failed");
+    assert(paintProjection(root, driver), "Repaint after hovering the badge failed");
     assert(!root.isContextTooltipOpenForTesting(),
         "Hover tooltip must wait for the hover-intent delay");
     // Rest on the badge until the hover-intent delay elapses.
     foreach (_; 0 .. 20) root.tickTree(0.05);
-    assert(driver.paint(), "Tooltip did not paint after hover");
+    assert(paintProjection(root, driver), "Tooltip did not paint after hover");
     assert(root.isContextTooltipOpenForTesting(),
         "Hovering the badge did not open the context tooltip");
     const tooltipBounds = root.contextTooltipBoundsForTesting();
@@ -2284,7 +2292,7 @@ int main(string[] args)
     // Moving away from the badge dismisses the tooltip.
     driver.moveTo(Point(4, 700));
     root.tickTree(0.02);
-    assert(driver.paint(), "Tooltip did not repaint after leaving");
+    assert(paintProjection(root, driver), "Tooltip did not repaint after leaving");
     assert(!root.isContextTooltipOpenForTesting(),
         "Leaving the badge did not dismiss the context tooltip");
 
@@ -2673,7 +2681,7 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(root.projectsRailCollapsedForTesting(),
         "Toggling again should collapse the rail");
-    assert(driver.paint(), "Rail toggle did not repaint");
+    assert(paintProjection(root, driver), "Rail toggle did not repaint");
     writeln("Project rail collapses to icon width and persists its state");
 
     // A local path mentioned in a reply is a link, and the message's
@@ -2688,7 +2696,7 @@ int main(string[] args)
         root.addConversationForTesting(["user", "assistant"],
             ["where is it?", "It lives in " ~ pathFile ~ " right now."]);
         root.tickTree(0.02);
-        assert(driver.paint(), "Path-link test did not paint");
+        assert(paintProjection(root, driver), "Path-link test did not paint");
         const pathIndex = root.messageCountForTesting() - 1;
         // The path in the reply was turned into a link.
         auto rect = root.messagePathLinkRectForTesting(pathIndex, pathFile);
@@ -2699,7 +2707,7 @@ int main(string[] args)
         driver.drag(Point(rect.x + 1, rect.y + rect.height / 2),
             Point(rect.x + rect.width - 1, rect.y + rect.height / 2));
         root.tickTree(0.02);
-        assert(driver.paint(), "Path-link drag did not repaint");
+        assert(paintProjection(root, driver), "Path-link drag did not repaint");
         assert(root.selectedMessageTextForTesting(pathIndex).indexOf(
             "pro_path_probe.d") >= 0,
             "dragging across the path did not select it: '" ~
@@ -2736,7 +2744,7 @@ int main(string[] args)
     // its own folder under the sandbox root.
     root.createSandboxProjectForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "New project did not paint after create");
+    assert(paintProjection(root, driver), "New project did not paint after create");
     assert(root.projectCountForTesting() == 2,
         "The New project button did not create the project");
     assert(projects.items().length == 2, "Rail did not gain a tile");
@@ -2809,7 +2817,7 @@ int main(string[] args)
     auto projectsJson = parseJSON(readText(buildPath(stateDir, "projects.json")));
     assert(projectsJson["sessionsRatio"].floating > ratioBefore,
         "Split ratio was not persisted");
-    assert(driver.paint(), "Split drag did not repaint");
+    assert(paintProjection(root, driver), "Split drag did not repaint");
     writeln("Sessions column is draggable and its width persists");
 
     // A real pointer drag takes the fast path: the sidebar reflows as the
@@ -2823,7 +2831,7 @@ int main(string[] args)
     const dragY = splitOrigin.y + split.bounds().height / 2;
     driver.drag(Point(dividerX, dragY), Point(dividerX + 120, dragY), 12);
     root.tickTree(0.02);
-    assert(driver.paint(), "Pointer split drag did not repaint");
+    assert(paintProjection(root, driver), "Pointer split drag did not repaint");
     assert(chatScroll.bounds().width != chatWidthBefore,
         "Chat pane did not reflow after the pointer drag ended");
     writeln("Pointer split drag reflows the chat pane on release");
@@ -2900,7 +2908,7 @@ int main(string[] args)
     const pickerModelBefore = pickerButton.text();
     driver.click(globalCenter(pickerButton));
     root.tickTree(0.02);
-    assert(driver.paint(), "Model picker did not repaint after opening");
+    assert(paintProjection(root, driver), "Model picker did not repaint after opening");
     assert(findById(root, "oc-model-picker") !is null,
         "Clicking the model button did not open the picker");
     // The picker pre-selects the current model before it has bounds; the
@@ -2920,7 +2928,7 @@ int main(string[] args)
 
     driver.click(globalCenter(pickerButton));
     root.tickTree(0.02);
-    assert(driver.paint(), "Model picker did not lay out for the row click");
+    assert(paintProjection(root, driver), "Model picker did not lay out for the row click");
     auto pickerList = requireWidget!ListView(root, "oc-model-picker");
     assert(pickerList.items().length > 1,
         "Model picker needs at least two models for this test");
@@ -2954,7 +2962,7 @@ int main(string[] args)
     // Restore the fixture's original selection through the same single click.
     driver.click(globalCenter(pickerButton));
     root.tickTree(0.02);
-    assert(driver.paint(),
+    assert(paintProjection(root, driver),
         "Model picker did not lay out for the restore row click");
     pickerList = requireWidget!ListView(root, "oc-model-picker");
     const restoreOrigin = pickerList.localToGlobal(Point(0, 0));
@@ -2992,7 +3000,7 @@ int main(string[] args)
     // explanation above the control so it does not cover the composer.
     driver.moveTo(globalCenter(thinkingToggle));
     root.tickTree(0.02);
-    assert(driver.paint(), "Thinking tooltip did not repaint");
+    assert(paintProjection(root, driver), "Thinking tooltip did not repaint");
     assert(root.isThinkingTooltipOpenForTesting(),
         "Hovering Thinking did not open its tooltip");
     const thinkingTip = root.thinkingTooltipBoundsForTesting();
@@ -3017,7 +3025,7 @@ int main(string[] args)
         assert(root.buttonTooltipTextForTesting("oc-changes").length == 0,
             "Button tooltip must wait for the hover-intent delay");
         foreach (_; 0 .. 20) root.tickTree(0.05);
-        assert(driver.paint(), "Changes button tooltip did not paint");
+        assert(paintProjection(root, driver), "Changes button tooltip did not paint");
         const changesTip = root.buttonTooltipTextForTesting("oc-changes");
         assert(changesTip.indexOf("file changes") >= 0,
             "Changes button tooltip lost its text: " ~ changesTip);
@@ -3037,7 +3045,7 @@ int main(string[] args)
         auto tipSend = requireWidget!Widget(root, "oc-send");
         driver.moveTo(globalCenter(tipSend));
         foreach (_; 0 .. 20) root.tickTree(0.05);
-        assert(driver.paint(), "Send button tooltip did not paint");
+        assert(paintProjection(root, driver), "Send button tooltip did not paint");
         const sendTip = root.buttonTooltipTextForTesting("oc-send");
         assert(sendTip.indexOf("Send (Enter)") >= 0,
             "Send button tooltip lost its text: " ~ sendTip);
@@ -3228,11 +3236,11 @@ int main(string[] args)
     assert(root.providerSelectorPresentForTesting(),
         "Settings did not reopen for the provider click test");
     root.tickTree(0.02);
-    assert(driver.paint(), "Settings did not lay out for the provider click test");
+    assert(paintProjection(root, driver), "Settings did not lay out for the provider click test");
     auto providerButton = requireWidget!Button(root, "oc-provider");
     driver.click(globalCenter(providerButton));
     root.tickTree(0.02);
-    assert(driver.paint(), "Provider dropdown did not repaint");
+    assert(paintProjection(root, driver), "Provider dropdown did not repaint");
     auto providerMenu = cast(ContextMenu) currentTransientPopup(root);
     assert(providerMenu !is null,
         "Clicking the Provider button did not open its dropdown");
@@ -3352,11 +3360,11 @@ int main(string[] args)
     openUsage.serviceAccountName = "Legacy: person@example.com";
     root.seedKeyUsageForTesting("opencode", "sk-open-main", openUsage);
     root.tickTree(0.02);
-    assert(driver.paint(), "Settings usage fixture did not lay out");
+    assert(paintProjection(root, driver), "Settings usage fixture did not lay out");
     auto usageKeyField = requireWidget!Widget(root, "oc-settings-key");
     driver.moveTo(globalCenter(usageKeyField));
     root.tickTree(0.02);
-    assert(driver.paint(), "API key usage bars did not paint");
+    assert(paintProjection(root, driver), "API key usage bars did not paint");
     assert(root.keyUsageTooltipAboveSettingsForTesting(),
         "API key tooltip must composite above the Settings popup");
     const usageTooltip = root.keyUsageTooltipTextForTesting();
@@ -3378,7 +3386,7 @@ int main(string[] args)
     commandUsage.windows[2].reset = commandPlan.period;
     root.seedKeyUsageForTesting("commandcode", "sk-cc-spare", commandUsage);
     root.tickTree(0.02);
-    assert(driver.paint(), "CommandCode settings did not lay out");
+    assert(paintProjection(root, driver), "CommandCode settings did not lay out");
     auto spareUsageField = requireWidget!Widget(root, "oc-settings-extrakey");
     driver.moveTo(globalCenter(spareUsageField));
     root.tickTree(0.02);
@@ -3392,7 +3400,7 @@ int main(string[] args)
         spareTooltip.indexOf("User: handle (person@example.com)") >= 0 &&
         spareTooltip.indexOf("Monthly credits left: $0.08") >= 0,
         "Spare key hover did not show CommandCode usage: " ~ spareTooltip);
-    assert(driver.paint(), "CommandCode usage bars did not paint");
+    assert(paintProjection(root, driver), "CommandCode usage bars did not paint");
     driver.moveTo(Point(4, 700));
     root.selectProviderForTesting(0);
     root.dismissPopupForTesting();
@@ -3406,7 +3414,7 @@ int main(string[] args)
         auto badge = requireWidget!Widget(root, "oc-key");
         driver.moveTo(globalCenter(badge));
         root.tickTree(0.02);
-        assert(driver.paint(), "Key badge tooltip did not paint");
+        assert(paintProjection(root, driver), "Key badge tooltip did not paint");
         assert(root.keyBadgeTooltipOpenForTesting(),
             "Hovering the toolbar key badge did not open the usage tooltip");
         const badgeTooltip = root.keyUsageTooltipTextForTesting();
@@ -3478,7 +3486,7 @@ int main(string[] args)
     writeln("Concise execution-contract prompt is viewable from Settings");
     const promptShots = buildPath(tempDir(), "aurora-opencode-tool-shots");
     if (!exists(promptShots)) mkdirRecurse(promptShots);
-    assert(driver.paint(), "System prompt viewer did not repaint");
+    assert(paintProjection(root, driver), "System prompt viewer did not repaint");
     window.saveScreenshot(buildPath(promptShots, "system-prompt.ppm"));
     root.dismissPopupForTesting();
 
@@ -3518,20 +3526,20 @@ int main(string[] args)
         assert(root.providerSelectorPresentForTesting(),
             "Settings did not open for the scroll check");
         root.tickTree(0.02);
-        assert(driver.paint(), "Settings did not lay out for the scroll check");
+        assert(paintProjection(root, driver), "Settings did not lay out for the scroll check");
         assert(root.settingsScrollMaxForTesting() == 0,
             "Settings showed a scrollbar while every row still fit");
         assert(root.toggleSettingsSectionForTesting("oc-settings-options"),
             "Settings dialog is missing its Options section header");
         driver.resize(Size(1200, 560));
         root.tickTree(0.02);
-        assert(driver.paint(), "Short Settings did not lay out");
+        assert(paintProjection(root, driver), "Short Settings did not lay out");
         assert(root.settingsScrollMaxForTesting() > 0,
             "Settings could not scroll its rows in a short window");
         root.dismissPopupForTesting();
         driver.resize(Size(1200, 800));
         root.tickTree(0.02);
-        assert(driver.paint(), "The restored window did not lay out");
+        assert(paintProjection(root, driver), "The restored window did not lay out");
         writeln("Settings scrolls its rows and keeps the footer fixed");
     }
 
@@ -3601,7 +3609,7 @@ int main(string[] args)
         runArgs.indexOf("run-args-ok") >= 0,
         "run args array was not flattened into a command line: " ~ runArgs);
     writeln("Tool arg display flattens argv arrays into a command line");
-    assert(driver.paint(), "Tool bubble did not paint");
+    assert(paintProjection(root, driver), "Tool bubble did not paint");
     writeln("Tool loop executed read + grep and landed two tool messages");
     assert(root.messageCountForTesting() >= 3,
         "Tool loop did not append the tool messages to the session");
@@ -3626,14 +3634,14 @@ int main(string[] args)
     root.toggleFirstToolGroupForTesting();
     assert(!root.firstToolGroupCollapsedForTesting(),
         "action group did not expand on toggle");
-    assert(driver.paint(), "Expanded action group did not repaint");
+    assert(paintProjection(root, driver), "Expanded action group did not repaint");
     const toolShots = buildPath(tempDir(), "aurora-opencode-tool-shots");
     if (!exists(toolShots)) mkdirRecurse(toolShots);
     window.saveScreenshot(buildPath(toolShots, "explored-expanded.ppm"));
     root.toggleFirstToolGroupForTesting();
     assert(root.firstToolGroupCollapsedForTesting(),
         "action group did not collapse again");
-    assert(driver.paint(), "Collapsed action group did not repaint");
+    assert(paintProjection(root, driver), "Collapsed action group did not repaint");
         window.saveScreenshot(buildPath(toolShots, "explored-collapsed.ppm"));
         writeln("A turn's tools fold into one collapsible action group");
 
@@ -3744,7 +3752,7 @@ int main(string[] args)
             timedHeaders[0].indexOf("Worked for") < 0,
             "elapsed time leaked into the action group: " ~
             (timedHeaders.length ? timedHeaders[0] : "(none)"));
-        assert(driver.paint(), "Timed live action group did not paint");
+        assert(paintProjection(root, driver), "Timed live action group did not paint");
 
         // Stream the final answer, then settle the turn. The rebuild must place
         // the completion boundary between the action group and this answer.
@@ -3776,7 +3784,7 @@ int main(string[] args)
         assert(frozenSeparators.length == 1 &&
             frozenSeparators[0] == doneSeparators[0],
             "the settled timer kept ticking");
-        assert(driver.paint(), "Worked-for completion separator did not paint");
+        assert(paintProjection(root, driver), "Worked-for completion separator did not paint");
         window.saveScreenshot(buildPath(toolShots, "worked-for-separator.ppm"));
         writeln("Worked-for separator precedes final answer and freezes");
     }
@@ -3856,7 +3864,7 @@ int main(string[] args)
         }
         assert(root.toolMessageCountForTesting() == 1,
             "nested read tool did not produce a result");
-        assert(driver.paint(), "Nested tool column did not paint");
+        assert(paintProjection(root, driver), "Nested tool column did not paint");
         // Visual order: [user, assistant, nested tool].
         const assistantX = root.bubbleBoundsForTesting(1).x;
         assert(root.bubbleVisibleForTesting(2),
@@ -3912,7 +3920,7 @@ int main(string[] args)
         // too, so they stay visible without expanding the group.
         assert(root.totalToolGroupAdditionsForTesting() >= 3,
             "live action-group header did not show the streamed +N");
-        assert(driver.paint(), "Live write row did not paint");
+        assert(paintProjection(root, driver), "Live write row did not paint");
         // More of the file body streams in: counters must grow.
         prep.arguments =
             `{"filePath":"page.html","content":"<html>\n<body>\n<p>hi</p>\n</body>\n</html>"}`;
@@ -3932,7 +3940,7 @@ int main(string[] args)
         assert(root.totalToolGroupAdditionsForTesting() >= 2 &&
             root.totalToolGroupDeletionsForTesting() >= 1,
             "live action-group header did not aggregate the edit preview");
-        assert(driver.paint(), "Live edit row did not paint");
+        assert(paintProjection(root, driver), "Live edit row did not paint");
         // The in-flight row is timed too, so a long command shows how long it
         // has been running. Freeze the value to keep the assertion non-racy and
         // prove the collapsed action-group header aggregates the live timer.
@@ -3941,7 +3949,7 @@ int main(string[] args)
             "live tool row did not report its elapsed time");
         assert(root.totalToolGroupElapsedMsForTesting() >= 2500,
             "collapsed action-group header did not aggregate the live duration");
-        assert(driver.paint(), "Live elapsed label did not paint");
+        assert(paintProjection(root, driver), "Live elapsed label did not paint");
         root.setLiveToolElapsedForTesting(0);
         // A long command must show unmistakable motion, not just a number that
         // changes once a second: the live action group animates a "working"
@@ -3993,7 +4001,7 @@ int main(string[] args)
             "Expected a live tool row while the arguments stream");
         assert(!root.activityVisibleForTesting(),
             "Activity row duplicated the live tool row");
-        assert(driver.paint(), "Live tool row did not paint");
+        assert(paintProjection(root, driver), "Live tool row did not paint");
         const actShots = buildPath(tempDir(), "aurora-opencode-live-shots");
         if (!exists(actShots)) mkdirRecurse(actShots);
         window.saveScreenshot(buildPath(actShots, "live-tool-row-no-phase.ppm"));
@@ -4057,7 +4065,7 @@ int main(string[] args)
         assert(root.firstToolGroupCollapsedForTesting(),
             "live edit action should start collapsed");
         root.toggleFirstToolGroupForTesting();
-        assert(!root.firstToolGroupCollapsedForTesting() && driver.paint(),
+        assert(!root.firstToolGroupCollapsedForTesting() && paintProjection(root, driver),
             "clicking the edit action did not expand its filename row");
         writeln("Partial edit arguments reveal the nested filename immediately");
     }
@@ -4104,7 +4112,7 @@ int main(string[] args)
             to!string(cmdDetailRows));
         assert(cmdSawRun,
             "run row lost its command line: " ~ to!string(cmdDetailRows));
-        assert(driver.paint(), "Detailed run/process rows did not paint");
+        assert(paintProjection(root, driver), "Detailed run/process rows did not paint");
         writeln("Command tool rows name their command line and action");
     }
 
@@ -4133,7 +4141,7 @@ int main(string[] args)
             "The 'Writing…' phase word is still in the transcript");
         assert(!root.activityVisibleForTesting(),
             "The wait row must be dropped once the header speaks");
-        assert(driver.paint(), "Streaming header did not paint");
+        assert(paintProjection(root, driver), "Streaming header did not paint");
         Thread.sleep(120.msecs);
         root.streamContentForTesting("Here is the explanation, in full detail.");
         root.tickTree(0.02);
@@ -4163,7 +4171,7 @@ int main(string[] args)
             root.lastAssistantThinkingHeaderTextForTesting();
         assert(finalHeader.indexOf("tokens") >= 0,
             "The completed reply lost its token count: " ~ finalHeader);
-        assert(driver.paint(), "Completed counted header did not paint");
+        assert(paintProjection(root, driver), "Completed counted header did not paint");
         const tokenShots = buildPath(tempDir(), "aurora-opencode-token-shots");
         if (!exists(tokenShots)) mkdirRecurse(tokenShots);
         window.saveScreenshot(buildPath(tokenShots, "live-token-counter.ppm"));
@@ -4237,11 +4245,11 @@ int main(string[] args)
             assert(root.lastAssistantContentForTesting() == expected,
                 "a one-character delta was lost while streaming: " ~ expected);
         }
-        assert(driver.paint(), "one-character streaming reply did not paint");
+        assert(paintProjection(root, driver), "one-character streaming reply did not paint");
         root.finishStreamForTesting();
         root.tickTree(0.02);
         assert(root.lastAssistantContentForTesting() == expected &&
-            driver.paint(),
+            paintProjection(root, driver),
             "settling the reply lost its final character");
         writeln("One-character answer deltas survive streaming and settlement");
     }
@@ -4265,6 +4273,7 @@ int main(string[] args)
         transition.name = "read";
         transition.arguments = `{"filePath":"missing-token-test.txt"}`;
         root.injectToolCallsForTesting([transition]);
+        root.projectTranscriptForTesting();
         const settledHeader = root.lastAssistantThinkingHeaderTextForTesting();
         assert(settledHeader.indexOf("tokens") >= 0 &&
             settledHeader.indexOf("t/s") >= 0,
@@ -4328,7 +4337,7 @@ int main(string[] args)
         root.addConversationForTesting(["user"], ["Inspect the target"]);
         root.startTurnClockForTesting();
         root.beginStreamForTesting();
-        assert(driver.paint(), "Empty assistant start did not paint");
+        assert(paintProjection(root, driver), "Empty assistant start did not paint");
         assert(root.bubbleHiddenForTesting(1),
             "an empty streaming assistant slot reserved transcript space");
         const int waitingIndex = root.activityRowVisualIndexForTesting();
@@ -4339,7 +4348,7 @@ int main(string[] args)
         stableCall.name = "read";
         stableCall.arguments = `{"filePath":"missing-stable-position.txt"}`;
         root.injectToolProgressForTesting([stableCall]);
-        assert(driver.paint(), "Preparing action group did not paint");
+        assert(paintProjection(root, driver), "Preparing action group did not paint");
         auto preparingLines = root.columnDebugForTesting();
         int preparingIndex = -1;
         foreach (i, line; preparingLines)
@@ -4350,7 +4359,7 @@ int main(string[] args)
 
         root.pauseToolContinuationForTesting();
         root.injectToolCallsForTesting([stableCall]);
-        assert(driver.paint(), "Running action group did not paint");
+        assert(paintProjection(root, driver), "Running action group did not paint");
         auto runningLines = root.columnDebugForTesting();
         int runningIndex = -1;
         foreach (i, line; runningLines)
@@ -4409,7 +4418,7 @@ int main(string[] args)
         assert(previews.length == 3 && previews[1].indexOf("+a\n+b") >= 0,
             "Live write row did not preview the streamed body: " ~
             (previews.length > 1 ? previews[1] : "(none)"));
-        assert(driver.paint(), "Live action group did not paint");
+        assert(paintProjection(root, driver), "Live action group did not paint");
         writeln("In-flight tools split into same-action live groups: ",
             liveHeaders[0], " | ", liveHeaders.length > 1 ? liveHeaders[1] : "");
         // An unnamed tool must not render as a blank row.
@@ -4443,7 +4452,7 @@ int main(string[] args)
         root.addConversationForTestingWithReasoning(["assistant"],
             ["Done — I read a.txt and wrote out.txt."], ["Now I can answer."]);
         root.tickTree(0.02);
-        assert(driver.paint(), "Multi-round exchange paint failed");
+        assert(paintProjection(root, driver), "Multi-round exchange paint failed");
         const int headers = root.thinkingHeaderCountForTesting();
         const auto texts = root.thinkingTextsForTesting();
         assert(headers == 3 && texts.length == 3,
@@ -4485,7 +4494,7 @@ int main(string[] args)
         }
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Expanded per-round Thinking did not paint");
+        assert(paintProjection(root, driver), "Expanded per-round Thinking did not paint");
         assert(root.transcriptRowsSequentialForTesting(),
             "transcript rows overlap or move backward after a live rebuild");
         const exShots = buildPath(tempDir(), "aurora-opencode-exchange-shots");
@@ -4510,14 +4519,14 @@ int main(string[] args)
         assert(root.activityRowVisualIndexForTesting() ==
             root.messageColumnVisualCountForTesting() - 1,
             "Waiting row rendered above the prompt instead of after it");
-        assert(driver.paint(), "Static reasoning layout failed");
+        assert(paintProjection(root, driver), "Static reasoning layout failed");
         const int staticHeight = root.bubbleHeightForTesting(1);
         root.beginStreamForTesting();
-        assert(driver.paint(), "Stream begin layout failed");
+        assert(paintProjection(root, driver), "Stream begin layout failed");
         assert(root.activityVisibleForTesting(),
             "A fresh stream should start with the activity row (no header yet)");
         root.streamReasoningForTesting("same reasoning");
-        assert(driver.paint(), "Reasoning stream paint failed");
+        assert(paintProjection(root, driver), "Reasoning stream paint failed");
         assert(!root.activityVisibleForTesting(),
             "Reasoning stream must not show a second 'Thinking' activity row");
         const int activityIndex = root.activityRowVisualIndexForTesting();
@@ -4565,7 +4574,7 @@ int main(string[] args)
             "A repeated failure added a phantom assistant turn");
         assert(!root.activityVisibleForTesting(),
             "A failed request left the activity row behind");
-        assert(driver.paint(), "Failed-reply layout did not paint");
+        assert(paintProjection(root, driver), "Failed-reply layout did not paint");
         writeln("Failure before chatBegin attaches to the reply, not the prompt");
     }
 
@@ -4607,7 +4616,7 @@ int main(string[] args)
             storedAfterFirstFailure + 1,
             "A failed retry should store one new reply, got " ~
             to!string(root.totalMessageCountForTesting()) ~ " stored");
-        assert(driver.paint(), "Failed-retry layout did not paint");
+        assert(paintProjection(root, driver), "Failed-retry layout did not paint");
         writeln("A failed retry stays on the active branch and offers Retry");
     }
 
@@ -4633,7 +4642,7 @@ int main(string[] args)
         liveEditRows[0].indexOf("editme.txt") >= 0,
         "In-progress edit row lacks the tool/file: " ~ liveEditRows[0]);
     writeln("In-progress edit row shown while the edit runs: ", liveEditRows[0]);
-    assert(driver.paint(), "In-progress edit row did not paint");
+    assert(paintProjection(root, driver), "In-progress edit row did not paint");
     const liveShots = buildPath(tempDir(), "aurora-opencode-live-shots");
     if (!exists(liveShots)) mkdirRecurse(liveShots);
     window.saveScreenshot(buildPath(liveShots, "live-edit-row.ppm"));
@@ -4679,7 +4688,7 @@ int main(string[] args)
     assert(root.firstToolBubbleCollapsedForTesting(),
         "edit diff part should start collapsed");
     root.toggleFirstToolBubbleForTesting();
-    assert(driver.paint(), "Expanded edit diff did not repaint");
+    assert(paintProjection(root, driver), "Expanded edit diff did not repaint");
     window.saveScreenshot(buildPath(toolShots, "edit-diff-expanded.ppm"));
     writeln("Edit tool reports a +adds/-dels diff");
 
@@ -4699,7 +4708,7 @@ int main(string[] args)
             root.toolDiffDeletionsForTesting(0) == delsBefore,
             "reloaded edit lost its diff counters");
         root.toggleFirstToolBubbleForTesting();
-        assert(driver.paint(), "Restored edit diff did not repaint");
+        assert(paintProjection(root, driver), "Restored edit diff did not repaint");
         window.saveScreenshot(buildPath(toolShots, "restored-edit-diff.ppm"));
         root.toggleFirstToolBubbleForTesting();
         writeln("Edit diff survives a save + reload");
@@ -4755,7 +4764,7 @@ int main(string[] args)
         root.addConversationForTesting(["user", "assistant", "user"],
             ["go", spacingText, "later"]);
         root.tickTree(0.02);
-        assert(driver.paint(), "plain prose spacing repaint failed");
+        assert(paintProjection(root, driver), "plain prose spacing repaint failed");
         const plainHeight = root.bubbleHeightForTesting(1);
 
         root.newChatForTesting();
@@ -4764,7 +4773,7 @@ int main(string[] args)
             `{"plan":[]}`, spacingText);
         root.appendToolReplyForTesting("call-spacing", "plan updated");
         root.tickTree(0.02);
-        assert(driver.paint(), "prose/action spacing repaint failed");
+        assert(paintProjection(root, driver), "prose/action spacing repaint failed");
         const compactHeight = root.bubbleHeightForTesting(1);
         assert(compactHeight == plainHeight - 6,
             "prose before an action group kept excess bottom inset");
@@ -4798,7 +4807,7 @@ int main(string[] args)
         // one, so no Regenerate pill footer inflates a one-line row.
         root.addConversationForTesting(["user"], ["done"]);
         root.tickTree(0.02);
-        assert(driver.paint(), "Uniform-pitch repaint failed");
+        assert(paintProjection(root, driver), "Uniform-pitch repaint failed");
         const int rowCount = root.messageCountForTesting();
         assert(rowCount == 6,
             "uniform-pitch scenario built the wrong column");
@@ -4834,7 +4843,7 @@ int main(string[] args)
         root.addConversationForTesting(["user", "assistant", "assistant"],
             ["q", "same reply", "same reply"]);
         root.tickTree(0.02);
-        assert(driver.paint(), "footer reserve repaint failed");
+        assert(paintProjection(root, driver), "footer reserve repaint failed");
         assert(root.bubbleActionForTesting(1) == "",
             "only the latest reply carries the pill");
         assert(root.bubbleActionForTesting(2) == "Regenerate",
@@ -4910,7 +4919,7 @@ int main(string[] args)
         assert(root.tipSecondaryActionForTesting() == "Continue",
             "an interrupted tool-round turn got no Continue pill: " ~
             root.tipSecondaryActionForTesting());
-        assert(driver.paint(), "interrupted-turn repaint failed");
+        assert(paintProjection(root, driver), "interrupted-turn repaint failed");
         const resumePill = root.tipActionBoundsForTesting();
         const resumeHeader = root.tipGroupHeaderBoundsForTesting();
         assert(resumePill.height > 0 && resumeHeader.height > 0 &&
@@ -4931,7 +4940,7 @@ int main(string[] args)
             "a settled tool round lost its Regenerate/Continue pill: " ~
             root.tipActionForTesting() ~ "/" ~
             root.tipSecondaryActionForTesting());
-        assert(driver.paint(), "settled tool-round repaint failed");
+        assert(paintProjection(root, driver), "settled tool-round repaint failed");
         // Continue from that wrapper (its tip is a tool result) must be
         // accepted and append the continuation, keeping the tool results.
         root.setSessionTurnStatusForTesting(interrupted, "running");
@@ -4971,7 +4980,7 @@ int main(string[] args)
              "shell out"],
             [null, "reasoning one", null, "reasoning two", null]);
         root.tickTree(0.02);
-        assert(driver.paint(), "reply/tool repaint failed");
+        assert(paintProjection(root, driver), "reply/tool repaint failed");
         int[5] bare;
         foreach (i; 0 .. 5)
             bare[i] = root.bubbleHeightForTesting(i);
@@ -4979,7 +4988,7 @@ int main(string[] args)
         foreach (i; 0 .. 5)
             root.setMessageTimeForTesting(i, "18:38");
         root.tickTree(0.02);
-        assert(driver.paint(), "reply/tool repaint (time) failed");
+        assert(paintProjection(root, driver), "reply/tool repaint (time) failed");
         foreach (i; 0 .. 5)
             assert(root.bubbleHeightForTesting(i) == bare[i],
                 "a bare timestamp added phantom height to row " ~ to!string(i) ~
@@ -5238,7 +5247,7 @@ int main(string[] args)
     assert(root.verificationStatusForTesting() == "required",
         "substantive mutation did not require verification");
     root.injectToolResultForTesting("run", "tests passed", false,
-        `{"program":"dub","args":["test"]}`);
+        `{"program":"dub","args":["test"]}`, 0, 0, "", null, "dub test");
     assert(root.verificationStatusForTesting() == "passed",
         "successful focused check did not pass verification");
     root.addConversationForTesting(["assistant"], [""]);
@@ -5327,12 +5336,12 @@ int main(string[] args)
         "Tool result bubble should start collapsed");
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Expanded tool bubble did not repaint");
+    assert(paintProjection(root, driver), "Expanded tool bubble did not repaint");
     assert(!root.firstToolBubbleCollapsedForTesting(),
         "Tool result bubble did not expand on toggle");
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Collapsed tool bubble did not repaint");
+    assert(paintProjection(root, driver), "Collapsed tool bubble did not repaint");
     assert(root.firstToolBubbleCollapsedForTesting(),
         "Tool result bubble did not collapse again");
     writeln("Tool outputs collapse by default and expand on click");
@@ -5344,12 +5353,12 @@ int main(string[] args)
     {
         root.scrollToForTesting(maxInt(0, beforeScroll / 2));
         root.tickTree(0.02);
-        assert(driver.paint(), "Scroll-up did not repaint");
+        assert(paintProjection(root, driver), "Scroll-up did not repaint");
     }
     const midScroll = root.scrollYForTesting();
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Expand did not repaint after scroll-up");
+    assert(paintProjection(root, driver), "Expand did not repaint after scroll-up");
     const afterExpandScroll = root.scrollYForTesting();
     // Allow a tiny clamp drift (the max may shrink), but never a jump to the
     // bottom when the expanded bubble is above the fold.
@@ -5358,7 +5367,7 @@ int main(string[] args)
         to!string(midScroll) ~ " -> " ~ to!string(afterExpandScroll));
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Collapse did not repaint after scroll-up");
+    assert(paintProjection(root, driver), "Collapse did not repaint after scroll-up");
     writeln("Tool collapse/expand preserves the scroll position");
 
     const shotDir = buildPath(tempDir(), "aurora-opencode-collapse-shots");
@@ -5366,7 +5375,7 @@ int main(string[] args)
     window.saveScreenshot(buildPath(shotDir, "tool-collapsed.ppm"));
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
-    assert(driver.paint(), "Expanded tool bubble did not repaint");
+    assert(paintProjection(root, driver), "Expanded tool bubble did not repaint");
     window.saveScreenshot(buildPath(shotDir, "tool-expanded.ppm"));
     root.toggleFirstToolBubbleForTesting();
     root.tickTree(0.02);
@@ -5393,7 +5402,7 @@ int main(string[] args)
         root.appendToolMessageForTesting("read", "tool body\n",
             `{"filePath":"tall.txt"}`, 0, 0, "");
         root.tickTree(0.02);
-        assert(driver.paint(), "Tall transcript paint failed");
+        assert(paintProjection(root, driver), "Tall transcript paint failed");
         root.scrollToForTesting(int.max);
         root.tickTree(0.02);
         const scrollRange = root.scrollYForTesting();
@@ -5426,7 +5435,7 @@ int main(string[] args)
             "tool output did not expand before the rebuild test");
         root.rebuildForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Rebuild did not repaint");
+        assert(paintProjection(root, driver), "Rebuild did not repaint");
         assert(!root.firstToolBubbleCollapsedForTesting(),
             "a rebuild collapsed the tool output the user had expanded");
         assert(root.scrollYForTesting() <= 4,
@@ -5469,7 +5478,7 @@ int main(string[] args)
             root.addConversationForTesting(["assistant"], [body.data]);
         }
         root.tickTree(0.02);
-        assert(driver.paint(), "Reopen transcript paint failed");
+        assert(paintProjection(root, driver), "Reopen transcript paint failed");
         root.scrollToForTesting(0);
         root.tickTree(0.02);
         assert(!root.followForTesting(),
@@ -5504,7 +5513,7 @@ int main(string[] args)
             root.addConversationForTesting(["assistant"], [body.data]);
         }
         root.tickTree(0.02);
-        assert(driver.paint(), "Tall streaming-test transcript did not paint");
+        assert(paintProjection(root, driver), "Tall streaming-test transcript did not paint");
         root.scrollToForTesting(int.max);
         root.tickTree(0.02);
         assert(root.scrollYForTesting() > 0,
@@ -5528,7 +5537,7 @@ int main(string[] args)
                 "streamed answer fragment " ~ to!string(i) ~ "\n");
             root.tickTree(0.02);
         }
-        assert(driver.paint(), "Streamed transcript did not paint");
+        assert(paintProjection(root, driver), "Streamed transcript did not paint");
         assert(!root.followForTesting(),
             "streaming re-engaged auto-follow after the user scrolled up");
         assert(root.scrollYForTesting() <= 4,
@@ -5591,7 +5600,7 @@ int main(string[] args)
         assert(root.firstToolGroupPartCountForTesting() == 2,
             "restored group lost a read part");
         root.toggleFirstToolGroupForTesting();
-        assert(driver.paint(), "Restored read group did not repaint");
+        assert(paintProjection(root, driver), "Restored read group did not repaint");
         window.saveScreenshot(buildPath(shotDir, "restored-reads-expanded.ppm"));
         root.toggleFirstToolGroupForTesting();
         writeln("Read bodies survive a save + reload");
@@ -5614,7 +5623,7 @@ int main(string[] args)
             to!string(root.chatWorkedSecondsForTesting()));
         assert(root.chatTimerLabelForTesting() == "Total 1m 07s",
             "chat timer label wrong: " ~ root.chatTimerLabelForTesting());
-        assert(driver.paint(), "Chat timer badge did not paint");
+        assert(paintProjection(root, driver), "Chat timer badge did not paint");
         root.persistForTesting();
         root.reloadSessionsForTesting();
         assert(root.chatWorkedSecondsForTesting() == 67,
@@ -5660,7 +5669,7 @@ int main(string[] args)
         root.addConversationForTesting(roles, bodies);
     }
     root.tickTree(0.02);
-    assert(driver.paint(), "Large-output paint failed");
+    assert(paintProjection(root, driver), "Large-output paint failed");
 
     size_t expandTool()
     {
@@ -5668,7 +5677,7 @@ int main(string[] args)
         root.tickTree(0.02);
         const before = root.bubbleShapeCountForTesting();
         const started = Clock.currTime;
-        assert(driver.paint(), "Tool expand paint failed");
+        assert(paintProjection(root, driver), "Tool expand paint failed");
         const shapes = root.bubbleShapeCountForTesting() - before;
         const elapsed = (Clock.currTime - started).total!"msecs";
         assert(shapes <= 120,
@@ -5683,7 +5692,7 @@ int main(string[] args)
     {
         root.toggleFirstToolBubbleForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Tool collapse paint failed");
+        assert(paintProjection(root, driver), "Tool collapse paint failed");
     }
     const firstToolShapes = expandTool();
     // Regression: the lazy row culling subtracted a canvas-local `top` from a
@@ -5737,18 +5746,18 @@ int main(string[] args)
             ["Think hard", "The answer."], [null, reason.data]);
     }
     root.tickTree(0.02);
-    assert(driver.paint(), "Long-reasoning paint failed");
+    assert(paintProjection(root, driver), "Long-reasoning paint failed");
     {
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Thinking expand paint failed");
+        assert(paintProjection(root, driver), "Thinking expand paint failed");
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Thinking collapse paint failed");
+        assert(paintProjection(root, driver), "Thinking collapse paint failed");
         const before = root.bubbleShapeCountForTesting();
         root.toggleLastThinkingForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Thinking re-expand paint failed");
+        assert(paintProjection(root, driver), "Thinking re-expand paint failed");
         const reshaped = root.bubbleShapeCountForTesting() - before;
         // One wrapped block may be re-shaped at a newly-seen width, but it must
         // never be shaped per line. Anything above a couple means the
@@ -5764,7 +5773,7 @@ int main(string[] args)
     {
         root.newChatForTesting();
         root.tickTree(0.02);
-        assert(driver.paint(), "Empty-state intro did not paint");
+        assert(paintProjection(root, driver), "Empty-state intro did not paint");
         auto intro = requireWidget!Widget(root, "oc-intro");
         assert(root.introVisibleForTesting(),
             "Intro overlay should be visible on an empty conversation");
@@ -5815,7 +5824,7 @@ int main(string[] args)
         root.tickTree(0.3);
         assert(root.introFadeForTesting() >= 1.0,
             "Intro overlay fade did not complete");
-        assert(driver.paint(), "Faded intro did not paint");
+        assert(paintProjection(root, driver), "Faded intro did not paint");
         window.saveScreenshot("build\\intro-empty.ppm");
         const firstPill = root.introSuggestionBoundsForTesting(0);
         assert(firstPill.width > 0 && firstPill.height > 0,
@@ -5865,7 +5874,7 @@ int main(string[] args)
         // The first message replaces the welcome with the transcript.
         root.addConversationForTesting(["user"], ["Hello there"]);
         root.tickTree(0.02);
-        assert(driver.paint(), "Transcript after intro did not paint");
+        assert(paintProjection(root, driver), "Transcript after intro did not paint");
         assert(!root.introVisibleForTesting(),
             "Intro overlay should hide once a message exists");
         // Switching back to the still-empty chat brings it back.
@@ -5961,7 +5970,7 @@ int main(string[] args)
         // Park the pointer clear of the panel first: hovering the card expands
         // it, so the geometry assertions below must measure the resting state.
         driver.moveTo(Point(4, 700));
-        assert(driver.paint(), "leaving the plan card did not repaint");
+        assert(paintProjection(root, driver), "leaving the plan card did not repaint");
         assert(root.detachedPlanVisibleForTesting(),
             "the detached plan panel did not show by default");
         assert(root.detachedPlanStepCountForTesting() == 2,
@@ -5972,7 +5981,7 @@ int main(string[] args)
             assert(line.indexOf("PLAN ") < 0,
                 "the plan rendered inline while the detached panel was on: " ~
                 line);
-        assert(driver.paint(), "the detached plan panel did not paint");
+        assert(paintProjection(root, driver), "the detached plan panel did not paint");
         const planRect = root.detachedPlanRectForTesting();
         const viewportWidth = root.messageCenterWidthForTesting();
         assert(planRect.width > 0 && planRect.height > 0,
@@ -5995,7 +6004,7 @@ int main(string[] args)
         // would move it out from under the pointer and make it hard to click.
         driver.moveTo(planPanel.localToGlobal(Point(planRect.x + 3,
             planRect.y + 10)));
-        assert(driver.paint(), "hovering the plan border did not repaint");
+        assert(paintProjection(root, driver), "hovering the plan border did not repaint");
         assert(!root.detachedPlanHoverExpandedForTesting(),
             "hovering the plan border expanded the card out from under " ~
             "the pointer");
@@ -6003,7 +6012,7 @@ int main(string[] args)
             "the plan card grew while the pointer was on its border");
         driver.moveTo(planPanel.localToGlobal(Point(
             planRect.x + planRect.width / 2, planRect.y + 12)));
-        assert(driver.paint(), "hovering the plan card did not repaint");
+        assert(paintProjection(root, driver), "hovering the plan card did not repaint");
         assert(root.detachedPlanHoverExpandedForTesting(),
             "hovering the detached plan card did not expand it");
         const hoverRect = root.detachedPlanRectForTesting();
@@ -6012,7 +6021,7 @@ int main(string[] args)
         // The left border is the collapse handle.
         driver.click(planPanel.localToGlobal(Point(hoverRect.x + 3,
             hoverRect.y + 10)));
-        assert(driver.paint(), "collapsing the plan card did not repaint");
+        assert(paintProjection(root, driver), "collapsing the plan card did not repaint");
         assert(root.detachedPlanCollapsedForTesting(),
             "clicking the plan card's left border did not collapse it");
         const collapsedRect = root.detachedPlanRectForTesting();
@@ -6029,7 +6038,7 @@ int main(string[] args)
         driver.click(planPanel.localToGlobal(Point(
             collapsedRect.x + collapsedRect.width / 2,
             collapsedRect.y + collapsedRect.height / 2)));
-        assert(driver.paint(), "restoring the plan card did not repaint");
+        assert(paintProjection(root, driver), "restoring the plan card did not repaint");
         assert(!root.detachedPlanCollapsedForTesting(),
             "clicking the collapsed tab did not restore the plan card");
         assert(root.detachedPlanRectForTesting().width > 32,
@@ -6037,7 +6046,7 @@ int main(string[] args)
             to!string(root.detachedPlanRectForTesting()));
         // Leave the pointer clear so the card settles back to its resting size.
         driver.moveTo(Point(4, 700));
-        assert(driver.paint(), "leaving the plan card did not repaint");
+        assert(paintProjection(root, driver), "leaving the plan card did not repaint");
         assert(!root.detachedPlanHoverExpandedForTesting(),
             "the plan card stayed expanded after the pointer left it");
         assert(root.detachedPlanRectForTesting().width == restingWidth,
@@ -6066,7 +6075,7 @@ int main(string[] args)
             `{"step":"Verify recovery","status":"in_progress"}]}`);
         root.rebuildForTesting();
         driver.moveTo(Point(4, 700));
-        assert(driver.paint(), "the minimize-button plan did not paint");
+        assert(paintProjection(root, driver), "the minimize-button plan did not paint");
         assert(root.detachedPlanVisibleForTesting(),
             "the detached plan panel did not show for the arrow check");
         const panel = requireWidget!Widget(root, "oc-plan-panel");
@@ -6080,7 +6089,7 @@ int main(string[] args)
             to!string(hideRect));
         driver.click(panel.localToGlobal(Point(hideRect.x + hideRect.width / 2,
             hideRect.y + hideRect.height / 2)));
-        assert(driver.paint(), "minimizing the plan did not repaint");
+        assert(paintProjection(root, driver), "minimizing the plan did not repaint");
         assert(root.detachedPlanCollapsedForTesting(),
             "clicking the bent arrow did not minimize the plan");
         const collapsedRect = root.detachedPlanRectForTesting();
@@ -6094,7 +6103,7 @@ int main(string[] args)
         driver.click(panel.localToGlobal(Point(
             collapsedRect.x + collapsedRect.width / 2,
             collapsedRect.y + collapsedRect.height / 2)));
-        assert(driver.paint(), "restoring the plan did not repaint");
+        assert(paintProjection(root, driver), "restoring the plan did not repaint");
         assert(!root.detachedPlanCollapsedForTesting() &&
             root.detachedPlanRectForTesting().width > 32,
             "clicking the minimized tab did not restore the plan");
@@ -6113,7 +6122,7 @@ int main(string[] args)
             `{"step":"Verify recovery","status":"in_progress"}]}`);
         root.rebuildForTesting();
         driver.moveTo(Point(4, 700));
-        assert(driver.paint(), "the padding plan did not paint");
+        assert(paintProjection(root, driver), "the padding plan did not paint");
         assert(root.detachedPlanVisibleForTesting(),
             "the detached plan panel did not show for the padding check");
         const panel = requireWidget!Widget(root, "oc-plan-panel");
@@ -6124,17 +6133,17 @@ int main(string[] args)
         // A click on the body, clear of the padded handle, must not minimize.
         driver.click(panel.localToGlobal(Point(cardRect.x + 40,
             cardRect.y + 10)));
-        assert(driver.paint(), "clicking the plan body did not repaint");
+        assert(paintProjection(root, driver), "clicking the plan body did not repaint");
         assert(!root.detachedPlanCollapsedForTesting(),
             "clicking the plan body beyond the padding minimized it");
         // Move clear so the hover expansion settles back to rest first.
         driver.moveTo(Point(4, 700));
-        assert(driver.paint(), "leaving the plan body did not repaint");
+        assert(paintProjection(root, driver), "leaving the plan body did not repaint");
         const restRect = root.detachedPlanRectForTesting();
         // A click inside the padding (past the thin rail) still minimizes it.
         driver.click(panel.localToGlobal(Point(restRect.x + 16,
             restRect.y + 10)));
-        assert(driver.paint(), "clicking the plan padding did not repaint");
+        assert(paintProjection(root, driver), "clicking the plan padding did not repaint");
         assert(root.detachedPlanCollapsedForTesting(),
             "clicking the plan card's left padding did not minimize it");
         // Restore so the checks that follow start from the expanded card.
@@ -6142,11 +6151,11 @@ int main(string[] args)
         driver.click(panel.localToGlobal(Point(
             collapsedRect.x + collapsedRect.width / 2,
             collapsedRect.y + collapsedRect.height / 2)));
-        assert(driver.paint(), "restoring the padded plan did not repaint");
+        assert(paintProjection(root, driver), "restoring the padded plan did not repaint");
         assert(!root.detachedPlanCollapsedForTesting(),
             "the padded plan stayed minimized after restore");
         driver.moveTo(Point(4, 700));
-        assert(driver.paint(), "leaving the restored plan did not repaint");
+        assert(paintProjection(root, driver), "leaving the restored plan did not repaint");
         writeln("Plan border interaction padding widens the minimize target");
     }
 
@@ -6161,7 +6170,7 @@ int main(string[] args)
             `{"step":"Second outcome","status":"pending"}]}`);
         root.setExperimentalNestedPlansForTesting(false);
         root.rebuildForTesting();
-        assert(driver.paint(), "baseline plan did not paint");
+        assert(paintProjection(root, driver), "baseline plan did not paint");
         const simpleHeight = root.detachedPlanRectForTesting().height;
         root.setExperimentalNestedPlansForTesting(true);
         root.injectToolResultForTesting("update_subplan", "Subplan updated",
@@ -6172,23 +6181,23 @@ int main(string[] args)
         assert(root.taskStepCountForTesting() == 2 &&
             root.nestedPlanStepCountForTesting(1) == 3,
             "substeps replaced the main checklist");
-        assert(driver.paint(), "expanded substeps did not paint");
+        assert(paintProjection(root, driver), "expanded substeps did not paint");
         const expandedHeight = root.detachedPlanRectForTesting().height;
         assert(expandedHeight > simpleHeight,
             "substeps did not expand the plan panel");
         root.toggleNestedPlanForTesting(0);
-        assert(driver.paint(), "collapsed substeps did not paint");
+        assert(paintProjection(root, driver), "collapsed substeps did not paint");
         assert(root.detachedPlanRectForTesting().height == simpleHeight,
             "collapsed substeps still occupied panel height");
         root.persistForTesting();
         root.reloadSessionsForTesting();
         assert(root.nestedPlanStepCountForTesting(1) == 3,
             "substeps did not survive a session reload");
-        assert(driver.paint() &&
+        assert(paintProjection(root, driver) &&
             root.detachedPlanRectForTesting().height == simpleHeight,
             "collapsed substeps reopened after a session reload");
         root.setExperimentalNestedPlansForTesting(false);
-        assert(driver.paint(), "opted-out plan did not paint");
+        assert(paintProjection(root, driver), "opted-out plan did not paint");
         assert(root.detachedPlanRectForTesting().height == simpleHeight &&
             root.taskStepCountForTesting() == 2,
             "turning off experimental substeps changed the main plan");
@@ -6297,7 +6306,7 @@ int main(string[] args)
         assert(latestActionPosition >= 0 && planPosition > latestActionPosition,
             "a newer plan update left the live plan card attached to an old " ~
             "transcript position");
-        assert(driver.paint(), "the plan card did not paint");
+        assert(paintProjection(root, driver), "the plan card did not paint");
         root.startTurnClockForTesting();
         root.setInputForTesting("Keep it GUI-first");
         root.sendForTesting();
@@ -6313,7 +6322,7 @@ int main(string[] args)
         assert(root.queuedPromptBubbleTextForTesting(0) == "Keep it GUI-first",
             "the pending prompt bubble lost its text: " ~
             root.queuedPromptBubbleTextForTesting(0));
-        assert(driver.paint(), "a queued prompt bubble did not paint");
+        assert(paintProjection(root, driver), "a queued prompt bubble did not paint");
         root.queueFollowUpForTesting("Run one final review");
         assert(root.queuedFollowUpCountForTesting() == 1 &&
             root.queuedPromptBubbleCountForTesting() == 2,

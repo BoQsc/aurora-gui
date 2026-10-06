@@ -1,6 +1,9 @@
 module auroraopencode.opencode_client;
 
+import auroraopencode.provideradapter : buildChatBody, chatMessageToJson, normalizeSystemMessages,
+    providerImageDataUrl = chatImageDataUrl;
 import core.sync.mutex : Mutex;
+import core.sync.condition : Condition;
 import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import core.sys.windows.windows : DWORD, DWORD_PTR, BOOL, FALSE, TRUE, GetLastError;
@@ -24,6 +27,8 @@ import auroraopencode.core : ChatImageAttachment, ChatRequestMessage,
 import auroraopencode.logging : logError, logInfo;
 
 /** Kinds of events the client delivers to the UI thread. */
+enum ChatStartResult { accepted, busy, closed, failed }
+
 enum OpenCodeEventKind
 {
     chatBegin,   // assistant reply started (text = "")
@@ -52,6 +57,10 @@ struct OpenCodeEvent
     string toolName;
     string toolCallId;
     bool toolFailed;
+    string verificationCheck;
+    string verificationWorkspace;
+    ulong verificationRevision;
+    bool verificationPassed;
     // A bounded output snapshot from an executing tool, not a terminal result.
     bool toolRunning;
     int diffAdditions;
@@ -468,7 +477,12 @@ private string userAgentFor(string baseUrl)
 final class OpenCodeClient
 {
     private Mutex _mutex;
+    private Condition _queueSpace;
+    private Thread _consumerThread;
     private OpenCodeEvent[] _pending;
+    private size_t _pendingBytes;
+    private enum size_t queueByteBudget = 8 * 1024 * 1024;
+    private enum size_t queueEventBudget = 1024;
     private bool _chatBusy;
     // True while the worker is paused between replays of a transient upstream
     // failure. A 429 is replayed until the provider answers, which can take a
@@ -550,6 +564,8 @@ final class OpenCodeClient
     this(string baseUrl, string apiKey)
     {
         _mutex = new Mutex();
+        _queueSpace = new Condition(_mutex);
+        _consumerThread = Thread.getThis();
         _baseUrl = baseUrl;
         _apiKey = apiKey;
         _opencodeSession = "aurora-session-" ~
@@ -670,7 +686,7 @@ final class OpenCodeClient
     }
 
     /** Start a streaming chat completion with tool definitions. */
-    void startChatMessages(const(ChatRequestMessage)[] messages,
+    ChatStartResult startChatMessages(const(ChatRequestMessage)[] messages,
         const(OpenCodeToolDef)[] tools, string model, bool thinking,
         ulong requestId = 0, string reasoningEffort = "",
         int thinkingBudgetTokens = 0, bool llamaCppServer = false)
@@ -678,8 +694,9 @@ final class OpenCodeClient
         _mutex.lock();
         if (_chatBusy || _sessionClosed)
         {
+            const result = _sessionClosed ? ChatStartResult.closed : ChatStartResult.busy;
             _mutex.unlock();
-            return;
+            return result;
         }
         _chatBusy = true;
         _cancel = false;
@@ -689,6 +706,8 @@ final class OpenCodeClient
         const requestSession = _opencodeSession;
         _mutex.unlock();
 
+        try
+        {
         ChatRequestMessage[] messageCopy;
         foreach (message; messages)
         {
@@ -736,12 +755,20 @@ final class OpenCodeClient
         });
         worker.isDaemon = true;
         worker.start();
+        return ChatStartResult.accepted;
+        }
+        catch (Exception error)
+        {
+            synchronized (_mutex) _chatBusy = false;
+            return ChatStartResult.failed;
+        }
     }
 
     void cancel()
     {
         _mutex.lock();
         _cancel = true;
+        _queueSpace.notifyAll();
         auto handle = _chatHandle;
         _chatHandle = null;
         _mutex.unlock();
@@ -780,6 +807,9 @@ final class OpenCodeClient
         _mutex.lock();
         _sessionClosed = true;
         _cancel = true;
+        _pending = null;
+        _pendingBytes = 0;
+        _queueSpace.notifyAll();
         auto session = _session;
         auto chatHandle = _chatHandle;
         auto modelsHandle = _modelsHandle;
@@ -809,20 +839,71 @@ final class OpenCodeClient
      * streaming worker never waits while the UI copies a potentially large
      * burst of events, and steady-state ticks allocate no event arrays.
      */
-    void drain(ref OpenCodeEvent[] output)
+    void drain(ref OpenCodeEvent[] output, size_t maxEvents = size_t.max,
+        size_t maxBytes = size_t.max)
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
+        if (maxEvents == size_t.max && maxBytes == size_t.max)
+        {
         auto reusable = output;
         output = _pending;
         _pending = reusable;
         _pending.length = 0;
+        _pendingBytes = 0;
+        }
+        else
+        {
+            output.length = 0;
+            size_t taken, bytes;
+            while (taken < _pending.length && output.length < maxEvents)
+            {
+                auto event = _pending[taken];
+                const cost = eventBytes(event);
+                if (bytes >= maxBytes) break;
+                if (event.kind == OpenCodeEventKind.delta &&
+                    event.text.length > maxBytes - bytes)
+                {
+                    size_t cut = maxBytes - bytes;
+                    while (cut && (cast(ubyte) event.text[cut] & 0xc0) == 0x80) --cut;
+                    if (!cut) break;
+                    event.text = event.text[0 .. cut];
+                    output ~= event;
+                    _pending[taken].text = _pending[taken].text[cut .. $];
+                    _pendingBytes -= cut;
+                    break;
+                }
+                if (output.length && cost > maxBytes - bytes) break;
+                output ~= event;
+                bytes += cost;
+                _pendingBytes -= cost;
+                ++taken;
+            }
+            _pending = _pending[taken .. $];
+        }
+        _queueSpace.notifyAll();
+    }
+
+    size_t queuedBytes()
+    {
+        synchronized (_mutex) return _pendingBytes;
+    }
+
+    private static size_t eventBytes(const ref OpenCodeEvent event)
+    {
+        size_t bytes = OpenCodeEvent.sizeof + event.text.length + event.diffText.length;
+        foreach (call; event.toolCalls)
+            bytes += OpenCodeToolCall.sizeof + call.id.length + call.name.length + call.arguments.length;
+        foreach (attachment; event.images) bytes += attachment.base64Data.length;
+        foreach (model; event.modelIds) bytes += model.length;
+        return bytes;
     }
 
     bool hasPendingEvents()
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
+
         return _pending.length > 0;
     }
 
@@ -850,6 +931,17 @@ final class OpenCodeClient
         _mutex.lock();
         scope (exit) _mutex.unlock();
 
+        const cost = eventBytes(event);
+        // Backpressure belongs on producers. Control events generated on the
+        // consumer thread use a reserve instead of waiting on their own drain.
+        // One indivisible event may exceed the byte budget; subsequent events
+        // wait until it is consumed. Cancellation always wakes blocked workers.
+        while (!_cancel && !_sessionClosed && _pending.length &&
+            (_pending.length >= queueEventBudget || _pendingBytes + cost > queueByteBudget) &&
+            Thread.getThis() !is _consumerThread)
+            _queueSpace.wait();
+        if (_sessionClosed || (_cancel && Thread.getThis() !is _consumerThread)) return;
+
         // Adjacent fragments of the same stream channel merge into one queued
         // event. The UI concatenates same-channel deltas anyway, so this is
         // byte-identical output with far fewer queue entries when a provider
@@ -862,6 +954,7 @@ final class OpenCodeClient
             _pending[$ - 1].reasoning == event.reasoning)
         {
             _pending[$ - 1].text ~= event.text;
+            _pendingBytes += event.text.length;
             return;
         }
         // These are snapshots, not an ordered history. When the UI is slower
@@ -873,10 +966,13 @@ final class OpenCodeClient
             _pending[$ - 1].kind == event.kind &&
             _pending[$ - 1].requestId == event.requestId)
         {
+            _pendingBytes -= eventBytes(_pending[$ - 1]);
             _pending[$ - 1] = event;
+            _pendingBytes += cost;
             return;
         }
         _pending ~= event;
+        _pendingBytes += cost;
     }
 
     /// Tag every event produced by the current streaming request. Tool-result
@@ -1714,211 +1810,9 @@ final class OpenCodeClient
         return isLlamaCppModelEntry(value);
     }
 
-    private static JSONValue chatMessageToJson(
-        const ref ChatRequestMessage message, bool forceReasoningReplay = false)
-    {
-        JSONValue json;
-        json["role"] = message.role;
-        // A user turn with inline images uses the OpenAI-compatible parts
-        // array. Text-only messages keep the plain string form, which is what
-        // every non-vision route and the local llama.cpp templates expect.
-        if (message.images.length > 0)
-            json["content"] = chatContentParts(message);
-        else
-            json["content"] = message.content;
-        // DeepSeek/CommandCode-style reasoning models require the assistant's
-        // reasoning_content to be echoed on the following tool round. Include
-        // an empty value for legacy persisted tool calls: presence is required
-        // even when an older Aurora build failed to save the returned text.
-        // `forceReasoningReplay` extends that to every assistant message; it is
-        // the recovery for a provider that rejected an earlier attempt with
-        // exactly this complaint.
-        if (message.role == "assistant" &&
-            (forceReasoningReplay || message.reasoningContent.length > 0 ||
-                message.toolCalls.length > 0))
-            json["reasoning_content"] = message.reasoningContent;
-        if (message.role == "tool" && message.toolCallId.length > 0)
-            json["tool_call_id"] = message.toolCallId;
-        if (message.toolCalls.length > 0)
-        {
-            JSONValue calls = JSONValue(string[].init);
-            foreach (call; message.toolCalls)
-            {
-                JSONValue callJson;
-                callJson["id"] = call.id;
-                callJson["type"] = "function";
-                JSONValue funcDef;
-                funcDef["name"] = call.name;
-                funcDef["arguments"] = call.arguments;
-                callJson["function"] = funcDef;
-                calls.array ~= callJson;
-            }
-            json["tool_calls"] = calls;
-        }
-        return json;
-    }
-
-    /// The multimodal `content` array: the text (when present) first, then one
-    /// `image_url` part per image as a base64 data URL.
-    private static JSONValue chatContentParts(
-        const ref ChatRequestMessage message)
-    {
-        JSONValue parts = JSONValue(string[].init);
-        if (message.content.length > 0)
-        {
-            JSONValue text;
-            text["type"] = "text";
-            text["text"] = message.content;
-            parts.array ~= text;
-        }
-        foreach (image; message.images)
-        {
-            if (image.base64Data.length == 0) continue;
-            JSONValue part;
-            part["type"] = "image_url";
-            JSONValue url;
-            url["url"] = chatImageDataUrl(image);
-            part["image_url"] = url;
-            parts.array ~= part;
-        }
-        return parts;
-    }
-
-    /// `data:<mime>;base64,<payload>`, defaulting the mime type so a caller
-    /// that only captured bytes still produces a valid URL.
     public static string chatImageDataUrl(const ref ChatImageAttachment image)
     {
-        const mime = image.mimeType.length > 0
-            ? image.mimeType : "image/png";
-        return "data:" ~ mime ~ ";base64," ~ image.base64Data;
-    }
-
-    /// llama.cpp chat templates (including Qwen 3/3.5 templates) commonly
-    /// require the system/developer instruction to be the first message and
-    /// allow only one such block. Aurora can add later system checkpoints when
-    /// compacting a long tool history, so fold every instruction block into a
-    /// single leading system message before serialization. Removing them from
-    /// their old positions also preserves assistant tool_calls -> tool result
-    /// adjacency for strict OpenAI-compatible validators.
-    private static ChatRequestMessage[] normalizeSystemMessages(
-        const(ChatRequestMessage)[] messages, bool strictSingleSystem)
-    {
-        // Hosted OpenAI-compatible providers accept instruction checkpoints in
-        // chronological order. Preserve them there: moving a newly appended
-        // checkpoint into message zero rewrites the prefix and defeats provider
-        // KV caches. Only the detected llama.cpp compatibility path needs the
-        // destructive single-leading-system fold below.
-        if (!strictSingleSystem)
-        {
-            ChatRequestMessage[] preserved;
-            foreach (message; messages)
-            {
-                ChatRequestMessage copy;
-                copy.role = message.role;
-                copy.content = message.content;
-                copy.reasoningContent = message.reasoningContent;
-                copy.toolCallId = message.toolCallId;
-                copy.toolCalls = message.toolCalls.dup;
-                copy.images = message.images.dup;
-                preserved ~= copy;
-            }
-            return preserved;
-        }
-        ChatRequestMessage combined;
-        combined.role = "system";
-        ChatRequestMessage[] ordinary;
-        foreach (message; messages)
-        {
-            if (message.role == "system" || message.role == "developer")
-            {
-                if (message.content.length == 0) continue;
-                if (combined.content.length > 0) combined.content ~= "\n\n";
-                combined.content ~= message.content;
-            }
-            else
-            {
-                ChatRequestMessage copy;
-                copy.role = message.role;
-                copy.content = message.content;
-                copy.reasoningContent = message.reasoningContent;
-                copy.toolCallId = message.toolCallId;
-                copy.toolCalls = message.toolCalls.dup;
-                // The fold rebuilds every non-system message, so inline images
-                // must be copied here too: dropping them silently turned a
-                // vision turn into a text turn with no error anywhere.
-                copy.images = message.images.dup;
-                ordinary ~= copy;
-            }
-        }
-        if (combined.content.length == 0) return ordinary;
-        return [combined] ~ ordinary;
-    }
-
-    private static string buildChatBody(const(ChatRequestMessage)[] messages,
-        const(OpenCodeToolDef)[] tools, string model, bool thinking,
-        string baseUrl, bool forceReasoningReplay = false,
-        string reasoningEffort = "", int thinkingBudgetTokens = 0,
-        bool llamaCppServer = false)
-    {
-        JSONValue root;
-        root["model"] = model;
-        JSONValue messageList = JSONValue(string[].init);
-        foreach (message; normalizeSystemMessages(messages, llamaCppServer))
-            messageList.array ~= chatMessageToJson(message, forceReasoningReplay);
-        root["messages"] = messageList;
-        if (tools.length > 0)
-        {
-            JSONValue toolList = JSONValue(string[].init);
-            foreach (tool; tools)
-            {
-                JSONValue toolJson;
-                toolJson["type"] = "function";
-                JSONValue funcDef;
-                funcDef["name"] = tool.name;
-                funcDef["description"] = tool.description;
-                try funcDef["parameters"] = parseJSON(tool.parametersJson);
-                catch (Exception) funcDef["parameters"] = JSONValue.emptyObject;
-                toolJson["function"] = funcDef;
-                toolList.array ~= toolJson;
-            }
-            root["tools"] = toolList;
-            // Match Codex's request contract: let the model return independent
-            // tool calls in one response instead of paying for a fresh model
-            // round-trip for every read/search. The Pro runtime still decides
-            // which calls are actually safe to execute concurrently.
-            root["parallel_tool_calls"] = true;
-        }
-        root["stream"] = true;
-        // Most OpenAI-compatible servers omit usage from streamed chunks unless
-        // explicitly asked. This lets the UI replace its live estimate with the
-        // provider tokenizer's authoritative counts.
-        JSONValue streamOptions;
-        streamOptions["include_usage"] = true;
-        root["stream_options"] = streamOptions;
-        // Thinking on maps the composer's effort onto `reasoning_effort`. The
-        // DeepSeek-class routes over-think at the provider's own default, so an
-        // unset effort resolves to `low` there -- except DeepSeek 4.1 Flash,
-        // which the user wants to think high by default (see
-        // defaultReasoningEffortForModel).
-        if (thinking)
-        {
-            root["reasoning_effort"] = reasoningEffort == "low" ||
-                reasoningEffort == "medium" || reasoningEffort == "high"
-                ? reasoningEffort : defaultReasoningEffortForModel(model);
-            if (llamaCppServer && thinkingBudgetTokens > 0)
-                root["thinking_budget_tokens"] = thinkingBudgetTokens;
-        }
-        // Thinking off must actually disable reasoning. Local llama-server and
-        // the OpenCode Zen gateway both accept `reasoning_effort: "none"`
-        // (Zen's validator lists none/minimal/low/medium/high/xhigh/max), so
-        // send it there. CommandCode's OpenAI route accepts only
-        // low/medium/high/xhigh/max -- `none` is an HTTP 400 -- so omit the
-        // option there; the provider's own default applies instead. api.
-        // deepseek.com is the same story via a different switch.
-        else if (llamaCppServer || isLoopbackApiBaseUrl(baseUrl) ||
-            isOpenCodeApiBaseUrl(baseUrl))
-            root["reasoning_effort"] = "none";
-        return root.toString();
+        return providerImageDataUrl(image);
     }
 
     /**

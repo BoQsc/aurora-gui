@@ -1,4 +1,5 @@
 module auroraopencode.tools;
+import auroraopencode.verification : VerificationEvidence, verificationCheck;
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall,
     OpenCodeToolDef, ensureStateDirectory, opencodeStateDirectory;
@@ -9,7 +10,7 @@ import auroraopencode.websearch : experimentalWebSearchExecute,
     experimentalWebSearchTools;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse : experimentalComputerUseExecute,
-    experimentalComputerUseTools;
+    experimentalComputerUseTools, ComputerUseContext;
 // experimental: orchestrator - delete with source/auroraopencode/orchestrator.d
 import auroraopencode.orchestrator : experimentalOrchestratorExecute,
     experimentalOrchestratorTools;
@@ -528,6 +529,7 @@ public struct ToolExecution
     // tool batch has been appended, then sent in a model-visible user message.
     // Keeping them off the `tool` message preserves strict tool-call ordering.
     ChatImageAttachment[] images;
+    VerificationEvidence verification;
 }
 
 /// A line-based diff between two file bodies. `unified` uses the standard
@@ -1685,7 +1687,11 @@ private ToolExecution runProgramTool(string args, string workspace,
             "run");
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
         cancellation, observer);
-    return ToolExecution("run", truncateOutput(result[0]), result[1]);
+    auto execution = ToolExecution("run", truncateOutput(result[0]), result[1]);
+    execution.verification.check = verificationCheck(program, argv);
+    execution.verification.workspace = resolvedWorkdir;
+    execution.verification.passed = !result[1] && execution.verification.check.length > 0;
+    return execution;
 }
 
 /// The D-native `webfetch` tool: fetch an HTTP(S) URL through the system
@@ -1939,6 +1945,7 @@ private string htmlToText(string html)
 /// probes isolated from the user's durable history.
 public struct ChangeContext
 {
+    ComputerUseContext computer;
     string conversationId;
     string turnId;
 }

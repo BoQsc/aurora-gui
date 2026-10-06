@@ -93,6 +93,8 @@ interface PopupSurface
 /** Base class for all retained-mode Aurora controls. */
 abstract class Widget
 {
+    private ulong _layoutRevision;
+    ulong layoutRevision() const @safe pure nothrow @nogc { return _layoutRevision; }
     private Widget _parent;
     private Widget[] _children;
     private WidgetHost _host;
@@ -410,6 +412,8 @@ abstract class Widget
 
     void invalidate()
     {
+        for (auto node = this; node !is null; node = node._parent)
+            ++node._layoutRevision;
         if (_host !is null)
             _host.invalidateWidget(this);
     }

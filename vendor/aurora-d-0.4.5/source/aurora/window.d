@@ -143,6 +143,8 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private MouseButton _pressClickButton;
 
     bool delegate() onCloseRequested;
+    /// Serialized non-rendering application work, including during live resize.
+    void delegate(double) applicationService;
 
     this(WindowOptions options, Theme theme = Theme.light())
     {
@@ -809,6 +811,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         // Application ticks can perform arbitrary work (decoding, polling,
         // layout invalidation). Do not let that work run inside Win32's modal
         // border-drag loop; the exact scene catches up after sizing ends.
+        if (applicationService !is null) applicationService(deltaSeconds);
         if (!_nativeResizeActive && _root !is null)
             _root.tickTree(deltaSeconds);
         if (!_nativeResizeActive && _resizeFinalizePending &&

@@ -13,7 +13,8 @@ import std.array : split;
 import std.datetime.systime : Clock;
 import std.file : exists, getSize, mkdirRecurse;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.path : dirName;
+import std.path : dirName, buildPath;
+import auroraopencode.attachmentstore : AttachmentStore;
 import std.stdio : File;
 import core.stdc.stdio : SEEK_END;
 import auroraopencode.core : ChatMessage, ChatSession, OpenCodeToolCall,
@@ -106,6 +107,7 @@ public final class DurableAgentRuntime : AgentRuntime
     private string _path;
     private ulong _nextSequence = 1;
     private string _lastError;
+    private ulong _journalBytes;
 
     public this(string path)
     {
@@ -114,13 +116,15 @@ public final class DurableAgentRuntime : AgentRuntime
         // whole journal here (tens of MB after a while) just to find one
         // integer is seconds of startup work for a value on the final line.
         _nextSequence = readLatestSequence(path) + 1;
+        ensureAppendBoundary();
+        _journalBytes = exists(path) ? getSize(path) : 0;
     }
 
     /// The highest sequence already on disk (0 when the journal is empty).
     /// Bounded by a tail read instead of a full parse.
     public ulong latestSequence() const
     {
-        return readLatestSequence(_path);
+        synchronized (cast(Object) this) return _nextSequence - 1;
     }
 
     /// Events with a sequence greater than `afterSequence`, in file order.
@@ -134,7 +138,7 @@ public final class DurableAgentRuntime : AgentRuntime
     /// start, so the whole journal is never re-read.
     public ulong journalSize() const
     {
-        return exists(_path) ? cast(ulong) getSize(_path) : 0;
+        synchronized (cast(Object) this) return _journalBytes;
     }
 
     /// Events written at or after `byteOffset`, in file order.
@@ -145,6 +149,8 @@ public final class DurableAgentRuntime : AgentRuntime
 
     public bool publish(AgentRuntimeEvent event)
     {
+        synchronized (this)
+        {
         try
         {
             const parent = dirName(_path);
@@ -152,13 +158,17 @@ public final class DurableAgentRuntime : AgentRuntime
             // A process death can tear the final JSON object before its line
             // terminator. Separate that fragment from the next valid record so
             // recovery loses at most the in-flight event, never its successor.
-            ensureAppendBoundary();
             event.schemaVersion = 1;
             event.sequence = _nextSequence;
             event.recordedAt = Clock.currTime.stdTime;
             auto file = File(_path, "a");
-            file.writeln(eventToJson(event).toString());
+            auto record = eventToJson(event);
+            auto attachments = AttachmentStore(buildPath(parent, "attachments"));
+            attachments.externalize(record);
+            const line = record.toString() ~ "\n";
+            file.write(line);
             file.flush();
+            _journalBytes += line.length;
             ++_nextSequence;
             _lastError = "";
             return true;
@@ -167,6 +177,7 @@ public final class DurableAgentRuntime : AgentRuntime
         {
             _lastError = error.msg;
             return false;
+        }
         }
     }
 
@@ -177,7 +188,7 @@ public final class DurableAgentRuntime : AgentRuntime
 
     public string lastError() const
     {
-        return _lastError;
+        synchronized (cast(Object) this) return _lastError;
     }
 
     private void ensureAppendBoundary()
@@ -207,12 +218,13 @@ private JSONValue eventToJson(const ref AgentRuntimeEvent event)
     if (event.turnId.length > 0) root["turnId"] = event.turnId;
     if (event.itemId.length > 0) root["itemId"] = event.itemId;
     if (event.itemKind.length > 0) root["itemKind"] = event.itemKind;
-    try root["payload"] = parseJSON(event.payloadJson);
+    try root["payload"] = event.parsedPayload.type != JSONType.null_
+        ? event.parsedPayload : parseJSON(event.payloadJson);
     catch (Exception) root["payload"] = JSONValue(event.payloadJson);
     return root;
 }
 
-private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event)
+private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event, string path)
 {
     if (root.type != JSONType.object) return false;
     auto type = "type" in root.object;
@@ -241,6 +253,8 @@ private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event)
     {
         // Keep the JSON text (the public field) and remember the parsed form,
         // so applying the event does not parse the same payload again.
+        auto attachments = AttachmentStore(buildPath(dirName(path), "attachments"));
+        attachments.hydrate(*field);
         event.payloadJson = field.toString();
         event.parsedPayload = *field;
     }
@@ -260,7 +274,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEvents(string path)
             try
             {
                 AgentRuntimeEvent event;
-                if (eventFromJson(parseJSON(line), event)) result ~= event;
+                if (eventFromJson(parseJSON(line), event, path)) result ~= event;
             }
             catch (Exception)
             {
@@ -348,7 +362,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsAfter(string path,
             try
             {
                 AgentRuntimeEvent event;
-                if (eventFromJson(parseJSON(line), event) &&
+                if (eventFromJson(parseJSON(line), event, path) &&
                     event.sequence > afterSequence)
                     result ~= event;
             }
@@ -394,7 +408,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
             try
             {
                 AgentRuntimeEvent event;
-                if (eventFromJson(parseJSON(line), event)) result ~= event;
+                if (eventFromJson(parseJSON(line), event, path)) result ~= event;
             }
             catch (Exception)
             {

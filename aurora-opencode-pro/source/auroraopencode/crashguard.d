@@ -108,6 +108,8 @@ public void noteActivity(string what)
 /// Whether a marker fires once per painted frame rather than once per step.
 private bool isPerFrameMarker(string what) pure nothrow @safe @nogc
 {
+    // Widths alternate during layout, bypassing identical-marker suppression.
+    if (what.length >= 7 && what[0 .. 7] == "measure") return true;
     if (what.length >= 5 && what[0 .. 5] == "paint") return true;
     // Most paint markers include the widget first ("MessageBubble.onPaint").
     // Treat those as per-frame too; otherwise alternating bubbles bypass the
