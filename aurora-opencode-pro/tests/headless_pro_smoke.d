@@ -633,23 +633,24 @@ int main(string[] args)
         verifyStopPreservesTranscript(root, driver, stateDir);
         return 0;
     }
-    // Git-independent Changes table is always available from the toolbar,
+    // Git-independent Changes view is always available from the toolbar,
     // including in an ordinary non-repository workspace.
     auto changesButton = requireWidget!Button(root, "oc-changes");
     changesButton.onClick();
     root.tickTree(0.02);
     assert(findById(root, "oc-changes-list") !is null,
-        "Changes button did not open the snapshot table");
-    assert(requireWidget!Button(root, "oc-changes-group-10m").enabled(),
-        "Ten-minute timeline control is unavailable");
-    requireWidget!Button(root, "oc-changes-group-all").onClick();
+        "Changes button did not open the snapshot view");
+    assert(findById(root, "oc-changes-latest") !is null,
+        "Just-the-last-change control is unavailable");
+    requireWidget!Button(root, "oc-changes-expand").onClick();
     assert(findById(root, "oc-changes-list") !is null,
-        "All changes control did not preserve the snapshot table");
-    assert(!requireWidget!Button(root, "oc-changes-revert-file").enabled(),
-        "Revert must be disabled when there is no selected change");
+        "Expand did not preserve the snapshot view");
+    requireWidget!Button(root, "oc-changes-collapse").onClick();
+    assert(findById(root, "oc-changes-restore") !is null,
+        "Restore control is unavailable");
     requireWidget!Button(root, "oc-changes-close").onClick();
     root.tickTree(0.02);
-    writeln("Standalone Changes table opens without Git");
+    writeln("Standalone Changes view opens without Git");
 
     // Context meter starts empty: the restored replies have no API usage yet.
     auto usageBadge = requireWidget!Widget(root, "oc-usage");

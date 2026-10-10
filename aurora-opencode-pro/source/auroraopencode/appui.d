@@ -32,7 +32,8 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
     previewToolDiffText,
-    rebuildRequestHandler, revertChangeRecord, ChangeContext, ChangeRecord,
+    rebuildRequestHandler, revertChangeRecord, revertChangeRecords,
+    planRevertRecords, ChangeRestorePath, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution, pendingNativeMutationIntents;
 import auroraopencode.systemprompt : promptVerbosityDirective,
     promptVerbosityLabel, promptVerbosityNames, rebuildModule,
@@ -19803,6 +19804,67 @@ public final class OpenCodeRoot : VBox
         });
     }
 
+    /// A change set is the human-facing unit of "what just happened": every
+    /// journal row from one agent turn in one conversation, shown newest first.
+    private struct ChangeSetView
+    {
+        string key;
+        string conversationId;
+        string conversationLabel;
+        string label;
+        string timestamp;
+        size_t[] records;
+    }
+
+    /// What a tree row acts on: a whole change set, one folder inside it, or a
+    /// single file. `records` index into the flat journal list.
+    private struct ChangeRowTarget
+    {
+        enum Kind { set, folder, file }
+        Kind kind;
+        string expandKey;
+        size_t[] records;
+        string path;
+    }
+
+    /// File name after the last path separator (either separator accepted).
+    private static string changeFileLabel(string path)
+    {
+        size_t cut;
+        foreach (index, ch; path)
+            if (ch == '/' || ch == '\\') cut = index + 1;
+        return cut < path.length ? path[cut .. $] : path;
+    }
+
+    /// Folder part of a path relative to the workspace ("" for the root).
+    private static string changeFolderLabel(string relative)
+    {
+        const name = changeFileLabel(relative);
+        if (name.length >= relative.length) return "";
+        return relative[0 .. relative.length - name.length - 1];
+    }
+
+    /// Short "YYYY-MM-DD HH:MM" form for a recorded timestamp.
+    private static string changeShortTime(string timestamp)
+    {
+        if (timestamp.length < 16) return timestamp;
+        return timestamp[0 .. 10] ~ " " ~ timestamp[11 .. 16];
+    }
+
+    private static string changeSetSummary(int created, int modified,
+        int deleted)
+    {
+        const total = created + modified + deleted;
+        const noun = total == 1 ? " file" : " files";
+        if (deleted > 0 && created == 0 && modified == 0)
+            return "Deleted " ~ to!string(total) ~ noun;
+        if (created > 0 && modified == 0 && deleted == 0)
+            return "Created " ~ to!string(total) ~ noun;
+        if (created == 0 && deleted == 0)
+            return "Edited " ~ to!string(total) ~ noun;
+        return "Changed " ~ to!string(total) ~ noun;
+    }
+
     private string changeConversationLabel(string id) const
     {
         foreach (session; _sessions)
@@ -20432,41 +20494,46 @@ public final class OpenCodeRoot : VBox
         auto title = content.add(new Label("File changes"));
         title.setPixelSize(opencodeFontTitle);
         auto hint = content.add(new Label(
-            "Aurora snapshots — independent of Git. Reverts are undoable and " ~
-            "stop on newer file changes. External programs are not tracked."));
+            "Aurora snapshots — independent of Git. Restore a file, a folder " ~
+            "or a whole change; a path edited since is kept, never " ~
+            "overwritten. External programs are not tracked."));
         hint.setScale(1);
         hint.setColor(opencodeMuted);
 
         auto controls = content.add(new HBox(8));
         controls.layoutHints().preferredHeight = 36;
-        auto groupLabel = controls.add(new Label("Group by"));
-        groupLabel.setScale(1);
-        groupLabel.setColor(opencodeMuted);
-        auto tenMinuteButton = controls.add(new Button("10 minutes"));
-        tenMinuteButton.setId("oc-changes-group-10m");
-        auto hourButton = controls.add(new Button("Hour"));
-        hourButton.setId("oc-changes-group-hour");
-        auto dayButton = controls.add(new Button("Day"));
-        dayButton.setId("oc-changes-group-day");
-        auto allButton = controls.add(new Button("All changes"));
-        allButton.setId("oc-changes-group-all");
-        controls.add(new Spacer());
         auto filter = new CheckBox("Current conversation only");
         filter.setId("oc-changes-filter");
         // Default to the active conversation's changes: the common case is
-        // reverting work this chat just did, and the box can still be cleared
+        // restoring work this chat just did, and the box can still be cleared
         // to see the whole workspace.
         filter.setChecked(true, false);
         controls.add(filter);
-        auto header = content.add(new Label(
-            "File                                      Change · Diff · Time · Conversation"));
-        header.setScale(1);
-        header.setColor(opencodeMuted);
+        auto latestOnly = new CheckBox("Just the last change");
+        latestOnly.setId("oc-changes-latest");
+        latestOnly.setChecked(true, false);
+        controls.add(latestOnly);
+        controls.add(new Spacer());
+        auto expandAll = new Button("Expand");
+        expandAll.setId("oc-changes-expand");
+        auto collapseAll = new Button("Collapse");
+        collapseAll.setId("oc-changes-collapse");
+        controls.add(expandAll);
+        controls.add(collapseAll);
+
         auto list = content.add(new ListView());
         list.setId("oc-changes-list");
-        list.layoutHints().preferredHeight = 380;
-        ChangeRecord[] visible;
+        list.layoutHints().preferredHeight = 400;
+
+        ChangeRecord[] all;
+        ChangeRowTarget[] targets;
+        ChangeSetView[] renderedSets;
         bool[string] reverted;
+        bool[string] expandedSets;
+        bool[string] expandedFolders;
+        string[] restoreIds;
+        string restoreScope;
+        bool restorable;
 
         auto status = content.add(new Label(""));
         status.setScale(1);
@@ -20477,44 +20544,45 @@ public final class OpenCodeRoot : VBox
         diffButton.setId("oc-changes-diff");
         auto folderButton = footer.add(new Button("Open folder", IconKind.folder));
         folderButton.setId("oc-changes-folder");
-        auto fileButton = footer.add(new Button("Revert file"));
-        fileButton.setId("oc-changes-revert-file");
-        auto actionButton = footer.add(new Button("Revert action"));
-        actionButton.setId("oc-changes-revert-action");
-        auto turnButton = footer.add(new Button("Revert turn"));
-        turnButton.setId("oc-changes-revert-turn");
+        auto restoreButton = footer.add(new Button("Restore"));
+        restoreButton.setId("oc-changes-restore");
         footer.add(new Spacer());
         auto close = footer.add(new Button("Close"));
         close.setId("oc-changes-close");
         content.add(footer);
 
-        bool isReverted(const ref ChangeRecord record)
-        {
-            return (record.id in reverted) !is null;
-        }
         void updateButtons()
         {
+            string[] ids;
+            string kindLabel;
             const index = list.selectedIndex();
-            const valid = index >= 0 && index < cast(int) visible.length &&
-                visible[index].id.length > 0;
-            const reversible = valid && !isReverted(visible[index]);
-            diffButton.setEnabled(valid);
-            folderButton.setEnabled(valid);
-            fileButton.setEnabled(reversible);
-            actionButton.setEnabled(reversible);
-            turnButton.setEnabled(reversible);
-        }
-        void updateGroupingButtons()
-        {
-            tenMinuteButton.setAccent(
-                _changeGrouping == ChangeGrouping.tenMinutes);
-            hourButton.setAccent(_changeGrouping == ChangeGrouping.hour);
-            dayButton.setAccent(_changeGrouping == ChangeGrouping.day);
-            allButton.setAccent(_changeGrouping == ChangeGrouping.all);
+            const valid = index >= 0 && index < cast(int) targets.length;
+            if (valid)
+            {
+                const target = targets[index];
+                foreach (row; target.records)
+                    if (row < all.length && (all[row].id in reverted) is null)
+                        ids ~= all[row].id;
+                if (target.kind == ChangeRowTarget.Kind.file)
+                    kindLabel = "this file";
+                else if (target.kind == ChangeRowTarget.Kind.folder)
+                    kindLabel = "this folder";
+                else kindLabel = "this change";
+            }
+            const file = valid &&
+                targets[index].kind == ChangeRowTarget.Kind.file;
+            diffButton.setEnabled(file);
+            folderButton.setEnabled(file);
+            restoreIds = ids;
+            restoreScope = kindLabel;
+            restorable = ids.length > 0;
+            restoreButton.setEnabled(restorable);
+            restoreButton.setText(restorable ? "Restore " ~ kindLabel :
+                "Restore");
         }
         void refresh()
         {
-            const all = listChangeRecords(workspace);
+            all = listChangeRecords(workspace);
             reverted = null;
             string[string] reverter;
             foreach (record; all)
@@ -20532,143 +20600,330 @@ public final class OpenCodeRoot : VBox
             }
             foreach (record; all)
                 if (!activeRecord(record.id)) reverted[record.id] = true;
-            visible.length = 0;
-            ListItem[] rows;
+
+            // One change set per conversation turn, newest first, then filtered
+            // to the active conversation and (by default) only the newest set,
+            // so the view stays quiet instead of listing every edit ever made.
             const currentId = _current >= 0 ? _sessions[_current].id : "";
-            int[string] groupSizes;
-            if (_changeGrouping != ChangeGrouping.all)
-                foreach (record; all)
-                {
-                    if (filter.checked() && record.conversationId != currentId)
-                        continue;
-                    ++groupSizes[changeGroupKey(record.timestamp,
-                        _changeGrouping)];
-                }
-            string previousGroup;
-            int firstRecordIndex = -1;
-            int recordCount;
-            for (size_t offset; offset < all.length; ++offset)
+            ChangeSetView[] sets;
+            size_t[string] where;
+            foreach (index, record; all)
             {
-                const record = all[$ - 1 - offset];
-                if (filter.checked() && record.conversationId != currentId)
-                    continue;
-                if (_changeGrouping != ChangeGrouping.all)
+                const key = record.conversationId ~ "|" ~ record.turnId;
+                if (key !in where)
                 {
-                    const key = changeGroupKey(record.timestamp,
-                        _changeGrouping);
-                    if (key != previousGroup)
+                    ChangeSetView view;
+                    view.key = key;
+                    view.conversationId = record.conversationId;
+                    view.conversationLabel =
+                        changeConversationLabel(record.conversationId);
+                    where[key] = sets.length;
+                    sets ~= view;
+                }
+                sets[where[key]].records ~= index;
+                sets[where[key]].timestamp = record.timestamp;
+            }
+            foreach (ref set; sets)
+            {
+                int created, modified, deleted;
+                foreach (row; set.records)
+                    switch (all[row].changeKind)
                     {
-                        auto separator = ListItem("── " ~
-                            changeGroupLabel(key, _changeGrouping) ~ " · " ~
-                            to!string(groupSizes[key]) ~
-                            (groupSizes[key] == 1 ? " change ──" :
-                                " changes ──"));
-                        separator.disabled = true;
-                        rows ~= separator;
-                        visible ~= ChangeRecord.init;
-                        previousGroup = key;
+                        case "Created": ++created; break;
+                        case "Deleted": ++deleted; break;
+                        default: ++modified; break;
+                    }
+                set.label = changeSetSummary(created, modified, deleted);
+            }
+
+            ListItem[] rows;
+            targets = null;
+            renderedSets = null;
+            foreach (offset; 0 .. sets.length)
+            {
+                if (filter.checked() &&
+                    sets[$ - 1 - offset].conversationId != currentId)
+                    continue;
+                if (latestOnly.checked() && renderedSets.length > 0) break;
+                auto set = sets[$ - 1 - offset];
+                renderedSets ~= set;
+                int adds, dels, setRestored;
+                foreach (row; set.records)
+                {
+                    adds += all[row].additions;
+                    dels += all[row].deletions;
+                    if (all[row].id in reverted) ++setRestored;
+                }
+                const expanded = (set.key in expandedSets) !is null;
+                auto head = ListItem(
+                    (expanded ? "▾  " : "▸  ") ~ set.label,
+                    IconKind.settings,
+                    changeShortTime(set.timestamp) ~ " · " ~
+                    to!string(set.records.length) ~
+                    (set.records.length == 1 ? " file" : " files") ~
+                    " · +" ~ to!string(adds) ~ " −" ~ to!string(dels) ~
+                    " · " ~ set.conversationLabel ~
+                    (setRestored > 0 ? " · ↶ " ~ to!string(setRestored) : ""));
+                head.dimmed = setRestored == set.records.length;
+                rows ~= head;
+                targets ~= ChangeRowTarget(ChangeRowTarget.Kind.set, set.key,
+                    set.records, "");
+                if (!expanded) continue;
+
+                string[] folderOrder;
+                size_t[][string] folderRecords;
+                foreach (row; set.records)
+                {
+                    const folder = changeFolderLabel(
+                        displayChangePath(all[row].path, workspace));
+                    if (folder !in folderRecords) folderOrder ~= folder;
+                    folderRecords[folder] ~= row;
+                }
+                foreach (folder; folderOrder)
+                {
+                    auto group = folderRecords[folder];
+                    int fAdds, fDels, fRestored;
+                    foreach (row; group)
+                    {
+                        fAdds += all[row].additions;
+                        fDels += all[row].deletions;
+                        if (all[row].id in reverted) ++fRestored;
+                    }
+                    const folderKey = set.key ~ "/" ~ folder;
+                    const folderOpen = (folderKey in expandedFolders) !is null;
+                    const folderName = folder.length > 0 ? folder :
+                        "(workspace root)";
+                    auto folderRow = ListItem(
+                        "     " ~ (folderOpen ? "▾  " : "▸  ") ~ folderName ~
+                        "/", IconKind.folder,
+                        to!string(group.length) ~
+                        (group.length == 1 ? " file" : " files") ~ " · +" ~
+                        to!string(fAdds) ~ " −" ~ to!string(fDels) ~
+                        (fRestored == group.length ? " · ↶ restored" : ""));
+                    folderRow.dimmed = fRestored == group.length;
+                    rows ~= folderRow;
+                    targets ~= ChangeRowTarget(ChangeRowTarget.Kind.folder,
+                        folderKey, group, "");
+                    if (!folderOpen) continue;
+
+                    foreach (row; group)
+                    {
+                        const record = all[row];
+                        const relative = displayChangePath(record.path,
+                            workspace);
+                        const marker = (record.id in reverted) !is null ?
+                            "↶ " : "";
+                        auto icon = record.changeKind == "Created"
+                            ? IconKind.newDocument
+                            : (record.changeKind == "Deleted"
+                                ? IconKind.trash : IconKind.settings);
+                        auto fileRow = ListItem(
+                            "          " ~ marker ~ changeFileLabel(relative),
+                            icon, record.changeKind ~ " · +" ~
+                            to!string(record.additions) ~ " −" ~
+                            to!string(record.deletions));
+                        fileRow.dimmed = (record.id in reverted) !is null;
+                        rows ~= fileRow;
+                        targets ~= ChangeRowTarget(ChangeRowTarget.Kind.file,
+                            "", [row], record.path);
                     }
                 }
-                if (firstRecordIndex < 0)
-                    firstRecordIndex = cast(int) rows.length;
-                visible ~= record;
-                ++recordCount;
-                const marker = isReverted(record) ? "↶ " : "";
-                const relative = displayChangePath(record.path, workspace);
-                const secondary = record.changeKind ~ " · +" ~
-                    to!string(record.additions) ~ " -" ~
-                    to!string(record.deletions) ~ " · " ~ record.timestamp ~
-                    " · " ~ changeConversationLabel(record.conversationId);
-                auto icon = record.changeKind == "Created" ? IconKind.newDocument :
-                    (record.changeKind == "Deleted" ? IconKind.trash :
-                        IconKind.settings);
-                auto row = ListItem(marker ~ relative, icon, secondary);
-                row.dimmed = isReverted(record);
-                rows ~= row;
+            }
+            if (rows.length == 0)
+            {
+                auto empty = ListItem(
+                    "No Aurora-managed file changes in this workspace.",
+                    IconKind.settings, "");
+                empty.disabled = true;
+                rows ~= empty;
+                targets ~= ChangeRowTarget.init;
             }
             list.setItems(rows);
-            list.setSelectedIndex(firstRecordIndex, false);
-            status.setText(recordCount == 0 ?
+            int select = -1;
+            foreach (index, target; targets)
+                if (target.kind == ChangeRowTarget.Kind.file)
+                {
+                    select = cast(int) index;
+                    break;
+                }
+            if (select < 0 && rows.length > 0) select = 0;
+            list.setSelectedIndex(select, false);
+            int fileCount;
+            foreach (set; renderedSets) fileCount += cast(int) set.records.length;
+            status.setText(rows.length == 0 ?
                 "No Aurora-managed file changes in this workspace." :
-                to!string(recordCount) ~ " recorded file change(s). " ~
-                "↶ means already reverted.");
+                to!string(renderedSets.length) ~
+                (renderedSets.length == 1 ? " change · " : " changes · ") ~
+                to!string(fileCount) ~
+                (fileCount == 1 ? " file. " : " files. ") ~
+                "↶ means already restored.");
             const pending = pendingNativeMutationIntents(workspace);
             if (pending.length)
                 status.setText(to!string(pending.length) ~
-                    " interrupted file operation(s) have preserved before-images. Inspect Changes/pending in the state folder before retrying.");
+                    " interrupted file operation(s) have preserved " ~
+                    "before-images. Inspect Changes/pending in the state " ~
+                    "folder before retrying.");
             updateButtons();
         }
-        ChangeRecord selectedRecord()
+        void toggleExpand(int index)
         {
-            const index = list.selectedIndex();
-            return index >= 0 && index < cast(int) visible.length ?
-                visible[index] : ChangeRecord.init;
+            if (index < 0 || index >= cast(int) targets.length) return;
+            const target = targets[index];
+            if (target.kind == ChangeRowTarget.Kind.file)
+            {
+                if (target.records.length > 0)
+                    showChangeDiffDialog(all[target.records[0]]);
+                return;
+            }
+            if (target.expandKey.length == 0) return;
+            if (target.kind == ChangeRowTarget.Kind.set)
+            {
+                if ((target.expandKey in expandedSets) !is null)
+                    expandedSets.remove(target.expandKey);
+                else
+                    expandedSets[target.expandKey] = true;
+            }
+            else
+            {
+                if ((target.expandKey in expandedFolders) !is null)
+                    expandedFolders.remove(target.expandKey);
+                else
+                    expandedFolders[target.expandKey] = true;
+            }
+            refresh();
         }
-        void runRevert(bool action, bool turn)
-        {
-            const record = selectedRecord();
-            if (record.id.length == 0) return;
-            ChangeContext context;
-            context.conversationId = _current >= 0 ?
-                _sessions[_current].id : "manual";
-            context.turnId = "manual-revert-" ~
-                to!string(Clock.currTime.stdTime);
-            const outcome = revertChangeRecord(workspace, record.id, action,
-                context, turn);
-            status.setText(outcome.message);
-            if (outcome.succeeded) refresh();
-        }
-        tenMinuteButton.onClick = delegate()
-        {
-            _changeGrouping = ChangeGrouping.tenMinutes;
-            updateGroupingButtons();
-            refresh();
-        };
-        hourButton.onClick = delegate()
-        {
-            _changeGrouping = ChangeGrouping.hour;
-            updateGroupingButtons();
-            refresh();
-        };
-        dayButton.onClick = delegate()
-        {
-            _changeGrouping = ChangeGrouping.day;
-            updateGroupingButtons();
-            refresh();
-        };
-        allButton.onClick = delegate()
-        {
-            _changeGrouping = ChangeGrouping.all;
-            updateGroupingButtons();
-            refresh();
-        };
         filter.onChanged = delegate(bool value) { refresh(); };
-        list.onSelectionChanged = delegate(int index) { updateButtons(); };
-        list.onActivated = delegate(int index)
+        latestOnly.onChanged = delegate(bool value) { refresh(); };
+        expandAll.onClick = delegate()
         {
-            const record = selectedRecord();
-            if (record.id.length > 0) showChangeDiffDialog(record);
+            foreach (set; renderedSets) expandedSets[set.key] = true;
+            refresh();
         };
+        collapseAll.onClick = delegate()
+        {
+            expandedSets = null;
+            expandedFolders = null;
+            refresh();
+        };
+        list.onSelectionChanged = delegate(int index) { updateButtons(); };
+        list.onActivated = delegate(int index) { toggleExpand(index); };
         diffButton.onClick = delegate()
         {
-            const record = selectedRecord();
-            if (record.id.length > 0) showChangeDiffDialog(record);
+            const index = list.selectedIndex();
+            if (index < 0 || index >= cast(int) targets.length) return;
+            const target = targets[index];
+            if (target.kind == ChangeRowTarget.Kind.file &&
+                target.records.length > 0)
+                showChangeDiffDialog(all[target.records[0]]);
         };
         folderButton.onClick = delegate()
         {
-            const record = selectedRecord();
-            if (record.id.length > 0) openFileLocation(record.path, workspace);
+            const index = list.selectedIndex();
+            if (index < 0 || index >= cast(int) targets.length) return;
+            const target = targets[index];
+            if (target.kind == ChangeRowTarget.Kind.file &&
+                target.records.length > 0)
+                openFileLocation(all[target.records[0]].path, workspace);
         };
-        fileButton.onClick = delegate() { runRevert(false, false); };
-        actionButton.onClick = delegate() { runRevert(true, false); };
-        turnButton.onClick = delegate() { runRevert(false, true); };
+        restoreButton.onClick = delegate()
+        {
+            if (!restorable || restoreIds.length == 0) return;
+            showRestorePreviewDialog(restoreIds, restoreScope,
+                delegate() { showChangesDialog(); });
+        };
         close.onClick = delegate() { dismissPopup(); };
-        updateGroupingButtons();
         refresh();
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(860, 630));
+        popup.setRequestedSize(Size(860, 640));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { _activePopup = null; };
+        openPopup(popup);
+    }
+
+    /// Preview then perform a scoped restore (a file, a folder, or a whole
+    /// change). The plan lists every path and flags the ones that changed since
+    /// Aurora recorded them; those are kept, so a restore never clobbers newer
+    /// work. `onDone` re-opens the changes view once the restore succeeds.
+    private void showRestorePreviewDialog(string[] recordIds, string scopeLabel,
+        void delegate() onDone)
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+        const workspace = activeWorkspace();
+        const plan = planRevertRecords(workspace, recordIds);
+        int conflicts;
+        foreach (row; plan)
+            if (row.conflict) ++conflicts;
+        auto content = new VBox(8, Insets(16));
+        content.layoutHints().preferredWidth = 640;
+        auto title = content.add(new Label("Restore " ~ scopeLabel));
+        title.setPixelSize(opencodeFontTitle);
+        auto hint = content.add(new Label(
+            to!string(plan.length) ~
+            (plan.length == 1 ? " path will be restored." :
+                " paths will be restored.") ~
+            (conflicts > 0 ?
+                " " ~ to!string(conflicts) ~
+                " changed since Aurora recorded them and will be kept." :
+                " Nothing changed since; the restore is clean.")));
+        hint.setScale(1);
+        hint.setColor(opencodeMuted);
+
+        auto preview = new TextArea();
+        preview.setReadOnly(true);
+        preview.layoutHints().preferredHeight = 300;
+        preview.layoutHints().minHeight = 160;
+        auto text = appender!string();
+        foreach (row; plan)
+        {
+            text.put(displayChangePath(row.path, workspace));
+            text.put("  —  ");
+            text.put(row.action);
+            if (row.conflict) text.put("   (kept: edited since recorded)");
+            text.put("\n");
+        }
+        preview.setText(text.data);
+        content.add(preview);
+
+        auto status = content.add(new Label(""));
+        status.setScale(1);
+        status.setColor(opencodeMuted);
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 36;
+        footer.add(new Spacer());
+        auto cancel = footer.add(new Button("Cancel"));
+        cancel.setId("oc-restore-cancel");
+        auto confirm = footer.add(new Button("Restore"));
+        confirm.setId("oc-restore-confirm");
+        content.add(footer);
+
+        cancel.onClick = delegate()
+        {
+            dismissPopup();
+            showChangesDialog();
+        };
+        confirm.onClick = delegate()
+        {
+            ChangeContext context;
+            context.conversationId = _current >= 0 ? _sessions[_current].id :
+                "manual";
+            context.turnId = "manual-restore-" ~
+                to!string(Clock.currTime.stdTime);
+            const outcome = revertChangeRecords(workspace, recordIds, context,
+                true);
+            if (outcome.succeeded)
+            {
+                dismissPopup();
+                if (onDone !is null) onDone();
+            }
+            else
+                status.setText(outcome.message);
+        };
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(680, 480));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate() { _activePopup = null; };
         openPopup(popup);

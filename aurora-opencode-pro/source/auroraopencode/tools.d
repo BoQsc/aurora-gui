@@ -5363,6 +5363,178 @@ public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
     return result;
 }
 
+/// One path a restore would touch, with the action it would take and whether
+/// the current bytes still match the recorded after-image. A preview built from
+/// these keeps a folder or whole-set restore from being a blind action.
+public struct ChangeRestorePath
+{
+    string path;
+    string action;
+    bool conflict;
+}
+
+private string changeRestoreAction(const ref ChangeRecord record)
+{
+    if (record.beforeExists)
+        return record.beforeDirectory ? "create folder" : "restore";
+    if (record.afterDirectory) return "remove folder";
+    return record.afterExists ? "delete" : "none";
+}
+
+/// Collapse selected journal rows per path (earliest before-image, latest
+/// after-image) so restoring a folder or a whole set touches each path once.
+private ChangeRecord[] collapseChangeRecords(ChangeRecord[] all,
+    const ref bool[string] wanted)
+{
+    ChangeRecord[string] combined;
+    string[] orderedPaths;
+    foreach (record; all)
+    {
+        if (record.id !in wanted) continue;
+        if (record.path !in combined)
+        {
+            combined[record.path] = record;
+            combined[record.path].revertOf = record.id;
+            orderedPaths ~= record.path;
+        }
+        else
+        {
+            auto aggregate = &combined[record.path];
+            aggregate.afterExists = record.afterExists;
+            aggregate.afterDirectory = record.afterDirectory;
+            aggregate.afterHash = record.afterHash;
+            aggregate.afterBlob = record.afterBlob;
+            aggregate.changeKind = record.changeKind;
+            aggregate.revertOf ~= "|" ~ record.id;
+        }
+    }
+    ChangeRecord[] targets;
+    foreach (path; orderedPaths) targets ~= combined[path];
+    return targets;
+}
+
+/// Preview restoring an explicit set of journal rows (a folder of files, a
+/// whole turn, or any selection) without changing anything on disk.
+public ChangeRestorePath[] planRevertRecords(string workspace,
+    string[] recordIds)
+{
+    auto mutationLock = workspaceMutationLock(workspace);
+    mutationLock.lock();
+    scope (exit) mutationLock.unlock();
+    bool[string] wanted;
+    foreach (id; recordIds)
+        if (id.length > 0) wanted[id] = true;
+    auto targets = collapseChangeRecords(listChangeRecords(workspace), wanted);
+    ChangeRestorePath[] plan;
+    foreach (ref record; targets)
+        plan ~= ChangeRestorePath(record.path, changeRestoreAction(record),
+            !currentMatchesAfter(record));
+    return plan;
+}
+
+/// Restore an explicit set of journal rows in one operation, collapsing repeat
+/// edits per path. Paths whose current bytes no longer match the recorded
+/// after-image are reported as conflicts; with `skipConflicts` (the default)
+/// they are left untouched, so newer edits are kept instead of blocking the
+/// rest of the restore.
+public ChangeRevertResult revertChangeRecords(string workspace,
+    string[] recordIds, ChangeContext context, bool skipConflicts = true)
+{
+    ChangeRevertResult result;
+    auto mutationLock = workspaceMutationLock(workspace);
+    mutationLock.lock();
+    scope (exit) mutationLock.unlock();
+    try
+    {
+        bool[string] wanted;
+        foreach (id; recordIds)
+            if (id.length > 0) wanted[id] = true;
+        auto collapsed = collapseChangeRecords(listChangeRecords(workspace),
+            wanted);
+        ChangeRecord[] targets;
+        string[] conflicts;
+        foreach (ref record; collapsed)
+        {
+            if (!currentMatchesAfter(record))
+            {
+                if (!skipConflicts)
+                {
+                    result.conflict = true;
+                    result.message = "Cannot restore because the path changed " ~
+                        "after Aurora recorded it: " ~ record.path;
+                    return result;
+                }
+                conflicts ~= record.path;
+                continue;
+            }
+            targets ~= record;
+        }
+        if (targets.length == 0)
+        {
+            result.conflict = conflicts.length > 0;
+            result.message = conflicts.length > 0 ?
+                "Nothing restored: all " ~ to!string(conflicts.length) ~
+                " path(s) changed after Aurora recorded them." :
+                "Nothing to restore.";
+            return result;
+        }
+        FileSnapshot[] before;
+        string[] paths;
+        string[] revertIds;
+        ChangeRecord[] directoriesToCreate;
+        ChangeRecord[] filesToRestore;
+        ChangeRecord[] filesToRemove;
+        ChangeRecord[] directoriesToRemove;
+        foreach (record; targets)
+        {
+            before ~= snapshotFile(record.path);
+            paths ~= record.path;
+            revertIds ~= record.revertOf.length > 0 ? record.revertOf :
+                record.id;
+            if (record.beforeExists)
+            {
+                if (record.beforeDirectory) directoriesToCreate ~= record;
+                else filesToRestore ~= record;
+            }
+            else if (record.afterDirectory) directoriesToRemove ~= record;
+            else filesToRemove ~= record;
+        }
+        sort!((a, b) => a.path.length < b.path.length)(directoriesToCreate);
+        foreach (record; directoriesToCreate)
+            if (!exists(record.path)) mkdirRecurse(record.path);
+        foreach (record; filesToRestore)
+        {
+            if (record.beforeBlob.length == 0 || !exists(record.beforeBlob))
+                throw new Exception("missing before snapshot for " ~ record.path);
+            const parent = dirName(record.path);
+            if (parent.length > 0) mkdirRecurse(parent);
+            write(record.path, read(record.beforeBlob));
+        }
+        foreach (record; filesToRemove)
+            if (exists(record.path) && isFile(record.path)) remove(record.path);
+        sort!((a, b) => a.path.length > b.path.length)(directoriesToRemove);
+        foreach (record; directoriesToRemove)
+            if (exists(record.path) && isDir(record.path)) rmdir(record.path);
+        const after = snapshotTargets(paths);
+        OpenCodeToolCall revertCall;
+        revertCall.id = "restore-" ~ to!string(Clock.currTime.stdTime);
+        revertCall.name = "revert";
+        recordMutation(revertCall, workspace, context, before, after,
+            revertCall.id, revertIds);
+        result.succeeded = true;
+        result.files = cast(int) targets.length;
+        result.message = "Restored " ~ to!string(targets.length) ~
+            (targets.length == 1 ? " path" : " paths");
+        if (conflicts.length > 0)
+            result.message ~= " (" ~ to!string(conflicts.length) ~
+                " kept, changed since recorded)";
+        result.message ~= ".";
+    }
+    catch (Exception error)
+        result.message = "Restore failed: " ~ error.msg;
+    return result;
+}
+
 public string changeRecordDiff(const ref ChangeRecord record)
 {
     try
