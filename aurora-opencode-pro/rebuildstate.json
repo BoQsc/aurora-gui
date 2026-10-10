@@ -1,13 +1,13 @@
 {
-  "status": "ok",
-  "phase": "relaunching",
-  "reason": "Apply the advisory plan-update reminder (queueStalePlanGuidance now also nudges when no plan exists after the read-only exploration budget) plus updated system prompt, tests, and docs.",
+  "status": "running",
+  "phase": "building",
+  "reason": "Apply the loopback system-message fold fix (core provideradapter.d + opencode_client.d) so local llama.cpp/Qwen requests stop 500ing on mid-conversation system messages.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 18:29:04.9603335 UTC",
-  "finishedAt": "2026-10-10 18:30:15.360723 UTC",
-  "durationMs": 70399,
+  "startedAt": "2026-10-10 19:21:30.6915871 UTC",
+  "finishedAt": "2026-10-10 19:21:30.6915871 UTC",
+  "durationMs": 0,
   "exitCode": 0,
   "errors": []
 }
