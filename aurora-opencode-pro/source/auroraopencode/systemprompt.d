@@ -210,10 +210,14 @@ private string operatingContractSection(in SystemPromptContext ctx)
 private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
-        "1. Define success. For substantial dependent phases, call update_plan first " ~
-        "with a concise objective and all known steps; keep one in_progress and mark " ~
-        "completed steps promptly. Skip a plan for direct answers, quick exploration, and single edits. " ~
-        "If exploration reveals larger work, record the plan then.\n" ~
+        "1. Define success. For multi-step work, call update_plan before substantial " ~
+        "inspection or implementation, at most after a brief initial lookup. Include " ~
+        "the current investigation when it is part of the task, along with known " ~
+        "implementation and validation outcomes. Keep one step in_progress and later " ~
+        "work pending. Update the plan when a phase finishes or the approach changes, " ~
+        "before moving to the next phase. Do not wait until the fix is ready to " ~
+        "introduce a checklist of work already done. Skip plans for direct answers, " ~
+        "quick exploration, and single edits; if exploration grows, plan immediately.\n" ~
         "2. Read explicit user paths directly, including paths outside the workspace. " ~
         "Discover files only when paths are unknown or a direct read fails. Read before editing.\n" ~
         "3. Apply the smallest complete change, batching all known related edits.\n" ~

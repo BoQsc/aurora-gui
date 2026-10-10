@@ -356,7 +356,8 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "update_plan",
         "Update the task plan with a list of steps, each carrying a status " ~
         "of `pending`, `in_progress` or `completed`. Record the plan before " ~
-        "starting a multi-step task: list every step up front, mark the first " ~
+        "starting a multi-step task, before substantial inspection or edits: " ~
+        "include investigation when needed, list known steps up front, mark the current " ~
         "`in_progress` and the rest `pending`. Then keep it current: call " ~
         "this again whenever a step's status changes, marking a finished step " ~
         "`completed` and the next one `in_progress`, so the checklist never " ~

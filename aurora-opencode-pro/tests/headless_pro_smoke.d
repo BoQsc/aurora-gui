@@ -5077,6 +5077,10 @@ int main(string[] args)
     // Repetition guides rather than controls: all three identical calls execute
     // and the third result adds a hidden note asking the model to reconsider
     // its approach. No tool result is fabricated or skipped.
+    // Record a finished plan so the early-plan and stale-plan guards do not
+    // interfere with this separate repetition-guidance contract.
+    root.injectToolResultForTesting("update_plan", "Plan updated", false,
+        `{"plan":[{"step":"Prepare repetition diagnostics","status":"completed"}]}`);
     const userCountBefore = root.userMessageCountForTesting();
     const repeatedToolCountBefore = root.toolMessageCountForTesting();
     OpenCodeToolCall loopCall;

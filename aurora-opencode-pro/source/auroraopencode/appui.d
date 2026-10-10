@@ -437,6 +437,7 @@ private final class MessageBubble : Widget
     // keeping the full inset made this transition look one row-gap too wide.
     private bool _compactBottom;
     private bool _failed;
+    private bool _toolDeferred;
     private string _error;
     private string _time;
     private string _usageText;
@@ -1114,7 +1115,9 @@ private final class MessageBubble : Widget
 
     void setFailed(string error)
     {
-        _failed = true;
+        _toolDeferred = _role == "tool" &&
+            _content.startsWith("Tool call deferred for planning:"d);
+        _failed = !_toolDeferred;
         _error = error;
         invalidate();
     }
@@ -2164,7 +2167,8 @@ private final class MessageBubble : Widget
         string text = humanToolTitle(_toolName);
         // Put the outcome before a possibly long command/path so a collapsed
         // failure remains understandable without relying on its red rail.
-        if (_failed) text ~= " · Failed";
+        if (_toolDeferred) text ~= " · Deferred";
+        else if (_failed) text ~= " · Failed";
         const subtitle = humanToolSubtitle(_toolName, _toolArgs);
         if (subtitle.length > 0) text ~= "  " ~ subtitle;
         return text;
@@ -9592,9 +9596,8 @@ public final class OpenCodeRoot : VBox
     // single unrefreshed plan produces a bounded number of nudges instead of
     // one on every tool round.
     private int[string] _planNudgedAt;
-    // Plan-first gate: at most one skipped mutating round per user turn while
-    // tracked plan mode is on, so an unplanned edit is nudged but never
-    // deadlocks. Keyed by session id; cleared when a new user turn starts.
+    // One deferred batch per user turn asks for an early model-owned plan.
+    // Strict mode additionally checks before the first mutation.
     private bool[string] _planGateFired;
     // Experimental computer use: a settled reply that requested no tools would
     // leave the agent idle mid-task (it looks "stuck"). We resume it
@@ -9618,11 +9621,12 @@ public final class OpenCodeRoot : VBox
     // action, without turning that heuristic into a hard ceiling. Large tasks
     // may legitimately need far more inspection than ordinary tasks.
     private static immutable int explorationCheckpointCalls = 10;
+    private static immutable int earlyPlanExplorationCalls = 3;
     // A recorded plan only helps while it stays current. When a plan still has
     // unfinished steps and the model runs this many tool results without an
     // update_plan call, the checklist has drifted from the actual work; nudge
     // the model to refresh it before continuing.
-    private static immutable int planRefreshNudgeCalls = 8;
+    private static immutable int planRefreshNudgeCalls = 4;
     // How many times one user turn may be auto-continued because the recorded
     // verification is still required before the turn is allowed to settle.
     // The model's own checklist no longer forces a continuation: an unfinished
@@ -15647,7 +15651,7 @@ public final class OpenCodeRoot : VBox
                 recorded = false;
                 continue;
             }
-            if (message.role == "tool" &&
+            if (message.role == "tool" && !message.failed &&
                 (message.toolName == "update_plan" ||
                 message.toolName == "update_subplan"))
                 recorded = true;
@@ -15696,7 +15700,11 @@ public final class OpenCodeRoot : VBox
         // point; only that may re-arm the reminder. Otherwise it fires once per
         // plan-refresh cycle instead of repeating every few results, which was
         // the endless "your checklist is stale" spam while a long run continued.
-        if (since < lastNudged) lastNudged = 0;
+        if (since < lastNudged)
+        {
+            _planNudgedAt.remove(session.id);
+            lastNudged = 0;
+        }
         if (lastNudged > 0) return false;
         if (since < planRefreshNudgeCalls) return false;
         _planNudgedAt[session.id] = since;
@@ -15871,30 +15879,30 @@ public final class OpenCodeRoot : VBox
             handleOutputFailure(failure);
             return;
         }
-        // experimental: planmode - plan-first gate. With tracked plan mode on,
-        // a durable plan must exist before the turn commits to either a
-        // mutating edit or an extended read-only exploration. The mutation
-        // case stops an unplanned edit; the exploration case stops the prior
-        // failure where a model inspected dozens of files and only recorded a
-        // plan just before its first edit (if at all). The advisory checkpoint
-        // at `explorationCheckpointCalls` was a single nudge the model could
-        // ignore, so nothing forced the plan. The batch is skipped once
-        // (synthetic results plus an internal nudge) so the next model round
-        // records the plan; the gate never fires twice in a turn, so a model
-        // that refuses to plan cannot deadlock the work.
+        // Allow quick lookups and small edits without planning overhead. Once
+        // exploration grows, request a plan before more work, even in normal
+        // mode. A batch already recording the plan must remain executable.
+        // This is bounded to one deferral; refusing to plan cannot deadlock.
         const mutatingPending = firstMutatingCall(calls) >= 0;
-        const explorationExhausted = !mutatingPending &&
-            readOnlyExplorationCount(*session) >= explorationCheckpointCalls;
-        if (experimentalStrictPlanEnabled() &&
-            (mutatingPending || explorationExhausted) &&
-            session.taskSteps.length == 0 &&
+        int pendingInspection;
+        bool recordingPlan;
+        foreach (call; calls)
+        {
+            if (call.name == "update_plan") recordingPlan = true;
+            if (isReadOnlyExplorationTool(call.name)) ++pendingInspection;
+        }
+        const explorationExhausted = readOnlyExplorationCount(*session) +
+            pendingInspection >= earlyPlanExplorationCalls;
+        if ((explorationExhausted ||
+                (experimentalStrictPlanEnabled() && mutatingPending)) &&
+            !recordingPlan && !hasIncompleteTaskSteps(*session) &&
             !planRecordedThisTurn(*session) &&
             !(session.id in _planGateFired ? _planGateFired[session.id] : false))
         {
             _planGateFired[session.id] = true;
             appendSkippedToolResults(*session, calls,
-                "Tool call skipped: no durable plan recorded for this turn. " ~
-                "Call update_plan first with the concrete remaining steps, " ~
+                "Tool call deferred for planning: no durable plan recorded for this turn. " ~
+                "No command failed or ran. Call update_plan first with the concrete steps, " ~
                 "then repeat the call.");
             ChatMessage planGate;
             planGate.role = "user";
@@ -15903,11 +15911,15 @@ public final class OpenCodeRoot : VBox
                 ? "Plan-first gate: record the durable plan with one " ~
                     "update_plan call (the concrete remaining steps and their " ~
                     "statuses) before making changes. The edit call will then run."
-                : "Plan-first gate: this turn has already spent its read-only " ~
-                    "inspection budget without recording a plan. Record the " ~
-                    "durable plan with one update_plan call (the concrete " ~
-                    "remaining steps and their statuses) before continuing to " ~
-                    "inspect. The next inspection call will then run.";
+                : "Plan-first gate: this request has grown beyond a quick lookup. " ~
+                    "Record a concise plan now, including the investigation " ~
+                    "still underway and the other outcomes this request needs. " ~
+                    "Include implementation and validation only when relevant. " ~
+                    "Mark the current step in_progress and later work " ~
+                    "pending. Update it as phases finish; do not wait until the " ~
+                    "fix is ready to show a retrospective checklist. Then repeat " ~
+                    "the deferred calls. Do not invent steps or claim unfinished " ~
+                    "work completed.";
             appendMessage(*session, planGate);
             session.turnStatus = "running";
             session.taskStatus = "active";
@@ -16115,7 +16127,10 @@ public final class OpenCodeRoot : VBox
             _pendingToolImages ~= event.images;
 
         if (!toolFailed && event.toolName == "update_plan")
+        {
+            _planNudgedAt.remove(session.id);
             applyDurablePlan(*session, toolArgs);
+        }
         if (!toolFailed && event.toolName == "update_subplan")
             applyNestedPlan(*session, toolArgs);
         // Prose documents do not need an executable checker. The agent can
