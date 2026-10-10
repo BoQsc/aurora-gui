@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "",
+  "reason": "Keep process controls accessible during workspace commands",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 20:33:31.3459861 UTC",
-  "finishedAt": "2026-10-10 20:34:30.3386371 UTC",
-  "durationMs": 58991,
+  "startedAt": "2026-10-10 21:41:30.0093155 UTC",
+  "finishedAt": "2026-10-10 21:42:24.2489486 UTC",
+  "durationMs": 54240,
   "exitCode": 0,
   "errors": []
 }

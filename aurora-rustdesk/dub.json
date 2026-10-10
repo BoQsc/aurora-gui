@@ -1,0 +1,21 @@
+{
+  "name": "aurora-rustdesk",
+  "description": "RustDesk-style remote desktop: numeric ID rendezvous, one-time password, encrypted session, file and clipboard transfer",
+  "authors": ["OpenAI"],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "targetType": "executable",
+  "targetName": "aurora-rustdesk",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": ["source", "../vendor/aurora-d-0.4.5/source"],
+  "libs-windows": ["user32", "gdi32", "shell32", "ole32", "advapi32", "crypt32", "bcrypt", "ws2_32"],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": ["releaseMode", "optimize", "inline"],
+      "dflags-windows-dmd": ["-mscrtlib=libcmt"],
+      "dflags-windows-ldc": ["-mscrtlib=libcmt"]
+    }
+  },
+  "lflags-windows": ["/SUBSYSTEM:WINDOWS", "/ENTRY:mainCRTStartup"],
+  "version": "1.0.0"
+}

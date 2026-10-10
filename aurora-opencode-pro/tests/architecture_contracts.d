@@ -94,6 +94,23 @@ private final class GateJob : WorkItem
     override void settle(ulong revision) {}
 }
 
+private final class ExpiringJob : WorkItem
+{
+    MonoTime deadline;
+    shared bool done;
+    bool executed;
+    bool abandoned;
+    this() { workspace = "blocked"; deadline = MonoTime.currTime + 150.msecs; }
+    override bool abandonQueued() { return MonoTime.currTime >= deadline; }
+    override void queueAbandoned() { abandoned = true; }
+    override void execute() { executed = true; }
+    override void settle(ulong revision)
+    {
+        import core.atomic : atomicStore;
+        atomicStore(done, true);
+    }
+}
+
 private void writeCheckpointChild(string directory)
 {
     auto repository = new ConversationRepository();
@@ -339,6 +356,30 @@ int main(string[] args)
     desktopScheduler.close();
     assert(desktopGate.peak == 1 && desktopGate.finished == 3);
     writeln("PASS worker and queue bounds, workspace mutation barriers, global desktop lease");
+    auto blockedScheduler = new WorkScheduler(1, 4);
+    auto blockedGate = new Gate();
+    assert(blockedScheduler.submit(new GateJob(blockedGate, "blocked", true)));
+    const startDeadline = MonoTime.currTime + 2.seconds;
+    while (true)
+    {
+        bool active;
+        synchronized (blockedGate.mutex) active = blockedGate.active == 1;
+        if (active) break;
+        assert(MonoTime.currTime < startDeadline);
+        Thread.sleep(5.msecs);
+    }
+    auto expiring = new ExpiringJob();
+    assert(blockedScheduler.submit(expiring));
+    import core.atomic : atomicLoad;
+    const queueDeadline = MonoTime.currTime + 2.seconds;
+    while (!atomicLoad(expiring.done) && MonoTime.currTime < queueDeadline)
+        Thread.sleep(10.msecs);
+    assert(atomicLoad(expiring.done) && expiring.abandoned && !expiring.executed,
+        "Queue deadline must settle even when all workers are occupied");
+    assert(blockedScheduler.pending() == 0 && blockedScheduler.revision("blocked") == 0);
+    blockedGate.release();
+    blockedScheduler.close();
+    writeln("PASS saturated worker pool expires queued work without running it or releasing an active lease");
 
     const logs = buildPath(directory, "logs");
     setLogDirectory(logs);

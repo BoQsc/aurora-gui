@@ -13367,8 +13367,10 @@ public final class OpenCodeRoot : VBox
         if (general.length > 0)
         {
             labels.put(generalAuroraSuggestion);
+            // Trailing space so a click leaves a gap to keep typing after the
+            // inserted path (mirrors the "General Aurora Opencode" pill).
             prompts.put("The general Aurora project source is at " ~ general
-                ~ ".");
+                ~ ". ");
         }
         _introOverlay.setSuggestions(labels.data, prompts.data);
     }

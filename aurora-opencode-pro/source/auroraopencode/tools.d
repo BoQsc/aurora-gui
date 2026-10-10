@@ -595,7 +595,11 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             "Execute shell commands in the workspace. Use this to run build " ~
             "commands, inspect the environment, or manipulate files when the " ~
             "dedicated tools do not fit. Set background=true for work that may " ~
-            "run long, then inspect it with the process tool. " ~
+            "run long, then inspect it with the process tool. Foreground commands " ~
+            "return a processId after 30 seconds if still running; inspect that same " ~
+            "process instead of starting it again. Emit flushed progress output, " ~
+            "use unbuffered output where available, and check quiet processes for " ~
+            "hangs rather than waiting for the full timeout. " ~
             shellUsageNotes(shell),
             `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the command in the background"}},"required":["command"]}`
         ),
@@ -653,7 +657,11 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "`-run` to compile and execute in one call; compiler options " ~
             "precede `-run` (example: `-Isource -i -run source/app.d`). " ~
             "Set background=true for work that may run long, " ~
-            "then inspect status and output with the process tool.",
+            "then inspect status and output with the process tool. Foreground commands " ~
+            "return a processId after 30 seconds if still running; inspect that same " ~
+            "process instead of starting it again. Emit flushed progress output " ~
+            "(for example python -u), use finite test deadlines, and investigate " ~
+            "quiet processes. A processId is not evidence that a check passed.",
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
         processToolDefinition(),
@@ -2503,7 +2511,7 @@ private void monitorBackgroundProcess(SupervisedProcess process, int timeoutMs)
             _processMutex.lock();
             process.running = false;
             process.exitCode = waited.status;
-            process.elapsedMs = stopwatch.peek.total!"msecs";
+            process.elapsedMs = (MonoTime.currTime - process.startedAt).total!"msecs";
             if (!process.stdinClosed)
             {
                 collectException(process.input.close());
@@ -2525,7 +2533,7 @@ private void monitorBackgroundProcess(SupervisedProcess process, int timeoutMs)
         process.killed = killRequested;
         process.timedOut = timedOut;
         process.exitCode = 1;
-        process.elapsedMs = stopwatch.peek.total!"msecs";
+        process.elapsedMs = (MonoTime.currTime - process.startedAt).total!"msecs";
         if (!process.stdinClosed)
         {
             collectException(process.input.close());
@@ -2962,6 +2970,37 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
         {
             timedOut = true;
             break;
+        }
+        if ((toolName == "run" || toolName == "bash") &&
+            stopwatch.peek >= msecs(30_000))
+        {
+            // Transfer this exact child and output file to supervision. Never
+            // rerun the command: it may already have made irreversible effects.
+            auto process = new SupervisedProcess();
+            synchronized (_processMutex)
+            {
+                process.id = "p-" ~ to!string(cast(long) MonoTime.currTime.ticks) ~
+                    "-" ~ to!string(++_processCounter);
+                process.command = displayCommand(argv);
+                process.workdir = workdir;
+                process.outputPath = outPath;
+                process.pid = pid;
+                process.stdinClosed = true;
+                process.startedAt = MonoTime.currTime - stopwatch.peek;
+                _processes[process.id] = process;
+            }
+            preserveOutput = true;
+            childAlive = false;
+            const remainingMs = timeoutMs - cast(int) stopwatch.peek.total!"msecs";
+            auto monitor = new Thread({ monitorBackgroundProcess(process, remainingMs); });
+            monitor.isDaemon = true;
+            monitor.start();
+            return tuple("Command still running after 30 seconds; returned control for inspection.\n" ~
+                "processId: " ~ process.id ~ "\n" ~
+                (latestOutput.length ? latestOutput ~ "\n" : "No output captured yet.\n") ~
+                "Use process status/output to inspect this command; do not restart it. " ~
+                "It has not completed or passed verification. Investigate missing progress " ~
+                "and kill it with the process tool if stuck.", false);
         }
     }
     if (timedOut || cancelled)

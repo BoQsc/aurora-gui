@@ -3,6 +3,8 @@ module parallel_tool_batch_test;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : OpenCodeToolCall;
 import auroraopencode.opencode_client : OpenCodeEventKind;
+import auroraopencode.opencode_client : OpenCodeClient;
+import auroraopencode.toolscheduler : scheduleToolBatch;
 import std.conv : to;
 import std.json : JSONValue, parseJSON;
 import std.file : readText;
@@ -10,7 +12,7 @@ import auroraopencode.websearch : experimentalWebSearchExecute;
 import std.typecons : tuple;
 import std.file : thisExePath;
 import core.thread : Thread;
-import core.time : msecs;
+import core.time : msecs, MonoTime;
 import auroraopencode.tools : executeTool, ToolCancellation, ChangeContext, runFilesystemHelperMode;
 import std.array : replicate;
 import std.file : mkdirRecurse, tempDir, write;
@@ -25,6 +27,11 @@ int main(string[] args)
     {
         Thread.sleep(msecs(1200));
         writeln("fixture output");
+        return 0;
+    }
+    if (args.length == 2 && args[1] == "--long-quiet-fixture")
+    {
+        Thread.sleep(msecs(60_000));
         return 0;
     }
     if (args.length == 3 && args[1] == "--aurora-filesystem-tool")
@@ -80,6 +87,33 @@ int main(string[] args)
     assert(!quiet.failed, quiet.output);
     assert(quiet.output.indexOf("fixture output") >= 0);
     assert(processProgress.indexOf("no new output for 1s") >= 0, processProgress);
+    auto controlClient = new OpenCodeClient("http://127.0.0.1:9", "");
+    auto commandBatch = scheduleToolBatch(controlClient, 501,
+        [OpenCodeToolCall("occupied", "run", processArgs.toString())],
+        workspace, new ToolCancellation(), ChangeContext.init);
+    Thread.sleep(200.msecs);
+    const inspectStarted = MonoTime.currTime;
+    auto inspectBatch = scheduleToolBatch(controlClient, 502,
+        [OpenCodeToolCall("control", "process", `{"action":"list"}`)],
+        workspace, new ToolCancellation(), ChangeContext.init);
+    inspectBatch.wait();
+    assert((MonoTime.currTime - inspectStarted) < 500.msecs,
+        "Process controls were blocked by a running workspace command");
+    commandBatch.wait();
+    processArgs["args"] = JSONValue([JSONValue("--long-quiet-fixture")]);
+    auto handedOff = executeTool(OpenCodeToolCall("handoff", "run", processArgs.toString()),
+        workspace);
+    assert(!handedOff.failed && !handedOff.verification.passed, handedOff.output);
+    const idStart = handedOff.output.indexOf("processId: ");
+    assert(idStart >= 0, handedOff.output);
+    auto idBody = handedOff.output[cast(size_t) idStart + 11 .. $];
+    const processId = idBody[0 .. idBody.indexOf("\n")];
+    auto status = executeTool(OpenCodeToolCall("inspect", "process",
+        `{"action":"status","processId":"` ~ processId ~ `"}`), workspace);
+    assert(!status.failed && status.output.indexOf("status: running") >= 0, status.output);
+    executeTool(OpenCodeToolCall("kill", "process",
+        `{"action":"kill","processId":"` ~ processId ~ `"}`), workspace);
+    processArgs["args"] = JSONValue([JSONValue("--quiet-fixture")]);
     auto stopToken = new ToolCancellation();
     auto stopped = executeTool(OpenCodeToolCall("stop", "run", processArgs.toString()),
         workspace, stopToken, ChangeContext.init, (string text) { stopToken.cancel(); });

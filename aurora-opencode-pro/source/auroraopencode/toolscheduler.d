@@ -7,9 +7,11 @@ import auroraopencode.workscheduler : WorkItem, WorkScheduler;
 import auroraopencode.computeruse : installComputerUseContext;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
+import core.time : MonoTime, seconds;
 
 private __gshared Mutex _instanceMutex;
 private __gshared WorkScheduler _scheduler;
+private __gshared WorkScheduler _processScheduler;
 shared static this() { _instanceMutex = new Mutex(); }
 
 private WorkScheduler scheduler()
@@ -21,12 +23,21 @@ private WorkScheduler scheduler()
     }
 }
 
+private WorkScheduler processScheduler()
+{
+    synchronized (_instanceMutex)
+    {
+        if (_processScheduler is null) _processScheduler = new WorkScheduler(2);
+        return _processScheduler;
+    }
+}
+
 public ulong toolWorkspaceRevision(string workspace) { return scheduler().revision(workspace); }
 
 public bool parallelTool(const ref OpenCodeToolCall call)
 {
     return call.name == "read" || call.name == "glob" || call.name == "grep" ||
-        call.name == "dshell" || call.name == "view_image";
+        call.name == "dshell" || call.name == "view_image" || call.name == "process";
 }
 
 public ToolBatch scheduleToolBatch(OpenCodeClient client, ulong requestId,
@@ -81,7 +92,10 @@ public final class ToolBatch
             // Each receiver owns its call. No reused loop delegate captures.
             auto job = new ToolJob(this, calls[i]);
             job.progress("Queued: waiting for a tool worker or workspace lease. Stop cancels this turn.");
-            if (!scheduler().submit(job))
+            // Process inspection and termination must remain available while
+            // workspace commands occupy the normal workers and writer lease.
+            auto lane = job.call.name == "process" ? processScheduler() : scheduler();
+            if (!lane.submit(job))
             {
                 job.result = ToolExecution(job.call.name, "Error: tool queue is at capacity; retry this call.", true);
                 job.settle(scheduler().revision(workspace));
@@ -113,13 +127,29 @@ private final class ToolJob : WorkItem
     ToolBatch batch;
     OpenCodeToolCall call;
     ToolExecution result;
+    MonoTime queueDeadline;
     this(ToolBatch batch, const ref OpenCodeToolCall call)
     {
         this.batch = batch;
         this.call = call;
+        queueDeadline = MonoTime.currTime + 30.seconds;
         workspace = batch.workspace;
         exclusive = !parallelTool(call);
         if (call.name == "computer") resource = "desktop";
+    }
+
+    override bool abandonQueued()
+    {
+        return batch.cancellation.cancelled() || MonoTime.currTime >= queueDeadline;
+    }
+
+    override void queueAbandoned()
+    {
+        result = ToolExecution(call.name, batch.cancellation.cancelled()
+            ? "Stopped: queued tool cancelled before it started."
+            : "Error: tool could not acquire a worker or workspace lease within 30 seconds; " ~
+              "it was not executed. Inspect long-running processes with the process tool, " ~
+              "then retry after the workspace is available.", true);
     }
 
     override void execute()

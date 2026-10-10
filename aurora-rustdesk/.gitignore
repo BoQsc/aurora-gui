@@ -1,0 +1,6 @@
+/aurora-rustdesk.exe
+/aurora-rustdesk.pdb
+/build-validation/
+/.dub/
+/.exe
+/.obj

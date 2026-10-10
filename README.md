@@ -197,6 +197,24 @@ Launch with `aurora-notepad\RUN-WINDOWS.bat`; the software-renderer variant is
 caption buttons, maximize, drag-snap, preview transparency, and title updates
 through the real `UiTestDriver` dispatch path.
 
+## Aurora RustDesk
+
+A RustDesk-style remote desktop (`aurora-rustdesk/`). Each computer has a
+stable nine-digit ID; an ID (rendezvous) server introduces the two computers by
+that ID, and the controller proves a short one-time (or permanent) password
+before any desktop, input, clipboard, or file data moves. One executable shares
+this computer, controls another, or runs the ID server and content-blind relay:
+
+```bat
+aurora-rustdesk\RUN-WINDOWS.bat
+aurora-rustdesk\aurora-rustdesk.exe --server 21116 21117
+```
+
+It reuses the vendored Aurora-D library and the encrypted-session, capture,
+input, clipboard, and transfer primitives proven in Aurora Remote, but replaces
+the link-based invitation with RustDesk's ID-server model. Verify with
+`python aurora-rustdesk\build.py --test`; see `aurora-rustdesk/README.md`.
+
 ## Timeline-first workflow
 
 - Import MP4 and MP3 using `Ctrl+I`, the Project Media right-click menu, or Windows File Explorer drag-and-drop.

@@ -3,6 +3,7 @@ module auroraopencode.workscheduler;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import core.time : msecs;
 import std.path : buildNormalizedPath;
 import std.string : toLower;
 
@@ -14,6 +15,8 @@ public abstract class WorkItem
     bool changed;
     abstract void execute();
     abstract void settle(ulong workspaceRevision);
+    bool abandonQueued() { return false; }
+    void queueAbandoned() {}
 }
 
 private struct Lease { size_t readers; bool writer; ulong revision; }
@@ -45,6 +48,10 @@ public final class WorkScheduler
             worker.start();
             _workers ~= worker;
         }
+        auto watchdog = new Thread(&watchQueue);
+        watchdog.isDaemon = true;
+        watchdog.start();
+        _workers ~= watchdog;
     }
 
     bool submit(WorkItem item)
@@ -90,6 +97,37 @@ public final class WorkScheduler
         auto normalized = buildNormalizedPath(workspace);
         version (Windows) return normalized.toLower();
         else return normalized;
+    }
+
+    // Independent of the worker pool: even all-busy workers must not prevent
+    // queued cancellation or a queue deadline from returning a terminal result.
+    private void watchQueue()
+    {
+        while (true)
+        {
+            WorkItem[] abandoned;
+            synchronized (_mutex)
+            {
+                if (_closed && !_pending.length) return;
+                for (size_t i; i < _pending.length;)
+                {
+                    if (!_pending[i].abandonQueued()) { ++i; continue; }
+                    abandoned ~= _pending[i];
+                    _pending = _pending[0 .. i] ~ _pending[i + 1 .. $];
+                }
+                if (abandoned.length) _wake.notifyAll();
+            }
+            foreach (item; abandoned)
+            {
+                try
+                {
+                    item.queueAbandoned();
+                    item.settle(revision(item.workspace));
+                }
+                catch (Throwable) {}
+            }
+            Thread.sleep(100.msecs);
+        }
     }
 
     private size_t nextEligible()
