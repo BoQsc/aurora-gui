@@ -79,7 +79,14 @@ public int runFilesystemHelperMode(string[] args)
         if (auto path = "progressPath" in request.object)
         {
             const progressPath = path.str;
-            progress = (string text) { write(progressPath, text); };
+            progress = (string text) {
+                try
+                {
+                    write(progressPath ~ ".tmp", text);
+                    rename(progressPath ~ ".tmp", progressPath);
+                }
+                catch (Exception) {} // progress must never fail the tool
+            };
         }
         result = dispatchTool(call, request["workspace"].str, null, progress);
     }
@@ -156,6 +163,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         collectException(remove(requestPath));
         collectException(remove(outputPath));
         collectException(remove(progressPath));
+        collectException(remove(progressPath ~ ".tmp"));
     }
     try
     {
@@ -198,18 +206,25 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         const deadline = started + timeoutMs.msecs;
         auto nextProgress = MonoTime.currTime;
         string latestProgress;
+        auto lastProgressAt = MonoTime.currTime;
         while (true)
         {
             if (observer !is null && MonoTime.currTime >= nextProgress)
             {
                 try
                 {
-                    if (exists(progressPath)) latestProgress = readFileCapped(progressPath, 16384);
+                    if (exists(progressPath))
+                    {
+                        auto snapshot = readFileCapped(progressPath, 16384);
+                        if (snapshot.length && snapshot != latestProgress)
+                        { latestProgress = snapshot; lastProgressAt = MonoTime.currTime; }
+                    }
                 }
                 catch (Exception) {}
                 observer("Filesystem host PID " ~ to!string(pid.processID) ~
                     " | elapsed " ~ to!string((MonoTime.currTime - started).total!"seconds") ~
-                    "s | timeout " ~ to!string(timeoutMs / 1000) ~ "s\n" ~
+                    "s | timeout " ~ to!string(timeoutMs / 1000) ~ "s | no new progress for " ~
+                    to!string((MonoTime.currTime - lastProgressAt).total!"seconds") ~ "s\n" ~
                     (latestProgress.length ? latestProgress : "Waiting for filesystem output: " ~ call.arguments) ~
                     "\nStop terminates this tool host and stops the turn.");
                 nextProgress = MonoTime.currTime + msecs(500);
@@ -220,6 +235,12 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                 running = false;
                 if (status.status != 0)
                     return ToolExecution(call.name, "Error: filesystem tool host exited with code " ~ to!string(status.status) ~ ".", true);
+                if (observer !is null)
+                    try
+                    {
+                        if (exists(progressPath)) observer("Filesystem host finished\n" ~ readFileCapped(progressPath, 16384));
+                    }
+                    catch (Exception) {}
                 break;
             }
             if (cancellation !is null && cancellation.cancelled())
@@ -1994,7 +2015,7 @@ private ToolExecution runProgramTool(string args, string workspace,
 /// script/style/SVG bodies, so a page whose inlined CSS is larger than its
 /// text still shows its content inside that budget.
 private ToolExecution runWebFetch(string args, string workspace,
-    ToolCancellation cancellation = null)
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -2038,8 +2059,9 @@ private ToolExecution runWebFetch(string args, string workspace,
     argv ~= to!string((timeoutMs + 999) / 1000);
     argv ~= url;
 
+    if (observer !is null) observer("Fetching " ~ url ~ "\nStarting HTTP request; waiting for response bytes.");
     auto result = runProcess(argv, workspace, timeoutMs + 10_000, "webfetch",
-        cancellation);
+        cancellation, observer);
     string output = result[0];
     bool failed = result[1];
 
@@ -2889,6 +2911,8 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     bool cancelled;
     int exitCode;
     ulong observedBytes;
+    string latestOutput;
+    auto lastOutputAt = MonoTime.currTime;
     auto nextOutputPoll = MonoTime.currTime;
     // Poll rather than blocking for the whole timeout so a stop request can
     // terminate a long-running command promptly instead of waiting it out.
@@ -2906,10 +2930,21 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
                 if (length != observedBytes)
                 {
                     observedBytes = length;
-                    observer(processOutputTail(outPath, length));
+                    latestOutput = processOutputTail(outPath, length);
+                    lastOutputAt = MonoTime.currTime;
                 }
             }
             catch (Exception) {}
+            observer((latestOutput.length ? latestOutput ~ "\n" :
+                (toolName == "webfetch" || toolName == "websearch" ?
+                    "HTTP request active; waiting for response bytes.\n" :
+                    "Waiting for stdout/stderr; the process may be working or buffering output.\n")) ~
+                "PID " ~ to!string(pid.processID) ~ " | elapsed " ~
+                to!string(stopwatch.peek.total!"seconds") ~ "s | timeout " ~
+                to!string(timeoutMs / 1000) ~ "s | captured " ~ to!string(observedBytes) ~
+                " bytes | no new output for " ~
+                to!string((MonoTime.currTime - lastOutputAt).total!"seconds") ~ "s\n" ~
+                "Stop terminates the process tree and stops this turn.");
         }
         if (waited.terminated)
         {
@@ -4416,7 +4451,18 @@ private Regex!(char) globToRegex(string pattern)
     return regex("^" ~ translated ~ "$");
 }
 
-private ToolExecution runGlob(string args, string workspace)
+private void reportScan(ToolOutputObserver observer, ref MonoTime next,
+    lazy string stage, string[] matches, bool force = false)
+{
+    if (observer is null || (!force && MonoTime.currTime < next)) return;
+    next = MonoTime.currTime + msecs(250);
+    string preview;
+    const first = matches.length > 3 ? matches.length - 3 : 0;
+    foreach (match; matches[first .. $]) preview ~= match ~ "\n";
+    observer(stage ~ (preview.length ? "\nLatest matches:\n" ~ preview : "\nNo matches collected yet."));
+}
+
+private ToolExecution runGlob(string args, string workspace, ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -4453,12 +4499,18 @@ private ToolExecution runGlob(string args, string workspace)
             error.msg, true);
 
     string[] matches;
+    size_t inspected;
+    auto nextProgress = MonoTime.currTime;
+    reportScan(observer, nextProgress, "Scanning directory: " ~ root, matches, true);
     // Walk the whole tree and match each relative path (forward slashes)
     // against the compiled glob, which correctly handles `**` recursion.
     try
     {
         foreach (entry; dirEntries(root, SpanMode.depth))
         {
+            ++inspected;
+            reportScan(observer, nextProgress, "Scanning: " ~ entry.name ~
+                "\nInspected " ~ to!string(inspected) ~ " entries; found " ~ to!string(matches.length) ~ " matches", matches);
             string relative = entry.name;
             if (relative.length >= root.length &&
                 relative[0 .. root.length] == root)
@@ -4474,6 +4526,8 @@ private ToolExecution runGlob(string args, string workspace)
         }
     }
     catch (Exception) {}
+    reportScan(observer, nextProgress, "Scan complete: " ~ to!string(inspected) ~
+        " entries; " ~ to!string(matches.length) ~ " matches", matches, true);
     matches.sort();
     if (matches.length == 0)
         return ToolExecution("glob", "No matches for: " ~ pattern, false);
@@ -4559,7 +4613,7 @@ private bool isWorkspaceAncestor(string candidate, string workspace)
 /// returning true when it finished in time.
 ///
 private ToolExecution runGrep(string args, string workspace,
-    ToolCancellation cancellation = null)
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -4669,6 +4723,19 @@ private ToolExecution runGrep(string args, string workspace,
     size_t scannedDirectories;
     size_t scannedFiles;
     size_t scannedLines;
+    ulong scannedBytes;
+    auto nextProgress = MonoTime.currTime;
+    string currentPath = root;
+    void reportGrepProgress(bool force = false)
+    {
+        if (observer is null || (!force && MonoTime.currTime < nextProgress)) return;
+        reportScan(observer, nextProgress, "Searching: " ~ currentPath ~
+            "\nScanned " ~ to!string(scannedDirectories) ~ " directories, " ~
+            to!string(scannedFiles) ~ " files, " ~ to!string(scannedLines) ~
+            " lines, " ~ to!string(scannedBytes) ~ " text bytes; found " ~
+            to!string(totalMatches) ~ " matches", hits, force);
+    }
+    reportGrepProgress(true);
     const deadline = MonoTime.currTime + timeoutMs.msecs;
     bool scanFile(string filePath, bool explicitFile = false)
     {
@@ -4693,6 +4760,8 @@ private ToolExecution runGrep(string args, string workspace,
             }
             catch (Exception) return false;
         }
+        currentPath = filePath;
+        reportGrepProgress();
         File file;
         try file = File(filePath, "r");
         catch (Exception) return false;
@@ -4723,6 +4792,8 @@ private ToolExecution runGrep(string args, string workspace,
             {
                 ++lineNo;
                 ++scannedLines;
+                scannedBytes += line.length;
+                if ((lineNo & 255) == 0) reportGrepProgress();
                 if ((lineNo & 255) == 0 && MonoTime.currTime >= deadline)
                 {
                     timedOut = true;
@@ -4820,6 +4891,8 @@ private ToolExecution runGrep(string args, string workspace,
             bool scanDirectory(string directory)
             {
                 ++scannedDirectories;
+                currentPath = directory;
+                reportGrepProgress();
                 if (MonoTime.currTime >= deadline)
                 {
                     timedOut = true;
@@ -4859,7 +4932,8 @@ private ToolExecution runGrep(string args, string workspace,
             scanDirectory(root);
         }
     }
-    performScan(); // the supervised process owns the hard outer deadline
+    performScan();
+    reportGrepProgress(true);
     if (timedOut)
     {
         auto report = appender!string();
@@ -5379,7 +5453,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "process":
             return runProcessTool(call.arguments);
         case "dshell":
-            return runDshell(call.arguments, workspace, cancellation);
+            return runDshell(call.arguments, workspace, cancellation, observer);
         case "open":
             return runOpenTool(call.arguments, workspace);
         case "read":
@@ -5407,16 +5481,18 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "remove":
             return runRemove(call.arguments, workspace);
         case "glob":
-            return runGlob(call.arguments, workspace);
+            return runGlob(call.arguments, workspace, observer);
         case "grep":
-            return runGrep(call.arguments, workspace, cancellation);
+            return runGrep(call.arguments, workspace, cancellation, observer);
         case "webfetch":
-            return runWebFetch(call.arguments, workspace, cancellation);
+            return runWebFetch(call.arguments, workspace, cancellation, observer);
         // experimental: websearch - delete with source/auroraopencode/websearch.d
         case "websearch":
         {
             auto search = experimentalWebSearchExecute(call.arguments,
-                workspace);
+                workspace, (string[] argv, string workdir, int timeout) {
+                    return runProcess(argv, workdir, timeout, "websearch", cancellation, observer);
+                });
             return ToolExecution("websearch", search[0], search[1]);
         }
         // experimental: computer use - delete with
@@ -5625,7 +5701,7 @@ public string previewToolDiffText(string toolName, string argsJson)
 /// commands the model most often reaches for (pwd, ls/dir, stat) so it never
 /// needs to invoke bash/cmd/powershell for plain directory introspection.
 private ToolExecution runDshell(string args, string workspace,
-    ToolCancellation cancellation = null)
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -5679,7 +5755,7 @@ private ToolExecution runDshell(string args, string workspace,
         case "list":
         case "ls":
         case "dir":
-            return dshellList(value, workspace);
+            return dshellList(value, workspace, observer);
         case "info":
         case "stat":
             return dshellStat(resolved, workspace);
@@ -5817,7 +5893,7 @@ private string startDirectoryScan(JSONValue args, string workspace)
     return saveDirectoryScan(state);
 }
 
-private ToolExecution dshellList(JSONValue args, string workspace)
+private ToolExecution dshellList(JSONValue args, string workspace, ToolOutputObserver observer = null)
 {
     string cursor;
     if (auto field = "cursor" in args.object) cursor = field.str;
@@ -5851,6 +5927,8 @@ private ToolExecution dshellList(JSONValue args, string workspace)
     auto pending = state["pending"].array.dup;
     string[] entries;
     size_t inspected, outputBytes;
+    size_t discovered;
+    auto nextProgress = MonoTime.currTime;
     const deadline = MonoTime.currTime + yieldMs.msecs;
     try
     {
@@ -5859,6 +5937,11 @@ private ToolExecution dshellList(JSONValue args, string workspace)
         {
             const task = pending[$ - 1];
             const name = task["path"].str;
+            reportScan(observer, nextProgress, "Listing: " ~ name ~
+                "\nInspected " ~ to!string(state["scanned"].integer) ~
+                " entries; matched " ~ to!string(state["matched"].integer) ~
+                "; pending " ~ to!string(pending.length) ~ "; discovered in this slice " ~
+                to!string(discovered), entries);
             if (task["expand"].boolean)
             {
                 // Snapshot one shallow directory so continuation does not
@@ -5866,6 +5949,9 @@ private ToolExecution dshellList(JSONValue args, string workspace)
                 JSONValue[] children;
                 foreach (entry; dirEntries(name, SpanMode.shallow))
                 {
+                    ++discovered;
+                    reportScan(observer, nextProgress, "Expanding directory: " ~ name ~
+                        "\nDiscovered " ~ to!string(discovered) ~ " entries in this slice", entries);
                     JSONValue child;
                     child["path"] = entry.name;
                     child["directory"] = entry.isDir;
@@ -5923,6 +6009,9 @@ private ToolExecution dshellList(JSONValue args, string workspace)
     catch (Exception error)
         return ToolExecution("dshell", "Error: could not list directory: " ~
             error.msg ~ directoryScanResumeHint(cursor), true);
+    reportScan(observer, nextProgress, "Directory slice complete: inspected " ~
+        to!string(inspected) ~ "; collected " ~ to!string(entries.length) ~
+        " matches; pending " ~ to!string(pending.length), entries, true);
     entries.sort();
     auto builder = appender!string();
     builder.put("<path>" ~ path ~ "</path>\n");

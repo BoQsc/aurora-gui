@@ -95,21 +95,40 @@ int main()
     writeln("PASS one lookup and a small edit execute without a plan or extra round");
 
     fresh(); context(3); run([readCall()]);
-    assert(root.lastToolResultForTesting().indexOf("deferred for planning") >= 0,
-        "Default mode still allowed extended unplanned inspection");
-    assert(root.lastUserMessageForTesting().indexOf("investigation still underway") >= 0);
-    bool deferred;
+    assert(root.lastToolResultForTesting().indexOf("actual evidence") >= 0,
+        "Normal mode blocked a read for a missing plan");
+    writeln("PASS normal inspection continues without mandatory planning");
+
+    fresh();
+    run([readCall(), readCall(), readCall(), readCall(), readCall(), readCall(), readCall()]);
+    assert(root.lastToolResultForTesting().indexOf("actual evidence") >= 0,
+        "Normal mode blocked seven independent reads");
+    assert(root.toolMessageCountForTesting() == 7);
+    assert(root.taskStepCountForTesting() == 0);
     foreach (header; root.toolResultHeaderTextsForTesting())
+        assert(header.indexOf("Deferred") < 0);
+    writeln("PASS seven normal reads execute without synthetic planning results");
+
+    root.setStrictPlanEnabledForTesting(true);
+    scope(exit) root.setStrictPlanEnabledForTesting(false);
+    fresh(); run([readCall(), readCall(), readCall()]);
+    assert(root.lastToolResultForTesting().indexOf("deferred for planning") >= 0);
+    assert(root.toolMessageCountForTesting() == 3, "Tool protocol pairing was lost");
+    assert(root.toolResultHeaderTextsForTesting().length == 0,
+        "Strict planning pause leaked synthetic per-call output cards");
+    size_t notices;
+    void countNotices(Widget row)
     {
-        assert(header.indexOf("Failed") < 0, "Planning deferral rendered as a failed command");
-        deferred |= header.indexOf("Deferred") >= 0;
+        if (row.id() == "oc-planning-pause") ++notices;
+        foreach (child; row.children()) countNotices(child);
     }
-    assert(deferred);
-    foreach (header; root.toolGroupHeaderTextsForTesting()) assert(header.indexOf("failed") < 0);
+    countNotices(root);
+    assert(notices == 1, "A planning batch must show one concise status row");
+    window.saveScreenshot("strict-plan-pause.bmp");
     run([readCall()]);
     assert(root.lastToolResultForTesting().indexOf("actual evidence") >= 0,
         "Refusing to plan deadlocked tool execution");
-    writeln("PASS default early plan check is neutral in UI and bounded to one deferral");
+    writeln("PASS strict mode preserves protocol results with one visible pause, bounded to one deferral");
 
     fresh(); run([readCall(), readCall(), readCall()]);
     assert(root.lastToolResultForTesting().indexOf("deferred for planning") >= 0,

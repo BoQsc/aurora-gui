@@ -80,8 +80,10 @@ public OpenCodeToolDef[] experimentalWebSearchTools()
 /// Execute a `websearch` call. Returns (output, failed). Network work happens
 /// here; everything else (registration, dispatch, UI) lives in the caller so
 /// this module stays the single drop point.
+public alias SearchProcessRunner = Tuple!(string, bool) delegate(string[], string, int);
+
 public Tuple!(string, bool) experimentalWebSearchExecute(string args,
-    string workspace)
+    string workspace, SearchProcessRunner runner = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -145,7 +147,7 @@ public Tuple!(string, bool) experimentalWebSearchExecute(string args,
     }
 
     enum timeoutMs = 30_000;
-    auto exchange = postJson(url, headers, body, workspace, timeoutMs);
+    auto exchange = postJson(url, headers, body, workspace, timeoutMs, runner);
 
     const text = extractSearchText(exchange[0]);
     if (strip(text).length > 0)
@@ -163,7 +165,7 @@ public Tuple!(string, bool) experimentalWebSearchExecute(string args,
 /// shell, so the URL and body never need quoting). The body is staged in a
 /// temp file and passed with `--data-binary @file`.
 private Tuple!(string, bool) postJson(string url, string[] headers,
-    string body, string workspace, int timeoutMs)
+    string body, string workspace, int timeoutMs, SearchProcessRunner runner)
 {
     const bodyPath = tempPath("aurora-websearch-", ".json");
     try write(bodyPath, body);
@@ -189,6 +191,7 @@ private Tuple!(string, bool) postJson(string url, string[] headers,
     argv ~= "@" ~ bodyPath;
     argv ~= url;
 
+    if (runner !is null) return runner(argv, workspace, timeoutMs + 10_000);
     return runCurl(argv, workspace, timeoutMs + 10_000);
 }
 

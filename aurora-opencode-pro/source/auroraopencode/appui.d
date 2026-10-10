@@ -13965,18 +13965,26 @@ public final class OpenCodeRoot : VBox
         }
         Widget[] parts;
         string[] names, ids;
+        bool planningDeferred;
         foreach (call; calls)
         {
             Widget part;
+            bool deferred;
             foreach (i, result; results)
                 if (call.id.length > 0 && result.toolCallId == call.id)
                 {
+                    if (result.content.startsWith("Tool call deferred for planning:"))
+                    {
+                        deferred = planningDeferred = true;
+                        break;
+                    }
                     auto row = buildMessageBubble(indices[i], result,
                         latestAssistantIndex, versionPositions, versionTotals);
                     if (result.toolName.length == 0) row.setToolName(call.name);
                     part = row;
                     break;
                 }
+            if (deferred) continue;
             if (part is null && includeLive)
             {
                 foreach (live; _liveToolCalls)
@@ -13997,6 +14005,13 @@ public final class OpenCodeRoot : VBox
             parts ~= part;
             names ~= call.name;
             ids ~= call.id;
+        }
+        if (planningDeferred)
+        {
+            auto notice = new Label("Paused to record a plan. Requested actions have not run.");
+            notice.setId("oc-planning-pause");
+            notice.setColor(opencodeMuted);
+            target.add(notice);
         }
         void addGroup(size_t start, size_t end)
         {
@@ -16132,9 +16147,9 @@ public final class OpenCodeRoot : VBox
             handleOutputFailure(failure);
             return;
         }
-        // Allow quick lookups and small edits without planning overhead. Once
-        // exploration grows, request a plan before more work, even in normal
-        // mode. A batch already recording the plan must remain executable.
+        // Normal mode never blocks tool execution for a missing plan.
+        // Explicit strict mode can request a plan before substantial work.
+        // A batch already recording the plan must remain executable.
         // This is bounded to one deferral; refusing to plan cannot deadlock.
         const mutatingPending = firstMutatingCall(calls) >= 0;
         int pendingInspection;
@@ -16146,8 +16161,7 @@ public final class OpenCodeRoot : VBox
         }
         const explorationExhausted = readOnlyExplorationCount(*session) +
             pendingInspection >= earlyPlanExplorationCalls;
-        if ((explorationExhausted ||
-                (experimentalStrictPlanEnabled() && mutatingPending)) &&
+        if (experimentalStrictPlanEnabled() && (explorationExhausted || mutatingPending) &&
             !recordingPlan && !hasIncompleteTaskSteps(*session) &&
             !planRecordedThisTurn(*session) &&
             !(session.id in _planGateFired ? _planGateFired[session.id] : false))

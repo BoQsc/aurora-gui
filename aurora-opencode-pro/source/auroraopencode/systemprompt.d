@@ -218,6 +218,9 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "before moving to the next phase. Do not wait until the fix is ready to " ~
         "introduce a checklist of work already done. Skip plans for direct answers, " ~
         "quick exploration, and single edits; if exploration grows, plan immediately.\n" ~
+        "Planning guidance is advisory in normal mode. Batch independent reads " ~
+        "directly when they answer the current question; a read count alone does " ~
+        "not require a plan or a pause. Strict plan mode is an explicit opt-in.\n" ~
         "2. Read explicit user paths directly, including paths outside the workspace. " ~
         "Discover files only when paths are unknown or a direct read fails. Read before editing.\n" ~
         "3. Apply the smallest complete change, batching all known related edits.\n" ~

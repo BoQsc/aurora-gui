@@ -222,3 +222,16 @@ Six release native GUI delivery samples in `build/architecture-checks-r0_tm_pp/`
 measured 2.396 ms median and 11.585 ms maximum from token receipt to render
 submission, separate from the fixture's intentional 100 ms provider wait.
 The user's saved settings had no experimentalChatRedesign opt-in at relaunch.
+
+## Planning pauses and ordinary reads
+
+Normal mode no longer defers tools because an inspection batch crosses a read
+count. The system prompt explicitly calls planning advisory in normal mode and
+allows independent reads directly. Explicit strict plan mode retains its bounded
+plan gate. Owned planning-deferral protocol records are preserved in history but
+render as one neutral pause per batch, without per-call output cards or an
+Explored action count. This also cleans up existing owned deferral batches.
+
+`early_plan_contracts` verifies seven real reads, strict-mode pairing, one visible
+pause, bounded retry, plan refresh and invalid-plan handling. The rendered pause
+was inspected in `build/strict-plan-pause-review.png`.
