@@ -75,7 +75,13 @@ public int runFilesystemHelperMode(string[] args)
         call.name = request["name"].str;
         call.arguments = request["arguments"].str;
         if (!filesystemTool(call.name)) return 2;
-        result = dispatchTool(call, request["workspace"].str);
+        ToolOutputObserver progress;
+        if (auto path = "progressPath" in request.object)
+        {
+            const progressPath = path.str;
+            progress = (string text) { write(progressPath, text); };
+        }
+        result = dispatchTool(call, request["workspace"].str, null, progress);
     }
     catch (Throwable error)
     {
@@ -100,7 +106,7 @@ public int runFilesystemHelperMode(string[] args)
 }
 
 private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
-    string workspace, ToolCancellation cancellation)
+    string workspace, ToolCancellation cancellation, ToolOutputObserver observer)
 {
     import std.file : thisExePath;
     import std.process : environment;
@@ -137,6 +143,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     // Short filenames avoid a potentially blocking write to a child stdin pipe.
     const requestPath = buildPath(tempDir(), "aurora-filesystem-" ~ to!string(started.ticks) ~ ".json");
     const outputPath = requestPath ~ ".out";
+    const progressPath = requestPath ~ ".progress";
     File input, output;
     Pid pid;
     bool running;
@@ -148,11 +155,13 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         if (output.isOpen) collectException(output.close());
         collectException(remove(requestPath));
         collectException(remove(outputPath));
+        collectException(remove(progressPath));
     }
     try
     {
         JSONValue request;
         request["name"] = call.name;
+        request["progressPath"] = progressPath;
         string arguments = call.arguments;
         if (call.name == "dshell")
         {
@@ -187,8 +196,24 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
             input, output, output, null, Config.suppressConsole);
         running = true;
         const deadline = started + timeoutMs.msecs;
+        auto nextProgress = MonoTime.currTime;
+        string latestProgress;
         while (true)
         {
+            if (observer !is null && MonoTime.currTime >= nextProgress)
+            {
+                try
+                {
+                    if (exists(progressPath)) latestProgress = readFileCapped(progressPath, 16384);
+                }
+                catch (Exception) {}
+                observer("Filesystem host PID " ~ to!string(pid.processID) ~
+                    " | elapsed " ~ to!string((MonoTime.currTime - started).total!"seconds") ~
+                    "s | timeout " ~ to!string(timeoutMs / 1000) ~ "s\n" ~
+                    (latestProgress.length ? latestProgress : "Waiting for filesystem output: " ~ call.arguments) ~
+                    "\nStop terminates this tool host and stops the turn.");
+                nextProgress = MonoTime.currTime + msecs(500);
+            }
             const status = waitTimeout(pid, 20.msecs);
             if (status.terminated)
             {
@@ -3010,40 +3035,72 @@ private enum size_t maxLineChars = 2000;
 /// `totalLines` still reports the real line count because scanning continues
 /// past `offset` to the end of file.
 private LineWindow readLineWindow(string path, size_t offset, size_t limit,
-    size_t maxBytes)
+    size_t maxBytes, ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     LineWindow window;
     window.firstLine = offset;
-    auto file = File(path, "r");
+    auto started = MonoTime.currTime;
+    auto nextProgress = started;
+    auto file = File(path, "rb");
     scope (exit) collectException(file.close());
-    size_t lineNo;
-    size_t bytes;
-    foreach (rawLine; file.byLine())
+    size_t lineNo = 1, bytes, scanned;
+    ubyte[65536] buffer;
+    ubyte[] line;
+    bool truncated, stop, pendingLine;
+    void emitLine()
     {
-        ++lineNo;
         window.totalLines = lineNo;
-        if (lineNo < offset) continue;
-        // `byLine` already strips the terminator; decode leniently so a
-        // non-UTF-8 file still yields valid UTF-8 line text.
-        string line = decodeBytesLenient(cast(const(ubyte)[]) rawLine);
-        if (line.length > maxLineChars)
-            line = line[0 .. utf8SafeCut(
-                cast(const(ubyte)[]) line[0 .. maxLineChars])] ~
-                " …(line truncated)";
-        // Count the rendered `N: ` prefix too, so the byte budget tracks the
-        // real output size for line-number-heavy reads.
-        const prefix = to!string(lineNo).length + 2;
-        if (bytes + prefix + line.length + 1 > maxBytes)
+        if (lineNo >= offset)
         {
-            window.hasMore = true;
+            if (line.length && line[$ - 1] == '\r') line.length--;
+            auto text = decodeBytesLenient(line);
+            if (truncated) text ~= " ...(line truncated)";
+            const rendered = to!string(lineNo).length + 2 + text.length + 1;
+            if (bytes + rendered > maxBytes) { window.hasMore = true; stop = true; return; }
+            window.lines ~= text;
+            bytes += rendered;
+            if (limit > 0 && window.lines.length >= limit)
+            { window.hasMore = true; stop = true; }
+        }
+        ++lineNo;
+        line.length = 0;
+        truncated = false;
+        pendingLine = false;
+    }
+    while (!stop)
+    {
+        if (cancellation !is null && cancellation.cancelled())
+            throw new Exception("Stopped: read cancelled after " ~ to!string(scanned) ~ " bytes.");
+        if ((MonoTime.currTime - started).total!"seconds" >= 10 || scanned >= 64 * 1024 * 1024)
+            throw new Exception("Read scan limit reached after " ~ to!string(scanned) ~
+                " bytes at line " ~ to!string(lineNo) ~
+                ". Use a smaller offset or search the file with grep. Stop cancels the current turn.");
+        if (observer !is null && MonoTime.currTime >= nextProgress)
+        {
+            observer("Reading " ~ path ~ "\nScanned " ~ to!string(scanned) ~
+                " bytes; line " ~ to!string(lineNo) ~ "; collected " ~
+                to!string(window.lines.length) ~ " lines.\n10s / 64 MiB scan limit. Stop cancels this turn.");
+            nextProgress = MonoTime.currTime + msecs(500);
+        }
+        auto chunk = file.rawRead(buffer[]);
+        if (!chunk.length)
+        {
+            if (pendingLine) emitLine();
             break;
         }
-        window.lines ~= line;
-        bytes += prefix + line.length + 1;
-        if (limit > 0 && window.lines.length >= limit)
+        scanned += chunk.length;
+        foreach (ch; chunk)
         {
-            window.hasMore = true;
-            break;
+            if (ch == '\n') { emitLine(); if (stop) break; }
+            else
+            {
+                pendingLine = true;
+                if (lineNo >= offset)
+                {
+                    if (line.length < maxLineChars) line ~= ch;
+                    else truncated = true;
+                }
+            }
         }
     }
     if (window.lines.length > 0)
@@ -3051,7 +3108,8 @@ private LineWindow readLineWindow(string path, size_t offset, size_t limit,
     return window;
 }
 
-private ToolExecution runRead(string args, string workspace)
+private ToolExecution runRead(string args, string workspace,
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -3082,18 +3140,10 @@ private ToolExecution runRead(string args, string workspace)
     // Leave headroom under the byte cap for the `N: ` prefixes and the footer.
     LineWindow window;
     try window = readLineWindow(path, offset, limit,
-        maxOutputBytes > 8192 ? maxOutputBytes - 8192 : maxOutputBytes);
-    catch (Exception)
-    {
-        // Not readable as text (e.g. non-UTF-8 bytes): fall back to a bounded
-        // raw read rather than failing outright.
-        string text;
-        try text = readFileCapped(path, maxOutputBytes + 4);
-        catch (Exception error)
-            return ToolExecution("read", "Error: could not read file: " ~
-                error.msg, true);
-        return ToolExecution("read", truncateOutput(text), false);
-    }
+        maxOutputBytes > 8192 ? maxOutputBytes - 8192 : maxOutputBytes,
+        cancellation, observer);
+    catch (Exception error)
+        return ToolExecution("read", "Error: " ~ error.msg, true);
     if (window.lines.length == 0)
     {
         if (offset > 1)
@@ -5024,7 +5074,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             return ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
         if (filesystemTool(call.name))
         {
-            auto hosted = runFilesystemTool(call, workspace, cancellation);
+            auto hosted = runFilesystemTool(call, workspace, cancellation, observer);
             hosted.elapsedMs = (MonoTime.currTime - started).total!"msecs";
             return hosted;
         }
@@ -5333,7 +5383,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "open":
             return runOpenTool(call.arguments, workspace);
         case "read":
-            return runRead(call.arguments, workspace);
+            return runRead(call.arguments, workspace, cancellation, observer);
         case "view_image":
             return runViewImage(call.arguments, workspace);
         case "write":

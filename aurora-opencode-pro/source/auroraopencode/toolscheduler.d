@@ -80,6 +80,7 @@ public final class ToolBatch
         {
             // Each receiver owns its call. No reused loop delegate captures.
             auto job = new ToolJob(this, calls[i]);
+            job.progress("Queued: waiting for a tool worker or workspace lease. Stop cancels this turn.");
             if (!scheduler().submit(job))
             {
                 job.result = ToolExecution(job.call.name, "Error: tool queue is at capacity; retry this call.", true);

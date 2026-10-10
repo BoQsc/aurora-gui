@@ -29,6 +29,13 @@ class Provider(BaseHTTPRequestHandler):
         requests.append(request)
         results = [m for m in request["messages"] if m["role"] == "tool"]
         if not results:
+            delta = {"role": "assistant", "tool_calls": [{
+                "index": 0, "id": "fixture-plan", "type": "function",
+                "function": {"name": "update_plan", "arguments": json.dumps({
+                    "plan": [{"step": "Read five fixture files", "status": "in_progress"},
+                             {"step": "Confirm the results", "status": "pending"}]})}}]}
+            reason = "tool_calls"
+        elif not any(m.get("tool_call_id", "").startswith("parallel-") for m in results):
             calls = [
                 {"index": i, "id": f"parallel-{i}", "type": "function",
                  "function": {"name": "read", "arguments": json.dumps({"filePath": f"file-{i}.txt"})}}
@@ -37,6 +44,7 @@ class Provider(BaseHTTPRequestHandler):
             delta = {"role": "assistant", "tool_calls": calls}
             reason = "tool_calls"
         else:
+            results = [m for m in results if m.get("tool_call_id", "").startswith("parallel-")]
             ids = [m.get("tool_call_id") for m in results]
             if len(ids) != 5 or set(ids) != {f"parallel-{i}" for i in range(5)}:
                 errors.append(f"Missing or duplicated tool result: {ids}")
@@ -80,7 +88,7 @@ try:
         ], cwd=directory, env=environment, capture_output=True, text=True, timeout=45)
         assert completed.returncode == 0, completed.stderr
         assert "PARALLEL_TOOLS_OK" in completed.stdout, completed.stdout
-        assert len(requests) == 2, f"Expected tool request and continuation; got {len(requests)}"
+        assert 3 <= len(requests) <= 4, f"Expected plan, tools, and continuation (plus optional plan reminder); got {len(requests)}"
         assert not errors, errors
         print("PASS: rebuilt application -> five parallel tools -> every result exactly once with correct content -> final answer.")
 finally:

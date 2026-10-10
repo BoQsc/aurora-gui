@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Restore chronological prose with compact activity rows",
+  "reason": "Show filesystem host and read scan progress",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 16:46:47.7246973 UTC",
-  "finishedAt": "2026-10-10 16:48:20.3291216 UTC",
-  "durationMs": 92603,
+  "startedAt": "2026-10-10 17:04:26.016291 UTC",
+  "finishedAt": "2026-10-10 17:05:46.4836021 UTC",
+  "durationMs": 80468,
   "exitCode": 0,
   "errors": []
 }
