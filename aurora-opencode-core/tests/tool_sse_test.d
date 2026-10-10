@@ -414,7 +414,9 @@ private void assertLlamaServerCompatibility()
     checkpoint.content = "Compaction checkpoint";
     developer.role = "developer";
     developer.content = "Durable task state";
-    auto hosted = parseJSON(client.buildBodyForTesting(
+    auto hostedClient = new OpenCodeClient("https://example.com/v1",
+        "test-key");
+    auto hosted = parseJSON(hostedClient.buildBodyForTesting(
         [user, initial, assistant, checkpoint, developer], null,
         "qwen-local", false));
     const hostedMessages = hosted.object["messages"].array;
@@ -445,6 +447,20 @@ private void assertLlamaServerCompatibility()
             assert(message.object["role"].str != "system" &&
                 message.object["role"].str != "developer",
                 "llama-server payload still contains a later instruction");
+
+    // Detection is best-effort: a local endpoint whose /models metadata did not
+    // identify it as llama.cpp must still fold. Otherwise a later agent round
+    // sends an internal checkpoint mid-conversation and the Qwen template
+    // answers HTTP 500 ("System message must be at the beginning", after three
+    // attempts) even though the model server is plainly llama.cpp.
+    auto localStrict = parseJSON(client.buildBodyForTesting(
+        [user, initial, assistant, checkpoint, developer], null,
+        "qwen-local", false));
+    const localWire = localStrict.object["messages"].array;
+    assert(localWire.length == 4 &&
+        localWire[0].object["role"].str == "system" &&
+        localWire[$ - 1]["role"].str == "user",
+        "a local endpoint left a midstream instruction unfolded");
 
     // Folding hidden guidance/checkpoint blocks out of their positions must not
     // leave two assistant turns adjacent: Aurora appends those blocks between

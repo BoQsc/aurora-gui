@@ -292,7 +292,16 @@ public string buildChatBody(const(ChatRequestMessage)[] messages,
 {
     JSONValue root;
     root["model"] = model;
-    const(ChatRequestMessage)[] projected = llamaCppServer
+    // A local endpoint is treated as llama.cpp even when the /models probe did
+    // not identify it: the whole llama.cpp family (llama-server, LM Studio,
+    // Ollama, koboldcpp) shares the same strict Qwen template, which rejects any
+    // system/developer block that is not the first message. Hosted providers
+    // still keep instruction checkpoints in chronological order, since moving an
+    // appended checkpoint to message zero would rewrite the token prefix and
+    // defeat their prompt cache.
+    const bool strictSingleSystem = llamaCppServer ||
+        isLoopbackApiBaseUrl(baseUrl);
+    const(ChatRequestMessage)[] projected = strictSingleSystem
         ? normalizeSystemMessages(messages, true) : messages;
     auto messageList = appender!string();
     messageList.put("[");

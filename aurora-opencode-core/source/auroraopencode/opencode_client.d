@@ -1995,7 +1995,8 @@ final class OpenCodeClient
     private static void logRequestShape(const(ChatRequestMessage)[] messages,
         string model, string baseUrl, bool llamaCppServer)
     {
-        const(ChatRequestMessage)[] normalized = llamaCppServer
+        const(ChatRequestMessage)[] normalized =
+            (llamaCppServer || isLoopbackApiBaseUrl(baseUrl))
             ? normalizeSystemMessages(messages, true) : messages;
         size_t images;
         size_t imageBytes;

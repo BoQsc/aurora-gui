@@ -9621,7 +9621,8 @@ public final class OpenCodeRoot : VBox
     // one on every tool round.
     private int[string] _planNudgedAt;
     // One deferred batch per user turn asks for an early model-owned plan.
-    // Strict mode additionally checks before the first mutation.
+    // Strict mode additionally checks before the first mutation. Normal mode
+    // only warns (see queueStalePlanGuidance) and never blocks the batch.
     private bool[string] _planGateFired;
     // Experimental computer use: a settled reply that requested no tools would
     // leave the agent idle mid-task (it looks "stuck"). We resume it
@@ -9646,6 +9647,11 @@ public final class OpenCodeRoot : VBox
     // may legitimately need far more inspection than ordinary tasks.
     private static immutable int explorationCheckpointCalls = 10;
     private static immutable int earlyPlanExplorationCalls = 3;
+    // A normal-mode turn that spends its read-only exploration budget without
+    // recording a plan gets an advisory reminder to call update_plan, so a long
+    // investigation no longer runs on forever with no checklist. Tied to the
+    // exploration checkpoint so the checkpoint and the reminder line up.
+    private static immutable int planGateExplorationCalls = explorationCheckpointCalls;
     // A recorded plan only helps while it stays current. When a plan still has
     // unfinished steps and the model runs this many tool results without an
     // update_plan call, the checklist has drifted from the actual work; nudge
@@ -15953,15 +15959,19 @@ public final class OpenCodeRoot : VBox
         return true;
     }
 
-    /// Queue a reminder when the model stopped refreshing a plan it recorded.
-    /// The checklist silently drifts otherwise: finished steps stay
-    /// pending/in_progress while the work has moved on. Bounded to one
+    /// Queue an advisory reminder to (re)record the plan. Two cases:
+    /// - a recorded plan with unfinished steps that the model stopped
+    ///   refreshing: the checklist silently drifts, so finished steps stay
+    ///   pending/in_progress while the work has moved on;
+    /// - no plan recorded at all after the read-only exploration budget is
+    ///   spent: a turn can otherwise investigate indefinitely without ever
+    ///   calling update_plan.
+    /// The reminder is advisory - the requested tools still run. Bounded to one
     /// reminder per plan-refresh cycle (a fresh `update_plan` restarts the
     /// count) so the model is nudged without being spammed every round.
     /// Returns true when a reminder was queued.
     private bool queueStalePlanGuidance(ref ChatSession session)
     {
-        if (!hasIncompleteTaskSteps(session)) return false;
         const since = toolResultsSincePlanUpdate(session);
         int lastNudged = session.id in _planNudgedAt ? _planNudgedAt[session.id] : 0;
         // A refreshed plan drops the tool-result counter below the last nudge
@@ -15974,15 +15984,27 @@ public final class OpenCodeRoot : VBox
             lastNudged = 0;
         }
         if (lastNudged > 0) return false;
-        if (since < planRefreshNudgeCalls) return false;
+        const refreshDue = hasIncompleteTaskSteps(session) &&
+            since >= planRefreshNudgeCalls;
+        const recordDue = !hasIncompleteTaskSteps(session) &&
+            !planRecordedThisTurn(session) &&
+            readOnlyExplorationCount(session) >= planGateExplorationCalls;
+        if (!refreshDue && !recordDue) return false;
         _planNudgedAt[session.id] = since;
         if (_pendingProgressGuidance.length == 0)
-            _pendingProgressGuidance = "Your durable checklist is stale: it " ~
-                "still shows steps pending or in_progress, but no update_plan " ~
-                "call has refreshed it for " ~ to!string(since) ~ " tool " ~
-                "results. Call update_plan now to mark finished steps " ~
-                "completed and set exactly one remaining step in_progress " ~
-                "(rewrite the steps if they no longer match the work).";
+            _pendingProgressGuidance = refreshDue
+                ? "Your durable checklist is stale: it still shows steps " ~
+                    "pending or in_progress, but no update_plan call has " ~
+                    "refreshed it for " ~ to!string(since) ~ " tool results. " ~
+                    "Call update_plan now to mark finished steps completed and " ~
+                    "set exactly one remaining step in_progress (rewrite the " ~
+                    "steps if they no longer match the work)."
+                : "No durable plan is recorded for this turn, yet " ~
+                    to!string(readOnlyExplorationCount(session)) ~ " read-only " ~
+                    "inspections have run. Call update_plan now with the " ~
+                    "concrete remaining steps and their statuses, including the " ~
+                    "investigation still underway, so the checklist reflects " ~
+                    "the work before you continue.";
         return true;
     }
 
@@ -16147,10 +16169,12 @@ public final class OpenCodeRoot : VBox
             handleOutputFailure(failure);
             return;
         }
-        // Normal mode never blocks tool execution for a missing plan.
-        // Explicit strict mode can request a plan before substantial work.
-        // A batch already recording the plan must remain executable.
-        // This is bounded to one deferral; refusing to plan cannot deadlock.
+        // Normal mode never blocks tool execution for a missing plan; the
+        // advisory reminder in queueStalePlanGuidance nudges the model to plan
+        // instead (see below). Explicit strict mode can request a plan before
+        // substantial work. A batch already recording the plan must remain
+        // executable. This is bounded to one deferral; refusing to plan cannot
+        // deadlock.
         const mutatingPending = firstMutatingCall(calls) >= 0;
         int pendingInspection;
         bool recordingPlan;

@@ -109,6 +109,18 @@ int main()
         assert(header.indexOf("Deferred") < 0);
     writeln("PASS seven normal reads execute without synthetic planning results");
 
+    fresh(); context(12);
+    assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0 &&
+        root.lastUserMessageForTesting().indexOf("update_plan") >= 0,
+        "A long investigation without a plan received no advisory reminder: " ~
+        root.lastUserMessageForTesting());
+    run([readCall()]);
+    assert(root.lastToolResultForTesting().indexOf("actual evidence") >= 0,
+        "The advisory planning reminder blocked exploration");
+    record(plan);
+    assert(root.taskStepCountForTesting() == 3);
+    writeln("PASS a long investigation without a plan gets an advisory reminder, not a pause");
+
     root.setStrictPlanEnabledForTesting(true);
     scope(exit) root.setStrictPlanEnabledForTesting(false);
     fresh(); run([readCall(), readCall(), readCall()]);
