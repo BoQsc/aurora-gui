@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Show early plans and progressive task status",
+  "reason": "Deploy the verified tool-policy fix: systemprompt.d no longer advertises the unadvertised `glob` tool in the native-only list, plus the aligned tools_test assertion.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 14:53:03.4837634",
-  "finishedAt": "2026-10-10 14:54:17.7246916",
-  "durationMs": 74240,
+  "startedAt": "2026-10-10 15:06:40.3631631",
+  "finishedAt": "2026-10-10 15:08:17.8986441",
+  "durationMs": 97535,
   "exitCode": 0,
   "errors": []
 }
