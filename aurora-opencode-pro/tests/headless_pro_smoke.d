@@ -526,6 +526,9 @@ private void verifyStopPreservesTranscript(OpenCodeRoot root,
 private bool paintProjection(OpenCodeRoot root, UiTestDriver driver)
 {
     root.projectTranscriptForTesting();
+    // These legacy cases inspect the detailed rows; compact defaults have
+    // separate coverage in turn_summary_contracts.
+    root.openActivityDetailsForTesting();
     return driver.paint();
 }
 
@@ -878,7 +881,7 @@ int main(string[] args)
     root.addConversationForTesting(["assistant"], ["A normal reply."]);
     assert(root.lastBubbleActionForTesting() == "Regenerate",
         "Latest assistant reply did not get the Regenerate pill");
-    assert(root.lastBubbleSecondaryActionForTesting() == "Continue",
+    assert(root.lastBubbleSecondaryActionForTesting() == "",
         "Latest assistant reply did not get the Continue pill");
     // Older bubbles (including the user message) have no visible pill.
     const count = root.messageCountForTesting();
@@ -1342,7 +1345,7 @@ int main(string[] args)
     root.setLastFinishReasonForTesting("length");
     root.persistForTesting();
     root.reloadSessionsForTesting();
-    assert(root.lastBubbleSecondaryActionForTesting() == "Continue",
+    assert(root.lastBubbleSecondaryActionForTesting() == "",
         "Continue disappeared after session reload");
     const beforeContinueTotal = root.totalMessageCountForTesting();
     assert(root.prepareContinueForTesting(),
@@ -3954,7 +3957,7 @@ int main(string[] args)
         // Details share the summary's inset; prompts and final replies remain
         // at the transcript edge.
         const promptX = root.bubbleBoundsForTesting(0).x;
-        assert(assistantX == promptX + 18,
+        assert(assistantX == promptX + 36,
             "Turn details must be indented beneath their opening header");
         writeln("Turn details use a consistent hierarchy inset");
     }
@@ -4869,6 +4872,7 @@ int main(string[] args)
         // one, so no Regenerate pill footer inflates a one-line row.
         root.addConversationForTesting(["user"], ["done"]);
         requireWidget!TurnWorkSummary(root, "oc-turn-work").setCollapsed(false);
+        root.openActivityDetailsForTesting();
         if (!root.firstToolGroupCollapsedForTesting())
             root.toggleFirstToolGroupForTesting();
         root.tickTree(0.02);
@@ -4930,10 +4934,9 @@ int main(string[] args)
         assert(pill.height == 18 && pill.bottom() <= withPill,
             "Regenerate pill must fit inside the reply bubble");
         const continuePill = root.bubbleSecondaryActionBoundsForTesting(2);
-        assert(continuePill.height == 18 && pill.right() < continuePill.x &&
-            continuePill.bottom() <= withPill,
-            "Continue pill overlaps Regenerate or leaves the reply bubble");
-        writeln("Regenerate and Continue share a padded reply footer");
+        assert(continuePill.height == 0,
+            "A completed reply must not offer Continue");
+        writeln("Completed replies reserve a padded Regenerate footer");
     }
 
     // A turn in flight must not leave Regenerate/Continue in the middle of the
@@ -4945,7 +4948,7 @@ int main(string[] args)
         root.addConversationForTesting(["user", "assistant"],
             ["ask", "first answer"]);
         assert(root.lastBubbleActionForTesting() == "Regenerate" &&
-            root.lastBubbleSecondaryActionForTesting() == "Continue",
+            root.lastBubbleSecondaryActionForTesting() == "",
             "a settled reply lost its Regenerate/Continue pill");
         root.startTurnClockForTesting();
         root.beginStreamForTesting();
@@ -4956,7 +4959,7 @@ int main(string[] args)
                 "Regenerate/Continue showed mid-conversation during a turn");
         root.finishStreamForTesting();
         assert(root.lastBubbleActionForTesting() == "Regenerate" &&
-            root.lastBubbleSecondaryActionForTesting() == "Continue",
+            root.lastBubbleSecondaryActionForTesting() == "",
             "the reply pill did not return once its turn settled");
         writeln("No reply pill mid-transcript while a turn is in flight");
     }
@@ -5008,7 +5011,7 @@ int main(string[] args)
         assert(root.tipIsToolGroupForTesting(),
             "a settled tool round should still host the pill on the tip group");
         assert(root.tipActionForTesting() == "Regenerate" &&
-            root.tipSecondaryActionForTesting() == "Continue",
+            root.tipSecondaryActionForTesting() == "",
             "a settled tool round lost its Regenerate/Continue pill: " ~
             root.tipActionForTesting() ~ "/" ~
             root.tipSecondaryActionForTesting());

@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Immediate expanded chat turns and indented activity",
+  "reason": "Keep turn border unchanged on click",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 15:45:24.0157112 UTC",
-  "finishedAt": "2026-10-10 15:46:56.0984939 UTC",
-  "durationMs": 92083,
+  "startedAt": "2026-10-10 16:10:17.9686898 UTC",
+  "finishedAt": "2026-10-10 16:11:21.0258081 UTC",
+  "durationMs": 63057,
   "exitCode": 0,
   "errors": []
 }

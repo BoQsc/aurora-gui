@@ -74,6 +74,19 @@ int main()
     assert(summary is startingSummary && !summary.collapsed(),
         "Completion folded the turn or replaced its header");
     assert(summary.title == "I’ll inspect how the transcript groups activity.");
+    TurnWorkSummary[] batches;
+    foreach (row; summary.children())
+        if (row.id() == "oc-activity-batch") batches ~= cast(TurnWorkSummary) row;
+    assert(batches.length == 3, "Activity was not grouped between commentary updates");
+    foreach (batch; batches)
+        assert(batch.collapsed() && batch.title.indexOf("tokens") < 0 &&
+            batch.title.indexOf("ms") < 0, "Technical detail leaked into the timeline");
+    assert(summary.children().length == 5,
+        "The opening sentence was repeated in the timeline");
+    batches[0].setCollapsed(false);
+    root.rebuildForTesting();
+    assert(!batches[0].collapsed(), "A refresh lost the batch expansion choice");
+    batches[0].setCollapsed(true);
     assert(summary.detail.indexOf("3 actions recorded") >= 0 &&
         summary.detail.indexOf("1 file changed") >= 0,
         "Repeated edits were counted as distinct files");
@@ -100,6 +113,7 @@ int main()
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
     assert(root.chatSearchMatchCountForTesting() == 1 && !summary.collapsed(),
         "Search did not open the enclosing work summary");
+    assert(!batches[0].collapsed(), "Search did not reveal the containing activity batch");
     root.setChatSearchQueryForTesting("");
     root.persistForTesting();
     root.reloadSessionsForTesting();
@@ -130,6 +144,8 @@ int main()
     root.beginStreamForTesting();
     root.streamContentForTesting("Next request complete.");
     root.finishStreamForTesting();
+    assert(root.tipSecondaryActionForTesting() == "",
+        "A completed response still offers Continue");
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
     assert(nextSummary.collapsed() && nextSummary.title == "I’ll inspect the next request.",
         "Streaming or completion reset a manually collapsed turn");
@@ -145,6 +161,30 @@ int main()
     assert(liveSummary.title == "I’ll inspect the layout.",
         "Opening sentence waited for a completed assistant/tool round");
     root.finishStreamForTesting();
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Capture the page"]);
+    root.appendToolRequestTurnForTesting("Prepare the folder", "failed-folder",
+        "create_folder", `{"path":"aurora-shot"}`, "I’ll capture the page.");
+    root.appendOwnedToolResultForTesting("failed-folder", "create_folder",
+        "Access denied", `{"path":"aurora-shot"}`, 0, 0, "", 14, true);
+    root.beginStreamForTesting();
+    root.streamContentForTesting("I could not create the folder.");
+    root.finishStreamForTesting();
+    auto failedBatch = cast(TurnWorkSummary) find(root, "oc-activity-batch");
+    assert(failedBatch !is null && failedBatch.collapsed() &&
+        failedBatch.title == "Create folder failed",
+        "A failed folder operation was labeled as a successful edit");
+    root.appendToolRequestTurnForTesting("Retry the folder", "retry-folder",
+        "create_folder", `{"path":"aurora-shot"}`, "I’ll retry creating the folder.");
+    root.appendOwnedToolResultForTesting("retry-folder", "create_folder",
+        "Created", `{"path":"aurora-shot"}`, 0, 0, "", 5);
+    root.beginStreamForTesting();
+    root.streamContentForTesting("The retry succeeded.");
+    root.finishStreamForTesting();
+    assert(failedBatch.title == "Create folder failed · recovered",
+        "An exact successful retry did not explain recovery");
+    assert((cast(TurnWorkSummary) find(root, "oc-turn-work")).detail.indexOf(
+        "recovered after 1 failed attempt") >= 0);
     writeln("PASS immediate and streaming headings, turn grouping, expansion identity, search, history and indentation");
     return 0;
 }

@@ -3,7 +3,7 @@ module auroraopencode.turnsummary;
 import aurora;
 import aurora.text.layout : TextLayoutOptions;
 import auroraopencode.core : opencodeText, opencodeMuted, opencodeBorder,
-    opencodeAccent, opencodePanel;
+    opencodePanel;
 import std.utf : toUTF32;
 import std.array : join;
 import std.conv : to;
@@ -28,6 +28,7 @@ public string turnOpeningSentence(string content)
 public final class TurnWorkSummary : VBox
 {
     private bool _collapsed;
+    private bool _activity;
     private bool[Widget] _visibility;
     private string _title, _detail;
     private TextLayout _titleLayout, _detailLayout;
@@ -35,7 +36,14 @@ public final class TurnWorkSummary : VBox
     private bool _hover, _attention;
     void delegate(bool) onCollapseChanged;
 
-    this() { super(6, Insets(0)); setId("oc-turn-work"); setFocusable(true); }
+    this(bool activity = false)
+    {
+        super(6, Insets(0));
+        _activity = activity;
+        _collapsed = activity;
+        setId(activity ? "oc-activity-batch" : "oc-turn-work");
+        setFocusable(true);
+    }
     bool collapsed() const { return _collapsed; }
     string title() const { return _title; }
     string detail() const { return _detail; }
@@ -94,8 +102,8 @@ public final class TurnWorkSummary : VBox
         _titleLayout = fontSystem().textEngine.layout(
             toUTF32((_collapsed ? "▸ " : "▾ ") ~ _title), options);
         _detailLayout = fontSystem().textEngine.layout(toUTF32(_detail), options);
-        _headerHeight = 20 + cast(int) _titleLayout.height +
-            cast(int) _detailLayout.height + 4;
+        _headerHeight = _activity ? 12 + cast(int) _titleLayout.height :
+            24 + cast(int) _titleLayout.height + cast(int) _detailLayout.height;
         int body;
         if (!_collapsed)
             foreach (row; children())
@@ -126,12 +134,12 @@ public final class TurnWorkSummary : VBox
     protected override void onPaint(ref Canvas canvas)
     {
         if (_titleLayout is null || _detailLayout is null) return;
-        canvas.drawRoundedRect(Rect(1, 1, maxInt(0, bounds().width - 2),
+        if (!_activity) canvas.drawRoundedRect(Rect(1, 1, maxInt(0, bounds().width - 2),
             maxInt(0, _headerHeight - 6)), 6, opencodePanel,
-            focused() ? opencodeAccent : opencodeBorder, 1);
-        canvas.drawLayout(Point(12, 8), _titleLayout,
-            opencodeText);
-        canvas.drawLayout(Point(12, 12 + cast(int) _titleLayout.height),
+            opencodeBorder, 1);
+        canvas.drawLayout(Point(12, _activity ? 6 : 8), _titleLayout,
+            _activity ? opencodeMuted : opencodeText);
+        if (!_activity) canvas.drawLayout(Point(12, 12 + cast(int) _titleLayout.height),
             _detailLayout, opencodeMuted);
         if (!_collapsed && bounds().height > _headerHeight)
             canvas.drawLine(Point(7, _headerHeight),

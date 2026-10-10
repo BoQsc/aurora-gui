@@ -9470,6 +9470,7 @@ public final class OpenCodeRoot : VBox
     // on every streamed tool-argument rebuild.
     private bool[string] _groupCollapsed;
     private TurnWorkSummary[string] _turnWorkSummaries;
+    private MessageBubble[string] _timelineCommentary;
     private PopupOverlay _activePopup;
     // The Changes dialog remembers its timeline scale when a diff is opened
     // and the user returns. Ten-minute buckets keep one focused burst of agent
@@ -13107,20 +13108,8 @@ public final class OpenCodeRoot : VBox
         if (isLive && !liveRowsAdded)
             addLiveToolRows(_messageColumn, "live");
         groupTurnWorkProjection(*session, path);
-        // Keep the newest concrete action discoverable after it finishes. Once
-        // a newer prompt or reply exists, the old group returns to normal history.
         foreach (child; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) child) group.setShowTail(false);
-        foreach_reverse (child; messageColumnVisuals())
-        {
-            if (auto group = cast(ToolGroupBubble) child)
-            {
-                group.setShowTail(true);
-                break;
-            }
-            if (auto bubble = cast(MessageBubble) child)
-                if (!bubble.hidden()) break;
-        }
         // Steering typed while this turn is still running is queued durably and
         // injected at the next valid message boundary. Show it now as a
         // dimmed, pending user bubble so submitting a prompt never looks like
@@ -13407,6 +13396,7 @@ public final class OpenCodeRoot : VBox
         Widget[] result;
         void collect(Widget node)
         {
+            if (node.id() == "oc-timeline-commentary") return;
             if (auto deferred = cast(DeferredTranscriptRow) node)
                 result ~= deferred.materialized() !is null ? deferred.materialized() : node;
             else if (auto nest = cast(VBox) node)
@@ -13432,12 +13422,14 @@ public final class OpenCodeRoot : VBox
         size_t[string] finalProse;
         struct WorkFacts
         {
-            int actions, commands, failed;
+            int actions, commands, failed, recovered;
             bool hasReasoning, hasCalls;
             string opening;
             bool[string] files;
         }
         WorkFacts[string] facts;
+        string[][string] failedTargets;
+        bool[string] recoveredResults;
         foreach (index; path)
         {
             const message = session.messages[index];
@@ -13461,6 +13453,18 @@ public final class OpenCodeRoot : VBox
                 if (message.failed) ++fact.failed;
                 const name = message.toolName.length > 0 ? message.toolName :
                     toolNameForResult(session, message);
+                // Recovery requires an exact retry of the same recorded operation.
+                const targetKey = latestTurn ~ ":" ~ name ~ ":" ~ message.toolArgs;
+                if (message.toolArgs.length > 0)
+                {
+                    if (message.failed) failedTargets[targetKey] ~= message.id;
+                    else if (auto earlier = targetKey in failedTargets)
+                    {
+                        fact.recovered += cast(int) (*earlier).length;
+                        foreach (id; *earlier) recoveredResults[id] = true;
+                        failedTargets.remove(targetKey);
+                    }
+                }
                 if (actionKindOf(name) == ActionKind.command) ++fact.commands;
                 if (!message.failed && actionKindOf(name) == ActionKind.edit)
                     foreach (file; toolArgumentPaths(name, message.toolArgs))
@@ -13479,6 +13483,16 @@ public final class OpenCodeRoot : VBox
             if (cast(LiveToolRow) row !is null || row is _activityRow) return true;
             foreach (child; row.children()) if (activeRows(child)) return true;
             return false;
+        }
+        Widget liveHost, precedingAssistant;
+        foreach (row; rows)
+        {
+            if (auto bubble = cast(MessageBubble) row)
+            {
+                if (bubble._role == "assistant") precedingAssistant = row;
+                else if (bubble._role == "user") precedingAssistant = null;
+            }
+            if (activeRows(row)) liveHost = precedingAssistant;
         }
         void flushWork()
         {
@@ -13500,7 +13514,10 @@ public final class OpenCodeRoot : VBox
             string status = busy ? "Working" : incomplete
                 ? (session.turnStatus == "failed" ? "Needs attention" : "Stopped · work retained")
                 : "Work recorded";
-            if (fact.failed > 0) status ~= " · " ~ to!string(fact.failed) ~ " failed";
+            const unresolved = fact.failed - fact.recovered;
+            if (unresolved > 0) status ~= " · " ~ to!string(unresolved) ~ " failed";
+            if (fact.recovered > 0) status ~= " · recovered after " ~
+                to!string(fact.recovered) ~ (fact.recovered == 1 ? " failed attempt" : " failed attempts");
             if (_settings.showWorkedFor)
                 if (auto duration = turn in _turnDurations)
                     status ~= " · " ~ formatTurnDuration(*duration);
@@ -13524,14 +13541,127 @@ public final class OpenCodeRoot : VBox
                 else if (incomplete) summary.setCollapsed(false);
                 _turnWorkSummaries[key] = summary;
             }
-            void expandActions(Widget row)
+            Widget[] timeline, batchRows;
+            string batchId;
+            void flushBatch()
             {
-                if (auto group = cast(ToolGroupBubble) row)
-                    if (group.collapseKey !in _groupCollapsed) group.setCollapsed(false);
-                foreach (child; row.children()) expandActions(child);
+                if (batchRows.length == 0) return;
+                bool visible;
+                foreach (row; batchRows) visible |= row.visible();
+                if (!visible)
+                {
+                    timeline ~= batchRows;
+                    batchRows = null;
+                    return;
+                }
+                string[] names;
+                int failures, recovered;
+                bool reasoning;
+                string failureTitle;
+                void inspect(Widget row)
+                {
+                    if (auto bubble = cast(MessageBubble) row)
+                    {
+                        reasoning |= bubble.hasThinking();
+                        if (bubble._role == "tool")
+                        {
+                            if (bubble._failed)
+                            {
+                                ++failures;
+                                failureTitle = humanToolTitle(bubble._toolName) ~ " failed";
+                                const index = bubble.messageIndex();
+                                if (index >= 0 && index < session.messages.length &&
+                                    session.messages[cast(size_t) index].id in recoveredResults)
+                                    ++recovered;
+                            }
+                            else names ~= bubble._toolName;
+                        }
+                    }
+                    foreach (child; row.children()) inspect(child);
+                }
+                foreach (row; batchRows) inspect(row);
+                string label = names.length > 0 ? actionGroupSummary(names, false) :
+                    failures > 0 ? failureTitle :
+                    reasoning ? "Reasoning and notes" : "Activity details";
+                if (label == "Worked")
+                    label = names.length == 1 && names[0] == "view_image" ?
+                        "Inspected an image" : "Completed " ~ to!string(names.length) ~
+                        (names.length == 1 ? " action" : " actions");
+                if (failures > 0 && names.length > 0) label ~= " · " ~ to!string(failures) ~
+                    (failures == 1 ? " failed action" : " failed actions");
+                if (recovered > 0 && recovered == failures) label ~= " · recovered";
+                const batchKey = "batch:" ~ key ~ ":" ~ batchId;
+                auto existing = batchKey in _turnWorkSummaries;
+                auto batch = existing is null ? new TurnWorkSummary(true) : *existing;
+                if (existing is null)
+                {
+                    batch.onCollapseChanged = delegate(bool value)
+                    {
+                        ChatScrollView.holdPositionForNextLayout(batch);
+                        _groupCollapsed[batchKey] = value;
+                        _messageColumn.invalidate();
+                        _messagesScroll.invalidate();
+                    };
+                    if (auto saved = batchKey in _groupCollapsed) batch.setCollapsed(*saved);
+                    _turnWorkSummaries[batchKey] = batch;
+                }
+                batch.update(batchRows, label, "", false);
+                timeline ~= batch;
+                used[batchKey] = true;
+                batchRows = null;
             }
-            foreach (row; work) expandActions(row);
-            summary.update(work, title, details.join(" · "), incomplete || fact.failed > 0);
+            foreach (row; work)
+            {
+                if (auto bubble = cast(MessageBubble) row)
+                {
+                    const index = bubble.messageIndex();
+                    if (index >= 0 && index < session.messages.length &&
+                        session.messages[cast(size_t) index].role == "assistant")
+                    {
+                        auto prose = session.messages[cast(size_t) index].content.strip();
+                        if (prose.length > 0)
+                        {
+                            flushBatch();
+                            // The opening is already visible as the turn header.
+                            if (prose.startsWith(fact.opening))
+                                prose = prose[fact.opening.length .. $].strip();
+                            if (prose.length > 0)
+                            {
+                                const commentaryKey = "commentary:" ~ session.id ~ ":" ~
+                                    session.messages[cast(size_t) index].id;
+                                auto retained = commentaryKey in _timelineCommentary;
+                                auto commentary = retained is null ? new MessageBubble() : *retained;
+                                if (retained is null)
+                                {
+                                    commentary.setId("oc-timeline-commentary");
+                                    commentary.setRole("assistant");
+                                    commentary.setMessageIndex(cast(int) index);
+                                    commentary.setWorkspace(workspaceForSession(_current));
+                                    commentary.setCompactBottom(true);
+                                    commentary.onContextMenuRequested =
+                                        delegate(int slot, Point globalPosition,
+                                            string linkTarget, Point localPosition)
+                                        {
+                                            showMessageContextMenu(commentary.messageIndex(),
+                                                globalPosition, commentary, linkTarget, localPosition);
+                                        };
+                                    _timelineCommentary[commentaryKey] = commentary;
+                                }
+                                if (to!string(commentary._content) != prose)
+                                    commentary.setContent(prose);
+                                timeline ~= commentary;
+                                used[commentaryKey] = true;
+                            }
+                        }
+                        if (batchRows.length == 0) batchId = session.messages[cast(size_t) index].id;
+                    }
+                }
+                if (batchRows.length == 0 && batchId.length == 0)
+                    batchId = to!string(timeline.length);
+                batchRows ~= row;
+            }
+            flushBatch();
+            summary.update(timeline, title, details.join(" · "), incomplete || unresolved > 0);
             projected ~= summary;
             used[key] = true;
             work = null;
@@ -13551,7 +13681,7 @@ public final class OpenCodeRoot : VBox
             auto finalIndex = turn in finalProse;
             const finalRow = finalIndex !is null && index >= 0 &&
                 cast(size_t) index == *finalIndex;
-            if (finalRow || activeRows(row))
+            if (finalRow || row is liveHost || activeRows(row))
             {
                 flushWork();
                 projected ~= row;
@@ -13565,6 +13695,10 @@ public final class OpenCodeRoot : VBox
         foreach (key, summary; _turnWorkSummaries)
             if (key !in used) { summary.restoreRows(); expired ~= key; }
         foreach (key; expired) _turnWorkSummaries.remove(key);
+        string[] staleCommentary;
+        foreach (key; _timelineCommentary.keys)
+            if (key !in used) staleCommentary ~= key;
+        foreach (key; staleCommentary) _timelineCommentary.remove(key);
         _messageColumn.clearChildren();
         foreach (row; projected) _messageColumn.add(row);
     }
@@ -14475,7 +14609,7 @@ public final class OpenCodeRoot : VBox
             {
                 bubble.setAction(message.failed ? "Retry" : "Regenerate",
                     regenerateAction(_current, messageIndex));
-                if (!message.failed)
+                if (!message.failed && sessionTurnIncomplete(_current))
                     bubble.setSecondaryAction("Continue",
                         continueAction(_current, messageIndex));
                 pillApplied = true;
@@ -14547,15 +14681,17 @@ public final class OpenCodeRoot : VBox
                 {
                     tipGroup.setAction("Regenerate",
                         regenerateAction(_current, resumableIndex));
-                    tipGroup.setSecondaryAction("Continue",
-                        continueAction(_current, resumableIndex));
+                    if (sessionTurnIncomplete(_current))
+                        tipGroup.setSecondaryAction("Continue",
+                            continueAction(_current, resumableIndex));
                 }
                 else
                 {
                     resumable.setAction("Regenerate",
                         regenerateAction(_current, resumableIndex));
-                    resumable.setSecondaryAction("Continue",
-                        continueAction(_current, resumableIndex));
+                    if (sessionTurnIncomplete(_current))
+                        resumable.setSecondaryAction("Continue",
+                            continueAction(_current, resumableIndex));
                 }
             }
         }
@@ -27649,6 +27785,21 @@ public final class OpenCodeRoot : VBox
     /// Test-only: start a live assistant turn exactly as a `chatBegin` event
     /// does, so a smoke test can drive the streaming phases (reasoning, then
     /// answer) without a real network round-trip.
+    public void openActivityDetailsForTesting()
+    {
+        foreach (key, summary; _turnWorkSummaries)
+            if (summary.id() == "oc-activity-batch") summary.setCollapsed(false);
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+            {
+                bool inBatch;
+                for (auto parent = group.parent(); parent !is null; parent = parent.parent())
+                    inBatch |= parent.id() == "oc-activity-batch";
+                if (inBatch && group.collapseKey !in _groupCollapsed)
+                    group.setCollapsed(false);
+            }
+    }
+
     public void beginStreamForTesting()
     {
         beginAssistantMessage();
@@ -28112,7 +28263,7 @@ public final class OpenCodeRoot : VBox
     /// included — the way a settled tool execution does.
     public void appendOwnedToolResultForTesting(string callId, string toolName,
         string content, string args, int additions, int deletions, string diff,
-        long elapsedMs = 0)
+        long elapsedMs = 0, bool failed = false)
     {
         if (_current < 0) return;
         auto session = &_sessions[_current];
@@ -28126,6 +28277,7 @@ public final class OpenCodeRoot : VBox
         message.diffDeletions = deletions;
         message.toolDiff = diff;
         message.toolElapsedMs = elapsedMs;
+        message.failed = failed;
         message.time = currentTimestamp();
         appendMessage(*session, message);
         rebuildMessageColumn();

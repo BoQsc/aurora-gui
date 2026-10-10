@@ -1,5 +1,39 @@
 # Chat turn summaries
 
+## Commentary timeline and activity batches
+
+Delivery verified: full detailed UI smoke in `build/architecture-checks-s9d7blpz/`;
+compact defaults, exact-retry recovery, search, chat consistency and history
+preservation in `build/architecture-checks-18r_46b6/`. The rebuild helper completed
+in 50.227 s and relaunched a responsive app. Forge publication and public download
+verification passed. The production executable passed four provider/native-tool
+round trips in `build/production-roundtrip-hstrpj61/`. Release delivery measurements
+in `build/architecture-checks-58v85nyo/`: six token-to-paint samples, median 5.010 ms,
+maximum 12.486 ms, excluding the fixture's intentional 100 ms provider wait.
+
+
+Turns remain expanded by default. Between commentary updates, original reasoning
+and action rows now live in a compact activity batch that starts collapsed. Its
+single-line label summarizes the recorded actions, without timings, token stats,
+raw commands or paths. Expanding the batch reveals the original widgets and all
+of their detailed disclosures. Search opens both layers. Manual expansion choices
+are retained during rebuilds. Consecutive tool rounds without commentary share a
+batch; a new commentary update starts the next batch.
+
+The opening sentence appears once in the timeline, as the turn header. Remaining
+commentary uses retained, selectable markdown widgets with the original message
+context menu. Original messages stay in details and in the saved message graph.
+Completed assistant replies show Regenerate; Continue is reserved for unfinished
+turns. Active tool rows remain visible while running, and settle into the compact
+batches when completed.
+
+Failed operations are excluded from successful action summaries and use their
+specific tool title (for example, “Create folder failed”). A subsequent successful
+retry with identical recorded tool name and nonempty arguments marks that failed
+attempt “recovered”; a different operation does not imply recovery. The full error
+and original failure styling remain available inside details.
+
+
 ## Immediate live headings and hierarchy
 
 Delivered through the rebuild helper (92.083 s), with a responsive relaunched

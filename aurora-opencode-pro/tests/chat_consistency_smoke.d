@@ -2,6 +2,7 @@ module chat_consistency_smoke;
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
+import auroraopencode.turnsummary;
 import auroraopencode.core : OpenCodeToolCall, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
 import std.conv : to;
@@ -137,6 +138,14 @@ int main()
     assert(root.transcriptRowsSequentialForTesting(), "Settled rows overlap");
     assert(!root.firstToolGroupCollapsedForTesting(),
         "Completion reset the group's expanded state");
+    auto batch = cast(auroraopencode.turnsummary.TurnWorkSummary) find(root, "oc-activity-batch");
+    assert(batch !is null && batch.collapsed(),
+        "Completed activity did not settle into a compact batch");
+    assertVisible(batch, view);
+    assert(root.lastToolResultBoundsForTesting().height == 0,
+        "Raw tool details leaked out of the collapsed batch");
+    root.openActivityDetailsForTesting();
+    root.tickTree(0.02); driver.paint();
     auto resultBounds = root.lastToolResultBoundsForTesting();
     const viewportTop = view.localToGlobal(Point(0, 0)).y;
     assert(resultBounds.height > 0 && resultBounds.y >= viewportTop &&
