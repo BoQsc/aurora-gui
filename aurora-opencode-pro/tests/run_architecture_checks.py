@@ -12,7 +12,7 @@ package = Path(__file__).resolve().parents[1]
 repo = package.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
-parser.add_argument('fixtures', nargs='*', default=['architecture_contracts', 'presentation_contracts', 'chat_performance_contracts', 'chat_consistency_smoke', 'headless_pro_smoke', 'tools_test', 'execution_ui_contracts', 'flow_resilience_contracts'])
+parser.add_argument('fixtures', nargs='*', default=['architecture_contracts', 'presentation_contracts', 'chat_performance_contracts', 'chat_consistency_smoke', 'history_preservation_contracts', 'headless_pro_smoke', 'tools_test', 'execution_ui_contracts', 'flow_resilience_contracts'])
 args = parser.parse_args()
 # The rebuild-button fixture requires an executable beneath the package's
 # recipe. Each run still has a distinct filename and private artifact folder.

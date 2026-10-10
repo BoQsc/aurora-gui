@@ -55,6 +55,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
             time.sleep(0.4)
         if model == "delivery":
             time.sleep(0.1)
+        if model == "history":
+            time.sleep(0.4 if attempt == 3 else 0.1)
         if model == "retry" and attempt == 1:
             payload = b'{"error":{"message":"brief unavailable"}}'
             self.send_response(503)
@@ -62,7 +64,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        first = 'data: ' + json.dumps({"choices": [{"delta": {"content": "first"}, "finish_reason": None}]}) + '\n\n'
+        content = ("original" if attempt == 1 else f"replacement{attempt}") if model == "history" else "first"
+        first = 'data: ' + json.dumps({"choices": [{"delta": {"content": content}, "finish_reason": None}]}) + '\n\n'
         last = ('data: ' + json.dumps({"choices": [{"delta": {"content": "last"}, "finish_reason": "stop"}],
                                       "usage": {"prompt_tokens": 42, "completion_tokens": 2, "total_tokens": 44}})
                 + '\n\ndata: [DONE]\n\n')
@@ -94,12 +97,18 @@ try:
     if "--vulkan" in sys.argv:
         env["AURORA_RENDERER"] = "vulkan"
     delivery = "--delivery" in sys.argv
-    fixture = "delivery_latency_contracts" if delivery else "latency_transport_contracts"
+    history = "--history" in sys.argv
+    fixture = "history_network_contracts" if history else "delivery_latency_contracts" if delivery else "latency_transport_contracts"
     result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
                              *(["--release"] if "--release" in sys.argv else []),
                              fixture], cwd=package.parent, env=env,
                             timeout=300 if "--release" in sys.argv else 120)
     assert result.returncode == 0
+    if history:
+        assert attempts["history"] == 3
+        assert not any(path.endswith("input_tokens") for model, path, port in received)
+        print("PASS actual regenerate click, streaming branch navigation, pre-header restore and late-event isolation", flush=True)
+        sys.exit(0)
     if delivery:
         assert attempts["delivery"] == 6
         assert not any(path.endswith("input_tokens") for model, path, port in received)

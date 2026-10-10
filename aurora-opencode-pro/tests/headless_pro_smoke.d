@@ -886,10 +886,9 @@ int main(string[] args)
     const totalBeforeRegenerate = root.totalMessageCountForTesting();
     assert(root.prepareRegenerateForTesting(),
         "Regenerate was not offered after an assistant reply");
-    // After dropping the reply, the user message is the last bubble and has no
-    // pill; the Regenerate action is back on the context menu.
-    assert(root.lastBubbleActionForTesting() == "",
-        "After regenerate the last bubble should have no pill");
+    // Until replacement headers arrive, the preserved reply stays readable.
+    assert(root.lastBubbleActionForTesting() == "View response",
+        "Regeneration must keep the original reply accessible before headers");
     const countAfterRegenerate = root.messageCountForTesting();
     assert(countAfterRegenerate == cast(int) count - 1,
         "Regenerate should drop the reply from the visible path");
@@ -1133,8 +1132,8 @@ int main(string[] args)
         ["assistant"], ["A reply that will be regenerated."]);
     assert(root.prepareRegenerateForTesting(),
         "Regenerate was not offered after an edit");
-    assert(root.lastBubbleActionForTesting() == "Regenerate",
-        "Pill did not refresh after the final regenerate");
+    assert(root.lastBubbleActionForTesting() == "View response",
+        "Original reply was not reachable after regenerating an edit");
     writeln("Chat-quality pill stays on the latest assistant reply");
 
     // Once sent, an image keeps a display-only filename pill in its user

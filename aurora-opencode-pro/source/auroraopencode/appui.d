@@ -487,6 +487,7 @@ private final class MessageBubble : Widget
     private Rect _versionNextRect;
     private int _versionHover;
     private int _versionWidth;
+    private bool _preservedPreview;
     // Right-click requests a context menu (Regenerate / Edit & resend / Copy).
     void delegate(int messageIndex, Point globalPosition, string linkTarget,
         Point localPosition) onContextMenuRequested;
@@ -1210,15 +1211,15 @@ private final class MessageBubble : Widget
     {
         _versionPosition = position;
         _versionTotal = total;
-        _versionPrev = previous;
-        _versionNext = next;
+        _versionPrev = position > 1 ? previous : null;
+        _versionNext = position < total ? next : null;
         invalidate();
     }
 
     /// Test-only: the `n/m` version label ("" when the message has no siblings).
     public string versionTextForTesting()
     {
-        return _versionTotal > 1
+        return _versionTotal > 0
             ? to!string(_versionPosition) ~ "/" ~ to!string(_versionTotal) : "";
     }
 
@@ -1226,7 +1227,7 @@ private final class MessageBubble : Widget
     /// siblings). Used to assert it never overlaps the action pill.
     public Rect versionNavBoundsForTesting() const
     {
-        if (_versionTotal <= 1 || _versionNextRect.width == 0)
+        if (_versionTotal <= 0 || _versionNextRect.width == 0)
             return Rect.init;
         const left = _versionPrevRect.x;
         const right = _versionNextRect.right();
@@ -1981,7 +1982,7 @@ private final class MessageBubble : Widget
             FontRole.ui, cast(FontFace) theme().uiFont, 200, false);
         const aw = maxInt(52, cast(int) labelLayout.width + 18);
         const x0 = (_queued ? width - userPanelWidth(width) : 0) +
-            padH + (_versionTotal > 1 ? _versionWidth + 6 : 0);
+            padH + (_versionTotal > 0 ? _versionWidth + 6 : 0);
         _actionRect = Rect(x0, height - padV - 19, aw, 18);
         canvas.fillRoundedRect(_actionRect, 9,
             _actionHover ? opencodeAccent.withAlpha(150) : opencodeBorder);
@@ -2028,7 +2029,7 @@ private final class MessageBubble : Widget
         _versionPrevRect = Rect.init;
         _versionNextRect = Rect.init;
         _versionWidth = 0;
-        if (_versionTotal <= 1) return;
+        if (_versionTotal <= 0) return;
         const y = height - padV - 19;
         const label = to!string(_versionPosition) ~ "/" ~ to!string(_versionTotal);
         auto labelLayout = canvas.layoutText(toUTF32(label), 1, FontRole.ui,
@@ -2920,7 +2921,7 @@ private final class MessageBubble : Widget
         return _usageText.length > 0 || _actionLabel.length > 0 ||
             _secondaryActionLabel.length > 0 ||
             _tertiaryActionLabel.length > 0 ||
-            _versionTotal > 1;
+            _versionTotal > 0;
     }
 
     /// Added height below the reply for the bottom-aligned footer. The
@@ -2935,7 +2936,7 @@ private final class MessageBubble : Widget
         if (!footerVisible()) return 0;
         if (_queued && _usageText.length > 0 && _actionLabel.length > 0)
             return 19 + 6 + fontPixelSize(1) + 4;
-        if (_actionLabel.length > 0 || _versionTotal > 1)
+        if (_actionLabel.length > 0 || _versionTotal > 0)
             return 19 + 6;
         return fontPixelSize(1) + 4;
     }
@@ -3093,7 +3094,7 @@ private final class MessageBubble : Widget
         const overThinking = hasThinking() &&
             _thinkingRect.contains(event.position);
         int overVersion;
-        if (_versionTotal > 1)
+        if (_versionTotal > 0)
         {
             if (_versionPrevRect.contains(event.position)) overVersion = 1;
             else if (_versionNextRect.contains(event.position)) overVersion = 2;
@@ -3181,7 +3182,7 @@ private final class MessageBubble : Widget
             setCollapsed(!_collapsed);
             return true;
         }
-        if (_versionTotal > 1)
+        if (_versionTotal > 0)
         {
             if (_versionPrevRect.contains(event.position) && _versionPrev !is null)
             {
@@ -12901,6 +12902,15 @@ public final class OpenCodeRoot : VBox
                     // Re-add the live reply instead of a fresh bubble so a
                     // rebuild during streaming does not drop in-flight text.
                     replyBubble = _streamBubble;
+                    if (versionTotals[index] > 1)
+                    {
+                        replyBubble.setVersionInfo(cast(int) versionPositions[index] + 1,
+                            cast(int) versionTotals[index], versionAction(index, -1),
+                            versionAction(index, +1));
+                        // Even a replacement waiting for its first token must
+                        // expose the arrow back to the preserved response.
+                        replyBubble.setHidden(false);
+                    }
                 }
                 else
                 {
@@ -13123,6 +13133,7 @@ public final class OpenCodeRoot : VBox
         // Carry the selection captured before the rebuild onto the freshly
         // built bubble for the same message, so a live turn's frequent rebuilds
         // no longer clear the reader's highlight.
+        addPreservedReplyPreview(*session, path, versionPositions, versionTotals);
         if (hadSelection)
             foreach (child; messageColumnVisuals())
             {
@@ -13147,6 +13158,40 @@ public final class OpenCodeRoot : VBox
         // otherwise be an inline card; keep it in step with the rebuild.
         updatePlanPanel();
         refreshBubbleActions();
+    }
+
+    // Regeneration rewinds the request context before contacting the provider.
+    // Keep the stored response readable while there is no replacement yet,
+    // including after cancellation/restart before response headers arrived.
+    private void addPreservedReplyPreview(const ref ChatSession session,
+        const(size_t)[] path, const(size_t)[] positions, const(size_t)[] totals)
+    {
+        if (!path.length) return;
+        const parent = session.messages[path[$ - 1]].id;
+        foreach_reverse (index, ref message; session.messages)
+        {
+            if (message.parentId != parent || message.role != "assistant") continue;
+            auto preview = new MessageBubble();
+            preview._preservedPreview = true;
+            preview.setRole("assistant");
+            preview.setMessageIndex(cast(int) index);
+            preview.setWorkspace(workspaceForSession(_current));
+            preview.setContent(message.content);
+            if (message.failed && message.error.length)
+                preview.setContent(message.content ~ "\n\nRequest failed:\n\n```text\n" ~
+                    message.error.replace("```", "`` `") ~ "\n```");
+            if (message.reasoning.length) preview.setThinking(message.reasoning);
+            preview.setUsageText("Previous response · preserved");
+            preview.setVersionInfo(cast(int) positions[index] + 1,
+                cast(int) totals[index], versionAction(index, -1), versionAction(index, +1));
+            const sessionIndex = _current;
+            const messageIndex = cast(int) index;
+            preview.setAction("View response", delegate() {
+                selectMessageBranch(sessionIndex, messageIndex);
+            });
+            _messageColumn.add(preview);
+            break;
+        }
     }
 
     /// Sync the detached plan panel with the active conversation's durable
@@ -14015,7 +14060,8 @@ public final class OpenCodeRoot : VBox
         // `▸ Thinking` header above its tool rows (each round keeps its own).
         if (message.role == "assistant" && message.toolCalls.length > 0 &&
             message.content.length == 0 && thinkingText.length == 0 &&
-            !message.failed)
+            !message.failed &&
+            !(index < versionTotals.length && versionTotals[index] > 1))
         {
             bubble.setHidden(true);
         }
@@ -14187,7 +14233,7 @@ public final class OpenCodeRoot : VBox
             // A queued prompt is not the latest settled reply; skip it so the
             // real last reply keeps its Regenerate/Continue pill while a
             // prompt sits in the queue.
-            if (child.queued()) continue;
+            if (child.queued() || child._preservedPreview) continue;
             // A hidden tool-call wrapper (no prose, no reasoning) paints
             // nothing, so a pill placed on it would be invisible; treat the
             // last visible bubble as the tip instead.
@@ -14211,7 +14257,7 @@ public final class OpenCodeRoot : VBox
             // A pending prompt's own "Send now" pill is bound when the bubble is
             // built (see `pendingPromptSendNowAction`); the reply pills below
             // must not clear or overwrite it.
-            if (bubble.queued()) continue;
+            if (bubble.queued() || bubble._preservedPreview) continue;
             bubble.clearAction();
             if (target is null || bubble !is target) continue;
             const messageIndex = bubble.messageIndex();
@@ -14358,17 +14404,6 @@ public final class OpenCodeRoot : VBox
         if (messageIndex < 0 ||
             messageIndex >= cast(int) session.messages.length)
             return;
-        if (_client.busy() || _turnTiming ||
-            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
-        {
-            _client.cancel();
-            // Abandon the interrupted turn so the killed tool's late result
-            // cannot restart the chat via a continuation request.
-            _turnCancelled = true;
-            _toolCancellation.cancel();
-            _suppressDoneStatus = true;
-        }
-        cancelPendingTools();
         const siblings = siblingMessages(*session,
             cast(size_t) messageIndex);
         if (siblings.length < 2) return;
@@ -14382,8 +14417,23 @@ public final class OpenCodeRoot : VBox
         if (position < 0) return;
         const target = position + direction;
         if (target < 0 || target >= cast(int) siblings.length) return;
-        const leaf = deepestDescendant(*session,
-            siblings[cast(size_t) target]);
+        selectMessageBranch(sessionIndex, cast(int) siblings[cast(size_t) target]);
+        updateStatus("Viewing version " ~ to!string(target + 1) ~ " of " ~
+            to!string(siblings.length) ~ ".");
+    }
+
+    private void selectMessageBranch(int sessionIndex, int messageIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (!ensureThreadLoaded(sessionIndex)) return;
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length) return;
+        cancelAutoResend();
+        if (_client.busy() || _turnTiming || _turnInFlight ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
+            stopActiveTurn();
+        cancelPendingTools();
+        const leaf = deepestDescendant(*session, cast(size_t) messageIndex);
         session.activeLeafId = session.messages[leaf].id;
         publishThreadUpdated(*session);
         _streamBubble = null;
@@ -14393,8 +14443,7 @@ public final class OpenCodeRoot : VBox
         updateSessionList(false);
         markDirty();
         refreshUsageBadge();
-        updateStatus("Viewing version " ~ to!string(target + 1) ~ " of " ~
-            to!string(siblings.length) ~ ".");
+        updateStatus("Viewing preserved response.");
     }
 
 
@@ -14688,7 +14737,9 @@ public final class OpenCodeRoot : VBox
         if (completionTokens == 0 && _liveOutputTokens > 0)
             completionTokens = cast(int) _liveOutputTokens;
         if (sessionIndex >= 0 && sessionIndex < cast(int) _sessions.length &&
-            _sessions[sessionIndex].messages.length > 0)
+            _sessions[sessionIndex].messages.length > 0 &&
+            _sessions[sessionIndex].messages[$ - 1].role == "assistant" &&
+            _sessions[sessionIndex].messages[$ - 1].id == _sessions[sessionIndex].activeLeafId)
         {
             auto message = &_sessions[sessionIndex].messages[$ - 1];
             if (message.time.length == 0) message.time = currentTimestamp();
@@ -18763,9 +18814,8 @@ public final class OpenCodeRoot : VBox
             scheduleQuickTitle(sessionIndex);
     }
 
-    /// Regenerate an assistant reply (or retry it when it failed): everything
-    /// from that reply onward is dropped and the request re-runs with the
-    /// history that produced it.
+    /// Regenerate with the original request context, keeping the entire old
+    /// response and its continuation as a navigable sibling branch.
     private void regenerateLastReply(int sessionIndex, int messageIndex)
     {
         if (!prepareRegenerate(sessionIndex, messageIndex)) return;
@@ -19149,6 +19199,7 @@ public final class OpenCodeRoot : VBox
         cancelPendingTools();
         session.activeLeafId = message.parentId;
         publishThreadUpdated(*session);
+        markDirty();
         _streamBubble = null;
         if (sessionIndex == _current) _editMessageIndex = -1;
         rebuildMessageColumn();
@@ -19162,22 +19213,17 @@ public final class OpenCodeRoot : VBox
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        if (_client.busy() || _turnTiming ||
-            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
-        {
-            _client.cancel();
-            // Abandon the interrupted turn so the killed tool's late result
-            // cannot restart the chat via a continuation request.
-            _turnCancelled = true;
-            _toolCancellation.cancel();
-            _suppressDoneStatus = true;
-        }
-        cancelPendingTools();
+        if (!ensureThreadLoaded(sessionIndex)) return;
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
             return;
         const message = session.messages[cast(size_t) messageIndex];
         if (message.role != "user") return;
+        cancelAutoResend();
+        if (_client.busy() || _turnTiming || _turnInFlight ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
+            stopActiveTurn();
+        cancelPendingTools();
         _streamBubble = null;
         _editMessageIndex = messageIndex;
         if (sessionIndex == _current)
@@ -26779,8 +26825,7 @@ public final class OpenCodeRoot : VBox
         return bubble !is null && bubble.invokeVersionNextForTesting();
     }
 
-    /// Test-only: true when the last assistant reply was removed in
-    /// preparation for a regenerate.
+    /// Test-only: prepare a sibling reply while retaining the original run.
     public bool prepareRegenerateForTesting()
     {
         if (_current < 0) return false;
@@ -27422,6 +27467,11 @@ public final class OpenCodeRoot : VBox
     public void finishStreamForTesting()
     {
         finishStreamInSessionForTesting(turnOwnerSessionForTesting());
+    }
+
+    public void cancelStreamForTesting()
+    {
+        finishAssistantMessage(true);
     }
 
     public void finishStreamInSessionForTesting(int sessionIndex)

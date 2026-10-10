@@ -59,6 +59,19 @@ LatencySnapshot complete(string base, string model, ulong id, bool local = false
 
 int main()
 {
+    foreach (url; ["https://api.commandcode.ai/provider/v1",
+        " HTTPS://API.COMMANDCODE.AI/provider/v1/ "])
+    {
+        const disabled = parseJSON(buildChatBody(null, null,
+            "deepseek/deepseek-v4.1-flash", false, url));
+        assert(disabled["reasoning_effort"].str == "off");
+        const enabled = parseJSON(buildChatBody(null, null,
+            "deepseek/deepseek-v4.1-flash", true, url, false, "high"));
+        assert(enabled["reasoning_effort"].str == "high");
+    }
+    const unknownProvider = parseJSON(buildChatBody(null, null,
+        "fixture", false, "https://example.com/v1"));
+    assert(("reasoning_effort" in unknownProvider.object) is null);
     const base = environment.get("AURORA_CONTRACT_PROVIDER_BASE", "");
     assert(base.length);
     environment["AURORA_HTTP_TRANSPORT"] = "winhttp";

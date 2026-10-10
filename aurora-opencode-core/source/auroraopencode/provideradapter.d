@@ -43,6 +43,7 @@ import auroraopencode.core : ChatRequestMessage, OpenCodeToolDef,
 import std.json : JSONValue, JSONType, parseJSON;
 import std.array : appender;
 import std.conv : to;
+import std.string : strip, stripRight, toLower;
 
 /// Per-client cache of immutable wire projections, bounded by retained input
 /// plus encoded output. Keys use string identity; entries retain those strings
@@ -345,13 +346,12 @@ public string buildChatBody(const(ChatRequestMessage)[] messages,
         if (llamaCppServer && thinkingBudgetTokens > 0)
             root["thinking_budget_tokens"] = thinkingBudgetTokens;
     }
-    // Thinking off must actually disable reasoning. Local llama-server and
-    // the OpenCode Zen gateway both accept `reasoning_effort: "none"`
-    // (Zen's validator lists none/minimal/low/medium/high/xhigh/max), so
-    // send it there. CommandCode's OpenAI route accepts only
-    // low/medium/high/xhigh/max -- `none` is an HTTP 400 -- so omit the
-    // option there; the provider's own default applies instead. api.
-    // deepseek.com is the same story via a different switch.
+    // CommandCode uses "off", while local servers and OpenCode use "none".
+    // Omitting the option on CommandCode lets its default enable reasoning
+    // even when the composer has Thinking disabled.
+    else if (baseUrl.strip().toLower().stripRight("/") ==
+        "https://api.commandcode.ai/provider/v1")
+        root["reasoning_effort"] = "off";
     else if (llamaCppServer || isLoopbackApiBaseUrl(baseUrl) ||
         isOpenCodeApiBaseUrl(baseUrl))
         root["reasoning_effort"] = "none";

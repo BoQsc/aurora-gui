@@ -125,6 +125,11 @@ rather than claiming the change works.
 
 ## Conventions
 
+- Preserve chat history unless the user explicitly deletes it. Regenerate,
+  retry, editing, stopping, compaction and branch navigation must retain prior
+  messages and continuations. Regenerated responses need numbered previous/next
+  navigation during streaming as well as after completion and reload.
+
 - Language: D. Match the surrounding style; add comments only where the code is
   not self-explanatory.
 - Prefer small, targeted edits over whole-file rewrites.
