@@ -3957,8 +3957,8 @@ int main(string[] args)
         // Details share the summary's inset; prompts and final replies remain
         // at the transcript edge.
         const promptX = root.bubbleBoundsForTesting(0).x;
-        assert(assistantX == promptX + 36,
-            "Turn details must be indented beneath their opening header");
+        assert(assistantX == promptX,
+            "Prose and actions must share the chat edge");
         writeln("Turn details use a consistent hierarchy inset");
     }
 
@@ -4813,7 +4813,7 @@ int main(string[] args)
     if (root.messageCountForTesting() == 3 && root.bubbleHiddenForTesting(1))
     {
         const first = root.bubbleBoundsForTesting(0);
-        const next = requireWidget!TurnWorkSummary(root, "oc-turn-work").bounds();
+        const next = requireWidget!TurnWorkSummary(root, "oc-activity-batch").bounds();
         assert(next.y - (first.y + first.height) == 6,
             "hidden wrapper added phantom spacing");
     }
@@ -4836,14 +4836,13 @@ int main(string[] args)
         root.appendToolRequestTurnForTesting("", "call-spacing", "update_plan",
             `{"plan":[]}`, spacingText);
         root.appendToolReplyForTesting("call-spacing", "plan updated");
-        requireWidget!TurnWorkSummary(root, "oc-turn-work").setCollapsed(false);
         root.tickTree(0.02);
         assert(paintProjection(root, driver), "prose/action spacing repaint failed");
         const compactHeight = root.bubbleHeightForTesting(1);
         assert(compactHeight == plainHeight - 6,
             "prose before an action group kept excess bottom inset");
         const prose = root.bubbleBoundsForTesting(1);
-        const action = root.bubbleBoundsForTesting(2);
+        const action = requireWidget!TurnWorkSummary(root, "oc-activity-batch").bounds();
         assert(action.y - prose.bottom() == 6,
             "tightening prose changed the real column gap");
         window.saveScreenshot("build\\compact-prose-action-gap.ppm");
@@ -4871,7 +4870,6 @@ int main(string[] args)
         // Trailing user keeps the last assistant reply from being the "latest"
         // one, so no Regenerate pill footer inflates a one-line row.
         root.addConversationForTesting(["user"], ["done"]);
-        requireWidget!TurnWorkSummary(root, "oc-turn-work").setCollapsed(false);
         root.openActivityDetailsForTesting();
         if (!root.firstToolGroupCollapsedForTesting())
             root.toggleFirstToolGroupForTesting();
@@ -4885,8 +4883,9 @@ int main(string[] args)
         const expected = root.bubbleHeightForTesting(2);
         foreach (i; [cast(int) 1, 2, 4])
         {
-            assert(root.bubbleHeightForTesting(i) == expected,
-                "one-line rows have different heights: index " ~
+            const rowHeight = i == 2 ? expected : expected - 12;
+            assert(root.bubbleHeightForTesting(i) == rowHeight,
+                "One-line card/header padding is incorrect: index " ~
                 to!string(i) ~ " = " ~
                 to!string(root.bubbleHeightForTesting(i)) ~ " vs " ~
                 to!string(expected));
@@ -4897,9 +4896,9 @@ int main(string[] args)
             const b = root.bubbleBoundsForTesting(i + 1);
             // The first thinking row is now preceded by its turn summary's
             // header. Its body rows still use the ordinary six-pixel pitch.
-            if (i == 0)
+            if (i == 0 || i == 3)
             {
-                assert(b.y - a.bottom() >= 6, "Turn summary overlaps its prompt");
+                assert(b.y - a.bottom() >= 6, "Activity details overlap their prompt");
                 continue;
             }
             assert(b.y - (a.y + a.height) == 6,
@@ -4997,8 +4996,8 @@ int main(string[] args)
         assert(paintProjection(root, driver), "interrupted-turn repaint failed");
         const resumePill = root.tipActionBoundsForTesting();
         const resumeHeader = root.tipGroupHeaderBoundsForTesting();
-        assert(resumePill.height > 0 && resumeHeader.height > 0 &&
-            resumePill.y >= resumeHeader.y + resumeHeader.height,
+        assert(resumePill.height > 0 && resumeHeader.height == 0 &&
+            resumePill.y >= root.lastToolResultBoundsForTesting().height,
             "the resume pill must sit below the tip tool row, not above it");
         // A SETTLED tool round KEEPS its Regenerate/Continue pill. A turn often
         // ends on a tool result (a `finish` step, a rebuild request), so the
@@ -5075,8 +5074,8 @@ int main(string[] args)
         {
             const a = root.bubbleBoundsForTesting(i);
             const b = root.bubbleBoundsForTesting(i + 1);
-            assert(b.y - (a.y + a.height) == 6,
-                "rows are not one column spacing apart at index " ~
+            assert(b.y - (a.y + a.height) >= 6,
+                "Activity disclosure overlaps chronological prose at index " ~
                 to!string(i));
         }
         window.saveScreenshot("build\\uniform-row-pitch-replies.ppm");

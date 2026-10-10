@@ -69,7 +69,7 @@ import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
-import auroraopencode.turnsummary : TurnWorkSummary, turnOpeningSentence;
+import auroraopencode.turnsummary : TurnWorkSummary;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 // experimental: attachments - drop a file or large paste as an attachment.
@@ -692,6 +692,7 @@ private final class MessageBubble : Widget
     // the original opencode app), with a pulsing "Thinking…" indicator while
     // the assistant is still working. Click toggles the full reasoning text.
     private bool _thinkingCollapsed = true;
+    private bool _reasoningInActivity;
     private Rect _thinkingRect;
     private bool _thinkingHover;
     private double _thinkingElapsed = 0;
@@ -1691,7 +1692,7 @@ private final class MessageBubble : Widget
         const bottomPad = _compactBottom && _role == "assistant" &&
             _content.length > 0 && !_failed && !footerVisible() ? 0 : padV;
         int height = padV + bottomPad;
-        if (hasThinking())
+        if (hasThinking() && !_reasoningInActivity)
         {
             // Thinking header (slim) always; full reasoning only when expanded.
             // A collapsed "Thinking" row is a plain one-line transcript row, so
@@ -1727,7 +1728,7 @@ private final class MessageBubble : Widget
         }
         else if (_role == "assistant")
         {
-            if (hasThinking() && _content.length > 0)
+            if (hasThinking() && !_reasoningInActivity && _content.length > 0)
                 height += thinkingContentGap;
             if (_content.length > 0)
                 // Markdown line boxes use fractional metrics. Flooring the
@@ -1831,7 +1832,7 @@ private final class MessageBubble : Widget
         const innerWidth = maxInt(1, width - 2 * padH);
         int y = padV;
 
-        if (hasThinking())
+        if (hasThinking() && !_reasoningInActivity)
         {
             drawThinkingHeader(canvas, innerWidth, y);
             y += thinkingHeaderHeight();
@@ -1854,7 +1855,7 @@ private final class MessageBubble : Widget
         _linkUrls.length = 0;
         _selSegments.length = 0;
 
-        if (hasThinking() && _content.length > 0)
+        if (hasThinking() && !_reasoningInActivity && _content.length > 0)
             y += thinkingContentGap;
 
         const contentY = y;
@@ -2956,7 +2957,7 @@ private final class MessageBubble : Widget
     private bool hoverActionsEligible() const
     {
         if (_hidden || _role == "tool" || _failed) return false;
-        if (hasThinking()) return false;
+        if (hasThinking() && !_reasoningInActivity) return false;
         if (_content.length > 0) return true;
         return _role == "user" && _actionRect.height == 0;
     }
@@ -9485,7 +9486,7 @@ public final class OpenCodeRoot : VBox
     // on every streamed tool-argument rebuild.
     private bool[string] _groupCollapsed;
     private TurnWorkSummary[string] _turnWorkSummaries;
-    private MessageBubble[string] _timelineCommentary;
+    private MessageBubble[string] _activityReasoning;
     private PopupOverlay _activePopup;
     // The Changes dialog remembers its timeline scale when a diff is opened
     // and the user returns. Ten-minute buckets keep one focused burst of agent
@@ -12640,6 +12641,8 @@ public final class OpenCodeRoot : VBox
         // message rows reused by the next projection.
         foreach (summary; _turnWorkSummaries) summary.restoreRows();
         foreach (row; messageColumnVisuals())
+            if (auto bubble = cast(MessageBubble) row) bubble._reasoningInActivity = false;
+        foreach (row; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) row) group.setFlat(false);
         // Stage the next painter order while retaining unchanged subtrees.
         _messageColumn.beginProjection();
@@ -13413,7 +13416,7 @@ public final class OpenCodeRoot : VBox
         Widget[] result;
         void collect(Widget node)
         {
-            if (node.id() == "oc-timeline-commentary") return;
+            if (node.id() == "oc-activity-reasoning") return;
             if (auto deferred = cast(DeferredTranscriptRow) node)
                 result ~= deferred.materialized() !is null ? deferred.materialized() : node;
             else if (auto nest = cast(VBox) node)
@@ -13425,75 +13428,31 @@ public final class OpenCodeRoot : VBox
         return result;
     }
 
-    /// Fold intermediate rounds beneath their user request without touching
-    /// the message graph. Current activity and the final response stay outside.
+    /// Keep prose in chronological order; fold only reasoning and settled tools.
     private void groupTurnWorkProjection(const ref ChatSession session,
         const(size_t)[] path)
     {
         auto rows = _messageColumn.children().dup;
-        Widget[] projected, work;
-        string turn;
-        bool afterFinal;
+        Widget[] projected, batchRows;
         bool[string] used;
-        string latestTurn;
-        size_t[string] finalProse;
-        struct WorkFacts
-        {
-            int actions, commands, failed, recovered;
-            bool hasReasoning, hasCalls;
-            string opening;
-            bool[string] files;
-        }
-        WorkFacts[string] facts;
+        string batchId, turn;
         string[][string] failedTargets;
         bool[string] recoveredResults;
         foreach (index; path)
         {
             const message = session.messages[index];
             if (message.internal) continue;
-            if (message.role == "user") latestTurn = message.id;
-            else if (message.role == "assistant")
+            if (message.role == "user") turn = message.id;
+            if (message.role != "tool" || message.toolArgs.length == 0) continue;
+            const name = message.toolName.length > 0 ? message.toolName :
+                toolNameForResult(session, message);
+            const targetKey = turn ~ ":" ~ name ~ ":" ~ message.toolArgs;
+            if (message.failed) failedTargets[targetKey] ~= message.id;
+            else if (auto earlier = targetKey in failedTargets)
             {
-                if (message.toolCalls.length > 0) finalProse.remove(latestTurn);
-                else finalProse[latestTurn] = index;
+                foreach (id; *earlier) recoveredResults[id] = true;
+                failedTargets.remove(targetKey);
             }
-            if (latestTurn.length == 0) continue;
-            auto fact = facts.get(latestTurn, WorkFacts.init);
-            fact.hasReasoning |= message.reasoning.length > 0;
-            fact.hasCalls |= message.toolCalls.length > 0;
-            if (message.role == "assistant" && fact.opening.length == 0 &&
-                message.content.strip().length > 0)
-                fact.opening = turnOpeningSentence(message.content);
-            if (message.role == "tool")
-            {
-                ++fact.actions;
-                if (message.failed) ++fact.failed;
-                const name = message.toolName.length > 0 ? message.toolName :
-                    toolNameForResult(session, message);
-                // Recovery requires an exact retry of the same recorded operation.
-                const targetKey = latestTurn ~ ":" ~ name ~ ":" ~ message.toolArgs;
-                if (message.toolArgs.length > 0)
-                {
-                    if (message.failed) failedTargets[targetKey] ~= message.id;
-                    else if (auto earlier = targetKey in failedTargets)
-                    {
-                        fact.recovered += cast(int) (*earlier).length;
-                        foreach (id; *earlier) recoveredResults[id] = true;
-                        failedTargets.remove(targetKey);
-                    }
-                }
-                if (actionKindOf(name) == ActionKind.command) ++fact.commands;
-                if (!message.failed && actionKindOf(name) == ActionKind.edit)
-                    foreach (file; toolArgumentPaths(name, message.toolArgs))
-                        fact.files[toLower(buildNormalizedPath(file))] = true;
-            }
-            facts[latestTurn] = fact;
-        }
-        long rowIndex(Widget row)
-        {
-            if (auto bubble = cast(MessageBubble) row) return bubble.messageIndex();
-            if (auto deferred = cast(DeferredTranscriptRow) row) return deferred.messageIndex;
-            return -1;
         }
         bool activeRows(Widget row)
         {
@@ -13511,66 +13470,18 @@ public final class OpenCodeRoot : VBox
             }
             if (activeRows(row)) liveHost = precedingAssistant;
         }
-        void flushWork()
+        void flushBatch()
         {
-            const busy = turn == latestTurn && sessionIsBusy(_current);
-            const key = session.id ~ ":" ~ turn;
-            if (turn.length == 0 || key in used || (work.length == 0 && !busy))
-            { projected ~= work; work = null; return; }
-            bool visibleWork;
-            foreach (row; work) visibleWork |= row.visible();
-            if (!visibleWork && !busy) { projected ~= work; work = null; return; }
-            const fact = facts.get(turn, WorkFacts.init);
-            // Plain conversations retain their familiar message layout.
-            if (!busy && fact.actions == 0 && !fact.hasReasoning && !fact.hasCalls)
-            { projected ~= work; work = null; return; }
-            const current = turn == latestTurn;
-            const incomplete = current && sessionTurnIncomplete(_current);
-            string title = fact.opening.length > 0 ? fact.opening :
-                busy ? "Starting your request…" : "Activity and notes";
-            string status = busy ? "Working" : incomplete
-                ? (session.turnStatus == "failed" ? "Needs attention" : "Stopped · work retained")
-                : "Work recorded";
-            const unresolved = fact.failed - fact.recovered;
-            if (unresolved > 0) status ~= " · " ~ to!string(unresolved) ~ " failed";
-            if (fact.recovered > 0) status ~= " · recovered after " ~
-                to!string(fact.recovered) ~ (fact.recovered == 1 ? " failed attempt" : " failed attempts");
-            if (_settings.showWorkedFor)
-                if (auto duration = turn in _turnDurations)
-                    status ~= " · " ~ formatTurnDuration(*duration);
-            string[] details = [status];
-            if (fact.actions > 0) details ~= to!string(fact.actions) ~ (fact.actions == 1 ? " action recorded" : " actions recorded");
-            if (fact.files.length > 0) details ~= to!string(fact.files.length) ~ (fact.files.length == 1 ? " file changed" : " files changed");
-            if (fact.commands > 0) details ~= to!string(fact.commands) ~ (fact.commands == 1 ? " command" : " commands");
-            auto cached = key in _turnWorkSummaries;
-            auto summary = cached is null ? new TurnWorkSummary() : *cached;
-            if (cached is null)
+            if (batchRows.length == 0) { batchId = ""; return; }
+            bool visible;
+            foreach (row; batchRows) visible |= row.visible();
+            if (!visible)
             {
-                const collapseKey = "turn:" ~ key;
-                summary.onCollapseChanged = delegate(bool value)
-                {
-                    ChatScrollView.holdPositionForNextLayout(summary);
-                    _groupCollapsed[collapseKey] = value;
-                    _messageColumn.invalidate();
-                    _messagesScroll.invalidate();
-                };
-                if (auto saved = collapseKey in _groupCollapsed) summary.setCollapsed(*saved);
-                else if (incomplete) summary.setCollapsed(false);
-                _turnWorkSummaries[key] = summary;
+                projected ~= batchRows;
+                batchRows = null;
+                batchId = "";
+                return;
             }
-            Widget[] timeline, batchRows;
-            string batchId;
-            void flushBatch()
-            {
-                if (batchRows.length == 0) return;
-                bool visible;
-                foreach (row; batchRows) visible |= row.visible();
-                if (!visible)
-                {
-                    timeline ~= batchRows;
-                    batchRows = null;
-                    return;
-                }
                 string[] names;
                 int failures, recovered;
                 bool reasoning;
@@ -13608,7 +13519,7 @@ public final class OpenCodeRoot : VBox
                 if (failures > 0 && names.length > 0) label ~= " · " ~ to!string(failures) ~
                     (failures == 1 ? " failed action" : " failed actions");
                 if (recovered > 0 && recovered == failures) label ~= " · recovered";
-                const batchKey = "batch:" ~ key ~ ":" ~ batchId;
+                const batchKey = "activity:" ~ session.id ~ ":" ~ batchId;
                 auto existing = batchKey in _turnWorkSummaries;
                 auto batch = existing is null ? new TurnWorkSummary(true) : *existing;
                 if (existing is null)
@@ -13624,99 +13535,91 @@ public final class OpenCodeRoot : VBox
                     _turnWorkSummaries[batchKey] = batch;
                 }
                 batch.update(batchRows, label, "", false);
-                timeline ~= batch;
-                used[batchKey] = true;
-                batchRows = null;
-            }
-            foreach (row; work)
-            {
-                if (auto bubble = cast(MessageBubble) row)
-                {
-                    const index = bubble.messageIndex();
-                    if (index >= 0 && index < session.messages.length &&
-                        session.messages[cast(size_t) index].role == "assistant")
-                    {
-                        auto prose = session.messages[cast(size_t) index].content.strip();
-                        if (prose.length > 0)
-                        {
-                            flushBatch();
-                            // The opening is already visible as the turn header.
-                            if (prose.startsWith(fact.opening))
-                                prose = prose[fact.opening.length .. $].strip();
-                            if (prose.length > 0)
-                            {
-                                const commentaryKey = "commentary:" ~ session.id ~ ":" ~
-                                    session.messages[cast(size_t) index].id;
-                                auto retained = commentaryKey in _timelineCommentary;
-                                auto commentary = retained is null ? new MessageBubble() : *retained;
-                                if (retained is null)
-                                {
-                                    commentary.setId("oc-timeline-commentary");
-                                    commentary.setRole("assistant");
-                                    commentary.setMessageIndex(cast(int) index);
-                                    commentary.setWorkspace(workspaceForSession(_current));
-                                    commentary.setCompactBottom(true);
-                                    commentary.onContextMenuRequested =
-                                        delegate(int slot, Point globalPosition,
-                                            string linkTarget, Point localPosition)
-                                        {
-                                            showMessageContextMenu(commentary.messageIndex(),
-                                                globalPosition, commentary, linkTarget, localPosition);
-                                        };
-                                    _timelineCommentary[commentaryKey] = commentary;
-                                }
-                                if (to!string(commentary._content) != prose)
-                                    commentary.setContent(prose);
-                                timeline ~= commentary;
-                                used[commentaryKey] = true;
-                            }
-                        }
-                        if (batchRows.length == 0) batchId = session.messages[cast(size_t) index].id;
-                    }
-                }
-                if (batchRows.length == 0 && batchId.length == 0)
-                    batchId = to!string(timeline.length);
-                batchRows ~= row;
-            }
-            flushBatch();
-            summary.update(timeline, title, details.join(" · "), incomplete || unresolved > 0);
-            projected ~= summary;
-            used[key] = true;
-            work = null;
+            projected ~= batch;
+            used[batchKey] = true;
+            batchRows = null;
+                batchId = "";
         }
         foreach (row; rows)
         {
-            const index = rowIndex(row);
-            if (index >= 0 && index < session.messages.length &&
-                session.messages[cast(size_t) index].role == "user")
+            if (auto bubble = cast(MessageBubble) row)
             {
-                flushWork();
-                turn = session.messages[cast(size_t) index].id;
-                afterFinal = false;
-                projected ~= row;
-                continue;
+                const index = bubble.messageIndex();
+                if (bubble._role == "assistant" && row !is liveHost &&
+                    row !is _streamBubble && !bubble._failed &&
+                    index >= 0 && index < session.messages.length)
+                {
+                    const message = session.messages[cast(size_t) index];
+                    if (message.content.length > 0)
+                    {
+                        if (message.toolCalls.length > 0)
+                        {
+                            flushBatch();
+                            projected ~= row;
+                        }
+                        bubble._reasoningInActivity = true;
+                        bubble.invalidate();
+                        if (batchRows.length == 0) batchId = message.id;
+                        if (bubble.hasThinking())
+                        {
+                            const reasoningKey = "reasoning:" ~ session.id ~ ":" ~ message.id;
+                            auto existing = reasoningKey in _activityReasoning;
+                            auto reasoning = existing is null ? new MessageBubble() : *existing;
+                            if (existing is null)
+                            {
+                                reasoning.setId("oc-activity-reasoning");
+                                reasoning.setRole("assistant");
+                                reasoning.setMessageIndex(cast(int) index);
+                                reasoning.setThinkingCollapsed(bubble.thinkingCollapsed());
+                                const persistId = message.id;
+                                reasoning.onSizeChanged = delegate()
+                                {
+                                    _thinkingCollapsed[persistId] = reasoning.thinkingCollapsed();
+                                    _messageColumn.invalidate();
+                                    _messagesScroll.invalidate();
+                                };
+                                _activityReasoning[reasoningKey] = reasoning;
+                            }
+                            if (to!string(reasoning._thinking) != message.reasoning)
+                                reasoning.setThinking(message.reasoning);
+                            reasoning.setSearchQuery(_searchQuery);
+                            batchRows ~= reasoning;
+                            used[reasoningKey] = true;
+                        }
+                        if (message.toolCalls.length == 0)
+                        {
+                            flushBatch();
+                            projected ~= row;
+                        }
+                        continue;
+                    }
+                    if (batchRows.length == 0) batchId = message.id;
+                    batchRows ~= row;
+                    continue;
+                }
             }
-            auto finalIndex = turn in finalProse;
-            const finalRow = finalIndex !is null && index >= 0 &&
-                cast(size_t) index == *finalIndex;
-            if (finalRow || row is liveHost || activeRows(row))
+            if (!activeRows(row) &&
+                (cast(TurnNest) row !is null || cast(ToolGroupBubble) row !is null))
             {
-                flushWork();
-                projected ~= row;
-                afterFinal = true;
+                if (batchRows.length == 0 && batchId.length == 0)
+                    batchId = "row:" ~ to!string(projected.length);
+                batchRows ~= row;
             }
-            else if (turn.length == 0 || afterFinal) projected ~= row;
-            else work ~= row;
+            else
+            {
+                flushBatch();
+                projected ~= row;
+            }
         }
-        flushWork();
+        flushBatch();
         string[] expired;
-        foreach (key, summary; _turnWorkSummaries)
-            if (key !in used) { summary.restoreRows(); expired ~= key; }
+        foreach (key, batch; _turnWorkSummaries)
+            if (key !in used) { batch.restoreRows(); expired ~= key; }
         foreach (key; expired) _turnWorkSummaries.remove(key);
-        string[] staleCommentary;
-        foreach (key; _timelineCommentary.keys)
-            if (key !in used) staleCommentary ~= key;
-        foreach (key; staleCommentary) _timelineCommentary.remove(key);
+        string[] staleReasoning;
+        foreach (key; _activityReasoning.keys)
+            if (key !in used) staleReasoning ~= key;
+        foreach (key; staleReasoning) _activityReasoning.remove(key);
         _messageColumn.clearChildren();
         foreach (row; projected) _messageColumn.add(row);
     }
@@ -13929,6 +13832,16 @@ public final class OpenCodeRoot : VBox
     /// The transcript bubble for a message index, searching nested groups too.
     private MessageBubble bubbleForMessageIndex(int messageIndex)
     {
+        if (_current >= 0 && _searchCurrent >= 0 &&
+            _searchCurrent < _searchMatchMessages.length &&
+            _searchMatchMessages[_searchCurrent] == messageIndex &&
+            _searchMatchInReasoning[_searchCurrent] &&
+            messageIndex >= 0 && messageIndex < _sessions[_current].messages.length)
+        {
+            const key = "reasoning:" ~ _sessions[_current].id ~ ":" ~
+                _sessions[_current].messages[cast(size_t) messageIndex].id;
+            if (auto reasoning = key in _activityReasoning) return *reasoning;
+        }
         MessageBubble[] found;
         collectMessageBubbles(_messageColumn, found);
         foreach (bubble; found)
@@ -14970,18 +14883,6 @@ public final class OpenCodeRoot : VBox
         }
         _streamBubble.setLiveTokens(_liveOutputTokens, true);
         _streamBubble.setTokenRate(_liveTokenRateTenths);
-        // Update the live heading without rebuilding the transcript per token.
-        foreach_reverse (index; activeMessagePath(*session))
-        {
-            if (session.messages[index].role != "user") continue;
-            const key = session.id ~ ":" ~ session.messages[index].id;
-            if (auto summary = key in _turnWorkSummaries)
-                if ((*summary).title == "Starting your request…" ||
-                    (*summary).title == turnOpeningSentence(message.content[0 ..
-                        message.content.length - (reasoning ? 0 : text.length)]))
-                    (*summary).setOpening(turnOpeningSentence(message.content));
-            break;
-        }
         // A reasoning reply already has the compact stats in its Thinking
         // header. Only reserve the footer for direct replies with no header.
         refreshLiveUsageFooter();

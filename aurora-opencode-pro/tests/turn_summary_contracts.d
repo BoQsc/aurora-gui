@@ -41,20 +41,9 @@ int main()
     foreach (_; 0 .. 30) { root.tickTree(0.02); driver.paint(); Thread.sleep(10.msecs); }
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Streamline the chat and keep all the details."]);
-    root.startTurnClockForTesting();
-    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    auto pendingSummary = cast(TurnWorkSummary) find(root, "oc-turn-work");
-    assert(pendingSummary !is null && !pendingSummary.collapsed() &&
-        pendingSummary.title == "Starting your request…",
-        "The turn header waited for provider output");
     root.appendToolRequestTurnForTesting("Inspect the current grouping.", "read-1", "read",
         `{"filePath":"appui.d"}`, "I’ll inspect how the transcript groups activity.");
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    auto startingSummary = cast(TurnWorkSummary) find(root, "oc-turn-work");
-    assert(startingSummary !is null && !startingSummary.collapsed(),
-        "A new working turn did not start expanded");
-    assert(startingSummary.title == "I’ll inspect how the transcript groups activity." &&
-        startingSummary.detail.indexOf("Working") >= 0);
     root.appendOwnedToolResultForTesting("read-1", "read", "unique inspected output",
         `{"filePath":"appui.d"}`, 0, 0, "");
     root.appendToolRequestTurnForTesting("Change the presentation.", "edit-1", "edit",
@@ -65,114 +54,51 @@ int main()
         `{"filePath":"appui.d"}`, "I’ll retain history and expansion choices.");
     root.appendOwnedToolResultForTesting("edit-2", "edit", "Edited appui.d again",
         `{"filePath":"appui.d"}`, 3, 1, "@@ -2 +2 @@\n-old\n+new");
-    assert(!startingSummary.collapsed(), "Updates automatically folded an expanded turn");
     root.beginStreamForTesting();
     root.streamContentForTesting("The chat now groups work beneath each request. Full activity remains available.");
     root.finishStreamForTesting();
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    auto summary = cast(TurnWorkSummary) find(root, "oc-turn-work");
-    assert(summary is startingSummary && !summary.collapsed(),
-        "Completion folded the turn or replaced its header");
-    assert(summary.title == "I’ll inspect how the transcript groups activity.");
+    assert(find(root, "oc-turn-work") is null, "Outer turn container remains");
+    assert(find(root, "oc-timeline-commentary") is null, "A duplicate commentary projection remains");
+    assert(root.messageCountForTesting() == 8 && root.toolMessageCountForTesting() == 3);
     TurnWorkSummary[] batches;
-    foreach (row; summary.children())
+    auto first = cast(TurnWorkSummary) find(root, "oc-activity-batch");
+    assert(first !is null);
+    foreach (row; first.parent().children())
         if (row.id() == "oc-activity-batch") batches ~= cast(TurnWorkSummary) row;
-    assert(batches.length == 3, "Activity was not grouped between commentary updates");
-    foreach (batch; batches)
-        assert(batch.collapsed() && batch.title.indexOf("tokens") < 0 &&
-            batch.title.indexOf("ms") < 0, "Technical detail leaked into the timeline");
-    assert(summary.children().length == 5,
-        "The opening sentence was repeated in the timeline");
-    batches[0].setCollapsed(false);
+    assert(batches.length == 3, "Expected one activity row between each prose update");
+    foreach (batch; batches) assert(batch.collapsed());
+    // Original prose rows remain visible at the chat edge with full opening text.
+    assert(root.bubbleVisibleForTesting(1) && root.bubbleVisibleForTesting(3) &&
+        root.bubbleVisibleForTesting(5) && root.bubbleVisibleForTesting(7));
+    assert(root.messageContentForTesting(1) == "I’ll inspect how the transcript groups activity.");
+    const edge = root.bubbleBoundsForTesting(0).x;
+    foreach (index; [1, 3, 5, 7]) assert(root.bubbleBoundsForTesting(index).x == edge,
+        "Assistant prose is indented inside a turn");
+    window.saveScreenshot("build/chat-straightforward.ppm");
+    first.setCollapsed(false);
     root.rebuildForTesting();
-    assert(!batches[0].collapsed(), "A refresh lost the batch expansion choice");
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(find(root, "oc-activity-batch") is first && !first.collapsed());
     foreach (batch; batches) batch.setCollapsed(false);
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    assert(root.activityGroupsFlatForTesting(),
-        "Expanded batches still contain category headers or extra category indentation");
-    foreach (batch; batches)
-        foreach (row; batch.children())
-            if (row.visible()) assert(row.bounds().x == 0,
-                "Batch details add another indentation step");
-    assert(root.lastToolResultBoundsForTesting().height > 0,
-        "Opening the batch did not directly reveal its action rows");
-    window.saveScreenshot("build/turn-summary-flat-actions.ppm");
+    assert(root.activityGroupsFlatForTesting());
+    window.saveScreenshot("build/chat-straightforward-details.ppm");
     foreach (batch; batches) batch.setCollapsed(true);
-    batches[0].setCollapsed(true);
-    assert(summary.detail.indexOf("3 actions recorded") >= 0 &&
-        summary.detail.indexOf("1 file changed") >= 0,
-        "Repeated edits were counted as distinct files");
-    assert(root.messageCountForTesting() == 8 && root.toolMessageCountForTesting() == 3);
-    summary.setCollapsed(true);
-    root.rebuildForTesting();
-    assert(summary.collapsed(), "A refresh ignored the user's collapse choice");
-    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    window.saveScreenshot("build/turn-summary-collapsed.ppm");
-    const collapsedHeight = summary.bounds().height;
-    summary.setCollapsed(false);
-    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    assert(summary.bounds().height > collapsedHeight);
-    foreach (row; summary.children())
-        if (row.visible()) assert(row.bounds().x == 18,
-            "Turn details did not receive their hierarchy indentation");
-    root.rebuildForTesting();
-    assert(find(root, "oc-turn-work") is summary && !summary.collapsed(),
-        "Projection lost row identity or the reader's expansion choice");
-    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    window.saveScreenshot("build/turn-summary-expanded.ppm");
-    summary.setCollapsed(true);
     root.setChatSearchQueryForTesting("unique inspected output");
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    assert(root.chatSearchMatchCountForTesting() == 1 && !summary.collapsed(),
-        "Search did not open the enclosing work summary");
-    assert(!batches[0].collapsed(), "Search did not reveal the containing activity batch");
+    assert(root.chatSearchMatchCountForTesting() == 1 && !first.collapsed());
+    first.setCollapsed(true);
+    root.setChatSearchQueryForTesting("Inspect the current grouping");
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(root.chatSearchMatchCountForTesting() == 1 && !first.collapsed(),
+        "Reasoning search did not reveal its activity row");
     root.setChatSearchQueryForTesting("");
     root.persistForTesting();
     root.reloadSessionsForTesting();
     foreach (_; 0 .. 20) { root.tickTree(0.02); driver.paint(); Thread.sleep(10.msecs); }
-    assert(root.messageCountForTesting() == 8 && root.toolMessageCountForTesting() == 3,
-        "Presentation grouping changed saved history");
-    auto restored = cast(TurnWorkSummary) find(root, "oc-turn-work");
-    assert(restored !is null && restored.detail.indexOf("1 file changed") >= 0);
-    // Header wrapping must remain usable in narrow chat columns.
-    auto narrow = restored.measure(Size(230, int.max));
-    assert(narrow.width == 230 && narrow.height > 40);
-    root.addConversationForTesting(["user"], ["A new request"]);
-    assert(find(root, "oc-turn-work") is restored,
-        "Starting another request ungrouped the previous task");
-    restored.setCollapsed(true);
-    root.rebuildForTesting();
-    assert(restored.collapsed() && root.messageCountForTesting() == 9);
-    root.startTurnClockForTesting();
-    root.appendToolRequestTurnForTesting("", "next-read", "read", "{}",
-        "I’ll inspect the next request. Extra context belongs in the details.");
-    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    TurnWorkSummary nextSummary;
-    foreach (row; find(root, "oc-turn-work").parent().children())
-        if (auto candidate = cast(TurnWorkSummary) row)
-            if (candidate !is restored) nextSummary = candidate;
-    assert(nextSummary !is null && !nextSummary.collapsed());
-    nextSummary.setCollapsed(true);
-    root.beginStreamForTesting();
-    root.streamContentForTesting("Next request complete.");
-    root.finishStreamForTesting();
-    assert(root.tipSecondaryActionForTesting() == "",
-        "A completed response still offers Continue");
-    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    assert(nextSummary.collapsed() && nextSummary.title == "I’ll inspect the next request.",
-        "Streaming or completion reset a manually collapsed turn");
-    root.newChatForTesting();
-    root.addConversationForTesting(["user"], ["Check live headings"]);
-    root.startTurnClockForTesting();
-    root.beginStreamForTesting();
-    root.streamContentForTesting("I’ll inspect ");
-    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
-    auto liveSummary = cast(TurnWorkSummary) find(root, "oc-turn-work");
-    assert(liveSummary !is null && liveSummary.title == "I’ll inspect");
-    root.streamContentForTesting("the layout. Then check details.");
-    assert(liveSummary.title == "I’ll inspect the layout.",
-        "Opening sentence waited for a completed assistant/tool round");
-    root.finishStreamForTesting();
+    assert(root.messageCountForTesting() == 8 && root.toolMessageCountForTesting() == 3);
+    assert(find(root, "oc-turn-work") is null);
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Capture the page"]);
     root.appendToolRequestTurnForTesting("Prepare the folder", "failed-folder",
@@ -183,9 +109,7 @@ int main()
     root.streamContentForTesting("I could not create the folder.");
     root.finishStreamForTesting();
     auto failedBatch = cast(TurnWorkSummary) find(root, "oc-activity-batch");
-    assert(failedBatch !is null && failedBatch.collapsed() &&
-        failedBatch.title == "Create folder failed",
-        "A failed folder operation was labeled as a successful edit");
+    assert(failedBatch !is null && failedBatch.title == "Create folder failed");
     root.appendToolRequestTurnForTesting("Retry the folder", "retry-folder",
         "create_folder", `{"path":"aurora-shot"}`, "I’ll retry creating the folder.");
     root.appendOwnedToolResultForTesting("retry-folder", "create_folder",
@@ -193,10 +117,26 @@ int main()
     root.beginStreamForTesting();
     root.streamContentForTesting("The retry succeeded.");
     root.finishStreamForTesting();
-    assert(failedBatch.title == "Create folder failed · recovered",
-        "An exact successful retry did not explain recovery");
-    assert((cast(TurnWorkSummary) find(root, "oc-turn-work")).detail.indexOf(
-        "recovered after 1 failed attempt") >= 0);
-    writeln("PASS immediate and streaming headings, turn grouping, expansion identity, search, history and indentation");
+    assert(failedBatch.title == "Create folder failed · recovered");
+    assert(root.tipSecondaryActionForTesting() == "");
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Check progress"]);
+    root.startTurnClockForTesting();
+    root.beginStreamForTesting();
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(find(root, "oc-activity") !is null && find(root, "oc-turn-work") is null);
+    root.streamContentForTesting("A direct reply.");
+    root.finishStreamForTesting();
+    assert(root.lastAssistantContentForTesting() == "A direct reply.");
+    assert(find(root, "oc-activity-batch") is null, "A plain reply gained an empty activity row");
+    root.newChatForTesting();
+    root.addConversationForTestingWithReasoning(
+        ["tool", "assistant", "tool", "assistant", "tool"],
+        ["first output", "First update.", "second output", "Second update.", "third output"],
+        [null, "first thought", null, "second thought", null]);
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(root.messageCountForTesting() == 5 && root.transcriptRowsSequentialForTesting(),
+        "Legacy orphan tool results reused a disclosure or overlapped prose");
+    writeln("PASS original chronological prose, no outer headers, compact activity, reasoning/tool search, recovery and history");
     return 0;
 }

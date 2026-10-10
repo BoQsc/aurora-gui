@@ -1,4 +1,26 @@
-# Chat turn summaries
+# Chat presentation
+
+## Current: chronological conversation
+
+Original assistant prose is shown once at the chat edge, in message order. There
+is no outer turn container, opening-sentence header, mirrored commentary, nested
+guide line, or whole-turn collapse. One compact activity disclosure between prose
+updates holds settled tools and reasoning. Its category wrappers remain flat;
+expanding the row shows actions directly. Final-answer reasoning joins the
+preceding activity so the final answer remains the last prose row. Plain replies
+do not acquire empty activity disclosures.
+
+Reasoning details use retained presentation widgets while original message records
+remain unchanged. Tool and reasoning search reveals the containing activity row.
+Prose keeps its original selection, context menu, branch navigation and reply
+controls. Current progress, live tools, exact-retry recovery, chat scroll anchors
+and saved history remain supported.
+
+The sections below record earlier iterations and verification, not the active
+outer-turn design.
+
+## Previous iterations
+
 
 ## Flatter activity details
 
@@ -150,3 +172,23 @@ After relaunch, optimized native GUI delivery with Vulkan requested passed in
 2.705 ms and maximum of 8.697 ms; 40 native worker notifications had a median
 of 0.061 ms. Rendering means submission, not display scanout. These local samples
 do not establish production network latency or a universal minimum.
+
+## Straightforward chronological chat delivery — 2026-10-10
+
+Removed the outer turn panel and generated opener. Original assistant prose stays
+in chronological order at the main chat edge, with compact expandable activity
+rows between updates and the final answer after its activity. Reasoning and tool
+search still reveal their activity; stored messages and history remain intact.
+
+The final source passed headless UI, turn summary, chat consistency and history
+preservation checks in `build/architecture-checks-wnxx3ijf/`, including legacy
+unowned tool results. The detached helper rebuilt the release in 92.605 seconds
+and relaunched a responsive app. The executable is newer than all package sources.
+Forge publication and public download verification passed with skipping unset.
+The production executable passed four HTTP/SSE rounds, native tools, pairing and
+settlement in `build/production-roundtrip-0wquq2_z/`.
+
+Release native GUI delivery passed in `build/architecture-checks-6sjxyhj_/`:
+six token-to-render samples measured 3.979 ms median and 12.091 ms maximum.
+These are client delivery measurements; the fixture's intentional 100 ms provider
+wait is separate. Rendering measures submission rather than display scanout.
