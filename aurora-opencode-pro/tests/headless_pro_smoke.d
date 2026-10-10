@@ -5961,6 +5961,46 @@ int main(string[] args)
         root.setInputForTesting("");
         writeln("Empty-state intro shows and prefills the composer");
 
+        // "New buttons from recent chats": a generated option becomes a new
+        // starter pill on the empty state, exactly as the dialog's Add does.
+        const beforeCount = root.introSuggestionsForTesting().length;
+        root.addIntroButtonForTesting("my repo", "C:\\work\\my repo \\");
+        root.tickTree(0.02);
+        const afterSuggestions = root.introSuggestionsForTesting();
+        assert(afterSuggestions.length == beforeCount + 1,
+            "Adding a generated button should add one starter pill");
+        assert(afterSuggestions[$ - 1] == "my repo",
+            "The added pill should carry the generated label");
+        assert(root.introSuggestionPromptsForTesting()[$ - 1] ==
+            "C:\\work\\my repo \\",
+            "The added pill should insert the generated prompt");
+        assert(root.introCustomButtonCountForTesting() == 1,
+            "The generated button should be recorded once");
+        assert(paintProjection(root, driver),
+            "Intro with an added button did not paint");
+        // Adding the same button again is a no-op.
+        root.addIntroButtonForTesting("my repo", "C:\\work\\my repo \\");
+        root.tickTree(0.02);
+        assert(root.introCustomButtonCountForTesting() == 1,
+            "Adding a duplicate button should be ignored");
+        writeln("Generated buttons extend the empty-state starter set");
+
+        // "New buttons from recent chats" dialog: clicking the pill opens it and
+        // the generated options must be laid out as visible rows, not merely
+        // recorded - this guards the popup relayout after dynamic rows are added.
+        assert(root.clickGenerateIntroButtonsForTesting(),
+            "Clicking the pill should open the suggestions dialog");
+        root.tickTree(0.02);
+        assert(root.suggestDialogOpenForTesting(),
+            "The suggestions dialog should be open after the click");
+        assert(root.suggestOptionLabelsForTesting().length > 0,
+            "The suggestions dialog should list at least one option");
+        assert(root.suggestListHeightForTesting() > 0,
+            "Suggestion rows were not laid out (popup relayout missing)");
+        assert(paintProjection(root, driver), "The suggestions dialog did not paint");
+        root.dismissSuggestDialogForTesting();
+        root.tickTree(0.02);
+
         // The first message replaces the welcome with the transcript.
         root.addConversationForTesting(["user"], ["Hello there"]);
         root.tickTree(0.02);

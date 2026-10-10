@@ -71,6 +71,10 @@ import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
 import auroraopencode.turnsummary : TurnWorkSummary;
+import auroraopencode.buttonsuggest : ButtonSuggestion,
+    conversationDigest, parseSuggestionResponse, recentConversationPaths,
+    suggestionsForPaths,
+    suggestButtonsFromRecentConversations, suggestionInstruction;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.preferencewriter : PreferenceWriter;
@@ -102,7 +106,7 @@ import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
-import std.file : append, dirEntries, exists, getSize, isDir, isFile,
+import std.file : append, dirEntries, exists, getSize, getcwd, isDir, isFile,
     fileRemove = remove, mkdirRecurse, readText, rename, rmdir, SpanMode,
     thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
@@ -7909,6 +7913,12 @@ private immutable string generalAuroraSuggestion = "Aurora project";
 /// path; omitted when no source package is present.
 private immutable string generalAuroraOpencodeSuggestion = "General Aurora Opencode";
 
+/// Empty-state action pill: unlike the suggestion pills it does not prefill the
+/// composer. Clicking it asks the agent to propose new starter buttons from
+/// recent conversations and shows them in a dialog, one Add action per option.
+private immutable string buttonSuggestionActionLabel =
+    "New buttons from recent chats";
+
 /// Shown over the transcript while the active conversation still has no
 /// messages: a centered welcome block with tappable prompt suggestions that
 /// prefill the composer. It is an overlay child of the scroll view (full
@@ -7922,6 +7932,10 @@ private final class IntroOverlay : Widget
     /// contributes to the composer and `selected` is true when it just became
     /// highlighted, false when pressing it again cleared it.
     void delegate(string prompt, bool selected) onSuggestion;
+
+    /// Fired when the action pill is clicked: the owner should propose new
+    /// starter buttons from recent conversations and show them in a dialog.
+    void delegate() onGenerateSuggestions;
 
     private static immutable int margin = 24;
     private static immutable int iconSize = 44;
@@ -7951,6 +7965,12 @@ private final class IntroOverlay : Widget
     // The highlight persists between clicks (it is not hover); pressing the
     // same pill again toggles it off.
     private int _selected = -1;
+    // Optional trailing action pill. Unlike a suggestion pill it is not a
+    // prompt toggle: clicking it runs `onGenerateSuggestions` (which opens the
+    // "new buttons from recent chats" dialog) instead of inserting text.
+    private string _actionLabel;
+    private Rect _actionRect;
+    private bool _actionHover;
 
     void setSubtitle(string value)
     {
@@ -8000,6 +8020,15 @@ private final class IntroOverlay : Widget
         invalidate();
     }
 
+    /// Set (empty string clears) the trailing action pill shown below the
+    /// suggestion pills.
+    void setActionLabel(string value)
+    {
+        if (_actionLabel == value) return;
+        _actionLabel = value;
+        invalidate();
+    }
+
     /// Test-only: current fade progress (0 = transparent, 1 = fully shown).
     public double fadeForTesting() const { return _fade; }
 
@@ -8035,6 +8064,21 @@ private final class IntroOverlay : Widget
         if (index < 0 || index >= cast(int) _pillPrompts.length) return false;
         if (onSuggestion is null) return false;
         activate(index);
+        return true;
+    }
+
+    /// Test-only: the action pill's label (empty when none).
+    public string actionLabelForTesting() const { return _actionLabel; }
+
+    /// Test-only: bounds of the action pill (empty before the first paint).
+    public Rect actionBoundsForTesting() const { return _actionRect; }
+
+    /// Test-only: click the action pill exactly as a left click would.
+    public bool clickGenerateForTesting()
+    {
+        if (_actionLabel.length == 0 || onGenerateSuggestions is null)
+            return false;
+        onGenerateSuggestions();
         return true;
     }
 
@@ -8157,7 +8201,14 @@ private final class IntroOverlay : Widget
                 rowGap * (cast(int) rows.length - 1);
 
         int block = iconSize + 18 + titleH + 8 + subtitleH;
+        const actionWidth = _actionLabel.length > 0
+            ? minInt(contentWidth,
+                cast(int) layoutFor(toUTF32(_actionLabel), opencodeFontBase)
+                    .measuredSize().width + 2 * pillPadH)
+            : 0;
         if (rows.length > 0) block += 26 + pillsH;
+        if (_actionLabel.length > 0)
+            block += (rows.length > 0 ? rowGap : 26) + pillHeight;
         int y = maxInt(24, (height - block) / 2 - 16);
         const centerX = width / 2;
 
@@ -8183,7 +8234,10 @@ private final class IntroOverlay : Widget
         _pillRects.length = 0;
         _pillLabels.length = 0;
         _pillPrompts.length = 0;
-        if (rows.length == 0) return;
+        _actionRect = Rect.init;
+        if (rows.length == 0 && _actionLabel.length == 0) return;
+        if (rows.length > 0)
+        {
         y += 26;
         foreach (row; rows)
         {
@@ -8215,10 +8269,48 @@ private final class IntroOverlay : Widget
             }
             y += pillHeight + rowGap;
         }
+        }
+        if (_actionLabel.length > 0)
+        {
+            if (rows.length == 0) y += 26;
+            const actionX = maxInt(0, (width - actionWidth) / 2);
+            _actionRect = Rect(actionX, y, actionWidth, pillHeight);
+            canvas.drawRoundedRect(_actionRect, pillHeight / 2,
+                faded(_actionHover ? opencodeSelection : opencodeField),
+                faded(_actionHover ? opencodeAccent : opencodeBorder),
+                _actionHover ? 2 : 1);
+            canvas.drawTextInRect(
+                Rect(actionX + pillPadH, y,
+                    maxInt(1, actionWidth - 2 * pillPadH), pillHeight),
+                toUTF32(_actionLabel),
+                faded(_actionHover ? opencodeText : opencodeAccent), 1,
+                HorizontalAlign.center, VerticalAlign.middle, true,
+                FontRole.ui, cast(FontFace) theme().uiFont);
+        }
     }
 
     override bool onMouseMove(ref Event event)
     {
+        if (_actionRect.width > 0 && _actionRect.contains(event.position))
+        {
+            if (!_actionHover)
+            {
+                _actionHover = true;
+                invalidate();
+            }
+            setCursor(CursorKind.hand);
+            if (_hover != -1)
+            {
+                _hover = -1;
+                invalidate();
+            }
+            return false;
+        }
+        if (_actionHover)
+        {
+            _actionHover = false;
+            invalidate();
+        }
         const next = pillAt(event.position);
         if (next != _hover)
         {
@@ -8231,14 +8323,20 @@ private final class IntroOverlay : Widget
 
     protected override void onMouseLeave()
     {
-        if (_hover == -1) return;
+        if (_hover == -1 && !_actionHover) return;
         _hover = -1;
+        _actionHover = false;
         invalidate();
     }
 
     override bool onMouseDown(ref Event event)
     {
         if (event.button != MouseButton.left) return false;
+        if (_actionRect.width > 0 && _actionRect.contains(event.position))
+        {
+            if (onGenerateSuggestions !is null) onGenerateSuggestions();
+            return true;
+        }
         const index = pillAt(event.position);
         if (index < 0 || onSuggestion is null) return false;
         activate(index);
@@ -9497,6 +9595,25 @@ public final class OpenCodeRoot : VBox
     private TurnWorkSummary[string] _turnWorkSummaries;
     private MessageBubble[string] _activityReasoning;
     private PopupOverlay _activePopup;
+    // "New buttons from recent chats" dialog and its one-shot generation.
+    private PopupOverlay _suggestDialog;
+    private VBox _suggestContent;
+    private VBox _suggestList;
+    private Label _suggestStatus;
+    private OpenCodeClient _suggestClient;
+    private OpenCodeEvent[] _suggestEvents;
+    private string _suggestOutput;
+    private string[] _suggestOptionLabels;
+    // The conversation excluded from mining when the dialog is open, so a
+    // failed agent request can fall back to the same local path list.
+private string _suggestExcludeId;
+    // When the agent request began; past the timeout the dialog falls back to
+    // locally mined paths so options always appear quickly.
+    private MonoTime _suggestStartedAt;
+    private static immutable double suggestAgentTimeoutSeconds = 6.0;
+    // Starter buttons the user added from generated suggestions this run; kept
+    // alongside the built-in pills by `configureIntroSuggestions`.
+    private ButtonSuggestion[] _introCustomButtons;
     // The Changes dialog remembers its timeline scale when a diff is opened
     // and the user returns. Ten-minute buckets keep one focused burst of agent
     // work together while still making pauses between bursts visible.
@@ -9896,7 +10013,7 @@ public final class OpenCodeRoot : VBox
 
     private void closeRuntimeClients()
     {
-
+        cancelButtonSuggestionRequest();
         if (_conversationRuntimes.length == 0 && _client !is null)
             _client.closeSession();
         foreach (rt; _conversationRuntimes)
@@ -11388,6 +11505,11 @@ public final class OpenCodeRoot : VBox
         {
             applyIntroSuggestion(prompt, selected);
         };
+        _introOverlay.onGenerateSuggestions = delegate()
+        {
+            showButtonSuggestionsDialog();
+        };
+        _introOverlay.setActionLabel(buttonSuggestionActionLabel);
         _introOverlay.setVisible(false);
 
         // Detached plan: the durable plan as a floating card pinned to the
@@ -13372,6 +13494,13 @@ public final class OpenCodeRoot : VBox
             prompts.put("The general Aurora project source is at " ~ general
                 ~ ". ");
         }
+        // User-added buttons (from the "New buttons from recent chats"
+        // dialog) persist for the session, appended after the built-in pills.
+        foreach (custom; _introCustomButtons)
+        {
+            labels.put(custom.label);
+            prompts.put(custom.prompt);
+        }
         _introOverlay.setSuggestions(labels.data, prompts.data);
     }
 
@@ -13400,6 +13529,329 @@ public final class OpenCodeRoot : VBox
         _input.setText(current);
         _input.requestFocus();
         updateStatus("");
+    }
+
+    /// Open the "new buttons from recent chats" dialog. It lists candidate
+    /// starter buttons mined from recent conversation paths, each with an Add
+    /// action; when a model key is configured the agent refines the list from
+    /// the same conversations.
+    private void showButtonSuggestionsDialog()
+    {
+        dismissPopup();
+        _suggestDialog = null;
+        _suggestList = null;
+        _suggestStatus = null;
+        _suggestOptionLabels = null;
+
+        auto content = new VBox(10, Insets(16));
+        _suggestContent = content;
+        content.layoutHints().preferredWidth = 460;
+
+        auto title = content.add(new Label("New buttons from recent chats"));
+        title.setPixelSize(opencodeFontTitle);
+
+        _suggestStatus = content.add(new Label(""));
+        _suggestStatus.setColor(opencodeMuted);
+        _suggestStatus.setId("oc-suggest-status");
+
+        _suggestList = new VBox(6);
+        _suggestList.setId("oc-suggest-list");
+        content.add(_suggestList);
+
+        auto footer = new HBox(8);
+        footer.layoutHints().preferredHeight = 36;
+        footer.add(new Spacer());
+        auto close = footer.add(new Button("Close"));
+        close.setId("oc-suggest-close");
+        close.onClick = delegate() { dismissPopup(); };
+        content.add(footer);
+
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(500, 460));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate()
+        {
+            cancelButtonSuggestionRequest();
+            _suggestDialog = null;
+            _suggestContent = null;
+            _suggestList = null;
+            _suggestStatus = null;
+            if (_activePopup is popup) _activePopup = null;
+        };
+        _suggestDialog = popup;
+        openPopup(popup);
+
+const excludeId = _current >= 0 && _current < cast(int) _sessions.length
+            ? _sessions[_current].id : "";
+        _suggestExcludeId = excludeId;
+        // Options appear instantly from recent-conversation paths; the agent
+        // then refines the list in place when it answers, so the dialog is
+        // never empty while awaiting the model.
+        auto local = gatherButtonSuggestionOptions(8);
+        fillButtonSuggestionList(local);
+        if (startButtonSuggestionRequest(excludeId))
+            setSuggestionStatus(local.length == 0
+                ? "Asking the agent to review your recent conversations…"
+                : "From recent conversations. Asking the agent to refine…");
+        else
+            setSuggestionStatus(local.length == 0
+                ? "No folder or file paths found in recent chats yet."
+                : "From recent conversations. No model configured to refine.");
+    }
+
+    /// Candidate starter buttons: paths mined from recent conversations plus
+    /// the folders this app already knows (projects and the active workspace),
+    /// so the list is populated even before the agent answers.
+    private ButtonSuggestion[] gatherButtonSuggestionOptions(size_t maxSuggestions)
+    {
+        string[] candidates = recentConversationPaths(_sessions,
+            _suggestExcludeId, maxSuggestions * 3);
+        foreach (project; _projectState.projects)
+            if (project.path.length > 0) candidates ~= project.path;
+        const workspace = activeWorkspace();
+        if (workspace.length > 0 && workspace != ".") candidates ~= workspace;
+        // Guaranteed fallbacks so a folder list always appears even with an
+        // empty history: the app's own source, the Aurora root, and the process
+        // working directory.
+        const source = programSourcePath();
+        if (source.length > 0) candidates ~= source;
+        const general = generalAuroraPath();
+        if (general.length > 0) candidates ~= general;
+        const cwd = getcwd();
+        if (cwd.length > 0) candidates ~= cwd;
+        return suggestionsForPaths(candidates, maxSuggestions);
+    }
+
+    private void showLocalButtonSuggestions(string status)
+    {
+        auto local = gatherButtonSuggestionOptions(8);
+        fillButtonSuggestionList(local);
+        setSuggestionStatus(local.length == 0
+            ? "No folder or file paths found in recent chats yet." : status);
+    }
+
+    /// Rebuild the dialog's option list, one row per option, each with an Add
+    /// button that turns it into a persistent starter pill.
+    private void fillButtonSuggestionList(ButtonSuggestion[] options)
+    {
+        _suggestOptionLabels = null;
+        if (_suggestList is null) return;
+        _suggestList.clearChildren();
+        enum int rowHeight = 44;
+        int rows;
+        foreach (option; options)
+        {
+            _suggestOptionLabels ~= option.label;
+            auto row = new HBox(10);
+            row.setId("oc-suggest-row");
+            // Box containers size a child from its preferred height, so a
+            // dynamically added row must state its own or it lays out at zero.
+            row.layoutHints().preferredHeight = rowHeight;
+            auto text = new VBox(2);
+            text.layoutHints().flex = 1.0;
+            text.layoutHints().preferredHeight = rowHeight;
+            auto label = new Label(option.label);
+            label.setColor(opencodeText);
+            text.add(label);
+            if (option.detail.length > 0)
+            {
+                auto detail = new Label(option.detail);
+                detail.setColor(opencodeMuted);
+                text.add(detail);
+            }
+            row.add(text);
+            auto add = new Button("Add");
+            add.setId("oc-suggest-add");
+            add.onClick = delegate() { addIntroButton(option); };
+            row.add(add);
+            _suggestList.add(row);
+            ++rows;
+        }
+        _suggestList.layoutHints().preferredHeight = rows == 0 ? 0
+            : rows * rowHeight + (rows - 1) * 6;
+        relayoutSuggestionDialog();
+    }
+
+    /// Re-measure and re-lay-out the dialog after its option rows change: a
+    /// popup does not relayout its layout-excluded content on its own when rows
+    /// are added later, so this mirrors `resizeSettingsPopup`.
+    private void relayoutSuggestionDialog()
+    {
+        if (_suggestDialog is null || _suggestContent is null) return;
+        const measured = _suggestContent.measure(Size(500, int.max));
+        const height = measured.height < 260 ? 260 : measured.height;
+        _suggestDialog.setRequestedSize(Size(500, height));
+        _suggestDialog.layoutTree();
+    }
+
+    private void setSuggestionStatus(string text)
+    {
+        if (_suggestStatus !is null) _suggestStatus.setText(text);
+    }
+
+    /// Append a generated suggestion as a persistent starter pill on the empty
+    /// state, then refresh the overlay so it appears immediately.
+    private void addIntroButton(ButtonSuggestion option)
+    {
+        if (option.label.length == 0 && option.prompt.length == 0) return;
+        foreach (existing; _introCustomButtons)
+            if (existing.label == option.label && existing.prompt == option.prompt)
+            {
+                setSuggestionStatus("\"" ~ option.label ~ "\" is already a button.");
+                return;
+            }
+        _introCustomButtons ~= option;
+        configureIntroSuggestions();
+        setSuggestionStatus("Added \"" ~ option.label ~ "\" as a button.");
+    }
+
+    /// Ask the configured model to propose buttons from recent conversations.
+    /// Runs on its own client and routing key so it never interleaves with a
+    /// live turn; a missing key or a failed start simply leaves the local list.
+    /// Returns true when the agent request is in flight (or was already), false
+    /// when it could not start and the caller should show local suggestions.
+    private bool startButtonSuggestionRequest(string excludeId)
+    {
+        if (_suggestClient !is null) return true;
+        const key = activeApiKey(_settings);
+        if (key.length == 0) return false;
+        const digest = conversationDigest(_sessions, excludeId, 4000);
+        if (digest.strip.length == 0) return false;
+        _suggestClient = new OpenCodeClient(_settings.baseUrl, key);
+        _suggestClient.setEventWake(_window.serviceWake());
+_suggestClient.setOpenCodeSession("aurora-open-code-button-suggestions");
+        _suggestOutput = "";
+        _suggestStartedAt = MonoTime.currTime;
+        ChatRequestMessage instruction;
+        instruction.role = "system";
+        instruction.content = suggestionInstruction();
+        ChatRequestMessage request;
+        request.role = "user";
+        request.content = digest;
+        const requestId = ++_nextRequestId;
+        _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(key);
+        if (_suggestClient.startChatMessages([instruction, request], null,
+            _settings.model, false, requestId) != ChatStartResult.accepted)
+        {
+            _requestTokenKeyIds.remove(requestId);
+            _suggestClient.closeSession();
+            _suggestClient = null;
+            return false;
+        }
+        return true;
+    }
+
+    private void cancelButtonSuggestionRequest()
+    {
+        if (_suggestClient is null) return;
+        _suggestClient.closeSession();
+        _suggestClient = null;
+        _suggestOutput = "";
+        _suggestEvents.length = 0;
+    }
+
+    /// Drain the running suggestion request and, on success, apply the parsed
+    /// buttons to the open dialog. Called from the service tick.
+private void pollButtonSuggestionRequest()
+    {
+        if (_suggestClient is null) return;
+        if ((MonoTime.currTime - _suggestStartedAt).total!"seconds" >=
+            suggestAgentTimeoutSeconds)
+        {
+            cancelButtonSuggestionRequest();
+            showLocalButtonSuggestions(
+                "The agent was slow; showing paths mined from recent conversations.");
+            return;
+        }
+        _suggestClient.drain(_suggestEvents);
+        bool finished;
+        bool succeeded;
+        foreach (event; _suggestEvents)
+        {
+            if (event.kind == OpenCodeEventKind.delta && !event.reasoning)
+                _suggestOutput ~= event.text;
+            else if (event.kind == OpenCodeEventKind.done)
+            {
+                finished = true;
+                succeeded = !event.cancelled;
+                recordRequestTokenUsage(event.requestId, event.totalTokens,
+                    event.promptTokens, event.completionTokens);
+            }
+            else if (event.kind == OpenCodeEventKind.error)
+            {
+                finished = true;
+                _requestTokenKeyIds.remove(event.requestId);
+            }
+        }
+        _suggestEvents.length = 0;
+        if (!finished) return;
+        _suggestClient.closeSession();
+        _suggestClient = null;
+        const output = _suggestOutput;
+        _suggestOutput = "";
+        if (!succeeded)
+        {
+            showLocalButtonSuggestions(
+                "Agent unavailable; showing paths mined from recent conversations.");
+            return;
+        }
+        auto parsed = parseSuggestionResponse(output);
+        if (parsed.length == 0)
+        {
+            showLocalButtonSuggestions(
+                "The agent suggested nothing new; showing recent paths.");
+            return;
+        }
+        fillButtonSuggestionList(parsed);
+        setSuggestionStatus("Suggested by the agent from recent conversations.");
+    }
+
+    /// Test-only: how many user-added starter buttons exist.
+    public size_t introCustomButtonCountForTesting() const
+    {
+        return _introCustomButtons.length;
+    }
+
+    /// Test-only: whether the suggestion dialog is open.
+    public bool suggestDialogOpenForTesting() const
+    {
+        return _suggestDialog !is null;
+    }
+
+    /// Test-only: labels of the options currently listed in the dialog.
+    public string[] suggestOptionLabelsForTesting() const
+    {
+        return _suggestOptionLabels.dup;
+    }
+
+    /// Test-only: laid-out height of the dialog's option list (0 when the rows
+    /// have not been laid out).
+    public int suggestListHeightForTesting() const
+    {
+        return _suggestList is null ? 0 : _suggestList.bounds().height;
+    }
+
+    /// Test-only: open the suggestion dialog exactly as the pill's click does.
+    public bool clickGenerateIntroButtonsForTesting()
+    {
+        return _introOverlay !is null && _introOverlay.clickGenerateForTesting();
+    }
+
+    /// Test-only: close the suggestion dialog if open.
+    public void dismissSuggestDialogForTesting()
+    {
+        if (_suggestDialog !is null) _suggestDialog.dismiss();
+    }
+
+    /// Test-only: add a starter button directly, exactly as the dialog's Add
+    /// button does, so a headless smoke test can exercise the feature.
+    public void addIntroButtonForTesting(string label, string prompt)
+    {
+        ButtonSuggestion option;
+        option.label = label;
+        option.prompt = prompt;
+        addIntroButton(option);
     }
 
     /// Drop the intro highlight when the composer no longer begins with the
@@ -25534,7 +25986,9 @@ public final class OpenCodeRoot : VBox
     /// Native timers keep it running during Win32's modal border resize loop.
     private void serviceExecution(double deltaSeconds)
     {
-        if (_servicingExecution || _sessions.length == 0) return;
+        if (_servicingExecution) return;
+        pollButtonSuggestionRequest();
+        if (_sessions.length == 0) return;
         invalidateChangedWorkspaceEvidence();
         if (auto journal = cast(RepositoryRuntime) _runtime)
         {

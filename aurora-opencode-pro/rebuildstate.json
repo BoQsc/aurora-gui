@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Keep process controls accessible during workspace commands",
+  "reason": "Deploy the verified fix: the suggestion dialog now lays out its option rows (explicit preferred heights + popup relayout), with temporary diagnostics removed. Verified by the headless smoke test.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 21:41:30.0093155 UTC",
-  "finishedAt": "2026-10-10 21:42:24.2489486 UTC",
-  "durationMs": 54240,
+  "startedAt": "2026-10-10 23:17:15.2460548 UTC",
+  "finishedAt": "2026-10-10 23:18:14.2166361 UTC",
+  "durationMs": 58969,
   "exitCode": 0,
   "errors": []
 }
