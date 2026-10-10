@@ -7,13 +7,15 @@ import std.datetime : SysTime;
 import std.file : thisExePath, timeLastModified;
 import std.format : format;
 
-/// `YYYY-MM-DD HH:MM` timestamp of when the running executable was linked.
+/// `YYYY-MM-DD HH:MM UTC`, when the running executable was linked, rendered in
+/// UTC so the same binary shows the identical stamp on any machine regardless
+/// of the viewing computer's timezone.
 private string executableBuildStamp()
 {
     try
     {
-        const built = timeLastModified(thisExePath()).toLocalTime();
-        return format("%04d-%02d-%02d %02d:%02d",
+        const built = timeLastModified(thisExePath()).toUTC();
+        return format("%04d-%02d-%02d %02d:%02d UTC",
             built.year, cast(int) built.month, built.day,
             built.hour, built.minute);
     }

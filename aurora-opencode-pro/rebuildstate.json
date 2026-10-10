@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the verified tool-policy fix: systemprompt.d no longer advertises the unadvertised `glob` tool in the native-only list, plus the aligned tools_test assertion.",
+  "reason": "Render the build/rebuild timestamps in UTC (labeled) in titlebar.d, appui.d formatStamp, and shared/rebuild.d rebuildStamp, so a binary shows the same build time on any machine regardless of timezone. Smoke fixture passes; deploying the verified change.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 15:06:40.3631631",
-  "finishedAt": "2026-10-10 15:08:17.8986441",
-  "durationMs": 97535,
+  "startedAt": "2026-10-10 15:26:39.7866374",
+  "finishedAt": "2026-10-10 15:27:28.6363994",
+  "durationMs": 48850,
   "exitCode": 0,
   "errors": []
 }

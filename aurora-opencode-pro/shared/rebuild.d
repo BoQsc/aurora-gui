@@ -218,10 +218,16 @@ bool writeRebuildState(string dir, in RebuildState state)
         return false;
 }
 
-/// `2026-09-21 17:54:10` in local time, the timestamp form every artifact uses.
+/// `2026-09-21 17:54:10 UTC`, the timestamp form every rebuild artifact uses,
+/// rendered in UTC so the recorded times are the same instants on any machine
+/// regardless of the viewing computer's timezone.
 private string rebuildStamp(SysTime value)
 {
-    return value.toLocalTime.toISOExtString.replace("T", " ");
+    auto text = value.toUTC().toISOExtString.replace("T", " ");
+    // toISOExtString appends the UTC designator ('Z'); swap it for an explicit
+    // label so the wall-clock reading is identical on every machine.
+    if (text.length > 0 && text[$ - 1] == 'Z') text = text[0 .. $ - 1];
+    return text ~ " UTC";
 }
 
 /// A JSON string literal, escaped correctly and minimally.

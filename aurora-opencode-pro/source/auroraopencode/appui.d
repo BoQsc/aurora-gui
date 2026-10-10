@@ -10386,11 +10386,14 @@ public final class OpenCodeRoot : VBox
             "\n...(report truncated; read the file for the rest)";
     }
 
-    /// `2026-09-21 17:54:10` in local time, matching the helper's log format.
+    /// `2026-09-21 17:54:10 UTC`, like the helper's artifacts, rendered in UTC so
+    /// a transferred binary reports the same instant on any machine regardless
+    /// of the viewing computer's timezone.
     private static string formatStamp(SysTime value)
     {
-        const text = value.toLocalTime.toISOExtString.replace("T", " ");
-        return text.length >= 19 ? text[0 .. 19] : text;
+        const text = value.toUTC().toISOExtString.replace("T", " ");
+        const trimmed = text.length >= 19 ? text[0 .. 19] : text;
+        return trimmed ~ " UTC";
     }
 
     /// A short, verifiable acknowledgement of a successful rebuild: when the
