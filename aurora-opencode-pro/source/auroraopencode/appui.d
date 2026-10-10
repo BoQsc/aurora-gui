@@ -23069,6 +23069,15 @@ public final class OpenCodeRoot : VBox
             {
                 selectSession(sessionIndex);
             }, "Enter"),
+            // Reveal this conversation's project folder in File Explorer,
+            // resolved from the conversation's own project so it works from any
+            // row without first opening the chat.
+            ContextMenuItem.command("Open folder", IconKind.folder, delegate()
+            {
+                const folder = workspaceForSession(sessionIndex);
+                version (Windows)
+                    openFolderInExplorer(folder.length > 0 ? folder : ".");
+            }),
             ContextMenuItem.command("Duplicate", IconKind.newDocument, delegate()
             {
                 duplicateSession(sessionIndex);

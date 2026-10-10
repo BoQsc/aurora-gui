@@ -99,9 +99,15 @@ int main()
     const labels = root.sessionContextMenuLabelsForTesting(0);
     writeln("menu: ", labels);
     bool sawItem;
+    bool sawOpenFolder;
     foreach (label; labels)
+    {
         if (label == "Copy & compact into new chat") sawItem = true;
+        if (label == "Open folder") sawOpenFolder = true;
+    }
     assert(sawItem, "the conversation menu never offered the copy+compact item");
+    assert(sawOpenFolder,
+        "the conversation menu never offered the open-folder item");
 
     const before = root.sessionCountForTesting();
     const sourceMessages = root.sessionMessageCountForTesting(0);
