@@ -11,7 +11,7 @@ import std.json : JSONType, parseJSON;
 import std.path : buildPath;
 import std.process : Config, execute, spawnProcess, thisProcessID;
 import std.stdio : stderr, stdin, stdout;
-import std.string : toLower;
+import std.string : strip, toLower;
 
 version (Windows)
 {
@@ -21,7 +21,7 @@ version (Windows)
 
 private enum string releaseFile = "aurora-opencode-pro.exe";
 private enum string releaseMetadataFile = "release.json";
-private enum string projectId = "fg_9fdcaacf6d3ae23e";
+private enum string projectId = import("update-project.txt").strip;
 private enum string releaseApi = "https://forge.boqsc.eu/api/release?project=" ~
     projectId;
 // The project's hosted site, where `tools/publish-forge.py` uploads both the
@@ -84,32 +84,29 @@ UpdateCheck checkForUpdate(string exePath, string stateDir)
 
 /// The published release description (`sha256`, `size`, `url`).
 ///
-/// The channel's API is tried first; when the host does not implement it - it
-/// answers 404 for any project - the small `release.json` published beside the
-/// EXE is used instead. That keeps checking independent of a server feature
-/// that may not exist, and both come from the same upload in
-/// `tools/publish-forge.py`.
+/// The hosted description is the primary channel. The API is a fallback for
+/// hosts that support it; normal checks avoid a known unsupported API request.
 private string fetchReleaseMetadata()
 {
     try
     {
-        auto api = execute(["curl.exe", "--fail", "--silent", "--show-error",
-            "--location", "--max-time", "20", releaseApi], null,
+        auto hosted = execute(["curl.exe", "--fail", "--silent", "--show-error",
+            "--location", "--max-time", "20", releaseMetadataUrl], null,
             Config.suppressConsole);
-        if (api.status == 0 && looksLikeRelease(api.output)) return api.output;
+        if (hosted.status == 0 && looksLikeRelease(hosted.output)) return hosted.output;
     }
     catch (Exception)
     {
-        // A missing curl or an unreachable API still leaves the hosted file.
+        // An unavailable hosted description still leaves the API fallback.
     }
-    auto hosted = execute(["curl.exe", "--fail", "--silent", "--show-error",
-        "--location", "--max-time", "20", releaseMetadataUrl], null,
+    auto api = execute(["curl.exe", "--fail", "--silent", "--show-error",
+        "--location", "--max-time", "20", releaseApi], null,
         Config.suppressConsole);
-    if (hosted.status != 0)
+    if (api.status != 0)
         throw new Exception("Could not reach the release channel.");
-    if (!looksLikeRelease(hosted.output))
+    if (!looksLikeRelease(api.output))
         throw new Exception("Release information is invalid.");
-    return hosted.output;
+    return api.output;
 }
 
 /// True when the text is the release object the check needs.

@@ -1,0 +1,46 @@
+name: Publish OpenCode update
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - .github/workflows/opencode-update.yml
+      - aurora-opencode-pro/source/**
+      - aurora-opencode-pro/shared/**
+      - aurora-opencode-pro/assets/**
+      - aurora-opencode-pro/tools/**
+      - aurora-opencode-pro/dub.json
+      - aurora-opencode-core/**
+      - vendor/aurora-d-0.4.5/source/**
+      - scripts/verify-windows-portability.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-update-channel
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'BoQsc/aurora-gui'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-2.112.0
+      - name: Test publisher
+        run: python -X utf8 -m unittest discover -s aurora-opencode-pro/tests -p test_forge_publish.py
+      - name: Build update
+        working-directory: aurora-opencode-pro
+        env:
+          FORGE_PUBLISH_SKIP: '1'
+        run: dub build --build=release
+      - name: Publish and verify public download
+        env:
+          FORGE_PUBLISHER_KEY: ${{ secrets.OPENCODE_FORGE_PUBLISHER_KEY }}
+        run: python -X utf8 aurora-opencode-pro/tools/publish-forge.py --required
