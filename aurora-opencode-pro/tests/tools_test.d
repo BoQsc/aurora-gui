@@ -1133,7 +1133,7 @@ int main()
         toolSteeringPrompt(false).indexOf("at most three") < 0,
         "Steering prompt must not impose artificial call quotas");
     assert(toolSteeringPrompt(false).indexOf(
-        "Skip a plan for direct answers, quick exploration") >= 0 &&
+        "Skip plans for direct answers, quick exploration") >= 0 &&
         toolSteeringPrompt(false).indexOf(
             "A final prose answer ends the turn") >= 0,
         "Steering prompt must scope plans and define a stopping condition");

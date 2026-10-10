@@ -1,13 +1,13 @@
 {
-  "status": "running",
-  "phase": "building",
+  "status": "ok",
+  "phase": "relaunching",
   "reason": "Show early plans and progressive task status",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
   "startedAt": "2026-10-10 14:53:03.4837634",
-  "finishedAt": "2026-10-10 14:53:03.4847595",
-  "durationMs": 0,
+  "finishedAt": "2026-10-10 14:54:17.7246916",
+  "durationMs": 74240,
   "exitCode": 0,
   "errors": []
 }

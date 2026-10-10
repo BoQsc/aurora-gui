@@ -533,7 +533,7 @@ private OpenCodeToolDef grepToolDefinition()
         "Search file contents under a directory. Uses regular expressions by " ~
         "default, or exact text when `literal` is true. Defaults to the " ~
         "workspace; set `path` for another directory or a specific file. " ~
-        "`mode` selects matching lines, matching files, or per-file counts.",
+            "`mode` selects matching lines, matching files, or per-file counts.",
         `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
     );
 }

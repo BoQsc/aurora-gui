@@ -268,7 +268,7 @@ private string toolPolicySection(in SystemPromptContext ctx)
     if (ctx.nativeOnly)
         text ~= "There is no shell and no bash/cmd/powershell. Use native " ~
             "`read`, `write`, `edit`, `apply_patch`, `copy`, `move`, `rename`, " ~
-            "`create_folder`, `remove`, `open`, `glob`, `grep`, " ~
+            "`create_folder`, `remove`, `open`, `grep`, " ~
             "and `dshell` file tools, plus `run` with an explicit program and " ~
             "argument list, and `webfetch` to read a web page or API. Do not " ~
             "reconstruct shell commands.\n";
