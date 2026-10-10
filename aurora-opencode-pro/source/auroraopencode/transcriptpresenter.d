@@ -208,8 +208,7 @@ public final class TranscriptPresenter : VBox
             const before = height.pixels;
             const intrinsicallyVisible = row.visible() || row in _virtualHidden;
             if (!intrinsicallyVisible) height.pixels = 0;
-            else if (!height.known ||
-                cursor + before >= lower && cursor <= upper)
+            else if (cursor + before >= lower && cursor <= upper)
             {
                 row.setVisible(true);
                 _virtualHidden.remove(row);

@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Publish deferred transcript row heights for VBox layout",
+  "reason": "Immediate expanded chat turns and indented activity",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 13:32:22.5711584 UTC",
-  "finishedAt": "2026-10-10 13:33:49.9200407 UTC",
-  "durationMs": 87351,
+  "startedAt": "2026-10-10 15:45:24.0157112 UTC",
+  "finishedAt": "2026-10-10 15:46:56.0984939 UTC",
+  "durationMs": 92083,
   "exitCode": 0,
   "errors": []
 }

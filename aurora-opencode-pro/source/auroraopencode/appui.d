@@ -69,6 +69,7 @@ import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
+import auroraopencode.turnsummary : TurnWorkSummary, turnOpeningSentence;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 // experimental: attachments - drop a file or large paste as an attachment.
@@ -4135,11 +4136,11 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
     if (edits > 0)
     {
         if (live)
-            pieces ~= edits == 1 ? "editing a file"
-                : "editing " ~ to!string(edits) ~ " files";
+            pieces ~= "editing files (" ~ to!string(edits) ~
+                (edits == 1 ? " action)" : " actions)");
         else
-            pieces ~= edits == 1 ? "edited a file"
-                : "edited " ~ to!string(edits) ~ " files";
+            pieces ~= "edited files (" ~ to!string(edits) ~
+                (edits == 1 ? " action)" : " actions)");
     }
     if (commands > 0)
     {
@@ -4153,11 +4154,11 @@ private string actionGroupSummary(const(string)[] toolNames, bool live)
     if (explores > 0)
     {
         if (live)
-            pieces ~= explores == 1 ? "exploring a file"
-                : "exploring " ~ to!string(explores) ~ " files";
+            pieces ~= "exploring (" ~ to!string(explores) ~
+                (explores == 1 ? " action)" : " actions)");
         else
-            pieces ~= explores == 1 ? "explored a file"
-                : "explored " ~ to!string(explores) ~ " files";
+            pieces ~= "explored (" ~ to!string(explores) ~
+                (explores == 1 ? " action)" : " actions)");
     }
     if (plans > 0)
         pieces ~= live ? "updating the plan" : "updated the plan";
@@ -9468,6 +9469,7 @@ public final class OpenCodeRoot : VBox
     // bubbles (which keep their own). Without it an expanded group would collapse
     // on every streamed tool-argument rebuild.
     private bool[string] _groupCollapsed;
+    private TurnWorkSummary[string] _turnWorkSummaries;
     private PopupOverlay _activePopup;
     // The Changes dialog remembers its timeline scale when a diff is opened
     // and the user returns. Ten-minute buckets keep one focused burst of agent
@@ -12618,6 +12620,9 @@ public final class OpenCodeRoot : VBox
             hadSelection = true;
             break;
         }
+        // A folded turn must not leak its presentation visibility into cached
+        // message rows reused by the next projection.
+        foreach (summary; _turnWorkSummaries) summary.restoreRows();
         // Stage the next painter order while retaining unchanged subtrees.
         _messageColumn.beginProjection();
         if (_bubbleCache is null) _bubbleCache = new StableRowCache!(MessageBubble, BubbleVersion)();
@@ -13101,6 +13106,7 @@ public final class OpenCodeRoot : VBox
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
             addLiveToolRows(_messageColumn, "live");
+        groupTurnWorkProjection(*session, path);
         // Keep the newest concrete action discoverable after it finishes. Once
         // a newer prompt or reply exists, the old group returns to normal history.
         foreach (child; messageColumnVisuals())
@@ -13399,16 +13405,168 @@ public final class OpenCodeRoot : VBox
     private Widget[] messageColumnVisuals()
     {
         Widget[] result;
-        foreach (child; _messageColumn.children())
+        void collect(Widget node)
         {
-            if (auto deferred = cast(DeferredTranscriptRow) child)
-                result ~= deferred.materialized() !is null ? deferred.materialized() : child;
-            else if (auto nest = cast(VBox) child)
-                foreach (inner; nest.children()) result ~= inner;
+            if (auto deferred = cast(DeferredTranscriptRow) node)
+                result ~= deferred.materialized() !is null ? deferred.materialized() : node;
+            else if (auto nest = cast(VBox) node)
+                foreach (inner; nest.children()) collect(inner);
             else
-                result ~= child;
+                result ~= node;
         }
+        foreach (child; _messageColumn.children()) collect(child);
         return result;
+    }
+
+    /// Fold intermediate rounds beneath their user request without touching
+    /// the message graph. Current activity and the final response stay outside.
+    private void groupTurnWorkProjection(const ref ChatSession session,
+        const(size_t)[] path)
+    {
+        auto rows = _messageColumn.children().dup;
+        Widget[] projected, work;
+        string turn;
+        bool afterFinal;
+        bool[string] used;
+        string latestTurn;
+        size_t[string] finalProse;
+        struct WorkFacts
+        {
+            int actions, commands, failed;
+            bool hasReasoning, hasCalls;
+            string opening;
+            bool[string] files;
+        }
+        WorkFacts[string] facts;
+        foreach (index; path)
+        {
+            const message = session.messages[index];
+            if (message.internal) continue;
+            if (message.role == "user") latestTurn = message.id;
+            else if (message.role == "assistant")
+            {
+                if (message.toolCalls.length > 0) finalProse.remove(latestTurn);
+                else finalProse[latestTurn] = index;
+            }
+            if (latestTurn.length == 0) continue;
+            auto fact = facts.get(latestTurn, WorkFacts.init);
+            fact.hasReasoning |= message.reasoning.length > 0;
+            fact.hasCalls |= message.toolCalls.length > 0;
+            if (message.role == "assistant" && fact.opening.length == 0 &&
+                message.content.strip().length > 0)
+                fact.opening = turnOpeningSentence(message.content);
+            if (message.role == "tool")
+            {
+                ++fact.actions;
+                if (message.failed) ++fact.failed;
+                const name = message.toolName.length > 0 ? message.toolName :
+                    toolNameForResult(session, message);
+                if (actionKindOf(name) == ActionKind.command) ++fact.commands;
+                if (!message.failed && actionKindOf(name) == ActionKind.edit)
+                    foreach (file; toolArgumentPaths(name, message.toolArgs))
+                        fact.files[toLower(buildNormalizedPath(file))] = true;
+            }
+            facts[latestTurn] = fact;
+        }
+        long rowIndex(Widget row)
+        {
+            if (auto bubble = cast(MessageBubble) row) return bubble.messageIndex();
+            if (auto deferred = cast(DeferredTranscriptRow) row) return deferred.messageIndex;
+            return -1;
+        }
+        bool activeRows(Widget row)
+        {
+            if (cast(LiveToolRow) row !is null || row is _activityRow) return true;
+            foreach (child; row.children()) if (activeRows(child)) return true;
+            return false;
+        }
+        void flushWork()
+        {
+            const busy = turn == latestTurn && sessionIsBusy(_current);
+            const key = session.id ~ ":" ~ turn;
+            if (turn.length == 0 || key in used || (work.length == 0 && !busy))
+            { projected ~= work; work = null; return; }
+            bool visibleWork;
+            foreach (row; work) visibleWork |= row.visible();
+            if (!visibleWork && !busy) { projected ~= work; work = null; return; }
+            const fact = facts.get(turn, WorkFacts.init);
+            // Plain conversations retain their familiar message layout.
+            if (!busy && fact.actions == 0 && !fact.hasReasoning && !fact.hasCalls)
+            { projected ~= work; work = null; return; }
+            const current = turn == latestTurn;
+            const incomplete = current && sessionTurnIncomplete(_current);
+            string title = fact.opening.length > 0 ? fact.opening :
+                busy ? "Starting your request…" : "Activity and notes";
+            string status = busy ? "Working" : incomplete
+                ? (session.turnStatus == "failed" ? "Needs attention" : "Stopped · work retained")
+                : "Work recorded";
+            if (fact.failed > 0) status ~= " · " ~ to!string(fact.failed) ~ " failed";
+            if (_settings.showWorkedFor)
+                if (auto duration = turn in _turnDurations)
+                    status ~= " · " ~ formatTurnDuration(*duration);
+            string[] details = [status];
+            if (fact.actions > 0) details ~= to!string(fact.actions) ~ (fact.actions == 1 ? " action recorded" : " actions recorded");
+            if (fact.files.length > 0) details ~= to!string(fact.files.length) ~ (fact.files.length == 1 ? " file changed" : " files changed");
+            if (fact.commands > 0) details ~= to!string(fact.commands) ~ (fact.commands == 1 ? " command" : " commands");
+            auto cached = key in _turnWorkSummaries;
+            auto summary = cached is null ? new TurnWorkSummary() : *cached;
+            if (cached is null)
+            {
+                const collapseKey = "turn:" ~ key;
+                summary.onCollapseChanged = delegate(bool value)
+                {
+                    ChatScrollView.holdPositionForNextLayout(summary);
+                    _groupCollapsed[collapseKey] = value;
+                    _messageColumn.invalidate();
+                    _messagesScroll.invalidate();
+                };
+                if (auto saved = collapseKey in _groupCollapsed) summary.setCollapsed(*saved);
+                else if (incomplete) summary.setCollapsed(false);
+                _turnWorkSummaries[key] = summary;
+            }
+            void expandActions(Widget row)
+            {
+                if (auto group = cast(ToolGroupBubble) row)
+                    if (group.collapseKey !in _groupCollapsed) group.setCollapsed(false);
+                foreach (child; row.children()) expandActions(child);
+            }
+            foreach (row; work) expandActions(row);
+            summary.update(work, title, details.join(" · "), incomplete || fact.failed > 0);
+            projected ~= summary;
+            used[key] = true;
+            work = null;
+        }
+        foreach (row; rows)
+        {
+            const index = rowIndex(row);
+            if (index >= 0 && index < session.messages.length &&
+                session.messages[cast(size_t) index].role == "user")
+            {
+                flushWork();
+                turn = session.messages[cast(size_t) index].id;
+                afterFinal = false;
+                projected ~= row;
+                continue;
+            }
+            auto finalIndex = turn in finalProse;
+            const finalRow = finalIndex !is null && index >= 0 &&
+                cast(size_t) index == *finalIndex;
+            if (finalRow || activeRows(row))
+            {
+                flushWork();
+                projected ~= row;
+                afterFinal = true;
+            }
+            else if (turn.length == 0 || afterFinal) projected ~= row;
+            else work ~= row;
+        }
+        flushWork();
+        string[] expired;
+        foreach (key, summary; _turnWorkSummaries)
+            if (key !in used) { summary.restoreRows(); expired ~= key; }
+        foreach (key; expired) _turnWorkSummaries.remove(key);
+        _messageColumn.clearChildren();
+        foreach (row; projected) _messageColumn.add(row);
     }
 
     // -- quick search (Ctrl+F) ---------------------------------------------
@@ -13568,8 +13726,12 @@ public final class OpenCodeRoot : VBox
         // above it or the row would not be on screen at all.
         for (auto parent = bubble.parent(); parent !is null;
             parent = parent.parent())
+        {
             if (auto group = cast(ToolGroupBubble) parent)
                 group.setCollapsed(false);
+            if (auto summary = cast(TurnWorkSummary) parent)
+                summary.setCollapsed(false);
+        }
         // Revealing a match is a deliberate move away from the live end of the
         // transcript, so automatic scrolling hands over (the jump-to-latest pill
         // brings it back).
@@ -13619,7 +13781,7 @@ public final class OpenCodeRoot : VBox
         collectMessageBubbles(_messageColumn, found);
         foreach (bubble; found)
             if (bubble.messageIndex() == messageIndex) return bubble;
-        foreach (child; _messageColumn.children())
+        foreach (child; messageColumnVisuals())
             if (auto deferred = cast(DeferredTranscriptRow) child)
                 if (deferred.messageIndex == messageIndex)
                     return cast(MessageBubble) deferred.ensureMaterialized();
@@ -14654,6 +14816,18 @@ public final class OpenCodeRoot : VBox
         }
         _streamBubble.setLiveTokens(_liveOutputTokens, true);
         _streamBubble.setTokenRate(_liveTokenRateTenths);
+        // Update the live heading without rebuilding the transcript per token.
+        foreach_reverse (index; activeMessagePath(*session))
+        {
+            if (session.messages[index].role != "user") continue;
+            const key = session.id ~ ":" ~ session.messages[index].id;
+            if (auto summary = key in _turnWorkSummaries)
+                if ((*summary).title == "Starting your request…" ||
+                    (*summary).title == turnOpeningSentence(message.content[0 ..
+                        message.content.length - (reasoning ? 0 : text.length)]))
+                    (*summary).setOpening(turnOpeningSentence(message.content));
+            break;
+        }
         // A reasoning reply already has the compact stats in its Thinking
         // header. Only reserve the footer for direct replies with no header.
         refreshLiveUsageFooter();
@@ -22177,6 +22351,7 @@ public final class OpenCodeRoot : VBox
     {
         if (_turnInFlight == active) return;
         _turnInFlight = active;
+        rebuildMessageColumn();
         if (_sessionList !is null) _sessionList.setActivityRows(activeSessionRows());
         // The in-flight flag is half of what makes a "running" turn look
         // incomplete (the other half is a live request), so a turn starting or

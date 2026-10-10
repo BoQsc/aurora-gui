@@ -5,6 +5,7 @@ import aurora.render.drawlist : DrawList;
 import aurora.render.software : SoftwareRenderer;
 import aurora.surface : Surface;
 import auroraopencode.appui : OpenCodeRoot, SessionListView;
+import auroraopencode.turnsummary : TurnWorkSummary;
 import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     OpenCodeToolCall, Settings, contextBudgetForModel, loadSettings,
     contextCompactionForModel, reasoningControlForModel,
@@ -600,7 +601,7 @@ int main(string[] args)
             "expected three same-action groups, got " ~ to!string(groups));
         assert(groups[0].indexOf("Explored") >= 0 && groups[0].indexOf("3") >= 0,
             "first group should be the explored run: " ~ groups[0]);
-        assert(groups[1].indexOf("Edited a file") >= 0,
+        assert(groups[1].indexOf("Edited files (1 action)") >= 0,
             "second group should be the edited run: " ~ groups[1]);
         assert(groups[2].indexOf("Ran a command") >= 0,
             "third group should be the command run: " ~ groups[2]);
@@ -3693,12 +3694,15 @@ int main(string[] args)
         "the explored group should contain the read and grep parts");
     auto groupHeaders = root.toolGroupHeaderTextsForTesting();
     assert(groupHeaders.length == 2 &&
-        groupHeaders[0].indexOf("Explored 2 files") >= 0 &&
+        groupHeaders[0].indexOf("Explored (2 actions)") >= 0 &&
         groupHeaders[1].indexOf("Ran a command") >= 0,
         "action group headers should split by action: " ~
         (groupHeaders.length ? groupHeaders[0] : "<none>"));
+    assert(!root.firstToolGroupCollapsedForTesting(),
+        "action group should start expanded inside its turn");
+    root.toggleFirstToolGroupForTesting();
     assert(root.firstToolGroupCollapsedForTesting(),
-        "action group should start collapsed");
+        "action group did not respect manual collapse");
     root.toggleFirstToolGroupForTesting();
     assert(!root.firstToolGroupCollapsedForTesting(),
         "action group did not expand on toggle");
@@ -3947,23 +3951,12 @@ int main(string[] args)
             to!string(nested.x) ~ " vs assistant x=" ~ to!string(assistantX));
         writeln("Tool results nest under the assistant turn at one left edge");
 
-        // The whole point: every collapsible row in the transcript lines up on
-        // one left edge, whether it is a top-level Thinking header, an
-        // "Explored" group, or a tool row nested under a turn. A mixed column
-        // (some rows at the column edge, some stepped in) is the bug.
-        int edge = -1;
-        foreach (i; 0 .. root.messageCountForTesting())
-        {
-            if (!root.bubbleVisibleForTesting(i)) continue;
-            const bounds = root.bubbleBoundsForTesting(i);
-            if (bounds.width == 0) continue;
-            if (edge < 0) edge = bounds.x;
-            assert(bounds.x == edge,
-                "transcript row " ~ to!string(i) ~ " is indented: x=" ~
-                to!string(bounds.x) ~ " vs " ~ to!string(edge));
-        }
-        assert(edge >= 0, "no visible rows to compare");
-        writeln("Every transcript row shares one left edge (x=", edge, ")");
+        // Details share the summary's inset; prompts and final replies remain
+        // at the transcript edge.
+        const promptX = root.bubbleBoundsForTesting(0).x;
+        assert(assistantX == promptX + 18,
+            "Turn details must be indented beneath their opening header");
+        writeln("Turn details use a consistent hierarchy inset");
     }
 
     // Live diff counters: while the model streams a file-mutating tool's
@@ -4475,8 +4468,8 @@ int main(string[] args)
         auto liveHeaders = root.toolGroupHeaderTextsForTesting();
         assert(liveHeaders.length == 3 &&
             liveHeaders[0].indexOf("Running a command") >= 0 &&
-            liveHeaders[1].indexOf("Editing a file") >= 0 &&
-            liveHeaders[2].indexOf("Exploring a file") >= 0,
+            liveHeaders[1].indexOf("Editing files (1 action)") >= 0 &&
+            liveHeaders[2].indexOf("Exploring (1 action)") >= 0,
             "Live action group headers are wrong: " ~
             (liveHeaders.length ? liveHeaders[0] : "(none)"));
         auto diffs = root.liveToolRowDiffTextsForTesting();
@@ -4817,7 +4810,7 @@ int main(string[] args)
     if (root.messageCountForTesting() == 3 && root.bubbleHiddenForTesting(1))
     {
         const first = root.bubbleBoundsForTesting(0);
-        const next = root.bubbleBoundsForTesting(2);
+        const next = requireWidget!TurnWorkSummary(root, "oc-turn-work").bounds();
         assert(next.y - (first.y + first.height) == 6,
             "hidden wrapper added phantom spacing");
     }
@@ -4840,6 +4833,7 @@ int main(string[] args)
         root.appendToolRequestTurnForTesting("", "call-spacing", "update_plan",
             `{"plan":[]}`, spacingText);
         root.appendToolReplyForTesting("call-spacing", "plan updated");
+        requireWidget!TurnWorkSummary(root, "oc-turn-work").setCollapsed(false);
         root.tickTree(0.02);
         assert(paintProjection(root, driver), "prose/action spacing repaint failed");
         const compactHeight = root.bubbleHeightForTesting(1);
@@ -4874,6 +4868,9 @@ int main(string[] args)
         // Trailing user keeps the last assistant reply from being the "latest"
         // one, so no Regenerate pill footer inflates a one-line row.
         root.addConversationForTesting(["user"], ["done"]);
+        requireWidget!TurnWorkSummary(root, "oc-turn-work").setCollapsed(false);
+        if (!root.firstToolGroupCollapsedForTesting())
+            root.toggleFirstToolGroupForTesting();
         root.tickTree(0.02);
         assert(paintProjection(root, driver), "Uniform-pitch repaint failed");
         const int rowCount = root.messageCountForTesting();
@@ -4894,6 +4891,13 @@ int main(string[] args)
         {
             const a = root.bubbleBoundsForTesting(i);
             const b = root.bubbleBoundsForTesting(i + 1);
+            // The first thinking row is now preceded by its turn summary's
+            // header. Its body rows still use the ordinary six-pixel pitch.
+            if (i == 0)
+            {
+                assert(b.y - a.bottom() >= 6, "Turn summary overlaps its prompt");
+                continue;
+            }
             assert(b.y - (a.y + a.height) == 6,
                 "rows are not one column spacing apart at index " ~
                 to!string(i));
@@ -6533,4 +6537,3 @@ int main(string[] args)
     writeln("Aurora OpenCode Pro headless smoke test passed.");
     return 0;
 }
-

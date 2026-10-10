@@ -153,8 +153,8 @@ int main()
         "Restore hid the newest completed action");
     root.addConversationForTesting(["assistant"], ["Finished the work."]);
     root.tickTree(0.02); driver.paint();
-    assert(root.lastToolResultBoundsForTesting().height == 0,
-        "An older collapsed action stayed open after a newer reply arrived");
+    assert(root.lastToolResultBoundsForTesting().height > 0,
+        "A newer reply unexpectedly folded the expanded action details");
     writeln("Parallel tool completion preserves request order");
 
     root.newChatForTesting();
