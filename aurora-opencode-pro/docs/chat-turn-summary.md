@@ -1,5 +1,20 @@
 # Chat turn summaries
 
+## Flatter activity details
+
+Within settled activity batches, action category containers are presentation-only:
+their headers and indentation are suppressed and their action rows are immediately
+visible when the batch opens. Individual outputs/diffs keep their disclosure
+controls. Batch content shares the commentary inset and does not add a second
+guide line. Live groups retain their existing progress visibility and controls.
+The retained category containers still preserve tool ordering, original widgets,
+search reveal, history and resume controls. Their flat presentation is reset
+before each projection so a retained widget reused outside a batch behaves normally.
+
+Verified by `build/architecture-checks-kb98k1sf/`: flat headers and action bounds,
+shared indentation, batch choices, search, live progress, and saved history.
+
+
 ## Commentary timeline and activity batches
 
 Delivery verified: full detailed UI smoke in `build/architecture-checks-s9d7blpz/`;

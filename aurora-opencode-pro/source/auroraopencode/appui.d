@@ -5524,6 +5524,7 @@ private final class ToolGroupBubble : Widget
 
     private Widget[] _parts;
     private bool _collapsed = true;
+    private bool _flat;
     private bool _showTail;
     private bool _hover;
     private Rect _headerRect;
@@ -5588,8 +5589,16 @@ private final class ToolGroupBubble : Widget
     private bool partVisible(Widget part)
     {
         // A collapsed history group must still show every action in progress.
-        return !_collapsed || (_live && cast(LiveToolRow) part !is null) ||
+        return _flat || !_collapsed || (_live && cast(LiveToolRow) part !is null) ||
             (_showTail && _parts.length > 0 && part is _parts[$ - 1]);
+    }
+
+    void setFlat(bool value)
+    {
+        if (_flat == value) return;
+        _flat = value;
+        foreach (part; _parts) part.setVisible(partVisible(part));
+        invalidate();
     }
 
     void setShowTail(bool value)
@@ -5829,10 +5838,10 @@ private final class ToolGroupBubble : Widget
         const width = maxInt(0, available.width);
         // Match MessageBubble's vertical padding so a collapsed group row is
         // the same height as a sibling Thinking / Shell / Read header row.
-        double height = 2 * padV + headerHeight();
-        if (!_collapsed || _live || _showTail)
+        double height = _flat ? 0 : 2 * padV + headerHeight();
+        if (_flat || !_collapsed || _live || _showTail)
         {
-            const childWidth = maxInt(0, width - 2 * padH);
+            const childWidth = maxInt(0, width - (_flat ? 0 : 2 * padH));
             foreach (part; _parts)
             {
                 if (!part.visible()) continue;
@@ -5849,22 +5858,28 @@ private final class ToolGroupBubble : Widget
 
     protected override void onLayout()
     {
-        const width = maxInt(0, bounds().width - 2 * padH);
-        int y = 2 * padV + headerHeight();
+        const width = maxInt(0, bounds().width - (_flat ? 0 : 2 * padH));
+        int y = _flat ? 0 : 2 * padV + headerHeight();
         foreach (part; _parts)
         {
             if (!part.visible()) continue;
             const hint = part.layoutHints().preferredHeight;
             const childHeight = hint >= 0 ? hint : part.bounds().height;
-            part.setBounds(Rect(padH, y, width, childHeight));
+            part.setBounds(Rect(_flat ? 0 : padH, y, width, childHeight));
             y += childHeight;
         }
     }
 
     protected override void onPaint(ref Canvas canvas)
     {
+        if (_flat)
+        {
+            _headerRect = Rect.init;
+            drawActionPill(canvas, bounds().width, bounds().height);
+            return;
+        }
         const h = headerHeight();
-        const innerWidth = maxInt(1, bounds().width - 2 * padH);
+        const innerWidth = maxInt(1, bounds().width - (_flat ? 0 : 2 * padH));
         _headerRect = Rect(padH, padV, innerWidth, h);
 
         // Aggregate the children's diff counters so the user sees the added and
@@ -12624,6 +12639,8 @@ public final class OpenCodeRoot : VBox
         // A folded turn must not leak its presentation visibility into cached
         // message rows reused by the next projection.
         foreach (summary; _turnWorkSummaries) summary.restoreRows();
+        foreach (row; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) row) group.setFlat(false);
         // Stage the next painter order while retaining unchanged subtrees.
         _messageColumn.beginProjection();
         if (_bubbleCache is null) _bubbleCache = new StableRowCache!(MessageBubble, BubbleVersion)();
@@ -13560,6 +13577,7 @@ public final class OpenCodeRoot : VBox
                 string failureTitle;
                 void inspect(Widget row)
                 {
+                    if (auto group = cast(ToolGroupBubble) row) group.setFlat(true);
                     if (auto bubble = cast(MessageBubble) row)
                     {
                         reasoning |= bubble.hasThinking();
@@ -27785,6 +27803,24 @@ public final class OpenCodeRoot : VBox
     /// Test-only: start a live assistant turn exactly as a `chatBegin` event
     /// does, so a smoke test can drive the streaming phases (reasoning, then
     /// answer) without a real network round-trip.
+    public bool activityGroupsFlatForTesting()
+    {
+        int count;
+        foreach (row; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) row)
+            {
+                bool inBatch;
+                for (auto parent = group.parent(); parent !is null; parent = parent.parent())
+                    inBatch |= parent.id() == "oc-activity-batch";
+                if (!inBatch) continue;
+                if (!group._flat || group._headerRect.height != 0) return false;
+                foreach (part; group._parts)
+                    if (!part.visible() || part.bounds().x != 0) return false;
+                ++count;
+            }
+        return count > 0;
+    }
+
     public void openActivityDetailsForTesting()
     {
         foreach (key, summary; _turnWorkSummaries)

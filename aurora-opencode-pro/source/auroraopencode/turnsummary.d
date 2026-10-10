@@ -110,7 +110,8 @@ public final class TurnWorkSummary : VBox
             {
                 if (!row.visible()) continue;
                 if (body > 0) body += spacing();
-                body += row.measure(Size(maxInt(1, available.width - 18), available.height)).height;
+                body += row.measure(Size(maxInt(1, available.width -
+                    (_activity ? 0 : 18)), available.height)).height;
             }
         const height = _headerHeight + body;
         layoutHints().preferredWidth = available.width;
@@ -126,7 +127,8 @@ public final class TurnWorkSummary : VBox
             if (!row.visible()) continue;
             const hint = row.layoutHints().preferredHeight;
             const height = hint >= 0 ? hint : row.bounds().height;
-            row.setBounds(Rect(18, y, maxInt(1, bounds().width - 18), height));
+            const inset = _activity ? 0 : 18;
+            row.setBounds(Rect(inset, y, maxInt(1, bounds().width - inset), height));
             y += height + spacing();
         }
     }
@@ -141,7 +143,7 @@ public final class TurnWorkSummary : VBox
             _activity ? opencodeMuted : opencodeText);
         if (!_activity) canvas.drawLayout(Point(12, 12 + cast(int) _titleLayout.height),
             _detailLayout, opencodeMuted);
-        if (!_collapsed && bounds().height > _headerHeight)
+        if (!_activity && !_collapsed && bounds().height > _headerHeight)
             canvas.drawLine(Point(7, _headerHeight),
                 Point(7, bounds().height - 2), opencodeBorder, 1);
     }

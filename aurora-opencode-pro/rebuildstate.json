@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Keep turn border unchanged on click",
+  "reason": "Flatten activity category headers and indentation",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 16:10:17.9686898 UTC",
-  "finishedAt": "2026-10-10 16:11:21.0258081 UTC",
-  "durationMs": 63057,
+  "startedAt": "2026-10-10 16:19:15.5944913 UTC",
+  "finishedAt": "2026-10-10 16:20:22.4260919 UTC",
+  "durationMs": 66830,
   "exitCode": 0,
   "errors": []
 }

@@ -86,6 +86,18 @@ int main()
     batches[0].setCollapsed(false);
     root.rebuildForTesting();
     assert(!batches[0].collapsed(), "A refresh lost the batch expansion choice");
+    foreach (batch; batches) batch.setCollapsed(false);
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(root.activityGroupsFlatForTesting(),
+        "Expanded batches still contain category headers or extra category indentation");
+    foreach (batch; batches)
+        foreach (row; batch.children())
+            if (row.visible()) assert(row.bounds().x == 0,
+                "Batch details add another indentation step");
+    assert(root.lastToolResultBoundsForTesting().height > 0,
+        "Opening the batch did not directly reveal its action rows");
+    window.saveScreenshot("build/turn-summary-flat-actions.ppm");
+    foreach (batch; batches) batch.setCollapsed(true);
     batches[0].setCollapsed(true);
     assert(summary.detail.indexOf("3 actions recorded") >= 0 &&
         summary.detail.indexOf("1 file changed") >= 0,
