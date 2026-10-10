@@ -2457,6 +2457,7 @@ int main(string[] args)
             "The meter must measure against the selected context target");
         assert(root.contextUsageTextForTesting() == "48%",
             "The meter must show the selected target, not the provider window");
+        root.flushSettingsForTesting();
         const targetSettings = parseJSON(readText(buildPath(stateDir,
             "settings.json")));
         assert(targetSettings["contextBudgets"].array.length >= 1,
@@ -2481,6 +2482,7 @@ int main(string[] args)
         targetMenu.items()[2].action();
         dismissContextMenus(root);
         root.tickTree(0.02);
+        root.flushSettingsForTesting();
         const optedOutSettings = loadSettings();
         assert(!contextCompactionForModel(optedOutSettings,
             optedOutSettings.baseUrl, "deepseek-v4.1-flash") &&
@@ -2734,6 +2736,7 @@ int main(string[] args)
         "Toggling should expand the rail");
     assert(root.projectsRailWidthForTesting() > 48,
         "Expanded rail should be wider than icon width");
+    root.flushRepositoryForTesting();
     auto railJson = parseJSON(readText(buildPath(stateDir, "projects.json")));
     assert(railJson["projectsCollapsed"].type == JSONType.false_,
         "Expanded rail state was not persisted");
@@ -2860,6 +2863,7 @@ int main(string[] args)
         "Switching back did not show the project's chat");
     writeln("Project switching filters the conversation list");
 
+    root.flushRepositoryForTesting();
     assert(exists(buildPath(stateDir, "projects.json")),
         "projects.json was not written");
 
@@ -2874,6 +2878,7 @@ int main(string[] args)
     root.tickTree(0.02);
     assert(root.sessionsRatioForTesting() > ratioBefore,
         "Dragging did not widen the conversation list");
+    root.flushRepositoryForTesting();
     auto projectsJson = parseJSON(readText(buildPath(stateDir, "projects.json")));
     assert(projectsJson["sessionsRatio"].floating > ratioBefore,
         "Split ratio was not persisted");
@@ -3137,6 +3142,7 @@ int main(string[] args)
     // Row 2 is Low: selecting it enables thinking at low effort.
     reasoningMenu.items()[2].action();
     dismissContextMenus(root);
+    root.flushSettingsForTesting();
     auto reloadedReasoningSettings = loadSettings();
     auto savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
         "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash");
@@ -3157,6 +3163,7 @@ int main(string[] args)
     // Row 9 is the 2,048-token preset.
     reasoningMenu.items()[9].action();
     dismissContextMenus(root);
+    root.flushSettingsForTesting();
     reloadedReasoningSettings = loadSettings();
     savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
         "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash");
@@ -3173,6 +3180,7 @@ int main(string[] args)
     // High must persist literally. It used to be stored as the empty
     // "implicit" effort, which the request builder now resolves to `low`, so
     // selecting High silently became Low and the menu never showed it checked.
+    root.flushSettingsForTesting();
     reloadedReasoningSettings = loadSettings();
     savedReasoning = reasoningControlForModel(reloadedReasoningSettings,
         "https://opencode.ai/zen/go/v1", "deepseek-v4.1-flash");
@@ -3360,6 +3368,7 @@ int main(string[] args)
     assert(qwenKeys == "sk-qwen-main\nsk-qwen-main",
         "An empty spare key shadowed the main key: " ~ qwenKeys);
     // Every provider's pair is persisted.
+    root.flushSettingsForTesting();
     const keysSettings = parseJSON(readText(buildPath(stateDir,
         "settings.json")));
     assert(keysSettings["providerKeys"].array.length == 3,
@@ -3566,6 +3575,7 @@ int main(string[] args)
         concisePrompt.indexOf("# Execution loop") >= 0,
         "Concise must leave the rest of the prompt intact");
     root.dismissPopupForTesting();
+    root.flushSettingsForTesting();
     const verbositySettings = parseJSON(readText(buildPath(stateDir,
         "settings.json")));
     assert(verbositySettings["verbosity"].str == "concise",

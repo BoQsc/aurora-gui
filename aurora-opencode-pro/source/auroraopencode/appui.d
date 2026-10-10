@@ -72,6 +72,7 @@ import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache,
 import auroraopencode.turnsummary : TurnWorkSummary;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
+import auroraopencode.preferencewriter : PreferenceWriter;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
@@ -9278,6 +9279,8 @@ public final class OpenCodeRoot : VBox
     private ConversationRuntime _execution;
     private ConversationRepository _repository;
     private ConversationRepository _snapshotRepository;
+    private PreferenceWriter!Settings _settingsWriter;
+    private PreferenceWriter!ProjectState _projectsWriter;
     private bool[string] _dirtyThreads;
     private bool _persistFailed;
     private bool _durabilityBlocked;
@@ -9924,6 +9927,8 @@ public final class OpenCodeRoot : VBox
         setLogDirectory(buildPath(opencodeStateDirectory(), "logs"));
         _repository = new ConversationRepository();
         _snapshotRepository = new ConversationRepository();
+        _settingsWriter = new PreferenceWriter!Settings((Settings value) { saveSettings(value); });
+        _projectsWriter = new PreferenceWriter!ProjectState((ProjectState value) { saveProjects(value); });
         _runtime = new RepositoryRuntime(_repository, buildPath(opencodeStateDirectory(),
             "runtime-events.jsonl"));
         (cast(RepositoryRuntime) _runtime).setWake(_window.serviceWake());
@@ -10594,7 +10599,10 @@ public final class OpenCodeRoot : VBox
             _miniChat.stop();
             _miniChat = null;
         }
+        flushSettings();
         persistState();
+        _settingsWriter.close();
+        _projectsWriter.close();
         closeRuntimeClients();
         _repository.close();
         _snapshotRepository.close();
@@ -10685,7 +10693,7 @@ public final class OpenCodeRoot : VBox
         // agent and close. The agent shows a small progress window while it
         // builds; this process is gone for the whole compile.
         persistState();
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
 
         auto plan = planRebuild(opencodeStateDirectory(), true,
             thisProcessID, thisExePath());
@@ -10710,7 +10718,7 @@ public final class OpenCodeRoot : VBox
         {
             writeResumeNoteIfTurnActive();
             persistState();
-            saveProjects(_projectState);
+            _projectsWriter.save(_projectState);
             if (!launchUpdateHelper(thisExePath(), _updateStagedPath,
                     opencodeStateDirectory(), _updateHash))
             {
@@ -11574,7 +11582,7 @@ public final class OpenCodeRoot : VBox
     {
         _projectState.projectsCollapsed = !_projectState.projectsCollapsed;
         applyProjectsRailState();
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
     }
 
     private int activeProjectIndex()
@@ -11694,7 +11702,7 @@ public final class OpenCodeRoot : VBox
         project.path = _settings.workspace;
         _projectState.projects ~= project;
         _projectState.activeId = project.id;
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
     }
 
     private static string projectNameFromPath(string path)
@@ -11761,7 +11769,7 @@ public final class OpenCodeRoot : VBox
             return;
         }
         _projectState.activeId = id;
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
         updateSessionsHeader();
         syncCurrentToActiveProject();
         updateSessionList(false);
@@ -11781,7 +11789,7 @@ public final class OpenCodeRoot : VBox
         ensureProjectDirectory(project);
         _projectState.projects ~= project;
         _projectState.activeId = project.id;
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
         updateProjectRail();
         updateSessionsHeader();
         syncCurrentToActiveProject();
@@ -11887,7 +11895,7 @@ public final class OpenCodeRoot : VBox
         project.path = path;
         project.name = projectNameFromPath(path);
         ensureProjectDirectory(*project);
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
         updateProjectRail();
         updateSessionsHeader();
         updateSessionList(false);
@@ -11928,7 +11936,7 @@ public final class OpenCodeRoot : VBox
         project.path = target;
         project.name = sandboxFolderName(1);
         ensureProjectDirectory(*project);
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
     }
 
     private void showProjectContextMenu(int index, Point globalPosition)
@@ -11947,7 +11955,7 @@ public final class OpenCodeRoot : VBox
             delegate()
             {
                 _projectState.activeId = project.id;
-                saveProjects(_projectState);
+                _projectsWriter.save(_projectState);
                 updateProjectRail();
                 updateSessionsHeader();
                 updateSessionList(false);
@@ -11989,7 +11997,7 @@ public final class OpenCodeRoot : VBox
             const name = nameField.textUtf8().strip();
             if (name.length == 0) return;
             _projectState.projects[cast(size_t) index].name = name;
-            saveProjects(_projectState);
+            _projectsWriter.save(_projectState);
             dismissPopup();
             updateProjectRail();
             updateSessionsHeader();
@@ -12020,7 +12028,7 @@ public final class OpenCodeRoot : VBox
         if (_projectState.activeId == project.id)
             _projectState.activeId = sandboxProjectId;
         removeEmptySandboxFolder(project);
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
         persistState();
         updateProjectRail();
         updateSessionsHeader();
@@ -21160,7 +21168,7 @@ public final class OpenCodeRoot : VBox
                 {
                     project.path = workspace;
                     ensureProjectDirectory(*project);
-                    saveProjects(_projectState);
+                    _projectsWriter.save(_projectState);
                     updateSessionsHeader();
                 }
             }
@@ -23454,7 +23462,7 @@ public final class OpenCodeRoot : VBox
 
     private void saveSettingsNow()
     {
-        saveSettings(_settings);
+        _settingsWriter.save(_settings);
     }
 
     /// Debounced settings write: a click handler must not block on the disk.
@@ -23470,7 +23478,7 @@ public final class OpenCodeRoot : VBox
     {
         if (!_settingsDirty) return;
         _settingsDirty = false;
-        saveSettings(_settings);
+        _settingsWriter.save(_settings);
     }
 
     /**
@@ -25817,7 +25825,7 @@ public final class OpenCodeRoot : VBox
         if (_sessionsRatioDirty)
         {
             _sessionsRatioDirty = false;
-            saveProjects(_projectState);
+            _projectsWriter.save(_projectState);
         }
 
         if (_draftsDirty.length > 0 && MonoTime.currTime >= _draftPersistDue)
@@ -26052,7 +26060,7 @@ public final class OpenCodeRoot : VBox
     {
         _execution.partialCheckpointAt = MonoTime.currTime - msecs(3000);
     }
-    public void flushRepositoryForTesting() { _repository.flush(); _snapshotRepository.flush(); }
+    public void flushRepositoryForTesting() { _repository.flush(); _snapshotRepository.flush(); _settingsWriter.flush(); _projectsWriter.flush(); }
 
     public void selectSessionForTesting(int index)
     {
@@ -26672,7 +26680,7 @@ public final class OpenCodeRoot : VBox
         ensureProjectDirectory(project);
         _projectState.projects ~= project;
         _projectState.activeId = project.id;
-        saveProjects(_projectState);
+        _projectsWriter.save(_projectState);
         updateProjectRail();
         updateSessionsHeader();
         syncCurrentToActiveProject();
@@ -27500,7 +27508,7 @@ public final class OpenCodeRoot : VBox
         {
             project.path = workspace;
             ensureProjectDirectory(*project);
-            saveProjects(_projectState);
+            _projectsWriter.save(_projectState);
         }
         if (_toolsBox !is null) _toolsBox.setChecked(true, false);
     }
@@ -27521,6 +27529,7 @@ public final class OpenCodeRoot : VBox
     public void flushSettingsForTesting()
     {
         flushSettings();
+        _settingsWriter.flush();
     }
 
     /// Test-only: reload sessions.json exactly as app startup does, so a test
