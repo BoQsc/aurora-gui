@@ -60,6 +60,17 @@ read-only and produce no side effects.
 
 ## Build
 
+- User preference: always rebuild after completing an implementation, verify
+  the rebuilt binary and its relaunch, then check delivery performance. A
+  source-only result is not completion. Prefer the in-app `rebuild` tool. If an
+  external coding session does not expose it and Aurora is already closed,
+  invoke the same rebuild flow through a detached copy of the application with
+  `--aurora-rebuild-helper`; provide the current package and executable paths.
+  Keep local verification rebuilds local with `FORGE_PUBLISH_SKIP=1`. Do not
+  replace this flow with a manual build against a running executable. Report
+  measured client overhead separately from provider/network latency; do not
+  claim an absolute latency minimum from a finite benchmark.
+
 - Apply a source change with the in-app **`rebuild` tool**, not a manual
   `dub build`/`dub run`. The tool closes the app, runs `dub build --build=release`
   in the package root, and relaunches it with the new build.

@@ -28,6 +28,7 @@ else version (Windows)
         OLE_E_ADVISENOTSUPPORTED, S_FALSE, S_OK;
     import core.sys.windows.wtypes : DVASPECT;
     import core.stdc.string : memcpy, memcmp;
+    import core.sync.mutex : Mutex;
     import std.array : split;
     import std.string : fromStringz, startsWith, strip;
     import std.utf : toUTF16, toUTF16z, toUTF32, toUTF8;
@@ -952,9 +953,46 @@ else version (Windows)
         }
     }
 
+    // Worker notifications interrupt frame pacing without letting ordinary
+    // invalidation messages re-arm an idle message-pump spin. Retained wake
+    // delegates become harmless before the HWND/event handle is released.
+    private final class ServiceSignal
+    {
+        private Mutex mutex;
+        private HWND target;
+        private HANDLE event;
+
+        this(HWND target)
+        {
+            mutex = new Mutex();
+            this.target = target;
+            event = CreateEventW(null, FALSE, FALSE, null);
+        }
+
+        void wake()
+        {
+            synchronized (mutex)
+                if (target !is null && PostMessageW(target, wmAuroraService, 0, 0))
+                    if (event !is null) SetEvent(event);
+        }
+
+        void stop()
+        {
+            synchronized (mutex)
+            {
+                target = null;
+                if (event !is null) CloseHandle(event);
+                event = null;
+            }
+        }
+
+        ~this() { if (event !is null) CloseHandle(event); }
+    }
+
     final class PlatformWindow : NativeWindow
     {
         private HWND _hwnd;
+        private ServiceSignal _serviceSignal;
         private Size _clientSize;
         private Size _framebufferSize;
         private DisplayScale _displayScale;
@@ -1277,27 +1315,32 @@ else version (Windows)
                     }
                     else if (_frameIntervalTicks > 0)
                     {
-                        // Steady-frame pacing: wait the precise remaining time to
-                        // the next 60 fps deadline (a fixed 16 ms wait drifts with
-                        // timer quantization, causing uneven scroll). A guaranteed
-                        // Sleep keeps the cadence even when messages are queued.
-                        nextFrameDeadline.QuadPart += _frameIntervalTicks;
+                        // Early worker/input frames keep the existing deadline;
+                        // advancing it on every notification would accumulate
+                        // pacing debt during a burst of stream fragments.
                         LARGE_INTEGER nowTicks;
                         QueryPerformanceCounter(&nowTicks);
                         if (nextFrameDeadline.QuadPart <= nowTicks.QuadPart)
                         {
-                            // Fell behind (a long frame); re-anchor so we never
-                            // burst-catch-up and instead keep a steady cadence.
-                            nextFrameDeadline.QuadPart = nowTicks.QuadPart +
-                                _frameIntervalTicks;
+                            nextFrameDeadline.QuadPart += _frameIntervalTicks;
+                            if (nextFrameDeadline.QuadPart <= nowTicks.QuadPart)
+                                nextFrameDeadline.QuadPart = nowTicks.QuadPart +
+                                    _frameIntervalTicks;
                         }
                         const remainUs = (nextFrameDeadline.QuadPart - nowTicks.QuadPart) *
-                            1000 / cast(long) perfFreq.QuadPart;
+                            1_000_000 / cast(long) perfFreq.QuadPart;
                         uint sleepMs = cast(uint) ((remainUs + 999) / 1000);
                         if (sleepMs > 0)
                         {
                             if (sleepMs > 20) sleepMs = 20;
-                            Sleep(sleepMs);
+                            // QS_INPUT wakes keyboard/pointer input. The separate
+                            // event wakes posted worker results, while paint and
+                            // invalidation traffic still obey the frame deadline.
+                            HANDLE serviceEvent = _serviceSignal is null ? null :
+                                _serviceSignal.event;
+                            MsgWaitForMultipleObjectsEx(serviceEvent is null ? 0 : 1,
+                                serviceEvent is null ? null : &serviceEvent, sleepMs,
+                                QS_INPUT, MWMO_INPUTAVAILABLE);
                         }
                         // A short drain keeps input/resize responsive between
                         // frames without letting the queue re-arm a spin.
@@ -1316,6 +1359,7 @@ else version (Windows)
             }
             if (_hwnd !is null && _inSizeMove)
                 KillTimer(_hwnd, liveResizeTimerId);
+            if (_serviceSignal !is null) _serviceSignal.stop();
             sink.onNativeShutdown();
             shutdownDragDrop();
             if (_hwnd !is null && IsWindow(_hwnd))
@@ -1339,8 +1383,8 @@ else version (Windows)
 
         override void delegate() serviceWake()
         {
-            auto target = _hwnd;
-            return delegate() { if (target !is null) PostMessageW(target, wmAuroraService, 0, 0); };
+            if (_serviceSignal is null) _serviceSignal = new ServiceSignal(_hwnd);
+            return &_serviceSignal.wake;
         }
 
         override void present(const(uint)[] pixels, int width, int height)
@@ -2278,6 +2322,7 @@ else version (Windows)
                     }
                     return 0;
                 case WM_DESTROY:
+                    if (_serviceSignal !is null) _serviceSignal.stop();
                     if (_inSizeMove) KillTimer(_hwnd, liveResizeTimerId);
                     _inSizeMove = false;
                     _closed = true;

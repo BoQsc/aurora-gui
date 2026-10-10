@@ -53,6 +53,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
             return
         if model == "delayed-headers":
             time.sleep(0.4)
+        if model == "delivery":
+            time.sleep(0.1)
         if model == "retry" and attempt == 1:
             payload = b'{"error":{"message":"brief unavailable"}}'
             self.send_response(503)
@@ -89,9 +91,21 @@ server = Server(("127.0.0.1", 0), Provider)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
+    if "--vulkan" in sys.argv:
+        env["AURORA_RENDERER"] = "vulkan"
+    delivery = "--delivery" in sys.argv
+    fixture = "delivery_latency_contracts" if delivery else "latency_transport_contracts"
     result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
-                             "latency_transport_contracts"], cwd=package.parent, env=env, timeout=120)
+                             *(["--release"] if "--release" in sys.argv else []),
+                             fixture], cwd=package.parent, env=env,
+                            timeout=300 if "--release" in sys.argv else 120)
     assert result.returncode == 0
+    if delivery:
+        assert attempts["delivery"] == 6
+        assert not any(path.endswith("input_tokens") for model, path, port in received)
+        assert len({port for model, path, port in received}) == 1, "Delivery did not reuse its TCP connection"
+        print("PASS six streamed native GUI deliveries over one reused TCP connection", flush=True)
+        sys.exit(0)
     assert not any(model == "skip-count" and path.endswith("input_tokens") for model, path, port in received)
     assert sum(model == "counted" and path.endswith("input_tokens") for model, path, port in received) == 1
     first_port = next(port for model, path, port in received if model == "skip-count")
