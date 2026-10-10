@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "forge-channel",
+  "reason": "Apply the follow-up guard that drops the hover pill row on bubbles too short to contain it, closing the degenerate-height clip case found by the geometry sweep.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 14:22:36.7971341",
-  "finishedAt": "2026-10-10 14:24:21.6146132",
-  "durationMs": 104818,
+  "startedAt": "2026-10-10 14:35:38.7727419",
+  "finishedAt": "2026-10-10 14:36:30.9512999",
+  "durationMs": 52178,
   "exitCode": 0,
   "errors": []
 }

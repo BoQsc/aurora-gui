@@ -2975,10 +2975,21 @@ private final class MessageBubble : Widget
         if (!canCopy && !canEdit) return;
 
         const rowH = 18;
-        // Float below the text: the row overlays the bubble's bottom, so the
-        // message spacing is the same hovered or not.
+        // The row must stay fully inside the bubble's own rect. The framework
+        // clips every widget's paint to its bounds (widget.d:
+        // `clipped(Rect(0, 0, bounds.width, bounds.height))`), so a row placed
+        // at `textBottom + 6` overflowed the bubble on the common case
+        // (height == padV + content + padV, textBottom == height - padV) and
+        // lost its bottom half to the clip; the leftover sliver read as
+        // "obstructed". Clamping to `height - rowH` keeps the pills fully
+        // visible, and because they are painted last they then sit on top of
+        // the message text rather than under it. If the bubble is shorter than
+        // the row itself there is no room to show it without clipping, so drop
+        // the affordance rather than draw a half-cut stub.
+        if (height < rowH) return;
         int rowY = textBottom + 6;
-        if (rowY + rowH > height) rowY = maxInt(textBottom + 2, height - rowH);
+        const maxRowY = height - rowH;
+        if (rowY > maxRowY) rowY = maxRowY;
         if (rowY < 0) rowY = 0;
 
         // Measure both pills first so a right-aligned pair can be placed as one
