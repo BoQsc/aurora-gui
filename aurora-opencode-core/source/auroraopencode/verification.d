@@ -22,10 +22,25 @@ public string verificationCheck(string program, const(string)[] args)
     string first = args.length ? args[0] : "";
     if (name == "pytest" || name == "mypy") return name;
     if (name == "ruff" && first == "check") return "ruff check";
-    if ((name == "python" || name == "python3" || name == "py") &&
-        args.length >= 2 && first == "-m" &&
-        (args[1] == "pytest" || args[1] == "unittest" || args[1] == "mypy"))
-        return args[1];
+    if (name == "python" || name == "python3" || name == "py")
+    {
+        size_t cursor;
+        while (cursor < args.length)
+        {
+            const option = args[cursor];
+            if (option == "-u" || option == "-B" || option == "-E" ||
+                option == "-I" || option == "-s" || option == "-S" ||
+                option == "-O" || option == "-OO" || option == "-q")
+                ++cursor;
+            else if ((option == "-X" || option == "-W") && cursor + 1 < args.length)
+                cursor += 2;
+            else break;
+        }
+        if (cursor + 1 < args.length && args[cursor] == "-m" &&
+            (args[cursor + 1] == "pytest" || args[cursor + 1] == "unittest" ||
+                args[cursor + 1] == "mypy"))
+            return args[cursor + 1];
+    }
     if ((name == "dub" && (first == "test" || first == "build")) ||
         (name == "cargo" && (first == "test" || first == "build" ||
             first == "check" || first == "clippy")) ||

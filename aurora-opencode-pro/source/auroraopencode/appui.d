@@ -104,7 +104,7 @@ import std.file : append, dirEntries, exists, getSize, isDir, isFile,
     thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : ceil, isFinite;
-import std.path : baseName, buildNormalizedPath, buildPath;
+import std.path : baseName, buildNormalizedPath, buildPath, extension;
 import std.process : environment, thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32, toUTF8;
@@ -2066,9 +2066,7 @@ private final class MessageBubble : Widget
         const textX = padH + padX;
         const rightX = padH + innerWidth - padX;
         const toggle = _collapsed ? "▸" : "▾";
-        string left = toggle ~ " " ~ humanToolTitle(_toolName);
-        const subtitle = humanToolSubtitle(_toolName, _toolArgs);
-        if (subtitle.length > 0) left ~= "  " ~ subtitle;
+        const left = toggle ~ " " ~ toolHeaderText();
 
         int statsWidth;
         TextLayout addLayout, delLayout, elapsedLayout;
@@ -2161,13 +2159,19 @@ private final class MessageBubble : Widget
         return opencodeFontBase + 2 + 2 * headerPadV;
     }
 
-    /// Height of a collapsed one-line reasoning header. A collapsed transcript
-    /// row (Thinking / action group / live / activity) is a single text line
-    /// padded by `padV` on each side, matching `2 * padV + opencodeFontBase + 2`
-    /// in ToolGroupBubble / LiveToolRow / ActivityRow. It deliberately does NOT
-    /// use `toolHeaderHeight()`: that adds the tool card's own `headerPadV`
-    /// inset, which is only needed when the header sits inside the rounded diff
-    /// card, and otherwise made the Thinking row taller than its neighbours.
+    private string toolHeaderText() const
+    {
+        string text = humanToolTitle(_toolName);
+        // Put the outcome before a possibly long command/path so a collapsed
+        // failure remains understandable without relying on its red rail.
+        if (_failed) text ~= " · Failed";
+        const subtitle = humanToolSubtitle(_toolName, _toolArgs);
+        if (subtitle.length > 0) text ~= "  " ~ subtitle;
+        return text;
+    }
+
+    /// Height of a collapsed one-line reasoning header, matching the other
+    /// transcript rows without the tool card's additional border insets.
     private static int thinkingHeaderHeight()
     {
         return opencodeFontBase + 2;
@@ -5715,6 +5719,11 @@ private final class ToolGroupBubble : Widget
     private string headerText() const
     {
         auto summary = actionGroupSummary(childToolNames(), _live);
+        int failed;
+        foreach (part; _parts)
+            if (auto bubble = cast(MessageBubble) part)
+                if (bubble._failed) ++failed;
+        if (failed > 0) summary ~= " · " ~ to!string(failed) ~ " failed";
         return (_collapsed ? "▸" : "▾") ~ " " ~ summary;
     }
 
@@ -15313,9 +15322,16 @@ public final class OpenCodeRoot : VBox
         return false;
     }
 
-    /// A successful mutation only advances task state when it changed the
-    /// requested artifact. Whitespace/comment-only edits are useful at times,
-    /// but they must not let a stuck model satisfy the implementation gate.
+    private static bool isPlainDocumentMutation(string name, string args)
+    {
+        if (name != "write" && name != "edit") return false;
+        const path = partialStringArg(args, "filePath");
+        const suffix = extension(path).toLower();
+        return suffix == ".md" || suffix == ".markdown" ||
+            suffix == ".rst" || suffix == ".adoc";
+    }
+
+    /// Whitespace/comment-only edits must not satisfy the implementation gate.
     private static bool isSubstantiveMutation(string name, bool failed,
         int additions, int deletions, string diff)
     {
@@ -16091,8 +16107,13 @@ public final class OpenCodeRoot : VBox
             applyDurablePlan(*session, toolArgs);
         if (!toolFailed && event.toolName == "update_subplan")
             applyNestedPlan(*session, toolArgs);
-        if (event.workspaceChanged || isSubstantiveMutation(event.toolName, toolFailed,
-            event.diffAdditions, event.diffDeletions, event.diffText))
+        // Prose documents do not need an executable checker. The agent can
+        // read back the artifact as requested without manufacturing a second
+        // final answer. Existing verification for code remains outstanding.
+        const proseChange = !toolFailed && isPlainDocumentMutation(event.toolName, toolArgs);
+        if (!proseChange && (event.workspaceChanged ||
+            isSubstantiveMutation(event.toolName, toolFailed,
+                event.diffAdditions, event.diffDeletions, event.diffText)))
         {
             session.verificationStatus = "required";
             session.taskStatus = "active";
@@ -27328,6 +27349,21 @@ public final class OpenCodeRoot : VBox
         foreach (child; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) child)
                 headers ~= group.headerTextForTesting();
+        return headers;
+    }
+
+    public string[] toolResultHeaderTextsForTesting()
+    {
+        string[] headers;
+        foreach (child; messageColumnVisuals())
+        {
+            if (auto group = cast(ToolGroupBubble) child)
+                foreach (part; group._parts)
+                    if (auto bubble = cast(MessageBubble) part)
+                        headers ~= bubble.toolHeaderText();
+            if (auto bubble = cast(MessageBubble) child)
+                if (bubble._role == "tool") headers ~= bubble.toolHeaderText();
+        }
         return headers;
     }
 

@@ -264,6 +264,11 @@ int main(string[] args)
     assert(verificationCheck("echo", ["build", "test"]) == "");
     assert(verificationCheck("python", ["-c", "print('tests passed')"]) == "");
     assert(verificationCheck("python", ["-m", "unittest", "test_actual"]) == "unittest");
+    assert(verificationCheck("python", ["-u", "-B", "-m", "unittest", "test_actual"]) == "unittest");
+    assert(verificationCheck("python", ["-X", "dev", "-W", "ignore", "-m", "pytest"]) == "pytest");
+    assert(verificationCheck("python", ["-u", "-c", "print('ok')", "-m", "unittest"]) == "");
+    assert(verificationCheck("python", ["-B", "script.py", "-m", "unittest"]) == "");
+    assert(verificationCheck("python", ["-u", "-m", "pytest", "--collect-only"]) == "");
     const commandDirectory = buildPath(directory, "commands");
     mkdirRecurse(commandDirectory);
     write(buildPath(commandDirectory, "test_actual.py"),
