@@ -1068,21 +1068,21 @@ public size_t[] activeMessagePath(const ref ChatSession session)
 public size_t deepestDescendant(const ref ChatSession session, size_t startIndex)
 {
     if (startIndex >= session.messages.length) return startIndex;
+    // Index the last appended child once. Scanning the entire transcript at
+    // every step made opening a long branch quadratic in its message count.
+    size_t[string] lastChild;
+    foreach (index, ref message; session.messages)
+        if (message.parentId.length > 0) lastChild[message.parentId] = index;
     size_t current = startIndex;
-    size_t guard = session.messages.length + 1;
-    while (guard-- > 0)
+    while (true)
     {
         const id = session.messages[current].id;
         if (id.length == 0) break;
-        size_t child = size_t.max;
-        foreach (index, message; session.messages)
-        {
-            if (index <= current) continue;
-            if (message.parentId.length > 0 && message.parentId == id)
-                child = index;
-        }
-        if (child == size_t.max) break;
-        current = child;
+        const child = id in lastChild;
+        // Preserve the original forward-only walk, including corrupt cycles
+        // or duplicate ids: every step must advance in storage order.
+        if (child is null || *child <= current) break;
+        current = *child;
     }
     return current;
 }

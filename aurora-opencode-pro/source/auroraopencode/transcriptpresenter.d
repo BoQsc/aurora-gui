@@ -2,6 +2,10 @@ module auroraopencode.transcriptpresenter;
 
 import aurora : VBox, Widget, ScrollView, Size, Rect, Insets, maxInt;
 
+// Shared with the projection so deferred construction and viewport measurement
+// start together, including ordinary medium-sized conversations.
+public enum size_t transcriptVirtualThreshold = 80;
+
 /// A cheap transcript descriptor. Expensive text/markdown widgets are created
 /// only when this row enters the measured viewport, and retained while visible.
 public final class DeferredTranscriptRow : Widget
@@ -78,14 +82,29 @@ public final class TranscriptPresenter : VBox
     private int[] _rowHeights;
     private int _totalHeight;
     private int _measuredTop = int.min;
+    private Widget _insertAnchor;
+    private int _insertAnchorScreenY;
+    private int _insertAnchorTop;
     private bool _projecting;
     private Widget[] _projectedRows;
-    private enum size_t virtualThreshold = 400;
+    private enum size_t virtualThreshold = transcriptVirtualThreshold;
     private enum int overscan = 700;
     bool delegate() following;
     void delegate(int) onAnchorCorrection;
 
     this(int spacing = 0, Insets padding = Insets(0)) { super(spacing, padding); }
+
+    /// Preserve a retained row's screen position while older descriptors are
+    /// prepended. Total-height deltas include unrelated offscreen estimates;
+    /// anchor to the row itself instead, without measuring the whole history.
+    void preserveTopInsertAnchor(Widget row)
+    {
+        auto view = viewport();
+        if (row is null || view is null) return;
+        _insertAnchor = row;
+        _insertAnchorTop = view.scrollY();
+        _insertAnchorScreenY = row.bounds().y - _insertAnchorTop;
+    }
 
     void beginProjection()
     {
@@ -115,8 +134,12 @@ public final class TranscriptPresenter : VBox
     {
         assert(_projecting);
         _projecting = false;
-        reconcileChildren(_projectedRows);
+        const changed = reconcileChildren(_projectedRows);
         _projectedRows = null;
+        // Streaming commonly projects the same retained rows. Their height
+        // revisions are checked during measurement; rebuilding both indexes
+        // here only allocates and hashes the unchanged history again.
+        if (!changed) return;
         Height[Widget] kept;
         bool[Widget] hidden;
         foreach (row; children())
@@ -146,24 +169,35 @@ public final class TranscriptPresenter : VBox
         const pad = padding();
         const width = maxInt(0, available.width - pad.left - pad.right);
         const page = view !is null ? maxInt(1, view.bounds().height) : 700;
-        const top = view !is null ? view.scrollY() : 0;
+        int top = view !is null ? view.scrollY() : 0;
         const follow = following !is null && following();
         _measuredTop = top;
         int estimatedBottom = pad.top + pad.bottom;
+        int estimatedCursor = pad.top;
+        bool anchored;
         foreach (row; children())
         {
+            if (row is _insertAnchor)
+            {
+                top = estimatedCursor - _insertAnchorScreenY;
+                anchored = true;
+            }
             if (!row.visible() && row !in _virtualHidden) continue;
             auto indexed = row in _heights;
             const pixels = indexed is null ? 64 : indexed.pixels;
             estimatedBottom += pixels + (pixels > 0 ? spacing() : 0);
+            estimatedCursor += pixels + (pixels > 0 ? spacing() : 0);
         }
         const lower = follow ? maxInt(0, estimatedBottom - page - overscan) : maxInt(0, top - overscan);
         const upper = follow ? int.max : top + page + overscan;
         _rowHeights.length = children().length;
         int cursor = pad.top;
         int correction;
+        int anchorTop;
         foreach (i, row; children())
         {
+            if (anchored && row is _insertAnchor)
+                anchorTop = cursor - _insertAnchorScreenY;
             auto old = row in _heights;
             Height height = old is null ? Height.init : *old;
             const before = height.pixels;
@@ -180,19 +214,26 @@ public final class TranscriptPresenter : VBox
                     height.revision = row.layoutRevision();
                     height.known = true;
                 }
-                if (!follow && cursor + before <= top) correction += height.pixels - before;
+                if (!follow && !anchored && cursor + before <= top) correction += height.pixels - before;
             }
             _heights[row] = height;
             _rowHeights[i] = height.pixels;
             cursor += height.pixels + (height.pixels > 0 ? spacing() : 0);
         }
         _totalHeight = cursor + pad.bottom;
+        if (anchored)
+        {
+            correction = anchorTop - _insertAnchorTop;
+            _insertAnchorTop = anchorTop;
+            _measuredTop = anchorTop;
+        }
         if (correction && onAnchorCorrection !is null) onAnchorCorrection(correction);
         return Size(available.width, _totalHeight);
     }
 
     protected override void onLayout()
     {
+        scope(exit) _insertAnchor = null;
         if (children().length < virtualThreshold) { super.onLayout(); return; }
         auto view = viewport();
         const top = view !is null ? view.scrollY() : 0;

@@ -180,5 +180,32 @@ int main()
     assert(root.hiddenHistoryCountForTesting() == 0,
         "Returning to the top did not re-arm history loading");
     writeln("History paging preserves the reader's position");
+    root.newChatForTesting();
+    roles.length = bodies.length = 0;
+    foreach (i; 0 .. 750)
+    {
+        roles ~= i % 2 == 0 ? "user" : "assistant";
+        string body = "Variable history " ~ to!string(i);
+        foreach (_; 0 .. 1 + i % 5)
+            body ~= "\n\nA paragraph with **formatting** and enough text to wrap across the viewport.";
+        bodies ~= body;
+    }
+    root.addConversationForTesting(roles, bodies);
+    root.tickTree(0.02); driver.paint();
+    foreach (_; 0 .. 3)
+    {
+        root.scrollToForTesting(100);
+        root.tickTree(0.02); driver.paint();
+        const anchorBefore = view.content().bounds().y + root.bubbleBoundsForTesting(1).y;
+        root.loadOlderHistoryForTesting();
+        root.tickTree(0.02); driver.paint();
+        const anchorAfter = view.content().bounds().y + root.bubbleBoundsForTesting(121).y;
+        assert(anchorBefore == anchorAfter,
+            "Repeated virtual paging shifted a retained variable-height row");
+        assert(!root.followForTesting());
+        assert(root.materializedTranscriptRowsForTesting() < 100,
+            "Paging materialized the entire history to preserve its anchor");
+    }
+    writeln("Repeated virtual paging anchors variable-height rows without constructing the full history");
     return 0;
 }

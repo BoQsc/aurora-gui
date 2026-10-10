@@ -836,7 +836,7 @@ final class OpenCodeClient
     {
         _mutex.lock();
         scope (exit) _mutex.unlock();
-        if (maxEvents == size_t.max && maxBytes == size_t.max)
+        if (_pending.length <= maxEvents && _pendingBytes <= maxBytes)
         {
         auto reusable = output;
         output = _pending;
@@ -887,6 +887,9 @@ final class OpenCodeClient
                 _pendingBytes -= cost;
                 ++taken;
             }
+            // Consumed slots otherwise retain tool payloads and image buffers
+            // in the queue allocation even after the UI has processed them.
+            _pending[0 .. taken] = OpenCodeEvent.init;
             _pending = _pending[taken .. $];
         }
         _queueSpace.notifyAll();
@@ -964,7 +967,8 @@ final class OpenCodeClient
         if (event.kind == OpenCodeEventKind.delta && _pending.length > 0 &&
             _pending[$ - 1].kind == OpenCodeEventKind.delta &&
             _pending[$ - 1].requestId == event.requestId &&
-            _pending[$ - 1].reasoning == event.reasoning)
+            _pending[$ - 1].reasoning == event.reasoning &&
+            _pending[$ - 1].text.length + event.text.length <= 64 * 1024)
         {
             _pending[$ - 1].text ~= event.text;
             _pendingBytes += event.text.length;
@@ -975,7 +979,12 @@ final class OpenCodeClient
         // causes redundant transcript rebuilds and badge layout work.
         if (_pending.length > 0 &&
             (event.kind == OpenCodeEventKind.toolCallDelta ||
-             event.kind == OpenCodeEventKind.usage) &&
+             event.kind == OpenCodeEventKind.usage ||
+             (event.kind == OpenCodeEventKind.toolResult && event.toolRunning &&
+              _pending[$ - 1].toolRunning &&
+              event.toolCallId.length > 0 &&
+              _pending[$ - 1].toolName == event.toolName &&
+              _pending[$ - 1].toolCallId == event.toolCallId)) &&
             _pending[$ - 1].kind == event.kind &&
             _pending[$ - 1].requestId == event.requestId)
         {

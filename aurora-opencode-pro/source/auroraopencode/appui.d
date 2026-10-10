@@ -67,7 +67,8 @@ import auroraopencode.execution : ThreadEngine;
 import auroraopencode.requestbuilder : projectRequestMessages;
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
-import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow;
+import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
+    transcriptVirtualThreshold;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 // experimental: attachments - drop a file or large paste as an attachment.
@@ -12500,11 +12501,19 @@ public final class OpenCodeRoot : VBox
         if (_current < 0) return;
         const count = activeMessagePath(_sessions[_current]).length;
         if (count <= _visibleMessageLimit) return;
+        const virtualHistory = _messageColumn.children().length >= transcriptVirtualThreshold;
+        if (virtualHistory)
+            foreach (row; _messageColumn.children())
+                if (cast(Button) row is null && row.bounds().bottom() > _messagesScroll.scrollY())
+                {
+                    _messageColumn.preserveTopInsertAnchor(row);
+                    break;
+                }
         const before = transcriptContentHeight();
         _visibleMessageLimit += messageHistoryPageSize;
         rebuildMessageColumn();
         const after = transcriptContentHeight();
-        if (after > before && _messagesScroll !is null)
+        if (!virtualHistory && after > before && _messagesScroll !is null)
             _messagesScroll.anchorAfterTopInsert(after - before);
         if (_messagesScroll !is null) _messagesScroll.invalidate();
     }
@@ -12872,7 +12881,7 @@ public final class OpenCodeRoot : VBox
                 }
                 // Long pages materialize ordinary settled replies only near
                 // the viewport. Live replies and tool rounds remain concrete.
-                if (path.length >= 400 && message.toolCalls.length == 0 &&
+                if (path.length >= transcriptVirtualThreshold && message.toolCalls.length == 0 &&
                     slot != liveHostSlot && cast(int) index != latestAssistantIndex &&
                     (message.content.length || message.reasoning.length) &&
                     (_streamBubble is null || _streamBubble.messageIndex() != cast(int) index))
@@ -13031,7 +13040,7 @@ public final class OpenCodeRoot : VBox
             }
             if (showAuthorHeader(message))
                 _messageColumn.add(authorHeaderWidget(message));
-            if (path.length >= 400 && message.role == "user")
+            if (path.length >= transcriptVirtualThreshold && message.role == "user")
                 _messageColumn.add(buildDeferredMessage(index,
                     session.messages[index], latestAssistantIndex, versionPositions, versionTotals));
             else
@@ -24969,16 +24978,28 @@ public final class OpenCodeRoot : VBox
             {
                 _execution.observe(*event);
                 const reasoning = event.reasoning;
-                auto merged = appender!string();
-                while (eventIndex < _eventScratch.length &&
+                string text = event.text;
+                ++eventIndex;
+                if (eventIndex < _eventScratch.length &&
                     _eventScratch[eventIndex].kind == OpenCodeEventKind.delta &&
                     _eventScratch[eventIndex].reasoning == reasoning &&
                     _eventScratch[eventIndex].requestId == event.requestId)
                 {
-                    merged.put(_eventScratch[eventIndex].text);
-                    ++eventIndex;
+                    auto merged = appender!string();
+                    merged.put(text);
+                    do
+                    {
+                        merged.put(_eventScratch[eventIndex].text);
+                        ++eventIndex;
+                    } while (eventIndex < _eventScratch.length &&
+                        _eventScratch[eventIndex].kind == OpenCodeEventKind.delta &&
+                        _eventScratch[eventIndex].reasoning == reasoning &&
+                        _eventScratch[eventIndex].requestId == event.requestId);
+                    text = merged.data;
                 }
-                appendStreamDelta(merged.data, reasoning);
+                // Producers already coalesce the usual single-channel batch.
+                // Pass that immutable payload through without copying it again.
+                appendStreamDelta(text, reasoning);
                 continue;
             }
             ++eventIndex;
