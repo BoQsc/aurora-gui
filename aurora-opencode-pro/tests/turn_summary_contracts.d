@@ -58,6 +58,12 @@ int main()
     root.streamContentForTesting("The chat now groups work beneath each request. Full activity remains available.");
     root.finishStreamForTesting();
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(find(root, "oc-activity-batch") is null,
+        "Chat redesign must be off by default");
+    assert(root.messageCountForTesting() == 8 && root.toolMessageCountForTesting() == 3);
+    window.saveScreenshot("build/chat-classic-default.ppm");
+    root.setExperimentalChatRedesignForTesting(true);
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
     assert(find(root, "oc-turn-work") is null, "Outer turn container remains");
     assert(find(root, "oc-timeline-commentary") is null, "A duplicate commentary projection remains");
     assert(root.messageCountForTesting() == 8 && root.toolMessageCountForTesting() == 3);
@@ -83,6 +89,9 @@ int main()
     foreach (batch; batches) batch.setCollapsed(false);
     foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
     assert(root.activityGroupsFlatForTesting());
+    auto nestedThinking = find(root, "oc-activity-reasoning");
+    assert(nestedThinking !is null && nestedThinking.bounds().x == 16,
+        "Nested Thinking header must be indented inside its activity row");
     window.saveScreenshot("build/chat-straightforward-details.ppm");
     foreach (batch; batches) batch.setCollapsed(true);
     root.setChatSearchQueryForTesting("unique inspected output");
@@ -94,6 +103,15 @@ int main()
     assert(root.chatSearchMatchCountForTesting() == 1 && !first.collapsed(),
         "Reasoning search did not reveal its activity row");
     root.setChatSearchQueryForTesting("");
+    root.setExperimentalChatRedesignForTesting(false);
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(find(root, "oc-activity-batch") is null &&
+        find(root, "oc-activity-reasoning") is null,
+        "Disabling redesign left experimental rows in the classic transcript");
+    assert(root.messageCountForTesting() == 8 && root.toolMessageCountForTesting() == 3);
+    root.setExperimentalChatRedesignForTesting(true);
+    foreach (_; 0 .. 3) { root.tickTree(0.02); assert(driver.paint()); }
+    assert(find(root, "oc-activity-batch") !is null);
     root.persistForTesting();
     root.reloadSessionsForTesting();
     foreach (_; 0 .. 20) { root.tickTree(0.02); driver.paint(); Thread.sleep(10.msecs); }

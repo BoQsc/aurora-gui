@@ -1,6 +1,25 @@
 # Chat presentation
 
-## Current: chronological conversation
+## Default: classic transcript; redesign is opt-in
+
+The classic transcript before commit `4880315` is the default presentation:
+original assistant thinking and prose, original collapsible tool groups, and the
+latest-action tail behavior. No experimental activity batch wraps these rows.
+Unrelated correctness and history fixes remain in place.
+
+Settings includes **Highly experimental chat redesign**, off by default, persisted
+as `experimentalChatRedesign`. Switching immediately rebuilds the presentation
+without altering stored messages, branches or versions. The experimental layout
+retains compact activity disclosures, nested Thinking indentation and the lighter
+background for first-level expanded activity. Disabling it restores intrinsic
+row visibility and normal tool-group behavior and removes presentation-only
+reasoning copies from search routing.
+
+Default-off, both switch directions, search, reload, and history checks passed
+in `build/architecture-checks-j7o9ldjr/`. The default screenshot is
+`build/chat-classic-default-review.png`.
+
+## Experimental: chronological conversation
 
 Original assistant prose is shown once at the chat edge, in message order. There
 is no outer turn container, opening-sentence header, mirrored commentary, nested
@@ -192,3 +211,14 @@ Release native GUI delivery passed in `build/architecture-checks-6sjxyhj_/`:
 six token-to-render samples measured 3.979 ms median and 12.091 ms maximum.
 These are client delivery measurements; the fixture's intentional 100 ms provider
 wait is separate. Rendering measures submission rather than display scanout.
+
+## Classic-default delivery verification
+
+The detached helper rebuilt and relaunched the responsive production app in
+80.268 seconds. The binary is newer than Pro and Core sources. Required Forge
+publication and public download verification passed. Production HTTP/SSE, native
+tools, pairing and settlement passed in `build/production-roundtrip-0cz875g1/`.
+Six release native GUI delivery samples in `build/architecture-checks-r0_tm_pp/`
+measured 2.396 ms median and 11.585 ms maximum from token receipt to render
+submission, separate from the fixture's intentional 100 ms provider wait.
+The user's saved settings had no experimentalChatRedesign opt-in at relaunch.

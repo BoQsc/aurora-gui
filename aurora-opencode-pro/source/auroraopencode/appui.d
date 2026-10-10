@@ -418,6 +418,10 @@ private final class MessageBubble : Widget
     private static immutable int padH = 10;
     private static immutable int padV = 6;
     private static immutable int gap = 4;
+    private int thinkingIndent() const
+    {
+        return id() == "oc-activity-reasoning" ? 16 : 0;
+    }
     // Breathing room between a collapsed "Thinking" header and the answer text
     // that follows it. The header and its reply share one bubble, so without this
     // the answer hugged the header: at 8 px it sat ~26 px below the header but
@@ -1706,7 +1710,7 @@ private final class MessageBubble : Widget
                 // `shapedThinking` reports "nothing measured yet" as a null
                 // layout (a ring placeholder or a failed shape), so the result
                 // must not be dereferenced unguarded.
-                auto layout = shapedThinking(innerWidth);
+                auto layout = shapedThinking(maxInt(1, innerWidth - thinkingIndent));
                 if (layout !is null)
                 {
                     noteActivity("measureThinking index=" ~
@@ -1838,12 +1842,13 @@ private final class MessageBubble : Widget
             y += thinkingHeaderHeight();
             if (!_thinkingCollapsed)
             {
-                auto layout = shapedThinking(innerWidth,
-                    thinkingBudgetDchars(innerWidth, height - y));
+                const thinkingWidth = maxInt(1, innerWidth - thinkingIndent);
+                auto layout = shapedThinking(thinkingWidth,
+                    thinkingBudgetDchars(thinkingWidth, height - y));
                 noteActivity("paintThinking index=" ~ to!string(_messageIndex) ~
                     " width=" ~ to!string(innerWidth) ~ " layout=" ~
                     (layout is null ? "null" : "ok"));
-                canvas.drawLayout(Point(padH, y), layout, opencodeThinkingText);
+                canvas.drawLayout(Point(padH + thinkingIndent, y), layout, opencodeThinkingText);
                 if (layout !is null)
                     y += layout.measuredSize().height + gap;
             }
@@ -12644,6 +12649,11 @@ public final class OpenCodeRoot : VBox
             if (auto bubble = cast(MessageBubble) row) bubble._reasoningInActivity = false;
         foreach (row; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) row) group.setFlat(false);
+        if (!_settings.experimentalChatRedesign)
+        {
+            _turnWorkSummaries = null;
+            _activityReasoning = null;
+        }
         // Stage the next painter order while retaining unchanged subtrees.
         _messageColumn.beginProjection();
         if (_bubbleCache is null) _bubbleCache = new StableRowCache!(MessageBubble, BubbleVersion)();
@@ -13127,9 +13137,20 @@ public final class OpenCodeRoot : VBox
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
             addLiveToolRows(_messageColumn, "live");
-        groupTurnWorkProjection(*session, path);
+        if (_settings.experimentalChatRedesign) groupTurnWorkProjection(*session, path);
         foreach (child; messageColumnVisuals())
             if (auto group = cast(ToolGroupBubble) child) group.setShowTail(false);
+        if (!_settings.experimentalChatRedesign)
+            foreach_reverse (child; messageColumnVisuals())
+            {
+                if (auto group = cast(ToolGroupBubble) child)
+                {
+                    group.setShowTail(true);
+                    break;
+                }
+                if (auto bubble = cast(MessageBubble) child)
+                    if (!bubble.hidden()) break;
+            }
         // Steering typed while this turn is still running is queued durably and
         // injected at the next valid message boundary. Show it now as a
         // dimmed, pending user bubble so submitting a prompt never looks like
@@ -20800,6 +20821,20 @@ public final class OpenCodeRoot : VBox
         planRow.add(planCheck);
         optionsBody.add(planRow);
 
+        auto chatRedesignRow = new HBox(8);
+        chatRedesignRow.layoutHints().preferredHeight = 32;
+        auto chatRedesignCheck = new CheckBox("Highly experimental chat redesign");
+        chatRedesignCheck.setId("oc-chatredesign");
+        chatRedesignCheck.setChecked(_settings.experimentalChatRedesign, false);
+        chatRedesignCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalChatRedesign = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        chatRedesignRow.add(chatRedesignCheck);
+        optionsBody.add(chatRedesignRow);
+
         // experimental: one level of optional substeps, off by default
         auto nestedRow = new HBox(8);
         nestedRow.layoutHints().preferredHeight = 32;
@@ -28271,6 +28306,13 @@ public final class OpenCodeRoot : VBox
     public void setExperimentalNestedPlansForTesting(bool value)
     {
         _settings.experimentalNestedPlans = value;
+        if (_current >= 0) rebuildMessageColumn();
+    }
+
+    public void setExperimentalChatRedesignForTesting(bool value)
+    {
+        _settings.experimentalChatRedesign = value;
+        saveSettingsNow();
         if (_current >= 0) rebuildMessageColumn();
     }
 

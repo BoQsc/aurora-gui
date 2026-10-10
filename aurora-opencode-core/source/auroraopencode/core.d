@@ -1156,6 +1156,7 @@ public struct Settings
     // Show the durable plan as a floating panel in the transcript's top-right
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
+    bool experimentalChatRedesign; // highly experimental presentation, off by default
     bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
     // experimental: planmode - stricter, non-templating plan upkeep. Off by
     // default; the Settings dialog owns this switch.
@@ -1525,6 +1526,9 @@ public Settings loadSettings()
                 if (auto found = "detachedPlan" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.detachedPlan = found.type == JSONType.true_;
+                if (auto found = "experimentalChatRedesign" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalChatRedesign = found.type == JSONType.true_;
                 if (auto found = "experimentalNestedPlans" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalNestedPlans =
@@ -1824,6 +1828,7 @@ public void saveSettings(const ref Settings settings)
     root["groupSameAction"] = settings.groupSameAction;
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
+    root["experimentalChatRedesign"] = settings.experimentalChatRedesign;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     root["experimentalStrictPlan"] = settings.experimentalStrictPlan;
     root["experimentalComputerUse"] = settings.experimentalComputerUse;

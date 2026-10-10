@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Show filesystem host and read scan progress",
+  "reason": "Restore classic chat default and preserve optional experimental redesign",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 17:04:26.016291 UTC",
-  "finishedAt": "2026-10-10 17:05:46.4836021 UTC",
-  "durationMs": 80468,
+  "startedAt": "2026-10-10 17:45:26.9130024 UTC",
+  "finishedAt": "2026-10-10 17:46:47.1806981 UTC",
+  "durationMs": 80267,
   "exitCode": 0,
   "errors": []
 }

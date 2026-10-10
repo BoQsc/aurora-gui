@@ -556,6 +556,7 @@ int main(string[] args)
 
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
+    root.setExperimentalChatRedesignForTesting(true);
     window.setRoot(root);
     // The smoke test drives the real widgets, so its clipboard copies/pastes
     // must stay in-process; otherwise running it would leave the fixture text

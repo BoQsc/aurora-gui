@@ -34,6 +34,10 @@ public final class TurnWorkSummary : VBox
     private TextLayout _titleLayout, _detailLayout;
     private int _headerHeight;
     private bool _hover, _attention;
+    private int rowInset(Widget row) const
+    {
+        return !_activity ? 18 : row.id() == "oc-activity-reasoning" ? 16 : 0;
+    }
     void delegate(bool) onCollapseChanged;
 
     this(bool activity = false)
@@ -111,7 +115,7 @@ public final class TurnWorkSummary : VBox
                 if (!row.visible()) continue;
                 if (body > 0) body += spacing();
                 body += row.measure(Size(maxInt(1, available.width -
-                    (_activity ? 0 : 18)), available.height)).height;
+                    rowInset(row)), available.height)).height;
             }
         const height = _headerHeight + body;
         layoutHints().preferredWidth = available.width;
@@ -127,7 +131,7 @@ public final class TurnWorkSummary : VBox
             if (!row.visible()) continue;
             const hint = row.layoutHints().preferredHeight;
             const height = hint >= 0 ? hint : row.bounds().height;
-            const inset = _activity ? 0 : 18;
+            const inset = rowInset(row);
             row.setBounds(Rect(inset, y, maxInt(1, bounds().width - inset), height));
             y += height + spacing();
         }
@@ -136,6 +140,16 @@ public final class TurnWorkSummary : VBox
     protected override void onPaint(ref Canvas canvas)
     {
         if (_titleLayout is null || _detailLayout is null) return;
+        if (_activity && !_collapsed && bounds().height > _headerHeight)
+        {
+            bool nestedActivity;
+            for (auto ancestor = parent(); ancestor !is null; ancestor = ancestor.parent())
+                if (auto summary = cast(TurnWorkSummary) ancestor)
+                    nestedActivity |= summary._activity;
+            if (!nestedActivity)
+                canvas.fillRoundedRect(Rect(0, 0, bounds().width, bounds().height),
+                    6, opencodePanel);
+        }
         if (!_activity) canvas.drawRoundedRect(Rect(1, 1, maxInt(0, bounds().width - 2),
             maxInt(0, _headerHeight - 6)), 6, opencodePanel,
             opencodeBorder, 1);

@@ -47,6 +47,7 @@ int main()
     options.renderer = RendererPreference.software;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
+    root.setExperimentalChatRedesignForTesting(true);
     window.setRoot(root);
     root.isolateClipboardForTesting(true);
     root.pauseToolContinuationForTesting();
