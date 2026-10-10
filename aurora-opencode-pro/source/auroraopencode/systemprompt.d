@@ -276,6 +276,13 @@ private string toolPolicySection(in SystemPromptContext ctx)
             "perform; do not use shell listing or content commands.\n";
     text ~= "Read exact file paths from the request directly. Use `dshell " ~
         "list` when paths need discovery and `grep` for content search. " ~
+        "Directory listing yields bounded batches with continuation cursors. " ~
+        "Inspect partial results before continuing; stop discovery once the " ~
+        "needed paths are found. Resume unfinished scans with dshell list and " ~
+        "the returned cursor, reusing the saved search instead of restarting. " ~
+        "A timed-out or interrupted scan returns its recovery cursor; retry " ~
+        "that cursor if the scan is still needed. Use a smaller yieldMs when " ~
+        "frequent chances to reassess are useful. " ~
         "Avoid a broader duplicate after successful discovery unless it " ~
         "answers a different named question. Tool schemas contain exact " ~
         "syntax and parameter requirements.\n";

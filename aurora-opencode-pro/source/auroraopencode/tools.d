@@ -38,7 +38,7 @@ import std.string : indexOf, lastIndexOf, replace, strip, toLower;
 import std.utf : toUTF8, toUTF16z, validate;
 import std.conv : to;
 import std.exception : collectException;
-import core.time : seconds, Duration, MonoTime, msecs;
+import core.time : seconds, Duration, MonoTime, msecs, hours;
 import std.datetime.stopwatch : StopWatch, AutoStart;
 import std.datetime : Clock;
 import std.algorithm : canFind, sort, map, filter, startsWith;
@@ -140,6 +140,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     File input, output;
     Pid pid;
     bool running;
+    string scanCursor;
     scope (exit)
     {
         if (running) killProcessTree(pid);
@@ -152,7 +153,26 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     {
         JSONValue request;
         request["name"] = call.name;
-        request["arguments"] = call.arguments;
+        string arguments = call.arguments;
+        if (call.name == "dshell")
+        {
+            auto fields = parseJSON(arguments);
+            if (fields.type == JSONType.object)
+                if (auto command = "command" in fields.object)
+                    if (command.type == JSONType.string &&
+                        (command.str == "list" || command.str == "ls" || command.str == "dir"))
+                    {
+                        if (auto cursor = "cursor" in fields.object)
+                            scanCursor = cursor.str;
+                        if (scanCursor.length == 0)
+                        {
+                            scanCursor = startDirectoryScan(fields, workspace);
+                            fields["cursor"] = scanCursor;
+                        }
+                        arguments = fields.toString();
+                    }
+        }
+        request["arguments"] = arguments;
         request["workspace"] = workspace;
         request["stateDirectory"] = opencodeStateDirectory();
         const encoded = request.toString();
@@ -178,9 +198,12 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                 break;
             }
             if (cancellation !is null && cancellation.cancelled())
-                return ToolExecution(call.name, "Stopped: filesystem tool cancelled; its host was terminated.", true);
+                return ToolExecution(call.name, "Stopped: filesystem tool cancelled; its host was terminated." ~
+                    directoryScanResumeHint(scanCursor), true);
             if (MonoTime.currTime >= deadline)
-                return ToolExecution(call.name, "Error: filesystem tool timed out after " ~ to!string(timeoutMs) ~ " ms; its host was terminated. Narrow the path or increase timeout.", true);
+                return ToolExecution(call.name, "Error: filesystem tool timed out after " ~ to!string(timeoutMs) ~ " ms; its host was terminated." ~
+                    (scanCursor.length > 0 ? directoryScanResumeHint(scanCursor)
+                        : " Narrow the path or increase timeout."), true);
         }
         output.close();
         if (getSize(outputPath) > attachmentImageMaxBytes * 2 + 256 * 1024)
@@ -268,7 +291,7 @@ private OpenCodeToolDef dshellToolDefinition()
          "nonstandard waiting command. `list` " ~
          "and `info` already return their resolved path, so do not pair them " ~
          "with `where`. This is the primary tool for navigating a workspace.",
-        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info","sleep","wait"],"description":"Operation: where (workspace path), list (directory discovery), info (metadata), or sleep/wait (pause seconds; discouraged - prefer making progress or inspecting with process, and if a pause is truly required use this native pause rather than a shell wait command)"},"path":{"type":"string","description":"Optional path, relative to the workspace or absolute; defaults to the workspace"},"recursive":{"type":"boolean","description":"For list: descend into subdirectories"},"pattern":{"type":"string","description":"For list: optional glob matched against paths relative to the listed directory, e.g. **/*.d"},"seconds":{"type":"number","description":"For sleep/wait: seconds to pause, fractional allowed; defaults to 1 and is capped at 300"}},"required":["command"]}`
+        `{"type":"object","properties":{"command":{"type":"string","enum":["where","list","info","sleep","wait"],"description":"Operation: where (workspace path), list (directory discovery), info (metadata), or sleep/wait (pause seconds; discouraged - prefer making progress or inspecting with process, and if a pause is truly required use this native pause rather than a shell wait command)"},"path":{"type":"string","description":"Optional path, relative to the workspace or absolute; defaults to the workspace"},"recursive":{"type":"boolean","description":"For list: descend into subdirectories without following directory symlinks"},"pattern":{"type":"string","description":"For list: optional glob matched against paths relative to the listed directory, e.g. **/*.d"},"cursor":{"type":"string","description":"For list: resume a returned continuation cursor in the same workspace. Saved path, pattern and recursive settings are reused. Omit to start a new scan. Cursors expire after 24 hours. A cancelled or timed-out slice can retry its cursor; unfinished work in that slice is retried."},"limit":{"type":"integer","minimum":1,"maximum":200,"description":"For list: maximum matches per batch, default 200"},"yieldMs":{"type":"integer","minimum":10,"maximum":5000,"description":"For list: cooperative time budget per batch, default 1000 ms. The tool also yields after 2000 inspected entries, even with no matches. OS directory calls can exceed this budget; the host timeout still applies."},"seconds":{"type":"number","description":"For sleep/wait: seconds to pause, fractional allowed; defaults to 1 and is capped at 300"}},"required":["command"]}`
     );
 }
 
@@ -5605,7 +5628,7 @@ private ToolExecution runDshell(string args, string workspace,
         case "list":
         case "ls":
         case "dir":
-            return dshellList(resolved, workspace, recursive, pattern);
+            return dshellList(value, workspace);
         case "info":
         case "stat":
             return dshellStat(resolved, workspace);
@@ -5661,19 +5684,111 @@ private string formatSleepSeconds(long milliseconds)
     return to!string(milliseconds / 1000.0) ~ "s";
 }
 
-private struct DshellListEntry
+private string directoryScanResumeHint(string cursor)
 {
-    string name;
-    string kind;
-    string size;
+    return cursor.length == 0 ? "" :
+        "\nThe last checkpoint is preserved. Resume with dshell " ~
+        `{"command":"list","cursor":"` ~ cursor ~ `"}. ` ~
+        "Only the unfinished batch is retried.";
 }
 
-private ToolExecution dshellList(string path, string workspace,
-    bool recursive, string pattern)
+private string directoryScanFile(string cursor)
 {
-    if (!exists(path) || !isDir(path))
-        return ToolExecution("dshell",
-            "Error: not a directory: " ~ path, true);
+    import std.uuid : UUID;
+    // Never allow a model-provided cursor to become an arbitrary file path.
+    if (cursor.length != 36) throw new Exception("Invalid directory scan cursor.");
+    auto id = UUID(cursor);
+    if (id.toString() != cursor) throw new Exception("Invalid directory scan cursor.");
+    return buildPath(opencodeStateDirectory(), "directory-scans", cursor ~ ".json");
+}
+
+private string saveDirectoryScan(JSONValue state)
+{
+    import std.uuid : randomUUID;
+    const encoded = state.toString();
+    if (encoded.length > 32 * 1024 * 1024)
+        throw new Exception("Directory scan checkpoint exceeds 32 MiB; narrow the path.");
+    const folder = buildPath(opencodeStateDirectory(), "directory-scans");
+    mkdirRecurse(folder);
+    // Limit retained checkpoints as well as their age. Old cursor retries may
+    // expire under sustained discovery; the newest continuation stays available.
+    struct RetainedCheckpoint { string path; long stamp; ulong bytes; }
+    RetainedCheckpoint[] retained;
+    ulong retainedBytes;
+    foreach (entry; dirEntries(folder, SpanMode.shallow))
+    {
+        if (!entry.isFile) continue;
+        if (Clock.currTime - entry.timeLastModified > 24.hours)
+            collectException(remove(entry.name));
+        else
+        {
+            retained ~= RetainedCheckpoint(entry.name, entry.timeLastModified.stdTime, entry.size);
+            retainedBytes += entry.size;
+        }
+    }
+    retained.sort!((a, b) => a.stamp < b.stamp);
+    foreach (i, entry; retained)
+    {
+        if (retained.length - i < 512 && retainedBytes + encoded.length <= 128 * 1024 * 1024) break;
+        // Separate filesystem hosts can prune the same old cursor concurrently.
+        collectException(remove(entry.path));
+        retainedBytes -= entry.bytes;
+    }
+    // Checkpoints are immutable. Killing a helper while it writes the next
+    // one cannot destroy the input cursor or skip unreported results.
+    const cursor = randomUUID().toString();
+    const path = directoryScanFile(cursor);
+    write(path ~ ".tmp", encoded);
+    rename(path ~ ".tmp", path);
+    return cursor;
+}
+
+private string startDirectoryScan(JSONValue args, string workspace)
+{
+    JSONValue state;
+    state["workspace"] = workspace;
+    string path = workspace;
+    if (auto field = "path" in args.object)
+        if (field.type == JSONType.string && field.str.length > 0)
+            path = resolveToolPath(field.str, workspace);
+    state["path"] = path;
+    state["pattern"] = "";
+    if (auto field = "pattern" in args.object) state["pattern"] = *field;
+    state["recursive"] = false;
+    if (auto field = "recursive" in args.object) state["recursive"] = *field;
+    state["scanned"] = 0L;
+    state["matched"] = 0L;
+    JSONValue task;
+    task["path"] = path;
+    task["expand"] = true;
+    task["directory"] = true;
+    state["pending"] = JSONValue([task]);
+    return saveDirectoryScan(state);
+}
+
+private ToolExecution dshellList(JSONValue args, string workspace)
+{
+    string cursor;
+    if (auto field = "cursor" in args.object) cursor = field.str;
+    if (cursor.length == 0) cursor = startDirectoryScan(args, workspace);
+    const checkpoint = directoryScanFile(cursor);
+    if (!exists(checkpoint))
+        return ToolExecution("dshell", "Error: directory scan cursor is missing or expired; start a new list.", true);
+    if (Clock.currTime - timeLastModified(checkpoint) > 24.hours)
+        return ToolExecution("dshell", "Error: directory scan cursor expired; start a new list.", true);
+    if (getSize(checkpoint) > 32 * 1024 * 1024)
+        return ToolExecution("dshell", "Error: directory scan checkpoint is too large.", true);
+    auto state = parseJSON(readText(checkpoint));
+    if (state["workspace"].str != workspace)
+        return ToolExecution("dshell", "Error: directory scan cursor belongs to another workspace.", true);
+    const path = state["path"].str;
+    const pattern = state["pattern"].str;
+    const recursive = state["recursive"].boolean;
+    long limit = 200, yieldMs = 1000;
+    if (auto field = "limit" in args.object) limit = field.integer;
+    if (auto field = "yieldMs" in args.object) yieldMs = field.integer;
+    if (limit < 1 || limit > 200 || yieldMs < 10 || yieldMs > 5000)
+        return ToolExecution("dshell", "Error: list limit must be 1..200 and yieldMs must be 10..5000.", true);
     Regex!(char) patternRegex;
     if (pattern.length > 0)
     {
@@ -5682,14 +5797,38 @@ private ToolExecution dshellList(string path, string workspace,
             return ToolExecution("dshell", "Error: invalid list pattern: " ~
                 error.msg, true);
     }
-    DshellListEntry[] entries;
-    bool capped;
+    auto pending = state["pending"].array.dup;
+    string[] entries;
+    size_t inspected, outputBytes;
+    const deadline = MonoTime.currTime + yieldMs.msecs;
     try
     {
-        const mode = recursive ? SpanMode.depth : SpanMode.shallow;
-        foreach (entry; dirEntries(path, mode))
+        while (pending.length > 0 && entries.length < limit &&
+            inspected < 2000 && (inspected == 0 || MonoTime.currTime < deadline))
         {
-            string relative = entry.name;
+            const task = pending[$ - 1];
+            const name = task["path"].str;
+            if (task["expand"].boolean)
+            {
+                // Snapshot one shallow directory so continuation does not
+                // re-walk previously scanned subtrees or depend on iterator order.
+                JSONValue[] children;
+                foreach (entry; dirEntries(name, SpanMode.shallow))
+                {
+                    JSONValue child;
+                    child["path"] = entry.name;
+                    child["directory"] = entry.isDir;
+                    child["expand"] = false;
+                    child["descend"] = recursive && entry.isDir && !entry.isSymlink;
+                    children ~= child;
+                }
+                children.sort!((a, b) => a["path"].str > b["path"].str);
+                pending.length -= 1;
+                pending ~= children;
+                ++inspected;
+                continue;
+            }
+            string relative = name;
             if (relative.length >= path.length &&
                 relative[0 .. path.length] == path)
                 relative = relative[path.length .. $];
@@ -5697,41 +5836,66 @@ private ToolExecution dshellList(string path, string workspace,
                 relative[0] == '/'))
                 relative = relative[1 .. $];
             relative = relative.replace("\\", "/");
-            if (pattern.length > 0 && matchFirst(relative, patternRegex).empty)
-                continue;
-
-            DshellListEntry listed;
-            listed.name = entry.name;
-            listed.kind = entry.isDir ? "dir" : "file";
-            if (entry.isDir)
-                listed.size = "-";
-            else
+            string line;
+            if (pattern.length == 0 || !matchFirst(relative, patternRegex).empty)
             {
-                try listed.size = to!string(entry.size);
-                catch (Exception) listed.size = "?";
+                string size = "-";
+                if (!task["directory"].boolean)
+                    try size = to!string(getSize(name));
+                    catch (Exception) size = "?";
+                line = (task["directory"].boolean ? "[d] " : "[f] ") ~
+                    name ~ "  (" ~ size ~ " bytes)\n";
+                // Leave the whole entry for the next page. Continuation must
+                // never get truncated off the end of a large tool result.
+                if (outputBytes + line.length > 30_000 && entries.length > 0) break;
+                if (line.length > 30_000)
+                    throw new Exception("A directory entry exceeds the output limit; narrow the path.");
             }
-            entries ~= listed;
-            if (entries.length >= 500)
+            pending.length -= 1;
+            ++inspected;
+            state["scanned"] = state["scanned"].integer + 1;
+            if (line.length > 0)
             {
-                capped = true;
-                break;
+                entries ~= line;
+                outputBytes += line.length;
+                state["matched"] = state["matched"].integer + 1;
+            }
+            if (task["descend"].boolean)
+            {
+                JSONValue descend;
+                descend["path"] = name;
+                descend["expand"] = true;
+                pending ~= descend;
             }
         }
     }
     catch (Exception error)
         return ToolExecution("dshell", "Error: could not list directory: " ~
-            error.msg, true);
-    entries.sort!((a, b) => a.name < b.name);
+            error.msg ~ directoryScanResumeHint(cursor), true);
+    entries.sort();
     auto builder = appender!string();
     builder.put("<path>" ~ path ~ "</path>\n");
     builder.put("<entries>\n");
     foreach (entry; entries)
-        builder.put((entry.kind == "dir" ? "[d] " : "[f] ") ~
-            entry.name ~ "  (" ~ entry.size ~ " bytes)\n");
-    if (capped)
-        builder.put("(Results capped at 500 entries; narrow path or pattern.)\n");
+        builder.put(entry);
     builder.put("</entries>\n");
-    return ToolExecution("dshell", truncateOutput(builder.data), false);
+    builder.put("Scanned " ~ to!string(state["scanned"].integer) ~
+        " entries; found " ~ to!string(state["matched"].integer) ~ " matches so far.\n");
+    if (pending.length > 0)
+    {
+        state["pending"] = JSONValue(pending);
+        string next;
+        try next = saveDirectoryScan(state);
+        catch (Exception error)
+            return ToolExecution("dshell", "Error: could not save directory scan checkpoint: " ~
+                error.msg ~ directoryScanResumeHint(cursor), true);
+        builder.put("Paused at a checkpoint; more entries remain.\n<continuation>" ~
+            next ~ "</continuation>\nContinue with dshell " ~
+            `{"command":"list","cursor":"` ~ next ~ `"}.` ~
+            " Stop here if the discovered paths answer the question.\n");
+    }
+    else builder.put("Scan complete.\n");
+    return ToolExecution("dshell", builder.data, false);
 }
 
 private ToolExecution dshellStat(string path, string workspace)

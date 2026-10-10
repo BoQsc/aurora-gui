@@ -3368,8 +3368,9 @@ private string humanToolTitle(string toolName)
     {
         case "bash":
         case "run":
-        case "dshell":
             return "Shell";
+        case "dshell":
+            return "Workspace";
         case "read":
             return "Read";
         case "write":
@@ -3517,8 +3518,28 @@ private string humanToolSubtitle(string toolName, string toolArgs)
     {
         case "bash":
         case "run":
-        case "dshell":
             return humanCommandLine(toolArgs);
+        case "dshell":
+        {
+            const command = partialStringArg(toolArgs, "command");
+            const cursor = partialStringArg(toolArgs, "cursor");
+            if (cursor.length > 0 && command == "list")
+                return "Continue scan " ~ cursor[0 .. minInt(8, cast(int) cursor.length)];
+            auto path = partialStringArg(toolArgs, "path");
+            if (path.length == 0) path = ".";
+            const pattern = partialStringArg(toolArgs, "pattern");
+            switch (command)
+            {
+                case "list":
+                    return "List " ~ path ~ (pattern.length > 0
+                        ? " · " ~ pattern : "");
+                case "info": return "Inspect " ~ path;
+                case "where": return "Locate workspace";
+                case "sleep":
+                case "wait": return "Wait";
+                default: return command;
+            }
+        }
         case "process":
         {
             // Which background process is being inspected and how: a bare
@@ -3966,8 +3987,51 @@ private string humanToolDetail(string toolName, string toolArgs)
         }
         case "bash":
         case "run":
+        {
+            auto detail = humanCommandLine(toolArgs);
+            const cwd = partialStringArg(toolArgs, "cwd");
+            if (cwd.length > 0) detail ~= "\nDirectory: " ~ cwd;
+            return detail;
+        }
         case "dshell":
-            return humanCommandLine(toolArgs);
+        {
+            const command = partialStringArg(toolArgs, "command");
+            const cursor = partialStringArg(toolArgs, "cursor");
+            if (cursor.length > 0 && command == "list")
+                return "Read the next batch from the saved directory scan\nCursor: " ~ cursor;
+            if (command == "where") return "Show the current workspace directory";
+            if (command == "sleep" || command == "wait")
+            {
+                string duration = "1";
+                try
+                {
+                    auto args = parseJSON(toolArgs);
+                    if (auto value = "seconds" in args.object)
+                        duration = value.toString();
+                }
+                catch (Exception) {}
+                return "Pause for " ~ duration ~ " seconds";
+            }
+            auto path = partialStringArg(toolArgs, "path");
+            if (path.length == 0 || path == ".") path = "Current workspace";
+            auto detail = "Directory: " ~ path;
+            if (command == "list")
+            {
+                bool recursive;
+                try
+                {
+                    auto args = parseJSON(toolArgs);
+                    if (auto value = "recursive" in args.object)
+                        recursive = value.type == JSONType.true_;
+                }
+                catch (Exception) {}
+                detail ~= "\nScope: " ~ (recursive
+                    ? "Directory and all subdirectories" : "Directory only");
+                const pattern = partialStringArg(toolArgs, "pattern");
+                detail ~= "\nFilter: " ~ (pattern.length > 0 ? pattern : "All entries");
+            }
+            return detail;
+        }
         default:
             return "";
     }
