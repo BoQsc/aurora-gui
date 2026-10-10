@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "preserved-response-versions",
-  "command": "dub build --build=release --force",
+  "reason": "regeneration-activity-order",
+  "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 13:25:01.3657638",
-  "finishedAt": "2026-10-10 13:27:10.5592405",
-  "durationMs": 129196,
+  "startedAt": "2026-10-10 13:34:43.5623409",
+  "finishedAt": "2026-10-10 13:35:38.0410822",
+  "durationMs": 54479,
   "exitCode": 0,
   "errors": []
 }

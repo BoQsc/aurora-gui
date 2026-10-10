@@ -48,7 +48,7 @@ int main()
     root.sendForTesting();
     until(delegate() { return !root.turnBusyForTesting() && root.lastAssistantContentForTesting() == "originallast"; });
     assert(root.invokeBubbleActionForTesting(1)); // actual Regenerate callback
-    assert(root.lastBubbleActionForTesting() == "View response");
+    assert(root.bubbleActionForTesting(1) == "View response");
     until(delegate() { return root.lastAssistantContentForTesting() == "replacement2"; });
     assert(root.bubbleVersionForTesting(1) == "2/2");
     assert(root.invokeBubbleVersionPrevForTesting(1));
@@ -67,8 +67,18 @@ int main()
     // Allow admission, but restore before this response's delayed headers.
     const admission = MonoTime.currTime + 150.msecs;
     while (MonoTime.currTime < admission) pump();
-    assert(root.lastBubbleActionForTesting() == "View response");
-    assert(root.invokeBubbleActionForTesting(root.messageColumnVisualCountForTesting() - 1));
+    assert(root.bubbleActionForTesting(1) == "View response");
+    assert(root.activityRowVisualIndexForTesting() == 2,
+        "Regeneration activity appeared above the preserved response");
+    assert(root.bubbleBoundsForTesting(1).bottom() <= root.bubbleBoundsForTesting(2).y);
+    root.setActivityForTesting("Working…");
+    root.projectTranscriptForTesting();
+    assert(driver.paint());
+    assert(root.activityRowVisualIndexForTesting() == 2,
+        "Working status moved above the preserved response");
+    assert(root.bubbleBoundsForTesting(1).bottom() <= root.bubbleBoundsForTesting(2).y);
+    window.saveScreenshot(buildPath(state, "regenerate-working-below.ppm"));
+    assert(root.invokeBubbleActionForTesting(1));
     assert(!root.turnBusyForTesting());
     const lateDeadline = MonoTime.currTime + 600.msecs;
     while (MonoTime.currTime < lateDeadline) pump();

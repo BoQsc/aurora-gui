@@ -12799,11 +12799,13 @@ public final class OpenCodeRoot : VBox
         // is no host: the rows go to the bottom, after the prompt. Nesting them
         // under the previous answer put "Waiting for the model…" ABOVE the prompt
         // that triggered it.
+        auto preservedReply = buildPreservedReplyPreview(*session, path,
+            versionPositions, versionTotals);
         const bool isLive = viewingTurnOwner() &&
             ((_activityRow !is null && _activityRow.hasLabel()) ||
              _preparingToolCalls.length > 0 || _liveToolCalls.length > 0);
         size_t liveHostSlot = size_t.max;
-        if (isLive)
+        if (isLive && preservedReply is null)
             foreach_reverse (slot, index; path)
             {
                 if (owner[slot] != size_t.max) continue; // owned tool result
@@ -13065,6 +13067,9 @@ public final class OpenCodeRoot : VBox
         // the card. Keep it discoverable without perturbing normal ordering.
         if (inlinePlan && session.taskSteps.length > 0 && !planAdded)
             addPlanAfter(planHostSlot);
+        // A pending regeneration still shows its stored response. Its current
+        // activity belongs below that preview, not under an earlier tool round.
+        if (preservedReply !is null) _messageColumn.add(preservedReply);
         // Live rows with no assistant turn to nest under (e.g. a tool progress
         // event before any reply exists) stay at the end of the column.
         if (isLive && !liveRowsAdded)
@@ -13133,7 +13138,6 @@ public final class OpenCodeRoot : VBox
         // Carry the selection captured before the rebuild onto the freshly
         // built bubble for the same message, so a live turn's frequent rebuilds
         // no longer clear the reader's highlight.
-        addPreservedReplyPreview(*session, path, versionPositions, versionTotals);
         if (hadSelection)
             foreach (child; messageColumnVisuals())
             {
@@ -13163,10 +13167,10 @@ public final class OpenCodeRoot : VBox
     // Regeneration rewinds the request context before contacting the provider.
     // Keep the stored response readable while there is no replacement yet,
     // including after cancellation/restart before response headers arrived.
-    private void addPreservedReplyPreview(const ref ChatSession session,
+    private MessageBubble buildPreservedReplyPreview(const ref ChatSession session,
         const(size_t)[] path, const(size_t)[] positions, const(size_t)[] totals)
     {
-        if (!path.length) return;
+        if (!path.length) return null;
         const parent = session.messages[path[$ - 1]].id;
         foreach_reverse (index, ref message; session.messages)
         {
@@ -13189,9 +13193,9 @@ public final class OpenCodeRoot : VBox
             preview.setAction("View response", delegate() {
                 selectMessageBranch(sessionIndex, messageIndex);
             });
-            _messageColumn.add(preview);
-            break;
+            return preview;
         }
+        return null;
     }
 
     /// Sync the detached plan panel with the active conversation's durable
