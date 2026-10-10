@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Render the build/rebuild timestamps in UTC (labeled) in titlebar.d, appui.d formatStamp, and shared/rebuild.d rebuildStamp, so a binary shows the same build time on any machine regardless of timezone. Smoke fixture passes; deploying the verified change.",
+  "reason": "Publish deferred transcript row heights for VBox layout",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 15:26:39.7866374",
-  "finishedAt": "2026-10-10 15:27:28.6363994",
-  "durationMs": 48850,
+  "startedAt": "2026-10-10 13:32:22.5711584 UTC",
+  "finishedAt": "2026-10-10 13:33:49.9200407 UTC",
+  "durationMs": 87351,
   "exitCode": 0,
   "errors": []
 }

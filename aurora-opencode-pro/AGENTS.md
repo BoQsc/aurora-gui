@@ -66,7 +66,15 @@ read-only and produce no side effects.
   external coding session does not expose it and Aurora is already closed,
   invoke the same rebuild flow through a detached copy of the application with
   `--aurora-rebuild-helper`; provide the current package and executable paths.
-  Keep local verification rebuilds local with `FORGE_PUBLISH_SKIP=1`. Do not
+  Completed user-requested fixes must publish to the configured update channel
+  by default, including when the rebuild is launched by an external agent.
+  Do not set `FORGE_PUBLISH_SKIP` for the final delivery rebuild. Use it only
+  for an explicitly requested local-only build or an isolated intermediate
+  verification build. Before reporting completion, run
+  `python tools/publish-forge.py --required` with `FORGE_PUBLISH_SKIP` unset;
+  confirm that publishing and public download verification succeed. A skipped
+  or failed upload is incomplete delivery and must be reported explicitly.
+  Do not
   replace this flow with a manual build against a running executable. Report
   measured client overhead separately from provider/network latency; do not
   claim an absolute latency minimum from a finite benchmark.

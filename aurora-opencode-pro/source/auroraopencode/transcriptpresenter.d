@@ -30,7 +30,12 @@ public final class DeferredTranscriptRow : Widget
     protected override Size onMeasure(Size available)
     {
         ensureMaterialized();
-        return _row.measure(available);
+        const measured = _row.measure(available);
+        // The ordinary VBox path places children from their layout hints.
+        // Deferred rows also occur below the presenter's virtualization limit.
+        layoutHints().preferredWidth = measured.width;
+        layoutHints().preferredHeight = measured.height;
+        return measured;
     }
     protected override void onLayout()
     {
@@ -203,7 +208,8 @@ public final class TranscriptPresenter : VBox
             const before = height.pixels;
             const intrinsicallyVisible = row.visible() || row in _virtualHidden;
             if (!intrinsicallyVisible) height.pixels = 0;
-            else if (cursor + before >= lower && cursor <= upper)
+            else if (!height.known ||
+                cursor + before >= lower && cursor <= upper)
             {
                 row.setVisible(true);
                 _virtualHidden.remove(row);
