@@ -478,6 +478,12 @@ public SystemPromptModule rebuildModule()
         "source and preserves your work. Run it between file operations; " ~
         "resolve any merge, rebase, or restored-local-change conflict it " ~
         "reports before continuing. Never discard local changes to sync. " ~
+        "By default rebuild checks the release's maintainer source branch and " ~
+        "refuses to start if updates are missing, conflicts remain, or the " ~
+        "check fails. This check can be disabled in Settings > Developer. " ~
+        "When blocked, update the source, integrate and resolve both sides of " ~
+        "any conflict, finish the Git operation, then retry rebuild. Verify " ~
+        "the relaunched app and test the change before publishing. " ~
         "Finished contributions are submitted with Settings > Developer > " ~
         "Publish pull request; this commits, prepares the contributor's fork, " ~
         "pushes a review branch and creates or updates the PR.\n");

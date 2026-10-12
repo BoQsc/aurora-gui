@@ -3,8 +3,12 @@ import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : Settings, saveSettings,
     loadSettings, setOpencodeStateDirectoryForTesting, OpenCodeToolCall, opencodeTheme;
-import auroraopencode.tools : executeTool, syncRequestHandler,
+import auroraopencode.tools : executeTool, syncRequestHandler, rebuildRequestHandler, rebuildSourceCheckHandler,
     builtinToolDefinitions, nativeOnlyToolDefinitions;
+import auroraopencode.developerworkflow : DeveloperSyncResult;
+import core.thread : Thread;
+import core.time : msecs, seconds;
+import std.json : parseJSON, JSONValue;
 import rebuild : findAuroraSourceFolder, findDeveloperSourceDirectory;
 import core.time : MonoTime;
 import std.file : copy, exists, mkdirRecurse, readText, tempDir, thisExePath, write;
@@ -12,7 +16,7 @@ import std.path : buildPath;
 import std.process : Config, execute;
 import std.conv : to;
 import std.stdio : writeln;
-import std.string : indexOf;
+import std.string : indexOf, startsWith;
 import std.array : join;
 
 Widget find(Widget root, string id)
@@ -89,6 +93,12 @@ void main(string[] args)
     settings.baseUrl = "http://127.0.0.1:9";
     settings.quickTitle = false;
     saveSettings(settings);
+    // Upgrade an old settings file that predates the opt-out preference.
+    auto oldSettings = parseJSON(readText(buildPath(state, "settings.json")));
+    oldSettings.object.remove("developerRequireLatestSource");
+    write(buildPath(state, "settings.json"), oldSettings.toString());
+    assert(loadSettings().developerRequireLatestSource,
+        "The rebuild source check must default on for existing installations");
     if (scenario != "missing" && scenario != "chosen")
         assert(findDeveloperSourceDirectory(settings.developerSourceDir, state, thisExePath()) == source,
             "Source resolver mismatch: expected " ~ source ~ " got " ~
@@ -134,6 +144,14 @@ void main(string[] args)
     auto rebuild = find(root, "oc-developer-rebuild");
     assert(rebuild !is null,
         "Rebuild must be reachable in Developer settings after source retrieval");
+    auto requireLatest = cast(CheckBox) find(root, "oc-developer-require-latest-source");
+    assert(requireLatest !is null && requireLatest.checked());
+    requireLatest.setChecked(false);
+    root.flushSettingsForTesting();
+    assert(!loadSettings().developerRequireLatestSource, "The explicit opt-out must persist");
+    requireLatest.setChecked(true);
+    root.flushSettingsForTesting();
+    assert(loadSettings().developerRequireLatestSource);
     auto status = cast(Label) find(root, "oc-developer-sourcestatus");
     assert(status !is null);
     if (scenario == "missing")
@@ -187,6 +205,53 @@ void main(string[] args)
     assert(find(root, "oc-developer-commit") is null);
     assert(find(root, "oc-developer-pr") is null);
     writeln("PASS: packaged Developer actions enabled and local work preserved: ", scenario);
+
+    if (scenario == "reported")
+    {
+        foreach (failure; ["Maintainer source is newer", "Error: network unavailable", "Error: Resolve conflicts first: local.d"])
+        {
+            root.rebuildSourceCheckForTesting = (string dir, bool required) {
+                assert(dir == source && required);
+                return DeveloperSyncResult(failure.startsWith("Error:"),
+                    !failure.startsWith("Error:"), "latest", failure);
+            };
+            (cast(Button) find(root, "oc-developer-rebuild")).activate();
+            const deadline = MonoTime.currTime + seconds(5);
+            while (find(root, "oc-rebuild-source-blocked") is null && MonoTime.currTime < deadline)
+            {
+                root.tickTree(0.02);
+                Thread.sleep(msecs(10));
+            }
+            assert(driver.paint());
+            assert(find(root, "oc-rebuild-source-blocked") !is null,
+                "A rejected source check must show a visible dialog");
+            auto detail = cast(TextArea) find(root, "oc-rebuild-source-message");
+            assert(detail !is null && detail.textUtf8().indexOf(failure) >= 0);
+            assert(find(root, "oc-rebuild-source-copy") !is null);
+            assert(!exists(buildPath(source, "rebuildstate.json")),
+                "A blocked rebuild must never start the helper");
+            assert(readText(buildPath(source, "source", "local-work.d")) == "developer's unfinished changes");
+            (cast(Button) find(root, "oc-rebuild-source-close")).activate();
+            open.activate();
+            assert(driver.paint());
+        }
+        auto blockedTool = executeTool(OpenCodeToolCall("stale-rebuild", "rebuild", "{}"), state);
+        assert(blockedTool.failed && blockedTool.output.indexOf("Resolve conflicts") >= 0,
+            "The same rejection must reach the agent before it is told a rebuild started");
+        auto optOut = cast(CheckBox) find(root, "oc-developer-require-latest-source");
+        optOut.setChecked(false);
+        bool requested;
+        root.rebuildSourceCheckForTesting = (string dir, bool required) {
+            assert(!required, "The agent preflight must honor the Developer opt-out");
+            return DeveloperSyncResult.init;
+        };
+        rebuildRequestHandler = (string reason) { requested = true; return true; };
+        auto allowedTool = executeTool(OpenCodeToolCall("opted-out-rebuild", "rebuild", "{}"), state);
+        assert(!allowedTool.failed && requested);
+        rebuildSourceCheckHandler = null;
+        rebuildRequestHandler = null;
+        writeln("PASS: real Rebuild clicks keep Aurora open and show update/offline/conflict recovery; agent receives failure");
+    }
     bool nativeSync, legacySync;
     foreach (tool; nativeOnlyToolDefinitions()) if (tool.name == "sync") nativeSync = true;
     foreach (tool; builtinToolDefinitions()) if (tool.name == "sync") legacySync = true;

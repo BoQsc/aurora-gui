@@ -26,6 +26,9 @@ private void removeTemporaryFile(string path)
 }
 
 public alias DeveloperProgress = void delegate(string);
+// The maintainer selects the source branch used for this release channel.
+// Keep provisioning, sync, the rebuild guard, and PR bases on the same branch.
+public enum string maintainerSourceBranch = import("maintainer-source-branch.txt").strip;
 private __gshared Mutex _developerMutex;
 shared static this() { _developerMutex = new Mutex(); }
 public Mutex developerOperationMutex() { return _developerMutex; }
@@ -201,7 +204,8 @@ public final class DeveloperWorkflow
     string gh;
     string upstreamRepo = "BoQsc/aurora-gui";
     string upstreamUrl = "https://github.com/BoQsc/aurora-gui.git";
-    string upstreamRef = "refs/remotes/aurora-maintainer/main";
+    string upstreamBranch = maintainerSourceBranch;
+    string upstreamRef = "refs/remotes/aurora-maintainer/source";
     DeveloperRunner runner;
     DeveloperProgress progress;
 
@@ -257,9 +261,12 @@ public final class DeveloperWorkflow
             enforce(git.length > 0, "Git is unavailable. Use Get source to prepare development tools.");
             if (!apply)
             {
-                const remote = gitCommand(dir, ["ls-remote", upstreamUrl, "refs/heads/main"], "Checking maintainer updates");
-                enforce(remote.length >= 40, "The maintainer branch could not be found.");
-                result.revision = remote[0 .. remote.indexOf('\t')];
+                gitCommand(dir, ["rev-parse", "--verify", "HEAD"], "Checking source checkout");
+                const remote = checked([git, "-C", dir, "ls-remote", upstreamUrl,
+                    "refs/heads/" ~ upstreamBranch], dir, "Checking maintainer updates", 45);
+                const separator = remote.indexOf('\t');
+                enforce(separator >= 40, "The maintainer source branch could not be found: " ~ upstreamBranch);
+                result.revision = remote[0 .. separator];
                 result.available = raw([git, "-C", dir, "merge-base", "--is-ancestor",
                     result.revision, "HEAD"], dir).status != 0;
                 result.message = result.available
@@ -269,16 +276,11 @@ public final class DeveloperWorkflow
             }
             requireCleanOperation(dir);
             gitCommand(dir, ["fetch", "--no-tags", upstreamUrl,
-                "+refs/heads/main:" ~ upstreamRef], "Checking maintainer updates");
+                "+refs/heads/" ~ upstreamBranch ~ ":" ~ upstreamRef], "Checking maintainer updates");
             result.revision = gitCommand(dir, ["rev-parse", upstreamRef], "Reading upstream revision");
             const count = gitCommand(dir, ["rev-list", "--count", "HEAD.." ~ upstreamRef], "Comparing source");
             result.available = to!ulong(count) > 0;
             if (!result.available) { result.message = "Aurora source is up to date with the maintainer."; return result; }
-            if (!apply)
-            {
-                result.message = count ~ " maintainer commit(s) available. Call `sync` between edits to reapply your work before rebuilding or publishing.";
-                return result;
-            }
             const branch = gitCommand(dir, ["branch", "--show-current"], "Reading source branch");
             // Published review branches retain their history, so later updates
             // remain ordinary fast-forward pushes to the existing PR.
@@ -298,6 +300,29 @@ public final class DeveloperWorkflow
         return result;
     }
 
+    /// Read-only preflight. An unavailable network, non-Git snapshot, or
+    /// unfinished conflict must never be mistaken for current source.
+    public DeveloperSyncResult checkRebuildSource(string dir, bool required = true)
+    {
+        DeveloperSyncResult result;
+        if (!required) return result;
+        try
+        {
+            enforce(git.length > 0, "Git is unavailable; prepare the Developer tools first.");
+            enforce(dir.length > 0, "Aurora source has not been located.");
+            requireCleanOperation(dir);
+            result = sync(dir, false);
+            if (result.available)
+                result.message = "Update Aurora's source before rebuilding. " ~ result.message;
+        }
+        catch (Exception e) { result.failed = true; result.message = "Error: " ~ e.msg; }
+        if (result.failed)
+            result.message ~= " Rebuild stopped because the source could not be verified. " ~
+                "Keep local work, resolve any conflict, and retry. To build without this check, " ~
+                "turn off Require latest maintainer source before rebuild in Settings > Developer.";
+        return result;
+    }
+
     /// No force-push, no upstream main push, and every failed stage stops the flow.
     public string publish(string dir, string title, string branchSuffix)
     {
@@ -305,6 +330,14 @@ public final class DeveloperWorkflow
         enforce(title.strip().length > 0 && title.indexOf('\n') < 0 && title.indexOf('\r') < 0,
             "Give your pull request a one-line title.");
         requireCleanOperation(dir);
+        // Publishing must not silently change the source that was just tested.
+        // Fetch refs only; the agent syncs, resolves, rebuilds and tests first.
+        gitCommand(dir, ["fetch", "--no-tags", upstreamUrl,
+            "+refs/heads/" ~ upstreamBranch ~ ":" ~ upstreamRef], "Checking maintainer source before publishing");
+        enforce(raw([git, "-C", dir, "merge-base", "--is-ancestor",
+            upstreamRef, "HEAD"], dir).status == 0,
+            "Update Aurora source with sync, resolve conflicts, rebuild and test before publishing. " ~
+            "The maintainer source is newer; publishing has not changed your files.");
         if (raw([gh, "auth", "status", "--hostname", "github.com"], dir).status != 0)
             checked([gh, "auth", "login", "--hostname", "github.com", "--web",
                 "--git-protocol", "https", "--skip-ssh-key", "--clipboard"], dir,
@@ -313,8 +346,7 @@ public final class DeveloperWorkflow
         const login = userData["login"].str;
         const userId = to!string(userData["id"].integer);
         const upstream = parseJSON(ghCommand(dir, ["api", "repos/" ~ upstreamRepo], "Reading project"));
-        const base = upstream["default_branch"].str;
-        enforce(base == "main", "The upstream default branch changed; update source sync before publishing.");
+        const base = upstreamBranch;
         string target = login.toLower() == upstream["owner"]["login"].str.toLower()
             ? upstreamRepo : login ~ "/" ~ upstream["name"].str;
         if (target != upstreamRepo)
@@ -345,9 +377,6 @@ public final class DeveloperWorkflow
             publishBranch = "aurora/contribution-" ~ branchSuffix;
             gitCommand(dir, ["switch", "-c", publishBranch], "Creating contribution branch");
         }
-        // Get the maintainer's latest work before creating a reviewable commit.
-        auto synced = sync(dir, true);
-        enforce(!synced.failed, synced.message);
         const status = gitCommand(dir, ["status", "--porcelain"], "Checking local changes");
         if (status.length > 0)
         {
@@ -372,4 +401,15 @@ public final class DeveloperWorkflow
         return ghCommand(dir, ["pr", "create", "--repo", upstreamRepo, "--base", base,
             "--head", head, "--title", title, "--body", body], "Creating pull request");
     }
+}
+
+public string rebuildSourceAgentPrompt(string source)
+{
+    return "Update Aurora OpenCode Pro's source at \"" ~ source ~
+        "\" to the latest maintainer source from BoQsc/aurora-gui, branch " ~
+        maintainerSourceBranch ~ ". Use the Aurora-specific sync tool between file operations. " ~
+        "Preserve all local commits, tracked edits, and untracked files. Resolve any merge, " ~
+        "rebase, or restored-local-change conflicts by integrating both changes; finish the " ~
+        "Git operation and confirm that no conflicts remain. Do not discard work or force-push. " ~
+        "Then use rebuild, verify the relaunched app, and test my changes before publishing a pull request.";
 }

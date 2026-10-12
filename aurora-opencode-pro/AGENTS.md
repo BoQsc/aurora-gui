@@ -74,6 +74,12 @@ read-only and produce no side effects.
   `python tools/publish-forge.py --required` with `FORGE_PUBLISH_SKIP` unset;
   confirm that publishing and public download verification succeed. A skipped
   or failed upload is incomplete delivery and must be reported explicitly.
+  Keep the binary update and downloadable source aligned: before delivering an
+  update, commit and publish its source to the maintainer branch selected in
+  `assets/maintainer-source-branch.txt` and verify the remote contains that
+  commit. Get source, sync, the rebuild guard, and contribution PRs all follow
+  this branch; do not assume the repository's default branch contains the
+  shipped app.
   Do not
   replace this flow with a manual build against a running executable. Report
   measured client overhead separately from provider/network latency; do not

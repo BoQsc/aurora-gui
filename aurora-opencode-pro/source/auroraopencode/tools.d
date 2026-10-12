@@ -582,7 +582,8 @@ private OpenCodeToolDef syncToolDefinition()
         "Check the Aurora OpenCode source for updates pushed by the maintainer " ~
         "and reapply your own local changes on top of them. Use this while " ~
         "working on Aurora's own source, so you build on the latest version and " ~
-        "resolve any conflict early. It checks the maintainer's main branch " ~
+        "resolve any conflict early. It checks the maintainer source branch " ~
+        "selected for this Aurora release " ~
         "and, unless reapply is turned off in Settings, fetches and applies " ~
         "updates while preserving local work and published PR history. " ~
         "Returns the outcome; on a " ~
@@ -5638,6 +5639,10 @@ public string changeRecordDiff(const ref ChangeRecord record)
 /// thread-local in D, so the worker would otherwise read its own null copy.
 public __gshared bool delegate(string reason) rebuildRequestHandler;
 
+/// Read-only host preflight. A nonempty explanation stops the rebuild and is
+/// returned to the agent so it can sync and resolve conflicts before retrying.
+public __gshared string delegate() rebuildSourceCheckHandler;
+
 /// The host application installs this to run an Aurora-source sync-and-reapply
 /// against the folder it has configured. The tool worker thread calls it and
 /// blocks on the result, so it returns the outcome text directly: whether the
@@ -5664,6 +5669,12 @@ private ToolExecution runRebuildTool(string arguments)
                 if (field.type == JSONType.string) reason = field.str;
     }
     catch (Exception) {}
+    if (rebuildSourceCheckHandler !is null)
+    {
+        const blocked = rebuildSourceCheckHandler();
+        if (blocked.length > 0)
+            return ToolExecution("rebuild", "Error: " ~ blocked, true);
+    }
     if (!rebuildRequestHandler(reason))
         return ToolExecution("rebuild",
             "Rebuild was not started: a rebuild is already pending, or the " ~

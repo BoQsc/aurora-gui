@@ -1208,6 +1208,9 @@ public struct Settings
     // (`git pull --rebase --autostash`) instead of leaving them behind. On by
     // default; the Developer section owns the switch.
     bool developerAutoReapply = true;
+    // Stop a self-rebuild until the checkout contains the maintainer's latest
+    // source. Independent of automatic reapplication; users may opt out.
+    bool developerRequireLatestSource = true;
     // On a brand-new chat, rewrite the name once with a tiny no-thinking
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
@@ -1591,6 +1594,9 @@ public Settings loadSettings()
                         found.type == JSONType.false_)
                         settings.developerAutoReapply =
                             found.type == JSONType.true_;
+                if (auto found = "developerRequireLatestSource" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.developerRequireLatestSource = found.type == JSONType.true_;
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
@@ -1869,6 +1875,7 @@ public void saveSettings(const ref Settings settings)
     root["developerMode"] = settings.developerMode;
     root["developerSourceDir"] = settings.developerSourceDir;
     root["developerAutoReapply"] = settings.developerAutoReapply;
+    root["developerRequireLatestSource"] = settings.developerRequireLatestSource;
     JSONValue contextBudgets = JSONValue(string[].init);
     foreach (budget; settings.contextBudgets)
     {

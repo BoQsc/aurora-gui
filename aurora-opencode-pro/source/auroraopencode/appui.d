@@ -1,6 +1,7 @@
 module auroraopencode.appui;
 
 import auroraopencode.developerworkflow : DeveloperWorkflow,
+    DeveloperSyncResult, maintainerSourceBranch, rebuildSourceAgentPrompt,
     developerOperationMutex, ensureDeveloperTool, findDeveloperTool;
 import auroraopencode.latency : RequestLatency, LatencyStage, LatencySnapshot;
 
@@ -34,7 +35,7 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
     previewToolDiffText,
-    rebuildRequestHandler, syncRequestHandler, revertChangeRecord,
+    rebuildRequestHandler, rebuildSourceCheckHandler, syncRequestHandler, revertChangeRecord,
     revertChangeRecords,
     planRevertRecords, ChangeRestorePath, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution, pendingNativeMutationIntents;
@@ -10164,6 +10165,14 @@ private string _suggestExcludeId;
      // helper does the work after this window closes (see shared/rebuild.d);
     // the pending flag keeps the transcript live until the helper is started.
     private bool _rebuildPending;
+    private bool _rebuildSourceChecking;
+    private bool _rebuildSourceCheckDone;
+    private DeveloperSyncResult _rebuildSourceCheckResult;
+    private string _rebuildSourceCheckReason;
+    private string _rebuildSourceCheckPath;
+    private string _rebuildSourceBlockedMessage;
+    /// Isolate the network in UI fixtures; production uses DeveloperWorkflow.
+    public DeveloperSyncResult delegate(string, bool) rebuildSourceCheckForTesting;
     private Button _updateButton;
     private bool _updateChecking;
     private bool _updateResultPending;
@@ -10355,6 +10364,7 @@ private string _suggestExcludeId;
         // Let the agent rebuild this app through the `rebuild` tool. The
         // handler only records the request; onTick performs it.
         rebuildRequestHandler = &onAgentRebuildRequested;
+        rebuildSourceCheckHandler = &onAgentRebuildSourceCheck;
         // Let the agent sync-and-reapply the Aurora source through `sync`.
         syncRequestHandler = &onSourceSyncRequested;
         // Optional floating mini chat overlay, off by default.
@@ -11059,12 +11069,123 @@ private string _suggestExcludeId;
     /// and relaunches the app supervised. A failed compile relaunches the
     /// previous binary, and the relaunched app reports the compiler errors.
     ///
-    /// Returns true when the agent was started; on failure the window stays
-    /// open and false is returned.
+    /// Returns true when the source check or helper was started. A rejected
+    /// check leaves the app open and explains how to update source first.
     ///
     public bool requestRebuild(string reason = "")
     {
-        if (_rebuildPending) return false;
+        if (_rebuildPending || _rebuildSourceChecking || _agentRebuildRequested ||
+            _sourceFetching || _developerPublishing)
+            return false;
+        if (!_settings.developerRequireLatestSource) return performRebuild(reason);
+        const source = developerSourceDirectory();
+        if (source.length == 0)
+        {
+            showDeveloperSourceSetup(delegate() { requestRebuild(reason); });
+            return false;
+        }
+        _rebuildSourceChecking = true;
+        updateStatus("Checking maintainer source before rebuilding…");
+        auto worker = new Thread({
+            auto result = checkRebuildSource(source, true);
+            synchronized (this)
+            {
+                _rebuildSourceCheckResult = result;
+                _rebuildSourceCheckReason = reason;
+                _rebuildSourceCheckPath = source;
+                _rebuildSourceCheckDone = true;
+            }
+        });
+        worker.isDaemon = true;
+        worker.start();
+        return true;
+    }
+
+    private DeveloperSyncResult checkRebuildSource(string source, bool required)
+    {
+        if (rebuildSourceCheckForTesting !is null)
+            return rebuildSourceCheckForTesting(source, required);
+        synchronized (developerOperationMutex())
+        {
+            auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
+            return workflow.checkRebuildSource(source, required);
+        }
+    }
+
+    private string onAgentRebuildSourceCheck()
+    {
+        auto result = checkRebuildSource(developerSourceDirectory(), _settings.developerRequireLatestSource);
+        if (!result.failed && !result.available) return "";
+        synchronized (this) { _rebuildSourceBlockedMessage = result.message; }
+        return result.message;
+    }
+
+    private void drainRebuildSourceCheck()
+    {
+        DeveloperSyncResult result;
+        string reason, blocked, checkedSource;
+        bool done;
+        synchronized (this)
+        {
+            blocked = _rebuildSourceBlockedMessage;
+            _rebuildSourceBlockedMessage = "";
+            done = _rebuildSourceCheckDone;
+            if (done)
+            {
+                _rebuildSourceCheckDone = false;
+                result = _rebuildSourceCheckResult;
+                reason = _rebuildSourceCheckReason;
+                checkedSource = _rebuildSourceCheckPath;
+            }
+        }
+        if (blocked.length > 0) showRebuildSourceBlocked(blocked);
+        if (!done) return;
+        _rebuildSourceChecking = false;
+        if (result.failed || result.available) showRebuildSourceBlocked(result.message);
+        else if (checkedSource != developerSourceDirectory())
+            showRebuildSourceBlocked("The source folder changed during the check. Retry Rebuild to check the selected source.");
+        else performRebuild(reason);
+    }
+
+    private void showRebuildSourceBlocked(string message)
+    {
+        updateStatus("Rebuild stopped. Update Aurora source and resolve conflicts first.");
+        dismissPopup();
+        auto content = new VBox(10, Insets(16));
+        content.setId("oc-rebuild-source-blocked");
+        auto title = content.add(new Label("Update source before rebuilding"));
+        title.setPixelSize(opencodeFontTitle);
+        auto detail = content.add(new TextArea(message));
+        detail.setId("oc-rebuild-source-message");
+        detail.setReadOnly(true);
+        detail.layoutHints().preferredHeight = 150;
+        content.add(new Label("Ask the agent to update source, reapply your work, and resolve conflicts."));
+        auto hint = content.add(new Label("Optional: turn off Require latest maintainer source in Settings > Developer."));
+        hint.setScale(1);
+        auto actions = content.add(new HBox(8));
+        actions.layoutHints().preferredHeight = 36;
+        auto copy = actions.add(new Button("Copy agent prompt"));
+        copy.setId("oc-rebuild-source-copy");
+        copy.onClick = delegate() {
+            copyTextToClipboard(rebuildSourceAgentPrompt(developerSourceDirectory()));
+            updateStatus("Agent prompt copied. Paste it into your Aurora development chat.");
+        };
+        actions.add(new Spacer());
+        auto close = actions.add(new Button("Close"));
+        close.setId("oc-rebuild-source-close");
+        close.onClick = delegate() { dismissPopup(); };
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(740, 320));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { if (_activePopup is popup) _activePopup = null; };
+        openPopup(popup);
+    }
+
+    /// Enter the existing helper flow only after the UI or tool preflight passes.
+    private bool performRebuild(string reason)
+    {
+        if (_rebuildPending || _sourceFetching || _developerPublishing) return false;
         _rebuildPending = true;
         updateStatus("Rebuilding; Aurora OpenCode will reopen when the new "
             ~ "build is ready...");
@@ -11159,7 +11280,7 @@ private string _suggestExcludeId;
 
     private void showDeveloperSourceFolderDialog(void delegate() ready = null)
     {
-        if (_sourceFetching || _developerPublishing) return;
+        if (_sourceFetching || _developerPublishing || _rebuildSourceChecking || _rebuildPending) return;
         dismissPopup();
         FileDialogOptions options;
         options.mode = FileDialogMode.open;
@@ -11217,7 +11338,8 @@ private string _suggestExcludeId;
     /// Continue a requested Publish/Rebuild only after preparation succeeds.
     private void requestSourceFetch(void delegate() ready = null)
     {
-        if (_sourceFetching || _developerPublishing) return;
+        if (_sourceFetching || _developerPublishing || _rebuildSourceChecking ||
+            _agentRebuildRequested || _rebuildPending) return;
         if (anyTurnIsBusy())
         {
             updateStatus("Use the agent's sync tool while it works, or stop the turn before syncing here.");
@@ -11259,7 +11381,8 @@ private string _suggestExcludeId;
                         if (!exists(buildPath(clone, ".git")))
                         {
                             import auroraopencode.developerworkflow : runDeveloperCommand;
-                            auto result = runDeveloperCommand([git, "clone", auroraRepoCloneUrl, clone], "", 300, "", progress);
+                            auto result = runDeveloperCommand([git, "clone", "--branch",
+                                maintainerSourceBranch, auroraRepoCloneUrl, clone], "", 300, "", progress);
                             if (result.status != 0) throw new Exception(result.output);
                         }
                         path = buildPath(clone, "aurora-opencode-pro");
@@ -11331,6 +11454,8 @@ private string _suggestExcludeId;
     /// The agent applies source updates between operations; background checks only notify.
     private string onSourceSyncRequested()
     {
+        if (_rebuildSourceChecking || _agentRebuildRequested || _rebuildPending)
+            return "Error: A rebuild check or rebuild is pending. Wait for it before syncing source.";
         synchronized (developerOperationMutex())
         {
             auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
@@ -11383,7 +11508,8 @@ private string _suggestExcludeId;
 
     private void runPublishPullRequest(string message)
     {
-        if (_developerPublishing || _sourceFetching) return;
+        if (_developerPublishing || _sourceFetching || _rebuildSourceChecking ||
+            _agentRebuildRequested || _rebuildPending) return;
         if (anyTurnIsBusy())
         {
             updateStatus("Finish or stop the agent's work before publishing its changes.");
@@ -11598,7 +11724,8 @@ private string _suggestExcludeId;
     /// the UI thread once the tool result has settled into the transcript.
     private bool onAgentRebuildRequested(string reason)
     {
-        if (_rebuildPending || _agentRebuildRequested) return false;
+        if (_rebuildPending || _rebuildSourceChecking || _sourceFetching ||
+            _developerPublishing || _agentRebuildRequested) return false;
         if (!canSelfRebuild()) return false;
         _agentRebuildReason = reason;
         _agentRebuildRequested = true;
@@ -11644,7 +11771,7 @@ private string _suggestExcludeId;
         if (!sessionIdKnown(sessionId)) sessionId = resumeOwnerSessionId();
         writeResumeNoteForRebuild(reason, sessionId);
         if (sessionId.length > 0) setTurnActiveMarker(true, sessionId);
-        if (!requestRebuild(reason)) removeResumeNoteForRebuild();
+        if (!performRebuild(reason)) removeResumeNoteForRebuild();
     }
 
     /// Whether `id` names a conversation that still exists, so the resume note
@@ -22612,6 +22739,22 @@ private void pollButtonSuggestionRequest()
         autoReapplyRow.add(autoReapplyCheck);
         developerActions.add(autoReapplyRow);
 
+        auto requireLatestRow = new HBox(8);
+        requireLatestRow.layoutHints().preferredHeight = 32;
+        auto requireLatest = requireLatestRow.add(new CheckBox(
+            "Require latest maintainer source before rebuild"));
+        requireLatest.setId("oc-developer-require-latest-source");
+        requireLatest.setChecked(_settings.developerRequireLatestSource, false);
+        requireLatest.onChanged = delegate(bool value)
+        {
+            _settings.developerRequireLatestSource = value;
+            saveSettingsNow();
+        };
+        developerActions.add(requireLatestRow);
+        auto sourceBranch = developerActions.add(new Label("Maintainer source: " ~ maintainerSourceBranch));
+        sourceBranch.setScale(1);
+        sourceBranch.setColor(opencodeMuted);
+
         // A git checkout with git on PATH can commit and push with the user's
         // own credentials; the app stores no secret.
         {
@@ -27328,6 +27471,7 @@ private void pollButtonSuggestionRequest()
         drainSourceFetch();
         drainDeveloperPush();
         drainDeveloperUpstreamCheck();
+        drainRebuildSourceCheck();
         drainKeyUsageResults();
         // Detect maintainer pushes without changing files beneath active tools.
         if (_settings.developerMode && !_developerSyncRunning &&
