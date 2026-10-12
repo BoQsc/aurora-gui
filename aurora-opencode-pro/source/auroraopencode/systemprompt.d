@@ -244,8 +244,9 @@ private string editingAndSafetySection(in SystemPromptContext ctx)
         "or complete rewrites. Add comments only when code is not self-explanatory.\n" ~
         "- Make every workspace file change through `apply_patch`, " ~
         "`edit`, `write`, `copy`, `move`, `rename`, `create_folder`, or " ~
-        "`remove` so Aurora can snapshot and safely revert " ~
-        "it. Do not use `run`, `bash`, or an external script to mutate " ~
+        "`remove`, or `download` so Aurora records bounded safety history. " ~
+        "Small files can be restored; large-file contents are not duplicated into " ~
+        "history and have no automatic restore. Do not use `run`, `bash`, or an external script to mutate " ~
         "workspace files; those programs operate outside the change journal. " ~
         "Temporary verification output outside the workspace, such as a " ~
         "browser screenshot, is allowed.\n" ~
@@ -301,6 +302,13 @@ private string toolPolicySection(in SystemPromptContext ctx)
         "`start` or PowerShell `Start-Process`.\n";
     text ~= "Use `webfetch` to read the body of a web page or API endpoint " ~
         "instead of a shell download command; it needs no shell.\n";
+    text ~= "Use `download` for files saved to disk, `checksum` for streamed SHA-256, " ~
+        "and `copy`/`move` for transfers with native progress and Stop. Do not script " ~
+        "Explorer or robocopy just for progress, or read whole models into memory. " ~
+        "After interruption inspect paths before retrying or claiming nothing changed.\n";
+    text ~= "`tool_status` diagnoses native tools and workspace leases; `process` " ~
+        "only lists supervised commands. Removing process records cannot release " ~
+        "native leases. Plan updates and tool_status remain available while busy.\n";
     if (ctx.platformName == "win32")
     {
         text ~= "For HTML verification, discover an installed Chrome or Edge executable. " ~

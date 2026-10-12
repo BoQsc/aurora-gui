@@ -1,5 +1,7 @@
 module auroraopencode.tools;
 import auroraopencode.verification : VerificationEvidence, verificationCheck;
+import auroraopencode.filetransfer : transferFiles;
+import auroraopencode.download : downloadFile, checksumFile, validSha256;
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall,
     OpenCodeToolDef, ensureStateDirectory, opencodeStateDirectory;
@@ -432,7 +434,10 @@ private OpenCodeToolDef moveToolDefinition()
         "Move files and directories into an existing destination folder " ~
         "without using a shell. Provide `source` for one item or `sources` " ~
         "for a batch. Item names stay unchanged; use `rename` when a name " ~
-        "must change. Existing targets are never overwritten.",
+        "must change. Shows live progress, bytes, speed and remaining time; " ~
+        "Stop cancels unfinished copies. Same-volume moves rename immediately; " ~
+        "cross-volume moves copy before deleting sources. Existing targets are " ~
+        "never overwritten. Use this instead of robocopy or Explorer scripts.",
         `{"type":"object","properties":{"source":{"type":"string","description":"One file or directory to move, relative to the workspace or absolute"},"sources":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Files and/or directories to move as one batch"},"destinationFolder":{"type":"string","description":"Existing folder that will receive the items"}},"required":["destinationFolder"]}`
     );
 }
@@ -447,7 +452,8 @@ private OpenCodeToolDef copyToolDefinition()
         "Copy files and directories into an existing destination folder " ~
         "without using a shell. Provide `source` for one item or `sources` " ~
         "for a batch. Directory trees are copied recursively and item names " ~
-        "stay unchanged. Existing targets are never overwritten.",
+        "stay unchanged. Shows live progress, bytes, speed and remaining time; " ~
+        "Stop cancels and cleans unfinished copies. Existing targets are never overwritten.",
         `{"type":"object","properties":{"source":{"type":"string","description":"One file or directory to copy, relative to the workspace or absolute"},"sources":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Files and/or directories to copy as one batch"},"destinationFolder":{"type":"string","description":"Existing folder that will receive the copies"}},"required":["destinationFolder"]}`
     );
 }
@@ -548,6 +554,27 @@ private OpenCodeToolDef webFetchToolDefinition()
     );
 }
 
+private OpenCodeToolDef downloadToolDefinition()
+{
+    return OpenCodeToolDef("download",
+        "Download an HTTP(S) URL directly to a file with a visible progress bar, bytes, " ~
+        "speed and remaining time. Streams large files without holding them in RAM. " ~
+        "Retry the same call to resume a recognized partial download safely. Optionally " ~
+        "supply the publisher's SHA-256; a mismatch rejects the data. Existing " ~
+        "destinations are never overwritten. Stop keeps resumable partial data. " ~
+        "Use this for models, archives and installers instead of curl scripts or webfetch.",
+        `{"type":"object","properties":{"url":{"type":"string"},"filePath":{"type":"string","description":"Destination path, relative to workspace or absolute"},"sha256":{"type":"string","description":"Optional publisher SHA-256, 64 hexadecimal characters"},"resume":{"type":"boolean","description":"Resume recognized partial data when safe, default true"},"timeout":{"type":"integer","description":"Timeout per network operation in milliseconds, default 10000; 1000 to 60000"}},"required":["url","filePath"]}`);
+}
+
+private OpenCodeToolDef checksumToolDefinition()
+{
+    return OpenCodeToolDef("checksum",
+        "Compute a file's SHA-256 using bounded streaming reads and visible progress. " ~
+        "Optionally compare an expected checksum. Use for large downloaded models and " ~
+        "archives instead of reading the entire file into Python or chat memory.",
+        `{"type":"object","properties":{"filePath":{"type":"string"},"sha256":{"type":"string","description":"Optional expected SHA-256"}},"required":["filePath"]}`);
+}
+
 /// Agent-facing rebuild tool. It does no building itself: the executable is
 /// locked while the app runs, so the work is delegated to the host application
 /// through `rebuildRequestHandler` (see `runRebuildTool`).
@@ -625,7 +652,10 @@ public OpenCodeToolDef[] builtinToolDefinitions()
             `{"type":"object","properties":{"command":{"type":"string","description":"The command to execute"},"shell":{"type":"string","enum":["auto","bash","cmd","powershell","pwsh"],"description":"The shell to run the command in. Defaults to the platform shell."},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute. Use this instead of cd."},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the command in the background"}},"required":["command"]}`
         ),
         processToolDefinition(),
+        toolStatusDefinition(),
         webFetchToolDefinition(),
+        downloadToolDefinition(),
+        checksumToolDefinition(),
         dshellToolDefinition(),
         openToolDefinition(),
         viewImageToolDefinition(),
@@ -687,7 +717,10 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
         processToolDefinition(),
+        toolStatusDefinition(),
         webFetchToolDefinition(),
+        downloadToolDefinition(),
+        checksumToolDefinition(),
         dshellToolDefinition(),
         openToolDefinition(),
         viewImageToolDefinition(),
@@ -787,6 +820,17 @@ public struct ToolExecution
     // Keeping them off the `tool` message preserves strict tool-call ordering.
     ChatImageAttachment[] images;
     VerificationEvidence verification;
+}
+
+public __gshared string delegate() toolStatusHandler;
+
+private OpenCodeToolDef toolStatusDefinition()
+{
+    return OpenCodeToolDef("tool_status",
+        "Inspect active native tools, elapsed time, workspace writer leases and queued work. " ~
+        "Available while workspace tools are busy. Use this for lease timeouts; process " ~
+        "only lists supervised commands. Stop the owning turn to cancel an active tool.",
+        `{"type":"object","properties":{}}`);
 }
 
 /// A line-based diff between two file bodies. `unified` uses the standard
@@ -1027,6 +1071,7 @@ private string snapshotHash(bool existsValue, bool directory,
 
 private bool snapshotIsText(const(ubyte)[] bytes)
 {
+    if (bytes.canFind(cast(ubyte) 0)) return false;
     try
     {
         validate(cast(string) bytes);
@@ -1046,39 +1091,86 @@ private string changeWorkspaceDirectory(string workspace)
     return root;
 }
 
-private FileSnapshot snapshotFile(string path)
+public enum safetySnapshotFileLimit = 1024 * 1024;
+private enum safetySnapshotTotalLimit = 16 * 1024 * 1024;
+private enum safetySnapshotEntryLimit = 10_000;
+
+private string snapshotHash(const ref FileSnapshot snapshot)
+{
+    return snapshot.omitted.length ? "metadata:" ~ snapshot.omitted :
+        snapshotHash(snapshot.exists, snapshot.directory, snapshot.bytes);
+}
+
+private FileSnapshot snapshotFile(string path, size_t* budget = null)
 {
     FileSnapshot result;
     result.path = buildNormalizedPath(path);
     result.exists = exists(result.path);
     result.directory = result.exists && isDir(result.path);
     if (result.exists && !result.directory && isFile(result.path))
-        result.bytes = cast(ubyte[]) read(result.path);
+    {
+        const size = getSize(result.path);
+        if (size > safetySnapshotFileLimit || (budget !is null && size > *budget))
+            result.omitted = "content not captured (size " ~ to!string(size) ~
+                ", modified " ~ to!string(timeLastModified(result.path).stdTime) ~ ")";
+        else
+        {
+            result.bytes = cast(ubyte[]) read(result.path, safetySnapshotFileLimit + 1);
+            if (result.bytes.length > safetySnapshotFileLimit || (budget !is null && result.bytes.length > *budget))
+            {
+                result.bytes = null;
+                result.omitted = "file grew beyond the 1 MiB history limit";
+            }
+            else if (budget !is null) *budget -= result.bytes.length;
+        }
+    }
     return result;
 }
 
-private FileSnapshot[] snapshotTargets(const string[] targets)
+private FileSnapshot[] snapshotTargets(const string[] targets,
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     FileSnapshot[] result;
+    size_t budget = safetySnapshotTotalLimit;
+    bool[string] visited;
+    auto nextReport = MonoTime.currTime;
     bool seen(string path)
     {
-        foreach (item; result)
-            if (item.path == path) return true;
-        return false;
+        return (path in visited) !is null;
+    }
+    void capture(string path)
+    {
+        if (cancellation !is null && cancellation.cancelled())
+            throw new Exception("Stopped: safety history capture cancelled.");
+        if (observer !is null && MonoTime.currTime >= nextReport)
+        {
+            observer("Preparing bounded safety history · " ~ to!string(result.length) ~ " paths\n" ~ path);
+            nextReport = MonoTime.currTime + 150.msecs;
+        }
+        visited[path] = true;
+        result ~= snapshotFile(path, &budget);
     }
     foreach (candidate; targets)
     {
         const path = buildNormalizedPath(candidate);
         if (exists(path) && isDir(path))
         {
-            if (!seen(path)) result ~= snapshotFile(path);
+            if (!seen(path)) capture(path);
+            const root = result.length - 1;
             foreach (entry; dirEntries(path, SpanMode.depth))
+            {
+                if (result.length >= safetySnapshotEntryLimit)
+                {
+                    result[root].omitted = "folder history exceeds 10,000 paths";
+                    return result;
+                }
                 if ((entry.isFile || entry.isDir) &&
                     !seen(buildNormalizedPath(entry.name)))
-                    result ~= snapshotFile(entry.name);
+                    capture(entry.name);
+            }
         }
         else if (!seen(path))
-            result ~= snapshotFile(path);
+            capture(path);
     }
     return result;
 }
@@ -1361,7 +1453,7 @@ private string[] mutationTargetPaths(const OpenCodeToolCall call,
     try value = parseJSON(call.arguments);
     catch (Exception) value = JSONValue.init;
     if (value.type != JSONType.object) return result;
-    if (call.name == "write" || call.name == "edit")
+    if (call.name == "write" || call.name == "edit" || call.name == "download")
     {
         if (auto field = "filePath" in value.object)
             if (field.type == JSONType.string) add(field.str);
@@ -1448,6 +1540,7 @@ private JSONValue changeRecordToJson(const ref ChangeRecord record)
     root["afterBlob"] = record.afterBlob;
     root["additions"] = record.additions;
     root["deletions"] = record.deletions;
+    if (record.restoreUnavailable.length) root["restoreUnavailable"] = record.restoreUnavailable;
     if (record.revertOf.length > 0) root["revertOf"] = record.revertOf;
     return root;
 }
@@ -1499,6 +1592,10 @@ private ChangeRecord changeRecordFromJson(ref const JSONValue root)
     record.afterBlob = jsonString(root, "afterBlob");
     record.additions = jsonInt(root, "additions");
     record.deletions = jsonInt(root, "deletions");
+    record.restoreUnavailable = jsonString(root, "restoreUnavailable");
+    foreach (blob; [record.beforeBlob, record.afterBlob])
+        if (blob.length && exists(blob) && getSize(blob) > safetySnapshotFileLimit)
+            record.restoreUnavailable = "Legacy snapshot exceeds the safe history limit; automatic restore is unavailable for this path.";
     record.revertOf = jsonString(root, "revertOf");
     return record;
 }
@@ -1570,8 +1667,9 @@ private string persistNativeMutationIntent(const OpenCodeToolCall call,
             file["path"] = item.path;
             file["exists"] = item.exists;
             file["directory"] = item.directory;
-            file["hash"] = snapshotHash(item.exists, item.directory, item.bytes);
-            if (item.exists && !item.directory)
+            file["hash"] = snapshotHash(item);
+            if (item.omitted.length) file["restoreUnavailable"] = item.omitted;
+            if (item.exists && !item.directory && !item.omitted.length)
             {
                 const blob = buildPath(directory, identity ~ "-" ~ to!string(index) ~ ".before");
                 writeSnapshotBlob(blob, item.bytes);
@@ -1637,13 +1735,13 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
     foreach (item; before)
     {
         oldByPath[item.path] = FileSnapshot(item.path, item.exists,
-            item.directory, item.bytes.dup);
+            item.directory, item.bytes.dup, item.omitted);
         if (!paths.canFind(item.path)) paths ~= item.path;
     }
     foreach (item; after)
     {
         newByPath[item.path] = FileSnapshot(item.path, item.exists,
-            item.directory, item.bytes.dup);
+            item.directory, item.bytes.dup, item.omitted);
         if (!paths.canFind(item.path)) paths ~= item.path;
     }
     synchronized (_changeJournalMutex)
@@ -1656,7 +1754,7 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
                 FileSnapshot(path, false, false, null);
             if (oldState.exists == newState.exists &&
                 oldState.directory == newState.directory &&
-                oldState.bytes == newState.bytes) continue;
+                oldState.bytes == newState.bytes && oldState.omitted == newState.omitted) continue;
             const id = to!string(Clock.currTime.stdTime) ~ "-" ~
                 to!string(++_changeSequence);
             const root = changeWorkspaceDirectory(workspace);
@@ -1676,21 +1774,23 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
             record.afterExists = newState.exists;
             record.beforeDirectory = oldState.directory;
             record.afterDirectory = newState.directory;
-            record.beforeHash = snapshotHash(oldState.exists,
-                oldState.directory, oldState.bytes);
-            record.afterHash = snapshotHash(newState.exists,
-                newState.directory, newState.bytes);
-            if (oldState.exists && !oldState.directory)
+            record.beforeHash = snapshotHash(oldState);
+            record.afterHash = snapshotHash(newState);
+            if (oldState.omitted.length || newState.omitted.length)
+                record.restoreUnavailable = "Automatic restore unavailable: " ~
+                    (oldState.omitted.length ? oldState.omitted : newState.omitted) ~
+                    ". History stores at most 1 MiB per file and 16 MiB per operation.";
+            if (oldState.exists && !oldState.directory && !oldState.omitted.length)
             {
                 record.beforeBlob = buildPath(root, "blobs", id ~ ".before");
                 writeSnapshotBlob(record.beforeBlob, oldState.bytes);
             }
-            if (newState.exists && !newState.directory)
+            if (newState.exists && !newState.directory && !newState.omitted.length)
             {
                 record.afterBlob = buildPath(root, "blobs", id ~ ".after");
                 writeSnapshotBlob(record.afterBlob, newState.bytes);
             }
-            if (!oldState.directory && !newState.directory &&
+            if (!record.restoreUnavailable.length && !oldState.directory && !newState.directory &&
                 snapshotIsText(oldState.bytes) &&
                 snapshotIsText(newState.bytes))
             {
@@ -2321,6 +2421,7 @@ public struct ChangeRecord
     int additions;
     int deletions;
     string revertOf;
+    string restoreUnavailable;
 }
 
 public struct ChangeRevertResult
@@ -2337,6 +2438,7 @@ private struct FileSnapshot
     bool exists;
     bool directory;
     ubyte[] bytes;
+    string omitted;
 }
 
 private __gshared ulong _changeSequence;
@@ -3333,6 +3435,8 @@ private ToolExecution runWrite(string args, string workspace)
     const path = resolveToolPath(filePath, workspace);
     string previous;
     const existed = exists(path) && isFile(path);
+    if (content.length > safetySnapshotFileLimit || (existed && getSize(path) > safetySnapshotFileLimit))
+        return ToolExecution("write", "Error: write is for text files up to 1 MiB. Use copy, move or a streaming program for large files.", true);
     if (existed)
     {
         try previous = readText(path);
@@ -3444,6 +3548,8 @@ private ToolExecution runEdit(string args, string workspace)
     const path = resolveToolPath(filePath, workspace);
     if (!exists(path) || !isFile(path))
         return ToolExecution("edit", "Error: file not found: " ~ path, true);
+    if (getSize(path) > safetySnapshotFileLimit)
+        return ToolExecution("edit", "Error: edit is for text files up to 1 MiB. Use a streaming program for large files.", true);
     string previous;
     try previous = readText(path);
     catch (Exception error)
@@ -4217,54 +4323,16 @@ private ToolExecution runUpdatePlan(string args, string workspace)
 
 /// The D-native `move` tool: rename one file/directory or move a batch into an
 /// existing directory. All collisions are rejected before the first rename.
-private ToolExecution runMove(string args, string workspace)
+private ToolExecution runMove(string args, string workspace,
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     const paths = resolveTransferPaths(args, workspace, "move");
     if (paths.error.length > 0)
         return ToolExecution("move", "Error: " ~ paths.error, true);
 
-    string[] movedSources;
-    string[] movedTargets;
-    try
-    {
-        foreach (index, source; paths.sources)
-        {
-            rename(source, paths.targets[index]);
-            movedSources ~= source;
-            movedTargets ~= paths.targets[index];
-        }
-    }
-    catch (Exception error)
-    {
-        string[] rollbackFailures;
-        for (size_t index = movedSources.length; index > 0; --index)
-        {
-            const source = movedSources[index - 1];
-            const target = movedTargets[index - 1];
-            try
-            {
-                if (exists(target) && !exists(source)) rename(target, source);
-            }
-            catch (Exception rollbackError)
-                rollbackFailures ~= target ~ ": " ~ rollbackError.msg;
-        }
-        auto message = "Error: move failed: " ~ error.msg;
-        if (rollbackFailures.length == 0 && movedSources.length > 0)
-            message ~= " Earlier items in the batch were restored.";
-        else if (rollbackFailures.length > 0)
-        {
-            message ~= " Rollback also failed:";
-            foreach (failure; rollbackFailures) message ~= "\n- " ~ failure;
-        }
-        return ToolExecution("move", message, true);
-    }
-
-    auto builder = appender!string();
-    builder.put("Moved " ~ to!string(paths.sources.length) ~
-        (paths.sources.length == 1 ? " item:" : " items:"));
-    foreach (index, source; paths.sources)
-        builder.put("\n- " ~ source ~ " -> " ~ paths.targets[index]);
-    return ToolExecution("move", builder.data, false);
+    auto outcome = transferFiles(paths.sources, paths.targets, true,
+        cancellation is null ? null : &cancellation.cancelled, observer);
+    return ToolExecution("move", outcome.output, outcome.failed);
 }
 
 private ToolExecution runRename(string args, string workspace)
@@ -4313,82 +4381,18 @@ private ToolExecution runCreateFolder(string args, string workspace)
         false);
 }
 
-private void copyPathRecursive(string source, string target)
-{
-    // Following a directory symlink can recurse back into an ancestor, while
-    // dereferencing a file symlink silently changes its semantics. Keep copy's
-    // behavior explicit until the tool has a preserve-links contract.
-    if (isSymlink(source))
-        throw new Exception("symbolic links are not supported: " ~ source);
-    if (isFile(source))
-    {
-        fileCopy(source, target);
-        return;
-    }
-    if (!isDir(source))
-        throw new Exception("source is not a file or directory: " ~ source);
-
-    mkdirRecurse(target);
-    foreach (entry; dirEntries(source, SpanMode.shallow))
-    {
-        const childTarget = buildPath(target, baseName(entry.name));
-        if (entry.isDir)
-            copyPathRecursive(entry.name, childTarget);
-        else if (entry.isFile)
-            fileCopy(entry.name, childTarget);
-        else
-            throw new Exception("unsupported filesystem entry: " ~ entry.name);
-    }
-}
-
 /// The D-native `copy` tool. A partially copied item or batch is removed on
 /// failure; source paths are never modified.
-private ToolExecution runCopy(string args, string workspace)
+private ToolExecution runCopy(string args, string workspace,
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
     const paths = resolveTransferPaths(args, workspace, "copy");
     if (paths.error.length > 0)
         return ToolExecution("copy", "Error: " ~ paths.error, true);
 
-    size_t attempted;
-    try
-    {
-        foreach (index, source; paths.sources)
-        {
-            attempted = index + 1;
-            copyPathRecursive(source, paths.targets[index]);
-        }
-    }
-    catch (Exception error)
-    {
-        string[] cleanupFailures;
-        for (size_t index = attempted; index > 0; --index)
-        {
-            const target = paths.targets[index - 1];
-            try
-            {
-                if (exists(target) && isDir(target)) rmdirRecurse(target);
-                else if (exists(target)) remove(target);
-            }
-            catch (Exception cleanupError)
-                cleanupFailures ~= target ~ ": " ~ cleanupError.msg;
-        }
-        auto message = "Error: copy failed: " ~ error.msg;
-        if (cleanupFailures.length == 0 && attempted > 0)
-            message ~= " Partial copies were removed; sources are unchanged.";
-        else if (cleanupFailures.length > 0)
-        {
-            message ~= " Cleanup also failed:";
-            foreach (failure; cleanupFailures) message ~= "\n- " ~ failure;
-        }
-        return ToolExecution("copy", message, true);
-    }
-
-    auto builder = appender!string();
-    builder.put("Copied " ~ to!string(paths.sources.length) ~
-        (paths.sources.length == 1 ? " item:" : " items:"));
-    foreach (index, source; paths.sources)
-        builder.put("\n- " ~ source ~ " -> " ~ paths.targets[index]);
-    return ToolExecution("copy", builder.data, false);
+    auto outcome = transferFiles(paths.sources, paths.targets, false,
+        cancellation is null ? null : &cancellation.cancelled, observer);
+    return ToolExecution("copy", outcome.output, outcome.failed);
 }
 
 /// The D-native `remove` tool: deletes a file, or a directory tree. Accepts
@@ -4426,7 +4430,14 @@ private ToolExecution runRemove(string args, string workspace)
         if (isFile(path))
         {
             string previous;
-            try previous = readText(path);
+            try
+            {
+                if (getSize(path) <= safetySnapshotFileLimit)
+                {
+                    const bytes = cast(ubyte[]) read(path, safetySnapshotFileLimit);
+                    if (snapshotIsText(bytes)) previous = cast(string) bytes;
+                }
+            }
             catch (Exception) previous = "";
             auto diff = computeTextDiff(previous, "");
             remove(path);
@@ -5217,7 +5228,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         if (call.name == "write" || call.name == "edit" ||
             call.name == "apply_patch" || call.name == "copy" ||
             call.name == "move" || call.name == "rename" ||
-            call.name == "create_folder" || call.name == "remove")
+            call.name == "create_folder" || call.name == "remove" || call.name == "download")
         {
             // Multiple conversations may work in one project. Serialize workspace
             // mutations so two tool workers can never write/delete concurrently;
@@ -5241,7 +5252,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
                 try
                 {
                     journalTargets = mutationTargetPaths(call, workspace);
-                    before = snapshotTargets(journalTargets);
+                    before = snapshotTargets(journalTargets, cancellation, observer);
                 }
                 catch (Exception error)
                     return ToolExecution(call.name,
@@ -5259,12 +5270,18 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             {
                 try
                 {
-                    const after = snapshotTargets(journalTargets);
+                    const after = snapshotTargets(journalTargets, cancellation, observer);
                     const transactionId = call.id.length > 0 ? call.id :
                         to!string(Clock.currTime.stdTime);
                     recordMutation(call, workspace, changeContext, before, after,
                         transactionId);
                     if (pendingIntent.length) retireNativeMutationIntent(pendingIntent);
+                    foreach (item; after)
+                        if (item.omitted.length)
+                        {
+                            result.output ~= "\nLarge-file contents were not duplicated into history. Automatic restore is unavailable for those paths.";
+                            break;
+                        }
                 }
                 catch (Exception error)
                     result.output ~= "\nWarning: the change was made, but its " ~
@@ -5286,12 +5303,14 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
 
 private bool currentMatchesAfter(const ref ChangeRecord record)
 {
+    if (record.restoreUnavailable.length) return false;
     const present = exists(record.path);
     if (present != record.afterExists) return false;
     if (!present) return true;
     if (isDir(record.path) != record.afterDirectory) return false;
     if (record.afterDirectory) return true;
     if (!isFile(record.path)) return false;
+    if (getSize(record.path) > safetySnapshotFileLimit) return false;
     if (record.afterBlob.length == 0 || !exists(record.afterBlob)) return false;
     return cast(ubyte[]) read(record.path) ==
         cast(ubyte[]) read(record.afterBlob);
@@ -5344,6 +5363,7 @@ public ChangeRevertResult revertChangeRecord(string workspace, string recordId,
                         aggregate.afterDirectory = record.afterDirectory;
                         aggregate.afterHash = record.afterHash;
                         aggregate.afterBlob = record.afterBlob;
+                        if (record.restoreUnavailable.length) aggregate.restoreUnavailable = record.restoreUnavailable;
                         aggregate.revertOf ~= "|" ~ record.id;
                     }
                 }
@@ -5466,6 +5486,7 @@ private ChangeRecord[] collapseChangeRecords(ChangeRecord[] all,
             aggregate.afterDirectory = record.afterDirectory;
             aggregate.afterHash = record.afterHash;
             aggregate.afterBlob = record.afterBlob;
+            if (record.restoreUnavailable.length) aggregate.restoreUnavailable = record.restoreUnavailable;
             aggregate.changeKind = record.changeKind;
             aggregate.revertOf ~= "|" ~ record.id;
         }
@@ -5599,6 +5620,8 @@ public ChangeRevertResult revertChangeRecords(string workspace,
 
 public string changeRecordDiff(const ref ChangeRecord record)
 {
+    if (record.restoreUnavailable.length) return record.restoreUnavailable ~
+        "\n\nBefore: " ~ record.beforeHash ~ "\nAfter: " ~ record.afterHash;
     try
     {
         if (record.beforeDirectory || record.afterDirectory)
@@ -5716,6 +5739,12 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runProgramTool(call.arguments, workspace, cancellation, observer);
         case "process":
             return runProcessTool(call.arguments);
+        case "download":
+        case "checksum":
+            return runDownloadOrChecksum(call, workspace, cancellation, observer);
+        case "tool_status":
+            return ToolExecution(call.name, toolStatusHandler is null ?
+                "No scheduler diagnostics are available in this host." : toolStatusHandler(), false);
         case "dshell":
             return runDshell(call.arguments, workspace, cancellation, observer);
         case "open":
@@ -5735,9 +5764,9 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "update_subplan":
             return runUpdateSubplan(call.arguments, workspace);
         case "copy":
-            return runCopy(call.arguments, workspace);
+            return runCopy(call.arguments, workspace, cancellation, observer);
         case "move":
-            return runMove(call.arguments, workspace);
+            return runMove(call.arguments, workspace, cancellation, observer);
         case "rename":
             return runRename(call.arguments, workspace);
         case "create_folder":
@@ -5788,6 +5817,33 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return ToolExecution(call.name,
                 "Error: unknown tool '" ~ call.name ~ "'.", true);
     }
+}
+
+private ToolExecution runDownloadOrChecksum(const ref OpenCodeToolCall call,
+    string workspace, ToolCancellation cancellation, ToolOutputObserver observer)
+{
+    const args = parseJSON(call.arguments);
+    const pathArg = jsonString(args, "filePath");
+    const expected = jsonString(args, "sha256").strip().toLower();
+    if (!pathArg.length || !validSha256(expected))
+        return ToolExecution(call.name, "Error: filePath is required; sha256, when supplied, must be 64 hexadecimal characters.", true);
+    const path = resolveToolPath(pathArg, workspace);
+    if (call.name == "checksum")
+    {
+        const actual = checksumFile(path, cancellation is null ? null : &cancellation.cancelled, observer);
+        const mismatch = expected.length > 0 && expected != actual;
+        return ToolExecution(call.name, (mismatch ? "Error: SHA-256 mismatch.\n" : "") ~
+            "SHA-256: " ~ actual ~ "\n" ~ path ~ (expected.length && !mismatch ? "\nChecksum matched." : ""), mismatch);
+    }
+    bool resume = true;
+    uint timeout = 10000;
+    if (auto field = "resume" in args.object) resume = field.boolean;
+    if (auto field = "timeout" in args.object)
+        if (field.type == JSONType.integer)
+            timeout = cast(uint) (field.integer < 1000 ? 1000 : field.integer > 60000 ? 60000 : field.integer);
+    auto outcome = downloadFile(jsonString(args, "url"), path, expected, resume,
+        cancellation is null ? null : &cancellation.cancelled, observer, timeout);
+    return ToolExecution(call.name, outcome.output, outcome.failed);
 }
 
 /// Count the lines in a file body without allocating a line array. A single
@@ -6312,6 +6368,16 @@ private ToolExecution dshellStat(string path, string workspace)
     builder.put("<path>" ~ path ~ "</path>\n");
     builder.put(isDir(path) ? "<type>directory</type>\n"
         : isFile(path) ? "<type>file</type>\n" : "<type>other</type>\n");
+    version (Windows)
+    {
+        import core.sys.windows.windows : GetDiskFreeSpaceExW, ULARGE_INTEGER;
+        ULARGE_INTEGER available, total, free;
+        const folder = isDir(path) ? path : dirName(path);
+        if (GetDiskFreeSpaceExW(folder.toUTF16z, &available, &total, &free))
+            builder.put("<volume_available_bytes>" ~ to!string(available.QuadPart) ~
+                "</volume_available_bytes>\n<volume_total_bytes>" ~ to!string(total.QuadPart) ~
+                "</volume_total_bytes>\n");
+    }
     if (isFile(path))
     {
         try builder.put("<size>" ~ to!string(getSize(path)) ~

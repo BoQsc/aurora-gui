@@ -3,7 +3,7 @@ module auroraopencode.workscheduler;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
-import core.time : msecs;
+import core.time : MonoTime, msecs;
 import std.path : buildNormalizedPath;
 import std.string : toLower;
 
@@ -13,6 +13,7 @@ public abstract class WorkItem
     string resource;
     bool exclusive;
     bool changed;
+    string label;
     abstract void execute();
     abstract void settle(ulong workspaceRevision);
     bool abandonQueued() { return false; }
@@ -20,6 +21,13 @@ public abstract class WorkItem
 }
 
 private struct Lease { size_t readers; bool writer; ulong revision; }
+
+public struct WorkStatus
+{
+    string tool, workspace;
+    bool exclusive;
+    long elapsedMs;
+}
 
 /// Bounded workers and writer-preferring workspace leases. A cancelled task
 /// keeps its physical lease until execute returns; logical Stop cannot let a
@@ -29,6 +37,7 @@ public final class WorkScheduler
     private Mutex _mutex;
     private Condition _wake;
     private WorkItem[] _pending;
+    private MonoTime[WorkItem] _running;
     private Lease[string] _leases;
     private bool[string] _resources;
     private Thread[] _workers;
@@ -77,6 +86,18 @@ public final class WorkScheduler
     size_t pending()
     {
         synchronized (_mutex) return _pending.length;
+    }
+
+    WorkStatus[] status()
+    {
+        synchronized (_mutex)
+        {
+            WorkStatus[] result;
+            foreach (item, started; _running)
+                result ~= WorkStatus(item.label, item.workspace, item.exclusive,
+                    (MonoTime.currTime - started).total!"msecs");
+            return result;
+        }
     }
 
     /// Drain accepted work, then release the worker threads. The caller must
@@ -164,6 +185,7 @@ public final class WorkScheduler
             if (item.exclusive) lease.writer = true;
             else ++lease.readers;
             if (item.resource.length) _resources[item.resource] = true;
+            _running[item] = MonoTime.currTime;
             _mutex.unlock();
             // WorkItem implementations must turn failures into terminal values.
             try item.execute();
@@ -175,6 +197,7 @@ public final class WorkScheduler
             if (item.exclusive) lease.writer = false;
             else --lease.readers;
             if (item.resource.length) _resources.remove(item.resource);
+            _running.remove(item);
             _wake.notifyAll();
             _mutex.unlock();
             try item.settle(revision);

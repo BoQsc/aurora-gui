@@ -4,6 +4,8 @@ import auroraopencode.developerworkflow : DeveloperWorkflow,
     DeveloperSyncResult, maintainerSourceBranch, rebuildSourceAgentPrompt,
     developerOperationMutex, ensureDeveloperTool, findDeveloperTool;
 import auroraopencode.latency : RequestLatency, LatencyStage, LatencySnapshot;
+import auroraopencode.transferprogress : TransferProgress, decodeTransferProgress,
+    transferProgressText;
 
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.computeruse : ComputerUseContext;
@@ -3666,6 +3668,12 @@ private string humanToolTitle(string toolName)
             return "Computer";
         case "process":
             return "Process";
+        case "tool_status":
+            return "Tool status";
+        case "download":
+            return "Download";
+        case "checksum":
+            return "Checksum";
         default:
             if (toolName.length == 0) return "Tool";
             return capitalizeFirst(toolName);
@@ -3702,6 +3710,10 @@ private string humanToolProgressTitle(string toolName)
             return "Moving";
         case "copy":
             return "Copying";
+        case "download":
+            return "Downloading";
+        case "checksum":
+            return "Checking checksum";
         case "rename":
             return "Renaming";
         case "create_folder":
@@ -3808,6 +3820,8 @@ private string humanToolSubtitle(string toolName, string toolArgs)
         case "read":
         case "write":
         case "edit":
+        case "download":
+        case "checksum":
             return basenameOf(partialStringArg(toolArgs, "filePath"));
         case "apply_patch":
         {
@@ -4479,6 +4493,8 @@ private final class LiveToolRow : Widget
     private string _detail;
     private string[] _detailLines;
     private bool _detailTruncated;
+    private bool _hasTransferProgress;
+    private TransferProgress _transferProgress;
     // Live wall-clock timer: shown while the command runs, so a long command
     // displays its elapsed time the same way a settled row shows its duration.
     private MonoTime _started;
@@ -4566,8 +4582,13 @@ private final class LiveToolRow : Widget
     void setDetail(string detail)
     {
         if (_detail == detail) return;
-        _detail = detail;
+        const oldHeight = detailHeight() + (_hasTransferProgress ? 12 : 0);
+        _hasTransferProgress = (_toolName == "copy" || _toolName == "move" || _toolName == "download" || _toolName == "checksum") &&
+            decodeTransferProgress(detail, _transferProgress);
+        _detail = _hasTransferProgress ? transferProgressText(_transferProgress) : detail;
         rebuildDetailLines();
+        if (oldHeight != detailHeight() + (_hasTransferProgress ? 12 : 0) && onSizeChanged !is null)
+            onSizeChanged();
         invalidate();
     }
 
@@ -4604,6 +4625,8 @@ private final class LiveToolRow : Widget
     int diffAdditionsForTesting() const { return _additions; }
     int diffDeletionsForTesting() const { return _deletions; }
     string previewForTesting() const { return _detail; }
+    bool hasTransferProgressForTesting() const { return _hasTransferProgress; }
+    double transferFractionForTesting() const { return _transferProgress.fraction(); }
 
     private int headerHeight()
     {
@@ -4633,7 +4656,7 @@ private final class LiveToolRow : Widget
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
-        const height = headerHeight() + detailHeight();
+        const height = headerHeight() + detailHeight() + (_hasTransferProgress ? 12 : 0);
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = height;
         return Size(width, height);
@@ -4703,10 +4726,24 @@ private final class LiveToolRow : Widget
             }
         }
 
+        if (_hasTransferProgress)
+        {
+            const track = Rect(padH + 8, h + 3, maxInt(1, bounds().width - 2 * padH - 16), 5);
+            canvas.fillRect(track, diffCardBorder);
+            if (_transferProgress.totalsKnown)
+                canvas.fillRect(Rect(track.x, track.y,
+                    cast(int) (track.width * _transferProgress.fraction()), track.height), opencodeAccent);
+            else
+            {
+                const width = maxInt(1, track.width / 4);
+                canvas.fillRect(Rect(track.x + (track.width - width) * pulseStep() / 3,
+                    track.y, width, track.height), opencodeAccent);
+            }
+        }
         if (_detailLines.length == 0) return;
         // The streamed body, one monospace row per line, indented under the
         // header. Long lines are clipped to the row width (no wrap).
-        int y = h;
+        int y = h + (_hasTransferProgress ? 12 : 0);
         const lineH = detailLineHeight();
         const bodyX = padH + 8;
         const bodyWidth = maxInt(1, bounds().width - bodyX - padH - 8);
@@ -16443,6 +16480,7 @@ private void pollButtonSuggestionRequest()
          // would manufacture a redundant model request that only re-sends the
          // history, inflating the re-sent (uncached) input the user pays for.
          if (session.queuedFollowUps.length == 0 &&
+             !explanationOnlyRequest(latestActualUserRequest(*session)) &&
              session.verificationStatus == "required" &&
              planContinuationCount(*session) < planContinuationLimit)
          {
@@ -17800,7 +17838,7 @@ private void pollButtonSuggestionRequest()
     {
         return name == "write" || name == "edit" || name == "apply_patch" ||
             name == "copy" || name == "move" || name == "rename" ||
-            name == "create_folder" || name == "remove";
+            name == "create_folder" || name == "remove" || name == "download";
     }
 
     private static bool isVerificationTool(string name, string arguments)
@@ -21733,7 +21771,8 @@ private void pollButtonSuggestionRequest()
         auto hint = content.add(new Label(
             "Aurora snapshots — independent of Git. Restore a file, a folder " ~
             "or a whole change; a path edited since is kept, never " ~
-            "overwritten. External programs are not tracked."));
+            "overwritten. Large-file contents are not copied into history; " ~
+            "those paths cannot be restored automatically. External programs are not tracked."));
         hint.setScale(1);
         hint.setColor(opencodeMuted);
 
@@ -21792,6 +21831,7 @@ private void pollButtonSuggestionRequest()
         {
             string[] ids;
             string kindLabel;
+            string restoreUnavailable;
             const index = list.selectedIndex();
             const valid = index >= 0 && index < cast(int) targets.length;
             if (valid)
@@ -21799,7 +21839,10 @@ private void pollButtonSuggestionRequest()
                 const target = targets[index];
                 foreach (row; target.records)
                     if (row < all.length && (all[row].id in reverted) is null)
+                    {
                         ids ~= all[row].id;
+                        if (all[row].restoreUnavailable.length) restoreUnavailable = all[row].restoreUnavailable;
+                    }
                 if (target.kind == ChangeRowTarget.Kind.file)
                     kindLabel = "this file";
                 else if (target.kind == ChangeRowTarget.Kind.folder)
@@ -21812,7 +21855,8 @@ private void pollButtonSuggestionRequest()
             folderButton.setEnabled(file);
             restoreIds = ids;
             restoreScope = kindLabel;
-            restorable = ids.length > 0;
+            restorable = ids.length > 0 && !restoreUnavailable.length;
+            if (restoreUnavailable.length) status.setText(restoreUnavailable);
             restoreButton.setEnabled(restorable);
             restoreButton.setText(restorable ? "Restore " ~ kindLabel :
                 "Restore");
@@ -29411,6 +29455,25 @@ private void pollButtonSuggestionRequest()
                 previews ~= row.previewForTesting();
         }
         return previews;
+    }
+
+    public double[] liveTransferFractionsForTesting()
+    {
+        double[] fractions;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                foreach (part; group._parts)
+                    if (auto row = cast(LiveToolRow) part)
+                        if (row.hasTransferProgressForTesting()) fractions ~= row.transferFractionForTesting();
+        return fractions;
+    }
+
+    public void injectToolOutputForTesting(string id, string text)
+    {
+        OpenCodeEvent event;
+        event.toolCallId = id;
+        event.text = text;
+        applyToolOutput(event);
     }
 
     /// Test-only: the Codex-style header of every action group in the column, in

@@ -2,7 +2,9 @@ module auroraopencode.toolscheduler;
 
 import auroraopencode.core : OpenCodeToolCall;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
-import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool;
+import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool,
+    toolStatusHandler;
+import std.json : JSONValue;
 import auroraopencode.workscheduler : WorkItem, WorkScheduler;
 import auroraopencode.computeruse : installComputerUseContext;
 import core.sync.mutex : Mutex;
@@ -12,7 +14,39 @@ import core.time : MonoTime, seconds;
 private __gshared Mutex _instanceMutex;
 private __gshared WorkScheduler _scheduler;
 private __gshared WorkScheduler _processScheduler;
-shared static this() { _instanceMutex = new Mutex(); }
+shared static this()
+{
+    _instanceMutex = new Mutex();
+    toolStatusHandler = () => toolStatus();
+}
+
+private string toolStatus()
+{
+    JSONValue result;
+    foreach (index, lane; [scheduler(), processScheduler()])
+    {
+        JSONValue info;
+        info["queued"] = cast(long) lane.pending();
+        info["running"] = JSONValue.emptyArray;
+        foreach (item; lane.status())
+        {
+            JSONValue row;
+            row["tool"] = item.tool;
+            row["workspace"] = item.workspace;
+            row["exclusive"] = item.exclusive;
+            row["elapsedMs"] = item.elapsedMs;
+            info["running"].array ~= row;
+        }
+        result[index == 0 ? "workspace" : "control"] = info;
+    }
+    return result.toString();
+}
+
+private bool controlTool(string name)
+{
+    return name == "process" || name == "tool_status" || name == "update_plan" ||
+        name == "update_subplan" || name == "open";
+}
 
 private WorkScheduler scheduler()
 {
@@ -37,7 +71,7 @@ public ulong toolWorkspaceRevision(string workspace) { return scheduler().revisi
 public bool parallelTool(const ref OpenCodeToolCall call)
 {
     return call.name == "read" || call.name == "glob" || call.name == "grep" ||
-        call.name == "dshell" || call.name == "view_image" || call.name == "process";
+        call.name == "dshell" || call.name == "view_image" || call.name == "process" || call.name == "checksum";
 }
 
 public ToolBatch scheduleToolBatch(OpenCodeClient client, ulong requestId,
@@ -94,7 +128,7 @@ public final class ToolBatch
             job.progress("Queued: waiting for a tool worker or workspace lease. Stop cancels this turn.");
             // Process inspection and termination must remain available while
             // workspace commands occupy the normal workers and writer lease.
-            auto lane = job.call.name == "process" ? processScheduler() : scheduler();
+            auto lane = controlTool(job.call.name) ? processScheduler() : scheduler();
             if (!lane.submit(job))
             {
                 job.result = ToolExecution(job.call.name, "Error: tool queue is at capacity; retry this call.", true);
@@ -132,9 +166,10 @@ private final class ToolJob : WorkItem
     {
         this.batch = batch;
         this.call = call;
+        label = call.name;
         queueDeadline = MonoTime.currTime + 30.seconds;
         workspace = batch.workspace;
-        exclusive = !parallelTool(call);
+        exclusive = !parallelTool(call) && !controlTool(call.name);
         if (call.name == "computer") resource = "desktop";
     }
 
@@ -148,8 +183,9 @@ private final class ToolJob : WorkItem
         result = ToolExecution(call.name, batch.cancellation.cancelled()
             ? "Stopped: queued tool cancelled before it started."
             : "Error: tool could not acquire a worker or workspace lease within 30 seconds; " ~
-              "it was not executed. Inspect long-running processes with the process tool, " ~
-              "then retry after the workspace is available.", true);
+              "it was not executed. Use tool_status to inspect active native tools and " ~
+              "process to inspect commands. Stop the owning turn before retrying; " ~
+              "removing finished process records does not release an active tool's lease.", true);
     }
 
     override void execute()
@@ -161,23 +197,25 @@ private final class ToolJob : WorkItem
         }
         // A failed exclusive effect may have changed files before reporting
         // failure. Keep earlier evidence invalidated in that case.
-        changed = exclusive && call.name != "update_plan" && call.name != "update_subplan" &&
-            call.name != "open" && call.name != "webfetch" &&
-            call.name != "websearch" && call.name != "computer";
+        changed = mutationCandidate();
         auto previous = installComputerUseContext(batch.context.computer);
         scope (exit) installComputerUseContext(previous);
         try
         {
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
-            changed = exclusive &&
-                result.verification.check.length == 0 && call.name != "update_plan" &&
-                call.name != "update_subplan" && call.name != "open" && call.name != "webfetch" &&
-                call.name != "websearch" && call.name != "computer";
+            changed = mutationCandidate() && result.verification.check.length == 0;
         }
         catch (Throwable error)
         {
             result = ToolExecution(call.name, "Error: tool failed: " ~ error.msg, true);
         }
+    }
+
+    private bool mutationCandidate()
+    {
+        if (batch.context.computer.explanationOnly && (call.name == "run" || call.name == "bash")) return false;
+        return exclusive && call.name != "update_plan" && call.name != "update_subplan" &&
+            call.name != "open" && call.name != "webfetch" && call.name != "websearch" && call.name != "computer";
     }
 
     private void progress(string output)
