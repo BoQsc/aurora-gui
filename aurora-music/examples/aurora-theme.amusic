@@ -1,0 +1,50 @@
+# A short original theme in A minor, written by hand to show the score format.
+#   <pitch-or-drum> <beat> <velocity> [<duration-in-beats>]
+tempo 96
+tail 2.5
+
+track Guitar inst=guitar gain=-5 pan=-0.3 rev=0.4
+  A2 0.0 0.80 0.9
+  E3 0.5 0.70 0.9
+  A3 1.0 0.70 0.9
+  C4 1.5 0.70 0.9
+  E4 2.0 0.75 0.9
+  C4 2.5 0.65 0.9
+  A3 3.0 0.65 0.9
+  E3 3.5 0.65 0.9
+  F2 4.0 0.80 0.9
+  C3 4.5 0.70 0.9
+  F3 5.0 0.70 0.9
+  A3 5.5 0.70 0.9
+  C4 6.0 0.75 0.9
+  A3 6.5 0.65 0.9
+  F3 7.0 0.65 0.9
+  C3 7.5 0.65 0.9
+
+track Piano inst=piano gain=-7 pan=0.15 rev=0.55
+  A3 0.0 0.60 1.9
+  C4 0.0 0.55 1.9
+  E4 0.0 0.55 1.9
+  F3 4.0 0.60 1.9
+  A3 4.0 0.55 1.9
+  C4 4.0 0.55 1.9
+
+track Bass inst=bass gain=-4 pan=0 rev=0.1
+  A2 0.0 0.90 3.5
+  F2 4.0 0.90 3.5
+
+track Drums inst=drums gain=-3 pan=0 rev=0.2
+  kick 0.0 0.95
+  snare 1.0 0.90
+  hat 0.5 0.60
+  kick 2.0 0.85
+  snare 3.0 0.90
+  hat 1.5 0.50
+  hat 2.5 0.60
+  hat 3.5 0.50
+  kick 4.0 0.95
+  snare 5.0 0.90
+  hat 4.5 0.60
+  kick 6.0 0.85
+  snare 7.0 0.90
+  ohat 7.5 0.50

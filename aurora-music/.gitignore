@@ -1,0 +1,8 @@
+# Build output and rendered audio.
+build/
+*.exe
+*.obj
+*.pdb
+*.wav
+aurora-music-demo.wav
+aurora-music-out.wav

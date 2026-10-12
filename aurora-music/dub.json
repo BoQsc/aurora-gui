@@ -1,0 +1,19 @@
+{
+  "name": "aurora-music",
+  "description": "A self-contained 0BSD software instrument: synthesizes piano, guitar, bass and drums and renders scores to WAV.",
+  "authors": [
+    "OpenAI"
+  ],
+  "copyright": "Copyright © 2026 OpenAI",
+  "license": "0BSD",
+  "targetType": "executable",
+  "targetName": "aurora-music",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source"
+  ],
+  "libs-windows": [
+    "winmm"
+  ],
+  "version": "0.1.0"
+}
