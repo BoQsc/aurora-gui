@@ -2,6 +2,8 @@ module auroraopencode.tools;
 import auroraopencode.verification : VerificationEvidence, verificationCheck;
 import auroraopencode.filetransfer : transferFiles;
 import auroraopencode.download : downloadFile, checksumFile, validSha256;
+import auroraopencode.searchprogress : SearchProgress, SearchReporter,
+    encodeSearchProgress, decodeSearchProgress, searchProgressText;
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall,
     OpenCodeToolDef, ensureStateDirectory, opencodeStateDirectory;
@@ -157,6 +159,8 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     Pid pid;
     bool running;
     string scanCursor;
+    SearchProgress searchProgress;
+    bool searchCall;
     scope (exit)
     {
         if (running) killProcessTree(pid);
@@ -192,6 +196,18 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                     }
         }
         request["arguments"] = arguments;
+        const searchArgs = parseJSON(arguments);
+        searchCall = call.name == "grep" || call.name == "glob" ||
+            (call.name == "dshell" && scanCursor.length > 0);
+        if (searchCall)
+        {
+            searchProgress.phase = "Starting search";
+            searchProgress.root = jsonString(searchArgs, "path").length ?
+                resolveToolPath(jsonString(searchArgs, "path"), workspace) : workspace;
+            searchProgress.path = searchProgress.root;
+            searchProgress.query = jsonString(searchArgs, "pattern");
+            searchProgress.filter = jsonString(searchArgs, "include");
+        }
         request["workspace"] = workspace;
         request["stateDirectory"] = opencodeStateDirectory();
         const encoded = request.toString();
@@ -211,7 +227,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         auto lastProgressAt = MonoTime.currTime;
         while (true)
         {
-            if (observer !is null && MonoTime.currTime >= nextProgress)
+            if ((observer !is null || searchCall) && MonoTime.currTime >= nextProgress)
             {
                 try
                 {
@@ -219,17 +235,27 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                     {
                         auto snapshot = readFileCapped(progressPath, 16384);
                         if (snapshot.length && snapshot != latestProgress)
-                        { latestProgress = snapshot; lastProgressAt = MonoTime.currTime; }
+                        {
+                            latestProgress = snapshot; lastProgressAt = MonoTime.currTime;
+                            SearchProgress update;
+                            if (searchCall && decodeSearchProgress(snapshot, update)) searchProgress = update;
+                        }
                     }
                 }
                 catch (Exception) {}
-                observer("Filesystem host PID " ~ to!string(pid.processID) ~
+                if (searchCall)
+                {
+                    searchProgress.elapsedMs = (MonoTime.currTime - started).total!"msecs";
+                    searchProgress.lastActivityMs = (MonoTime.currTime - lastProgressAt).total!"msecs";
+                    if (observer !is null) observer(encodeSearchProgress(searchProgress));
+                }
+                else observer("Filesystem host PID " ~ to!string(pid.processID) ~
                     " | elapsed " ~ to!string((MonoTime.currTime - started).total!"seconds") ~
                     "s | timeout " ~ to!string(timeoutMs / 1000) ~ "s | no new progress for " ~
                     to!string((MonoTime.currTime - lastProgressAt).total!"seconds") ~ "s\n" ~
                     (latestProgress.length ? latestProgress : "Waiting for filesystem output: " ~ call.arguments) ~
                     "\nStop terminates this tool host and stops the turn.");
-                nextProgress = MonoTime.currTime + msecs(500);
+                nextProgress = MonoTime.currTime + msecs(200);
             }
             const status = waitTimeout(pid, 20.msecs);
             if (status.terminated)
@@ -240,16 +266,34 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                 if (observer !is null)
                     try
                     {
-                        if (exists(progressPath)) observer("Filesystem host finished\n" ~ readFileCapped(progressPath, 16384));
+                        if (exists(progressPath))
+                        {
+                            const finalProgress = readFileCapped(progressPath, 16384);
+                            SearchProgress update;
+                            if (searchCall && decodeSearchProgress(finalProgress, update))
+                                observer(encodeSearchProgress(update));
+                            else observer("Filesystem host finished\n" ~ finalProgress);
+                        }
                     }
                     catch (Exception) {}
                 break;
             }
+            string searchInterruption(string phase)
+            {
+                if (!searchCall) return "";
+                searchProgress.phase = phase;
+                searchProgress.terminal = true;
+                searchProgress.partial = true;
+                searchProgress.elapsedMs = (MonoTime.currTime - started).total!"msecs";
+                if (observer !is null) observer(encodeSearchProgress(searchProgress));
+                return "\nLast reported search activity (partial results):\n" ~ searchProgressText(searchProgress);
+            }
             if (cancellation !is null && cancellation.cancelled())
                 return ToolExecution(call.name, "Stopped: filesystem tool cancelled; its host was terminated." ~
-                    directoryScanResumeHint(scanCursor), true);
+                    searchInterruption("Search stopped — incomplete") ~ directoryScanResumeHint(scanCursor), true);
             if (MonoTime.currTime >= deadline)
                 return ToolExecution(call.name, "Error: filesystem tool timed out after " ~ to!string(timeoutMs) ~ " ms; its host was terminated." ~
+                    searchInterruption("Search timed out — incomplete") ~
                     (scanCursor.length > 0 ? directoryScanResumeHint(scanCursor)
                         : " Narrow the path or increase timeout."), true);
         }
@@ -627,7 +671,10 @@ private OpenCodeToolDef grepToolDefinition()
         "Search file contents under a directory. Uses regular expressions by " ~
         "default, or exact text when `literal` is true. Defaults to the " ~
         "workspace; set `path` for another directory or a specific file. " ~
-            "`mode` selects matching lines, matching files, or per-file counts.",
+            "`mode` selects matching lines, matching files, or per-file counts. " ~
+            "Shows live scope, current path, scan counts, matches and skipped files. " ~
+            "Recursive searches skip generated folders, binary files and files over 8 MiB; " ~
+            "use an exact file path to search a larger text file. Partial results are labelled.",
         `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
     );
 }
@@ -4524,18 +4571,8 @@ private Regex!(char) globToRegex(string pattern)
     return regex("^" ~ translated ~ "$");
 }
 
-private void reportScan(ToolOutputObserver observer, ref MonoTime next,
-    lazy string stage, string[] matches, bool force = false)
-{
-    if (observer is null || (!force && MonoTime.currTime < next)) return;
-    next = MonoTime.currTime + msecs(250);
-    string preview;
-    const first = matches.length > 3 ? matches.length - 3 : 0;
-    foreach (match; matches[first .. $]) preview ~= match ~ "\n";
-    observer(stage ~ (preview.length ? "\nLatest matches:\n" ~ preview : "\nNo matches collected yet."));
-}
-
-private ToolExecution runGlob(string args, string workspace, ToolOutputObserver observer = null)
+private ToolExecution runGlob(string args, string workspace, ToolCancellation cancellation = null,
+    ToolOutputObserver observer = null)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -4571,19 +4608,38 @@ private ToolExecution runGlob(string args, string workspace, ToolOutputObserver 
         return ToolExecution("glob", "Error: invalid pattern: " ~
             error.msg, true);
 
+    long limit = 500, timeoutMs = 10000;
+    if (auto field = "limit" in value.object) limit = field.integer;
+    if (auto field = "timeout" in value.object) timeoutMs = field.integer;
+    if (limit < 1 || limit > 1000 || timeoutMs < 1 || timeoutMs > 600000)
+        return ToolExecution("glob", "Error: glob limit must be 1..1000 and timeout 1..600000 ms.", true);
     string[] matches;
-    size_t inspected;
-    auto nextProgress = MonoTime.currTime;
-    reportScan(observer, nextProgress, "Scanning directory: " ~ root, matches, true);
-    // Walk the whole tree and match each relative path (forward slashes)
-    // against the compiled glob, which correctly handles `**` recursion.
-    try
+    auto progress = new SearchReporter("Finding paths", root, pattern, "path glob", observer);
+    progress.report(matches, true);
+    bool capped, timedOut, stopped;
+    string lastError;
+    const deadline = MonoTime.currTime + timeoutMs.msecs;
+    bool interrupted()
     {
-        foreach (entry; dirEntries(root, SpanMode.depth))
+        if (cancellation !is null && cancellation.cancelled()) stopped = true;
+        if (MonoTime.currTime >= deadline) timedOut = true;
+        return stopped || timedOut || capped;
+    }
+    void scan(string directory, size_t depth = 0)
+    {
+        if (interrupted()) return;
+        if (depth > 256) { ++progress.value.errors; lastError = "Folder depth exceeds 256: " ~ directory; return; }
+        ++progress.value.directories;
+        progress.value.path = directory;
+        progress.report(matches);
+        try foreach (entry; dirEntries(directory, SpanMode.shallow))
         {
-            ++inspected;
-            reportScan(observer, nextProgress, "Scanning: " ~ entry.name ~
-                "\nInspected " ~ to!string(inspected) ~ " entries; found " ~ to!string(matches.length) ~ " matches", matches);
+            if (interrupted()) return;
+            ++progress.value.entries;
+            progress.value.path = entry.name;
+            progress.report(matches);
+            if (entry.isSymlink) { ++progress.value.skippedLinks; continue; }
+            if (entry.isFile) ++progress.value.files;
             string relative = entry.name;
             if (relative.length >= root.length &&
                 relative[0 .. root.length] == root)
@@ -4592,22 +4648,33 @@ private ToolExecution runGlob(string args, string workspace, ToolOutputObserver 
                 relative[0] == '/'))
                 relative = relative[1 .. $];
             const rel = relative.replace("\\", "/");
-            if (rel.length == 0) continue;
-            if (matchFirst(rel, re).empty) continue;
-            matches ~= entry.name;
-            if (matches.length >= 500) break;
+            if (rel.length && !matchFirst(rel, re).empty)
+            {
+                matches ~= entry.name;
+                progress.value.matches = matches.length;
+                if (matches.length >= limit) { capped = true; return; }
+            }
+            else ++progress.value.skippedFiltered;
+            if (entry.isDir) scan(entry.name, depth + 1);
         }
+        catch (Exception error) { ++progress.value.errors; lastError = error.msg; }
     }
-    catch (Exception) {}
-    reportScan(observer, nextProgress, "Scan complete: " ~ to!string(inspected) ~
-        " entries; " ~ to!string(matches.length) ~ " matches", matches, true);
+    scan(root);
+    progress.value.terminal = true;
+    progress.value.partial = capped || timedOut || stopped || progress.value.errors > 0;
+    progress.value.phase = stopped ? "Search stopped — incomplete" : timedOut ? "Search timed out — incomplete" :
+        capped ? "Result limit reached — incomplete" : progress.value.errors ? "Search finished with unreadable paths" : "Search complete";
+    progress.report(matches, true);
     matches.sort();
-    if (matches.length == 0)
-        return ToolExecution("glob", "No matches for: " ~ pattern, false);
     auto builder = appender!string();
+    builder.put(searchProgressText(progress.value, false) ~ "\n");
+    if (!matches.length) builder.put(progress.value.partial ? "No matches in the paths checked; search is incomplete.\n" : "No matches for: " ~ pattern ~ "\n");
     foreach (match; matches)
         builder.put(match ~ "\n");
-    return ToolExecution("glob", truncateOutput(builder.data), false);
+    if (capped) builder.put("Results capped at " ~ to!string(limit) ~ "; raise limit or narrow the search.\n");
+    if (timedOut) builder.put("Soft deadline reached; narrow path or increase timeout.\n");
+    if (lastError.length) builder.put("Last traversal error: " ~ lastError ~ "\n");
+    return ToolExecution("glob", truncateOutput(builder.data), stopped || timedOut || (progress.value.errors > 0 && !matches.length));
 }
 
 private bool grepIgnoredDirectory(string directory)
@@ -4793,20 +4860,14 @@ private ToolExecution runGrep(string args, string workspace,
     bool capped;
     bool stopped;
     bool timedOut;
-    size_t scannedDirectories;
-    size_t scannedFiles;
-    size_t scannedLines;
-    ulong scannedBytes;
-    auto nextProgress = MonoTime.currTime;
-    string currentPath = root;
+    auto progress = new SearchReporter("Searching contents", root, pattern,
+        (literal ? "literal" : "regex") ~ (caseSensitive ? ", case sensitive" : ", ignore case") ~
+        (include.length ? ", include " ~ include : ""), observer);
+    string lastError;
     void reportGrepProgress(bool force = false)
     {
-        if (observer is null || (!force && MonoTime.currTime < nextProgress)) return;
-        reportScan(observer, nextProgress, "Searching: " ~ currentPath ~
-            "\nScanned " ~ to!string(scannedDirectories) ~ " directories, " ~
-            to!string(scannedFiles) ~ " files, " ~ to!string(scannedLines) ~
-            " lines, " ~ to!string(scannedBytes) ~ " text bytes; found " ~
-            to!string(totalMatches) ~ " matches", hits, force);
+        progress.value.matches = totalMatches;
+        progress.report(hits, force);
     }
     reportGrepProgress(true);
     const deadline = MonoTime.currTime + timeoutMs.msecs;
@@ -4823,22 +4884,37 @@ private ToolExecution runGrep(string args, string workspace,
             return true;
         }
         if (include.length > 0 &&
-            !fileMatchesInclude(baseName(filePath), include)) return false;
+            !fileMatchesInclude(baseName(filePath), include)) { ++progress.value.skippedFiltered; return false; }
         if (!explicitFile)
         {
-            if (grepIgnoredFile(filePath)) return false;
+            if (grepIgnoredFile(filePath)) { ++progress.value.skippedBinary; return false; }
             try
             {
-                if (getSize(filePath) > maxRecursiveFileBytes) return false;
+                if (getSize(filePath) > maxRecursiveFileBytes) { ++progress.value.skippedLarge; return false; }
             }
-            catch (Exception) return false;
+            catch (Exception error) { ++progress.value.errors; lastError = error.msg; return false; }
         }
-        currentPath = filePath;
+        progress.value.path = filePath;
         reportGrepProgress();
         File file;
-        try file = File(filePath, "r");
-        catch (Exception) return false;
-        ++scannedFiles;
+        try
+        {
+            file = File(filePath, "rb");
+            auto probe = file.rawRead(new ubyte[8192]);
+            if (probe.canFind(cast(ubyte) 0))
+            {
+                ++progress.value.skippedBinary;
+                file.close();
+                return false;
+            }
+            file.seek(0);
+        }
+        catch (Exception error)
+        {
+            collectException(file.close());
+            ++progress.value.errors; lastError = error.msg; return false;
+        }
+        ++progress.value.files;
         scope (exit) collectException(file.close());
         size_t lineNo;
         size_t fileMatches;
@@ -4864,8 +4940,8 @@ private ToolExecution runGrep(string args, string workspace,
             foreach (line; file.byLine())
             {
                 ++lineNo;
-                ++scannedLines;
-                scannedBytes += line.length;
+                ++progress.value.lines;
+                progress.value.bytes += line.length;
                 if ((lineNo & 255) == 0) reportGrepProgress();
                 if ((lineNo & 255) == 0 && MonoTime.currTime >= deadline)
                 {
@@ -4878,10 +4954,11 @@ private ToolExecution runGrep(string args, string workspace,
                     stopped = true;
                     return true;
                 }
-                const matched = lineMatches(
-                    decodeBytesLenient(cast(const(ubyte)[]) line));
-                string display =
-                    decodeBytesLenient(cast(const(ubyte)[]) line);
+                string decodedLine = decodeBytesLenient(cast(const(ubyte)[]) line);
+                while (decodedLine.length && (decodedLine[$ - 1] == '\r' || decodedLine[$ - 1] == '\n'))
+                    decodedLine = decodedLine[0 .. $ - 1];
+                const matched = lineMatches(decodedLine);
+                string display = decodedLine;
                 if (display.length > maxLineChars)
                     display = display[0 .. utf8SafeCut(
                         cast(const(ubyte)[]) display[0 .. maxLineChars])] ~ "…";
@@ -4937,7 +5014,7 @@ private ToolExecution runGrep(string args, string workspace,
                 }
             }
         }
-        catch (Exception) {}
+        catch (Exception error) { ++progress.value.errors; lastError = error.msg; }
         if (mode == "count" && fileMatches > 0)
         {
             ++matchedFiles;
@@ -4961,10 +5038,11 @@ private ToolExecution runGrep(string args, string workspace,
             scanFile(root, true);
         else
         {
-            bool scanDirectory(string directory)
+            bool scanDirectory(string directory, size_t depth = 0)
             {
-                ++scannedDirectories;
-                currentPath = directory;
+                if (depth > 256) { ++progress.value.errors; lastError = "Folder depth exceeds 256: " ~ directory; return false; }
+                ++progress.value.directories;
+                progress.value.path = directory;
                 reportGrepProgress();
                 if (MonoTime.currTime >= deadline)
                 {
@@ -4980,6 +5058,9 @@ private ToolExecution runGrep(string args, string workspace,
                 {
                     foreach (entry; dirEntries(directory, SpanMode.shallow))
                     {
+                        ++progress.value.entries;
+                        progress.value.path = entry.name;
+                        reportGrepProgress();
                         if (MonoTime.currTime >= deadline)
                         {
                             timedOut = true;
@@ -4990,43 +5071,50 @@ private ToolExecution runGrep(string args, string workspace,
                             stopped = true;
                             return true;
                         }
+                        if (entry.isSymlink) { ++progress.value.skippedLinks; continue; }
                         if (entry.isDir)
                         {
-                            if (!grepIgnoredDirectory(entry.name) &&
-                                scanDirectory(entry.name)) return true;
+                            if (grepIgnoredDirectory(entry.name)) { ++progress.value.skippedDirectories; continue; }
+                            if (scanDirectory(entry.name, depth + 1)) return true;
                         }
                         else if (entry.isFile && scanFile(entry.name))
                             return true;
                     }
                 }
-                catch (Exception) {}
+                catch (Exception error) { ++progress.value.errors; lastError = error.msg; }
                 return false;
             }
             scanDirectory(root);
         }
     }
     performScan();
+    progress.value.terminal = true;
+    progress.value.partial = timedOut || stopped || capped || progress.value.errors > 0;
+    progress.value.phase = stopped ? "Search stopped — incomplete" : timedOut ? "Search paused at soft deadline — incomplete" :
+        capped ? "Result limit reached — incomplete" : progress.value.errors ? "Search finished with unreadable paths" : "Search complete";
     reportGrepProgress(true);
+    const summary = searchProgressText(progress.value, false) ~ "\n";
     if (timedOut)
     {
         auto report = appender!string();
         report.put("Paused: grep reached its " ~ to!string(timeoutMs) ~
             " ms soft deadline after scanning " ~
-            to!string(scannedDirectories) ~ " directories, " ~
-            to!string(scannedFiles) ~ " files, and " ~
-            to!string(scannedLines) ~ " lines; found " ~
+            to!string(progress.value.directories) ~ " directories, " ~
+            to!string(progress.value.files) ~ " files, and " ~
+            to!string(progress.value.lines) ~ " lines; found " ~
             to!string(totalMatches) ~ " matches so far. Review this progress " ~
             "and decide whether waiting longer is reasonable. Rerun the same " ~
             "focused search with a larger `timeout` (up to 600000 ms), or " ~
-            "narrow `path`, `pattern`, or `include`.\n");
+            "narrow `path`, `pattern`, or `include`.\n" ~ summary);
         foreach (hit; hits) report.put(hit ~ "\n");
         return ToolExecution("grep", truncateOutput(report.data), true);
     }
     if (stopped)
-        return ToolExecution("grep", "Stopped: grep cancelled.", true);
-    if (totalMatches == 0)
-        return ToolExecution("grep", "No matches for: " ~ pattern, false);
+        return ToolExecution("grep", "Stopped: grep cancelled.\n" ~ summary, true);
     auto builder = appender!string();
+    builder.put(summary);
+    if (!totalMatches) builder.put(progress.value.errors ?
+        "No matches in the files checked; unreadable paths make this search incomplete.\n" : "No matches for: " ~ pattern ~ "\n");
     foreach (hit; hits)
         builder.put(hit ~ "\n");
     if (mode == "count")
@@ -5038,7 +5126,8 @@ private ToolExecution runGrep(string args, string workspace,
         builder.put("(Results capped at " ~ to!string(maxResults) ~
             (mode == "content" ? " matching lines" : " matching files") ~
             " — raise `limit` or narrow the search.)\n");
-    return ToolExecution("grep", truncateOutput(builder.data), false);
+    if (lastError.length) builder.put("Last read error: " ~ lastError ~ "\n");
+    return ToolExecution("grep", truncateOutput(builder.data), progress.value.errors > 0 && totalMatches == 0);
 }
 
 private bool endsWith(string value, string suffix)
@@ -5774,7 +5863,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "remove":
             return runRemove(call.arguments, workspace);
         case "glob":
-            return runGlob(call.arguments, workspace, observer);
+            return runGlob(call.arguments, workspace, cancellation, observer);
         case "grep":
             return runGrep(call.arguments, workspace, cancellation, observer);
         case "webfetch":
@@ -6249,8 +6338,13 @@ private ToolExecution dshellList(JSONValue args, string workspace, ToolOutputObs
     auto pending = state["pending"].array.dup;
     string[] entries;
     size_t inspected, outputBytes;
-    size_t discovered;
-    auto nextProgress = MonoTime.currTime;
+    auto progress = new SearchReporter("Listing paths", path, pattern, recursive ? "recursive" : "one folder", observer);
+    static foreach (field; ["directories", "files", "skippedFiltered", "skippedLinks"])
+        if (auto count = field in state.object) __traits(getMember, progress.value, field) = cast(ulong) count.integer;
+    progress.value.entries = cast(ulong) state["scanned"].integer;
+    progress.value.matches = cast(ulong) state["matched"].integer;
+    progress.value.pending = pending.length;
+    progress.report(entries, true);
     const deadline = MonoTime.currTime + yieldMs.msecs;
     try
     {
@@ -6259,31 +6353,35 @@ private ToolExecution dshellList(JSONValue args, string workspace, ToolOutputObs
         {
             const task = pending[$ - 1];
             const name = task["path"].str;
-            reportScan(observer, nextProgress, "Listing: " ~ name ~
-                "\nInspected " ~ to!string(state["scanned"].integer) ~
-                " entries; matched " ~ to!string(state["matched"].integer) ~
-                "; pending " ~ to!string(pending.length) ~ "; discovered in this slice " ~
-                to!string(discovered), entries);
+            progress.value.path = name;
+            progress.value.entries = cast(ulong) state["scanned"].integer;
+            progress.value.matches = cast(ulong) state["matched"].integer;
+            progress.value.pending = pending.length;
+            progress.report(entries);
             if (task["expand"].boolean)
             {
                 // Snapshot one shallow directory so continuation does not
                 // re-walk previously scanned subtrees or depend on iterator order.
                 JSONValue[] children;
+                ++progress.value.directories;
                 foreach (entry; dirEntries(name, SpanMode.shallow))
                 {
-                    ++discovered;
-                    reportScan(observer, nextProgress, "Expanding directory: " ~ name ~
-                        "\nDiscovered " ~ to!string(discovered) ~ " entries in this slice", entries);
+                    progress.value.phase = "Discovering folder entries";
+                    progress.value.path = name;
+                    progress.value.pending = pending.length + children.length;
+                    progress.report(entries);
                     JSONValue child;
                     child["path"] = entry.name;
                     child["directory"] = entry.isDir;
                     child["expand"] = false;
                     child["descend"] = recursive && entry.isDir && !entry.isSymlink;
+                    if (entry.isSymlink) ++progress.value.skippedLinks;
                     children ~= child;
                 }
                 children.sort!((a, b) => a["path"].str > b["path"].str);
                 pending.length -= 1;
                 pending ~= children;
+                progress.value.phase = "Listing paths";
                 ++inspected;
                 continue;
             }
@@ -6313,12 +6411,14 @@ private ToolExecution dshellList(JSONValue args, string workspace, ToolOutputObs
             pending.length -= 1;
             ++inspected;
             state["scanned"] = state["scanned"].integer + 1;
+            if (!task["directory"].boolean) ++progress.value.files;
             if (line.length > 0)
             {
                 entries ~= line;
                 outputBytes += line.length;
                 state["matched"] = state["matched"].integer + 1;
             }
+            else ++progress.value.skippedFiltered;
             if (task["descend"].boolean)
             {
                 JSONValue descend;
@@ -6329,11 +6429,21 @@ private ToolExecution dshellList(JSONValue args, string workspace, ToolOutputObs
         }
     }
     catch (Exception error)
+    {
+        ++progress.value.errors;
+        progress.value.terminal = progress.value.partial = true;
+        progress.value.phase = "Directory search failed — incomplete";
+        progress.report(entries, true);
         return ToolExecution("dshell", "Error: could not list directory: " ~
-            error.msg ~ directoryScanResumeHint(cursor), true);
-    reportScan(observer, nextProgress, "Directory slice complete: inspected " ~
-        to!string(inspected) ~ "; collected " ~ to!string(entries.length) ~
-        " matches; pending " ~ to!string(pending.length), entries, true);
+            error.msg ~ "\n" ~ searchProgressText(progress.value, false) ~ directoryScanResumeHint(cursor), true);
+    }
+    progress.value.entries = cast(ulong) state["scanned"].integer;
+    progress.value.matches = cast(ulong) state["matched"].integer;
+    progress.value.pending = pending.length;
+    progress.value.terminal = true;
+    progress.value.partial = pending.length > 0;
+    progress.value.phase = pending.length ? "Search paused at checkpoint — more entries remain" : "Search complete";
+    progress.report(entries, true);
     entries.sort();
     auto builder = appender!string();
     builder.put("<path>" ~ path ~ "</path>\n");
@@ -6345,6 +6455,8 @@ private ToolExecution dshellList(JSONValue args, string workspace, ToolOutputObs
         " entries; found " ~ to!string(state["matched"].integer) ~ " matches so far.\n");
     if (pending.length > 0)
     {
+        static foreach (field; ["directories", "files", "skippedFiltered", "skippedLinks"])
+            state[field] = cast(long) __traits(getMember, progress.value, field);
         state["pending"] = JSONValue(pending);
         string next;
         try next = saveDirectoryScan(state);

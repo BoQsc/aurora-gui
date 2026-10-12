@@ -6,6 +6,7 @@ import auroraopencode.developerworkflow : DeveloperWorkflow,
 import auroraopencode.latency : RequestLatency, LatencyStage, LatencySnapshot;
 import auroraopencode.transferprogress : TransferProgress, decodeTransferProgress,
     transferProgressText;
+import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress, searchProgressText;
 
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.computeruse : ComputerUseContext;
@@ -4495,6 +4496,8 @@ private final class LiveToolRow : Widget
     private bool _detailTruncated;
     private bool _hasTransferProgress;
     private TransferProgress _transferProgress;
+    private bool _hasSearchProgress;
+    private SearchProgress _searchProgress;
     // Live wall-clock timer: shown while the command runs, so a long command
     // displays its elapsed time the same way a settled row shows its duration.
     private MonoTime _started;
@@ -4582,12 +4585,15 @@ private final class LiveToolRow : Widget
     void setDetail(string detail)
     {
         if (_detail == detail) return;
-        const oldHeight = detailHeight() + (_hasTransferProgress ? 12 : 0);
+        const oldHeight = detailHeight() + progressHeight();
         _hasTransferProgress = (_toolName == "copy" || _toolName == "move" || _toolName == "download" || _toolName == "checksum") &&
             decodeTransferProgress(detail, _transferProgress);
-        _detail = _hasTransferProgress ? transferProgressText(_transferProgress) : detail;
+        _hasSearchProgress = (_toolName == "grep" || _toolName == "glob" || _toolName == "dshell") &&
+            decodeSearchProgress(detail, _searchProgress);
+        _detail = _hasTransferProgress ? transferProgressText(_transferProgress) :
+            _hasSearchProgress ? searchProgressText(_searchProgress) : detail;
         rebuildDetailLines();
-        if (oldHeight != detailHeight() + (_hasTransferProgress ? 12 : 0) && onSizeChanged !is null)
+        if (oldHeight != detailHeight() + progressHeight() && onSizeChanged !is null)
             onSizeChanged();
         invalidate();
     }
@@ -4599,8 +4605,8 @@ private final class LiveToolRow : Widget
         if (_detail.length == 0) return;
         import std.string : splitLines;
         const lines = splitLines(_detail);
-        const lineLimit = _outputPreview ? 8 : maxDetailLines;
-        const first = _outputPreview && lines.length > lineLimit
+        const lineLimit = _hasSearchProgress ? 10 : _outputPreview ? 8 : maxDetailLines;
+        const first = _outputPreview && !_hasSearchProgress && lines.length > lineLimit
             ? lines.length - lineLimit : 0;
         _detailTruncated = first > 0;
         foreach (index, raw; lines)
@@ -4627,6 +4633,9 @@ private final class LiveToolRow : Widget
     string previewForTesting() const { return _detail; }
     bool hasTransferProgressForTesting() const { return _hasTransferProgress; }
     double transferFractionForTesting() const { return _transferProgress.fraction(); }
+    bool hasSearchProgressForTesting() const { return _hasSearchProgress; }
+
+    private int progressHeight() const { return _hasTransferProgress || _hasSearchProgress ? 12 : 0; }
 
     private int headerHeight()
     {
@@ -4656,7 +4665,7 @@ private final class LiveToolRow : Widget
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
-        const height = headerHeight() + detailHeight() + (_hasTransferProgress ? 12 : 0);
+        const height = headerHeight() + detailHeight() + progressHeight();
         layoutHints().preferredWidth = width;
         layoutHints().preferredHeight = height;
         return Size(width, height);
@@ -4726,13 +4735,17 @@ private final class LiveToolRow : Widget
             }
         }
 
-        if (_hasTransferProgress)
+        if (_hasTransferProgress || _hasSearchProgress)
         {
             const track = Rect(padH + 8, h + 3, maxInt(1, bounds().width - 2 * padH - 16), 5);
             canvas.fillRect(track, diffCardBorder);
-            if (_transferProgress.totalsKnown)
+            if (_hasTransferProgress && _transferProgress.totalsKnown)
                 canvas.fillRect(Rect(track.x, track.y,
                     cast(int) (track.width * _transferProgress.fraction()), track.height), opencodeAccent);
+            else if (_hasSearchProgress && _searchProgress.terminal)
+            {
+                if (!_searchProgress.partial) canvas.fillRect(track, opencodeAccent);
+            }
             else
             {
                 const width = maxInt(1, track.width / 4);
@@ -4743,7 +4756,7 @@ private final class LiveToolRow : Widget
         if (_detailLines.length == 0) return;
         // The streamed body, one monospace row per line, indented under the
         // header. Long lines are clipped to the row width (no wrap).
-        int y = h + (_hasTransferProgress ? 12 : 0);
+        int y = h + progressHeight();
         const lineH = detailLineHeight();
         const bodyX = padH + 8;
         const bodyWidth = maxInt(1, bounds().width - bodyX - padH - 8);
@@ -29466,6 +29479,17 @@ private void pollButtonSuggestionRequest()
                     if (auto row = cast(LiveToolRow) part)
                         if (row.hasTransferProgressForTesting()) fractions ~= row.transferFractionForTesting();
         return fractions;
+    }
+
+    public size_t liveSearchProgressCountForTesting()
+    {
+        size_t count;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                foreach (part; group._parts)
+                    if (auto row = cast(LiveToolRow) part)
+                        if (row.hasSearchProgressForTesting()) ++count;
+        return count;
     }
 
     public void injectToolOutputForTesting(string id, string text)
