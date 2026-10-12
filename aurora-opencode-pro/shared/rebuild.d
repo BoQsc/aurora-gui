@@ -37,10 +37,10 @@ import core.time : MonoTime, msecs, seconds;
 import std.array : join;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
-import std.file : append, copy, dirEntries, exists, getSize, mkdirRecurse,
+import std.file : append, copy, dirEntries, exists, getSize, isDir, mkdirRecurse,
     readText, remove, SpanMode, timeLastModified, write;
 import std.json : JSONType, parseJSON;
-import std.path : baseName, buildPath, dirName;
+import std.path : baseName, buildPath, buildNormalizedPath, dirName;
 import std.process : Config, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
 import std.string : indexOf, lastIndexOf, replace, startsWith, strip, toLower;
@@ -353,6 +353,10 @@ struct RebuildPlan
     bool rebuild;
     /// Why the rebuild was requested, carried into the ledger and the agent.
     string reason;
+    /// Image to stage as the rebuild agent when it differs from `exePath`:
+    /// building a source folder whose executable may not exist yet stages the
+    /// running exe instead. Empty means `exePath`.
+    string helperImage;
 }
 
 /**
@@ -379,14 +383,108 @@ string findBuildDirectory(string exePath)
 }
 
 /**
- * True when `dir` is Aurora OpenCode's own package: it ships this module's
- * source. Gates the agent-facing rebuild tool and its system-prompt awareness,
- * so a packaged copy with no sources never offers a rebuild it cannot perform.
+ * Identify Aurora's package across current and older source layouts. Gates
+ * rebuild and self-development awareness without relying on one module path.
  */
 bool isAuroraProject(string dir)
 {
     if (dir.length == 0) return false;
-    return exists(buildPath(dir, "shared", "rebuild.d"));
+    if (exists(buildPath(dir, "shared", "rebuild.d"))) return true;
+    // Older checkouts need not contain the current rebuild module layout.
+    try
+    {
+        if (!exists(buildPath(dir, "source", "app.d"))) return false;
+        auto recipe = parseJSON(readText(buildPath(dir, "dub.json")));
+        if (recipe.type != JSONType.object) return false;
+        if (auto name = "name" in recipe.object)
+            return name.type == JSONType.string && name.str == "aurora-opencode-pro";
+    }
+    catch (Exception) {}
+    return false;
+}
+
+/// Accept a package, its repository root, or its source subfolder. Older
+/// Developer settings and folder links have used all three forms.
+private string auroraPackageAt(string path)
+{
+    path = path.strip();
+    if (path.length >= 2 && path[0] == '"' && path[$ - 1] == '"')
+        path = path[1 .. $ - 1];
+    if (path.length == 0) return "";
+    try
+    {
+        path = buildNormalizedPath(path);
+        if (isAuroraProject(path)) return path;
+        const packageDir = buildPath(path, "aurora-opencode-pro");
+        if (isAuroraProject(packageDir)) return packageDir;
+        const enclosing = findBuildDirectory(buildPath(path, "source-probe.exe"));
+        if (isAuroraProject(enclosing)) return enclosing;
+    }
+    catch (Exception) {}
+    return "";
+}
+
+/// Search only the selected/source storage folder, with bounded depth and work.
+/// A renamed or wrapped download is recoverable; ambiguous copies need a choice.
+string findAuroraSourceFolder(string folder)
+{
+    const direct = auroraPackageAt(folder);
+    if (direct.length > 0) return direct;
+    if (folder.length == 0 || !exists(folder) || !isDir(folder)) return "";
+    string[] layer = [folder];
+    string found;
+    size_t visited;
+    foreach (_; 0 .. 4)
+    {
+        string[] next;
+        foreach (directory; layer)
+        {
+            if (++visited > 128) return "";
+            const packageDir = auroraPackageAt(directory);
+            if (packageDir.length > 0)
+            {
+                if (found.length > 0 &&
+                    buildNormalizedPath(found).toLower() != buildNormalizedPath(packageDir).toLower())
+                    return "";
+                found = packageDir;
+                continue;
+            }
+            try foreach (entry; dirEntries(directory, SpanMode.shallow))
+            {
+                if (!entry.isDir || entry.isSymlink) continue;
+                const name = baseName(entry.name).toLower();
+                if (name.startsWith(".") || name == "build" || name == "bin" ||
+                    name == "vendor" || name == "node_modules" || name == "target") continue;
+                if (next.length >= 128) return "";
+                next ~= entry.name;
+            }
+            catch (Exception) {}
+        }
+        layer = next;
+        if (layer.length == 0) break;
+    }
+    return found;
+}
+
+/// A downloaded executable cannot locate source by walking its own ancestors.
+/// Recover existing AppData checkouts when an older build lost the saved path,
+/// without downloading, syncing, or touching the developer's working files.
+string findDeveloperSourceDirectory(string configured, string stateDirectory,
+    string exePath)
+{
+    const saved = findAuroraSourceFolder(configured);
+    if (saved.length > 0) return saved;
+    const checkout = findBuildDirectory(exePath);
+    if (isAuroraProject(checkout)) return checkout;
+    if (stateDirectory.length == 0) return "";
+    const root = buildPath(stateDirectory, "source");
+    foreach (candidate; [buildPath(root, "aurora-gui"),
+        buildPath(root, "aurora-gui-main"), root])
+    {
+        const source = auroraPackageAt(candidate);
+        if (source.length > 0) return source;
+    }
+    return findAuroraSourceFolder(root);
 }
 
 /**
@@ -482,12 +580,13 @@ private void pruneStaleHelpers(string dir, string keep)
 private string provisionHelper(in RebuildPlan plan)
 {
     const path = rebuildHelperPath(plan);
-    if (path.length == 0 || !exists(plan.exePath)) return "";
+    const image = plan.helperImage.length > 0 ? plan.helperImage : plan.exePath;
+    if (path.length == 0 || !exists(image)) return "";
     try
     {
         mkdirRecurse(dirName(path));
         pruneStaleHelpers(dirName(path), path);
-        copy(plan.exePath, path);
+        copy(image, path);
         return path;
     }
     catch (Exception error)
@@ -1116,6 +1215,38 @@ private void restoreExe(string exePath, string backup, bool haveBackup,
         appendLine(logPath, "could not restore the exe: " ~ error.msg);
 }
 
+/// Build output may live in AppData while the running app lives elsewhere.
+/// Replace the same installed executable and retain its previous image on failure.
+public bool installRebuiltImage(string built, string installed, out string error)
+{
+    error = "";
+    if (buildNormalizedPath(built).toLower() == buildNormalizedPath(installed).toLower())
+        return true;
+    const staged = installed ~ ".rebuild-new";
+    const backup = installed ~ ".bak";
+    bool backedUp;
+    try
+    {
+        if (!exists(built) || getSize(built) == 0)
+            throw new Exception("Rebuilt executable is missing or empty: " ~ built);
+        copy(built, staged);
+        if (exists(installed)) { copy(installed, backup); backedUp = true; }
+        copy(staged, installed);
+        remove(staged);
+        return true;
+    }
+    catch (Exception e)
+    {
+        error = "Could not update the running application's executable: " ~ e.msg;
+        if (backedUp)
+        {
+            try { copy(backup, installed); }
+            catch (Exception restoreError) { error ~= "; restore failed: " ~ restoreError.msg; }
+        }
+        return false;
+    }
+}
+
 /**
  * Run one DUB build and validate its output. `argv` is the command;
  * `targetExe` is the file that must exist and be non-empty afterwards.
@@ -1547,7 +1678,17 @@ int runRebuildHelperMode(string[] args)
         began);
     int exitCode;
     string[] errors;
-    if (runDub(job, dubArgv(job), job.exePath, true, exitCode, errors))
+    // Downloads can be renamed (for example "Aurora (1).exe"); DUB's
+    // output name is still the package target, not the installed filename.
+    const builtImage = buildPath(job.packageDir, "aurora-opencode-pro.exe");
+    bool built = runDub(job, dubArgv(job), builtImage, true, exitCode, errors);
+    if (built)
+    {
+        string installError;
+        built = installRebuiltImage(builtImage, job.exePath, installError);
+        if (!built) { exitCode = -1; errors = [installError]; appendLine(job.logPath, installError); }
+    }
+    if (built)
     {
         appendLine(job.logPath, "build succeeded");
         setProgress("Rebuild finished. Starting...", "", 1.0);

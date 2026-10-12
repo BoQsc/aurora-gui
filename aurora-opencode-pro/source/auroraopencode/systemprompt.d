@@ -472,5 +472,13 @@ public SystemPromptModule rebuildModule()
         "code, not twice for one change - and announce it when you do. It " ~
         "needs no user approval or confirmation. If the build fails, the " ~
         "resumed conversation reports the compiler errors so you can fix " ~
-        "them and call `rebuild` again.\n");
+        "them and call `rebuild` again. While you work on Aurora's own source, " ~
+        "call the `sync` tool before editing, when a maintainer-update notice " ~
+        "arrives, and before rebuilding. It applies the latest maintainer " ~
+        "source and preserves your work. Run it between file operations; " ~
+        "resolve any merge, rebase, or restored-local-change conflict it " ~
+        "reports before continuing. Never discard local changes to sync. " ~
+        "Finished contributions are submitted with Settings > Developer > " ~
+        "Publish pull request; this commits, prepares the contributor's fork, " ~
+        "pushes a review branch and creates or updates the PR.\n");
 }

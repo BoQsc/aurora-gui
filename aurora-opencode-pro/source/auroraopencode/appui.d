@@ -1,5 +1,7 @@
 module auroraopencode.appui;
 
+import auroraopencode.developerworkflow : DeveloperWorkflow,
+    developerOperationMutex, ensureDeveloperTool, findDeveloperTool;
 import auroraopencode.latency : RequestLatency, LatencyStage, LatencySnapshot;
 
 import auroraopencode.attachmentstore : AttachmentStore;
@@ -18,7 +20,7 @@ import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
 import rebuild : RebuildOutcome, findAuroraRoot, isAuroraProject,
-    launchRebuild, planRebuild, readRebuildOutcome, rebuildFailed,
+    findAuroraSourceFolder, findDeveloperSourceDirectory, launchRebuild, planRebuild, readRebuildOutcome, rebuildFailed,
     rebuildIncomplete, rebuildStatusLabel, rebuildSucceeded;
 import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
 import auroraopencode.deepseekpeak : DeepSeekPeakStats, deepSeekPeakStats,
@@ -32,7 +34,8 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, executeTool, listChangeRecords,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
     previewToolDiffText,
-    rebuildRequestHandler, revertChangeRecord, revertChangeRecords,
+    rebuildRequestHandler, syncRequestHandler, revertChangeRecord,
+    revertChangeRecords,
     planRevertRecords, ChangeRestorePath, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution, pendingNativeMutationIntents;
 import auroraopencode.systemprompt : promptVerbosityDirective,
@@ -97,8 +100,8 @@ import auroraopencode.emergency : emergencyHeartbeat,
     emergencyTrigger, overseerStallSeconds, setEmergencyReportEnabled,
     setOverseerEnabled, startEmergencyWatchdog;
 import core.thread : Thread;
-import core.time : MonoTime, msecs;
-import std.algorithm : canFind, max;
+import core.time : MonoTime, msecs, minutes, seconds;
+import std.algorithm : canFind, endsWith, max;
 import std.array : appender, join;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
@@ -107,14 +110,15 @@ import std.digest.sha : sha256Of;
 // `remove` is aliased because this module's widget base class declares its own
 // `remove(Widget child)`, which otherwise wins name lookup inside the class.
 import std.file : append, dirEntries, exists, getSize, getcwd, isDir, isFile,
-    fileRemove = remove, mkdirRecurse, readText, rename, rmdir, SpanMode,
+    fileRemove = remove, mkdirRecurse, read, readText, rename, rmdir, SpanMode,
     thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : ceil, isFinite;
-import std.path : baseName, buildNormalizedPath, buildPath, extension;
-import std.process : environment, thisProcessID;
+import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension;
+import std.process : Config, environment, execute, thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32, toUTF8;
+import std.zip : ZipArchive;
 version (Windows)
 {
     pragma(lib, "user32");
@@ -230,6 +234,223 @@ private void openChatsFolder()
     if (!exists(dir)) mkdirRecurse(dir);
     version (Windows)
         openFolderInExplorer(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Developer mode (opt-in): source folder, toolchain status, logs and the
+// contribution workflow. Source and private tools are prepared on demand;
+// publishing creates a reviewable pull request using the contributor's account.
+// ---------------------------------------------------------------------------
+
+/// Whether an executable is reachable through PATH, so a developer action can
+/// name what is missing instead of a later launch failing without explanation.
+/// Only directories are inspected; nothing is executed here.
+private bool commandOnPath(string exeName)
+{
+    const path = environment.get("PATH");
+    if (path.length == 0) return false;
+    foreach (dir; path.split(';'))
+    {
+        if (dir.length == 0) continue;
+        version (Windows)
+        {
+            if (exists(buildPath(dir, exeName ~ ".exe"))) return true;
+        }
+        else
+        {
+            if (exists(buildPath(dir, exeName))) return true;
+        }
+    }
+    return false;
+}
+
+/// A one-line status of the tools a developer needs, probed from PATH.
+private string developerToolchainSummary()
+{
+    return "Toolchain — dub: " ~ (commandOnPath("dub") ? "found" : "missing") ~
+        "  ·  dmd: " ~ (commandOnPath("dmd") ? "found" : "missing") ~
+        "  ·  git: " ~ (findDeveloperTool("git", opencodeStateDirectory()).length > 0
+            ? "found" : "prepared when needed");
+}
+
+/// Case-insensitive path equality, so a rebuild target that is the running
+/// package is recognized as "the same folder" on Windows.
+private bool sameDirectory(string a, string b)
+{
+    if (a.length == 0 || b.length == 0) return a == b;
+    return buildNormalizedPath(a).toLower() == buildNormalizedPath(b).toLower();
+}
+
+/// The `origin` remote URL recorded in `dir`'s git config, or "" when the
+/// directory is not a checkout or the remote is absent.
+private string gitOriginUrl(string dir)
+{
+    if (dir.length == 0) return "";
+    const root = gitRepoRoot(dir);
+    if (root.length == 0) return "";
+    const configPath = buildPath(root, ".git", "config");
+    if (!exists(configPath)) return "";
+    try
+    {
+        bool inOrigin;
+        foreach (line; readText(configPath).split('\n'))
+        {
+            const trimmed = strip(line);
+            if (trimmed.length == 0) continue;
+            if (trimmed[0] == '[')
+            {
+                inOrigin = trimmed.startsWith(`[remote "origin"]`);
+                continue;
+            }
+            if (!inOrigin) continue;
+            if (!trimmed.startsWith("url")) continue;
+            const equals = trimmed.indexOf('=');
+            if (equals >= 0) return strip(trimmed[equals + 1 .. $]);
+        }
+    }
+    catch (Exception) {}
+    return "";
+}
+
+/// The current branch name from `dir`'s HEAD, or "" for a detached head or a
+/// directory that is not a checkout.
+private string gitCurrentBranch(string dir)
+{
+    if (dir.length == 0) return "";
+    const headPath = buildPath(dir, ".git", "HEAD");
+    if (!exists(headPath)) return "";
+    try
+    {
+        const text = strip(readText(headPath));
+        const prefix = "ref: refs/heads/";
+        if (text.startsWith(prefix)) return text[prefix.length .. $];
+    }
+    catch (Exception) {}
+    return "";
+}
+
+/// The `.git` directory of the repository containing `dir`, or "" when `dir` is
+/// not inside a git checkout. Walks up a bounded number of levels.
+private string gitRepoRoot(string dir)
+{
+    auto current = dir;
+    foreach (_; 0 .. 8)
+    {
+        if (current.length == 0) return "";
+        if (exists(buildPath(current, ".git"))) return current;
+        const parent = dirName(current);
+        if (parent.length == 0 || parent == current) return "";
+        current = parent;
+    }
+    return "";
+}
+
+/// Drop a trailing `.git` from a repository path.
+private string stripGitSuffix(string path)
+{
+    return path.endsWith(".git") ? path[0 .. $ - 4] : path;
+}
+
+/// Turn a git remote URL into a browsable repository URL, or "" when it is not
+/// a recognizable host. Handles the `git@host:owner/repo.git` and https forms.
+private string gitWebBase(string remote)
+{
+    auto url = strip(remote);
+    if (url.length == 0) return "";
+    if (url.startsWith("git@"))
+    {
+        const colon = url.indexOf(':');
+        if (colon < 0) return "";
+        return "https://" ~ url["git@".length .. colon] ~ "/" ~
+            stripGitSuffix(url[colon + 1 .. $]);
+    }
+    if (url.startsWith("https://") || url.startsWith("http://"))
+        return stripGitSuffix(url);
+    return "";
+}
+
+/// The GitHub "open a pull request" page for `webBase`: the compare view with
+/// the current branch, so the click lands on the prefilled PR form. When there
+/// is no branch (or it is the default branch) the compare landing page opens.
+private string developerPullRequestUrl(string webBase, string dir)
+{
+    if (webBase.length == 0) return "";
+    const branch = gitCurrentBranch(dir);
+    if (branch.length == 0 || branch == "main" || branch == "master")
+        return webBase ~ "/compare?expand=1";
+    return webBase ~ "/compare/main..." ~ branch ~ "?expand=1";
+}
+
+/// Reveal the directory holding the app's logs and crash reports.
+private void openDeveloperLogs()
+{
+    const logs = buildPath(opencodeStateDirectory(), "logs");
+    if (!exists(logs)) mkdirRecurse(logs);
+    version (Windows)
+        openFolderInExplorer(logs);
+}
+
+/// The GitHub snapshot of the whole Aurora repository: how a packaged install
+/// (one with no source checkout) obtains the files it needs to be improved.
+private immutable string auroraSourceSnapshotUrl =
+    "https://github.com/BoQsc/aurora-gui/archive/refs/heads/main.zip";
+
+/// The repository URL used to make a real checkout (so it can pull and push).
+private immutable string auroraRepoCloneUrl =
+    "https://github.com/BoQsc/aurora-gui.git";
+
+/// Where a downloaded source snapshot is extracted: the app's own data folder
+/// (beside settings and logs, under `%APPDATA%\Aurora OpenCode\source`), so a
+/// per-user snapshot needs no location choice and leaves no clutter elsewhere.
+/// The archive's own top-level folder (for example `aurora-gui-main`) is
+/// created inside it.
+private string defaultSourceRoot()
+{
+    return buildPath(opencodeStateDirectory(), "source");
+}
+
+/// Download the repository snapshot with `curl.exe`, the same console tool the
+/// updater uses. Returns true when the archive was written.
+private bool downloadAuroraSnapshot(string zipPath)
+{
+    try
+    {
+        if (exists(zipPath)) fileRemove(zipPath);
+        auto result = execute(["curl.exe", "--fail", "--silent", "--show-error",
+            "--location", "--max-time", "300", "--output", zipPath,
+            auroraSourceSnapshotUrl], null, Config.suppressConsole);
+        return result.status == 0 && exists(zipPath);
+    }
+    catch (Exception) return false;
+}
+
+/// Extract a downloaded zip snapshot under `destRoot` and return the archive's
+/// top-level directory, or "" when the archive holds nothing. Absolute and
+/// parent-relative entries are skipped so a hostile archive cannot escape.
+private string extractZipSnapshot(string zipPath, string destRoot)
+{
+    auto archive = new ZipArchive(cast(ubyte[]) read(zipPath));
+    string top;
+    foreach (name, member; archive.directory)
+    {
+        auto sub = name.replace('\\', '/');
+        if (sub.length == 0) continue;
+        if (sub[0] == '/' || sub.indexOf("..") >= 0) continue;
+        const parts = sub.split('/');
+        if (parts.length == 0 || parts[0].length == 0) continue;
+        if (top.length == 0) top = parts[0];
+        const target = buildPath(destRoot, sub);
+        if (sub[$ - 1] == '/')
+        {
+            if (!exists(target)) mkdirRecurse(target);
+            continue;
+        }
+        archive.expand(member);
+        const parent = dirName(target);
+        if (parent.length > 0 && !exists(parent)) mkdirRecurse(parent);
+        write(target, member.expandedData);
+    }
+    return top.length > 0 ? buildPath(destRoot, top) : "";
 }
 
 /// Baseline offset of the first shaped line inside a layout box. The stats
@@ -9949,6 +10170,39 @@ private string _suggestExcludeId;
     private UpdateCheck _updateReady;
     private string _updateStagedPath;
     private string _updateHash;
+    // Developer mode: a packaged install can download the repository snapshot
+    // (source provisioning), and a git checkout can commit/push with the user's
+    // own git. Both run on worker threads and are drained on the UI thread.
+    private bool _sourceFetching;
+    private bool _sourceFetchResultPending;
+    private string _sourceFetchPath;
+    private string _sourceFetchError;
+    private bool _sourceFetchUpdated;
+    private string _sourceFetchNote;
+    private void delegate() _afterDeveloperSourceFetch;
+    private Label _developerSourceStatus;
+    private Label _developerSourceValueLabel;
+    private Button _developerSourceActionButton;
+    private TextField _developerCommitField;
+    private bool _developerPushPending;
+    private string _developerPushError;
+    private string _developerPushUrl;
+    private bool _developerPublishing;
+    private Button _developerPublishButton;
+    private Button _developerRebuildButton;
+    private string _developerPublishProgress;
+    private string _developerLastPublishProgress;
+    private bool _developerAuthBrowserOpened;
+    private string _developerUpstreamRevision;
+    private string[string] _developerNotifiedRevision;
+    // Developer-mode background upstream check: on launch and on a timer, so a
+    // developer working on a stale copy is told and their work is reapplied.
+    private bool _developerSyncRunning;
+    private bool _developerSyncDone;
+    private bool _developerSyncChanged;
+    private string _developerSyncNote;
+    private MonoTime _developerSyncDue;
+    private string _pendingDeveloperNote;
     // The update check gets a visible dialog: the one-line status bar is easy
     // to miss, and a build that can rebuild itself has no toolbar Update
     // button, so the dialog is also where the install action lives.
@@ -10052,6 +10306,12 @@ private string _suggestExcludeId;
         (cast(RepositoryRuntime) _runtime).setWake(_window.serviceWake());
         phase("journal runtime");
         _settings = loadSettings();
+        const recoveredSource = developerSourceDirectory();
+        if (recoveredSource.length > 0 && recoveredSource != _settings.developerSourceDir)
+        {
+            _settings.developerSourceDir = recoveredSource;
+            saveSettingsNow();
+        }
         _execution = new ConversationRuntime(_settings.baseUrl, activeApiKey(_settings));
         _client.setEventWake(_window.serviceWake());
         // experimental: computer use - mirror the persisted switch into the
@@ -10095,6 +10355,8 @@ private string _suggestExcludeId;
         // Let the agent rebuild this app through the `rebuild` tool. The
         // handler only records the request; onTick performs it.
         rebuildRequestHandler = &onAgentRebuildRequested;
+        // Let the agent sync-and-reapply the Aurora source through `sync`.
+        syncRequestHandler = &onSourceSyncRequested;
         // Optional floating mini chat overlay, off by default.
         setMiniChatEnabled(_settings.floatingMiniChat);
         // Emergency freeze detection + optional overseer; mirror the persisted
@@ -10562,8 +10824,7 @@ private string _suggestExcludeId;
         try builtTime = timeLastModified(exe);
         catch (Exception) return "";
         const built = formatStamp(builtTime);
-        const packageDir = planRebuild(opencodeStateDirectory(), true,
-            thisProcessID, exe).workingDir;
+        const packageDir = developerSourceDirectory();
         const sourceDir = packageDir.length > 0
             ? buildPath(packageDir, "source") : "";
         if (sourceDir.length == 0 || !exists(sourceDir))
@@ -10573,7 +10834,9 @@ private string _suggestExcludeId;
         bool haveNewest;
         try
         {
-            foreach (entry; dirEntries(sourceDir, SpanMode.depth))
+            foreach (root; [sourceDir, buildPath(packageDir, "shared"),
+                buildPath(dirName(packageDir), "aurora-opencode-core", "source")])
+            foreach (entry; dirEntries(root, SpanMode.depth))
             {
                 if (!entry.isFile) continue;
                 const name = entry.name;
@@ -10607,8 +10870,7 @@ private string _suggestExcludeId;
     /// (where no rebuild could have happened anyway).
     private string rebuildPackageDirectory()
     {
-        const dir = planRebuild(opencodeStateDirectory(), true, thisProcessID,
-            thisExePath()).workingDir;
+        const dir = developerSourceDirectory();
         return dir.length > 0 ? dir : opencodeStateDirectory();
     }
 
@@ -10815,6 +11077,16 @@ private string _suggestExcludeId;
 
         auto plan = planRebuild(opencodeStateDirectory(), true,
             thisProcessID, thisExePath());
+        // Rebuild the folder the source lives in, which need not be the folder
+        // this exe sits in: a user who downloaded the source builds the running
+        // app from it. The agent is a copy of this running exe, since that
+        // folder may not hold a built executable yet.
+        const sourceDir = developerSourceDirectory();
+        if (sourceDir.length > 0 && !sameDirectory(sourceDir, plan.workingDir))
+        {
+            plan.workingDir = sourceDir;
+            plan.helperImage = thisExePath();
+        }
         plan.reason = reason;
         if (!launchRebuild(plan))
         {
@@ -10868,6 +11140,334 @@ private string _suggestExcludeId;
         });
         worker.isDaemon = true;
         worker.start();
+    }
+
+    private bool useDeveloperSourceFolder(string folder)
+    {
+        const source = findAuroraSourceFolder(folder);
+        if (source.length == 0)
+        {
+            updateStatus("No unique Aurora OpenCode source found in that folder. Select its aurora-opencode-pro package.");
+            return false;
+        }
+        _settings.developerSourceDir = source;
+        saveSettingsNow();
+        configureIntroSuggestions();
+        updateStatus("Using existing Aurora source at " ~ source ~ ". Local files were left intact.");
+        return true;
+    }
+
+    private void showDeveloperSourceFolderDialog(void delegate() ready = null)
+    {
+        if (_sourceFetching || _developerPublishing) return;
+        dismissPopup();
+        FileDialogOptions options;
+        options.mode = FileDialogMode.open;
+        options.selectFolders = true;
+        options.title = "Select existing Aurora source";
+        options.acceptLabel = "Use source";
+        options.initialPath = exists(defaultSourceRoot())
+            ? defaultSourceRoot() : opencodeStateDirectory();
+        showFileDialog(this, options, delegate(string folder)
+        {
+            if (useDeveloperSourceFolder(folder) && ready !is null) ready();
+            else showSettingsDialog();
+        }, delegate() { showSettingsDialog(); });
+    }
+
+    private void showDeveloperSourceSetup(void delegate() ready)
+    {
+        dismissPopup();
+        auto content = new VBox(10, Insets(16));
+        content.setId("oc-developer-source-setup");
+        content.add(new Label("Aurora could not locate its source on this computer."));
+        content.add(new Label("Use existing source to keep your current changes."));
+        content.add(new Label("Get source downloads a new checkout."));
+        auto actions = content.add(new HBox(8));
+        actions.layoutHints().preferredHeight = 36;
+        auto choose = actions.add(new Button("Use existing source", IconKind.folder));
+        choose.setId("oc-developer-choose-source");
+        choose.onClick = delegate() { showDeveloperSourceFolderDialog(ready); };
+        auto get = actions.add(new Button("Get source"));
+        get.setId("oc-developer-fetch-source");
+        get.onClick = delegate() { dismissPopup(); requestSourceFetch(ready); };
+        auto cancel = actions.add(new Button("Cancel"));
+        cancel.setId("oc-developer-source-cancel");
+        cancel.onClick = delegate() { dismissPopup(); showSettingsDialog(); };
+        auto popup = new PopupOverlay(content, this);
+        popup.setAnchor(Rect.init, PopupPlacement.centered);
+        popup.setRequestedSize(Size(500, 190));
+        popup.setBackdrop(Color.rgba(0, 0, 0, 150));
+        popup.onDismissed = delegate() { if (_activePopup is popup) _activePopup = null; };
+        openPopup(popup);
+    }
+
+    private void requestDeveloperRebuild()
+    {
+        if (_developerPublishing || _sourceFetching) return;
+        if (developerSourceDirectory().length == 0)
+        {
+            showDeveloperSourceSetup(&requestDeveloperRebuild);
+            return;
+        }
+        requestRebuild("Rebuild the running app from its configured Developer source");
+    }
+
+    /// Retrieve a real checkout or synchronize existing source on a worker.
+    /// Continue a requested Publish/Rebuild only after preparation succeeds.
+    private void requestSourceFetch(void delegate() ready = null)
+    {
+        if (_sourceFetching || _developerPublishing) return;
+        if (anyTurnIsBusy())
+        {
+            updateStatus("Use the agent's sync tool while it works, or stop the turn before syncing here.");
+            return;
+        }
+        _afterDeveloperSourceFetch = ready;
+        _sourceFetching = true;
+        if (_developerSourceStatus !is null)
+            _developerSourceStatus.setText("Preparing Aurora source…");
+        const existing = developerSourceDirectory();
+        const stateDir = opencodeStateDirectory();
+        const root = defaultSourceRoot();
+        const autoReapply = _settings.developerAutoReapply;
+        _developerLastPublishProgress = "";
+        auto progress = (string value) {
+            synchronized (this) { _developerPublishProgress = value; }
+        };
+        auto worker = new Thread({
+            string path, error, note;
+            try
+            {
+                synchronized (developerOperationMutex())
+                {
+                    const git = ensureDeveloperTool("git", stateDir, progress);
+                    if (existing.length > 0)
+                    {
+                        if (gitRepoRoot(existing).length == 0)
+                            throw new Exception("This older source snapshot has no Git history. It has been preserved; retrieve a checkout in a new folder before publishing.");
+                        auto workflow = new DeveloperWorkflow(git, "", null, progress);
+                        auto result = workflow.sync(existing, autoReapply);
+                        if (result.failed) throw new Exception(result.message);
+                        path = existing;
+                        note = result.message;
+                    }
+                    else
+                    {
+                        mkdirRecurse(root);
+                        const clone = buildPath(root, "aurora-gui");
+                        if (!exists(buildPath(clone, ".git")))
+                        {
+                            import auroraopencode.developerworkflow : runDeveloperCommand;
+                            auto result = runDeveloperCommand([git, "clone", auroraRepoCloneUrl, clone], "", 300, "", progress);
+                            if (result.status != 0) throw new Exception(result.output);
+                        }
+                        path = buildPath(clone, "aurora-opencode-pro");
+                        if (!isAuroraProject(path)) throw new Exception("The downloaded checkout is missing Aurora's build source.");
+                    }
+                }
+            }
+            catch (Exception e) { error = "Source preparation failed: " ~ e.msg; }
+            synchronized (this)
+            {
+                _sourceFetchPath = path;
+                _sourceFetchError = error;
+                _sourceFetchUpdated = note.length > 0;
+                _sourceFetchNote = note;
+                _sourceFetchResultPending = true;
+            }
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    /// Report a finished source download on the UI thread and reveal the folder.
+    private void drainSourceFetch()
+    {
+        string path, error;
+        synchronized (this)
+        {
+            if (!_sourceFetchResultPending) return;
+            _sourceFetchResultPending = false;
+            path = _sourceFetchPath;
+            error = _sourceFetchError;
+        }
+        _sourceFetching = false;
+        auto ready = _afterDeveloperSourceFetch;
+        _afterDeveloperSourceFetch = null;
+        synchronized (this) { _developerPublishProgress = ""; }
+        if (_developerPublishButton !is null)
+            _developerPublishButton.setEnabled(true);
+        if (_developerRebuildButton !is null)
+            _developerRebuildButton.setEnabled(true);
+        if (error.length > 0)
+        {
+            if (_developerSourceStatus !is null)
+                _developerSourceStatus.setText(error);
+            updateStatus(error);
+            return;
+        }
+        if (_developerSourceStatus !is null)
+            _developerSourceStatus.setText("Source ready at " ~ path);
+        updateStatus("Aurora source ready at " ~ path ~
+            " — press Rebuild to build the running app from it.");
+        _settings.developerSourceDir = path;
+        saveSettingsNow();
+        // Reflect the retrieval in an open Developer section: the row shows the
+        // path and the action becomes "Sync source".
+        if (_developerSourceValueLabel !is null)
+        {
+            _developerSourceValueLabel.setText(path);
+            _developerSourceValueLabel.layoutHints().preferredWidth = 0;
+        }
+        if (_developerSourceActionButton !is null)
+            _developerSourceActionButton.setText("Sync source");
+        configureIntroSuggestions();
+        if (_sourceFetchUpdated && _sourceFetchNote.length > 0)
+            updateStatus(_sourceFetchNote);
+        if (ready !is null) ready();
+    }
+
+    /// The agent applies source updates between operations; background checks only notify.
+    private string onSourceSyncRequested()
+    {
+        synchronized (developerOperationMutex())
+        {
+            auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
+            return workflow.sync(developerSourceDirectory(), _settings.developerAutoReapply).message;
+        }
+    }
+
+    private void startDeveloperUpstreamCheck()
+    {
+        if (_developerSyncRunning || _sourceFetching || _developerPublishing) return;
+        const source = developerSourceDirectory();
+        const git = findDeveloperTool("git", opencodeStateDirectory());
+        if (source.length == 0 || git.length == 0 || gitRepoRoot(source).length == 0) return;
+        _developerSyncRunning = true;
+        auto worker = new Thread({
+            auto workflow = new DeveloperWorkflow(git);
+            import auroraopencode.developerworkflow : DeveloperSyncResult;
+            DeveloperSyncResult result;
+            synchronized (developerOperationMutex())
+                result = workflow.sync(source, false);
+            synchronized (this)
+            {
+                _developerSyncChanged = result.available && !result.failed &&
+                    result.revision != _developerUpstreamRevision;
+                _developerSyncNote = result.message;
+                if (!result.failed) _developerUpstreamRevision = result.revision;
+                _developerSyncDone = true;
+            }
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    private void drainDeveloperUpstreamCheck()
+    {
+        bool changed;
+        string note;
+        synchronized (this)
+        {
+            if (!_developerSyncDone) return;
+            _developerSyncDone = false;
+            changed = _developerSyncChanged;
+            note = _developerSyncNote;
+        }
+        _developerSyncRunning = false;
+        if (!changed) return;
+        _pendingDeveloperNote = note;
+        updateStatus(note);
+    }
+
+    private void runPublishPullRequest(string message)
+    {
+        if (_developerPublishing || _sourceFetching) return;
+        if (anyTurnIsBusy())
+        {
+            updateStatus("Finish or stop the agent's work before publishing its changes.");
+            return;
+        }
+        const dir = developerSourceDirectory();
+        if (dir.length == 0)
+        {
+            showDeveloperSourceSetup(delegate() { runPublishPullRequest(message); });
+            return;
+        }
+        _developerPublishing = true;
+        _developerAuthBrowserOpened = false;
+        _developerLastPublishProgress = "";
+        if (_developerPublishButton !is null) _developerPublishButton.setEnabled(false);
+        const text = message.length > 0 ? message : "Improve Aurora OpenCode";
+        const stateDir = opencodeStateDirectory();
+        const suffix = to!string(Clock.currTime.toUnixTime) ~ "-" ~ to!string(thisProcessID);
+        updateStatus("Preparing your pull request…");
+        auto progress = (string value) {
+            synchronized (this) { _developerPublishProgress = value; }
+        };
+        auto worker = new Thread({
+            string error, url;
+            try
+            {
+                synchronized (developerOperationMutex())
+                {
+                    const git = ensureDeveloperTool("git", stateDir, progress);
+                    const gh = ensureDeveloperTool("gh", stateDir, progress);
+                    auto workflow = new DeveloperWorkflow(git, gh, null, progress);
+                    url = workflow.publish(dir, text, suffix);
+                    if (!url.startsWith("https://github.com/BoQsc/aurora-gui/pull/"))
+                        throw new Exception("GitHub returned an unexpected pull-request URL.");
+                }
+            }
+            catch (Exception e) { error = "Could not publish pull request: " ~ e.msg; }
+            synchronized (this)
+            {
+                _developerPushError = error;
+                _developerPushUrl = url;
+                _developerPushPending = true;
+            }
+        });
+        worker.isDaemon = true;
+        worker.start();
+    }
+
+    private void drainDeveloperPush()
+    {
+        string error, url, progress;
+        bool completed;
+        synchronized (this)
+        {
+            progress = _developerPublishProgress;
+            completed = _developerPushPending;
+            if (completed)
+            {
+                _developerPushPending = false;
+                error = _developerPushError;
+                url = _developerPushUrl;
+                _developerPublishProgress = "";
+            }
+        }
+        if (progress.length > 0 && progress != _developerLastPublishProgress)
+        {
+            _developerLastPublishProgress = progress;
+            updateStatus(progress);
+            if (_developerSourceStatus !is null) _developerSourceStatus.setText(progress);
+            const loginUrl = progress.indexOf("https://github.com/login/");
+            if (!_developerAuthBrowserOpened && loginUrl >= 0)
+            {
+                auto authUrl = progress[loginUrl .. $].split()[0];
+                _developerAuthBrowserOpened = true;
+                openLinkInBrowser(authUrl);
+            }
+        }
+        if (!completed) return;
+        _developerPublishing = false;
+        if (_developerPublishButton !is null) _developerPublishButton.setEnabled(true);
+        const message = error.length > 0 ? error : "Pull request published: " ~ url;
+        updateStatus(message);
+        if (_developerSourceStatus !is null) _developerSourceStatus.setText(message);
+        if (error.length == 0) openLinkInBrowser(url);
     }
 
     private void drainUpdateResult()
@@ -10967,12 +11567,30 @@ private string _suggestExcludeId;
         }
     }
 
-    /// Whether this build can rebuild itself: the executable lives under a
-    /// package that is Aurora OpenCode's own source.
+    /// Resolve saved source, the executable's checkout, or source retrieved by
+    /// an older packaged build. All Developer actions use this same package.
+    private string developerSourceDirectory() const
+    {
+        return findDeveloperSourceDirectory(_settings.developerSourceDir,
+            opencodeStateDirectory(), thisExePath());
+    }
+
     private bool canSelfRebuild() const
     {
-        return isAuroraProject(planRebuild(opencodeStateDirectory(), true,
-            thisProcessID, thisExePath()).workingDir);
+        return isAuroraProject(developerSourceDirectory());
+    }
+
+    /// Apply the Developer-mode switch. The self-hosting prompt module is
+    /// registered per request from `isSelfProjectWorkspace`, so enabling the
+    /// switch takes effect on the next prompt; this only reports the change.
+    public void applyDeveloperMode(bool enabled)
+    {
+        // Refresh the empty-state starters so the Aurora pills appear (or
+        // disappear) with the switch, then report the change.
+        configureIntroSuggestions();
+        updateIntroOverlay();
+        updateStatus(enabled ? "Developer mode enabled."
+            : "Developer mode disabled.");
     }
 
     /// Tool handler for the agent-facing `rebuild` tool. Runs on the tool
@@ -11747,6 +12365,7 @@ private string _suggestExcludeId;
     /// can rebuild itself (a dev checkout), which is the same capability.
     private bool isSelfProjectWorkspace(string workspace) const
     {
+        if (_settings.developerMode) return true;
         if (isAuroraProject(workspace)) return true;
         return canSelfRebuild();
     }
@@ -13474,7 +14093,17 @@ private string _suggestExcludeId;
             labels.put(suggestion);
             prompts.put(suggestion);
         }
-        const source = programSourcePath();
+        string source = programSourcePath();
+        // Developer mode offers the same starters even when the running app is
+        // not itself inside a checkout: point them at the configured or
+        // downloaded source folder.
+        const devSource = developerSourceDirectory();
+        // Developer mode shows the Aurora starters even when the running app is
+        // not itself inside a checkout: point them at the configured/downloaded
+        // source folder, or the repository URL until a local copy exists, so the
+        // pills appear the moment the switch is turned on.
+        if (_settings.developerMode)
+            source = devSource.length > 0 ? devSource : auroraRepoCloneUrl;
         if (source.length > 0)
         {
             labels.put(selfFixSuggestion);
@@ -13485,7 +14114,8 @@ private string _suggestExcludeId;
             // inserted path (mirrors the "Search the web " pill).
             prompts.put("Its program source is at " ~ source ~ " ");
         }
-        const general = generalAuroraPath();
+        string general = _settings.developerMode && devSource.length > 0
+            ? findAuroraRoot(devSource) : generalAuroraPath();
         if (general.length > 0)
         {
             labels.put(generalAuroraSuggestion);
@@ -13614,9 +14244,13 @@ const excludeId = _current >= 0 && _current < cast(int) _sessions.length
         // Guaranteed fallbacks so a folder list always appears even with an
         // empty history: the app's own source, the Aurora root, and the process
         // working directory.
-        const source = programSourcePath();
+        string source = programSourcePath();
+        if (source.length == 0 && _settings.developerMode)
+            source = developerSourceDirectory();
         if (source.length > 0) candidates ~= source;
-        const general = generalAuroraPath();
+        string general = generalAuroraPath();
+        if (general.length == 0 && _settings.developerMode && source.length > 0)
+            general = findAuroraRoot(source);
         if (general.length > 0) candidates ~= general;
         const cwd = getcwd();
         if (cwd.length > 0) candidates ~= cwd;
@@ -17512,6 +18146,11 @@ private void pollButtonSuggestionRequest()
     private void sendMessage()
     {
         const submittedTicks = MonoTime.currTime.ticks;
+        if (_sourceFetching || _developerPublishing)
+        {
+            updateStatus("Source preparation or publication is still running. Your prompt is kept here; send it when that finishes.");
+            return;
+        }
         // Startup is still parsing the saved conversations off the UI thread.
         // Sending now would create a chat the restore then replaces, so keep
         // the typed prompt in the composer and ask the user to wait a moment.
@@ -19299,6 +19938,23 @@ private void pollButtonSuggestionRequest()
         // A turn is about to read and extend this conversation's transcript.
         if (!ensureThreadLoaded(sessionIndex)) return;
         auto session = &_sessions[sessionIndex];
+        if (_pendingDeveloperNote.length > 0 &&
+            isSelfProjectWorkspace(workspaceForSession(sessionIndex)))
+        {
+            const key = session.id;
+            const delivered = key in _developerNotifiedRevision;
+            if (delivered is null || *delivered != _developerUpstreamRevision)
+            {
+                ChatMessage note;
+                note.role = "user";
+                note.internal = true;
+                note.content = "Aurora maintainer update: " ~ _pendingDeveloperNote;
+                note.time = currentTimestamp();
+                appendMessage(*session, note);
+                _developerNotifiedRevision[key] = _developerUpstreamRevision;
+                markDirty();
+            }
+        }
         if (_settings.toolsEnabled)
             ensureDurableTaskCheckpoint(*session,
                 _settings.experimentalNestedPlans);
@@ -21421,6 +22077,9 @@ private void pollButtonSuggestionRequest()
         auto optionsBody = addSettingsSection(sections, "Options",
             "oc-settings-options", false,
             delegate() { resizeSettingsPopup(popup, content); });
+        auto developerBody = addSettingsSection(sections, "Developer",
+            "oc-settings-developer", _settings.developerMode,
+            delegate() { resizeSettingsPopup(popup, content); });
 
         // Provider preset picker: choosing one fills the base URL, key and
         // model fields below, all of which stay editable.
@@ -21841,6 +22500,196 @@ private void pollButtonSuggestionRequest()
         verbosityHint.setScale(1);
         verbosityHint.setColor(opencodeMuted);
 
+        // Developer: opt-in surface for the source folder, the build toolchain,
+        // the logs, and the repository hand-off. The switch lives here, not in
+        // Options, so the section that explains it is the same one it reveals.
+        // Enabling it also lets the agent treat this build as self-hosted (see
+        // isSelfProjectWorkspace), so a prompt can rebuild from a checkout.
+        auto developerCheckRow = new HBox(8);
+        developerCheckRow.layoutHints().preferredHeight = 32;
+        auto developerCheck = new CheckBox("Developer mode");
+        developerCheck.setId("oc-developer");
+        developerCheck.setChecked(_settings.developerMode, false);
+        developerCheckRow.add(developerCheck);
+        auto developerHint = new Label(
+            "Reveals the tools to improve Aurora OpenCode itself: this app's " ~
+            "source folder, build tools, logs, and Publish pull request. " ~
+            "Publishing sends your changes for maintainer review. GitHub " ~
+            "sign-in is needed once; missing Git tools are prepared on demand.");
+        developerHint.setScale(1);
+        developerHint.setColor(opencodeMuted);
+
+        auto developerActions = new SettingsSectionBody();
+
+        // Source folder: where Aurora's source lives on this machine — the
+        // package the running exe was built from, or, when there is none, the
+        // app's data folder where "Get source" places a snapshot. The button is
+        // always present and opens whichever applies.
+        const developerSource = developerSourceDirectory();
+        const developerSourceOpenDir = developerSource.length > 0
+            ? developerSource : defaultSourceRoot();
+        auto developerSourceRow = new HBox(8);
+        developerSourceRow.layoutHints().preferredHeight = 32;
+        auto developerSourceLabel = developerSourceRow.add(new Label("Source folder"));
+        developerSourceLabel.layoutHints().preferredWidth = 110;
+        developerSourceLabel.setScale(1);
+        auto developerSourceValue = developerSourceRow.add(new Label(
+            developerSource.length > 0 ? developerSource
+            : developerSourceOpenDir ~ " (source not located)"));
+        developerSourceValue.setScale(1);
+        developerSourceValue.setColor(opencodeMuted);
+        developerSourceValue.layoutHints().flex = 1.0;
+        developerSourceValue.layoutHints().preferredWidth = 0;
+        _developerSourceValueLabel = developerSourceValue;
+        auto developerSourceOpen =
+            developerSourceRow.add(new Button("Open folder", IconKind.folder));
+        developerSourceOpen.setId("oc-developer-source");
+        developerSourceOpen.onClick = delegate()
+        {
+            const currentSource = developerSourceDirectory();
+            const dir = currentSource.length > 0 ? currentSource : developerSourceOpenDir;
+            if (!exists(dir)) mkdirRecurse(dir);
+            version (Windows) openFolderInExplorer(dir);
+        };
+        developerActions.add(developerSourceRow);
+
+        // Packaged installs have no checkout: offer to download the repository
+        // snapshot so the app can be improved on this machine.
+        if (developerSource.length == 0)
+        {
+            auto getRow = new HBox(8);
+            getRow.layoutHints().preferredHeight = 32;
+            auto getButton = getRow.add(new Button("Get source"));
+            getButton.setId("oc-developer-getsource");
+            _developerSourceActionButton = getButton;
+            getButton.onClick = delegate() { requestSourceFetch(); };
+            auto choose = getRow.add(new Button("Use existing source", IconKind.folder));
+            choose.setId("oc-developer-use-source");
+            choose.onClick = delegate() { showDeveloperSourceFolderDialog(); };
+            getRow.add(new Spacer());
+            developerActions.add(getRow);
+            _developerSourceStatus = developerActions.add(new Label(
+                "Source not located. Use existing source or Get source."));
+            _developerSourceStatus.setId("oc-developer-sourcestatus");
+            _developerSourceStatus.setScale(1);
+            _developerSourceStatus.setColor(opencodeMuted);
+        }
+        else
+        {
+            auto syncRow = new HBox(8);
+            syncRow.layoutHints().preferredHeight = 32;
+            auto syncButton = syncRow.add(new Button("Sync source"));
+            syncButton.setId("oc-developer-syncsource");
+            _developerSourceActionButton = syncButton;
+            syncButton.onClick = delegate() { requestSourceFetch(); };
+            auto choose = syncRow.add(new Button("Use existing source", IconKind.folder));
+            choose.setId("oc-developer-use-source");
+            choose.onClick = delegate() { showDeveloperSourceFolderDialog(); };
+            syncRow.add(new Spacer());
+            developerActions.add(syncRow);
+            _developerSourceStatus = developerActions.add(new Label(
+                "Source ready. Sync reapplies local work on the maintainer's " ~
+                "latest source; Rebuild updates your running app."));
+            _developerSourceStatus.setId("oc-developer-sourcestatus");
+            _developerSourceStatus.setScale(1);
+            _developerSourceStatus.setColor(opencodeMuted);
+        }
+
+        // Reapply on update: when the source is synchronized, put the
+        // developer's own work back on top of the latest upstream. On by
+        // default; turn it off to leave local changes untouched.
+        auto autoReapplyRow = new HBox(8);
+        autoReapplyRow.layoutHints().preferredHeight = 32;
+        auto autoReapplyCheck = new CheckBox(
+            "Reapply my changes on upstream update");
+        autoReapplyCheck.setId("oc-developer-autoreapply");
+        autoReapplyCheck.setChecked(_settings.developerAutoReapply, false);
+        autoReapplyCheck.onChanged = delegate(bool value)
+        {
+            _settings.developerAutoReapply = value;
+            saveSettingsNow();
+        };
+        autoReapplyRow.add(autoReapplyCheck);
+        developerActions.add(autoReapplyRow);
+
+        // A git checkout with git on PATH can commit and push with the user's
+        // own credentials; the app stores no secret.
+        {
+            auto commitRow = new HBox(8);
+            commitRow.layoutHints().preferredHeight = 32;
+            auto commitField = commitRow.add(
+                new TextField("Improve Aurora OpenCode"));
+            commitField.setId("oc-developer-commitmsg");
+            commitField.layoutHints().flex = 1.0;
+            commitField.layoutHints().preferredWidth = 0;
+            _developerCommitField = commitField;
+            auto commitButton = commitRow.add(new Button("Publish pull request"));
+            commitButton.setId("oc-developer-publish-pr");
+            _developerPublishButton = commitButton;
+            commitButton.setEnabled(!_developerPublishing && !_sourceFetching);
+            commitButton.onClick = delegate()
+            {
+                runPublishPullRequest(
+                    _developerCommitField !is null
+                    ? _developerCommitField.textUtf8().strip() : "");
+            };
+            auto rebuildButton = commitRow.add(new Button("Rebuild", IconKind.refresh));
+            rebuildButton.setId("oc-developer-rebuild");
+            _developerRebuildButton = rebuildButton;
+            rebuildButton.setEnabled(!_developerPublishing && !_sourceFetching);
+            rebuildButton.onClick = &requestDeveloperRebuild;
+            developerActions.add(commitRow);
+        }
+
+        // Toolchain probe: names what is present so a missing compiler shows up
+        // here instead of a later `dub build` failing without explanation.
+        auto developerToolchain = developerActions.add(
+            new Label(developerToolchainSummary()));
+        developerToolchain.setId("oc-developer-toolchain");
+        developerToolchain.setScale(1);
+        developerToolchain.setColor(opencodeMuted);
+
+        // Hand-off row: logs, then the repository actions the remote allows.
+        auto developerButtons = new HBox(8);
+        developerButtons.layoutHints().preferredHeight = 32;
+        auto developerLogs = developerButtons.add(new Button("Open logs"));
+        developerLogs.setId("oc-developer-logs");
+        developerLogs.onClick = delegate() { openDeveloperLogs(); };
+        const developerWebBase = gitWebBase(gitOriginUrl(developerSource));
+        if (developerWebBase.length > 0)
+        {
+            auto developerClient = developerButtons.add(
+                new Button("Open in git client"));
+            developerClient.setId("oc-developer-client");
+            developerClient.onClick = delegate()
+            {
+                openLinkInBrowser("x-github-client://openRepo/" ~ developerWebBase);
+            };
+            auto developerRepo = developerButtons.add(new Button("Repository"));
+            developerRepo.setId("oc-developer-repo");
+            developerRepo.onClick = delegate()
+            {
+                openLinkInBrowser(developerWebBase);
+            };
+
+        }
+        developerButtons.add(new Spacer());
+        developerActions.add(developerButtons);
+
+        developerCheck.onChanged = delegate(bool value)
+        {
+            _settings.developerMode = value;
+            saveSettingsNow();
+            developerActions.setVisible(value);
+            applyDeveloperMode(value);
+            resizeSettingsPopup(popup, content);
+        };
+        developerActions.setVisible(_settings.developerMode);
+
+        developerBody.add(developerCheckRow);
+        developerBody.add(developerHint);
+        developerBody.add(developerActions);
+
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 36;
         auto promptButton = footer.add(new Button("System prompt"));
@@ -21916,6 +22765,12 @@ private void pollButtonSuggestionRequest()
             _settingsVerbosityButton = null;
             _settingsAdditionalKeyField = null;
             _settingsKeyRows = null;
+            _developerSourceValueLabel = null;
+            _developerSourceActionButton = null;
+            _developerSourceStatus = null;
+            _developerCommitField = null;
+            _developerPublishButton = null;
+            _developerRebuildButton = null;
             _settingsPopupContent = null;
             _settingsKeyFields.length = 0;
             _settingsKeyUseButtons.length = 0;
@@ -26470,7 +27325,20 @@ private void pollButtonSuggestionRequest()
             loadStartupState();
         }
         drainUpdateResult();
+        drainSourceFetch();
+        drainDeveloperPush();
+        drainDeveloperUpstreamCheck();
         drainKeyUsageResults();
+        // Detect maintainer pushes without changing files beneath active tools.
+        if (_settings.developerMode && !_developerSyncRunning &&
+            MonoTime.currTime >= _developerSyncDue)
+        {
+            _developerSyncDue = MonoTime.currTime + seconds(15);
+            startDeveloperUpstreamCheck();
+        }
+        // Updates are inserted into each Aurora conversation's next request.
+        // This also reaches an inactive chat when it is resumed and avoids
+        // interrupting an unrelated conversation or editing beneath a tool.
         // Resume after an unexpected shutdown, once the restored transcript has
         // been laid out. Sending earlier would extend a conversation whose
         // widgets are not built yet.

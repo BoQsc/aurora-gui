@@ -1193,6 +1193,21 @@ public struct Settings
     // stops (a runaway turn), then fire the same emergency diagnostic. Off by
     // default; the Settings dialog owns the switch.
     bool overseerObserver;
+    // Developer mode: reveal the Developer section (source folder, toolchain
+    // status, logs, repository/pull-request actions) and let the agent treat
+    // this build as self-hosted even outside a source checkout. Off by default;
+    // the Settings dialog's Developer section owns the switch.
+    bool developerMode;
+    // Developer mode: the source folder Rebuild and the git hand-off use. Empty
+    // means the package the running executable was built from (an owner's own
+    // checkout); "Get source" sets it to a downloaded checkout so any user can
+    // rebuild the running app from source they did not have before.
+    string developerSourceDir;
+    // Developer mode: when the source is synchronized, reapply the developer's
+    // own commits and uncommitted edits on top of the latest upstream
+    // (`git pull --rebase --autostash`) instead of leaving them behind. On by
+    // default; the Developer section owns the switch.
+    bool developerAutoReapply = true;
     // On a brand-new chat, rewrite the name once with a tiny no-thinking
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
@@ -1564,6 +1579,18 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ ||
                         found.type == JSONType.false_)
                         settings.overseerObserver = found.type == JSONType.true_;
+                if (auto found = "developerMode" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.developerMode = found.type == JSONType.true_;
+                if (auto found = "developerSourceDir" in value.object)
+                    if (found.type == JSONType.string)
+                        settings.developerSourceDir = found.str;
+                if (auto found = "developerAutoReapply" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.developerAutoReapply =
+                            found.type == JSONType.true_;
                 if (auto found = "compactDeepSeek500k" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.compactDeepSeek500k = found.type == JSONType.true_;
@@ -1839,6 +1866,9 @@ public void saveSettings(const ref Settings settings)
     root["floatingMiniChatLines"] = settings.floatingMiniChatLines;
     root["emergencyReport"] = settings.emergencyReport;
     root["overseerObserver"] = settings.overseerObserver;
+    root["developerMode"] = settings.developerMode;
+    root["developerSourceDir"] = settings.developerSourceDir;
+    root["developerAutoReapply"] = settings.developerAutoReapply;
     JSONValue contextBudgets = JSONValue(string[].init);
     foreach (budget; settings.contextBudgets)
     {

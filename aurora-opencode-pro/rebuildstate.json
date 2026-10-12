@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the verified fix: the suggestion dialog now lays out its option rows (explicit preferred heights + popup relayout), with temporary diagnostics removed. Verified by the headless smoke test.",
+  "reason": "Recognize legacy Aurora source packages without shared/rebuild.d, recover the existing Git checkout, and offer source setup from Publish and Rebuild",
   "command": "dub build --build=release",
-  "exe": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
-  "dir": "C:\\Users\\LENOVO LOQ 15\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-10 23:17:15.2460548 UTC",
-  "finishedAt": "2026-10-10 23:18:14.2166361 UTC",
-  "durationMs": 58969,
+  "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+  "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+  "startedAt": "2026-10-12 16:56:42.2187103 UTC",
+  "finishedAt": "2026-10-12 16:57:27.1033743 UTC",
+  "durationMs": 44884,
   "exitCode": 0,
   "errors": []
 }

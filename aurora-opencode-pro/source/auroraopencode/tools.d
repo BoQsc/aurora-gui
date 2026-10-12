@@ -571,6 +571,26 @@ private OpenCodeToolDef rebuildToolDefinition()
     );
 }
 
+/// Agent-facing sync tool: check the Aurora source for upstream commits and
+/// reapply the developer's own changes on top of them. The work happens in the
+/// host application (which knows the configured source folder), reached through
+/// `syncRequestHandler`.
+private OpenCodeToolDef syncToolDefinition()
+{
+    return OpenCodeToolDef(
+        "sync",
+        "Check the Aurora OpenCode source for updates pushed by the maintainer " ~
+        "and reapply your own local changes on top of them. Use this while " ~
+        "working on Aurora's own source, so you build on the latest version and " ~
+        "resolve any conflict early. It checks the maintainer's main branch " ~
+        "and, unless reapply is turned off in Settings, fetches and applies " ~
+        "updates while preserving local work and published PR history. " ~
+        "Returns the outcome; on a " ~
+        "conflict it names the situation so you can resolve it and continue.",
+        `{"type":"object","properties":{},"required":[]}`
+    );
+}
+
 /// Keep the grep contract identical in shell-enabled and native-only modes.
 private OpenCodeToolDef grepToolDefinition()
 {
@@ -618,6 +638,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         updatePlanToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
+        syncToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
@@ -679,6 +700,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         updatePlanToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
+        syncToolDefinition(),
         OpenCodeToolDef(
             "read",
             "Read a text file from the workspace, one line per line, prefixed " ~
@@ -5616,6 +5638,13 @@ public string changeRecordDiff(const ref ChangeRecord record)
 /// thread-local in D, so the worker would otherwise read its own null copy.
 public __gshared bool delegate(string reason) rebuildRequestHandler;
 
+/// The host application installs this to run an Aurora-source sync-and-reapply
+/// against the folder it has configured. The tool worker thread calls it and
+/// blocks on the result, so it returns the outcome text directly: whether the
+/// source is up to date, how many upstream commits were applied, or that a
+/// conflict needs resolving.
+public __gshared string delegate() syncRequestHandler;
+
 /// Bridge the model's `rebuild` request to the host application. The tool
 /// performs no build itself: `dub` cannot replace the running image, so only
 /// the app can drive the detached-helper flow. Returns a clear result either
@@ -5646,6 +5675,19 @@ private ToolExecution runRebuildTool(string arguments)
         "If the build fails to compile, the app relaunches the previous " ~
         "binary and reports the compiler errors in the resumed conversation " ~
         "so you can fix them and call the rebuild tool again.");
+}
+
+/// Bridge the model's `sync` request to the host application, which performs
+/// the fetch/reapply against the configured Aurora source folder and returns
+/// the outcome.
+private ToolExecution runSyncTool(string arguments)
+{
+    if (syncRequestHandler is null)
+        return ToolExecution("sync",
+            "Error: the sync tool is only available inside the Aurora OpenCode " ~
+            "application, where a source sync handler is registered.", true);
+    const output = syncRequestHandler();
+    return ToolExecution("sync", output, output.startsWith("Error:"));
 }
 
 /// Dispatch a tool call. Split out of `executeTool` so the timing wrapper has a
@@ -5729,6 +5771,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         }
         case "rebuild":
             return runRebuildTool(call.arguments);
+        case "sync":
+            return runSyncTool(call.arguments);
         default:
             return ToolExecution(call.name,
                 "Error: unknown tool '" ~ call.name ~ "'.", true);
