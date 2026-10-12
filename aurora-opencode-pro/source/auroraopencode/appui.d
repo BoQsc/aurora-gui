@@ -4605,7 +4605,7 @@ private final class LiveToolRow : Widget
         if (_detail.length == 0) return;
         import std.string : splitLines;
         const lines = splitLines(_detail);
-        const lineLimit = _hasSearchProgress ? 10 : _outputPreview ? 8 : maxDetailLines;
+        const lineLimit = _hasSearchProgress ? 12 : _outputPreview ? 8 : maxDetailLines;
         const first = _outputPreview && !_hasSearchProgress && lines.length > lineLimit
             ? lines.length - lineLimit : 0;
         _detailTruncated = first > 0;
@@ -4634,8 +4634,11 @@ private final class LiveToolRow : Widget
     bool hasTransferProgressForTesting() const { return _hasTransferProgress; }
     double transferFractionForTesting() const { return _transferProgress.fraction(); }
     bool hasSearchProgressForTesting() const { return _hasSearchProgress; }
+    bool hasMeasuredSearchProgressForTesting() const
+    { return _hasSearchProgress && _toolName == "grep" && _searchProgress.totalsKnown; }
+    double searchFractionForTesting() const { return _searchProgress.fraction(); }
 
-    private int progressHeight() const { return _hasTransferProgress || _hasSearchProgress ? 12 : 0; }
+    private int progressHeight() const { return _hasTransferProgress || hasMeasuredSearchProgressForTesting() ? 12 : 0; }
 
     private int headerHeight()
     {
@@ -4735,17 +4738,16 @@ private final class LiveToolRow : Widget
             }
         }
 
-        if (_hasTransferProgress || _hasSearchProgress)
+        if (progressHeight())
         {
             const track = Rect(padH + 8, h + 3, maxInt(1, bounds().width - 2 * padH - 16), 5);
             canvas.fillRect(track, diffCardBorder);
             if (_hasTransferProgress && _transferProgress.totalsKnown)
                 canvas.fillRect(Rect(track.x, track.y,
                     cast(int) (track.width * _transferProgress.fraction()), track.height), opencodeAccent);
-            else if (_hasSearchProgress && _searchProgress.terminal)
-            {
-                if (!_searchProgress.partial) canvas.fillRect(track, opencodeAccent);
-            }
+            else if (hasMeasuredSearchProgressForTesting())
+                canvas.fillRect(Rect(track.x, track.y,
+                    cast(int) (track.width * _searchProgress.fraction()), track.height), opencodeAccent);
             else
             {
                 const width = maxInt(1, track.width / 4);
@@ -29490,6 +29492,17 @@ private void pollButtonSuggestionRequest()
                     if (auto row = cast(LiveToolRow) part)
                         if (row.hasSearchProgressForTesting()) ++count;
         return count;
+    }
+
+    public double[] liveSearchFractionsForTesting()
+    {
+        double[] fractions;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                foreach (part; group._parts)
+                    if (auto row = cast(LiveToolRow) part)
+                        if (row.hasMeasuredSearchProgressForTesting()) fractions ~= row.searchFractionForTesting();
+        return fractions;
     }
 
     public void injectToolOutputForTesting(string id, string text)

@@ -27,6 +27,7 @@ int main(string[] args)
                         scan.path = buildPath(scan.root, "large-log.txt");
                         scan.query = "needle";
                         scan.files = 77; scan.directories = 4; scan.entries = 81;
+                        scan.totalsKnown = true; scan.candidateFiles = 100; scan.processedFiles = 76;
                         scan.lines = 50000; scan.bytes = 8 * 1024 * 1024;
                         scan.matches = 2;
                         scan.latest = ["large-log.txt:15: needle", "large-log.txt:29: needle"];

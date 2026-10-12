@@ -672,7 +672,8 @@ private OpenCodeToolDef grepToolDefinition()
         "default, or exact text when `literal` is true. Defaults to the " ~
         "workspace; set `path` for another directory or a specific file. " ~
             "`mode` selects matching lines, matching files, or per-file counts. " ~
-            "Shows live scope, current path, scan counts, matches and skipped files. " ~
+            "Discovers candidate files first, then shows measured progress by files processed, " ~
+            "with live scope, current path, scan counts, matches and skipped files. " ~
             "Recursive searches skip generated folders, binary files and files over 8 MiB; " ~
             "use an exact file path to search a larger text file. Partial results are labelled.",
         `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
@@ -4860,7 +4861,8 @@ private ToolExecution runGrep(string args, string workspace,
     bool capped;
     bool stopped;
     bool timedOut;
-    auto progress = new SearchReporter("Searching contents", root, pattern,
+    bool inventoryLimited;
+    auto progress = new SearchReporter("Discovering candidate files", root, pattern,
         (literal ? "literal" : "regex") ~ (caseSensitive ? ", case sensitive" : ", ignore case") ~
         (include.length ? ", include " ~ include : ""), observer);
     string lastError;
@@ -4871,20 +4873,21 @@ private ToolExecution runGrep(string args, string workspace,
     }
     reportGrepProgress(true);
     const deadline = MonoTime.currTime + timeoutMs.msecs;
-    bool scanFile(string filePath, bool explicitFile = false)
+    bool interrupted()
     {
-        if (MonoTime.currTime >= deadline)
-        {
-            timedOut = true;
-            return true;
-        }
-        if (cancellation !is null && cancellation.cancelled())
-        {
-            stopped = true;
-            return true;
-        }
-        if (include.length > 0 &&
-            !fileMatchesInclude(baseName(filePath), include)) { ++progress.value.skippedFiltered; return false; }
+        if (cancellation !is null && cancellation.cancelled()) stopped = true;
+        if (MonoTime.currTime >= deadline) timedOut = true;
+        return stopped || timedOut;
+    }
+
+    enum size_t maxCandidates = 100_000;
+    enum size_t maxCandidatePathBytes = 32 * 1024 * 1024;
+    string[] candidates;
+    size_t candidatePathBytes;
+    bool addCandidate(string filePath, bool explicitFile = false)
+    {
+        if (include.length && !fileMatchesInclude(baseName(filePath), include))
+        { ++progress.value.skippedFiltered; return false; }
         if (!explicitFile)
         {
             if (grepIgnoredFile(filePath)) { ++progress.value.skippedBinary; return false; }
@@ -4894,8 +4897,64 @@ private ToolExecution runGrep(string args, string workspace,
             }
             catch (Exception error) { ++progress.value.errors; lastError = error.msg; return false; }
         }
+        if (candidates.length >= maxCandidates || filePath.length > maxCandidatePathBytes - candidatePathBytes)
+        { inventoryLimited = true; return true; }
+        candidates ~= filePath;
+        candidatePathBytes += filePath.length;
+        progress.value.candidateFiles = candidates.length;
+        return false;
+    }
+
+    bool discoverDirectory(string directory, size_t depth = 0)
+    {
+        if (interrupted()) return true;
+        if (depth > 256) { ++progress.value.errors; lastError = "Folder depth exceeds 256: " ~ directory; return false; }
+        ++progress.value.directories;
+        progress.value.path = directory;
+        reportGrepProgress();
+        try
+        {
+            foreach (entry; dirEntries(directory, SpanMode.shallow))
+            {
+                if (interrupted()) return true;
+                ++progress.value.entries;
+                progress.value.path = entry.name;
+                if (entry.isSymlink) ++progress.value.skippedLinks;
+                else if (entry.isDir)
+                {
+                    if (grepIgnoredDirectory(entry.name)) ++progress.value.skippedDirectories;
+                    else if (discoverDirectory(entry.name, depth + 1)) return true;
+                }
+                else if (entry.isFile && addCandidate(entry.name)) return true;
+                reportGrepProgress();
+            }
+        }
+        catch (Exception error) { ++progress.value.errors; lastError = error.msg; }
+        return interrupted();
+    }
+
+    bool scanFile(string filePath, bool explicitFile = false)
+    {
+        if (interrupted()) return true;
+        bool processed;
+        scope (exit)
+        {
+            if (processed) ++progress.value.processedFiles;
+            reportGrepProgress();
+        }
         progress.value.path = filePath;
         reportGrepProgress();
+        // Files can grow or disappear after discovery. Keep the recursive size
+        // policy and count a failed/skipped attempt as processed, with its reason.
+        if (!explicitFile)
+        {
+            try
+            {
+                if (getSize(filePath) > maxRecursiveFileBytes)
+                { ++progress.value.skippedLarge; processed = true; return false; }
+            }
+            catch (Exception error) { ++progress.value.errors; lastError = error.msg; processed = true; return false; }
+        }
         File file;
         try
         {
@@ -4905,6 +4964,7 @@ private ToolExecution runGrep(string args, string workspace,
             {
                 ++progress.value.skippedBinary;
                 file.close();
+                processed = true;
                 return false;
             }
             file.seek(0);
@@ -4912,7 +4972,7 @@ private ToolExecution runGrep(string args, string workspace,
         catch (Exception error)
         {
             collectException(file.close());
-            ++progress.value.errors; lastError = error.msg; return false;
+            ++progress.value.errors; lastError = error.msg; processed = true; return false;
         }
         ++progress.value.files;
         scope (exit) collectException(file.close());
@@ -4988,6 +5048,7 @@ private ToolExecution runGrep(string args, string workspace,
                 ++totalMatches;
                 if (mode == "files")
                 {
+                    processed = true; // This mode needs only the first match.
                     ++matchedFiles;
                     hits ~= filePath;
                     if (matchedFiles >= maxResults)
@@ -5015,6 +5076,7 @@ private ToolExecution runGrep(string args, string workspace,
             }
         }
         catch (Exception error) { ++progress.value.errors; lastError = error.msg; }
+        processed = true;
         if (mode == "count" && fileMatches > 0)
         {
             ++matchedFiles;
@@ -5029,69 +5091,27 @@ private ToolExecution runGrep(string args, string workspace,
         return false;
     }
 
-    // Models frequently pass the known target file as `path`. Treat that as a
-    // precise one-file search instead of failing and provoking another tool
-    // round just to remove the filename from the argument.
-    void performScan()
+    const explicitFile = isFile(root);
+    if (!interrupted())
     {
-        if (isFile(root))
-            scanFile(root, true);
-        else
-        {
-            bool scanDirectory(string directory, size_t depth = 0)
-            {
-                if (depth > 256) { ++progress.value.errors; lastError = "Folder depth exceeds 256: " ~ directory; return false; }
-                ++progress.value.directories;
-                progress.value.path = directory;
-                reportGrepProgress();
-                if (MonoTime.currTime >= deadline)
-                {
-                    timedOut = true;
-                    return true;
-                }
-                if (cancellation !is null && cancellation.cancelled())
-                {
-                    stopped = true;
-                    return true;
-                }
-                try
-                {
-                    foreach (entry; dirEntries(directory, SpanMode.shallow))
-                    {
-                        ++progress.value.entries;
-                        progress.value.path = entry.name;
-                        reportGrepProgress();
-                        if (MonoTime.currTime >= deadline)
-                        {
-                            timedOut = true;
-                            return true;
-                        }
-                        if (cancellation !is null && cancellation.cancelled())
-                        {
-                            stopped = true;
-                            return true;
-                        }
-                        if (entry.isSymlink) { ++progress.value.skippedLinks; continue; }
-                        if (entry.isDir)
-                        {
-                            if (grepIgnoredDirectory(entry.name)) { ++progress.value.skippedDirectories; continue; }
-                            if (scanDirectory(entry.name, depth + 1)) return true;
-                        }
-                        else if (entry.isFile && scanFile(entry.name))
-                            return true;
-                    }
-                }
-                catch (Exception error) { ++progress.value.errors; lastError = error.msg; }
-                return false;
-            }
-            scanDirectory(root);
-        }
+        if (explicitFile) addCandidate(root, true);
+        else discoverDirectory(root);
     }
-    performScan();
+    if (!interrupted() && !inventoryLimited)
+    {
+        progress.value.totalsKnown = true;
+        progress.value.phase = "Searching contents";
+        progress.value.path = root;
+        reportGrepProgress(true);
+        foreach (filePath; candidates)
+            if (scanFile(filePath, explicitFile)) break;
+    }
     progress.value.terminal = true;
-    progress.value.partial = timedOut || stopped || capped || progress.value.errors > 0;
-    progress.value.phase = stopped ? "Search stopped — incomplete" : timedOut ? "Search paused at soft deadline — incomplete" :
-        capped ? "Result limit reached — incomplete" : progress.value.errors ? "Search finished with unreadable paths" : "Search complete";
+    progress.value.partial = timedOut || stopped || capped || inventoryLimited || progress.value.errors > 0;
+    progress.value.phase = stopped ? "Search stopped — incomplete" : timedOut ?
+        (progress.value.totalsKnown ? "Search paused at soft deadline — incomplete" : "Candidate discovery paused at soft deadline — incomplete") :
+        inventoryLimited ? "Candidate discovery limit reached — incomplete" : capped ? "Result limit reached — incomplete" :
+        progress.value.errors ? "Search finished with unreadable paths" : "Search complete";
     reportGrepProgress(true);
     const summary = searchProgressText(progress.value, false) ~ "\n";
     if (timedOut)
@@ -5113,6 +5133,9 @@ private ToolExecution runGrep(string args, string workspace,
         return ToolExecution("grep", "Stopped: grep cancelled.\n" ~ summary, true);
     auto builder = appender!string();
     builder.put(summary);
+    if (inventoryLimited)
+        return ToolExecution("grep", summary ~ "Candidate discovery exceeded 100000 files or 32 MiB of paths. " ~
+            "Contents were not searched. Narrow `path` or `include` and retry.\n", true);
     if (!totalMatches) builder.put(progress.value.errors ?
         "No matches in the files checked; unreadable paths make this search incomplete.\n" : "No matches for: " ~ pattern ~ "\n");
     foreach (hit; hits)

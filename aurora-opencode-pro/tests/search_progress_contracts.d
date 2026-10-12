@@ -51,6 +51,8 @@ int main()
     assert(last.terminal && !last.partial && last.matches == 2 && last.files == 2 && events >= 1);
     assert(last.skippedDirectories == 1 && last.skippedBinary == 2 && last.skippedLarge == 1, grep.output);
     assert(last.lines == 4 && last.root.length && last.query == "^needle$");
+    assert(last.totalsKnown && last.candidateFiles == 3 && last.processedFiles == 3 && last.fraction() == 1);
+    assert(grep.output.indexOf("Processed 3 of 3 candidate files") >= 0, grep.output);
     assert(grep.output.indexOf("aurora-search") < 0);
     writeln("PASS real helper IPC: scope, CRLF matches, files, lines and skip reasons reach the observer");
 
@@ -59,9 +61,35 @@ int main()
     auto capped = run("grep", `{"pattern":"needle","limit":1}`);
     assert(!capped.failed && last.partial && last.terminal && last.matches == 1);
     assert(last.phase.indexOf("incomplete") >= 0 && capped.output.indexOf("capped at 1") >= 0, capped.output);
+    assert(last.totalsKnown && last.candidateFiles == 3 && last.processedFiles < last.candidateFiles,
+        "Discovery must finish before scanning; a file stopped at the content limit must not count as processed");
+    auto oneFileCap = run("grep", `{"pattern":"needle","path":"src/main.d","limit":1}`);
+    assert(!oneFileCap.failed && last.candidateFiles == 1 && last.processedFiles == 0 && last.fraction() == 0);
+    auto filesMode = run("grep", `{"pattern":"needle","path":"src/main.d","mode":"files"}`);
+    assert(!filesMode.failed && !last.partial && last.processedFiles == 1 && last.fraction() == 1);
+    auto countMode = run("grep", `{"pattern":"needle","path":"src/main.d","mode":"count"}`);
+    assert(!countMode.failed && !last.partial && last.processedFiles == 1 && last.matches == 2);
     auto absent = run("grep", `{"pattern":"never-present"}`);
     assert(!absent.failed && absent.output.indexOf("No matches") >= 0 && !last.partial && last.terminal);
+    auto emptyCandidates = run("grep", `{"pattern":"needle","include":"*.not-present"}`);
+    assert(!emptyCandidates.failed && last.totalsKnown && last.candidateFiles == 0 && last.fraction() == 1);
     writeln("PASS filtered scans, match limits and completed zero-match searches remain distinguishable");
+
+    const discoveryRoot = buildPath(workspace, "discovery");
+    mkdirRecurse(discoveryRoot);
+    foreach (i; 0 .. 2000) write(buildPath(discoveryRoot, to!string(i) ~ ".txt"), "needle\n");
+    auto discoveryTimeout = run("grep", `{"pattern":"needle","path":"discovery","timeout":1}`);
+    assert(discoveryTimeout.failed && last.partial && !last.totalsKnown && last.processedFiles == 0 && last.matches == 0,
+        discoveryTimeout.output);
+    assert(last.phase.indexOf("Candidate discovery paused") >= 0, discoveryTimeout.output);
+    rmdirRecurse(discoveryRoot);
+    auto longText = File(buildPath(workspace, "long.txt"), "wb");
+    foreach (_; 0 .. 20000) longText.write("not present in this line\n");
+    longText.close();
+    auto contentsTimeout = run("grep", `{"pattern":"missing","path":"long.txt","timeout":1}`);
+    assert(contentsTimeout.failed && last.partial && last.totalsKnown && last.candidateFiles == 1 &&
+        last.processedFiles == 0 && last.fraction() == 0, contentsTimeout.output);
+    writeln("PASS discovery deadlines have no percentage; a deadline inside a file retains the real processed count");
 
     auto paths = run("glob", `{"pattern":"**/*","limit":2}`);
     assert(!paths.failed && last.terminal && last.partial && last.matches == 2, paths.output);
@@ -97,6 +125,8 @@ int main()
         scope (exit) CloseHandle(handle);
         auto unreadable = run("grep", `{"pattern":"missing","path":"locked.txt"}`);
         assert(unreadable.failed && last.errors == 1 && last.partial, unreadable.output);
+        assert(last.totalsKnown && last.candidateFiles == 1 && last.processedFiles == 1,
+            "Unreadable candidates count as attempted, with an explicitly incomplete outcome");
         assert(unreadable.output.indexOf("search incomplete") >= 0 && unreadable.output.indexOf("Last read error") >= 0);
         writeln("PASS an unreadable explicit file cannot produce a complete no-match result");
     }
@@ -115,6 +145,7 @@ int main()
     auto timeout = run("glob", `{"pattern":"**/*","_fixtureBlocked":true,"_fixtureProgress":true,"timeout":1400}`);
     assert(timeout.failed && last.partial && last.phase.indexOf("timed out") >= 0, timeout.output);
     assert(timeout.output.indexOf("77 files") >= 0 && timeout.output.indexOf("partial results") >= 0);
+    assert(last.totalsKnown && last.processedFiles == 76 && last.candidateFiles == 100 && last.fraction() == 0.76);
     writeln("PASS quiet-host heartbeats, Stop and hard timeouts preserve the last reported partial evidence");
 
     SearchProgress malicious;
@@ -124,6 +155,10 @@ int main()
     assert(decodeSearchProgress(encodeSearchProgress(malicious), decoded));
     assert(decoded.latest == ["b", "c"] && decoded.query == "one two");
     assert(!decodeSearchProgress("\x1eaurora-search {}", decoded));
+    malicious.totalsKnown = true; malicious.candidateFiles = 10; malicious.processedFiles = 11;
+    assert(!decodeSearchProgress(encodeSearchProgress(malicious), decoded));
+    malicious.processedFiles = 5; malicious.totalsKnown = false;
+    assert(!decodeSearchProgress(encodeSearchProgress(malicious), decoded));
     writeln("PASS progress encoding bounds previews and rejects malformed payloads");
     return 0;
 }

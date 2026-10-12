@@ -13,9 +13,17 @@ public struct SearchProgress
     ulong directories, files, entries, lines, bytes, matches;
     ulong skippedFiltered, skippedDirectories, skippedBinary, skippedLarge, skippedLinks, errors;
     ulong pending;
+    ulong candidateFiles, processedFiles;
     long elapsedMs, lastActivityMs;
-    bool terminal, partial;
+    bool terminal, partial, totalsKnown;
     string[] latest;
+
+    double fraction() const
+    {
+        if (!totalsKnown) return 0;
+        if (!candidateFiles) return terminal && !partial ? 1 : 0;
+        return cast(double) processedFiles / candidateFiles;
+    }
 }
 
 private enum prefix = "\x1eaurora-search ";
@@ -37,12 +45,14 @@ public string encodeSearchProgress(const ref SearchProgress p)
     value["query"] = bounded(p.query, 600);
     value["filter"] = bounded(p.filter, 300);
     static foreach (field; ["directories", "files", "entries", "lines", "bytes", "matches",
-        "skippedFiltered", "skippedDirectories", "skippedBinary", "skippedLarge", "skippedLinks", "errors", "pending"])
+        "skippedFiltered", "skippedDirectories", "skippedBinary", "skippedLarge", "skippedLinks", "errors", "pending",
+        "candidateFiles", "processedFiles"])
         value[field] = cast(long) __traits(getMember, p, field);
     value["elapsedMs"] = p.elapsedMs;
     value["lastActivityMs"] = p.lastActivityMs;
     value["terminal"] = p.terminal;
     value["partial"] = p.partial;
+    value["totalsKnown"] = p.totalsKnown;
     value["latest"] = JSONValue.emptyArray;
     const first = p.latest.length > 2 ? p.latest.length - 2 : 0;
     foreach (hit; p.latest[first .. $]) value["latest"].array ~= JSONValue(bounded(hit, 360));
@@ -68,6 +78,15 @@ public bool decodeSearchProgress(string text, out SearchProgress p)
         if (p.elapsedMs < 0 || p.lastActivityMs < 0) return false;
         p.terminal = value["terminal"].boolean;
         p.partial = value["partial"].boolean;
+        // Older search payloads carry activity only, without a measured total.
+        if (auto field = "totalsKnown" in value.object)
+        {
+            p.totalsKnown = field.boolean;
+            if (value["candidateFiles"].integer < 0 || value["processedFiles"].integer < 0) return false;
+            p.candidateFiles = cast(ulong) value["candidateFiles"].integer;
+            p.processedFiles = cast(ulong) value["processedFiles"].integer;
+            if (p.processedFiles > p.candidateFiles || (!p.totalsKnown && p.processedFiles)) return false;
+        }
         if (value["latest"].array.length > 2) return false;
         foreach (hit; value["latest"].array) p.latest ~= hit.str;
         return true;
@@ -84,6 +103,11 @@ public string searchProgressText(const ref SearchProgress p, bool preview = true
         (p.filter.length ? " · " ~ bounded(p.filter, 300) : "");
     text ~= "\nScope: " ~ bounded(p.root, 2000);
     if (preview && p.path.length) text ~= "\nCurrent: " ~ bounded(p.path, 2000);
+    if (p.totalsKnown)
+        text ~= "\nProcessed " ~ to!string(p.processedFiles) ~ " of " ~ to!string(p.candidateFiles) ~
+            " candidate files · " ~ to!string(cast(uint) (p.fraction() * 100)) ~ "% by file";
+    else if (p.candidateFiles || p.phase.startsWith("Discovering candidate") || p.phase.startsWith("Candidate discovery"))
+        text ~= "\nDiscovered " ~ to!string(p.candidateFiles) ~ " candidate files · total unknown";
     text ~= "\nChecked " ~ to!string(p.files) ~ " files · " ~ to!string(p.directories) ~
         " folders · " ~ to!string(p.entries) ~ " entries · " ~ to!string(p.matches) ~ " matches";
     if (p.lines || p.bytes) text ~= "\nRead " ~ to!string(p.lines) ~ " lines · " ~ transferBytes(p.bytes);

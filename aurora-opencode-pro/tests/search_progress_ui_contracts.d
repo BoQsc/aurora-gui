@@ -43,7 +43,7 @@ int main()
         root.seedPendingToolBatchForTesting([call]);
         root.rebuildForTesting();
         SearchProgress progress;
-        progress.phase = "Searching contents";
+        progress.phase = "Discovering candidate files";
         progress.root = "C:/Projects/ImageStudio";
         progress.path = "C:/Projects/ImageStudio/src/inference.py";
         progress.query = "load_model";
@@ -55,27 +55,47 @@ int main()
         progress.elapsedMs = 3400;
         progress.lastActivityMs = 1200;
         progress.latest = ["src/inference.py:42: model = load_model(model_path)"];
+        progress.candidateFiles = 850;
         root.injectToolOutputForTesting(call.id, encodeSearchProgress(progress));
         root.tickTree(0.02);
         assert(driver.paint());
-        assert(root.liveSearchProgressCountForTesting() == 1, tool ~ " has no search bar");
+        assert(root.liveSearchProgressCountForTesting() == 1, tool ~ " has no search activity");
+        assert(root.liveSearchFractionsForTesting().length == 0, "Unknown totals must not show a progress bar");
         const previews = root.liveToolRowPreviewsForTesting();
         assert(previews.length == 1 && previews[0].indexOf("1248 files") >= 0 &&
             previews[0].indexOf("14 matches") >= 0 && previews[0].indexOf("load_model(model_path)") >= 0);
         assert(previews[0].indexOf("no new scan activity for 1.2s") >= 0 && previews[0].indexOf("Current:") >= 0);
         assert(previews[0].indexOf("aurora-search") < 0 && previews[0].indexOf("%") < 0);
         assert(root.transcriptRowsSequentialForTesting(), "Search details overlap transcript rows");
-        if (tool == "grep") window.saveScreenshot("build/search-progress.ppm");
+        if (tool == "grep")
+        {
+            window.saveScreenshot("build/search-discovery.ppm");
+            progress.phase = "Searching contents";
+            progress.totalsKnown = true;
+            progress.candidateFiles = 2000; progress.processedFiles = 1248;
+            root.injectToolOutputForTesting(call.id, encodeSearchProgress(progress));
+            root.tickTree(0.02);
+            assert(driver.paint());
+            assert(root.liveSearchFractionsForTesting() == [0.624]);
+            assert(root.liveToolRowPreviewsForTesting()[0].indexOf("Processed 1248 of 2000 candidate files · 62% by file") >= 0);
+            window.saveScreenshot("build/search-progress.ppm");
+            foreach (_; 0 .. 20) root.tickTree(0.1);
+            assert(driver.paint() && root.liveSearchFractionsForTesting() == [0.624],
+                "Time without completed files must not advance measured progress");
+        }
         root.rebuildForTesting();
         root.tickTree(0.02);
         assert(driver.paint() && root.liveSearchProgressCountForTesting() == 1);
+        assert(root.liveSearchFractionsForTesting() == (tool == "grep" ? [0.624] : null));
         progress.phase = "Search paused at checkpoint — more entries remain";
         progress.terminal = progress.partial = true;
         root.injectToolOutputForTesting(call.id, encodeSearchProgress(progress));
         root.tickTree(0.02);
         assert(driver.paint());
         assert(root.liveToolRowPreviewsForTesting()[0].indexOf("more entries remain") >= 0);
+        assert(root.liveSearchFractionsForTesting() == (tool == "grep" ? [0.624] : null),
+            "Paused progress must keep its actual fraction");
     }
-    writeln("PASS grep, glob and listing show structured activity without a fake percentage; transcript rebuild preserves it");
+    writeln("PASS discovery and path listing have no animated bar; grep renders measured progress that survives quiet periods, pause and transcript rebuild");
     return 0;
 }
