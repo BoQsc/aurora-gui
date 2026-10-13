@@ -155,4 +155,3 @@ void main(string[] args) {
     writeln("PASS: root/package scheduler jobs, threads and separate processes serialize the same checkout");
     writeln("ARTIFACTS ",root);
 }
-
