@@ -746,6 +746,21 @@ private final class MessageBubble : Widget
     private void delegate() _editActionCallback;
     private bool _pointerInside;
 
+    // In-place message edit (Pro): the Edit pill turns the message's own text
+    // into an editable field inside the bubble, with Save/Cancel, instead of
+    // sending the user to the composer at the bottom of the window. The field is
+    // a real child so it keeps the caret, selection and keyboard focus; the
+    // bubble reserves room for it and for the Save/Cancel row while open.
+    private InlineMessageEditor _inlineEditor;
+    private bool _editingInPlace;
+    private void delegate(string text) _inlineEditCommit;
+    private void delegate() _inlineEditCancel;
+    private Rect _inlineSaveRect;
+    private Rect _inlineCancelRect;
+    private bool _inlineSaveHover;
+    private bool _inlineCancelHover;
+    private static immutable int inlineActionRowHeight = 22;
+
     // Interactive affordances (Pro): message/code copy buttons and links.
     private int _hoverCopy = -1;
     private int _hoverLink = -1;
@@ -1566,6 +1581,103 @@ private final class MessageBubble : Widget
         _editActionCallback = callback;
     }
 
+    /// Wire the in-place editor's Save/Cancel paths. Save hands back the edited
+    /// text; Cancel dismisses without changing the message.
+    void setInlineEditActions(void delegate(string text) commit,
+        void delegate() cancel)
+    {
+        _inlineEditCommit = commit;
+        _inlineEditCancel = cancel;
+    }
+
+    /// Whether this bubble is currently editing its message in place.
+    public bool editingInPlaceForTesting() const @safe pure nothrow @nogc
+    {
+        return _editingInPlace;
+    }
+
+    /// Test-only: the text the in-place editor currently holds.
+    public string inlineEditTextForTesting() const
+    {
+        return _inlineEditor is null ? "" : _inlineEditor.textUtf8();
+    }
+
+    /// Test-only: replace the in-place editor's text.
+    public void setInlineEditTextForTesting(string text)
+    {
+        if (_inlineEditor !is null) _inlineEditor.setText(text, false);
+    }
+
+    /// Turn this message into an editable field seeded with its own text.
+    void beginInlineEdit()
+    {
+        if (_editingInPlace || _role != "user" || _content.length == 0) return;
+        _editingInPlace = true;
+        // The hover pills and transcript text selection give way to the editor.
+        _pointerInside = false;
+        _copyActionRect = Rect.init;
+        _editActionRect = Rect.init;
+        _copyActionHover = false;
+        _editActionHover = false;
+        clearSelection();
+        if (_inlineEditor is null)
+        {
+            _inlineEditor = new InlineMessageEditor();
+            _inlineEditor.setId("oc-inline-edit");
+            _inlineEditor.setShowBorder(false);
+            _inlineEditor.setTransparentBackground(true);
+            _inlineEditor.setFocusDecoration(false);
+            _inlineEditor.setPadding(0);
+            _inlineEditor.setWordWrap(true);
+            // Match the transcript text (UI face at the chat size) so the edit
+            // reads as the message itself, not a separate control.
+            _inlineEditor.setFontFace(cast(FontFace) theme().uiFont,
+                FontRole.ui);
+            _inlineEditor.setPixelSizeOverride(opencodeFontChat);
+            _inlineEditor.onCommit = delegate()
+            {
+                if (_inlineEditCommit !is null)
+                    _inlineEditCommit(_inlineEditor.textUtf8().strip());
+            };
+            _inlineEditor.onCancel = delegate()
+            {
+                if (_inlineEditCancel !is null) _inlineEditCancel();
+            };
+            add(_inlineEditor);
+        }
+        _inlineEditor.setText(_content, false);
+        _inlineEditor.requestFocus();
+        invalidate();
+    }
+
+    /// Leave in-place edit mode without changing the message. The editor is
+    /// parked at zero bounds so it stops painting and hit-testing.
+    void endInlineEdit()
+    {
+        if (!_editingInPlace) return;
+        _editingInPlace = false;
+        _inlineSaveRect = Rect.init;
+        _inlineCancelRect = Rect.init;
+        _inlineSaveHover = false;
+        _inlineCancelHover = false;
+        if (_inlineEditor !is null)
+        {
+            _inlineEditor.setText("", false);
+            _inlineEditor.setBounds(Rect.init);
+        }
+        invalidate();
+    }
+
+    /// Height the in-place editor needs for the message text at `width`,
+    /// including a little slack so the editor's own wrap never clips a line.
+    private int inlineEditorHeight(int width)
+    {
+        auto layout = shapedContent(maxInt(1, width));
+        const textHeight = layout is null ? fontPixelSize(1) + 4
+            : layout.measuredSize().height;
+        return maxInt(textHeight + 8, fontPixelSize(1) + 14);
+    }
+
     /// The raw message text, so a hover Copy writes the same payload the
     /// right-click "Copy message" does.
     public string contentText() const
@@ -1959,7 +2071,17 @@ private final class MessageBubble : Widget
             }
         }
 
-        if (_role == "tool")
+        if (_editingInPlace)
+        {
+            // The in-place editor takes the message text's place: size the
+            // bubble to the field plus the Save/Cancel row under it.
+            const wrapWidth = _role == "user" ?
+                maxInt(24, userPanelWidth(available.width) - 2 * padH) :
+                innerWidth;
+            height += inlineEditorHeight(wrapWidth) + gap +
+                inlineActionRowHeight;
+        }
+        else if (_role == "tool")
         {
             // Header (title + subtitle + diff counters) always; the rendered
             // body (unified diff or numbered output) only when expanded.
@@ -2012,6 +2134,18 @@ private final class MessageBubble : Widget
 
     protected override void onLayout()
     {
+        if (_editingInPlace && _inlineEditor !is null)
+        {
+            const panelW = userPanelWidth(bounds().width);
+            const textX = _role == "user" ?
+                maxInt(0, bounds().width - panelW) + padH : padH;
+            const textWidth = _role == "user" ?
+                maxInt(24, panelW - 2 * padH) :
+                maxInt(1, bounds().width - 2 * padH);
+            _inlineEditor.setBounds(Rect(textX, padV, textWidth,
+                inlineEditorHeight(textWidth)));
+            return;
+        }
         if (_role != "user" || _sentAttachments is null ||
             !_sentAttachments.visible()) return;
         const panelW = userPanelWidth(bounds().width);
@@ -2102,7 +2236,14 @@ private final class MessageBubble : Widget
 
         const contentY = y;
 
-        if (_role == "tool")
+        if (_editingInPlace)
+        {
+            // The editor child paints the message text; the bubble only leaves
+            // room for it and draws the Save/Cancel row below.
+            y += inlineEditorHeight(_role == "user" ? userInnerWidth :
+                innerWidth) + gap;
+        }
+        else if (_role == "tool")
         {
             // Header and body share one rounded card, so a file edit reads as a
             // single object (a title bar over its diff rows) instead of a loose
@@ -2167,6 +2308,9 @@ private final class MessageBubble : Widget
                 drawSelection(canvas);
             }
         }
+
+        if (_editingInPlace)
+            drawInlineEditActions(canvas, width, y);
 
         if (_failed && _error.length > 0)
         {
@@ -3198,6 +3342,7 @@ private final class MessageBubble : Widget
     /// never show the row.
     private bool hoverActionsEligible() const
     {
+        if (_editingInPlace) return false;
         if (_hidden || _role == "tool" || _failed) return false;
         if (hasThinking() && !_reasoningInActivity) return false;
         if (_content.length > 0) return true;
@@ -3219,7 +3364,8 @@ private final class MessageBubble : Widget
         _editActionRect = Rect.init;
         if (!_pointerInside || !hoverActionsEligible()) return;
         const canCopy = _content.length > 0;
-        const canEdit = _role == "user" && _actionRect.height == 0;
+        const canEdit = _content.length > 0 && _role == "user" &&
+            _actionRect.height == 0;
         if (!canCopy && !canEdit) return;
 
         const rowH = 18;
@@ -3283,6 +3429,36 @@ private final class MessageBubble : Widget
             HorizontalAlign.center, VerticalAlign.middle, true);
     }
 
+    /// Save/Cancel row for the in-place editor. Save resends the edited prompt
+    /// as a new branch; Cancel restores the message untouched.
+    private void drawInlineEditActions(ref Canvas canvas, int width, int y)
+    {
+        _inlineSaveRect = Rect.init;
+        _inlineCancelRect = Rect.init;
+        auto saveLayout = canvas.layoutText(toUTF32("Save"), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, 200, false);
+        auto cancelLayout = canvas.layoutText(toUTF32("Cancel"), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, 200, false);
+        const saveW = maxInt(52, cast(int) saveLayout.width + 20);
+        const cancelW = maxInt(68, cast(int) cancelLayout.width + 20);
+        const rowH = 20;
+        const leftEdge = _role == "user" ?
+            maxInt(0, width - userPanelWidth(width)) + padH : padH;
+        int x = maxInt(leftEdge, width - padH - (saveW + 6 + cancelW));
+        _inlineCancelRect = Rect(x, y, cancelW, rowH);
+        _inlineSaveRect = Rect(x + cancelW + 6, y, saveW, rowH);
+        canvas.fillRoundedRect(_inlineCancelRect, 9,
+            _inlineCancelHover ? opencodeBorder.withAlpha(180) : opencodeBorder);
+        canvas.drawTextInRect(_inlineCancelRect, toUTF32("Cancel"),
+            _inlineCancelHover ? Color.rgb(255, 255, 255) : opencodeMuted, 1,
+            HorizontalAlign.center, VerticalAlign.middle, true);
+        canvas.fillRoundedRect(_inlineSaveRect, 9,
+            _inlineSaveHover ? opencodeAccent.withAlpha(200) : opencodeAccent);
+        canvas.drawTextInRect(_inlineSaveRect, toUTF32("Save"),
+            Color.rgb(255, 255, 255), 1, HorizontalAlign.center,
+            VerticalAlign.middle, true);
+    }
+
     private void drawFooter(ref Canvas canvas, int width, int height)
     {
         if (!footerVisible()) return;
@@ -3300,6 +3476,22 @@ private final class MessageBubble : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        if (_editingInPlace)
+        {
+            // Only the Save/Cancel pills show hover chrome; clicks on the text
+            // itself are handled by the editor child.
+            const overSave = _inlineSaveRect.height > 0 &&
+                _inlineSaveRect.contains(event.position);
+            const overCancel = _inlineCancelRect.height > 0 &&
+                _inlineCancelRect.contains(event.position);
+            if (overSave != _inlineSaveHover || overCancel != _inlineCancelHover)
+            {
+                _inlineSaveHover = overSave;
+                _inlineCancelHover = overCancel;
+                invalidate();
+            }
+            return overSave || overCancel;
+        }
         if (!_pointerInside)
         {
             // Re-entering the bubble: the hover row was suppressed while the
@@ -3427,6 +3619,24 @@ private final class MessageBubble : Widget
             return false;
         }
         if (event.button != MouseButton.left) return false;
+        if (_editingInPlace)
+        {
+            if (_inlineSaveRect.height > 0 &&
+                _inlineSaveRect.contains(event.position))
+            {
+                if (_inlineEditCommit !is null)
+                    _inlineEditCommit(_inlineEditor.textUtf8().strip());
+                return true;
+            }
+            if (_inlineCancelRect.height > 0 &&
+                _inlineCancelRect.contains(event.position))
+            {
+                if (_inlineEditCancel !is null) _inlineEditCancel();
+                return true;
+            }
+            // A click on the message text belongs to the editor child.
+            return false;
+        }
         if (hasThinking() && _thinkingRect.contains(event.position))
         {
             ChatScrollView.holdPositionForNextLayout(this);
@@ -7502,6 +7712,40 @@ private final class ChatInput : TextArea
     }
 }
 
+/// Editable field used when a message is edited in place inside its own bubble.
+/// Enter saves (Shift+Enter inserts a newline) and Escape cancels, so the
+/// inline editor behaves like the composer without the trip to the bottom of
+/// the window.
+private final class InlineMessageEditor : TextArea
+{
+    void delegate() onCommit;
+    void delegate() onCancel;
+
+    this()
+    {
+        super("");
+        // The bubble sizes this field itself; the stock multiline minimum
+        // (80 px) would otherwise force a tall empty block.
+        layoutHints().minHeight = 0;
+        layoutHints().preferredHeight = 0;
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        if (event.key == Key.escape)
+        {
+            if (onCancel !is null) onCancel();
+            return true;
+        }
+        if (event.key == Key.enter && !event.shift())
+        {
+            if (onCommit !is null) onCommit();
+            return true;
+        }
+        return super.onKeyDown(event);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Centered content column
 // ---------------------------------------------------------------------------
@@ -9906,6 +10150,10 @@ public final class OpenCodeRoot : VBox
     // chose to edit. Send replaces it with a sibling branch so the original
     // run survives; -1 when no edit is pending.
     private int _editMessageIndex = -1;
+
+    // The bubble whose message is being edited in place (null when none). Held
+    // so a second Edit, Cancel or a conversation switch can close it cleanly.
+    private MessageBubble _inlineEditBubble;
 
     // The live "what is going on" row pinned to the end of the transcript while
     // the assistant works. Retained across rebuilds so its pulse and elapsed
@@ -13242,6 +13490,7 @@ private string _suggestExcludeId;
             "", "", "", runtimeThreadPayload(session));
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
+        cancelInlineMessageEdit();
         _filterText = "";
         if (_filterBox !is null) _filterBox.clear();
         followNewestMessage();
@@ -13271,6 +13520,7 @@ private string _suggestExcludeId;
         loadRuntime(index);
         _visibleMessageLimit = messageHistoryPageSize;
         _editMessageIndex = -1;
+        cancelInlineMessageEdit();
         if (_input !is null) _input.setText(_sessions[index].draft, false);
         // Opening a conversation is the "attention" its unread dot waits for.
         bool clearedUnread;
@@ -16037,7 +16287,7 @@ private void pollButtonSuggestionRequest()
                     globalPosition, bubble, linkTarget, localPosition);
             };
         // Hover row: Copy always writes the message text; Edit (user prompts
-        // only) prefills the composer to branch from that prompt.
+        // only) opens the message for in-place editing inside its own bubble.
         bubble.setCopyAction(delegate()
         {
             const text = bubble.contentText();
@@ -16049,7 +16299,7 @@ private void pollButtonSuggestionRequest()
         if (message.role == "user")
             bubble.setEditAction(delegate()
             {
-                editAndResend(_current, bubble.messageIndex());
+                beginInlineMessageEdit(bubble, _current, bubble.messageIndex());
             });
         // Persisted token usage appears only on the latest assistant reply.
         if (cast(int) index == latestAssistantIndex &&
@@ -21201,6 +21451,98 @@ private void pollButtonSuggestionRequest()
         markDirty();
         updateStatus("Editing prompt — press Send to replace it " ~
             "(the previous run is kept).");
+    }
+
+    /// Edit a user prompt in place inside its own bubble. Saving branches from
+    /// the prompt's parent (keeping the original run) and resends it, exactly
+    /// like "Edit & resend" but without the trip to the composer.
+    private void beginInlineMessageEdit(MessageBubble bubble, int sessionIndex,
+        int messageIndex)
+    {
+        if (bubble is null) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        if (!ensureThreadLoaded(sessionIndex)) return;
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
+            return;
+        if (session.messages[cast(size_t) messageIndex].role != "user") return;
+        if (session.messages[cast(size_t) messageIndex].content.length == 0)
+            return;
+
+        cancelInlineMessageEdit();
+        cancelAutoResend();
+        if (_client.busy() || _turnTiming || _turnInFlight ||
+            _pendingToolCalls.length > 0 || _pendingToolResults > 0)
+            stopActiveTurn();
+        cancelPendingTools();
+        _streamBubble = null;
+        _editMessageIndex = -1;
+        bubble.setInlineEditActions(
+            (string text)
+            {
+                commitInlineMessageEdit(bubble, sessionIndex, messageIndex,
+                    text);
+            },
+            ()
+            {
+                cancelInlineMessageEdit();
+            });
+        _inlineEditBubble = bubble;
+        bubble.beginInlineEdit();
+        _messageColumn.invalidate();
+        _messagesScroll.invalidate();
+        markDirty();
+        updateStatus("Editing message — Save to resend, Esc to cancel.");
+    }
+
+    /// Apply the in-place edited prompt: branch from its parent, keep the
+    /// original run, and resend through the normal send path so the message
+    /// tree matches "Edit & resend". When the send is refused (busy / still
+    /// loading) the text stays in the composer, armed, as a fallback.
+    private void commitInlineMessageEdit(MessageBubble bubble, int sessionIndex,
+        int messageIndex, string text)
+    {
+        text = text.strip();
+        if (_inlineEditBubble is bubble)
+        {
+            bubble.endInlineEdit();
+            _inlineEditBubble = null;
+        }
+        if (text.length == 0 || sessionIndex != _current ||
+            sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+        {
+            _editMessageIndex = -1;
+            rebuildMessageColumn();
+            return;
+        }
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 ||
+            messageIndex >= cast(int) session.messages.length ||
+            session.messages[cast(size_t) messageIndex].role != "user")
+        {
+            _editMessageIndex = -1;
+            rebuildMessageColumn();
+            return;
+        }
+        // Arm the branch and let the composer send path start the request; the
+        // original message is retained as a sibling version.
+        _editMessageIndex = messageIndex;
+        _input.setText(text);
+        _input.requestFocus();
+        sendMessage();
+        rebuildMessageColumn();
+    }
+
+    /// Leave in-place edit mode (Cancel, Esc, or a conversation switch).
+    private void cancelInlineMessageEdit()
+    {
+        auto bubble = _inlineEditBubble;
+        _inlineEditBubble = null;
+        if (bubble !is null) bubble.endInlineEdit();
+        _messageColumn.invalidate();
+        _messagesScroll.invalidate();
+        markDirty();
     }
 
     // -- model picker -----------------------------------------------------
@@ -29320,6 +29662,67 @@ private void pollButtonSuggestionRequest()
         message.time = currentTimestamp();
         appendMessage(*session, message);
         _editMessageIndex = -1;
+        rebuildMessageColumn();
+        updateSessionList(false);
+        markDirty();
+        return cast(int) session.messages.length - 1;
+    }
+
+    /// Test-only: begin editing the user bubble at child `index` in place.
+    public bool beginInlineEditForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        if (bubble is null) return false;
+        beginInlineMessageEdit(bubble, _current, bubble.messageIndex());
+        return _inlineEditBubble is bubble && bubble.editingInPlaceForTesting();
+    }
+
+    /// Test-only: whether an in-place message edit is open.
+    public bool inlineEditActiveForTesting() const
+    {
+        return _inlineEditBubble !is null;
+    }
+
+    /// Test-only: the text held by the open in-place editor.
+    public string inlineEditTextForTesting()
+    {
+        return _inlineEditBubble is null ? "" :
+            _inlineEditBubble.inlineEditTextForTesting();
+    }
+
+    /// Test-only: replace the open in-place editor's text.
+    public bool setInlineEditTextForTesting(string text)
+    {
+        if (_inlineEditBubble is null) return false;
+        _inlineEditBubble.setInlineEditTextForTesting(text);
+        return true;
+    }
+
+    /// Test-only: cancel the open in-place editor.
+    public void cancelInlineEditForTesting()
+    {
+        cancelInlineMessageEdit();
+    }
+
+    /// Test-only: apply the open in-place edit as a sibling branch without a
+    /// network request, mirroring `commitEditForTesting`.
+    public int commitInlineEditForTesting(string text)
+    {
+        auto bubble = _inlineEditBubble;
+        if (bubble is null || _current < 0) return -1;
+        const index = bubble.messageIndex();
+        bubble.endInlineEdit();
+        _inlineEditBubble = null;
+        auto session = &_sessions[_current];
+        if (index < 0 || index >= cast(int) session.messages.length) return -1;
+        const target = session.messages[cast(size_t) index];
+        if (target.role != "user") return -1;
+        session.activeLeafId = target.parentId;
+        ChatMessage message;
+        message.role = "user";
+        message.content = text;
+        message.time = currentTimestamp();
+        appendMessage(*session, message);
         rebuildMessageColumn();
         updateSessionList(false);
         markDirty();

@@ -1227,6 +1227,46 @@ int main(string[] args)
         "Continuing on one branch disturbed the other run");
     writeln("Edit + regenerate keep prior runs and branch navigation works");
 
+    // In-place message editing: a message's Edit control turns the bubble
+    // itself into an editor. Save branches and keeps the original run; Cancel
+    // leaves the message exactly as it was.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["edit in place", "in place answer"]);
+    const inlineUser = root.messageCountForTesting() - 2;
+    assert(root.beginInlineEditForTesting(inlineUser),
+        "In-place edit did not open on the user message");
+    assert(root.inlineEditActiveForTesting() &&
+        root.inlineEditTextForTesting() == "edit in place",
+        "In-place editor was not seeded with the message text");
+    const editShots = buildPath(tempDir(), "aurora-opencode-edit-shots");
+    if (!exists(editShots)) mkdirRecurse(editShots);
+    assert(paintProjection(root, driver), "In-place editor did not paint");
+    window.saveScreenshot(buildPath(editShots, "inline-edit.ppm"));
+    writeln("In-place edit screenshot: ", editShots);
+    root.setInlineEditTextForTesting("edited in place");
+    assert(root.inlineEditTextForTesting() == "edited in place",
+        "In-place editor did not take the new text");
+    const inlineEdited = root.commitInlineEditForTesting("edited in place");
+    assert(inlineEdited >= 0, "In-place Save did not create a new prompt");
+    assert(!root.inlineEditActiveForTesting(),
+        "In-place editor stayed open after Save");
+    assert(root.messageVersionCountForTesting(inlineEdited) == 2,
+        "In-place edit must keep both versions of the prompt");
+    // Cancel leaves the open message untouched.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["cancel me"]);
+    assert(root.beginInlineEditForTesting(0),
+        "In-place edit did not reopen");
+    root.setInlineEditTextForTesting("discarded");
+    const cancelBefore = root.totalMessageCountForTesting();
+    root.cancelInlineEditForTesting();
+    assert(!root.inlineEditActiveForTesting(),
+        "In-place editor stayed open after Cancel");
+    assert(root.totalMessageCountForTesting() == cancelBefore,
+        "Cancel must not change the message tree");
+    writeln("Message edits happen in place inside the bubble");
+
     // Core graph persistence: a session saved with ids/activeLeaf must keep its
     // genuine root branch (two prompts sharing an empty parent), while a legacy
     // transcript with no ids is rebuilt as a single chain.
