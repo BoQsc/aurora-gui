@@ -63,13 +63,20 @@ final class MipImage
             viewWidth <= 0 || viewHeight <= 0)
             return;
 
+        // Downscaling with a factor below 4 resamples the FULL-resolution level
+        // with exact per-output-pixel area averaging, which is sharper than
+        // first box-blurring into a mip and then bilinearly sampling it.
+        // Heavier downscaling falls back to the pre-filtered mip chain (so
+        // extremely zoomed-out views stay cheap), and upscaling uses bilinear.
         int level = 0;
         double levelZoom = zoom;
-        while (levelZoom < 1.0 && level + 1 < _levels)
-        {
-            levelZoom *= 2.0;
-            ++level;
-        }
+        if (zoom < 0.25)
+            while (levelZoom < 1.0 && level + 1 < _levels)
+            {
+                levelZoom *= 2.0;
+                ++level;
+            }
+        const bool useArea = zoom < 1.0 && level == 0;
         const double baseToLevel = cast(double) (1 << level);
 
         const uint bgR = background.r;
@@ -100,6 +107,20 @@ final class MipImage
         destX1 = max(0, min(destX1, viewWidth - 1));
         destY1 = max(0, min(destY1, viewHeight - 1));
         if (destX1 < destX0 || destY1 < destY0) return;
+
+        if (useArea)
+        {
+            const ubyte[] base = _pixels[0 .. cast(size_t) _width *
+                cast(size_t) _height * 4];
+            if (_hasAlpha)
+                renderAreaAlpha(base, _width, _height, output, viewWidth,
+                    destX0, destY0, destX1, destY1, srcX, srcY, zoom,
+                    checkerA, checkerB);
+            else
+                renderArea(base, _width, _height, output, viewWidth,
+                    destX0, destY0, destX1, destY1, srcX, srcY, zoom);
+            return;
+        }
 
         const int lw = _levelWidth[level];
         const int lh = _levelHeight[level];
@@ -364,6 +385,125 @@ final class MipImage
                 }
             }
         }
+    }
+
+    /// Exact area-average downscale of an opaque image (full-resolution level).
+    private static void renderArea(const(ubyte)[] pixels, int bw, int bh,
+        ubyte* output, int viewWidth, int x0, int y0, int x1, int y1,
+        double srcX, double srcY, double zoom)
+    {
+        foreach (y; y0 .. y1 + 1)
+        {
+            int sy0 = clampIndex(cast(int) floor(srcY + cast(double) y / zoom), bh);
+            int sy1 = clampIndex(cast(int) ceil(srcY + cast(double) (y + 1) / zoom), bh);
+            if (sy1 <= sy0) sy1 = min(bh, sy0 + 1);
+            auto o = output + (cast(size_t) y * viewWidth + cast(size_t) x0) * 3;
+            foreach (x; x0 .. x1 + 1)
+            {
+                int sx0 = clampIndex(cast(int) floor(srcX + cast(double) x / zoom), bw);
+                int sx1 = clampIndex(cast(int) ceil(srcX + cast(double) (x + 1) / zoom), bw);
+                if (sx1 <= sx0) sx1 = min(bw, sx0 + 1);
+                uint rSum = 0;
+                uint gSum = 0;
+                uint bSum = 0;
+                uint count = 0;
+                foreach (sy; sy0 .. sy1)
+                    foreach (sx; sx0 .. sx1)
+                    {
+                        const size_t p = (cast(size_t) sy * bw + sx) * 4;
+                        rSum += pixels[p];
+                        gSum += pixels[p + 1];
+                        bSum += pixels[p + 2];
+                        ++count;
+                    }
+                if (count == 0) count = 1;
+                o[0] = cast(ubyte) ((rSum + count / 2) / count);
+                o[1] = cast(ubyte) ((gSum + count / 2) / count);
+                o[2] = cast(ubyte) ((bSum + count / 2) / count);
+                o += 3;
+            }
+        }
+    }
+
+    /// Exact area-average downscale of an image with alpha, composited over the
+    /// checkerboard the same way the bilinear path does.
+    private static void renderAreaAlpha(const(ubyte)[] pixels, int bw, int bh,
+        ubyte* output, int viewWidth, int x0, int y0, int x1, int y1,
+        double srcX, double srcY, double zoom, Color checkerA, Color checkerB)
+    {
+        const uint caR = checkerA.r;
+        const uint caG = checkerA.g;
+        const uint caB = checkerA.b;
+        const uint cbR = checkerB.r;
+        const uint cbG = checkerB.g;
+        const uint cbB = checkerB.b;
+        foreach (y; y0 .. y1 + 1)
+        {
+            int sy0 = clampIndex(cast(int) floor(srcY + cast(double) y / zoom), bh);
+            int sy1 = clampIndex(cast(int) ceil(srcY + cast(double) (y + 1) / zoom), bh);
+            if (sy1 <= sy0) sy1 = min(bh, sy0 + 1);
+            auto o = output + (cast(size_t) y * viewWidth + cast(size_t) x0) * 3;
+            foreach (x; x0 .. x1 + 1)
+            {
+                int sx0 = clampIndex(cast(int) floor(srcX + cast(double) x / zoom), bw);
+                int sx1 = clampIndex(cast(int) ceil(srcX + cast(double) (x + 1) / zoom), bw);
+                if (sx1 <= sx0) sx1 = min(bw, sx0 + 1);
+                uint rSum = 0;
+                uint gSum = 0;
+                uint bSum = 0;
+                uint aSum = 0;
+                uint count = 0;
+                foreach (sy; sy0 .. sy1)
+                    foreach (sx; sx0 .. sx1)
+                    {
+                        const size_t p = (cast(size_t) sy * bw + sx) * 4;
+                        const uint a = pixels[p + 3];
+                        rSum += cast(uint) pixels[p] * a;
+                        gSum += cast(uint) pixels[p + 1] * a;
+                        bSum += cast(uint) pixels[p + 2] * a;
+                        aSum += a;
+                        ++count;
+                    }
+                if (count == 0) count = 1;
+                const bool dark = ((x >> 4) + (y >> 4)) & 1;
+                if (aSum == 0)
+                {
+                    o[0] = cast(ubyte) (dark ? cbR : caR);
+                    o[1] = cast(ubyte) (dark ? cbG : caG);
+                    o[2] = cast(ubyte) (dark ? cbB : caB);
+                }
+                else
+                {
+                    const uint red = (rSum + aSum / 2) / aSum;
+                    const uint green = (gSum + aSum / 2) / aSum;
+                    const uint blue = (bSum + aSum / 2) / aSum;
+                    const uint alpha = (aSum + count / 2) / count;
+                    if (alpha >= 255)
+                    {
+                        o[0] = cast(ubyte) red;
+                        o[1] = cast(ubyte) green;
+                        o[2] = cast(ubyte) blue;
+                    }
+                    else
+                    {
+                        const uint chkR = dark ? cbR : caR;
+                        const uint chkG = dark ? cbG : caG;
+                        const uint chkB = dark ? cbB : caB;
+                        const uint inverse = 255u - alpha;
+                        o[0] = cast(ubyte) ((red * alpha + chkR * inverse + 127u) / 255u);
+                        o[1] = cast(ubyte) ((green * alpha + chkG * inverse + 127u) / 255u);
+                        o[2] = cast(ubyte) ((blue * alpha + chkB * inverse + 127u) / 255u);
+                    }
+                }
+                o += 3;
+            }
+        }
+    }
+
+    private static int clampIndex(int value, int size) @safe pure nothrow @nogc
+    {
+        if (value < 0) return 0;
+        return value > size ? size : value;
     }
 
     private static double floor(double value) @safe pure nothrow @nogc
