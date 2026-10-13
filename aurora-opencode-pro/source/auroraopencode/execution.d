@@ -4,11 +4,40 @@ import auroraopencode.core : OpenCodeToolCall, ChatImageAttachment;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.tools : ToolCancellation;
 import auroraopencode.repository : RepositoryRuntime;
-import core.time : MonoTime;
+import core.time : MonoTime, msecs;
+import core.sync.mutex : Mutex;
 
 public import auroraopencode.executionstate : RequestPhase;
 import auroraopencode.executionstate : ExecutionState, ExecutionCommand,
     ExecutionCommandKind, reduceExecution;
+
+private final class EffectAdmission
+{
+    Mutex mutex;
+    ToolCancellation cancellation;
+    MonoTime queued;
+    bool pending = true;
+    this(ToolCancellation cancellation)
+    { mutex = new Mutex(); this.cancellation = cancellation; queued = MonoTime.currTime; }
+    bool start()
+    {
+        synchronized (mutex)
+        {
+            if (!pending || cancellation.cancelled()) { pending = false; return false; }
+            pending = false;
+            return true;
+        }
+    }
+    bool expire(long timeoutMs)
+    {
+        synchronized (mutex)
+        {
+            if (!pending || cancellation.cancelled() || MonoTime.currTime - queued < timeoutMs.msecs) return false;
+            pending = false;
+            return true;
+        }
+    }
+}
 
 /// A conversation is the sole owner of its mutable execution state. No fields
 /// are copied through a shared root when another conversation is serviced.
@@ -33,6 +62,7 @@ public class ThreadEngine
     ToolCancellation cancellation;
     private ToolCancellation _effectCancellation;
     private ulong _effectRequestId;
+    private EffectAdmission _queuedEffect;
     OpenCodeEvent[] eventScratch;
     private ExecutionState _protocol;
     ref inout(ulong) activeRequestId() inout @property { return _protocol.requestId; }
@@ -157,6 +187,8 @@ public class ThreadEngine
             _effectRequestId = requestId;
         }
         auto admission = _effectCancellation;
+        auto queued = new EffectAdmission(admission);
+        _queuedEffect = queued;
         auto receiver = client;
         void fail(string error)
         {
@@ -168,8 +200,15 @@ public class ThreadEngine
             receiver.pushLocalEvent(event);
         }
         return journal.afterCommitted(delegate() {
-            if (!admission.cancelled()) effect();
+            if (queued.start()) effect();
         }, &fail);
+    }
+
+    /// A tool batch must not look like a running scan while its durable
+    /// admission never reaches the scheduler. Revocation fences late callbacks.
+    bool expireQueuedEffect(long timeoutMs = 30_000)
+    {
+        return _queuedEffect !is null && _queuedEffect.expire(timeoutMs);
     }
 
     struct ResultAdmission { bool accepted; string arguments; }

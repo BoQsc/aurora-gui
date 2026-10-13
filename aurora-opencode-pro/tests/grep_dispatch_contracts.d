@@ -1,0 +1,94 @@
+module grep_dispatch_contracts;
+import aurora;
+import auroraopencode.appui : OpenCodeRoot;
+import auroraopencode.core;
+import auroraopencode.tools;
+import auroraopencode.toolscheduler;
+import auroraopencode.execution;
+import auroraopencode.repository;
+import auroraopencode.opencode_client;
+import auroraopencode.searchprogress;
+import core.time : MonoTime, seconds, msecs;
+import core.thread : Thread;
+import std.file : mkdirRecurse, write;
+import std.path : absolutePath, buildPath;
+import std.json : JSONValue;
+import std.conv : to;
+import std.string : indexOf;
+import std.stdio : writeln;
+
+int main()
+{
+    const workspace = absolutePath("grep-dispatch-" ~ to!string(MonoTime.currTime.ticks));
+    mkdirRecurse(workspace);
+    mkdirRecurse(buildPath(workspace, ".git"));
+    setOpencodeStateDirectoryForTesting(buildPath(workspace, "state"));
+    scope (exit) setOpencodeStateDirectoryForTesting("");
+    developerSourceDirectoryHandler = () => workspace;
+    scope (exit) developerSourceDirectoryHandler = null;
+    foreach (name; ["one.d", "two.d", "three.d"])
+        write(buildPath(workspace, name), "match needle\nsecond needle\n");
+    auto repository = new ConversationRepository();
+    scope (exit) repository.close();
+    auto journal = new RepositoryRuntime(repository, buildPath(workspace, "journal.jsonl"));
+    auto engine = new ThreadEngine("http://127.0.0.1:9", "");
+    scope (exit) engine.close();
+    OpenCodeToolCall[] calls;
+    foreach (i, name; [".", "one.d", "two.d", "three.d"])
+    {
+        JSONValue args;
+        args["path"] = buildPath(workspace, name);
+        args["pattern"] = "needle|other";
+        args["timeout"] = 2000;
+        calls ~= OpenCodeToolCall("grep-" ~ to!string(i), "grep", args.toString());
+    }
+    engine.acceptRequest(10);
+    assert(engine.dispatchAfterCommit(journal, 10, delegate() {
+        scheduleToolBatch(engine.client, 10, calls, workspace, new ToolCancellation(), ChangeContext.init);
+    }));
+    const deadline = MonoTime.currTime + 8.seconds;
+    size_t results, progress;
+    bool[string] complete;
+    while (results < 4 && MonoTime.currTime < deadline)
+    {
+        OpenCodeEvent[] events; engine.client.drain(events);
+        foreach (event; events)
+            if (event.kind == OpenCodeEventKind.toolResult)
+            {
+                if (event.toolRunning) ++progress;
+                else
+                {
+                    writeln("Result ", event.toolCallId, ": ", event.toolFailed, " ", event.text);
+                    assert(!event.toolFailed && event.text.indexOf("needle") >= 0);
+                    assert(event.toolCallId !in complete); complete[event.toolCallId] = true;
+                    ++results;
+                }
+            }
+        Thread.sleep(5.msecs);
+    }
+    assert(results == 4, "Four grep requests never reached terminal results");
+    assert(progress > 0);
+    repository.flush();
+    writeln("PASS durable dispatch starts all four source-tree greps and returns each result with live activity");
+    developerSourceDirectoryHandler = null;
+    Settings settings; settings.workspace = workspace; settings.baseUrl = "http://127.0.0.1:9";
+    settings.quickTitle = false; saveSettings(settings);
+    WindowOptions options; options.renderer = RendererPreference.software;
+    auto window = new GuiWindow(options, opencodeTheme());
+    auto root = new OpenCodeRoot(window); window.setRoot(root);
+    scope (exit) root.shutdownClient();
+    auto driver = new UiTestDriver(window);
+    const ready = MonoTime.currTime + 5.seconds;
+    void pump() { window.onNativeTick(0.02); root.projectTranscriptForTesting(); assert(driver.paint()); Thread.sleep(5.msecs); }
+    while (root.startupPendingForTesting() && MonoTime.currTime < ready) pump();
+    assert(!root.startupPendingForTesting());
+    root.newChatForTesting(); root.pauseToolContinuationForTesting();
+    root.addConversationForTesting(["user", "assistant"], ["Ground recommendations in these four searches.", ""]);
+    root.injectToolCallsForTesting(calls);
+    const completed = MonoTime.currTime + 8.seconds;
+    while (root.pendingToolResultsForTesting() && MonoTime.currTime < completed) pump();
+    assert(root.pendingToolResultsForTesting() == 0 && root.toolMessageCountForTesting() == 4,
+        "Actual chat dispatch left four grep rows running indefinitely");
+    writeln("PASS actual chat dispatcher completes four searches and replaces every live row with its result");
+    return 0;
+}

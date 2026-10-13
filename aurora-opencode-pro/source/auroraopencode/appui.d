@@ -121,7 +121,7 @@ import std.file : append, dirEntries, exists, getSize, getcwd, isDir, isFile,
     thisExePath, timeLastModified, write;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : ceil, isFinite;
-import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension;
+import std.path : baseName, buildNormalizedPath, buildPath, dirName, extension, isAbsolute;
 import std.process : Config, environment, execute, thisProcessID;
 import std.string : indexOf, replace, split, startsWith, strip, toLower;
 import std.utf : toUTF16z, toUTF32, toUTF8;
@@ -4267,6 +4267,16 @@ private string humanToolDetail(string toolName, string toolArgs)
             if (cwd.length > 0) detail ~= "\nDirectory: " ~ cwd;
             return detail;
         }
+        case "grep":
+        case "glob":
+        {
+            const path = partialStringArg(toolArgs, "path");
+            const pattern = partialStringArg(toolArgs, "pattern");
+            const include = partialStringArg(toolArgs, "include");
+            return "Scope: " ~ (path.length ? path : "Current workspace") ~
+                "\nFind: " ~ pattern ~ (include.length ? "\nInclude: " ~ include : "") ~
+                "\nWaiting for search activity; no results received yet.";
+        }
         case "dshell":
         {
             const command = partialStringArg(toolArgs, "command");
@@ -4487,6 +4497,26 @@ private final class LiveToolRow : Widget
     private string _subtitle;
     private string _callId;
     private bool _outputPreview;
+    private bool _expandable, _collapsed = true;
+    private string _requestDetail;
+    void delegate(bool) onCollapseChanged;
+    bool collapsedForTesting() const { return _collapsed; }
+    bool expandableForTesting() const { return _expandable; }
+    void setCollapsed(bool value)
+    {
+        if (_collapsed == value) return;
+        ChatScrollView.holdPositionForNextLayout(this);
+        _collapsed = value;
+        if (onCollapseChanged !is null) onCollapseChanged(value);
+        if (onSizeChanged !is null) onSizeChanged();
+        invalidate();
+    }
+    override bool onMouseDown(ref Event event)
+    {
+        if (!_expandable || event.button != MouseButton.left || event.position.y > headerHeight()) return false;
+        setCollapsed(!_collapsed);
+        return true;
+    }
     // Provisional `+N -M` for a file-mutating tool whose arguments are still
     // streaming (or have just arrived). Replaced by the real result bubble's
     // counters once the tool reports back.
@@ -4569,6 +4599,7 @@ private final class LiveToolRow : Widget
         if (_toolName == toolName && _title == title && _subtitle == subtitle)
             return;
         _toolName = toolName;
+        _expandable = toolName == "grep" || toolName == "glob" || toolName == "dshell";
         _title = title;
         _subtitle = subtitle;
         invalidate();
@@ -4594,7 +4625,8 @@ private final class LiveToolRow : Widget
         _hasSearchProgress = (_toolName == "grep" || _toolName == "glob" || _toolName == "dshell") &&
             decodeSearchProgress(detail, _searchProgress);
         _detail = _hasTransferProgress ? transferProgressText(_transferProgress) :
-            _hasSearchProgress ? searchProgressText(_searchProgress) : detail;
+            _hasSearchProgress ? searchProgressText(_searchProgress) :
+            _expandable && _requestDetail.length && detail != _requestDetail ? _requestDetail ~ "\n\nStatus: " ~ detail : detail;
         rebuildDetailLines();
         if (oldHeight != detailHeight() + progressHeight() && onSizeChanged !is null)
             onSizeChanged();
@@ -4608,7 +4640,7 @@ private final class LiveToolRow : Widget
         if (_detail.length == 0) return;
         import std.string : splitLines;
         const lines = splitLines(_detail);
-        const lineLimit = _hasSearchProgress ? 12 : _outputPreview ? 8 : maxDetailLines;
+        const lineLimit = _hasSearchProgress ? 24 : _outputPreview ? 8 : maxDetailLines;
         const first = _outputPreview && !_hasSearchProgress && lines.length > lineLimit
             ? lines.length - lineLimit : 0;
         _detailTruncated = first > 0;
@@ -4655,6 +4687,7 @@ private final class LiveToolRow : Widget
 
     private int detailHeight()
     {
+        if (_expandable && _collapsed) return 0;
         return cast(int) _detailLines.length * detailLineHeight() +
             (_detailTruncated ? detailLineHeight() : 0);
     }
@@ -4692,7 +4725,13 @@ private final class LiveToolRow : Widget
         static immutable int[4] rowPulseAlphas = [70, 130, 210, 130];
         canvas.fillCircle(Point(padH + 12, h / 2), 3,
             opencodeAccent.withAlpha(rowPulseAlphas[pulseStep()]));
-        const textX = padH + 22;
+        if (_expandable)
+        {
+            auto disclosure = canvas.layoutText(toUTF32(_collapsed ? "▸" : "▾"), 1,
+                FontRole.ui, cast(FontFace) theme().uiFont, 18, false);
+            canvas.drawLayout(Point(padH + 22, (h - cast(int) disclosure.height) / 2), disclosure, opencodeMuted);
+        }
+        const textX = padH + (_expandable ? 38 : 22);
         const innerWidth = maxInt(1, bounds().width - textX - padH - 8);
         int statsWidth;
         TextLayout addLayout, delLayout, elapsedLayout;
@@ -4758,7 +4797,7 @@ private final class LiveToolRow : Widget
                     track.y, width, track.height), opencodeAccent);
             }
         }
-        if (_detailLines.length == 0) return;
+        if (_detailLines.length == 0 || (_expandable && _collapsed)) return;
         // The streamed body, one monospace row per line, indented under the
         // header. Long lines are clipped to the row width (no wrap).
         int y = h + progressHeight();
@@ -15430,12 +15469,32 @@ private void pollButtonSuggestionRequest()
         int additions, deletions;
         if (previewToolDiff(call.name, call.arguments, additions, deletions))
             row.setDiff(additions, deletions);
+        row._requestDetail = humanToolDetail(call.name, call.arguments);
+        if (call.name == "grep" || call.name == "glob")
+        {
+            const requested = partialStringArg(call.arguments, "path");
+            const workspace = workspaceForSession(turnOwnerSessionIndex());
+            const scopePath = buildNormalizedPath(isAbsolute(requested) ? requested :
+                buildPath(workspace, requested.length ? requested : "."));
+            row._requestDetail = "Scope: " ~ scopePath ~ "\n" ~
+                "Find: " ~ partialStringArg(call.arguments, "pattern") ~
+                (partialStringArg(call.arguments, "include").length ? "\nInclude: " ~ partialStringArg(call.arguments, "include") : "") ~
+                "\nNo results received yet.";
+        }
+        row.onSizeChanged = delegate()
+        {
+            _messageColumn.invalidate();
+            _messagesScroll.invalidate();
+        };
+        const foldKey = "live-search:" ~ call.id;
+        row.onCollapseChanged = delegate(bool value) { _groupCollapsed[foldKey] = value; };
+        if (auto saved = foldKey in _groupCollapsed) row.setCollapsed(*saved);
         if (auto output = call.id in _liveToolOutputs)
         {
             row._outputPreview = true;
             row.setDetail(*output);
         }
-        else row.setDetail(humanToolDetail(call.name, call.arguments));
+        else row.setDetail(row._requestDetail);
         if (call.id.length > 0) _liveToolRows[call.id] = row;
         return row;
     }
@@ -17629,6 +17688,8 @@ private void pollButtonSuggestionRequest()
         _pendingToolImages.length = 0;
         _reportedToolCallIds = null;
         _liveToolCalls = calls.dup;
+        foreach (call; calls)
+            _liveToolOutputs[call.id] = "Waiting for durable tool dispatch. The search has not started yet.";
         _pendingToolResults = cast(int) calls.length;
         updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
         // Each running call already gets its own live row (or the aggregated
@@ -17692,6 +17753,25 @@ private void pollButtonSuggestionRequest()
         ToolCancellation cancellation, ChangeContext changeContext)
     {
         scheduleToolBatch(client, requestId, calls, workspace, cancellation, changeContext);
+    }
+
+    private void checkToolDispatchAdmission()
+    {
+        if (_pendingToolCalls.length == 0 || !_execution.expireQueuedEffect()) return;
+        const requestId = _activeRequestId;
+        const calls = _pendingToolCalls.dup;
+        foreach (call; calls)
+        {
+            OpenCodeEvent result;
+            result.kind = OpenCodeEventKind.toolResult;
+            result.requestId = requestId;
+            result.toolCallId = call.id;
+            result.toolName = call.name;
+            result.toolFailed = true;
+            result.text = "Error: tool dispatch did not start within 30 seconds while waiting for conversation storage. " ~
+                "This search did not scan files. Its queued admission was revoked; retry after storage recovers.";
+            applyToolResult(result);
+        }
     }
 
     private void applyToolOutput(const OpenCodeEvent event)
@@ -27432,6 +27512,7 @@ private void pollButtonSuggestionRequest()
             }
         }
         _eventScratch = _eventScratch[eventIndex .. $];
+        checkToolDispatchAdmission();
         _batchingToolResults = false;
         flushToolTranscriptChanges();
         const partialOwner = turnOwnerSessionIndex();
@@ -29579,6 +29660,17 @@ private void pollButtonSuggestionRequest()
                     if (auto row = cast(LiveToolRow) part)
                         if (row.hasTransferProgressForTesting()) fractions ~= row.transferFractionForTesting();
         return fractions;
+    }
+
+    public Widget liveToolRowForTesting(string callId)
+    {
+        auto row = callId in _liveToolRows;
+        return row is null ? null : *row;
+    }
+    public bool liveSearchCollapsedForTesting(string callId)
+    {
+        auto row = callId in _liveToolRows;
+        return row is null || (*row).collapsedForTesting();
     }
 
     public size_t liveSearchProgressCountForTesting()

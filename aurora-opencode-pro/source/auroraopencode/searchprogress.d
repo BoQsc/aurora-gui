@@ -9,7 +9,7 @@ import auroraopencode.transferprogress : transferBytes;
 
 public struct SearchProgress
 {
-    string phase, root, path, query, filter;
+    string phase, root, path, folder, query, filter;
     ulong directories, files, entries, lines, bytes, matches;
     ulong skippedFiltered, skippedDirectories, skippedBinary, skippedLarge, skippedLinks, errors;
     ulong pending;
@@ -25,6 +25,8 @@ public struct SearchProgress
         return cast(double) processedFiles / candidateFiles;
     }
 }
+
+public enum size_t searchPreviewHits = 8;
 
 private enum prefix = "\x1eaurora-search ";
 
@@ -42,6 +44,7 @@ public string encodeSearchProgress(const ref SearchProgress p)
     value["phase"] = bounded(p.phase, 120);
     value["root"] = bounded(p.root, 2000);
     value["path"] = bounded(p.path, 2000);
+    value["folder"] = bounded(p.folder, 2000);
     value["query"] = bounded(p.query, 600);
     value["filter"] = bounded(p.filter, 300);
     static foreach (field; ["directories", "files", "entries", "lines", "bytes", "matches",
@@ -54,7 +57,7 @@ public string encodeSearchProgress(const ref SearchProgress p)
     value["partial"] = p.partial;
     value["totalsKnown"] = p.totalsKnown;
     value["latest"] = JSONValue.emptyArray;
-    const first = p.latest.length > 2 ? p.latest.length - 2 : 0;
+    const first = p.latest.length > searchPreviewHits ? p.latest.length - searchPreviewHits : 0;
     foreach (hit; p.latest[first .. $]) value["latest"].array ~= JSONValue(bounded(hit, 360));
     return prefix ~ value.toString();
 }
@@ -73,6 +76,7 @@ public bool decodeSearchProgress(string text, out SearchProgress p)
             if (value[field].integer < 0) return false;
             __traits(getMember, p, field) = cast(ulong) value[field].integer;
         }
+        if (auto folder = "folder" in value.object) p.folder = folder.str;
         p.elapsedMs = value["elapsedMs"].integer;
         p.lastActivityMs = value["lastActivityMs"].integer;
         if (p.elapsedMs < 0 || p.lastActivityMs < 0) return false;
@@ -87,7 +91,7 @@ public bool decodeSearchProgress(string text, out SearchProgress p)
             p.processedFiles = cast(ulong) value["processedFiles"].integer;
             if (p.processedFiles > p.candidateFiles || (!p.totalsKnown && p.processedFiles)) return false;
         }
-        if (value["latest"].array.length > 2) return false;
+        if (value["latest"].array.length > searchPreviewHits) return false;
         foreach (hit; value["latest"].array) p.latest ~= hit.str;
         return true;
     }
@@ -102,6 +106,7 @@ public string searchProgressText(const ref SearchProgress p, bool preview = true
     if (p.query.length) text ~= "\nFind: " ~ bounded(p.query, 600) ~
         (p.filter.length ? " · " ~ bounded(p.filter, 300) : "");
     text ~= "\nScope: " ~ bounded(p.root, 2000);
+    if (preview && p.folder.length) text ~= "\nCurrent folder: " ~ bounded(p.folder, 2000);
     if (preview && p.path.length) text ~= "\nCurrent: " ~ bounded(p.path, 2000);
     if (p.totalsKnown)
         text ~= "\nProcessed " ~ to!string(p.processedFiles) ~ " of " ~ to!string(p.candidateFiles) ~
@@ -116,7 +121,12 @@ public string searchProgressText(const ref SearchProgress p, bool preview = true
         to!string(p.skippedBinary) ~ " binary · " ~ to!string(p.skippedLarge) ~
         " oversized · " ~ to!string(p.skippedLinks) ~ " links · " ~ to!string(p.errors) ~ " unreadable";
     if (p.pending) text ~= " · " ~ to!string(p.pending) ~ " queued entries";
-    if (preview) foreach (hit; p.latest) text ~= "\nLatest: " ~ bounded(hit, 360);
+    if (preview)
+    {
+        text ~= p.latest.length ? "\nPartial results (latest " ~ to!string(p.latest.length) ~ "):" :
+            "\nPartial results: no matches reported yet.";
+        foreach (hit; p.latest) text ~= "\n" ~ bounded(hit, 360);
+    }
     return text;
 }
 
@@ -131,7 +141,7 @@ public final class SearchReporter
         this.observer = observer;
         started = MonoTime.currTime;
         value.phase = phase; value.root = root; value.path = root;
-        value.query = query; value.filter = filter;
+        value.query = query; value.filter = filter; value.folder = root;
     }
 
     void report(string[] hits = null, bool force = false)
@@ -139,7 +149,7 @@ public final class SearchReporter
         if (!force && MonoTime.currTime < next) return;
         value.elapsedMs = (MonoTime.currTime - started).total!"msecs";
         value.latest = null;
-        const first = hits.length > 2 ? hits.length - 2 : 0;
+        const first = hits.length > searchPreviewHits ? hits.length - searchPreviewHits : 0;
         foreach (hit; hits[first .. $]) value.latest ~= bounded(hit, 360);
         if (observer !is null) observer(encodeSearchProgress(value));
         next = MonoTime.currTime + 200.msecs;

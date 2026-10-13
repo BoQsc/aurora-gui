@@ -82,7 +82,8 @@ public final class CheckoutLease
     version (Windows) private HANDLE handle;
     else private Mutex mutex;
 
-    this(string path, bool delegate() cancelled = null, int timeoutSeconds = 45)
+    this(string path, bool delegate() cancelled = null, int timeoutSeconds = 45,
+        void delegate(string) waiting = null)
     {
         const identity = checkoutIdentity(path);
         version (Windows)
@@ -91,6 +92,7 @@ public final class CheckoutLease
             handle = CreateMutexW(null, false, toUTF16z(name));
             enforce(handle !is null, "Could not create the Aurora checkout lock.");
             const deadline = MonoTime.currTime + seconds(timeoutSeconds);
+            auto nextNotice = MonoTime.currTime;
             while (true)
             {
                 if (cancelled !is null && cancelled())
@@ -100,6 +102,12 @@ public final class CheckoutLease
                 }
                 const state = WaitForSingleObject(handle, 50);
                 if (state == WAIT_OBJECT_0 || state == WAIT_ABANDONED) break;
+                if (waiting !is null && MonoTime.currTime >= nextNotice)
+                {
+                    waiting("Waiting for source checkout access: " ~ identity ~
+                        ". No files are being searched yet; another source operation owns the lock.");
+                    nextNotice = MonoTime.currTime + msecs(200);
+                }
                 if (state == WAIT_FAILED || MonoTime.currTime >= deadline)
                 {
                     CloseHandle(handle); handle = null;

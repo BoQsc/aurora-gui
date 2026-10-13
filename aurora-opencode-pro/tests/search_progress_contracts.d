@@ -153,7 +153,11 @@ int main()
     malicious.root = "workspace"; malicious.latest = ["a", "b", "c"];
     SearchProgress decoded;
     assert(decodeSearchProgress(encodeSearchProgress(malicious), decoded));
-    assert(decoded.latest == ["b", "c"] && decoded.query == "one two");
+    assert(decoded.latest == ["a", "b", "c"] && decoded.query == "one two");
+    malicious.latest = null;
+    foreach (i; 0 .. 20) malicious.latest ~= to!string(i);
+    assert(decodeSearchProgress(encodeSearchProgress(malicious), decoded));
+    assert(decoded.latest.length == searchPreviewHits && decoded.latest[0] == "12" && decoded.latest[$ - 1] == "19");
     assert(!decodeSearchProgress("\x1eaurora-search {}", decoded));
     malicious.totalsKnown = true; malicious.candidateFiles = 10; malicious.processedFiles = 11;
     assert(!decodeSearchProgress(encodeSearchProgress(malicious), decoded));

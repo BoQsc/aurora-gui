@@ -228,6 +228,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
             searchProgress.root = jsonString(searchArgs, "path").length ?
                 resolveToolPath(jsonString(searchArgs, "path"), workspace) : workspace;
             searchProgress.path = searchProgress.root;
+            searchProgress.folder = isFile(searchProgress.root) ? dirName(searchProgress.root) : searchProgress.root;
             searchProgress.query = jsonString(searchArgs, "pattern");
             searchProgress.filter = jsonString(searchArgs, "include");
         }
@@ -4687,12 +4688,14 @@ private ToolExecution runGlob(string args, string workspace, ToolCancellation ca
         if (depth > 256) { ++progress.value.errors; lastError = "Folder depth exceeds 256: " ~ directory; return; }
         ++progress.value.directories;
         progress.value.path = directory;
+        progress.value.folder = directory;
         progress.report(matches);
         try foreach (entry; dirEntries(directory, SpanMode.shallow))
         {
             if (interrupted()) return;
             ++progress.value.entries;
             progress.value.path = entry.name;
+            progress.value.folder = directory;
             progress.report(matches);
             if (entry.isSymlink) { ++progress.value.skippedLinks; continue; }
             if (entry.isFile) ++progress.value.files;
@@ -4966,6 +4969,7 @@ private ToolExecution runGrep(string args, string workspace,
         if (depth > 256) { ++progress.value.errors; lastError = "Folder depth exceeds 256: " ~ directory; return false; }
         ++progress.value.directories;
         progress.value.path = directory;
+        progress.value.folder = directory;
         reportGrepProgress();
         try
         {
@@ -4974,6 +4978,7 @@ private ToolExecution runGrep(string args, string workspace,
                 if (interrupted()) return true;
                 ++progress.value.entries;
                 progress.value.path = entry.name;
+            progress.value.folder = directory;
                 if (entry.isSymlink) ++progress.value.skippedLinks;
                 else if (entry.isDir)
                 {
@@ -4998,6 +5003,7 @@ private ToolExecution runGrep(string args, string workspace,
             reportGrepProgress();
         }
         progress.value.path = filePath;
+        progress.value.folder = dirName(filePath);
         reportGrepProgress();
         // Files can grow or disappear after discovery. Keep the recursive size
         // policy and count a failed/skipped attempt as processed, with its reason.
@@ -5448,7 +5454,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         CheckoutLease[] leases;
         scope (exit) foreach_reverse (lease; leases) lease.release();
         foreach (identity; identities)
-            leases ~= new CheckoutLease(identity, cancellation is null ? null : &cancellation.cancelled);
+            leases ~= new CheckoutLease(identity, cancellation is null ? null : &cancellation.cancelled, 45, observer);
         bool sourceMutation;
         string[] sourceTargets;
         if (developerSource.length)

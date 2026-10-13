@@ -165,6 +165,17 @@ int main()
     assert(journal.effectsBlocked(), "An old snapshot acknowledged a newer failure");
     journal.acknowledgeSnapshot(failureRevision);
     assert(!journal.effectsBlocked());
+    auto admissionGate = new Gate();
+    assert(repository.submit(&admissionGate.wait));
+    assert(engine.dispatchAfterCommit(journal, 103, delegate() { atomicOp!"+="(effects, 1); }));
+    Thread.sleep(5.msecs);
+    assert(engine.expireQueuedEffect(1), "Unstarted durable dispatch has no deadline");
+    admissionGate.release(); repository.flush();
+    assert(atomicLoad(effects) == 1, "A timed-out admission executed later");
+    assert(engine.dispatchAfterCommit(journal, 104, delegate() { atomicOp!"+="(effects, 1); }));
+    repository.flush();
+    assert(atomicLoad(effects) == 2 && !engine.expireQueuedEffect(1));
+    writeln("PASS expired tool admission cannot execute late; fresh admissions remain usable");
     writeln("PASS nonblocking admission, Stop before acknowledgement, durable ordering, failed journal prevents effects");
 
     auto cache = new WireProjectionCache();
