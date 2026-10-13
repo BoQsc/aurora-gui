@@ -32,7 +32,7 @@
 module rebuild;
 
 import core.sync.mutex : Mutex;
-import auroraopencode.checkout : CheckoutLease;
+import auroraopencode.checkout : CheckoutLease, canonicalPath;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.array : join;
@@ -624,12 +624,61 @@ bool launchRebuild(in RebuildPlan plan, string reason = "")
         state.startedAt = rebuildStamp(Clock.currTime);
         writeRebuildState(plan.workingDir, state);
     }
+    const handoffDirectory = plan.logPath.length ? dirName(plan.logPath) : "";
+    if (handoffDirectory.length && !writeSupervisorHandoff(handoffDirectory, plan.exePath, plan.waitPid))
+        return false;
     try
         spawnProcess(argv, stdin, stdout, stderr, null,
             Config.detached | Config.suppressConsole);
     catch (Exception)
+    {
+        clearSupervisorHandoff(handoffDirectory, plan.waitPid);
         return false;
+    }
     return true;
+}
+
+private string supervisorHandoffPath(string directory, int pid)
+{
+    return directory.length && pid > 0
+        ? buildPath(directory, "supervisor-handoff-" ~ to!string(pid) ~ ".json") : "";
+}
+
+/// A requested rebuild/update must own the next launch, even if shutdown crashes.
+bool writeSupervisorHandoff(string directory, string executable, int pid)
+{
+    const path = supervisorHandoffPath(directory, pid);
+    if (!path.length || !executable.length) return false;
+    try
+    {
+        mkdirRecurse(directory);
+        write(path, "{\"exe\":" ~ jsonString(canonicalPath(executable)) ~
+            ",\"created\":" ~ to!string(Clock.currTime.toUnixTime()) ~ "}");
+        return true;
+    }
+    catch (Exception) { return false; }
+}
+
+void clearSupervisorHandoff(string directory, int pid)
+{
+    const path = supervisorHandoffPath(directory, pid);
+    try { if (path.length && exists(path)) remove(path); }
+    catch (Exception) {}
+}
+
+/// Consume only a fresh request for this exact child and executable.
+bool consumeSupervisorHandoff(string directory, string executable, int pid)
+{
+    const path = supervisorHandoffPath(directory, pid);
+    if (!path.length || !exists(path)) return false;
+    scope (exit) clearSupervisorHandoff(directory, pid);
+    try
+    {
+        const request = parseJSON(readText(path));
+        const age = Clock.currTime.toUnixTime() - request["created"].integer;
+        return age >= 0 && age <= 300 && request["exe"].str == canonicalPath(executable);
+    }
+    catch (Exception) { return false; }
 }
 
 /// Assemble a plan for the running build. `exePath` and `waitPid` are passed in
@@ -1146,7 +1195,7 @@ private string[] dubArgv(in HelperJob job)
  * matching lines turns pages of progress output into the handful that explain
  * the failure.
  */
-private string[] errorLines(string output)
+string[] errorLines(string output)
 {
     string[] found;
     size_t start;
@@ -1155,7 +1204,9 @@ private string[] errorLines(string output)
         auto end = output.indexOf('\n', start);
         if (end < 0) end = output.length;
         const line = strip(output[start .. end]);
-        if (line.indexOf("Error:") >= 0 || line.indexOf("error:") >= 0)
+        const lower = line.toLower();
+        if (lower.indexOf("error:") >= 0 || lower.startsWith("error ") ||
+            lower.indexOf("fatal error ") >= 0)
             found ~= line;
         if (end == output.length) break;
         start = end + 1;
@@ -1185,7 +1236,7 @@ private void writeBuildReport(in HelperJob job, string[] argv, int code,
     text ~= "exit:    " ~ to!string(code) ~ "\n";
     text ~= "\ncompiler errors (" ~ to!string(errors.length) ~ "):\n";
     if (errors.length == 0)
-        text ~= "  (no line matched 'error:'; see " ~
+        text ~= "  (no error line recognized; see " ~
             buildLogPath(stateRoot(job)) ~ " for the full output)\n";
     else
         foreach (line; errors)
@@ -1475,21 +1526,24 @@ private void noteUnexpectedExit(in HelperJob job, int code, int restartNumber)
  * without calling the app's crash handler, so the exit status is visible only
  * to a parent. Exit code 0 is a normal window close.
  */
-private int runChild(in HelperJob job)
+int runSupervisedChild(string exePath, string packageDir, string logPath, out bool handedOff)
 {
-    appendLine(job.logPath, "running " ~ job.exePath);
+    appendLine(logPath, "running " ~ exePath);
     // The app has the window while it runs, so the agent's own window is put
     // away: two windows and one of them stale would be worse than none.
     closeProgressWindow();
     try
     {
-        auto pid = spawnProcess([job.exePath], stdin, stdout, stderr, null,
+        auto pid = spawnProcess([exePath], stdin, stdout, stderr, null,
             Config.suppressConsole,
-            job.packageDir.length > 0 ? job.packageDir : null);
+            packageDir.length > 0 ? packageDir : null);
+        const childPid = pid.processID;
         const code = wait(pid);
-        appendLine(job.logPath, "app exited: " ~ to!string(code) ~ " (" ~
+        appendLine(logPath, "app exited: " ~ to!string(code) ~ " (" ~
             hex(cast(uint) code) ~ ": " ~ describeExitCode(code) ~ ")");
-        if (code != 0)
+        handedOff = consumeSupervisorHandoff(logPath.length ? dirName(logPath) : "",
+            exePath, childPid);
+        if (code != 0 && !handedOff)
         {
             openProgressWindow("Aurora OpenCode - restarting");
             setProgress("The app stopped unexpectedly. Restarting...",
@@ -1500,7 +1554,7 @@ private int runChild(in HelperJob job)
     }
     catch (Exception error)
     {
-        appendLine(job.logPath, "run failed: " ~ error.msg);
+        appendLine(logPath, "run failed: " ~ error.msg);
         return 1;
     }
 }
@@ -1522,7 +1576,13 @@ private int supervise(in HelperJob job)
                 "executable missing; supervisor stopping instead of looping");
             return 2;
         }
-        const code = runChild(job);
+        bool handedOff;
+        const code = runSupervisedChild(job.exePath, job.packageDir, job.logPath, handedOff);
+        if (handedOff)
+        {
+            appendLine(job.logPath, "requested rebuild/update owns the next launch; supervisor stopping");
+            return 0;
+        }
         if (code == 0)
         {
             appendLine(job.logPath, "clean exit; supervisor stopping");
