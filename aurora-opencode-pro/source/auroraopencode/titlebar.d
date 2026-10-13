@@ -80,6 +80,7 @@ private uint readU32le(const(ubyte)[] bytes, size_t offset)
 public final class OpenCodeTitleBar : FramelessWindowTitleBar
 {
     public static immutable int titleBarHeight = opencodeTitleBarHeight;
+    private int _preferredTitleWidth;
 
     this(GuiWindow window)
     {
@@ -89,7 +90,9 @@ public final class OpenCodeTitleBar : FramelessWindowTitleBar
             ? "Aurora OpenCode  " ~ stamp
             : "Aurora OpenCode";
         setTitle(title);
-        setTitleWidth(measuredTitleWidth(title));
+        _preferredTitleWidth = measuredTitleWidth(title);
+        setTitleMinWidth(1);
+        setTitleWidth(_preferredTitleWidth);
         setIcon(IconKind.terminal);
         setBarHeight(titleBarHeight);
         layoutHints().preferredHeight = titleBarHeight;
@@ -98,6 +101,17 @@ public final class OpenCodeTitleBar : FramelessWindowTitleBar
         setTitleAlign(HorizontalAlign.left);
         setCaptionButtonWidth(46);
         applyPalette();
+    }
+
+    protected override void onLayout()
+    {
+        if (content() !is null && bounds().width > 0)
+        {
+            const actionsWidth = content().measure().width;
+            const titleSpace = titleRect().width + contentRect().width - actionsWidth;
+            setTitleWidth(maxInt(1, minInt(_preferredTitleWidth, titleSpace)));
+        }
+        super.onLayout();
     }
 
     /// Width that fits `text` at the caption font plus a small side pad.

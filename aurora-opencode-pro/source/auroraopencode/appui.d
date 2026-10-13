@@ -10268,9 +10268,13 @@ private string _suggestExcludeId;
     /// Isolate the network in UI fixtures; production uses DeveloperWorkflow.
     public DeveloperSyncResult delegate(string, bool) rebuildSourceCheckForTesting;
     private Button _updateButton;
+    private Button _toolbarRebuildButton;
     private bool _updateChecking;
     private bool _updateResultPending;
     private UpdateCheck _updateReady;
+    /// Keep update-button fixtures independent of the network and installed app.
+    public UpdateCheck delegate(string, string) updateCheckForTesting;
+    public bool delegate(string, string, string, string) updateInstallForTesting;
     private string _updateStagedPath;
     private string _updateHash;
     // Developer mode: a packaged install can download the repository snapshot
@@ -11345,20 +11349,15 @@ private string _suggestExcludeId;
     private void requestUpdate()
     {
         if (_updateChecking || _rebuildPending) return;
-        if (developerSourceDirectory().length)
-        {
-            showRebuildSourceBlocked("Developer updates must preserve your customized source. " ~
-                "Use sync in your Aurora development chat, resolve conflicts, then rebuild and verify your changes. " ~
-                "The public executable does not contain your local customizations.");
-            return;
-        }
         if (_updateStagedPath.length > 0)
         {
             writeResumeNoteIfTurnActive();
             persistState();
             _projectsWriter.save(_projectState);
-            if (!launchUpdateHelper(thisExePath(), _updateStagedPath,
-                    opencodeStateDirectory(), _updateHash))
+            const started = updateInstallForTesting is null
+                ? launchUpdateHelper(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash)
+                : updateInstallForTesting(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash);
+            if (!started)
             {
                 updateStatus("Update failed: could not start the replacement helper.");
                 updateUpdateDialog(
@@ -11378,8 +11377,9 @@ private string _suggestExcludeId;
         showUpdateCheckDialog();
         const exe = thisExePath();
         const stateDir = opencodeStateDirectory();
+        auto check = updateCheckForTesting;
         auto worker = new Thread({
-            auto result = checkForUpdate(exe, stateDir);
+            auto result = check is null ? checkForUpdate(exe, stateDir) : check(exe, stateDir);
             synchronized (this)
             {
                 _updateReady = result;
@@ -12181,35 +12181,17 @@ private string _suggestExcludeId;
         settingsButton.onClick = delegate() { showSettingsDialog(); };
         addButtonTooltip(settingsButton, settingsButtonTooltipText);
 
-        // Rebuild the package with DUB and relaunch. The window closes first so
-        // DUB can overwrite the running .exe. Only offered when this build sits
-        // inside Aurora's own source package, since only then is there a recipe
-        // to build. A build that can rebuild does not need its own update
-        // button, so the update check moves onto this button's context menu.
-        if (canSelfRebuild())
-        {
-            auto rebuildButton = toolbar.add(new ContextMenuButton("Rebuild",
-                IconKind.refresh));
-            rebuildButton.setId("oc-rebuild");
-            rebuildButton.onClick = delegate() { requestRebuild(); };
-            addButtonTooltip(rebuildButton, rebuildButtonTooltipText);
-            rebuildButton.onContextMenuRequested = delegate(Point position)
-            {
-                ContextMenuItem[] items;
-                items ~= ContextMenuItem.command("Check update", IconKind.refresh,
-                    delegate() { requestUpdate(); });
-                showContextMenu(rebuildButton, position, items);
-            };
-        }
-        else
-        {
-            // Install a published release on demand: check the update channel
-            // and, when a newer EXE is available, install it on a second click.
-            _updateButton = toolbar.add(new Button("Check update", IconKind.refresh));
-            _updateButton.setId("oc-update");
-            _updateButton.onClick = delegate() { requestUpdate(); };
-            addButtonTooltip(_updateButton, updateButtonTooltipText);
-        }
+        // Rebuild compiles local source. Update installs the maintainer's binary;
+        // both actions stay independently reachable on a development install.
+        _toolbarRebuildButton = toolbar.add(new Button("Rebuild", IconKind.refresh));
+        _toolbarRebuildButton.setId("oc-rebuild");
+        _toolbarRebuildButton.onClick = delegate() { requestRebuild(); };
+        _toolbarRebuildButton.setVisible(_settings.developerMode || canSelfRebuild());
+        addButtonTooltip(_toolbarRebuildButton, rebuildButtonTooltipText);
+        _updateButton = toolbar.add(new Button("Update", IconKind.refresh));
+        _updateButton.setId("oc-update");
+        _updateButton.onClick = delegate() { requestUpdate(); };
+        addButtonTooltip(_updateButton, updateButtonTooltipText);
 
         _keyBadge = toolbar.add(new KeyStatusBadge(""));
         _keyBadge.setId("oc-key");
@@ -14397,6 +14379,8 @@ private string _suggestExcludeId;
     /// useful to point the agent at, so the pill is omitted.
     private void configureIntroSuggestions()
     {
+        if (_toolbarRebuildButton !is null)
+            _toolbarRebuildButton.setVisible(_settings.developerMode || canSelfRebuild());
         auto labels = appender!(string[])();
         auto prompts = appender!(string[])();
         foreach (suggestion; defaultIntroSuggestions)
