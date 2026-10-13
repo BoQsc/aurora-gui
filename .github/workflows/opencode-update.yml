@@ -11,6 +11,7 @@ on:
       - aurora-opencode-pro/shared/**
       - aurora-opencode-pro/assets/**
       - aurora-opencode-pro/tools/**
+      - aurora-opencode-pro/tests/**
       - aurora-opencode-pro/dub.json
       - aurora-opencode-core/**
       - vendor/aurora-d-0.4.5/source/**
@@ -37,6 +38,8 @@ jobs:
           compiler: dmd-2.112.0
       - name: Test publisher
         run: python -X utf8 -m unittest discover -s aurora-opencode-pro/tests -p test_forge_publish.py
+      - name: Test unfinished task continuation
+        run: python -X utf8 -B aurora-opencode-pro/tests/test_task_continuation.py
       - name: Build update
         working-directory: aurora-opencode-pro
         env:

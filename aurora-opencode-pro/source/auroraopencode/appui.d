@@ -71,7 +71,8 @@ import auroraopencode.orchestrator : setOrchestratorSetting,
 // experimental: planmode - delete with source/auroraopencode/planmode.d
 import auroraopencode.planmode : experimentalStrictPlanEnabled,
     setStrictPlanSetting, trackedPlanPromptBlock;
-import auroraopencode.requestintent : explanationOnlyRequest;
+import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
+import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.requestbuilder : projectRequestMessages;
@@ -10094,14 +10095,6 @@ private string _suggestExcludeId;
     // update_plan call, the checklist has drifted from the actual work; nudge
     // the model to refresh it before continuing.
     private static immutable int planRefreshNudgeCalls = 4;
-    // How many times one user turn may be auto-continued because the recorded
-    // verification is still required before the turn is allowed to settle.
-    // The model's own checklist no longer forces a continuation: an unfinished
-    // model-owned checklist must not hold an ordinary turn open after a final
-    // answer (that was the endless "Continuing…" yapping). One reminder is
-    // enough to catch a genuinely skipped verification; past that the turn
-    // settles and the user decides whether to continue.
-    private static immutable int planContinuationLimit = 1;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -16618,85 +16611,53 @@ private void pollButtonSuggestionRequest()
                 return;
             }
         }
-        if (!explanationOnlyRequest(latestActualUserRequest(*session)) &&
-            planNeedsCompletionReview(*session))
+        const continuation = taskContinuation(*session, _settings.toolsEnabled);
+        if (continuation.action == TaskContinuationAction.continueWork)
         {
             ChatMessage guidance;
             guidance.role = "user";
             guidance.internal = true;
-            guidance.content = "Plan reconciliation checkpoint: Compare each " ~
-                "checklist step with what was actually completed in this " ~
-                "turn. Call update_plan to mark finished steps completed and " ~
-                "rewrite transient, mixed, or obsolete steps into concrete " ~
-                "remaining outcomes. Do not mark unfinished work completed. " ~
-                "If the checklist is already accurate, briefly name the " ~
-                "remaining work or blocker. Avoid repeating the prior answer.";
+            guidance.time = currentTimestamp();
+            guidance.content = continuation.guidance();
             appendMessage(*session, guidance);
+            session.turnStatus = "running";
+            session.taskStatus = "active";
             publishThreadUpdated(*session);
             markDirty();
             setTurnActiveMarker(true, session.id);
             setTurnInFlight(true);
-            updateStatus("Reconciling the plan…");
-             startChatRequest(sessionIndex, false);
-             return;
-         }
-         // Hold the turn open only while verification of a recorded change is
-         // still required, bounded per user turn. The model's own checklist no
-         // longer re-opens the turn: a final answer settles it, and an
-         // unfinished checklist is shown to the user instead of manufacturing
-         // more model requests (the endless "Continuing…" yapping).
-         // A distinct follow-up is already queued to open the next user turn, so
-         // it will carry unfinished work forward. Auto-continuing here as well
-         // would manufacture a redundant model request that only re-sends the
-         // history, inflating the re-sent (uncached) input the user pays for.
-         if (session.queuedFollowUps.length == 0 &&
-             !explanationOnlyRequest(latestActualUserRequest(*session)) &&
-             session.verificationStatus == "required" &&
-             planContinuationCount(*session) < planContinuationLimit)
-         {
-             ChatMessage continuation;
-             continuation.role = "user";
-             continuation.internal = true;
-             continuation.content = planContinuationMarker ~
-                 ". Run the focused verification for the change already made " ~
-                 "(the same check that establishes it works), then report the " ~
-                 "result. If the change cannot be verified with a command, " ~
-                 "state that explicitly and settle the turn.";
-             appendMessage(*session, continuation);
-             session.turnStatus = "running";
-             session.taskStatus = "active";
-             setTurnActiveMarker(true, session.id);
-             setTurnInFlight(true);
-             updateStatus("Continuing outstanding verification…");
-             publishThreadUpdated(*session);
-             markDirty();
-             startChatRequest(sessionIndex, false);
-             return;
-         }
-         if (hasIncompleteTaskSteps(*session))
+            updateStatus("Continuing unfinished work…");
+            startChatRequest(sessionIndex, false);
+            return;
+        }
+        if (continuation.action == TaskContinuationAction.needsAttention)
         {
-            session.turnStatus = "completed";
+            failAssistantMessage("Task unfinished: the agent ended three consecutive " ~
+                "continuation attempts without new work, evidence, completed steps, " ~
+                "or passing verification. The remaining plan and conversation are " ~
+                "preserved. Send Continue to retry, or provide the missing information " ~
+                "if the agent identified a blocker.");
+            updateStatus("Task unfinished · needs attention.");
+            return;
+        }
+        session.turnStatus = "completed";
+        if (session.taskStatus == "blocked")
+            updateStatus("Task unfinished · waiting on the reported blocker.");
+        else if (hasIncompleteTaskSteps(*session))
+        {
             session.taskStatus = "active";
-            updateStatus("Turn complete · task still has checklist items.");
-            publishThreadUpdated(*session);
-            markDirty();
+            updateStatus("Answer complete · task still has checklist items.");
         }
         else if (session.verificationStatus == "required")
         {
-            session.turnStatus = "completed";
             session.taskStatus = "verifying";
-            updateStatus("Turn complete · verification is still required.");
+            updateStatus("Answer complete · verification is still required.");
         }
         else
-        {
-            session.turnStatus = "completed";
             session.taskStatus = "completed";
-        }
         markUnreadIfBackground(sessionIndex);
         publishThreadUpdated(*session);
         markDirty();
-        // experimental: computer use - the turn ended without requesting tools,
-        // so resume it instead of idling (see maybeAutoContinue).
         maybeAutoContinue(sessionIndex);
         startNextQueuedFollowUp(sessionIndex);
     }
@@ -16707,60 +16668,9 @@ private void pollButtonSuggestionRequest()
         if (cancelled || sessionIndex < 0 ||
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
-        if (session.queuedGuidance.length > 0 ||
-            planNeedsCompletionReview(session)) return true;
-        // Keep working only while verification is still required, bounded so a
-        // stuck model cannot loop forever. The budget is derived from the turn's
-        // marker messages, so a new user turn starts over implicitly. An
-        // already-queued follow-up owns the next turn, so it continues the work
-        // itself; auto-continuing here would add a redundant request that
-        // re-sends the whole history for no new progress. The model's own
-        // unfinished checklist no longer holds the turn open by itself.
-        const unfinished = session.queuedFollowUps.length == 0 &&
-            session.verificationStatus == "required";
-        return unfinished && planContinuationCount(session) < planContinuationLimit;
-    }
-
-    /// Give the model one chance per real user turn to reconcile an unfinished
-    /// checklist before the final answer settles. The internal marker survives
-    /// persistence and prevents a loop if work genuinely remains unfinished.
-    private static bool planNeedsCompletionReview(const ref ChatSession session)
-    {
-        if (!hasIncompleteTaskSteps(session) ||
-            session.queuedFollowUps.length > 0) return false;
-        bool reviewed;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal)
-                reviewed = false;
-            if (message.role == "user" && message.internal &&
-                message.content.startsWith("Plan reconciliation checkpoint:"))
-                reviewed = true;
-        }
-        return !reviewed;
-    }
-
-    /// Prefix of the internal message that opens a bounded auto-continuation
-    /// while verification of the recorded work is still outstanding.
-    private enum planContinuationMarker = "Continuation: outstanding verification";
-
-    /// How many outstanding-verification continuations this user turn already
-    /// opened. Counting the marker messages (rather than external state) makes
-    /// the bound survive compaction/restart and keeps `taskContinuesAfterDone`
-    /// const-safe.
-    private static int planContinuationCount(const ref ChatSession session)
-    {
-        int count;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal) count = 0;
-            if (message.role == "user" && message.internal &&
-                message.content.startsWith(planContinuationMarker))
-                ++count;
-        }
-        return count;
+        if (session.queuedGuidance.length > 0) return true;
+        return taskContinuation(session, _settings.toolsEnabled).action !=
+            TaskContinuationAction.settle;
     }
 
     private string clarifyProviderRequestError(string error) const
@@ -17852,11 +17762,14 @@ private void pollButtonSuggestionRequest()
             ? nestedPlanError(*session, toolArgs) : "";
         const imageError = !event.toolFailed && event.toolName == "retire_images"
             ? retireImagesSessionError(*session, toolArgs) : "";
+        const blockerError = !event.toolFailed && event.toolName == "task_blocker"
+            ? taskBlockerError(toolArgs) : "";
         const toolFailed = event.toolFailed || planError.length > 0 ||
-            subplanError.length > 0 || imageError.length > 0;
+            subplanError.length > 0 || imageError.length > 0 || blockerError.length > 0;
         const toolText = planError.length > 0 ? planError :
             subplanError.length > 0 ? subplanError :
-            imageError.length > 0 ? imageError : event.text;
+            imageError.length > 0 ? imageError :
+            blockerError.length > 0 ? blockerError : event.text;
         ChatMessage toolMessage;
         toolMessage.role = "tool";
         toolMessage.content = toolText;
@@ -17907,6 +17820,12 @@ private void pollButtonSuggestionRequest()
             session.verificationStatus = "passed";
             session.taskStatus = hasIncompleteTaskSteps(*session)
                 ? "active" : "completed";
+            publishThreadUpdated(*session);
+        }
+
+        if (!toolFailed && event.toolName == "task_blocker")
+        {
+            session.taskStatus = "blocked";
             publishThreadUpdated(*session);
         }
 
@@ -20834,6 +20753,12 @@ private void pollButtonSuggestionRequest()
         }
         auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0) return;
+        if (session.taskStatus == "blocked")
+        {
+            _autoContinuePendingSession = -1;
+            logAutoContinue("skip: task needs attention");
+            return;
+        }
         const path = activeMessagePath(*session);
         if (path.length > 0 &&
             session.messages[path[$ - 1]].error.startsWith(outputFailurePrefix))
@@ -20842,7 +20767,7 @@ private void pollButtonSuggestionRequest()
             logAutoContinue("skip: agent output recovery exhausted");
             return;
         }
-        if (explanationOnlyRequest(latestActualUserRequest(*session)))
+        if (answerOnlyRequest(latestActualUserRequest(*session)))
         {
             _autoContinuePendingSession = -1;
             logAutoContinue("skip: latest request asks for an explanation");

@@ -19,6 +19,8 @@ def check(package, source, name, *, unittest=False, run_args=()):
     for include in [folder / "source", ROOT / "aurora-opencode-core/source",
                     ROOT / "vendor/aurora-d-0.4.5/source", folder / "shared"]:
         command.append("-I" + str(include))
+    if (folder / "assets").is_dir():
+        command.append("-J" + str(folder / "assets"))
     command.extend(str(folder / path) for path in source)
     command.extend(["user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib",
                     "winmm.lib", "-of=" + str(output)])

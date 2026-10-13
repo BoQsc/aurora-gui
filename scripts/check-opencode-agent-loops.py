@@ -93,8 +93,9 @@ def main():
     try:
         check("aurora-opencode-pro", ["tests/agent_loop_smoke.d"], "agent-loop-smoke",
               run_args=(f"http://127.0.0.1:{server.server_port}/v1",))
-        # A successful run also opens the app's existing verification reminder.
-        assert COUNTS == {"fixture: recover-xml": 4, "fixture: stuck-xml": 2,
+        # The fixture never supplies the requested verification. Three stagnant
+        # work continuations must end visibly instead of silently settling it.
+        assert COUNTS == {"fixture: recover-xml": 6, "fixture: stuck-xml": 2,
                           "fixture: recover-prose": 2}, COUNTS
     finally:
         server.shutdown()

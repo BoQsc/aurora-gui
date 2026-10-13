@@ -211,19 +211,11 @@ private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
         "1. Define success. For multi-step work, call update_plan before substantial " ~
-        "inspection or implementation, at most after a brief initial lookup. Include " ~
-        "the current investigation when it is part of the task, along with known " ~
-        "implementation and validation outcomes. Keep one step in_progress and later " ~
-        "work pending. Update the plan when a phase finishes or the approach changes, " ~
-        "before moving to the next phase. Do not wait until the fix is ready to " ~
-        "introduce a checklist of work already done. Skip plans for direct answers, " ~
-        "quick exploration, and single edits; if exploration grows, plan immediately.\n" ~
-        "Batch independent reads directly when they answer the current question; " ~
-        "a brief read count alone does not require a plan. Planning stays " ~
-        "advisory, but once a turn has spent its read-only exploration budget " ~
-        "without a plan you will receive a reminder to call update_plan, and you " ~
-        "should record the concrete steps then. Strict plan mode is a stronger " ~
-        "explicit opt-in that also plans before the first change.\n" ~
+        "inspection or implementation. Include investigation and known outcomes. " ~
+        "Keep one step in_progress; update at phase boundaries. Skip plans for direct " ~
+        "answers, quick exploration, and single edits; plan if exploration grows.\n" ~
+        "Batch independent reads. Plans are advisory, with an exploration-budget " ~
+        "reminder. Strict plan mode also plans before the first change.\n" ~
         "2. Read explicit user paths directly, including paths outside the workspace. " ~
         "Discover files only when paths are unknown or a direct read fails. Read before editing.\n" ~
         "3. Apply the smallest complete change, batching all known related edits.\n" ~
@@ -232,8 +224,9 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "failures require a changed approach. GUI changes need interaction assertions " ~
         "or rendered inspection; compilation alone is insufficient. For local HTML, " ~
         "discover a browser at runtime and inspect the page and key interactions.\n" ~
-        "5. Report the outcome, changed locations, checks, and concrete remaining " ~
-        "blockers. Keep the plan accurate. A final prose answer ends the turn.\n";
+        "5. Finish authorized work and verification before reporting the outcome and " ~
+        "checks. Keep the plan accurate. Do not ask to continue work already requested. " ~
+        "Use task_blocker only for missing input or an external dependency.\n";
 }
 
 private string editingAndSafetySection(in SystemPromptContext ctx)

@@ -459,9 +459,20 @@ private OpenCodeToolDef applyPatchToolDefinition()
     );
 }
 
-/// The D-native `update_plan` tool definition: records the task plan so the
-/// user can see the steps and their progress. At most one step may be
-/// `in_progress` at a time.
+private OpenCodeToolDef taskBlockerToolDefinition()
+{
+    return OpenCodeToolDef("task_blocker",
+        "Report a specific blocker that requires missing user input or an external " ~
+        "dependency before the authorized task can continue. Supply kind=input " ~
+        "and the required question, or kind=external and the unavailable dependency. " ~
+        "This pauses automatic continuation and keeps unfinished work recorded. " ~
+        "Do not use it to request permission to continue work already authorized, " ~
+        "to offer a review of a partial result, or merely because work remains. " ~
+        "Continue independent work first; then explain the blocker to the user.",
+        `{"type":"object","properties":{"kind":{"type":"string","enum":["input","external"]},"reason":{"type":"string","description":"The specific missing information or unavailable dependency preventing further work"},"question":{"type":"string","description":"The required question for kind=input"}},"required":["kind","reason"]}`);
+}
+
+/// Record the visible plan, with at most one step in progress.
 private OpenCodeToolDef updatePlanToolDefinition()
 {
     return OpenCodeToolDef(
@@ -748,6 +759,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        taskBlockerToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
         syncToolDefinition(),
@@ -814,6 +826,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        taskBlockerToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
         syncToolDefinition(),
@@ -6029,6 +6042,17 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runApplyPatch(call.arguments, workspace);
         case "update_plan":
             return runUpdatePlan(call.arguments, workspace);
+        case "task_blocker":
+        {
+            import auroraopencode.taskcontinuation : taskBlockerError;
+            const error = taskBlockerError(call.arguments);
+            if (error.length) return ToolExecution(call.name, "Error: " ~ error, true);
+            const args = parseJSON(call.arguments);
+            const reason = jsonString(args, "reason");
+            const question = jsonString(args, "question");
+            return ToolExecution(call.name, "Task needs attention: " ~ reason ~
+                (question.length ? "\nRequired input: " ~ question : ""), false);
+        }
         case "update_subplan":
             return runUpdateSubplan(call.arguments, workspace);
         case "copy":

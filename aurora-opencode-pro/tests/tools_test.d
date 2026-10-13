@@ -1137,7 +1137,8 @@ int main(string[] args)
     assert(toolSteeringPrompt(false).indexOf(
         "Skip plans for direct answers, quick exploration") >= 0 &&
         toolSteeringPrompt(false).indexOf(
-            "A final prose answer ends the turn") >= 0,
+            "Finish authorized work and verification") >= 0 &&
+        toolSteeringPrompt(false).indexOf("task_blocker") >= 0,
         "Steering prompt must scope plans and define a stopping condition");
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
         toolSteeringPrompt(false).indexOf("# Communication"),
@@ -1536,6 +1537,22 @@ int main(string[] args)
             dir);
         assert(bad.failed, "update_plan must reject two in_progress steps");
         writeln("update_plan renders steps and enforces one in-progress step");
+
+        foreach (definitions; [builtinToolDefinitions(), nativeOnlyToolDefinitions()])
+        {
+            bool advertised;
+            foreach (definition; definitions)
+                if (definition.name == "task_blocker") advertised = true;
+            assert(advertised, "Both toolsets must expose required-input reporting");
+        }
+        auto blocker = executeTool(makeCall("task_blocker",
+            `{"kind":"input","reason":"Deployment server missing","question":"Which server?"}`), dir);
+        assert(!blocker.failed && blocker.output.indexOf("Which server?") >= 0);
+        assert(executeTool(makeCall("task_blocker",
+            `{"kind":"input","reason":"Deployment server missing"}`), dir).failed);
+        assert(executeTool(makeCall("task_blocker",
+            `{"kind":"external","reason":""}`), dir).failed);
+        writeln("task_blocker requires a specific dependency or a required-input question");
 
         auto subplan = executeTool(makeCall("update_subplan",
             `{"parent_step":1,"plan":[{"step":"inspect","status":"completed"},` ~
