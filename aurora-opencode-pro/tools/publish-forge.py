@@ -37,6 +37,10 @@ FORGE_URL = "https://forge.boqsc.eu"
 ENV_KEY = "FORGE_PUBLISHER_KEY"
 ENV_ID = "FORGE_PUBLISHER_ID"
 
+_source_spec = importlib.util.spec_from_file_location("aurora_build_provenance", Path(__file__).with_name("build_provenance.py"))
+_source = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(_source)
+
 
 def runtime_dependencies(package: Path, executable: Path) -> list[str]:
     verifier = package.parent / "scripts/verify-windows-portability.py"
@@ -123,6 +127,7 @@ def main(argv=None) -> int:
             print("Publishing with installed runtime required: " + ", ".join(dependencies))
 
         content = executable.read_bytes()
+        source = _source.verify_release_source(package, executable)
         digest = hashlib.sha256(content).hexdigest()
         if not 0 < len(content) <= 25 * 1024 * 1024:
             raise ValueError("EXE exceeds the updater's supported size")
@@ -131,6 +136,7 @@ def main(argv=None) -> int:
             "url": f"{FORGE_URL}/~/{project_id}/{EXE_NAME}",
             "runtime_dlls": dependencies,
             "version": json.loads((package / "dub.json").read_text(encoding="utf-8"))["version"],
+            **source,
         }
         try:
             unchanged = public_metadata(project_id) == description

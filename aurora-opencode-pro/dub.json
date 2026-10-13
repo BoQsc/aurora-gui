@@ -28,8 +28,12 @@
       "targetType": "executable",
       "targetName": "aurora-opencode-pro",
       "mainSourceFile": "source/app.d",
+      "preBuildCommands-windows": [
+        "python tools/build_provenance.py begin"
+      ],
       "postBuildCommands-windows": [
         "cmd /c tools\\embed-icon.bat",
+        "python tools/build_provenance.py finish",
         "python tools/publish-forge.py"
       ]
     },
@@ -38,8 +42,12 @@
       "targetType": "executable",
       "targetName": "aurora-opencode-pro-new",
       "mainSourceFile": "source/app.d",
+      "preBuildCommands-windows": [
+        "python tools/build_provenance.py begin --exe aurora-opencode-pro-new.exe"
+      ],
       "postBuildCommands-windows": [
-        "cmd /c tools\\embed-icon.bat"
+        "cmd /c tools\\embed-icon.bat",
+        "python tools/build_provenance.py finish --exe aurora-opencode-pro-new.exe"
       ]
     },
     {
@@ -109,5 +117,5 @@
     "QuartzCore",
     "-lobjc"
   ],
-  "version": "0.66.9"
+  "version": "0.66.10"
 }

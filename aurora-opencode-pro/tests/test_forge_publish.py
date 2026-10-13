@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import struct
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -43,9 +44,23 @@ class PublisherTests(unittest.TestCase):
         (self.root / "scripts").mkdir()
         shutil.copy(PACKAGE.parent / "scripts/verify-windows-portability.py", self.root / "scripts")
         (self.package / "assets/update-project.txt").write_text("fg_test\n")
+        (self.package / "assets/maintainer-source-branch.txt").write_text("release-source\n")
         (self.package / "dub.json").write_text('{"version":"1.2.3"}')
+        (self.package / "source").mkdir()
+        (self.package / "source/app.d").write_text("module app;\n")
+        for name in ["build_provenance.py", "publish-forge.py"]:
+            shutil.copy(PACKAGE / "tools" / name, self.package / "tools" / name)
         self.content = pe("MSVCR120.dll")
         (self.package / publisher.EXE_NAME).write_bytes(self.content)
+        self.remote = self.root / "upstream.git"
+        subprocess.run(["git", "init", "--bare", str(self.remote)], check=True, capture_output=True)
+        self.git("init", "-b", "release-source")
+        self.git("config", "user.name", "Fixture")
+        self.git("config", "user.email", "fixture@example.invalid")
+        (self.root / ".gitignore").write_text("state/\nupstream.git/\n*.exe\n**/build-source-*.json\n")
+        self.git("add", "pro", "scripts", ".gitignore")
+        self.git("commit", "-m", "Source fixture")
+        self.git("push", str(self.remote), "release-source")
         self.config = self.root / "state/Aurora OpenCode/forge-publisher.json"
         self.config.parent.mkdir(parents=True)
         self.original_config = {"enabled": True, "id": "fg_test", "key": "fsk_fixture"}
@@ -90,6 +105,7 @@ class PublisherTests(unittest.TestCase):
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.patches = [
+            patch.object(publisher._source, "UPSTREAM_URL", str(self.remote)),
             patch.object(publisher, "__file__", str(self.package / "tools/publish-forge.py")),
             patch.object(publisher, "FORGE_URL", f"http://127.0.0.1:{self.server.server_port}"),
             patch.dict(os.environ, {"APPDATA": str(self.root / "state"),
@@ -108,13 +124,22 @@ class PublisherTests(unittest.TestCase):
         self.temp.cleanup()
 
     def publish(self):
+        publisher._source.record(self.package, "begin")
+        publisher._source.record(self.package, "finish")
         return publisher.main(["--required"])
+
+    def git(self, *args):
+        return subprocess.run(["git", "-C", str(self.root), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
 
     def test_dynamic_runtime_is_published_and_publicly_verified(self):
         self.assertEqual(self.publish(), 0)
         release = json.loads(self.files["release.json"])
         self.assertEqual(release["runtime_dlls"], ["MSVCR120.dll"])
         self.assertEqual(release["sha256"], hashlib.sha256(self.content).hexdigest())
+        self.assertEqual(release["source_commit"], self.git("rev-parse", "HEAD"))
+        self.assertEqual(release["source_branch"], "release-source")
+        self.assertFalse(release["source_dirty"])
         self.assertEqual(self.files[publisher.EXE_NAME], self.content)
         self.assertEqual(self.uploads, [publisher.EXE_NAME, "release.json"])
         self.assertEqual(json.loads(self.config.read_text())["key"], "fsk_fixture")
@@ -169,6 +194,31 @@ class PublisherTests(unittest.TestCase):
         os.environ["FORGE_PUBLISHER_KEY"] = "fsk_fixture"
         self.assertEqual(self.publish(), 0)
         self.assertEqual(json.loads(self.config.read_text()), self.original_config)
+
+    def test_dirty_source_never_reaches_public_channel(self):
+        (self.package / "source/app.d").write_text("module app; // unpublished edit\n")
+        self.assertEqual(self.publish(), 1)
+        self.assertEqual(self.uploads, [])
+
+    def test_unpublished_source_commit_is_rejected(self):
+        (self.package / "source/app.d").write_text("module app; // new commit\n")
+        self.git("add", "pro/source/app.d")
+        self.git("commit", "-m", "Not pushed")
+        self.assertEqual(self.publish(), 1)
+        self.assertEqual(self.uploads, [])
+
+    def test_changed_executable_requires_a_new_build_record(self):
+        self.assertEqual(self.publish(), 0)
+        self.uploads.clear()
+        (self.package / publisher.EXE_NAME).write_bytes(self.content + b"changed")
+        self.assertEqual(publisher.main(["--required"]), 1)
+        self.assertEqual(self.uploads, [])
+
+    def test_source_changed_during_build_is_rejected(self):
+        publisher._source.record(self.package, "begin")
+        (self.package / "source/app.d").write_text("module app; // changed during compilation\n")
+        with self.assertRaisesRegex(RuntimeError, "Source changed during compilation"):
+            publisher._source.record(self.package, "finish")
 
 
 if __name__ == "__main__":

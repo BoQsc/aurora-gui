@@ -3,7 +3,7 @@ module auroraopencode.developerworkflow;
 import core.thread : Thread;
 import core.sync.mutex : Mutex;
 import core.time : MonoTime, seconds, msecs;
-import std.algorithm : endsWith, startsWith, canFind;
+import std.algorithm : endsWith, startsWith, canFind, any;
 import std.array : join;
 import std.conv : to;
 import std.datetime : Clock;
@@ -19,6 +19,7 @@ import std.process : Config, environment, spawnProcess, tryWait, wait, kill,
 import std.stdio : File;
 import std.string : strip, split, replace, indexOf, toLower;
 import std.zip : ZipArchive;
+import auroraopencode.checkout : CheckoutLease, canonicalPath;
 
 private void removeTemporaryFile(string path)
 {
@@ -100,7 +101,7 @@ public DeveloperCommandResult runDeveloperCommand(string[] args, string dir,
                 : "Working… " ~ elapsed ~ "s elapsed");
             nextProgress = MonoTime.currTime + seconds(1);
         }
-        Thread.sleep(50.msecs);
+        Thread.sleep(10.msecs);
     }
     auto output = exists(outputPath) ? readText(outputPath) : "";
     if (status != 0 && exists(errorPath)) output ~= readText(errorPath);
@@ -208,6 +209,7 @@ public final class DeveloperWorkflow
     string upstreamRef = "refs/remotes/aurora-maintainer/source";
     DeveloperRunner runner;
     DeveloperProgress progress;
+    private string[string] gitDirectories;
 
     this(string git, string gh = "", DeveloperRunner runner = null,
         DeveloperProgress progress = null)
@@ -241,23 +243,128 @@ public final class DeveloperWorkflow
     private string ghCommand(string dir, string[] args, string phase)
     { return checked([gh] ~ args, dir, phase); }
 
-    private void requireCleanOperation(string dir)
+    private string statePath(string dir, string name)
+    {
+        if (dir !in gitDirectories)
+            gitDirectories[dir] = gitCommand(dir, ["rev-parse", "--absolute-git-dir"], "Checking repository state");
+        return buildPath(gitDirectories[dir], name);
+    }
+
+    private void requireCleanOperation(string dir, bool allowPendingSync = false)
     {
         auto conflicts = gitCommand(dir, ["diff", "--name-only", "--diff-filter=U"], "Checking conflicts");
         enforce(conflicts.length == 0, "Resolve these conflicts first: " ~ conflicts);
-        foreach (state; ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"])
+        foreach (state; ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer"])
         {
-            const path = gitCommand(dir, ["rev-parse", "--git-path", state], "Checking repository state");
-            enforce(!exists(isAbsolute(path) ? path : buildPath(dir, path)),
+            enforce(!exists(statePath(dir, state)),
                 "Finish the existing merge or rebase before continuing.");
         }
+        enforce(allowPendingSync || !exists(statePath(dir, "aurora-sync-pending.json")),
+            "An Aurora sync needs finishing. Resolve and stage any conflicts, finish the Git operation, then call sync to restore local work.");
     }
 
-    public DeveloperSyncResult sync(string dir, bool apply)
+    private void protectUntrackedPaths(string dir)
+    {
+        const root = gitCommand(dir, ["rev-parse", "--show-toplevel"], "Locating source checkout");
+        const incoming = gitCommand(root, ["diff", "--name-only", "--no-renames", "--diff-filter=AMT", "-z",
+            "HEAD", upstreamRef], "Checking incoming paths").split('\0');
+        auto local = gitCommand(root, ["ls-files", "--others", "--exclude-standard", "-z"], "Checking untracked work").split('\0');
+        local ~= gitCommand(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], "Checking ignored work").split('\0');
+        foreach (path; incoming)
+        foreach (saved; local)
+            if (path.length && saved.length && (path == saved ||
+                path.startsWith(saved ~ "/") || saved.startsWith(path ~ "/")))
+                throw new Exception("Maintainer update would overwrite untracked or ignored local work: " ~ saved ~
+                    ". Move or back it up before retrying sync; your file was preserved.");
+    }
+
+    private void finishPendingSync(string dir, bool recoveryResolved = false)
+    {
+        const path = statePath(dir, "aurora-sync-pending.json");
+        if (!exists(path)) return;
+        requireCleanOperation(dir, true);
+        if (recoveryResolved) { remove(path); return; }
+        auto pending = parseJSON(readText(path));
+        const phase = pending["phase"].str;
+        const edits = pending["edits"].str;
+        if (phase == "prepared")
+            throw new Exception("Sync was interrupted while saving local edits. They are backed up at " ~ edits ~
+                ". Inspect and integrate that snapshot, then call sync with recoveryResolved=true.");
+        if (phase == "stashed")
+        {
+            pending["phase"] = "restoring";
+            write(path, pending.toString());
+            auto restored = raw([git, "-C", dir, "stash", "apply", "--index", edits], dir);
+            if (restored.status != 0)
+            {
+                // --index can refuse before touching files when upstream changed
+                // a staged path. Restore the worktree too, keeping the snapshot.
+                if (raw([git, "-C", dir, "diff", "--quiet"], dir).status == 0 &&
+                    raw([git, "-C", dir, "diff", "--cached", "--quiet"], dir).status == 0)
+                    restored = raw([git, "-C", dir, "stash", "apply", edits], dir);
+                pending["phase"] = "conflicted";
+                pending["requiresAcknowledgement"] = gitCommand(dir,
+                    ["diff", "--name-only", "--diff-filter=U"], "Checking restoration conflicts").length == 0;
+                write(path, pending.toString());
+                throw new Exception("Restoring local changes needs conflict or staging resolution. " ~
+                    restored.output.strip() ~ " Recovery snapshot: " ~ edits ~
+                    ". Resolve and stage the intended result, then call sync again.");
+            }
+        }
+        else if (phase != "conflicted")
+            throw new Exception("Local-change restoration was interrupted. Recovery snapshot: " ~ edits ~
+                ". Inspect and integrate it, then call sync with recoveryResolved=true.");
+        else if (auto acknowledgement = "requiresAcknowledgement" in pending.object)
+            enforce(acknowledgement.type != JSONType.true_,
+                "Review and restore your staged selection from " ~ edits ~
+                ", then call sync with recoveryResolved=true. Your content remains recoverable.");
+        requireCleanOperation(dir, true);
+        remove(path);
+    }
+
+    /// Conflict repairs remain possible while ordinary source writes are blocked.
+    public DeveloperSyncResult checkSourceBeforeEdit(string dir, string[] paths,
+        bool gitResolution = false, bool required = true)
+    {
+        DeveloperSyncResult result;
+        if (!required) return result;
+        try
+        {
+            auto lease = new CheckoutLease(dir);
+            scope (exit) lease.release();
+            enforce(git.length > 0, "Git is unavailable; prepare Developer tools first.");
+            const root = gitCommand(dir, ["rev-parse", "--show-toplevel"], "Locating source checkout");
+            const conflicts = gitCommand(root, ["diff", "--name-only", "--diff-filter=U", "-z"], "Checking conflicts").split('\0');
+            bool repairsOnly = paths.length > 0;
+            foreach (path; paths)
+            {
+                bool found;
+                foreach (conflict; conflicts)
+                    if (conflict.length && canonicalPath(buildPath(root, conflict)) == canonicalPath(path)) found = true;
+                if (!found) repairsOnly = false;
+            }
+            bool unfinished;
+            foreach (state; ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer", "aurora-sync-pending.json"])
+                if (exists(statePath(dir, state))) unfinished = true;
+            if (repairsOnly || (gitResolution && (unfinished || conflicts.any!(value => value.length > 0)))) return result;
+            enforce(!unfinished && !conflicts.any!(value => value.length > 0),
+                "Finish source conflict resolution and call sync before ordinary edits.");
+            result = sync(dir, false);
+            if (result.available)
+                result.message = "Source edit stopped. Call sync, integrate the maintainer update, and reread affected files before retrying. " ~ result.message;
+        }
+        catch (Exception e) { result.failed = true; result.message = "Error: Source edit stopped: " ~ e.msg; }
+        return result;
+    }
+
+    public DeveloperSyncResult sync(string dir, bool apply, bool recoveryResolved = false)
     {
         DeveloperSyncResult result;
         try
         {
+            enforce(dir.length > 0, "Aurora source has not been located.");
+            auto lease = new CheckoutLease(dir);
+            scope (exit) lease.release();
             enforce(git.length > 0, "Git is unavailable. Use Get source to prepare development tools.");
             if (!apply)
             {
@@ -274,6 +381,7 @@ public final class DeveloperWorkflow
                     : "Aurora source is up to date with the maintainer.";
                 return result;
             }
+            finishPendingSync(dir, recoveryResolved);
             requireCleanOperation(dir);
             gitCommand(dir, ["fetch", "--no-tags", upstreamUrl,
                 "+refs/heads/" ~ upstreamBranch ~ ":" ~ upstreamRef], "Checking maintainer updates");
@@ -281,20 +389,32 @@ public final class DeveloperWorkflow
             const count = gitCommand(dir, ["rev-list", "--count", "HEAD.." ~ upstreamRef], "Comparing source");
             result.available = to!ulong(count) > 0;
             if (!result.available) { result.message = "Aurora source is up to date with the maintainer."; return result; }
-            const branch = gitCommand(dir, ["branch", "--show-current"], "Reading source branch");
-            // Published review branches retain their history, so later updates
-            // remain ordinary fast-forward pushes to the existing PR.
-            if (branch.startsWith("aurora/contribution-"))
-                gitCommand(dir, ["-c", "user.name=Aurora Developer", "-c",
-                    "user.email=developer@users.noreply.github.com", "merge", "--no-edit",
-                    "--autostash", upstreamRef], "Applying maintainer updates to your contribution");
-            else
-                gitCommand(dir, ["rebase", "--autostash", upstreamRef], "Reapplying local work");
-            // Git can return success even when applying the autostash conflicted.
-            const conflicts = gitCommand(dir, ["diff", "--name-only", "--diff-filter=U"], "Checking reapplied changes");
-            enforce(conflicts.length == 0, "Upstream is applied, but restoring local changes conflicted: " ~
-                conflicts ~ ". Resolve these files; Git kept the autostash for recovery.");
-            result.message = count ~ " maintainer commit(s) applied; local changes reapplied.";
+            protectUntrackedPaths(dir);
+            const recovery = "refs/aurora/recovery/" ~ to!string(Clock.currTime.toUnixTime()) ~ "-" ~
+                to!string(thisProcessID) ~ "-" ~ to!string(MonoTime.currTime.ticks);
+            gitCommand(dir, ["update-ref", recovery ~ "/head", "HEAD"], "Saving source recovery point");
+            const edits = gitCommand(dir, ["stash", "create", "Aurora source sync recovery"], "Snapshotting local edits");
+            if (edits.length)
+            {
+                gitCommand(dir, ["update-ref", recovery ~ "/edits", edits], "Preserving local edit snapshot");
+                JSONValue pending;
+                pending["phase"] = "prepared";
+                pending["edits"] = recovery ~ "/edits";
+                pending["upstream"] = result.revision;
+                const path = statePath(dir, "aurora-sync-pending.json");
+                write(path, pending.toString());
+                gitCommand(dir, ["stash", "push", "--message", "Aurora recovery: " ~ recovery], "Saving tracked local changes");
+                pending["phase"] = "stashed";
+                write(path, pending.toString());
+            }
+            // Merge on every branch: rewriting arbitrary histories can discard
+            // merge-only amendments and invalidate already-published commits.
+            gitCommand(dir, ["-c", "user.name=Aurora Developer", "-c",
+                "user.email=developer@users.noreply.github.com", "merge", "--no-edit",
+                "--no-autostash", "--no-overwrite-ignore", upstreamRef], "Integrating maintainer updates");
+            finishPendingSync(dir);
+            result.message = count ~ " maintainer commit(s) applied; local changes and staged selections preserved. " ~
+                "Reread affected files before further edits. Recovery: " ~ recovery;
         }
         catch (Exception e) { result.failed = true; result.message = "Error: " ~ e.msg; }
         return result;
@@ -308,6 +428,8 @@ public final class DeveloperWorkflow
         if (!required) return result;
         try
         {
+            auto lease = new CheckoutLease(dir);
+            scope (exit) lease.release();
             enforce(git.length > 0, "Git is unavailable; prepare the Developer tools first.");
             enforce(dir.length > 0, "Aurora source has not been located.");
             requireCleanOperation(dir);
@@ -326,6 +448,8 @@ public final class DeveloperWorkflow
     /// No force-push, no upstream main push, and every failed stage stops the flow.
     public string publish(string dir, string title, string branchSuffix)
     {
+        auto lease = new CheckoutLease(dir);
+        scope (exit) lease.release();
         enforce(git.length > 0 && gh.length > 0, "Developer tools are not ready.");
         enforce(title.strip().length > 0 && title.indexOf('\n') < 0 && title.indexOf('\r') < 0,
             "Give your pull request a one-line title.");

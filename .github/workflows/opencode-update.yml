@@ -3,7 +3,7 @@ name: Publish OpenCode update
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [codex/portable-crt-experiment]
     tags: ['v*']
     paths:
       - .github/workflows/opencode-update.yml
@@ -30,6 +30,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: dlang-community/setup-dlang@v2
         with:
           compiler: dmd-2.112.0

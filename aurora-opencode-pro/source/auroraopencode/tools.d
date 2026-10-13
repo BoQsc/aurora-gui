@@ -55,6 +55,30 @@ import std.typecons : Tuple;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import auroraopencode.workerbudget : WorkerBudget;
+import auroraopencode.checkout : checkoutIdentity, CheckoutLease;
+
+public __gshared string delegate() developerSourceDirectoryHandler;
+public __gshared string delegate(string, string[], bool) developerSourceEditCheckHandler;
+private string _toolDeveloperSource;
+private bool _toolDeveloperSourcePinned;
+public struct DeveloperToolSourceContext { string path; bool pinned; }
+public DeveloperToolSourceContext installDeveloperToolSource(string path)
+{
+    auto previous = DeveloperToolSourceContext(_toolDeveloperSource, _toolDeveloperSourcePinned);
+    _toolDeveloperSource = path;
+    _toolDeveloperSourcePinned = true;
+    return previous;
+}
+public void restoreDeveloperToolSource(DeveloperToolSourceContext previous)
+{
+    _toolDeveloperSource = previous.path;
+    _toolDeveloperSourcePinned = previous.pinned;
+}
+public string developerToolSourceDirectory()
+{
+    if (_toolDeveloperSourcePinned) return _toolDeveloperSource;
+    return developerSourceDirectoryHandler is null ? "" : developerSourceDirectoryHandler();
+}
 
 private __gshared WorkerBudget _filesystemHosts;
 shared static this() { _filesystemHosts = new WorkerBudget(4); }
@@ -666,7 +690,7 @@ private OpenCodeToolDef syncToolDefinition()
         "updates while preserving local work and published PR history. " ~
         "Returns the outcome; on a " ~
         "conflict it names the situation so you can resolve it and continue.",
-        `{"type":"object","properties":{},"required":[]}`
+        `{"type":"object","properties":{"recoveryResolved":{"type":"boolean","description":"Only after an interrupted sync or staging-restoration failure: inspect its durable recovery snapshot, integrate and stage the intended result, then set true to acknowledge recovery. Never use to discard local work."}},"required":[]}`
     );
 }
 
@@ -2593,8 +2617,7 @@ shared static this()
 
 private Mutex workspaceMutationLock(string workspace)
 {
-    auto key = buildNormalizedPath(workspace);
-    version (Windows) key = key.toLower();
+    const key = checkoutIdentity(workspace);
     _workspaceLocksMutex.lock();
     scope (exit) _workspaceLocksMutex.unlock();
     if (auto found = key in _workspaceMutationLocks) return *found;
@@ -5352,6 +5375,31 @@ private void runPostEditHooks(const(PostEditHook)[] hooks, string workspace,
 /// long it took. The result is a plain-text string ready to be fed back to the
 /// model as a `tool` message. A view_image result additionally carries pixels
 /// out-of-band so the UI can attach them after the batch's tool messages.
+private bool sourceGitResolutionCommand(const OpenCodeToolCall call, const ref JSONValue input)
+{
+    if (call.name != "run" || input.type != JSONType.object) return false;
+    const program = baseName(jsonString(input, "program")).toLower();
+    if (program != "git" && program != "git.exe") return false;
+    auto values = "args" in input.object;
+    if (values is null || values.type != JSONType.array || !values.array.length) return false;
+    string[] args;
+    foreach (value; values.array)
+    {
+        if (value.type != JSONType.string) return false;
+        args ~= value.str;
+    }
+    while (args.length >= 3 && args[0] == "-c")
+    {
+        if (!args[1].startsWith("user.name=") && !args[1].startsWith("user.email=") && args[1] != "core.editor=true") return false;
+        args = args[2 .. $];
+    }
+    if (["add", "status", "diff", "show", "rev-parse", "ls-files"].canFind(args[0])) return true;
+    if (args[0] == "stash" && args.length >= 2 && ["apply", "show", "list"].canFind(args[1])) return true;
+    if (args[0] == "commit") return args.length == 2 && args[1] == "--no-edit";
+    return args.length == 2 && ["merge", "rebase", "cherry-pick", "revert"].canFind(args[0]) &&
+        ["--continue", "--abort"].canFind(args[1]);
+}
+
 public ToolExecution executeTool(const OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation = null,
     ChangeContext changeContext = ChangeContext.init,
@@ -5363,6 +5411,69 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     {
         if (cancellation !is null && cancellation.cancelled())
             return ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
+        const developerSource = developerToolSourceDirectory();
+        auto targets = mutationTargetPaths(call, workspace);
+        auto leasePaths = targets.dup;
+        const control = call.name == "process" || call.name == "tool_status" ||
+            call.name == "update_plan" || call.name == "update_subplan" || call.name == "open";
+        JSONValue input;
+        try input = parseJSON(call.arguments); catch (Exception) {}
+        auto operationDir = workspace;
+        if (input.type == JSONType.object)
+        {
+            const workdir = jsonString(input, "workdir");
+            if (workdir.length) operationDir = resolveToolPath(workdir, workspace);
+            foreach (key; ["filePath", "path"])
+            {
+                const path = jsonString(input, key);
+                if (path.length && !targets.length && developerSource.length &&
+                    checkoutIdentity(resolveToolPath(path, workspace)) == checkoutIdentity(developerSource))
+                    leasePaths ~= developerSource;
+            }
+        }
+        const command = call.name == "run" || call.name == "bash";
+        if (!control && (targets.length || command || call.name == "sync" || call.name == "rebuild"))
+            leasePaths ~= operationDir;
+        else if (!control && developerSource.length && checkoutIdentity(operationDir) == checkoutIdentity(developerSource))
+            leasePaths ~= developerSource;
+        if (developerSource.length && (command || call.name == "sync" || call.name == "rebuild"))
+            leasePaths ~= developerSource;
+        string[] identities;
+        foreach (path; leasePaths)
+        {
+            const identity = checkoutIdentity(path);
+            if (!identities.canFind(identity)) identities ~= identity;
+        }
+        identities.sort();
+        CheckoutLease[] leases;
+        scope (exit) foreach_reverse (lease; leases) lease.release();
+        foreach (identity; identities)
+            leases ~= new CheckoutLease(identity, cancellation is null ? null : &cancellation.cancelled);
+        bool sourceMutation;
+        string[] sourceTargets;
+        if (developerSource.length)
+        {
+            const sourceIdentity = checkoutIdentity(developerSource);
+            foreach (path; targets)
+                if (checkoutIdentity(path) == sourceIdentity) sourceTargets ~= path;
+            sourceMutation = sourceTargets.length > 0 || (command &&
+                (checkoutIdentity(operationDir) == sourceIdentity ||
+                 call.arguments.replace("\\\\", "/").replace('\\', '/').toLower().indexOf(
+                    sourceIdentity.replace('\\', '/')) >= 0));
+        }
+        if (sourceMutation)
+        {
+            if (command && input.type == JSONType.object && jsonBool(input, "background"))
+                return ToolExecution(call.name,
+                    "Error: Aurora source commands must run in the foreground so sync waits for the physical operation to finish.", true);
+            if (developerSourceEditCheckHandler !is null)
+            {
+                const blocked = developerSourceEditCheckHandler(developerSource, sourceTargets,
+                    sourceGitResolutionCommand(call, input));
+                if (blocked.length)
+                    return ToolExecution(call.name, "Error: " ~ blocked, true);
+            }
+        }
         if (filesystemTool(call.name))
         {
             auto hosted = runFilesystemTool(call, workspace, cancellation, observer);
@@ -5815,7 +5926,7 @@ public __gshared string delegate() rebuildSourceCheckHandler;
 /// blocks on the result, so it returns the outcome text directly: whether the
 /// source is up to date, how many upstream commits were applied, or that a
 /// conflict needs resolving.
-public __gshared string delegate() syncRequestHandler;
+public __gshared string delegate(string arguments) syncRequestHandler;
 
 /// Bridge the model's `rebuild` request to the host application. The tool
 /// performs no build itself: `dub` cannot replace the running image, so only
@@ -5864,7 +5975,7 @@ private ToolExecution runSyncTool(string arguments)
         return ToolExecution("sync",
             "Error: the sync tool is only available inside the Aurora OpenCode " ~
             "application, where a source sync handler is registered.", true);
-    const output = syncRequestHandler();
+    const output = syncRequestHandler(arguments);
     return ToolExecution("sync", output, output.startsWith("Error:"));
 }
 

@@ -6,6 +6,7 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.path : buildNormalizedPath;
 import std.string : toLower;
+import auroraopencode.checkout : checkoutIdentity;
 
 public abstract class WorkItem
 {
@@ -39,6 +40,7 @@ public final class WorkScheduler
     private WorkItem[] _pending;
     private MonoTime[WorkItem] _running;
     private Lease[string] _leases;
+    private string[string] _identities;
     private bool[string] _resources;
     private Thread[] _workers;
     private bool _closed;
@@ -65,9 +67,11 @@ public final class WorkScheduler
 
     bool submit(WorkItem item)
     {
+        const identity = checkoutIdentity(item.workspace);
         synchronized (_mutex)
         {
             if (_closed || _pending.length >= _capacity) return false;
+            _identities[item.workspace] = identity;
             _pending ~= item;
             _wake.notifyAll();
             return true;
@@ -80,6 +84,17 @@ public final class WorkScheduler
         {
             auto lease = key(workspace) in _leases;
             return lease is null ? 0 : lease.revision;
+        }
+    }
+
+    void invalidate(string workspace)
+    {
+        const identity = checkoutIdentity(workspace);
+        synchronized (_mutex)
+        {
+            _identities[workspace] = identity;
+            if (identity !in _leases) _leases[identity] = Lease.init;
+            ++_leases[identity].revision;
         }
     }
 
@@ -113,11 +128,10 @@ public final class WorkScheduler
         foreach (worker; _workers) worker.join();
     }
 
-    private static string key(string workspace)
+    private string key(string workspace)
     {
-        auto normalized = buildNormalizedPath(workspace);
-        version (Windows) return normalized.toLower();
-        else return normalized;
+        if (workspace !in _identities) _identities[workspace] = checkoutIdentity(workspace);
+        return _identities[workspace];
     }
 
     // Independent of the worker pool: even all-busy workers must not prevent

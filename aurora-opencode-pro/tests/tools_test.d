@@ -13,7 +13,7 @@ import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
     listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
     rebuildRequestHandler, resolveToolPath, revertChangeRecord,
-    toolSteeringPrompt;
+    toolSteeringPrompt, runFilesystemHelperMode;
 import auroraopencode.systemprompt : PromptVerbosity, promptVerbosityDirective,
     promptVerbosityFromName, promptVerbosityLabel, promptVerbosityName,
     promptVerbosityNames, rebuildModule, setSystemPromptModules;
@@ -38,8 +38,10 @@ private OpenCodeToolCall makeCall(string name, string args)
     return call;
 }
 
-int main()
+int main(string[] args)
 {
+    const helper = runFilesystemHelperMode(args);
+    if (helper >= 0) return helper;
     const dir = buildPath(tempDir(), "aurora-opencode-tools-test");
     if (exists(dir)) rmdirRecurse(dir);
     mkdirRecurse(dir);

@@ -3,6 +3,7 @@ module auroraopencode.appui;
 import auroraopencode.developerworkflow : DeveloperWorkflow,
     DeveloperSyncResult, maintainerSourceBranch, rebuildSourceAgentPrompt,
     developerOperationMutex, ensureDeveloperTool, findDeveloperTool;
+import auroraopencode.checkout : CheckoutLease;
 import auroraopencode.latency : RequestLatency, LatencyStage, LatencySnapshot;
 import auroraopencode.transferprogress : TransferProgress, decodeTransferProgress,
     transferProgressText;
@@ -39,6 +40,7 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
     previewToolDiffText,
     rebuildRequestHandler, rebuildSourceCheckHandler, syncRequestHandler, revertChangeRecord,
+    developerSourceDirectoryHandler, developerSourceEditCheckHandler, developerToolSourceDirectory,
     revertChangeRecords,
     planRevertRecords, ChangeRestorePath, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution, pendingNativeMutationIntents;
@@ -82,7 +84,7 @@ import auroraopencode.buttonsuggest : ButtonSuggestion,
     conversationDigest, parseSuggestionResponse, recentConversationPaths,
     suggestionsForPaths,
     suggestButtonsFromRecentConversations, suggestionInstruction;
-import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
+import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision, invalidateToolWorkspace;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.preferencewriter : PreferenceWriter;
 // experimental: attachments - drop a file or large paste as an attachment.
@@ -10263,6 +10265,7 @@ private string _suggestExcludeId;
     private bool _developerSyncDone;
     private bool _developerSyncChanged;
     private string _developerSyncNote;
+    private string _developerSyncSource;
     private MonoTime _developerSyncDue;
     private string _pendingDeveloperNote;
     // The update check gets a visible dialog: the one-line status bar is easy
@@ -10276,6 +10279,7 @@ private string _suggestExcludeId;
     // the tool result has been drained and persisted into the transcript.
     private bool _agentRebuildRequested;
     private string _agentRebuildReason;
+    private string _agentRebuildSource;
     /// The conversation whose `rebuild` tool call triggered the pending rebuild,
     /// captured when the tool batch was dispatched. This is the exact chat the
     /// relaunched app must resume; relying on live "busy" state instead is what
@@ -10420,6 +10424,8 @@ private string _suggestExcludeId;
         rebuildSourceCheckHandler = &onAgentRebuildSourceCheck;
         // Let the agent sync-and-reapply the Aurora source through `sync`.
         syncRequestHandler = &onSourceSyncRequested;
+        developerSourceDirectoryHandler = &developerSourceDirectory;
+        developerSourceEditCheckHandler = &onDeveloperSourceEditCheck;
         // Optional floating mini chat overlay, off by default.
         setMiniChatEnabled(_settings.floatingMiniChat);
         // Emergency freeze detection + optional overseer; mirror the persisted
@@ -10888,6 +10894,21 @@ private string _suggestExcludeId;
         catch (Exception) return "";
         const built = formatStamp(builtTime);
         const packageDir = developerSourceDirectory();
+        const provenance = buildPath(packageDir, "build-source-aurora-opencode-pro.exe.json");
+        if (packageDir.length && exists(provenance))
+        {
+            try
+            {
+                auto record = parseJSON(readText(provenance));
+                if (record["binary_sha256"].str == toHexString(sha256Of(read(exe))).toLower())
+                    return " The running binary was built " ~ built ~ " from source commit " ~ record["source_commit"].str ~
+                        (record["source_dirty"].boolean ? " including recorded local edits." : ".") ~
+                        " Its executable hash matches the recorded build.";
+                return " The running binary was built " ~ built ~
+                    ", but differs from the configured source's recorded build. Sync and rebuild to verify your changes.";
+            }
+            catch (Exception) {}
+        }
         const sourceDir = packageDir.length > 0
             ? buildPath(packageDir, "source") : "";
         if (sourceDir.length == 0 || !exists(sourceDir))
@@ -10921,7 +10942,7 @@ private string _suggestExcludeId;
         if (builtTime >= newestTime)
             return " The running binary was built " ~ built ~ ", newer than " ~
                 "the newest source change (" ~ formatStamp(newestTime) ~ "), " ~
-                "so it includes your edits.";
+                "according to file timestamps. Exact source identity requires a recorded build.";
         return " The running binary was built " ~ built ~ " but " ~
             baseName(newestName) ~ " changed later (" ~
             formatStamp(newestTime) ~ "); the build may be stale — rebuild " ~
@@ -11158,16 +11179,23 @@ private string _suggestExcludeId;
     {
         if (rebuildSourceCheckForTesting !is null)
             return rebuildSourceCheckForTesting(source, required);
-        synchronized (developerOperationMutex())
+        try
         {
-            auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
-            return workflow.checkRebuildSource(source, required);
+            auto lease = new CheckoutLease(source);
+            scope (exit) lease.release();
+            synchronized (developerOperationMutex())
+            {
+                auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
+                return workflow.checkRebuildSource(source, required);
+            }
         }
+        catch (Exception e) { return DeveloperSyncResult(true, false, "", "Source check failed: " ~ e.msg); }
     }
 
     private string onAgentRebuildSourceCheck()
     {
-        auto result = checkRebuildSource(developerSourceDirectory(), _settings.developerRequireLatestSource);
+        const source = developerToolSourceDirectory();
+        auto result = checkRebuildSource(source, _settings.developerRequireLatestSource);
         if (!result.failed && !result.available) return "";
         synchronized (this) { _rebuildSourceBlockedMessage = result.message; }
         return result.message;
@@ -11278,6 +11306,13 @@ private string _suggestExcludeId;
     private void requestUpdate()
     {
         if (_updateChecking || _rebuildPending) return;
+        if (developerSourceDirectory().length)
+        {
+            showRebuildSourceBlocked("Developer updates must preserve your customized source. " ~
+                "Use sync in your Aurora development chat, resolve conflicts, then rebuild and verify your changes. " ~
+                "The public executable does not contain your local customizations.");
+            return;
+        }
         if (_updateStagedPath.length > 0)
         {
             writeResumeNoteIfTurnActive();
@@ -11318,6 +11353,11 @@ private string _suggestExcludeId;
 
     private bool useDeveloperSourceFolder(string folder)
     {
+        if (anyTurnIsBusy() || _sourceFetching || _developerPublishing || _rebuildSourceChecking || _agentRebuildRequested || _rebuildPending)
+        {
+            updateStatus("Finish the active development operation before changing source folders.");
+            return false;
+        }
         const source = findAuroraSourceFolder(folder);
         if (source.length == 0)
         {
@@ -11325,6 +11365,10 @@ private string _suggestExcludeId;
             return false;
         }
         _settings.developerSourceDir = source;
+        _developerUpstreamRevision = "";
+        _developerNotifiedRevision = null;
+        _pendingDeveloperNote = "";
+        _developerSyncDue = MonoTime.currTime;
         saveSettingsNow();
         configureIntroSuggestions();
         updateStatus("Using existing Aurora source at " ~ source ~ ". Local files were left intact.");
@@ -11414,6 +11458,8 @@ private string _suggestExcludeId;
             string path, error, note;
             try
             {
+                auto lease = new CheckoutLease(existing.length ? existing : buildPath(root, "aurora-gui"));
+                scope (exit) lease.release();
                 synchronized (developerOperationMutex())
                 {
                     const git = ensureDeveloperTool("git", stateDir, progress);
@@ -11423,6 +11469,7 @@ private string _suggestExcludeId;
                             throw new Exception("This older source snapshot has no Git history. It has been preserved; retrieve a checkout in a new folder before publishing.");
                         auto workflow = new DeveloperWorkflow(git, "", null, progress);
                         auto result = workflow.sync(existing, autoReapply);
+                        invalidateToolWorkspace(existing);
                         if (result.failed) throw new Exception(result.message);
                         path = existing;
                         note = result.message;
@@ -11505,15 +11552,34 @@ private string _suggestExcludeId;
     }
 
     /// The agent applies source updates between operations; background checks only notify.
-    private string onSourceSyncRequested()
+    private string onSourceSyncRequested(string arguments)
     {
         if (_rebuildSourceChecking || _agentRebuildRequested || _rebuildPending)
             return "Error: A rebuild check or rebuild is pending. Wait for it before syncing source.";
+        const source = developerToolSourceDirectory();
+        auto lease = new CheckoutLease(source);
+        scope (exit) lease.release();
         synchronized (developerOperationMutex())
         {
+            bool recovered;
+            try
+            {
+                auto input = parseJSON(arguments);
+                if (input.type == JSONType.object)
+                    if (auto value = "recoveryResolved" in input.object)
+                        recovered = value.type == JSONType.true_;
+            }
+            catch (Exception) {}
             auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
-            return workflow.sync(developerSourceDirectory(), _settings.developerAutoReapply).message;
+            return workflow.sync(source, _settings.developerAutoReapply, recovered).message;
         }
+    }
+
+    private string onDeveloperSourceEditCheck(string source, string[] paths, bool gitResolution)
+    {
+        auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
+        auto result = workflow.checkSourceBeforeEdit(source, paths, gitResolution, _settings.developerRequireLatestSource);
+        return result.failed || result.available ? result.message : "";
     }
 
     private void startDeveloperUpstreamCheck()
@@ -11521,18 +11587,24 @@ private string _suggestExcludeId;
         if (_developerSyncRunning || _sourceFetching || _developerPublishing) return;
         const source = developerSourceDirectory();
         const git = findDeveloperTool("git", opencodeStateDirectory());
-        if (source.length == 0 || git.length == 0 || gitRepoRoot(source).length == 0) return;
+        if (source.length == 0) return;
         _developerSyncRunning = true;
         auto worker = new Thread({
             auto workflow = new DeveloperWorkflow(git);
             import auroraopencode.developerworkflow : DeveloperSyncResult;
             DeveloperSyncResult result;
-            synchronized (developerOperationMutex())
-                result = workflow.sync(source, false);
+            try
+            {
+                auto lease = new CheckoutLease(source);
+                scope (exit) lease.release();
+                synchronized (developerOperationMutex())
+                    result = workflow.checkSourceBeforeEdit(source, null);
+            }
+            catch (Exception e) { result = DeveloperSyncResult(true, false, "", "Source check failed: " ~ e.msg); }
             synchronized (this)
             {
-                _developerSyncChanged = result.available && !result.failed &&
-                    result.revision != _developerUpstreamRevision;
+                _developerSyncChanged = result.failed || result.available;
+                _developerSyncSource = source;
                 _developerSyncNote = result.message;
                 if (!result.failed) _developerUpstreamRevision = result.revision;
                 _developerSyncDone = true;
@@ -11545,16 +11617,20 @@ private string _suggestExcludeId;
     private void drainDeveloperUpstreamCheck()
     {
         bool changed;
-        string note;
+        string note, source;
         synchronized (this)
         {
             if (!_developerSyncDone) return;
             _developerSyncDone = false;
             changed = _developerSyncChanged;
             note = _developerSyncNote;
+            source = _developerSyncSource;
         }
         _developerSyncRunning = false;
-        if (!changed) return;
+        if (source != developerSourceDirectory()) return;
+        if (_developerSourceStatus !is null) _developerSourceStatus.setText(note);
+        if (!changed) { _pendingDeveloperNote = ""; return; }
+        if (note != _pendingDeveloperNote) _developerNotifiedRevision = null;
         _pendingDeveloperNote = note;
         updateStatus(note);
     }
@@ -11589,12 +11665,15 @@ private string _suggestExcludeId;
             string error, url;
             try
             {
+                auto lease = new CheckoutLease(dir);
+                scope (exit) lease.release();
                 synchronized (developerOperationMutex())
                 {
                     const git = ensureDeveloperTool("git", stateDir, progress);
                     const gh = ensureDeveloperTool("gh", stateDir, progress);
                     auto workflow = new DeveloperWorkflow(git, gh, null, progress);
                     url = workflow.publish(dir, text, suffix);
+                    invalidateToolWorkspace(dir);
                     if (!url.startsWith("https://github.com/BoQsc/aurora-gui/pull/"))
                         throw new Exception("GitHub returned an unexpected pull-request URL.");
                 }
@@ -11781,6 +11860,7 @@ private string _suggestExcludeId;
             _developerPublishing || _agentRebuildRequested) return false;
         if (!canSelfRebuild()) return false;
         _agentRebuildReason = reason;
+        _agentRebuildSource = developerToolSourceDirectory();
         _agentRebuildRequested = true;
         _agentRebuildCountdown = agentRebuildDelayTicks;
         return true;
@@ -11793,6 +11873,11 @@ private string _suggestExcludeId;
     private void requestAgentRebuild()
     {
         if (_rebuildPending) return;
+        if (_agentRebuildSource != developerSourceDirectory())
+        {
+            showRebuildSourceBlocked("The source folder changed after the agent checked it. Retry rebuild for the selected source.");
+            return;
+        }
         const reason = _agentRebuildReason;
         _agentRebuildReason = "";
         if (!canSelfRebuild())
@@ -22834,7 +22919,7 @@ private void pollButtonSuggestionRequest()
         auto requireLatestRow = new HBox(8);
         requireLatestRow.layoutHints().preferredHeight = 32;
         auto requireLatest = requireLatestRow.add(new CheckBox(
-            "Require latest maintainer source before rebuild"));
+            "Require latest maintainer source before editing or rebuild"));
         requireLatest.setId("oc-developer-require-latest-source");
         requireLatest.setChecked(_settings.developerRequireLatestSource, false);
         requireLatest.onChanged = delegate(bool value)

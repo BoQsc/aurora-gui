@@ -1276,11 +1276,11 @@ public struct Settings
     string developerSourceDir;
     // Developer mode: when the source is synchronized, reapply the developer's
     // own commits and uncommitted edits on top of the latest upstream
-    // (`git pull --rebase --autostash`) instead of leaving them behind. On by
+    // using history-preserving merge and recoverable edit snapshots. On by
     // default; the Developer section owns the switch.
     bool developerAutoReapply = true;
-    // Stop a self-rebuild until the checkout contains the maintainer's latest
-    // source. Independent of automatic reapplication; users may opt out.
+    // Stop source writes and a self-rebuild until the checkout contains the
+    // maintainer's latest source. Users may opt out for offline work.
     bool developerRequireLatestSource = true;
     // On a brand-new chat, rewrite the name once with a tiny no-thinking
     // request (a few tokens) instead of the raw first message. On by default;

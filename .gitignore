@@ -19,6 +19,7 @@
 *.lib
 *.exe
 *.zip
+aurora-opencode-pro/build-source-*.json
 *.7z
 *.rar
 *.mp4

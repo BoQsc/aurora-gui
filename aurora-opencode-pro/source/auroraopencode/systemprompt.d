@@ -493,7 +493,7 @@ public SystemPromptModule rebuildModule()
         "them and call `rebuild` again. While you work on Aurora's own source, " ~
         "call the `sync` tool before editing, when a maintainer-update notice " ~
         "arrives, and before rebuilding. It applies the latest maintainer " ~
-        "source and preserves your work. Run it between file operations; " ~
+        "source and preserves your work. Run it between file operations and reread affected files after updates; " ~
         "resolve any merge, rebase, or restored-local-change conflict it " ~
         "reports before continuing. Never discard local changes to sync. " ~
         "By default rebuild checks the release's maintainer source branch and " ~

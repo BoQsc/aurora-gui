@@ -3,7 +3,7 @@ module auroraopencode.toolscheduler;
 import auroraopencode.core : OpenCodeToolCall;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool,
-    toolStatusHandler;
+    toolStatusHandler, developerToolSourceDirectory, installDeveloperToolSource, restoreDeveloperToolSource;
 import std.json : JSONValue;
 import auroraopencode.workscheduler : WorkItem, WorkScheduler;
 import auroraopencode.computeruse : installComputerUseContext;
@@ -67,6 +67,7 @@ private WorkScheduler processScheduler()
 }
 
 public ulong toolWorkspaceRevision(string workspace) { return scheduler().revision(workspace); }
+public void invalidateToolWorkspace(string workspace) { scheduler().invalidate(workspace); }
 
 public bool parallelTool(const ref OpenCodeToolCall call)
 {
@@ -91,6 +92,7 @@ public final class ToolBatch
     ulong requestId;
     OpenCodeToolCall[] calls;
     string workspace;
+    string developerSource;
     ToolCancellation cancellation;
     ChangeContext context;
     size_t cursor, remaining;
@@ -104,6 +106,7 @@ public final class ToolBatch
         this.requestId = requestId;
         this.calls = calls.dup;
         this.workspace = workspace;
+        this.developerSource = developerToolSourceDirectory();
         this.cancellation = cancellation;
         this.context = context;
     }
@@ -190,6 +193,8 @@ private final class ToolJob : WorkItem
 
     override void execute()
     {
+        auto previousSource = installDeveloperToolSource(batch.developerSource);
+        scope (exit) restoreDeveloperToolSource(previousSource);
         if (batch.cancellation.cancelled())
         {
             result = ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
@@ -204,6 +209,8 @@ private final class ToolJob : WorkItem
         {
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
             changed = mutationCandidate() && result.verification.check.length == 0;
+            if (changed && batch.developerSource.length && (call.name == "sync" || call.name == "run" || call.name == "bash"))
+                invalidateToolWorkspace(batch.developerSource);
         }
         catch (Throwable error)
         {

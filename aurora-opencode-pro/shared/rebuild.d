@@ -32,6 +32,7 @@
 module rebuild;
 
 import core.sync.mutex : Mutex;
+import auroraopencode.checkout : CheckoutLease;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.array : join;
@@ -1670,6 +1671,17 @@ int runRebuildHelperMode(string[] args)
     }
     Thread.sleep(500.msecs);
 
+    CheckoutLease checkoutLease;
+    try { checkoutLease = new CheckoutLease(job.packageDir); }
+    catch (Exception e)
+    {
+        appendLine(job.logPath, "source checkout unavailable: " ~ e.msg);
+        writeJobState(job, RebuildStatus.failed, "source-in-use", strip(timestamp()),
+            -1, [e.msg], MonoTime.currTime);
+        return superviseClaimed(job);
+    }
+    scope (exit) checkoutLease.release();
+
     appendLine(job.logPath, "rebuilding: " ~ join(dubArgv(job), " "));
     setProgress("Rebuilding...", "dub build --build=" ~ job.buildType, -1.0);
     const began = MonoTime.currTime;
@@ -1704,5 +1716,6 @@ int runRebuildHelperMode(string[] args)
         writeJobState(job, RebuildStatus.failed, "build-failed", startedAt,
             exitCode, errors, began);
     }
+    checkoutLease.release();
     return superviseClaimed(job);
 }

@@ -37,7 +37,7 @@ final class FakeGitHub
         calls ~= args;
         if (args[0] != "fake-gh")
         {
-            if (args.canFind("push"))
+            if (args.canFind("push") && !args.canFind("stash"))
             {
                 ++pushes;
                 assert(!args.canFind("--force") && !args.canFind("--force-with-lease"));
@@ -188,19 +188,19 @@ void main(string[] args)
     command(rebasing, ["add", "-A"]);
     command(rebasing, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
         "commit", "-m", "Local contribution"]);
-    auto rebaseConflict = workflow.sync(rebasing, true);
-    assert(rebaseConflict.failed, "An overlapping committed change must stop for conflict resolution");
+    auto mergeConflict = workflow.sync(rebasing, true);
+    assert(mergeConflict.failed, "An overlapping committed change must stop for conflict resolution");
     write(buildPath(rebasing, "local.txt"), "maintainer and local changes integrated\n");
     command(rebasing, ["add", "local.txt"]);
     auto unfinished = workflow.checkRebuildSource(rebasing);
     assert(unfinished.failed && unfinished.message.indexOf("Finish the existing") >= 0,
-        "Staging a resolution is insufficient while the rebase remains unfinished: " ~ unfinished.message);
+        "Staging a resolution is insufficient while the merge remains unfinished: " ~ unfinished.message);
     command(rebasing, ["-c", "core.editor=true", "-c", "user.name=Fixture", "-c",
-        "user.email=fixture@example.invalid", "rebase", "--continue"]);
+        "user.email=fixture@example.invalid", "merge", "--continue"]);
     auto resolved = workflow.checkRebuildSource(rebasing);
     assert(!resolved.failed && !resolved.available, resolved.message);
     assert(readText(buildPath(rebasing, "local.txt")).strip() == "maintainer and local changes integrated");
-    writeln("PASS: a real rebase conflict blocks until its resolution is staged and the rebase is completed");
+    writeln("PASS: a real merge conflict blocks until its resolution is staged and the merge is completed");
 
     const rejected = buildPath(root, "rejected");
     command(root, ["clone", "--branch", "main", upstream, rejected]);

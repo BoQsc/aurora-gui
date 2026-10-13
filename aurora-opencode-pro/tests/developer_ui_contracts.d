@@ -256,10 +256,10 @@ void main(string[] args)
     foreach (tool; nativeOnlyToolDefinitions()) if (tool.name == "sync") nativeSync = true;
     foreach (tool; builtinToolDefinitions()) if (tool.name == "sync") legacySync = true;
     assert(nativeSync && legacySync);
-    syncRequestHandler = () => "Error: fetch failed";
+    syncRequestHandler = (string arguments) => "Error: fetch failed";
     auto failed = executeTool(OpenCodeToolCall("failed-sync", "sync", "{}"), state);
     assert(failed.failed && failed.output.indexOf("fetch failed") >= 0);
-    syncRequestHandler = () => "Local work reapplied.";
+    syncRequestHandler = (string arguments) => "Local work reapplied.";
     assert(!executeTool(OpenCodeToolCall("good-sync", "sync", "{}"), state).failed);
     syncRequestHandler = null;
     assert(executeTool(OpenCodeToolCall("missing-sync", "sync", "{}"), state).failed);
