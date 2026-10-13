@@ -44,24 +44,33 @@ private void paintElement(Element element, Canvas canvas)
 
     const absX = element.box.x;
     const absY = element.box.y;
-    const width = element.box.width;
-    const height = element.box.height;
+
+    // `box.x/box.y` is the border-box origin and `box.width/height` is the
+    // CONTENT box (that is what layout stores). Reconstruct the border box so
+    // backgrounds, borders and shadows cover padding + border, and use the real
+    // content box for clipping and text wrapping.
+    const contentW = element.box.width;
+    const contentH = element.box.height;
+    const borderW = contentW + element.box.paddingLeft + element.box.paddingRight +
+        element.box.borderLeft + element.box.borderRight;
+    const borderH = contentH + element.box.paddingTop + element.box.paddingBottom +
+        element.box.borderTop + element.box.borderBottom;
 
     // box-shadow: a semi-transparent copy of the box offset by (H,V), painted
     // BEHIND the element so its corners round like the box they come from.
-    paintShadow(element, canvas, absX, absY, width, height);
+    paintShadow(element, canvas, absX, absY, borderW, borderH);
 
-    const radius = roundedRadius(element, width, height);
+    const radius = roundedRadius(element, borderW, borderH);
 
-    // Background (rounded corners when border-radius > 0).
+    // Background over the padding/border box (rounded corners when radius > 0).
     const bg = parseColor(element.style.background);
     if (bg.present)
     {
         if (radius > 0)
-            canvas.fillRoundedRect(Rect(absX, absY, width, height), radius,
+            canvas.fillRoundedRect(Rect(absX, absY, borderW, borderH), radius,
                 withOpacity(bg.color, element.style.opacity));
         else
-            canvas.fillRect(Rect(absX, absY, width, height),
+            canvas.fillRect(Rect(absX, absY, borderW, borderH),
                 withOpacity(bg.color, element.style.opacity));
     }
 
@@ -74,24 +83,25 @@ private void paintElement(Element element, Canvas canvas)
             canvas.drawImage(dst, bgImage);
     }
 
-    // Border: draw per-side using the box's border widths.
+    // Border: draw per-side around the border box.
     const bColor = withOpacity(parseColorOrDefault(element.style.borderColor,
         Color.rgb(0, 0, 0)), element.style.opacity);
     if (element.box.borderTop > 0)
-        canvas.fillRect(Rect(absX, absY, width, element.box.borderTop), bColor);
+        canvas.fillRect(Rect(absX, absY, borderW, element.box.borderTop), bColor);
     if (element.box.borderBottom > 0)
-        canvas.fillRect(Rect(absX, absY + height - element.box.borderBottom,
-            width, element.box.borderBottom), bColor);
+        canvas.fillRect(Rect(absX, absY + borderH - element.box.borderBottom,
+            borderW, element.box.borderBottom), bColor);
     if (element.box.borderLeft > 0)
-        canvas.fillRect(Rect(absX, absY, element.box.borderLeft, height), bColor);
+        canvas.fillRect(Rect(absX, absY, element.box.borderLeft, borderH), bColor);
     if (element.box.borderRight > 0)
-        canvas.fillRect(Rect(absX + width - element.box.borderRight, absY,
-            element.box.borderRight, height), bColor);
+        canvas.fillRect(Rect(absX + borderW - element.box.borderRight, absY,
+            element.box.borderRight, borderH), bColor);
 
-    const innerX = absX + element.box.paddingLeft + element.box.borderLeft;
-    const innerY = absY + element.box.paddingTop + element.box.borderTop;
-    const innerWidth = max(0, width - element.box.paddingLeft - element.box.paddingRight);
-    const innerHeight = max(0, height - element.box.paddingTop - element.box.paddingBottom);
+    // The content box: inside the border and padding.
+    const innerX = absX + element.box.borderLeft + element.box.paddingLeft;
+    const innerY = absY + element.box.borderTop + element.box.paddingTop;
+    const innerWidth = contentW;
+    const innerHeight = contentH;
 
     // overflow: hidden/scroll/auto — clip the content (text, inline runs, and
     // every descendant box) to this element's content box so children that
@@ -101,19 +111,15 @@ private void paintElement(Element element, Canvas canvas)
         overflowValue == "auto";
     Canvas contentCanvas = canvas;
     if (clipsChildren)
-    {
-        const contentW = max(0, innerWidth - element.box.borderLeft - element.box.borderRight);
-        const contentH = max(0, innerHeight - element.box.borderTop - element.box.borderBottom);
         contentCanvas = canvas.clipped(Rect(innerX, innerY, contentW, contentH));
-    }
 
-    // display:list-item — draw a small filled bullet at the left of the content
-    // edge (roughly the first line's box height from the top).
+    // display:list-item — draw a small filled bullet OUTSIDE the content edge
+    // (in the list's left padding/marker area) so it never sits on the text.
     if (element.style.display == "list-item")
     {
         auto bulletColor = parseColorOrDefault(element.style.color, Color.rgb(0, 0, 0));
         const int bulletR = 3;
-        const int bulletCX = innerX + bulletR + 2;
+        const int bulletCX = maxInt(2, innerX - 15);
         const int bulletCY = innerY + bulletR + 2;
         contentCanvas.fillCircle(Point(bulletCX, bulletCY), bulletR,
             withOpacity(bulletColor, element.style.opacity));
@@ -134,25 +140,25 @@ private void paintElement(Element element, Canvas canvas)
         }
     }
 
-    // Image element
-    if (element.tag == "img" && (element.box.width > 0 && element.box.height > 0))
+    // Image element (painted inside the content box).
+    if (element.tag == "img" && contentW > 0 && contentH > 0)
     {
         auto image = cast(RgbaImage) element.image;
         if (image !is null)
-            contentCanvas.drawImage(Rect(absX, absY, element.box.width, element.box.height), image);
+            contentCanvas.drawImage(Rect(innerX, innerY, contentW, contentH), image);
         else
         {
             // Placeholder box while the image loads.
-            contentCanvas.fillRect(Rect(absX, absY, element.box.width, element.box.height),
+            contentCanvas.fillRect(Rect(innerX, innerY, contentW, contentH),
                 Color.rgb(220, 220, 220));
         }
     }
 
     // hr
-    if (element.tag == "hr" && element.box.height > 0)
+    if (element.tag == "hr" && contentH > 0)
     {
-        contentCanvas.drawLine(Point(absX, absY + element.box.height / 2),
-            Point(absX + element.box.width, absY + element.box.height / 2),
+        contentCanvas.drawLine(Point(innerX, innerY + contentH / 2),
+            Point(innerX + contentW, innerY + contentH / 2),
             Color.rgb(120, 120, 120));
     }
 
@@ -189,12 +195,11 @@ private void paintElement(Element element, Canvas canvas)
     // when the content is taller than the box (like WebPageView does).
     if (overflowValue == "scroll" || overflowValue == "auto")
     {
-        const contentH = innerHeight - element.box.borderTop - element.box.borderBottom;
         const scrollTrack = contentH;
         if (scrollTrack > 0)
         {
             const int barW = 6;
-            const int barX = innerX + max(0, innerWidth - barW);
+            const int barX = innerX + max(0, contentW - barW);
             // Thumb height proportional to the fraction of content visible.
             const int thumbH = maxInt(12, scrollTrack * scrollTrack /
                 maxInt(scrollTrack + 1, contentBottom(element)));
@@ -226,8 +231,12 @@ private Rect backgroundDestRect(Element element, RgbaImage image)
 {
     const boxX = element.box.x;
     const boxY = element.box.y;
-    const boxW = element.box.width;
-    const boxH = element.box.height;
+    // `box.width/height` is the content box; size-position the background image
+    // against the padding/border box, which is what the background covers.
+    const boxW = element.box.width + element.box.paddingLeft + element.box.paddingRight +
+        element.box.borderLeft + element.box.borderRight;
+    const boxH = element.box.height + element.box.paddingTop + element.box.paddingBottom +
+        element.box.borderTop + element.box.borderBottom;
     const imgW = image.width();
     const imgH = image.height();
     const size = element.style.backgroundSize.toLower().strip();
@@ -309,8 +318,12 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
     TextLayoutOptions options;
     options.role = FontRole.ui;
     options.pixelSize = max(1, pixelSize);
-    options.maxWidth = maxWidth;
-    options.wrap = maxWidth > 0;
+    // Wrapping width is the content width that layout stored, which is the
+    // measured text width truncated to int. Re-wrap with one extra pixel so a
+    // run whose measured width rounds down does not drop its final glyph onto
+    // a second line (which scattered inline <b>/<i>/<a> runs across lines).
+    options.maxWidth = maxWidth > 0 ? maxWidth + 1 : 0;
+    options.wrap = options.maxWidth > 0;
     auto layout = FontSystem.sharedInstance().textEngine.layout(dtext, options);
     auto color = parseColorOrDefault(style.color, Color.rgb(0, 0, 0));
     if (style.opacity < 1.0)
@@ -668,7 +681,7 @@ unittest
         auto li = new Element("li");
         li.style.display = "list-item";
         li.style.color = "black";
-        li.box.x = 10;
+        li.box.x = 30;
         li.box.y = 10;
         li.box.width = 100;
         li.box.height = 20;
@@ -680,7 +693,8 @@ unittest
         auto canvas = Canvas(surface);
         paintElement(li, canvas);
 
-        // Bullet center: innerX=16, innerY=14, radius 3 -> around (21, 19).
+        // Marker sits outside the content edge: innerX=36, innerY=14, r=3 ->
+        // center at (36-15, 19) = (21, 19).
         auto p = surface.pixel(21, 19);
         auto lum = (p & 0xff) + ((p >> 8) & 0xff) + ((p >> 16) & 0xff);
         assert(lum < 400,

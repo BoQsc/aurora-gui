@@ -90,6 +90,7 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules)
     style.display = uaDisplay(element.tag);
     if (element.tag == "th")
         style.fontWeight = "bold";
+    applyUserAgentDefaults(style, element.tag);
 
     auto cascade = cascadeFor(element, rules);
     applyDeclaration(style, "display", cascade.get("display", ""));
@@ -188,6 +189,78 @@ private string uaDisplay(string tag)
             return "none";
         default:
             return "inline";
+    }
+}
+
+/// Baseline user-agent styling for common HTML tags. Applied before the author
+/// cascade and inline `style=""`, so page CSS still overrides it. Without this,
+/// headings, paragraphs and lists had no default margins or type sizes and
+/// every block sat flush against the previous one.
+private void applyUserAgentDefaults(ref ComputedStyle style, string tag)
+{
+    switch (tag)
+    {
+        case "h1":
+            style.fontSize = "32px";
+            style.fontWeight = "bold";
+            style.margin = "21px 0";
+            break;
+        case "h2":
+            style.fontSize = "24px";
+            style.fontWeight = "bold";
+            style.margin = "19px 0";
+            break;
+        case "h3":
+            style.fontSize = "19px";
+            style.fontWeight = "bold";
+            style.margin = "18px 0";
+            break;
+        case "h4":
+            style.fontSize = "16px";
+            style.fontWeight = "bold";
+            style.margin = "21px 0";
+            break;
+        case "h5":
+            style.fontSize = "13px";
+            style.fontWeight = "bold";
+            style.margin = "22px 0";
+            break;
+        case "h6":
+            style.fontSize = "11px";
+            style.fontWeight = "bold";
+            style.margin = "24px 0";
+            break;
+        case "p", "figure", "dl":
+            style.margin = "16px 0";
+            break;
+        case "pre":
+            style.margin = "16px 0";
+            style.fontFamily = "monospace";
+            break;
+        case "blockquote":
+            style.margin = "16px 40px";
+            break;
+        case "ul", "ol":
+            style.margin = "16px 0";
+            style.padding = "0 0 0 40px";
+            break;
+        case "dd":
+            style.margin = "0 0 0 40px";
+            break;
+        case "hr":
+            style.margin = "8px 0";
+            break;
+        case "b", "strong":
+            style.fontWeight = "bold";
+            break;
+        case "i", "em", "cite", "dfn", "var":
+            style.fontStyle = "italic";
+            break;
+        case "code", "kbd", "samp":
+            style.fontFamily = "monospace";
+            break;
+        default:
+            break;
     }
 }
 
@@ -472,7 +545,9 @@ private int resolveSide(string value, int containingWidth, int sideIndex)
     switch (parts.length)
     {
         case 1: return px(parts[0]);
-        case 2: return sideIndex < 2 ? px(parts[0]) : px(parts[1]);
+        // 2-value shorthand is vertical horizontal: top/bottom = first,
+        // left/right = second. (sideIndex: 0=top, 1=right, 2=bottom, 3=left.)
+        case 2: return sideIndex % 2 == 0 ? px(parts[0]) : px(parts[1]);
         case 3: switch (sideIndex) { case 0: return px(parts[0]); case 1: case 3: return px(parts[1]); default: return px(parts[2]); }
         default: switch (sideIndex) { case 0: return px(parts[0]); case 1: return px(parts[1]); case 2: return px(parts[2]); default: return px(parts[3]); }
     }
@@ -916,12 +991,26 @@ private int resolveWidth(Element element, int containingWidth)
     else if (style.display == "inline-block")
     {
         // An inline-block with a decoded image sizes to the image's intrinsic
-        // width; otherwise fall back to a 16px placeholder.
+        // width; otherwise shrink-to-fit its content — measure the widest
+        // unwrapped text line instead of a fixed placeholder. A fixed 16px box
+        // truncated every `<a style="display:inline-block">` to one glyph.
         auto img = cast(RgbaImage) element.image;
         if (img !is null)
             width = img.width();
         else
-            width = 16;
+        {
+            const px = style.pxLength(style.fontSize);
+            const pixelSize = px >= 0 ? px : 16;
+            const content = element.textContent();
+            if (content.strip().length)
+            {
+                auto lay = shapeText(content, pixelSize, 0);
+                width = lay !is null ? cast(int) lay.width
+                    : cast(int)(content.length * 8);
+            }
+            else
+                width = 16;
+        }
     }
     else
         width = containingWidth - element.box.paddingLeft - element.box.paddingRight -
@@ -1132,7 +1221,8 @@ private void layoutInlineChildren(Element element, ref FlowContext flow, Element
         auto childElement = cast(Element) child;
         if (childElement !is null)
         {
-            const int cw = childElement.style.display == "inline-block" ? 16 :
+            const int cw = childElement.style.display == "inline-block" ?
+                resolveWidth(childElement, flow.width) :
                 cast(int)(childElement.textContent().length * 8);
             const int leftEdge2 = flow.lineLeft(currentLineY, lineHeight);
             const int rightEdge2 = flow.lineRight(currentLineY, lineHeight);

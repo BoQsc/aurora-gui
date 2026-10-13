@@ -13,7 +13,7 @@ module app;
 import aurora;
 import aurorabrowser.appui : BrowserRoot, browserTheme;
 
-private int runScreenshot(string path)
+private int runScreenshot(string path, string startUrl)
 {
     WindowOptions options;
     options.title = "Aurora Browser";
@@ -25,6 +25,8 @@ private int runScreenshot(string path)
     auto window = new GuiWindow(options, browserTheme());
     auto root = new BrowserRoot(window);
     window.setRoot(root);
+    if (startUrl.length > 0)
+        root.openUrlAtStartup(startUrl);
     auto driver = new UiTestDriver(window);
     driver.resize(Size(options.width, options.height));
     driver.paint();
@@ -39,6 +41,17 @@ private string urlArg(string[] args)
     for (int i = 1; i < args.length - 1; ++i)
     {
         if (args[i] == "--url" && args[i + 1].length > 0)
+            return args[i + 1];
+    }
+    return "";
+}
+
+/// Extract `--screenshot <path>` from the command line ("" when absent).
+private string screenshotArg(string[] args)
+{
+    for (int i = 1; i < args.length - 1; ++i)
+    {
+        if (args[i] == "--screenshot" && args[i + 1].length > 0)
             return args[i + 1];
     }
     return "";
@@ -70,7 +83,8 @@ private int runBrowser(string startUrl)
 
 int main(string[] args)
 {
-    if (args.length >= 3 && args[1] == "--screenshot")
-        return runScreenshot(args[2]);
+    const screenshot = screenshotArg(args);
+    if (screenshot.length > 0)
+        return runScreenshot(screenshot, urlArg(args));
     return runBrowser(urlArg(args));
 }
