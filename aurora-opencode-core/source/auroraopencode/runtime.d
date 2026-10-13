@@ -430,7 +430,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
  * authority when that cache is missing, stale, or was torn during a crash.
  */
 public ChatSession[] projectAgentRuntimeEvents(
-    const(AgentRuntimeEvent)[] events)
+    const(AgentRuntimeEvent)[] events, bool incremental = false)
 {
     ChatSession[] sessions;
     size_t[string] positions;
@@ -517,7 +517,10 @@ public ChatSession[] projectAgentRuntimeEvents(
     foreach (session; sessions)
     {
         if (session.id in deleted) continue;
-        ensureMessageGraph(session);
+        // A tail replay may point into the already-folded snapshot. Repairing
+        // those absent parents here severs the saved conversation. The caller
+        // repairs the complete graph after merging an incremental projection.
+        if (!incremental) ensureMessageGraph(session);
         result ~= session;
     }
     return result;

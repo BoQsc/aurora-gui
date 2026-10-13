@@ -26141,6 +26141,7 @@ private void pollButtonSuggestionRequest()
     /// index path inserts `false` entries.
     private bool[string] _threadLoaded;
     private bool _threadStoreActive;
+    private bool _restoringSessions;
     private bool[string] _threadLoadsPending;
     private string[string] _threadLoadErrors;
     private struct HistoryResult { string id; ChatMessage[] messages; string error; }
@@ -26273,7 +26274,13 @@ private void pollButtonSuggestionRequest()
                 }
                 if (!loadThreadMessages(session)) return false;
                 *flag = true;
-                if (session.turnStatus == "interrupted" && recordInterruptedReads(session)) markDirty();
+                if (!_restoringSessions)
+                {
+                    bool changed = repairRestoredParentLinks(session);
+                    ensureMessageGraph(session);
+                    if (session.turnStatus == "interrupted") changed |= recordInterruptedReads(session);
+                    if (changed) markDirty();
+                }
                 return true;
             }
         return false;
@@ -26658,6 +26665,9 @@ private void pollButtonSuggestionRequest()
 
     private void restoreSessions()
     {
+        const previouslyRestoring = _restoringSessions;
+        _restoringSessions = true;
+        scope (exit) _restoringSessions = previouslyRestoring;
         _sessions.length = 0;
         loadPinnedSessions();
         loadArchivedSessions();
@@ -26700,7 +26710,7 @@ private void pollButtonSuggestionRequest()
                             if (_sessions[index].id == deletedId)
                                 _sessions = _sessions[0 .. index] ~
                                     _sessions[index + 1 .. $];
-                    foreach (session; projectAgentRuntimeEvents(events))
+                    foreach (session; projectAgentRuntimeEvents(events, true))
                     {
                         if (session.id.length > 0)
                             ensureThreadLoadedById(session.id);
@@ -26723,7 +26733,9 @@ private void pollButtonSuggestionRequest()
             foreach (ref session; _sessions)
             {
                 if (session.messages.length == 0) continue;
+                imageHistoryChanged |= repairRestoredParentLinks(session);
                 ensureMessageGraph(session);
+                if (session.turnStatus == "interrupted") imageHistoryChanged |= recordInterruptedReads(session);
                 imageHistoryChanged |= pruneTranscriptImagePayloads(session);
                 imageHistoryChanged |= upgradeSavedScreenshots(session);
                 if (session.id.length == 0) session.id = newSessionId();
@@ -27068,7 +27080,7 @@ private void pollButtonSuggestionRequest()
                         if (_sessions[index].id == deletedId)
                             _sessions = _sessions[0 .. index] ~
                                 _sessions[index + 1 .. $];
-                foreach (session; projectAgentRuntimeEvents(events))
+                foreach (session; projectAgentRuntimeEvents(events, true))
                     mergeJournalSession(session);
             }
         }
@@ -27081,7 +27093,9 @@ private void pollButtonSuggestionRequest()
         bool imageHistoryChanged;
         foreach (ref session; _sessions)
         {
+            imageHistoryChanged |= repairRestoredParentLinks(session);
             ensureMessageGraph(session);
+            if (session.turnStatus == "interrupted") imageHistoryChanged |= recordInterruptedReads(session);
             // A prior long session (usually a computer-use loop) can carry
             // hundreds of screenshots; release all but the newest few frames so
             // restoring it does not pin gigabytes of base64 in memory.
@@ -27232,6 +27246,60 @@ private void pollButtonSuggestionRequest()
             return;
         }
         _sessions ~= session;
+    }
+
+    private bool repairRestoredParentLinks(ref ChatSession session)
+    {
+        if (_runtime is null || session.messages.length < 2) return false;
+        size_t[string] roots, positions;
+        foreach (i, message; session.messages)
+        {
+            positions[message.id] = i;
+            if (i > 0 && message.id.length && !message.parentId.length)
+                roots[message.id] = i;
+        }
+        if (!roots.length) return false;
+        // Repair only links supported by the original durable record. A bounded
+        // tail lookup avoids replaying a large image journal on every launch.
+        enum ulong recoveryBytes = 8 * 1024 * 1024;
+        const bytes = _runtime.journalSize();
+        string[string] parents;
+        foreach (event; _runtime.eventsFrom(bytes > recoveryBytes ? bytes - recoveryBytes : 0))
+        {
+            if (event.threadId != session.id || event.itemId !in roots ||
+                (event.kind != AgentEventKind.itemAdded && event.kind != AgentEventKind.itemUpdated)) continue;
+            auto payload = event.parsedPayload;
+            if (payload.type != JSONType.object)
+                try payload = parseJSON(event.payloadJson);
+                catch (Exception) { continue; }
+            if (payload.type != JSONType.object) continue;
+            if (auto parent = "parentId" in payload.object)
+                if (parent.type == JSONType.string && parent.str.length &&
+                    parent.str != event.itemId && parent.str in positions)
+                    parents[event.itemId] = parent.str;
+        }
+        size_t restored;
+        foreach (id, parent; parents)
+        {
+            bool cycle;
+            auto ancestor = parent;
+            size_t remaining = session.messages.length;
+            while (ancestor.length && remaining > 0)
+            {
+                --remaining;
+                if (ancestor == id) { cycle = true; break; }
+                auto found = ancestor in positions;
+                if (found is null) break;
+                ancestor = session.messages[*found].parentId;
+            }
+            if (cycle || ancestor.length && remaining == 0) continue;
+            session.messages[roots[id]].parentId = parent;
+            ++restored;
+        }
+        if (!restored) return false;
+        JSONValue details; details["messageCount"] = cast(long) restored;
+        logAgentLifecycle(session.id, 0, "history.parent_links_restored", details);
+        return true;
     }
 
     private void mergeJournalSession(ChatSession recovered)
