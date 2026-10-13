@@ -89,7 +89,15 @@ void main(string[] args) {
     fixture("staging",author,upstream,dev);
     write(buildPath(dev,"base.txt"),"staged\n"); command(dev,["add","base.txt"]);
     write(buildPath(dev,"base.txt"),"staged\nunstaged\n"); update(author,"upstream.txt","new\n");
-    w=workflow(upstream); result=w.sync(dev,true); assert(!result.failed,result.message);
+    w=workflow(upstream);
+    const publishedRevision=command(author,["rev-parse","HEAD"]);
+    const stagedHead=command(dev,["rev-parse","HEAD"]);
+    result=w.sync(dev,true,false,"ffffffffffffffffffffffffffffffffffffffff");
+    assert(result.failed && result.message.indexOf("published source")>=0,result.message);
+    assert(command(dev,["rev-parse","HEAD"])==stagedHead);
+    assert(command(dev,["show",":base.txt"])=="staged");
+    assert(readText(buildPath(dev,"base.txt"))=="staged\nunstaged\n");
+    result=w.sync(dev,true,false,publishedRevision); assert(!result.failed,result.message);
     assert(command(dev,["show",":base.txt"])=="staged");
     assert(readText(buildPath(dev,"base.txt"))=="staged\nunstaged\n");
     writeln("PASS: successful sync preserves the staged/unstaged split");
@@ -114,13 +122,25 @@ void main(string[] args) {
     update(author,"base.txt","owner work\n");
     result=w.sync(dev,true); assert(result.failed,result.message);
     assert(w.checkRebuildSource(dev).failed);
+    assert(w.checkRebuildSource(dev,false).failed,
+        "Turning off freshness checks must not permit a conflicted rebuild");
+    assert(w.checkSourceBeforeEdit(dev,[buildPath(dev,"upstream.txt")],false,false).failed,
+        "Turning off freshness checks must not permit ordinary edits during conflicts");
+    assert(!w.checkSourceBeforeEdit(dev,[buildPath(dev,"base.txt")],false,false).failed,
+        "Conflict repairs must remain available with freshness checks off");
     edit=executeTool(writeCall(buildPath(dev,"base.txt"),"owner and local work integrated\n"),root);
     assert(!edit.failed,edit.output);
     assert(executeTool(writeCall(buildPath(dev,"upstream.txt"),"unrelated change\n"),dev).failed);
     command(dev,["add","base.txt"]);
     assert(w.checkRebuildSource(dev).failed,"Pending restoration must still block builds after staging");
+    assert(w.checkRebuildSource(dev,false).failed);
+    assert(w.checkSourceBeforeEdit(dev,null,false,false).failed);
     assert(!w.sync(dev,true).failed);
     assert(!w.checkRebuildSource(dev).failed);
+    w.upstreamUrl=buildPath(root,"offline.git");
+    assert(!w.checkRebuildSource(dev,false).failed && !w.checkSourceBeforeEdit(dev,null,false,false).failed,
+        "Freshness opt-out must still work offline after conflicts are finished");
+    w.upstreamUrl=upstream;
     assert(readText(buildPath(dev,"base.txt"))=="owner and local work integrated\n");
     const localGateStarted=MonoTime.currTime;
     assert(!w.checkSourceBeforeEdit(dev,null).failed);

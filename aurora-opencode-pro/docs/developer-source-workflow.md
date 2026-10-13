@@ -34,9 +34,12 @@ rebuilds, verifies the relaunched application, and tests the changes. Publishing
 a pull request follows testing. The dialog never starts an agent or resolves
 conflicts automatically.
 
-Turning the setting off skips the maintainer check, including when offline.
+Turning the setting off skips the remote maintainer check, including when offline.
+Unresolved conflicts and unfinished source recovery still block ordinary edits
+and rebuilds; conflict repairs remain available.
 The separate **Reapply my changes on upstream update** setting controls whether
-`sync` applies updates or only reports them.
+`sync` applies updates or only reports them. Explicit **Update** always applies
+source updates in Developer mode, regardless of this preference.
 
 ## Maintainer source channel
 
@@ -48,10 +51,26 @@ Publish source commits to the selected branch before delivering the binary
 update. Change the asset when moving the release channel to a different branch.
 
 Update remains visible in Developer mode and installs the maintainer's published
-executable. Rebuild separately compiles the selected local source. A binary update
-leaves local source files intact; use Sync source to integrate maintainer source
-updates and Rebuild to apply local customizations again. Public releases record the exact
+executable. It first synchronizes the selected source with the maintainer branch,
+preserving local commits, tracked edits and staged selections through the same
+recovery snapshots as Sync source. It also synchronizes source when the executable
+is already current. Missing source offers setup; older non-Git snapshots are
+preserved and require a checkout before Update can continue.
+
+Finish or stop active turns before Update. Source work and competing source
+operations wait while Update prepares the checkout. A failed fetch, untracked
+collision, merge conflict or unfinished recovery keeps Aurora open and hides the
+installation action. The dialog shows the problem and offers a conflict-resolution
+prompt for the existing development chat. Resolve and stage the intended changes,
+finish the Git operation and call Sync source, then retry Update. Installation
+rechecks source under the checkout lock; disabling the latest-source preference
+cannot bypass conflict recovery. Update never rebuilds or resolves conflicting
+code automatically. Rebuild separately compiles the selected source to apply
+local customizations again.
+
+Ordinary mode Update continues to replace only the executable. Public releases record the exact
 source commit, branch and build-input fingerprint. Publishing rejects dirty or
 unpublished source, an executable changed since its build record, or source that
 changed during compilation. CI follows the selected source branch; update its
-branch trigger when moving the channel.
+branch trigger when moving the channel. Developer Update verifies that the
+release's source commit is available on that branch before integrating it.
