@@ -220,10 +220,9 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "Discover files only when paths are unknown or a direct read fails. Read before editing.\n" ~
         "3. Apply the smallest complete change, batching all known related edits.\n" ~
         "4. Verify proportionally: verification is an evidence phase, not a quota. After relevant checks pass, repeat or broaden only " ~
-        "for a new edit, failure, or named unresolved concern. Repeated identical " ~
-        "failures require a changed approach. GUI changes need interaction assertions " ~
-        "or rendered inspection; compilation alone is insufficient. For local HTML, " ~
-        "discover a browser at runtime and inspect the page and key interactions.\n" ~
+        "for a new edit, failure, or named unresolved concern. Change approach after " ~
+        "repeated identical failures. Verify GUI interaction or rendered output, " ~
+        "not compilation alone. Inspect local HTML in a browser.\n" ~
         "5. Finish authorized work and verification before reporting the outcome and " ~
         "checks. Keep the plan accurate. Do not ask to continue work already requested. " ~
         "Use task_blocker only for missing input or an external dependency.\n";
