@@ -7,6 +7,7 @@ import std.algorithm : canFind;
 import std.conv : to;
 import auroraopencode.outputguard : outputFailurePrefix;
 import std.string : startsWith;
+import auroraopencode.grepformat : compactGrepHistory;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
 public ChatRequestMessage[] projectRequestMessages(
@@ -75,7 +76,7 @@ public ChatRequestMessage[] projectRequestMessages(
                         const reply = session.messages[path[k]];
                         ChatRequestMessage tool;
                         tool.role = reply.role;
-                        tool.content = reply.content;
+                        tool.content = reply.toolName == "grep" ? compactGrepHistory(reply.content) : reply.content;
                         tool.toolCallId = reply.toolCallId;
                         messages ~= tool;
                     }

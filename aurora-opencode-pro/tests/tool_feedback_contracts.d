@@ -1,0 +1,100 @@
+module tool_feedback_contracts;
+import auroraopencode.core : OpenCodeToolCall, setOpencodeStateDirectoryForTesting;
+import auroraopencode.tools : executeTool, ChangeContext, listChangeRecords, revertChangeRecord;
+import auroraopencode.searchprogress;
+import auroraopencode.grepformat : compactGrepHistory;
+import auroraopencode.requestbuilder : projectRequestMessages;
+import auroraopencode.core : ChatSession;
+import core.time : MonoTime;
+import std.conv : to;
+import std.file : mkdirRecurse, readText, write, getSize;
+import std.path : buildPath, absolutePath;
+import std.json : JSONValue;
+import std.array : replicate;
+import std.string : indexOf, count;
+import std.stdio : writeln;
+
+int main()
+{
+    const workspace = absolutePath("tool-feedback-" ~ to!string(MonoTime.currTime.ticks));
+    mkdirRecurse(workspace); setOpencodeStateDirectoryForTesting(buildPath(workspace, "state"));
+    auto target = buildPath(workspace, "patch.txt");
+    auto call = (string name, string args) => OpenCodeToolCall("fixture-" ~ name, name, args);
+    auto patch = (string text) { JSONValue args; args["patch"] = text; return executeTool(call("apply_patch", args.toString()), workspace); };
+    write(target, "top\r\nfirst\r\nmiddle\r\nsecond\r\nbottom\r\nlast\r\n");
+    auto changed = patch("*** Begin Patch\n*** Update File: patch.txt\n@@\n bottom\n-last\n+LAST\n@@\n top\n-first\n+FIRST\n@@\n middle\n-second\n+SECOND\n*** End Patch");
+    assert(!changed.failed, changed.output);
+    assert(readText(target) == "top\r\nFIRST\r\nmiddle\r\nSECOND\r\nbottom\r\nLAST\r\n");
+    changed = patch("*** Begin Patch\n*** Update File: patch.txt\n@@\n bottom\n-LAST\n+third\n*** Update File: patch.txt\n@@\n top\n-FIRST\n+first again\n*** End Patch");
+    assert(!changed.failed && changed.output.indexOf("1 path") >= 0, changed.output);
+    assert(readText(target).indexOf("top\r\nfirst again") >= 0 && readText(target).indexOf("bottom\r\nthird") >= 0);
+    const before = readText(target);
+    auto rejected = patch("*** Begin Patch\n*** Update File: patch.txt\n@@\n-absent anchor\n+replacement\n@@\n top\n-first again\n+must not apply\n*** Add File: must-not-exist.txt\n+staged only\n*** End Patch");
+    assert(rejected.failed && rejected.output.indexOf("hunk 1: patch context not found") >= 0 &&
+        rejected.output.indexOf("unexpected patch line") < 0 && readText(target) == before, rejected.output);
+    import std.file : exists;
+    assert(!exists(buildPath(workspace, "must-not-exist.txt")));
+    write(target, "same\nspacer\nsame\nend\n");
+    rejected = patch("*** Begin Patch\n*** Update File: patch.txt\n@@\n-end\n+END\n@@\n-same\n+changed\n*** End Patch");
+    assert(rejected.failed && rejected.output.indexOf("ambiguous") >= 0 && readText(target) == "same\nspacer\nsame\nend\n");
+    writeln("PASS unordered CRLF hunks, combined same-file sections, concise context failures, ambiguous anchors and atomic rejection");
+
+    const folder = buildPath(workspace, "folder with spaces");
+    mkdirRecurse(folder); const source = buildPath(folder, "search.d");
+    write(source, "before\nneedle A\nneedle B\nafter\n".replicate(20));
+    JSONValue args; args["path"] = source; args["pattern"] = "needle"; args["context"] = 1;
+    SearchProgress last;
+    auto grouped = executeTool(call("grep", args.toString()), workspace, null, ChangeContext.init, (string payload) {
+        SearchProgress progress; assert(decodeSearchProgress(payload, progress)); last = progress;
+    });
+    assert(!grouped.failed && grouped.output.count("File: " ~ source) == 1, grouped.output);
+    assert(grouped.output.indexOf("1- before\n2: needle A\n3: needle B\n4- after") >= 0, grouped.output);
+    assert(last.terminal && last.matches == 40 && last.latest[$ - 1].indexOf("search.d:79: needle B") >= 0);
+    args["format"] = "classic";
+    auto classic = executeTool(call("grep", args.toString()), workspace);
+    assert(!classic.failed && classic.output.indexOf(source ~ ":2: needle A") >= 0);
+    assert(grouped.output.length * 3 < classic.output.length, "Grouping did not substantially reduce repeated paths");
+    const stored = classic.output;
+    const projected = compactGrepHistory(stored);
+    assert(projected.length * 3 < stored.length && projected.indexOf("2: needle A") >= 0 && projected.indexOf("1- before") >= 0);
+    assert(compactGrepHistory(grouped.output) == grouped.output);
+    assert(compactGrepHistory("Error: grep failed") == "Error: grep failed");
+    assert(compactGrepHistory("/project/a.d:2: hit\n/project/a.d-3- context\n").indexOf("2: hit\n3- context") >= 0);
+    assert(classic.output == stored, "Compacting requests changed the saved result");
+    ChatSession session; session.messages.length = 2;
+    session.messages[0].id = "request"; session.messages[0].role = "assistant";
+    session.messages[0].toolCalls = [OpenCodeToolCall("old-grep", "grep", "{}")];
+    session.messages[1].id = "result"; session.messages[1].parentId = "request";
+    session.messages[1].role = "tool"; session.messages[1].toolName = "grep";
+    session.messages[1].toolCallId = "old-grep"; session.messages[1].content = stored;
+    session.activeLeafId = "result";
+    auto wire = projectRequestMessages(session);
+    assert(wire.length == 2 && wire[1].content == projected && wire[1].toolCallId == "old-grep");
+    assert(session.messages[1].content == stored, "Wire projection changed durable history");
+    writeln("MEASURE grouped_bytes=", grouped.output.length, " classic_bytes=", classic.output.length);
+    writeln("PASS default grouped grep, overlapping context, line anchors, full-path live previews and classic compatibility");
+
+    const large = buildPath(workspace, "large-source.d");
+    const original = "source line\n".replicate(150000) ~ "unique before\n";
+    write(large, original); args = JSONValue.init;
+    args["filePath"] = large; args["oldString"] = "unique before"; args["newString"] = "unique after";
+    ChangeContext context; context.conversationId = "source-chat"; context.turnId = "source-turn";
+    auto edited = executeTool(call("edit", args.toString()), workspace, null, context);
+    assert(!edited.failed && edited.output.indexOf("restore is unavailable") < 0, edited.output);
+    auto records = listChangeRecords(workspace);
+    assert(records.length == 1 && !records[0].restoreUnavailable.length && getSize(records[0].beforeBlob) > 1024 * 1024);
+    const after = readText(large);
+    write(large, after ~ "external edit\n");
+    auto conflict = revertChangeRecord(workspace, records[0].id, false, context);
+    assert(!conflict.succeeded && conflict.conflict && readText(large) == after ~ "external edit\n");
+    write(large, after);
+    auto restored = revertChangeRecord(workspace, records[0].id, false, context);
+    assert(restored.succeeded && readText(large) == original, restored.message);
+    records = listChangeRecords(workspace);
+    assert(revertChangeRecord(workspace, records[$ - 1].id, false, context).succeeded && readText(large) == after);
+    import std.path : dirName;
+    assert(getSize(buildPath(dirName(dirName(records[0].beforeBlob)), "journal.jsonl")) < 12000,
+        "File bodies must stay in disk blobs, outside the conversation and change metadata");
+    writeln("PASS large source undo/redo stores exact disk snapshots and refuses to overwrite subsequent edits");
+    return 0;
+}

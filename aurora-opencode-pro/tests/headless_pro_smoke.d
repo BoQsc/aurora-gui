@@ -1234,10 +1234,22 @@ int main(string[] args)
     root.addConversationForTesting(["user", "assistant"],
         ["edit in place", "in place answer"]);
     const inlineUser = root.messageCountForTesting() - 2;
-    assert(root.beginInlineEditForTesting(inlineUser),
-        "In-place edit did not open on the user message");
-    assert(root.inlineEditActiveForTesting() &&
-        root.inlineEditTextForTesting() == "edit in place",
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "In-place edit setup did not paint");
+    // Click the message's real hover Edit pill through the window's normal
+    // hit-test / dispatch path: hover the bubble, then left-click the pill.
+    const inlineBubble = root.messageBubbleGlobalBoundsForTesting(inlineUser);
+    assert(inlineBubble.width > 0, "User bubble had no bounds");
+    driver.moveTo(Point(inlineBubble.x + inlineBubble.width / 2,
+        inlineBubble.y + inlineBubble.height / 2));
+    assert(paintProjection(root, driver), "Hover row did not paint");
+    const editPill = root.editPillCenterForTesting(inlineUser);
+    assert(editPill.x >= 0, "Hover Edit pill was not drawn on the user message");
+    driver.click(editPill);
+    root.tickTree(0.02);
+    assert(root.inlineEditActiveForTesting(),
+        "Clicking Edit did not open the in-place editor");
+    assert(root.inlineEditTextForTesting() == "edit in place",
         "In-place editor was not seeded with the message text");
     const editShots = buildPath(tempDir(), "aurora-opencode-edit-shots");
     if (!exists(editShots)) mkdirRecurse(editShots);
@@ -3713,7 +3725,8 @@ int main(string[] args)
         "read tool did not number lines: " ~ root.toolResultForTesting(readCall.id));
     assert(root.toolResultForTesting(grepCall.id).indexOf("notes.txt") >= 0,
         "grep tool did not find the matching file");
-    assert(root.toolResultForTesting(grepCall.id).indexOf("notes.txt:1: hello tool world") >= 0,
+    assert(root.toolResultForTesting(grepCall.id).indexOf("notes.txt") >= 0 &&
+        root.toolResultForTesting(grepCall.id).indexOf("1: hello tool world") >= 0,
         "grep tool did not return a line-numbered snippet: " ~
         root.toolResultForTesting(grepCall.id));
     assert(root.toolResultForTesting(runCall.id).indexOf("run-args-ok") >= 0,

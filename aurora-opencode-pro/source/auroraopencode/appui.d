@@ -753,6 +753,9 @@ private final class MessageBubble : Widget
     // bubble reserves room for it and for the Save/Cancel row while open.
     private InlineMessageEditor _inlineEditor;
     private bool _editingInPlace;
+    private string _inlineLayoutText;
+    private int _inlineLayoutWidth = -1;
+    private TextLayout _inlineLayout;
     private void delegate(string text) _inlineEditCommit;
     private void delegate() _inlineEditCancel;
     private Rect _inlineSaveRect;
@@ -1605,7 +1608,7 @@ private final class MessageBubble : Widget
     /// Test-only: replace the in-place editor's text.
     public void setInlineEditTextForTesting(string text)
     {
-        if (_inlineEditor !is null) _inlineEditor.setText(text, false);
+        if (_inlineEditor !is null) _inlineEditor.setText(text, true);
     }
 
     /// Turn this message into an editable field seeded with its own text.
@@ -1634,6 +1637,13 @@ private final class MessageBubble : Widget
             _inlineEditor.setFontFace(cast(FontFace) theme().uiFont,
                 FontRole.ui);
             _inlineEditor.setPixelSizeOverride(opencodeFontChat);
+            _inlineEditor.onChanged = delegate()
+            {
+                ChatScrollView.holdPositionForNextLayout(this);
+                _inlineLayout = null;
+                invalidate();
+                if (parent() !is null) parent().invalidate();
+            };
             _inlineEditor.onCommit = delegate()
             {
                 if (_inlineEditCommit !is null)
@@ -1672,10 +1682,18 @@ private final class MessageBubble : Widget
     /// including a little slack so the editor's own wrap never clips a line.
     private int inlineEditorHeight(int width)
     {
-        auto layout = shapedContent(maxInt(1, width));
+        const text = _inlineEditor is null ? contentText() : _inlineEditor.textUtf8();
+        width = maxInt(1, width);
+        if (_inlineLayout is null || _inlineLayoutText != text || _inlineLayoutWidth != width)
+        {
+            _inlineLayoutText = text;
+            _inlineLayoutWidth = width;
+            _inlineLayout = shape(toUTF32(text), width);
+        }
+        auto layout = _inlineLayout;
         const textHeight = layout is null ? fontPixelSize(1) + 4
             : layout.measuredSize().height;
-        return maxInt(textHeight + 8, fontPixelSize(1) + 14);
+        return minInt(320, maxInt(textHeight + 8, fontPixelSize(1) + 14));
     }
 
     /// The raw message text, so a hover Copy writes the same payload the
@@ -5350,6 +5368,8 @@ private struct TooltipBubble
 
 private final class PlanCard : Widget
 {
+    private bool _checklistStale;
+    bool checklistStaleForTesting() const { return _checklistStale; }
     private static immutable int padH = 12;
     private static immutable int padV = 8;
     private static immutable int lineH = opencodeFontBase + 6;
@@ -5419,7 +5439,7 @@ private final class PlanCard : Widget
     /// Replace the rendered plan. The card is rebuilt on every tool result, so
     /// it copies the steps into its own arrays and repaints only on a change.
     void update(string objective, const(TaskStep)[] steps, string status,
-        const(NestedPlan)[] nestedPlans = null, bool showNested = false)
+        const(NestedPlan)[] nestedPlans = null, bool showNested = false, bool checklistStale = false)
     {
         string[] texts;
         string[] statuses;
@@ -5430,7 +5450,8 @@ private final class PlanCard : Widget
         }
         if (!showNested && !_showNested && objective == _objective &&
             status == _status &&
-            texts == _texts && statuses == _statuses) return;
+            texts == _texts && statuses == _statuses && checklistStale == _checklistStale) return;
+        _checklistStale = checklistStale;
         _objective = objective;
         _status = status;
         _texts = texts;
@@ -5506,7 +5527,8 @@ private final class PlanCard : Widget
     {
         string title = "Plan  " ~ to!string(doneCount()) ~ "/" ~
             to!string(_texts.length) ~ " done";
-        if (_status.length > 0) title ~= "  -  " ~ _status;
+        if (_checklistStale) title ~= " · needs update";
+        else if (_status.length > 0) title ~= "  -  " ~ _status;
         return title;
     }
 
@@ -5923,9 +5945,9 @@ private final class DetachedPlanPanel : Widget
 
     /// Replace the rendered plan and show the panel only while steps exist.
     void update(string objective, const(TaskStep)[] steps, string status,
-        const(NestedPlan)[] nestedPlans = null, bool showNested = false)
+        const(NestedPlan)[] nestedPlans = null, bool showNested = false, bool checklistStale = false)
     {
-        _card.update(objective, steps, status, nestedPlans, showNested);
+        _card.update(objective, steps, status, nestedPlans, showNested, checklistStale);
         setVisible(steps.length > 0);
         invalidate();
     }
@@ -10317,6 +10339,7 @@ private string _suggestExcludeId;
     // single unrefreshed plan produces a bounded number of nudges instead of
     // one on every tool round.
     private int[string] _planNudgedAt;
+    private int[string] _planNudgedPhase;
     // One deferred batch per user turn asks for an early model-owned plan.
     // Strict mode additionally checks before the first mutation. Normal mode
     // only warns (see queueStalePlanGuidance) and never blocks the batch.
@@ -14251,7 +14274,7 @@ private string _suggestExcludeId;
             auto planCard = new PlanCard();
             planCard.update(session.objective, session.taskSteps,
                 session.taskStatus, session.nestedPlans,
-                _settings.experimentalNestedPlans);
+                _settings.experimentalNestedPlans, checklistStale(*session));
             planCard.onToggleNested = delegate(size_t parent)
             {
                 toggleNestedPlan(parent);
@@ -14750,7 +14773,7 @@ private string _suggestExcludeId;
         const session = &_sessions[_current];
         _planPanel.update(session.objective, session.taskSteps,
             session.taskStatus, session.nestedPlans,
-            _settings.experimentalNestedPlans);
+            _settings.experimentalNestedPlans, checklistStale(*session));
     }
 
     private void toggleNestedPlan(size_t parent)
@@ -17666,8 +17689,8 @@ private void pollButtonSuggestionRequest()
                 continue;
             }
             if (message.role != "tool") continue;
-            if (message.toolName == "update_plan" ||
-                message.toolName == "update_subplan")
+            if (!message.failed && (message.toolName == "update_plan" ||
+                message.toolName == "update_subplan"))
             {
                 count = 0;
                 continue;
@@ -17732,13 +17755,33 @@ private void pollButtonSuggestionRequest()
     /// - no plan recorded at all after the read-only exploration budget is
     ///   spent: a turn can otherwise investigate indefinitely without ever
     ///   calling update_plan.
-    /// The reminder is advisory - the requested tools still run. Bounded to one
-    /// reminder per plan-refresh cycle (a fresh `update_plan` restarts the
-    /// count) so the model is nudged without being spammed every round.
+    /// The reminder is advisory. It fires once per phase (inspection, editing,
+    /// verification) until a fresh plan resets it, rather than every few calls.
     /// Returns true when a reminder was queued.
+    private static bool checklistStale(const ref ChatSession session)
+    {
+        return hasIncompleteTaskSteps(session) && toolResultsSincePlanUpdate(session) >= planRefreshNudgeCalls;
+    }
+
+    private static int planWorkPhase(const ref ChatSession session)
+    {
+        int phase;
+        foreach (index; activeMessagePath(session))
+        {
+            const message = session.messages[index];
+            if (message.role == "user" && !message.internal) { phase = 0; continue; }
+            if (message.role != "tool" || message.failed) continue;
+            if (message.toolName == "update_plan" || message.toolName == "update_subplan") { phase = 0; continue; }
+            if (message.toolName == "edit" || message.toolName == "write" || message.toolName == "apply_patch" ||
+                message.toolName == "remove" || message.toolName == "move" || message.toolName == "rename") phase = maxInt(phase, 1);
+        }
+        return session.taskStatus == "verifying" ? 2 : phase;
+    }
+
     private bool queueStalePlanGuidance(ref ChatSession session)
     {
         const since = toolResultsSincePlanUpdate(session);
+        const phase = planWorkPhase(session);
         int lastNudged = session.id in _planNudgedAt ? _planNudgedAt[session.id] : 0;
         // A refreshed plan drops the tool-result counter below the last nudge
         // point; only that may re-arm the reminder. Otherwise it fires once per
@@ -17747,9 +17790,11 @@ private void pollButtonSuggestionRequest()
         if (since < lastNudged)
         {
             _planNudgedAt.remove(session.id);
+            _planNudgedPhase.remove(session.id);
             lastNudged = 0;
         }
-        if (lastNudged > 0) return false;
+        const lastPhase = session.id in _planNudgedPhase ? _planNudgedPhase[session.id] : 0;
+        if (lastNudged > 0 && phase <= lastPhase) return false;
         const refreshDue = hasIncompleteTaskSteps(session) &&
             since >= planRefreshNudgeCalls;
         const recordDue = !hasIncompleteTaskSteps(session) &&
@@ -17757,6 +17802,7 @@ private void pollButtonSuggestionRequest()
             readOnlyExplorationCount(session) >= planGateExplorationCalls;
         if (!refreshDue && !recordDue) return false;
         _planNudgedAt[session.id] = since;
+        _planNudgedPhase[session.id] = phase;
         if (_pendingProgressGuidance.length == 0)
             _pendingProgressGuidance = refreshDue
                 ? "Your durable checklist is stale: it still shows steps " ~
@@ -17784,7 +17830,10 @@ private void pollButtonSuggestionRequest()
             "Focused inspection remains available when one concrete unknown " ~
             "still blocks the edit, but do not repeat known reads or broaden " ~
             "the search scope. If a command reaches a soft deadline, inspect " ~
-            "its progress report and decide whether a longer wait is justified.";
+            "its progress report and decide whether a longer wait is justified. " ~
+            "Before another inspection, identify the concrete unanswered question. " ~
+            "Reuse recorded results, focus path/include on the relevant source, " ~
+            "combine related patterns, and batch related edits to a file in one patch.";
         // The completion gate can only reconcile a durable checklist that
         // exists. Long evidence-gathering runs often never call `update_plan`,
         // leaving the plan empty, so nudge the model to record one. The app
@@ -29683,6 +29732,17 @@ private void pollButtonSuggestionRequest()
         return _inlineEditBubble !is null;
     }
 
+    public int inlineEditHeightForTesting() const
+    {
+        return _inlineEditBubble is null || _inlineEditBubble._inlineEditor is null ? 0 :
+            _inlineEditBubble._inlineEditor.bounds().height;
+    }
+
+    public bool planNeedsUpdateForTesting() const
+    {
+        return _planPanel !is null && _planPanel._card.checklistStaleForTesting();
+    }
+
     /// Test-only: the text held by the open in-place editor.
     public string inlineEditTextForTesting()
     {
@@ -29755,6 +29815,28 @@ private void pollButtonSuggestionRequest()
     {
         auto bubble = messageBubbleForTesting(index);
         return bubble is null ? Rect.init : bubble.actionBoundsForTesting();
+    }
+
+    /// Test-only: global bounds of the message bubble at child `index`.
+    public Rect messageBubbleGlobalBoundsForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        if (bubble is null) return Rect.init;
+        const origin = bubble.globalOrigin();
+        return Rect(origin.x, origin.y, bubble.bounds().width,
+            bubble.bounds().height);
+    }
+
+    /// Test-only: global center of the hover Edit pill on the bubble at child
+    /// `index` (a negative point when the pill is not currently drawn).
+    public Point editPillCenterForTesting(int index)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        if (bubble is null) return Point(-1, -1);
+        const r = bubble.editActionBoundsForTesting();
+        if (r.width <= 0 || r.height <= 0) return Point(-1, -1);
+        return bubble.localToGlobal(Point(r.x + r.width / 2,
+            r.y + r.height / 2));
     }
 
     public Rect bubbleSecondaryActionBoundsForTesting(int index)

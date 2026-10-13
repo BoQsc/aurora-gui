@@ -47,7 +47,7 @@ int main()
     }
 
     auto grep = run("grep", `{"pattern":"^needle$"}`);
-    assert(!grep.failed && grep.output.indexOf("main.d:2: needle") >= 0, grep.output);
+    assert(!grep.failed && grep.output.indexOf("main.d") >= 0 && grep.output.indexOf("2: needle") >= 0, grep.output);
     assert(last.terminal && !last.partial && last.matches == 2 && last.files == 2 && events >= 1);
     assert(last.skippedDirectories == 1 && last.skippedBinary == 2 && last.skippedLarge == 1, grep.output);
     assert(last.lines == 4 && last.root.length && last.query == "^needle$");

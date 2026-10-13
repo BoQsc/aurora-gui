@@ -20,11 +20,14 @@ private __gshared string[] _pending;
 private __gshared size_t _pendingBytes;
 private __gshared ulong _queuedSequence, _writtenSequence, _dropped;
 private __gshared bool _stopping;
+private __gshared bool _debugLogging;
 private enum size_t maxQueueBytes = 512 * 1024;
 private enum ulong maxLogBytes = 8UL * 1024 * 1024;
 
 shared static this()
 {
+    import std.process : environment;
+    _debugLogging = environment.get("AURORA_DEBUG_ACTIVITY", "") == "1";
     _queueMutex = new Mutex();
     _fileMutex = new Mutex();
     _wake = new Condition(_queueMutex);
@@ -64,6 +67,8 @@ public string logDirectory()
 }
 
 public void logInfo(string message) { enqueue("INFO", message); }
+public void setDebugLogging(bool enabled) { _debugLogging = enabled; }
+public void logDebug(string message) { if (_debugLogging) enqueue("DEBUG", message); }
 public void logLaunch(string appName)
 {
     enqueue("LAUNCH", "========== " ~ appName ~ " started ==========");

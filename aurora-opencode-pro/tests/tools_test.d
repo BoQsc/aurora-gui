@@ -35,6 +35,14 @@ private OpenCodeToolCall makeCall(string name, string args)
     call.id = "call_test";
     call.name = name;
     call.arguments = args;
+    // These existing contracts also exercise the explicit classic format.
+    // The default grouped format is covered by tool_feedback_contracts.
+    if (name == "grep")
+    {
+        auto fields = parseJSON(args);
+        if ("format" !in fields.object) fields["format"] = "classic";
+        call.arguments = fields.toString();
+    }
     return call;
 }
 

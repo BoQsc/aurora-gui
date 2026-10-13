@@ -1,7 +1,7 @@
 module auroraopencode.crashguard;
 
 import auroraopencode.core : opencodeStateDirectory;
-import auroraopencode.logging : logError, logInfo, setLogDirectory;
+import auroraopencode.logging : logError, logInfo, logDebug, setLogDirectory;
 import std.algorithm : sort, splitter;
 import std.conv : parse, to;
 import std.datetime : Clock, SysTime;
@@ -81,10 +81,8 @@ private enum int keepSymbolArchives = 3;
  *
  * A native access violation unwinds nothing and carries no D trace: the only
  * way to know which step was running when it died is for the app to have said
- * so beforehand. `noteActivity` writes that marker to the log immediately
- * rather than keeping it in memory, because the crash handler may be as
- * broken as the faulting code. It also stamps the value into `_lastActivity`
- * for the uncaught-Throwable path.
+ * so beforehand. The current marker stays in memory for crash reporting;
+ * AURORA_DEBUG_ACTIVITY=1 also writes verbose layout/paint markers to disk.
  */
 public void noteActivity(string what)
 {
@@ -102,7 +100,7 @@ public void noteActivity(string what)
     // grew the log to megabytes. The in-memory `_lastActivity` above is never
     // throttled, so the crash handler still reports the exact last paint.
     if (!isPerFrameMarker(what) || markerWriteDue())
-        logInfo("activity: " ~ what);
+        logDebug("activity: " ~ what);
 }
 
 /// Whether a marker fires once per painted frame rather than once per step.

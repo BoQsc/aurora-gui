@@ -485,7 +485,10 @@ private OpenCodeToolDef applyPatchToolDefinition()
         "update, unchanged context lines start " ~
         "with a space, removed lines with `-` and added lines with `+`. " ~
         "Prefer this over several `edit` calls when a change touches " ~
-        "multiple files or places.",
+        "multiple files or places. Put related changes in one call; unique " ~
+        "context permits hunks in any order. Repeated Update File sections " ~
+        "for the same existing file are combined into one atomic update. " ~
+        "Ambiguous context needs more surrounding lines.",
         `{"type":"object","properties":{"patch":{"type":"string","description":"The patch text, starting with *** Begin Patch and ending with *** End Patch"}},"required":["patch"]}`
     );
 }
@@ -749,8 +752,10 @@ private OpenCodeToolDef grepToolDefinition()
             "Discovers candidate files first, then shows measured progress by files processed, " ~
             "with live scope, current path, scan counts, matches and skipped files. " ~
             "Recursive searches skip generated folders, binary files and files over 8 MiB; " ~
-            "use an exact file path to search a larger text file. Partial results are labelled.",
-        `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
+            "use an exact file path to search a larger text file. Partial results are labelled. " ~
+            "Content results default to one File header followed by numbered match/context lines. " ~
+            "Prefer a known file or source subfolder and a focused include filter; combine related patterns.",
+        `{"type":"object","properties":{"pattern":{"type":"string","description":"Text or regular expression to search for"},"literal":{"type":"boolean","description":"Treat pattern as exact text instead of a regular expression (default false)"},"caseSensitive":{"type":"boolean","description":"Match letter case (default true)"},"context":{"type":"integer","minimum":0,"maximum":20,"description":"Context lines before and after each content match (default 0)"},"mode":{"type":"string","enum":["content","files","count"],"description":"Return matching lines, matching file paths, or per-file matching-line counts (default content)"},"format":{"type":"string","enum":["grouped","classic"],"description":"grouped prints each file path once (default); classic repeats path:line on each result"},"limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Maximum matching lines in content mode or matching files in files/count mode (default 200)"},"include":{"type":"string","description":"Optional file-name glob or suffix, e.g. *.d"},"path":{"type":"string","description":"Directory or file to search, relative to the workspace or absolute; defaults to the workspace"},"timeout":{"type":"integer","minimum":1,"maximum":600000,"description":"Soft deadline in milliseconds (default 10000). If progress justifies waiting, rerun with a longer value."}},"required":["pattern"]}`
     );
 }
 
@@ -1217,7 +1222,7 @@ private string changeWorkspaceDirectory(string workspace)
     return root;
 }
 
-public enum safetySnapshotFileLimit = 1024 * 1024;
+public enum safetySnapshotFileLimit = 8 * 1024 * 1024;
 private enum safetySnapshotTotalLimit = 16 * 1024 * 1024;
 private enum safetySnapshotEntryLimit = 10_000;
 
@@ -1245,7 +1250,7 @@ private FileSnapshot snapshotFile(string path, size_t* budget = null)
             if (result.bytes.length > safetySnapshotFileLimit || (budget !is null && result.bytes.length > *budget))
             {
                 result.bytes = null;
-                result.omitted = "file grew beyond the 1 MiB history limit";
+                result.omitted = "file grew beyond the 8 MiB history limit";
             }
             else if (budget !is null) *budget -= result.bytes.length;
         }
@@ -1905,7 +1910,7 @@ private void recordMutation(const OpenCodeToolCall call, string workspace,
             if (oldState.omitted.length || newState.omitted.length)
                 record.restoreUnavailable = "Automatic restore unavailable: " ~
                     (oldState.omitted.length ? oldState.omitted : newState.omitted) ~
-                    ". History stores at most 1 MiB per file and 16 MiB per operation.";
+                    ". History stores at most 8 MiB per file and 16 MiB per operation.";
             if (oldState.exists && !oldState.directory && !oldState.omitted.length)
             {
                 record.beforeBlob = buildPath(root, "blobs", id ~ ".before");
@@ -4004,11 +4009,26 @@ private ToolExecution runApplyPatch(string args, string workspace)
         return false;
     }
 
+    int stagedIndex(string path)
+    {
+        const comparable = comparableSearchPath(path);
+        foreach (i, change; changes)
+            if (comparableSearchPath(change.path) == comparable) return cast(int) i;
+        return -1;
+    }
+
     void stageChange(string relativePath, string path, bool beforeExists,
         string before, bool afterExists, string after,
         bool includeInDiff = true, string diffBefore = null,
         string diffAfter = null)
     {
+        const previous = stagedIndex(path);
+        if (previous >= 0)
+        {
+            changes[previous].after = after;
+            changes[previous].diffAfter = diffAfter is null ? after : diffAfter;
+            return;
+        }
         PatchChange change;
         change.relativePath = relativePath;
         change.path = path;
@@ -4116,9 +4136,11 @@ private ToolExecution runApplyPatch(string args, string workspace)
             string movePath;
             if (moveRel.length > 0)
                 movePath = resolveToolPath(moveRel, workspace);
-            if (alreadyStaged(path))
+            const staged = stagedIndex(path);
+            if (staged >= 0 && (moveRel.length || !changes[staged].beforeExists ||
+                !changes[staged].afterExists || !changes[staged].includeInDiff))
             {
-                failures ~= rel ~ ": duplicate patch section";
+                failures ~= rel ~ ": conflicting patch sections; combine updates before moving or deleting this path";
                 while (cursor < bodyEnd && !isPatchDirective(lines[cursor]))
                     ++cursor;
                 continue;
@@ -4148,7 +4170,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
                 continue;
             }
             string original;
-            try original = readText(path);
+            try original = staged >= 0 ? changes[staged].after : readText(path);
             catch (Exception error)
             {
                 failures ~= rel ~ ": " ~ error.msg;
@@ -4163,10 +4185,12 @@ private ToolExecution runApplyPatch(string args, string workspace)
             string failReason;
             string[] oldLines;
             string[] newLines;
+            size_t hunkNumber;
 
             void flushHunk()
             {
                 if (oldLines.length == 0 && newLines.length == 0) return;
+                ++hunkNumber;
                 const oldBlock = joinPatchLines(oldLines);
                 const newBlock = joinPatchLines(newLines);
                 // `content.indexOf` returns `ptrdiff_t` and -1 means "not
@@ -4191,9 +4215,26 @@ private ToolExecution runApplyPatch(string args, string workspace)
                         if (!findPatchContextIgnoringNewlines(content,
                             oldBlock, searchPos, at, oldEnd))
                         {
-                            hunkFailed = true;
-                            failReason = "patch context not found";
-                            return;
+                            // Unique earlier context is safe even when hunks
+                            // were supplied out of source order. Repeated
+                            // earlier context requires a more precise anchor.
+                            if (!findPatchContextIgnoringNewlines(content,
+                                oldBlock, 0, at, oldEnd))
+                            {
+                                hunkFailed = true;
+                                failReason = "hunk " ~ to!string(hunkNumber) ~
+                                    ": patch context not found. Use the current file text as context.";
+                                return;
+                            }
+                            size_t otherAt, otherEnd;
+                            if (findPatchContextIgnoringNewlines(content,
+                                oldBlock, at + 1, otherAt, otherEnd))
+                            {
+                                hunkFailed = true;
+                                failReason = "hunk " ~ to!string(hunkNumber) ~
+                                    ": ambiguous earlier patch context; include more surrounding lines.";
+                                return;
+                            }
                         }
                     }
                     else
@@ -4258,6 +4299,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
             if (hunkFailed)
             {
                 failures ~= rel ~ ": " ~ failReason;
+                while (cursor < bodyEnd && !isPatchDirective(lines[cursor])) ++cursor;
                 continue;
             }
             if (moveRel.length == 0)
@@ -4908,6 +4950,7 @@ private ToolExecution runGrep(string args, string workspace,
     string include;
     string pathArg;
     string mode = "content";
+    string outputFormat = "grouped";
     bool literal;
     bool caseSensitive = true;
     size_t contextLines;
@@ -4927,6 +4970,8 @@ private ToolExecution runGrep(string args, string workspace,
         if (auto field = "mode" in value.object)
             if (field.type == JSONType.string)
                 mode = toLower(field.str);
+        if (auto field = "format" in value.object)
+            if (field.type == JSONType.string) outputFormat = toLower(field.str);
         if (auto field = "literal" in value.object)
             literal = field.type == JSONType.true_;
         if (auto field = "caseSensitive" in value.object)
@@ -4964,6 +5009,8 @@ private ToolExecution runGrep(string args, string workspace,
     if (mode != "content" && mode != "files" && mode != "count")
         return ToolExecution("grep",
             "Error: grep `mode` must be content, files, or count.", true);
+    if (outputFormat != "grouped" && outputFormat != "classic")
+        return ToolExecution("grep", "Error: grep `format` must be grouped or classic.", true);
 
     const root = pathArg.length > 0
         ? resolveToolPath(pathArg, workspace) : workspace;
@@ -5001,6 +5048,7 @@ private ToolExecution runGrep(string args, string workspace,
     enum size_t maxLineChars = 300;
     enum ulong maxRecursiveFileBytes = 8UL * 1024 * 1024;
     string[] hits;
+    string[] previewHits;
     size_t totalMatches;
     size_t matchedFiles;
     bool capped;
@@ -5014,7 +5062,7 @@ private ToolExecution runGrep(string args, string workspace,
     void reportGrepProgress(bool force = false)
     {
         progress.value.matches = totalMatches;
-        progress.report(hits, force);
+        progress.report(previewHits, force);
     }
     reportGrepProgress(true);
     const deadline = MonoTime.currTime + timeoutMs.msecs;
@@ -5137,10 +5185,16 @@ private ToolExecution runGrep(string args, string workspace,
 
         void emitLine(size_t number, string display, bool matched)
         {
+            if (!lastEmittedLine && outputFormat == "grouped") hits ~= "File: " ~ filePath;
             if (lastEmittedLine > 0 && number > lastEmittedLine + 1)
                 hits ~= "--";
-            hits ~= filePath ~ (matched ? ":" : "-") ~ to!string(number) ~
+            hits ~= (outputFormat == "classic" ? filePath ~ (matched ? ":" : "-") : "") ~ to!string(number) ~
                 (matched ? ": " : "- ") ~ display;
+            if (matched)
+            {
+                previewHits ~= filePath ~ ":" ~ to!string(number) ~ ": " ~ display;
+                if (previewHits.length > 8) previewHits = previewHits[$ - 8 .. $].dup;
+            }
             lastEmittedLine = number;
         }
         try
@@ -5199,6 +5253,8 @@ private ToolExecution runGrep(string args, string workspace,
                     processed = true; // This mode needs only the first match.
                     ++matchedFiles;
                     hits ~= filePath;
+                    previewHits ~= filePath;
+                    if (previewHits.length > 8) previewHits = previewHits[$ - 8 .. $].dup;
                     if (matchedFiles >= maxResults)
                     {
                         capped = true;
@@ -5230,6 +5286,8 @@ private ToolExecution runGrep(string args, string workspace,
             ++matchedFiles;
             hits ~= filePath ~ ": " ~ to!string(fileMatches) ~
                 (fileMatches == 1 ? " matching line" : " matching lines");
+            previewHits ~= hits[$ - 1];
+            if (previewHits.length > 8) previewHits = previewHits[$ - 8 .. $].dup;
             if (matchedFiles >= maxResults)
             {
                 capped = true;
