@@ -4,6 +4,7 @@ import core.thread : Thread;
 import core.sync.mutex : Mutex;
 import core.time : MonoTime, seconds, msecs;
 import std.algorithm : endsWith, startsWith, canFind, any;
+import std.ascii : isHexDigit;
 import std.array : join;
 import std.conv : to;
 import std.datetime : Clock;
@@ -327,7 +328,6 @@ public final class DeveloperWorkflow
         bool gitResolution = false, bool required = true)
     {
         DeveloperSyncResult result;
-        if (!required) return result;
         try
         {
             auto lease = new CheckoutLease(dir);
@@ -349,6 +349,7 @@ public final class DeveloperWorkflow
             if (repairsOnly || (gitResolution && (unfinished || conflicts.any!(value => value.length > 0)))) return result;
             enforce(!unfinished && !conflicts.any!(value => value.length > 0),
                 "Finish source conflict resolution and call sync before ordinary edits.");
+            if (!required) return result;
             result = sync(dir, false);
             if (result.available)
                 result.message = "Source edit stopped. Call sync, integrate the maintainer update, and reread affected files before retrying. " ~ result.message;
@@ -357,7 +358,8 @@ public final class DeveloperWorkflow
         return result;
     }
 
-    public DeveloperSyncResult sync(string dir, bool apply, bool recoveryResolved = false)
+    public DeveloperSyncResult sync(string dir, bool apply, bool recoveryResolved = false,
+        string releaseRevision = "")
     {
         DeveloperSyncResult result;
         try
@@ -366,6 +368,10 @@ public final class DeveloperWorkflow
             auto lease = new CheckoutLease(dir);
             scope (exit) lease.release();
             enforce(git.length > 0, "Git is unavailable. Use Get source to prepare development tools.");
+            enforce(releaseRevision.length == 0 ||
+                ((releaseRevision.length == 40 || releaseRevision.length == 64) &&
+                    !releaseRevision.any!(value => !isHexDigit(value))),
+                "The update's published source revision is invalid.");
             if (!apply)
             {
                 gitCommand(dir, ["rev-parse", "--verify", "HEAD"], "Checking source checkout");
@@ -386,6 +392,10 @@ public final class DeveloperWorkflow
             gitCommand(dir, ["fetch", "--no-tags", upstreamUrl,
                 "+refs/heads/" ~ upstreamBranch ~ ":" ~ upstreamRef], "Checking maintainer updates");
             result.revision = gitCommand(dir, ["rev-parse", upstreamRef], "Reading upstream revision");
+            if (releaseRevision.length)
+                enforce(raw([git, "-C", dir, "merge-base", "--is-ancestor",
+                    releaseRevision, upstreamRef], dir).status == 0,
+                    "The update's published source is unavailable on the maintainer branch. Retry Update after the source channel is repaired.");
             const count = gitCommand(dir, ["rev-list", "--count", "HEAD.." ~ upstreamRef], "Comparing source");
             result.available = to!ulong(count) > 0;
             if (!result.available) { result.message = "Aurora source is up to date with the maintainer."; return result; }
@@ -425,7 +435,6 @@ public final class DeveloperWorkflow
     public DeveloperSyncResult checkRebuildSource(string dir, bool required = true)
     {
         DeveloperSyncResult result;
-        if (!required) return result;
         try
         {
             auto lease = new CheckoutLease(dir);
@@ -433,6 +442,7 @@ public final class DeveloperWorkflow
             enforce(git.length > 0, "Git is unavailable; prepare the Developer tools first.");
             enforce(dir.length > 0, "Aurora source has not been located.");
             requireCleanOperation(dir);
+            if (!required) return result;
             result = sync(dir, false);
             if (result.available)
                 result.message = "Update Aurora's source before rebuilding. " ~ result.message;
@@ -440,8 +450,8 @@ public final class DeveloperWorkflow
         catch (Exception e) { result.failed = true; result.message = "Error: " ~ e.msg; }
         if (result.failed)
             result.message ~= " Rebuild stopped because the source could not be verified. " ~
-                "Keep local work, resolve any conflict, and retry. To build without this check, " ~
-                "turn off Require latest maintainer source before rebuild in Settings > Developer.";
+                "Keep local work, resolve any conflict, and retry. The latest-source setting skips remote checks only; " ~
+                "conflicts and unfinished recovery still need resolution.";
         return result;
     }
 

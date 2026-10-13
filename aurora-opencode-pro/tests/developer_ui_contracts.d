@@ -5,7 +5,8 @@ import auroraopencode.core : Settings, saveSettings,
     loadSettings, setOpencodeStateDirectoryForTesting, OpenCodeToolCall, opencodeTheme;
 import auroraopencode.tools : executeTool, syncRequestHandler, rebuildRequestHandler, rebuildSourceCheckHandler,
     builtinToolDefinitions, nativeOnlyToolDefinitions;
-import auroraopencode.developerworkflow : DeveloperSyncResult;
+import auroraopencode.developerworkflow : DeveloperWorkflow, DeveloperSyncResult, maintainerSourceBranch,
+    runDeveloperCommand;
 import auroraopencode.updater : UpdateCheck;
 import core.thread : Thread;
 import core.time : msecs, seconds;
@@ -13,11 +14,11 @@ import std.json : parseJSON, JSONValue;
 import rebuild : findAuroraSourceFolder, findDeveloperSourceDirectory;
 import core.time : MonoTime;
 import std.file : copy, exists, mkdirRecurse, readText, tempDir, thisExePath, write;
-import std.path : buildPath;
+import std.path : buildPath, dirName;
 import std.process : Config, execute;
 import std.conv : to;
 import std.stdio : writeln;
-import std.string : indexOf, startsWith;
+import std.string : indexOf, startsWith, strip;
 import std.array : join;
 
 Widget find(Widget root, string id)
@@ -36,6 +37,24 @@ T findType(T)(Widget root)
     return null;
 }
 
+void finishUpdate(OpenCodeRoot root)
+{
+    const deadline = MonoTime.currTime + seconds(15);
+    while (root.updatePendingForTesting() && MonoTime.currTime < deadline)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(msecs(10));
+    }
+    assert(!root.updatePendingForTesting(), "Update worker did not finish");
+}
+
+string git(string directory, string[] args)
+{
+    auto result = runDeveloperCommand(["git", "-C", directory] ~ args, directory, 30, "", null);
+    assert(result.status == 0, result.output);
+    return result.output.strip;
+}
+
 void main(string[] args)
 {
     const state = buildPath(tempDir(), "aurora-developer-ui-" ~ to!string(MonoTime.currTime.ticks));
@@ -46,7 +65,8 @@ void main(string[] args)
         mkdirRecurse(state);
         const packaged = buildPath(state, "Aurora OpenCode.exe");
         copy(thisExePath(), packaged);
-        foreach (scenario; ["configured", "narrow", "recovered", "stale", "repository", "source-subdirectory", "snapshot", "flat", "nested", "recipe", "reported", "chosen", "missing"])
+        foreach (scenario; ["configured", "narrow", "recovered", "stale", "repository", "source-subdirectory", "snapshot", "flat", "nested", "recipe", "reported", "chosen", "missing",
+            "update-current", "update-conflict", "update-offline", "update-nondeveloper", "update-integration"])
         {
             auto result = execute([packaged, scenario], null, Config.suppressConsole);
             assert(result.status == 0, scenario ~ ": " ~ result.output);
@@ -84,9 +104,41 @@ void main(string[] args)
         }
     }
     else mkdirRecurse(state);
+    string publishedRevision = "0123456789012345678901234567890123456789";
+    DeveloperWorkflow localWorkflow;
+    if (scenario == "update-integration")
+    {
+        const checkout = dirName(source);
+        const upstream = buildPath(state, "maintainer.git");
+        const author = buildPath(state, "maintainer");
+        git(state, ["init", "--bare", upstream]);
+        git(checkout, ["init", "-b", maintainerSourceBranch]);
+        git(checkout, ["config", "user.name", "Fixture"]);
+        git(checkout, ["config", "user.email", "fixture@example.invalid"]);
+        git(checkout, ["config", "core.autocrlf", "false"]);
+        git(checkout, ["add", "-A"]);
+        git(checkout, ["commit", "-m", "Older source"]);
+        git(checkout, ["remote", "add", "origin", upstream]);
+        git(checkout, ["push", "origin", maintainerSourceBranch]);
+        git(state, ["clone", "--branch", maintainerSourceBranch, upstream, author]);
+        git(author, ["config", "user.name", "Fixture"]);
+        git(author, ["config", "user.email", "fixture@example.invalid"]);
+        write(buildPath(author, "aurora-opencode-pro", "source", "owner-update.d"), "latest maintainer source\n");
+        git(author, ["add", "-A"]);
+        git(author, ["commit", "-m", "Maintainer update"]);
+        git(author, ["push", "origin", maintainerSourceBranch]);
+        publishedRevision = git(author, ["rev-parse", "HEAD"]);
+        write(buildPath(source, "source", "app.d"), "module app; // staged customization\n");
+        git(checkout, ["add", "aurora-opencode-pro/source/app.d"]);
+        write(buildPath(source, "source", "app.d"), "module app; // staged customization\n// unfinished change\n");
+        write(buildPath(source, "draft.txt"), "untracked work\n");
+        localWorkflow = new DeveloperWorkflow("git");
+        localWorkflow.upstreamUrl = upstream;
+    }
     setOpencodeStateDirectoryForTesting(state);
     Settings settings;
-    settings.developerMode = true;
+    settings.developerMode = scenario != "update-nondeveloper";
+    settings.developerAutoReapply = false; // Explicit Update still synchronizes source.
     if (scenario == "configured") settings.developerSourceDir = source;
     else if (scenario == "stale") settings.developerSourceDir = buildPath(state, "old-location", "aurora-opencode-pro");
     else if (scenario == "repository") settings.developerSourceDir = buildPath(state, "source", "aurora-gui");
@@ -122,13 +174,44 @@ void main(string[] args)
     assert(toolbarRebuild !is null && toolbarRebuild.visible() && toolbarRebuild !is update,
         "Developer installs need separate Update and Rebuild buttons, including source setup");
     assert(toolbarRebuild.bounds().right() <= toolbarRebuild.parent().bounds().width);
-    if (scenario == "configured" || scenario == "missing")
+    if (scenario == "missing")
     {
-        bool checked, installed;
+        bool checked;
+        root.updateCheckForTesting = (string executable, string directory) {
+            checked = true;
+            return UpdateCheck.init;
+        };
+        update.activate();
+        assert(driver.paint());
+        assert(find(root, "oc-developer-source-setup") !is null && !checked,
+            "Developer Update must offer source setup before a binary-only update");
+        (cast(Button) find(root, "oc-developer-source-cancel")).activate();
+        driver.pressKey(Key.escape);
+    }
+    if (scenario == "configured" || scenario.startsWith("update-"))
+    {
+        bool checked, installed, sourceConflict;
+        int sourceUpdates, finalChecks;
+        const revision = publishedRevision;
         root.updateCheckForTesting = (string executable, string directory) {
             assert(executable == thisExePath() && directory == state);
             checked = true;
-            return UpdateCheck(true, "fixture-update.exe", "fixture-hash", "");
+            return UpdateCheck(scenario != "update-current" && scenario != "update-integration", "fixture-update.exe", "fixture-hash", "",
+                revision, maintainerSourceBranch);
+        };
+        root.updateSourceForTesting = (string directory, string publishedRevision, bool apply) {
+            assert(scenario != "update-nondeveloper", "Ordinary Update must remain binary-only");
+            assert(directory == source && publishedRevision == revision);
+            if (apply) ++sourceUpdates;
+            else ++finalChecks;
+            if (localWorkflow !is null)
+                return apply ? localWorkflow.sync(directory, true, false, publishedRevision)
+                    : localWorkflow.checkSourceBeforeEdit(directory, null, false, false);
+            if (scenario == "update-conflict" || (sourceConflict && !apply))
+                return DeveloperSyncResult(true, false, revision, "Error: Resolve these conflicts first: local-work.d");
+            if (scenario == "update-offline")
+                return DeveloperSyncResult(true, false, revision, "Error: network unavailable");
+            return DeveloperSyncResult(false, true, revision, "Local work reapplied.");
         };
         root.updateInstallForTesting = (string executable, string staged, string directory, string hash) {
             assert(executable == thisExePath() && staged == "fixture-update.exe" &&
@@ -139,23 +222,62 @@ void main(string[] args)
         update.activate();
         assert(find(root, "oc-update-message") !is null &&
             find(root, "oc-rebuild-source-blocked") is null,
-            "Update must open the binary-update dialog even with local source");
-        const deadline = MonoTime.currTime + seconds(5);
+            "Update must open its own dialog and keep Rebuild separate");
+        assert(!root.requestRebuild("Must not race Update"));
+        auto concurrentSync = executeTool(OpenCodeToolCall("update-sync", "sync", "{}"), state);
+        assert(concurrentSync.failed, "Sync must not race an Update worker");
         auto install = cast(Button) find(root, "oc-update-install");
-        while (!install.visible() && MonoTime.currTime < deadline)
+        finishUpdate(root);
+        assert(checked);
+        if (scenario == "update-current" || scenario == "update-integration")
         {
-            root.tickTree(0.02);
-            Thread.sleep(msecs(10));
+            assert(sourceUpdates == 1 && !install.visible() && !installed);
+            auto message = cast(TextArea) find(root, "oc-update-message");
+            assert(message.textUtf8().indexOf("Source synchronized") >= 0);
+            if (scenario == "update-integration")
+            {
+                assert(readText(buildPath(source, "source", "owner-update.d")) == "latest maintainer source\n");
+                assert(git(source, ["show", ":aurora-opencode-pro/source/app.d"]) == "module app; // staged customization");
+                assert(readText(buildPath(source, "source", "app.d")) == "module app; // staged customization\n// unfinished change\n");
+                assert(readText(buildPath(source, "draft.txt")) == "untracked work\n");
+                git(source, ["merge-base", "--is-ancestor", publishedRevision, "HEAD"]);
+                assert(git(source, ["for-each-ref", "--format=%(refname)", "refs/aurora/recovery/"]).length > 0);
+            }
         }
-        assert(checked && install.visible());
-        install.activate();
-        assert(installed && !root.rebuildPendingForTesting(),
-            "Binary updates must use the installer without starting a source rebuild");
-        if (scenario == "configured")
-            assert(readText(buildPath(source, "source", "local-work.d")) == "developer's unfinished changes");
+        else if (scenario == "update-conflict" || scenario == "update-offline")
+        {
+            assert(sourceUpdates == 1 && !install.visible() && !installed && !root.rebuildPendingForTesting());
+            auto recovery = find(root, "oc-update-source-recovery");
+            assert(recovery !is null && recovery.visible());
+            auto message = cast(TextArea) find(root, "oc-update-message");
+            assert(message.textUtf8().indexOf("Local work is preserved") >= 0);
+        }
+        else
+        {
+            assert(install.visible());
+            install.activate();
+            finishUpdate(root);
+            assert(installed && !root.rebuildPendingForTesting(),
+                "A successful source preparation must install the binary without rebuilding");
+            assert(scenario == "update-nondeveloper"
+                ? sourceUpdates == 0 && finalChecks == 0
+                : sourceUpdates == 2 && finalChecks == 1);
+            if (scenario == "configured")
+            {
+                installed = false;
+                sourceConflict = true;
+                (cast(Button) find(root, "oc-update-install")).activate();
+                finishUpdate(root);
+                install = cast(Button) find(root, "oc-update-install");
+                assert(!installed && !install.visible() && !root.rebuildPendingForTesting(),
+                    "Conflicts introduced after staging must stop installation on retry");
+            }
+        }
+        assert(readText(buildPath(source, "source", "local-work.d")) == "developer's unfinished changes");
         (cast(Button) find(root, "oc-update-close")).activate();
         assert(driver.paint());
-        writeln("PASS: visible Developer Update checks and installs the maintainer binary separately from Rebuild: ", scenario);
+        writeln("PASS: Update prepares source, checks conflicts before installation and leaves Rebuild separate: ", scenario);
+        if (scenario.startsWith("update-")) return;
     }
     if (scenario != "missing" && scenario != "chosen")
         assert(root.introSuggestionPromptsForTesting().join("\n").indexOf(source) >= 0,

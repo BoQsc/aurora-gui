@@ -7023,8 +7023,8 @@ private immutable string changesButtonTooltipText = "Review file changes";
 private immutable string profileButtonTooltipText = "Usage and account";
 private immutable string settingsButtonTooltipText = "Settings and providers";
 private immutable string rebuildButtonTooltipText =
-    "Rebuild and relaunch (right-click: update)";
-private immutable string updateButtonTooltipText = "Install a newer release";
+    "Rebuild selected source and relaunch";
+private immutable string updateButtonTooltipText = "Update the app and, in Developer mode, synchronize source";
 private immutable string railToggleTooltipText = "Show or hide projects";
 private immutable string newProjectTooltipText = "New sandbox project";
 private immutable string openFolderTooltipText = "Open this folder";
@@ -10268,8 +10268,15 @@ private string _suggestExcludeId;
     /// Keep update-button fixtures independent of the network and installed app.
     public UpdateCheck delegate(string, string) updateCheckForTesting;
     public bool delegate(string, string, string, string) updateInstallForTesting;
+    public DeveloperSyncResult delegate(string, string, bool) updateSourceForTesting;
     private string _updateStagedPath;
     private string _updateHash;
+    private string _updateSourceRevision;
+    private string _updateSourceBranch;
+    private string _updateSourcePath;
+    private bool _updateDeveloperMode;
+    private bool _updateInstallRequested;
+    private string _updateProgress;
     // Developer mode: a packaged install can download the repository snapshot
     // (source provisioning), and a git checkout can commit/push with the user's
     // own git. Both run on worker threads and are drained on the UI thread.
@@ -10304,12 +10311,11 @@ private string _suggestExcludeId;
     private string _developerSyncSource;
     private MonoTime _developerSyncDue;
     private string _pendingDeveloperNote;
-    // The update check gets a visible dialog: the one-line status bar is easy
-    // to miss, and a build that can rebuild itself has no toolbar Update
-    // button, so the dialog is also where the install action lives.
+    // Keep source preparation and conflict recovery visible before installation.
     private PopupOverlay _updateDialog;
-    private Label _updateDialogMessage;
+    private TextArea _updateDialogMessage;
     private Button _updateDialogAction;
+    private Button _updateSourceRecoveryButton;
     // An agent-triggered rebuild arrives on the tool worker thread. Record it
     // there and perform it a few ticks later on the UI thread, by which point
     // the tool result has been drained and persisted into the transcript.
@@ -11115,6 +11121,8 @@ private string _suggestExcludeId;
         return _rebuildPending;
     }
 
+    public bool updatePendingForTesting() const { return _updateChecking; }
+
     /// Test-only: the resume prompt the app would inject for a given resume
     /// cause and rebuild-failure report ("" when the build succeeded).
     public static string resumePromptForTesting(string cause, string reason,
@@ -11185,9 +11193,8 @@ private string _suggestExcludeId;
     public bool requestRebuild(string reason = "")
     {
         if (_rebuildPending || _rebuildSourceChecking || _agentRebuildRequested ||
-            _sourceFetching || _developerPublishing)
+            _updateChecking || _sourceFetching || _developerPublishing)
             return false;
-        if (!_settings.developerRequireLatestSource) return performRebuild(reason);
         const source = developerSourceDirectory();
         if (source.length == 0)
         {
@@ -11196,8 +11203,9 @@ private string _suggestExcludeId;
         }
         _rebuildSourceChecking = true;
         updateStatus("Checking maintainer source before rebuilding…");
+        const required = _settings.developerRequireLatestSource;
         auto worker = new Thread({
-            auto result = checkRebuildSource(source, true);
+            auto result = checkRebuildSource(source, required);
             synchronized (this)
             {
                 _rebuildSourceCheckResult = result;
@@ -11277,7 +11285,7 @@ private string _suggestExcludeId;
         detail.setReadOnly(true);
         detail.layoutHints().preferredHeight = 150;
         content.add(new Label("Ask the agent to update source, reapply your work, and resolve conflicts."));
-        auto hint = content.add(new Label("Optional: turn off Require latest maintainer source in Settings > Developer."));
+        auto hint = content.add(new Label("The latest-source setting can skip remote checks; conflicts still require resolution."));
         hint.setScale(1);
         auto actions = content.add(new HBox(8));
         actions.layoutHints().preferredHeight = 36;
@@ -11302,7 +11310,7 @@ private string _suggestExcludeId;
     /// Enter the existing helper flow only after the UI or tool preflight passes.
     private bool performRebuild(string reason)
     {
-        if (_rebuildPending || _sourceFetching || _developerPublishing) return false;
+        if (_rebuildPending || _sourceFetching || _developerPublishing || _updateChecking) return false;
         _rebuildPending = true;
         updateStatus("Rebuilding; Aurora OpenCode will reopen when the new "
             ~ "build is ready...");
@@ -11341,38 +11349,54 @@ private string _suggestExcludeId;
 
     private void requestUpdate()
     {
-        if (_updateChecking || _rebuildPending) return;
-        if (_updateStagedPath.length > 0)
+        if (_updateChecking || _rebuildPending || _sourceFetching || _developerPublishing ||
+            _rebuildSourceChecking || _agentRebuildRequested) return;
+        if (_settings.developerMode && anyTurnIsBusy())
         {
-            writeResumeNoteIfTurnActive();
-            persistState();
-            _projectsWriter.save(_projectState);
-            const started = updateInstallForTesting is null
-                ? launchUpdateHelper(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash)
-                : updateInstallForTesting(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash);
-            if (!started)
-            {
-                updateStatus("Update failed: could not start the replacement helper.");
-                updateUpdateDialog(
-                    "Update failed: could not start the replacement helper.",
-                    true);
-                return;
-            }
-            _rebuildPending = true;
-            closeRuntimeClients();
-            updateStatus("Installing update and relaunching...");
-            _window.close();
+            updateStatus("Finish or stop the active turn before Update synchronizes your source. Your work is preserved.");
+            return;
+        }
+        const source = _settings.developerMode ? developerSourceDirectory() : "";
+        if (_settings.developerMode && source.length == 0)
+        {
+            showDeveloperSourceSetup(&requestUpdate);
             return;
         }
 
         _updateChecking = true;
+        _updateDeveloperMode = _settings.developerMode;
+        _updateSourcePath = source;
+        _updateInstallRequested = _updateStagedPath.length > 0;
+        _updateProgress = "";
         updateStatus("Checking for an Aurora update...");
         showUpdateCheckDialog();
         const exe = thisExePath();
         const stateDir = opencodeStateDirectory();
+        const staged = UpdateCheck(_updateStagedPath.length > 0, _updateStagedPath,
+            _updateHash, "", _updateSourceRevision, _updateSourceBranch);
+        const developer = _updateDeveloperMode;
         auto check = updateCheckForTesting;
         auto worker = new Thread({
-            auto result = check is null ? checkForUpdate(exe, stateDir) : check(exe, stateDir);
+            UpdateCheck result;
+            try
+            {
+                result = staged.available ? staged
+                    : check is null ? checkForUpdate(exe, stateDir) : check(exe, stateDir);
+                if (developer && result.error.length == 0)
+                {
+                    if (result.sourceBranch != maintainerSourceBranch || result.sourceRevision.length == 0)
+                        throw new Exception("The release does not identify source on this maintainer channel. Retry after the release metadata is repaired.");
+                    synchronized (this) { _updateProgress = "Synchronizing source and preserving local changes..."; }
+                    auto lease = new CheckoutLease(source);
+                    scope (exit) lease.release();
+                    DeveloperSyncResult synced;
+                    synchronized (developerOperationMutex())
+                        synced = prepareUpdateSource(source, result.sourceRevision, true);
+                    invalidateToolWorkspace(source);
+                    if (synced.failed) throw new Exception(synced.message);
+                }
+            }
+            catch (Exception e) { result.error = "Source update stopped: " ~ e.msg; }
             synchronized (this)
             {
                 _updateReady = result;
@@ -11383,9 +11407,67 @@ private string _suggestExcludeId;
         worker.start();
     }
 
+    /// Explicit Update always integrates source; the Sync source preference does
+    /// not turn this combined action into a binary-only update.
+    private DeveloperSyncResult prepareUpdateSource(string source, string revision, bool apply)
+    {
+        if (updateSourceForTesting !is null) return updateSourceForTesting(source, revision, apply);
+        auto progress = (string value) {
+            synchronized (this) { _updateProgress = value; }
+        };
+        auto workflow = new DeveloperWorkflow(ensureDeveloperTool("git", opencodeStateDirectory(), progress),
+            "", null, progress);
+        return apply ? workflow.sync(source, true, false, revision)
+            : workflow.checkSourceBeforeEdit(source, null, false, false);
+    }
+
+    private void installPreparedUpdate()
+    {
+        CheckoutLease lease;
+        scope (exit) { if (lease !is null) lease.release(); }
+        if (_settings.developerMode)
+        {
+            try
+            {
+                // Hold the physical checkout through the last conflict check
+                // and installer launch. A competing writer must finish first.
+                lease = new CheckoutLease(_updateSourcePath, null, 0);
+                DeveloperSyncResult checked;
+                synchronized (developerOperationMutex())
+                    checked = prepareUpdateSource(_updateSourcePath, _updateSourceRevision, false);
+                if (checked.failed) throw new Exception(checked.message);
+            }
+            catch (Exception e)
+            {
+                _updateStagedPath = "";
+                const message = "Source update stopped: " ~ e.msg ~
+                    "\nResolve conflicts, finish the Git operation, then retry Update. Aurora will stay open.";
+                updateStatus(message);
+                updateUpdateDialog(message, false, true);
+                return;
+            }
+        }
+        writeResumeNoteIfTurnActive();
+        persistState();
+        _projectsWriter.save(_projectState);
+        const started = updateInstallForTesting is null
+            ? launchUpdateHelper(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash)
+            : updateInstallForTesting(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash);
+        if (!started)
+        {
+            updateStatus("Update failed: could not start the replacement helper.");
+            updateUpdateDialog("Update failed: could not start the replacement helper.", true);
+            return;
+        }
+        _rebuildPending = true;
+        closeRuntimeClients();
+        updateStatus("Installing update and relaunching...");
+        _window.close();
+    }
+
     private bool useDeveloperSourceFolder(string folder)
     {
-        if (anyTurnIsBusy() || _sourceFetching || _developerPublishing || _rebuildSourceChecking || _agentRebuildRequested || _rebuildPending)
+        if (anyTurnIsBusy() || _updateChecking || _sourceFetching || _developerPublishing || _rebuildSourceChecking || _agentRebuildRequested || _rebuildPending)
         {
             updateStatus("Finish the active development operation before changing source folders.");
             return false;
@@ -11409,7 +11491,7 @@ private string _suggestExcludeId;
 
     private void showDeveloperSourceFolderDialog(void delegate() ready = null)
     {
-        if (_sourceFetching || _developerPublishing || _rebuildSourceChecking || _rebuildPending) return;
+        if (_updateChecking || _sourceFetching || _developerPublishing || _rebuildSourceChecking || _rebuildPending) return;
         dismissPopup();
         FileDialogOptions options;
         options.mode = FileDialogMode.open;
@@ -11454,7 +11536,7 @@ private string _suggestExcludeId;
 
     private void requestDeveloperRebuild()
     {
-        if (_developerPublishing || _sourceFetching) return;
+        if (_updateChecking || _developerPublishing || _sourceFetching) return;
         if (developerSourceDirectory().length == 0)
         {
             showDeveloperSourceSetup(&requestDeveloperRebuild);
@@ -11467,7 +11549,7 @@ private string _suggestExcludeId;
     /// Continue a requested Publish/Rebuild only after preparation succeeds.
     private void requestSourceFetch(void delegate() ready = null)
     {
-        if (_sourceFetching || _developerPublishing || _rebuildSourceChecking ||
+        if (_updateChecking || _sourceFetching || _developerPublishing || _rebuildSourceChecking ||
             _agentRebuildRequested || _rebuildPending) return;
         if (anyTurnIsBusy())
         {
@@ -11586,8 +11668,8 @@ private string _suggestExcludeId;
     /// The agent applies source updates between operations; background checks only notify.
     private string onSourceSyncRequested(string arguments)
     {
-        if (_rebuildSourceChecking || _agentRebuildRequested || _rebuildPending)
-            return "Error: A rebuild check or rebuild is pending. Wait for it before syncing source.";
+        if (_updateChecking || _sourceFetching || _developerPublishing || _rebuildSourceChecking || _agentRebuildRequested || _rebuildPending)
+            return "Error: An Update, source operation or rebuild is pending. Wait for it before syncing source.";
         const source = developerToolSourceDirectory();
         auto lease = new CheckoutLease(source);
         scope (exit) lease.release();
@@ -11609,6 +11691,7 @@ private string _suggestExcludeId;
 
     private string onDeveloperSourceEditCheck(string source, string[] paths, bool gitResolution)
     {
+        if (_updateChecking) return "Error: Update is preparing source. Wait for it before editing or resolving conflicts.";
         auto workflow = new DeveloperWorkflow(findDeveloperTool("git", opencodeStateDirectory()));
         auto result = workflow.checkSourceBeforeEdit(source, paths, gitResolution, _settings.developerRequireLatestSource);
         return result.failed || result.available ? result.message : "";
@@ -11616,7 +11699,7 @@ private string _suggestExcludeId;
 
     private void startDeveloperUpstreamCheck()
     {
-        if (_developerSyncRunning || _sourceFetching || _developerPublishing) return;
+        if (_updateChecking || _developerSyncRunning || _sourceFetching || _developerPublishing) return;
         const source = developerSourceDirectory();
         const git = findDeveloperTool("git", opencodeStateDirectory());
         if (source.length == 0) return;
@@ -11669,7 +11752,7 @@ private string _suggestExcludeId;
 
     private void runPublishPullRequest(string message)
     {
-        if (_developerPublishing || _sourceFetching || _rebuildSourceChecking ||
+        if (_updateChecking || _developerPublishing || _sourceFetching || _rebuildSourceChecking ||
             _agentRebuildRequested || _rebuildPending) return;
         if (anyTurnIsBusy())
         {
@@ -11763,36 +11846,66 @@ private string _suggestExcludeId;
     private void drainUpdateResult()
     {
         UpdateCheck result;
+        string progress;
+        bool done;
         synchronized (this)
         {
-            if (!_updateResultPending) return;
-            result = _updateReady;
-            _updateResultPending = false;
+            progress = _updateProgress;
+            _updateProgress = "";
+            done = _updateResultPending;
+            if (done)
+            {
+                result = _updateReady;
+                _updateResultPending = false;
+            }
+        }
+        if (!done)
+        {
+            if (progress.length > 0) updateUpdateDialog(progress, false);
+            return;
         }
         _updateChecking = false;
+        if (_updateDeveloperMode != _settings.developerMode ||
+            (_updateDeveloperMode && _updateSourcePath != developerSourceDirectory()))
+            result.error = "Developer mode or the source folder changed during Update. Retry for the current source.";
         string message;
         bool canInstall;
         if (result.error.length > 0)
         {
-            message = "Update check failed: " ~ result.error;
+            _updateStagedPath = "";
+            message = "Update stopped: " ~ result.error;
+            if (_updateDeveloperMode)
+                message ~= "\nLocal work is preserved. Resolve any conflicts, finish the Git operation and call Sync source, then retry Update. Rebuild remains separate.";
             updateStatus(message);
         }
         else if (result.available)
         {
             _updateStagedPath = result.stagedPath;
             _updateHash = result.hash;
+            _updateSourceRevision = result.sourceRevision;
+            _updateSourceBranch = result.sourceBranch;
             if (_updateButton !is null) _updateButton.setText("Update");
-            message = "An Aurora update is ready.";
+            message = _updateDeveloperMode
+                ? "Source synchronized; local changes preserved. The app update is ready. Install and restart to use it. Rebuild remains separate."
+                : "An Aurora update is ready.";
             canInstall = true;
             updateStatus("An Aurora update is ready. Click Install and restart " ~
                 "to install it.");
         }
         else
         {
-            message = "Aurora OpenCode is up to date.";
+            message = _updateDeveloperMode
+                ? "The app is up to date. Source synchronized; local changes preserved. Use Rebuild separately to apply your local customizations."
+                : "Aurora OpenCode is up to date.";
             updateStatus(message);
         }
-        updateUpdateDialog(message, canInstall);
+        if (result.error.length == 0 && _updateDeveloperMode)
+        {
+            _pendingDeveloperNote = "";
+            _developerNotifiedRevision = null;
+        }
+        updateUpdateDialog(message, canInstall, result.error.length > 0 && _updateDeveloperMode);
+        if (canInstall && _updateInstallRequested) installPreparedUpdate();
     }
 
     /// Show the update dialog while the check (and any download) runs, so the
@@ -11804,19 +11917,32 @@ private string _suggestExcludeId;
         _updateDialog = null;
         _updateDialogMessage = null;
         _updateDialogAction = null;
+        _updateSourceRecoveryButton = null;
 
         auto content = new VBox(10, Insets(16));
-        content.layoutHints().preferredWidth = 420;
+        content.layoutHints().preferredWidth = 640;
 
         auto title = content.add(new Label("Aurora OpenCode update"));
         title.setPixelSize(opencodeFontTitle);
 
         _updateDialogMessage =
-            content.add(new Label("Checking for an Aurora update..."));
+            content.add(new TextArea("Checking for an Aurora update..."));
         _updateDialogMessage.setId("oc-update-message");
+        _updateDialogMessage.setReadOnly(true);
+        _updateDialogMessage.layoutHints().preferredHeight = 170;
 
         auto footer = new HBox(8);
         footer.layoutHints().preferredHeight = 36;
+        _updateSourceRecoveryButton = footer.add(new Button("Copy conflict-resolution prompt"));
+        _updateSourceRecoveryButton.setId("oc-update-source-recovery");
+        _updateSourceRecoveryButton.setVisible(false);
+        _updateSourceRecoveryButton.onClick = delegate() {
+            copyTextToClipboard("Synchronize Aurora source at \"" ~ developerSourceDirectory() ~
+                "\" using the sync tool. Preserve local changes. Resolve and stage conflicts, finish the Git operation, " ~
+                "then call sync again. Inspect any recovery snapshot before acknowledging recoveryResolved=true. " ~
+                "Reread changed files and tell me when I can retry Update. Rebuild remains a separate action.");
+            updateStatus("Conflict-resolution prompt copied. Paste it into your development chat.");
+        };
         footer.add(new Spacer());
         auto close = footer.add(new Button("Close"));
         close.setId("oc-update-close");
@@ -11831,13 +11957,14 @@ private string _suggestExcludeId;
 
         auto popup = new PopupOverlay(content, this);
         popup.setAnchor(Rect.init, PopupPlacement.centered);
-        popup.setRequestedSize(Size(440, 190));
+        popup.setRequestedSize(Size(660, 290));
         popup.setBackdrop(Color.rgba(0, 0, 0, 150));
         popup.onDismissed = delegate()
         {
             _updateDialog = null;
             _updateDialogMessage = null;
             _updateDialogAction = null;
+            _updateSourceRecoveryButton = null;
             if (_activePopup is popup) _activePopup = null;
         };
         _updateDialog = popup;
@@ -11846,10 +11973,11 @@ private string _suggestExcludeId;
 
     /// Reflect the finished check in the dialog, if the user still has it open.
     /// A staged update offers the install action; otherwise only Close remains.
-    private void updateUpdateDialog(string message, bool canInstall)
+    private void updateUpdateDialog(string message, bool canInstall, bool sourceBlocked = false)
     {
         if (_updateDialog is null) return;
         if (_updateDialogMessage !is null) _updateDialogMessage.setText(message);
+        if (_updateSourceRecoveryButton !is null) _updateSourceRecoveryButton.setVisible(sourceBlocked);
         if (_updateDialogAction !is null)
         {
             _updateDialogAction.setVisible(canInstall);
@@ -11888,7 +12016,7 @@ private string _suggestExcludeId;
     /// the UI thread once the tool result has settled into the transcript.
     private bool onAgentRebuildRequested(string reason)
     {
-        if (_rebuildPending || _rebuildSourceChecking || _sourceFetching ||
+        if (_updateChecking || _rebuildPending || _rebuildSourceChecking || _sourceFetching ||
             _developerPublishing || _agentRebuildRequested) return false;
         if (!canSelfRebuild()) return false;
         _agentRebuildReason = reason;
@@ -18408,9 +18536,9 @@ private void pollButtonSuggestionRequest()
     private void sendMessage()
     {
         const submittedTicks = MonoTime.currTime.ticks;
-        if (_sourceFetching || _developerPublishing)
+        if (_updateChecking || _sourceFetching || _developerPublishing)
         {
-            updateStatus("Source preparation or publication is still running. Your prompt is kept here; send it when that finishes.");
+            updateStatus("Update, source preparation or publication is still running. Your prompt is kept here; send it when that finishes.");
             return;
         }
         // Startup is still parsing the saved conversations off the UI thread.

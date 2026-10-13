@@ -37,6 +37,8 @@ struct UpdateCheck
     string stagedPath;
     string hash;
     string error;
+    string sourceRevision;
+    string sourceBranch;
 }
 
 private string fileHash(string path)
@@ -45,18 +47,27 @@ private string fileHash(string path)
 }
 
 /// Fetch a small release description, then stage and verify a newer EXE.
-UpdateCheck checkForUpdate(string exePath, string stateDir)
+UpdateCheck checkForUpdate(string exePath, string stateDir,
+    string delegate() releaseForTesting = null)
 {
     UpdateCheck result;
     try
     {
-        auto release = parseJSON(fetchReleaseMetadata());
+        auto release = parseJSON(releaseForTesting is null
+            ? fetchReleaseMetadata() : releaseForTesting());
         const hash = toLower(release["sha256"].str);
         const size = release["size"].integer;
         const url = release["url"].str;
         if (hash.length != 64 || size <= 0 || size > maxReleaseBytes ||
             url != releaseUrl)
             throw new Exception("Release information is invalid.");
+        if (auto revision = "source_commit" in release.object)
+            result.sourceRevision = revision.str;
+        if (auto branch = "source_branch" in release.object)
+            result.sourceBranch = branch.str;
+        if (auto dirty = "source_dirty" in release.object)
+            if (dirty.type == JSONType.true_)
+                throw new Exception("The published release was built from unpublished source changes.");
         if (hash == fileHash(exePath)) return result;
 
         mkdirRecurse(stateDir);
