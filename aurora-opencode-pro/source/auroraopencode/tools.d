@@ -1,4 +1,7 @@
 module auroraopencode.tools;
+import auroraopencode.core : imageAttachmentToJson, imageAttachmentFromJson;
+import auroraopencode.imagecontext : retireImagesArgumentsError;
+import auroraopencode.imagenormalization : ImageCrop;
 import auroraopencode.verification : VerificationEvidence, verificationCheck;
 import auroraopencode.filetransfer : transferFiles;
 import auroraopencode.download : downloadFile, checksumFile, validSha256;
@@ -8,7 +11,7 @@ import auroraopencode.searchprogress : SearchProgress, SearchReporter,
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall,
     OpenCodeToolDef, ensureStateDirectory, opencodeStateDirectory;
 import auroraopencode.attachments : attachmentImageForData,
-    attachmentImageKindForBytes, attachmentImageMaxBytes;
+    attachmentImageKindForBytes, attachmentImageMaxBytes, attachmentImageInputMaxBytes, attachmentImageForInlineData;
 // experimental: websearch - delete with source/auroraopencode/websearch.d
 import auroraopencode.websearch : experimentalWebSearchExecute,
     experimentalWebSearchTools;
@@ -105,11 +108,7 @@ public int runFilesystemHelperMode(string[] args)
     response["images"] = JSONValue.emptyArray;
     foreach (image; result.images)
     {
-        JSONValue encoded;
-        encoded["mimeType"] = image.mimeType;
-        encoded["name"] = image.name;
-        encoded["base64Data"] = image.base64Data;
-        response["images"].array ~= encoded;
+        response["images"].array ~= imageAttachmentToJson(image);
     }
     stdout.write(response.toString());
     stdout.flush();
@@ -307,11 +306,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         result.failed = response["failed"].boolean;
         foreach (imageJson; response["images"].array)
         {
-            ChatImageAttachment image;
-            image.mimeType = imageJson["mimeType"].str;
-            image.name = imageJson["name"].str;
-            image.base64Data = imageJson["base64Data"].str;
-            result.images ~= image;
+            result.images ~= imageAttachmentFromJson(imageJson);
         }
         return result;
     }
@@ -558,12 +553,24 @@ private OpenCodeToolDef viewImageToolDefinition()
 {
     return OpenCodeToolDef(
         "view_image",
-        "Load a local PNG, JPEG, WebP, or GIF and attach its pixels to your " ~
-        "next turn for visual inspection. Use this when the user asks about " ~
-        "an image by path: `read` is text-only, while `open` only shows the " ~
-        "image to the user. Paths may be workspace-relative or absolute.",
-        `{"type":"object","properties":{"filePath":{"type":"string","description":"Image path, relative to the workspace or absolute"}},"required":["filePath"]}`
+        "Inspect pixels from a local image file or an archived attachmentBlob shown " ~
+        "in image labels. Images are optimized by default. Use crop in original pixel " ~
+        "coordinates for fine text; detail=original explicitly sends full detail " ~
+        "(maximum 4 MiB). Originals are preserved. After recording the needed visual " ~
+        "findings, use retire_images to avoid reprocessing pixels on every later request.",
+        `{"type":"object","properties":{"filePath":{"type":"string","description":"Image path, relative to the workspace or absolute"},"attachmentBlob":{"type":"string","description":"Archived original blob id from an image label; use instead of filePath"},"detail":{"type":"string","enum":["auto","original"],"description":"auto optimizes dimensions and bytes; original preserves detail"},"crop":{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["x","y","width","height"]}},"anyOf":[{"required":["filePath"]},{"required":["attachmentBlob"]}]}`
     );
+}
+
+private OpenCodeToolDef retireImagesToolDefinition()
+{
+    return OpenCodeToolDef("retire_images",
+        "Save a visual summary and stop resending selected images on later requests. " ~
+        "Use imageIds from image labels after extracting all details needed for the task. " ~
+        "Keep pixels active while still comparing or inspecting them. This preserves " ~
+        "the transcript and originals; use view_image with attachmentBlob to inspect " ~
+        "them again. Supply a useful summary including relevant text, layout, and uncertainties.",
+        `{"type":"object","properties":{"imageIds":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"string"}},"summary":{"type":"string","description":"Visual findings to retain after removing pixels from later requests"}},"required":["imageIds","summary"]}`);
 }
 
 /// Inspect and control commands launched with `background:true`.
@@ -707,6 +714,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         dshellToolDefinition(),
         openToolDefinition(),
         viewImageToolDefinition(),
+        retireImagesToolDefinition(),
         copyToolDefinition(),
         moveToolDefinition(),
         renameToolDefinition(),
@@ -772,6 +780,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         dshellToolDefinition(),
         openToolDefinition(),
         viewImageToolDefinition(),
+        retireImagesToolDefinition(),
         copyToolDefinition(),
         moveToolDefinition(),
         renameToolDefinition(),
@@ -3415,50 +3424,73 @@ private ToolExecution runViewImage(string args, string workspace)
     JSONValue value;
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
-    string filePath;
-    if (value.type == JSONType.object)
-        if (auto field = "filePath" in value.object)
-            if (field.type == JSONType.string)
-                filePath = field.str;
-    if (filePath.length == 0)
-        return ToolExecution("view_image",
-            "Error: view_image requires a `filePath` argument.", true);
-
-    const path = resolveToolPath(filePath, workspace);
-    if (!exists(path) || !isFile(path))
-        return ToolExecution("view_image", "Error: image file not found: " ~
-            path, true);
-
-    ulong size;
-    try size = getSize(path);
-    catch (Exception error)
-        return ToolExecution("view_image", "Error: could not inspect image: " ~
-            error.msg, true);
-    if (size == 0)
-        return ToolExecution("view_image", "Error: image file is empty: " ~
-            path, true);
-    if (size > attachmentImageMaxBytes)
-        return ToolExecution("view_image", "Error: image is " ~
-            to!string(size) ~ " bytes; the maximum is " ~
-            to!string(attachmentImageMaxBytes) ~ " bytes. Resize or convert " ~
-            "it before viewing.", true);
-
+    string filePath, attachmentBlob, detail = "auto";
+    ImageCrop crop;
+    if (value.type != JSONType.object)
+        return ToolExecution("view_image", "Error: expected image arguments.", true);
+    if (auto f = "filePath" in value.object) if (f.type == JSONType.string) filePath = f.str;
+    if (auto f = "attachmentBlob" in value.object) if (f.type == JSONType.string) attachmentBlob = f.str;
+    if (auto f = "detail" in value.object) if (f.type == JSONType.string) detail = f.str;
+    if (detail != "auto" && detail != "original")
+        return ToolExecution("view_image", "Error: detail must be auto or original.", true);
+    if ((filePath.length == 0) == (attachmentBlob.length == 0))
+        return ToolExecution("view_image", "Error: supply exactly one of filePath or attachmentBlob.", true);
+    if (auto f = "crop" in value.object)
+    {
+        if (f.type != JSONType.object)
+            return ToolExecution("view_image", "Error: crop requires x, y, width, and height.", true);
+        int[4] dimensions;
+        foreach (i, key; ["x", "y", "width", "height"])
+        {
+            auto v = key in f.object;
+            if (v is null || v.type != JSONType.integer || v.integer < 0 || v.integer > 32768)
+                return ToolExecution("view_image", "Error: invalid crop coordinates.", true);
+            dimensions[i] = cast(int) v.integer;
+        }
+        if (!dimensions[2] || !dimensions[3])
+            return ToolExecution("view_image", "Error: crop dimensions must be positive.", true);
+        crop = ImageCrop(dimensions[0], dimensions[1], dimensions[2], dimensions[3]);
+    }
     ubyte[] data;
-    try data = cast(ubyte[]) read(path);
+    string label;
+    try
+    {
+        if (attachmentBlob.length)
+        {
+            import auroraopencode.attachmentstore : AttachmentStore;
+            import std.base64 : Base64;
+            auto store = AttachmentStore(buildPath(opencodeStateDirectory(), "attachments"));
+            data = Base64.decode(store.get(attachmentBlob));
+            label = "archived-image";
+        }
+        else
+        {
+            const path = resolveToolPath(filePath, workspace);
+            if (!exists(path) || !isFile(path))
+                return ToolExecution("view_image", "Error: image file not found: " ~ path, true);
+            const size = getSize(path);
+            if (!size || size > attachmentImageInputMaxBytes)
+                return ToolExecution("view_image", "Error: image input must be between 1 byte and 32 MiB.", true);
+            data = cast(ubyte[]) read(path);
+            label = path;
+        }
+        const mimeType = attachmentImageKindForBytes(data);
+        if (!mimeType.length)
+            return ToolExecution("view_image", "Error: unsupported image format. Expected PNG, JPEG, WebP, or GIF.", true);
+        auto image = attachmentImageForInlineData(mimeType, baseName(label), data, detail == "original", crop);
+        ToolExecution result;
+        result.name = "view_image";
+        result.output = "Loaded image for visual inspection: " ~ label ~ " (original " ~
+            to!string(data.length) ~ " bytes; transmitted " ~ to!string(image.base64Data.length) ~
+            " base64 bytes, " ~ image.mimeType ~ "). Original attachmentBlob: " ~ image.originalBlob ~
+            ". Original dimensions " ~ to!string(image.originalWidth) ~ "x" ~ to!string(image.originalHeight) ~
+            "; transmitted " ~ to!string(image.width) ~ "x" ~ to!string(image.height) ~
+            ". Use a crop or detail=original if fine details are unclear.";
+        result.images = [image];
+        return result;
+    }
     catch (Exception error)
-        return ToolExecution("view_image", "Error: could not read image: " ~
-            error.msg, true);
-    const mimeType = attachmentImageKindForBytes(data);
-    if (mimeType.length == 0)
-        return ToolExecution("view_image", "Error: unsupported image format: " ~
-            path ~ ". Expected PNG, JPEG, WebP, or GIF.", true);
-
-    ToolExecution result;
-    result.name = "view_image";
-    result.output = "Loaded image for visual inspection: " ~ path ~ " (" ~
-        to!string(size) ~ " bytes, " ~ mimeType ~ ").";
-    result.images = [attachmentImageForData(mimeType, baseName(path), data)];
-    return result;
+        return ToolExecution("view_image", "Error: could not load image: " ~ error.msg, true);
 }
 
 private ToolExecution runWrite(string args, string workspace)
@@ -5865,6 +5897,13 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runRead(call.arguments, workspace, cancellation, observer);
         case "view_image":
             return runViewImage(call.arguments, workspace);
+        case "retire_images":
+        {
+            const error = retireImagesArgumentsError(call.arguments);
+            if (error.length) return ToolExecution(call.name, error, true);
+            return ToolExecution(call.name, "Images retired from later requests; originals preserved. Visual summary:\n" ~
+                parseJSON(call.arguments)["summary"].str, false);
+        }
         case "write":
             return runWrite(call.arguments, workspace);
         case "edit":

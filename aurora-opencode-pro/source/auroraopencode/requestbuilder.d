@@ -1,7 +1,10 @@
 module auroraopencode.requestbuilder;
 
 import auroraopencode.core : ChatSession, ChatRequestMessage, activeMessagePath;
-import auroraopencode.imagehistory : requestHistoryImages;
+import auroraopencode.imagehistory : requestHistoryImageIndices, isScreenshot;
+import auroraopencode.imagecontext : retiredImageIds, imageReferenceId;
+import std.algorithm : canFind;
+import std.conv : to;
 import auroraopencode.outputguard : outputFailurePrefix;
 import std.string : startsWith;
 
@@ -20,8 +23,9 @@ public ChatRequestMessage[] projectRequestMessages(
                     slot = i + 1;
                     break;
                 }
-        auto historyImages = requestHistoryImages(session, path, slot,
+        auto historyImages = requestHistoryImageIndices(session, path, slot,
             imageLimit);
+        const retired = retiredImageIds(session, path);
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
@@ -112,7 +116,21 @@ public ChatRequestMessage[] projectRequestMessages(
             if (message.role == "assistant")
                 request.reasoningContent = message.reasoning;
             request.toolCallId = message.toolCallId;
-            request.images = historyImages[slot];
+            foreach (i; historyImages[slot]) request.images ~= message.images[i];
+            foreach (i, image; message.images)
+            {
+                if (isScreenshot(message, image) && image.base64Data.length == 0) continue;
+                const id = imageReferenceId(session, path[slot], i);
+                const status = id in retired ? "retired; use recorded findings and reload the original for visual details absent from the answer or summary" :
+                    canFind(historyImages[slot], i) ? "pixels attached" : "pixels omitted by image window or request budget";
+                request.content ~= "\n[Image " ~ id ~ ": " ~ image.name ~ "; " ~ status;
+                if (image.originalWidth > 0 && image.originalHeight > 0)
+                    request.content ~= "; original dimensions " ~ to!string(image.originalWidth) ~ "x" ~
+                        to!string(image.originalHeight) ~ ", transmitted " ~ to!string(image.width) ~ "x" ~ to!string(image.height);
+                const original = image.originalBlob.length ? image.originalBlob : image.blob;
+                if (original.length) request.content ~= "; original available via view_image attachmentBlob=" ~ original;
+                request.content ~= "]";
+            }
             messages ~= request;
             ++slot;
         }

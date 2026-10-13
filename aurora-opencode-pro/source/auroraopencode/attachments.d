@@ -29,12 +29,13 @@ module auroraopencode.attachments;
 // ===========================================================================
 
 import aurora;
+import auroraopencode.imagenormalization;
 import auroraopencode.core : ChatImageAttachment;
 import std.algorithm : canFind;
 import std.array : appender;
 import std.conv : to;
 import std.file : exists, getSize, isFile, read, readText;
-import std.path : baseName, extension;
+import std.path : baseName, extension, buildPath;
 import std.process : environment;
 import std.stdio : File;
 import std.string : splitLines, strip, toLower;
@@ -54,10 +55,10 @@ public enum size_t attachmentPasteLineThreshold = 20;
 /// referenced by name only so a huge binary cannot blow up the request.
 public immutable size_t attachmentFileMaxBytes = 64 * 1024;
 
-/// Images at or below this size are sent inline as `image_url` parts. Larger
-/// ones fall back to the name-only note: base64 inflates by a third, and a
-/// multi-megabyte body is rejected by most gateways.
+/// Maximum raw bytes for explicit original detail. Normal reads accept larger
+/// inputs and transmit a bounded derivative instead.
 public immutable size_t attachmentImageMaxBytes = 4 * 1024 * 1024;
+public enum size_t attachmentImageInputMaxBytes = 32 * 1024 * 1024;
 
 /// Whether the experimental attachments feature is active. Read on every use so
 /// tests (and a relaunch with a different environment) see the current value.
@@ -171,10 +172,10 @@ public Attachment attachmentForFile(string path)
         const kind = attachmentImageKindForPath(path);
         if (kind.length > 0)
         {
-            if (size > attachmentImageMaxBytes)
+            if (size > attachmentImageInputMaxBytes)
             {
                 attachment.body = "Attached image " ~ path ~ " is larger than " ~
-                    to!string(attachmentImageMaxBytes / 1024) ~
+                    to!string(attachmentImageInputMaxBytes / 1024) ~
                     " KiB, so it was not sent inline. Use the file tools to " ~
                     "inspect or convert it first.";
                 return attachment;
@@ -197,6 +198,8 @@ public Attachment attachmentForFile(string path)
     }
     catch (Exception error)
     {
+        attachment.isImage = false;
+        attachment.image = ChatImageAttachment.init;
         attachment.body = "Attachment " ~ path ~ " could not be read: " ~
             error.msg;
     }
@@ -253,7 +256,7 @@ public string attachmentImageKindForPath(string path)
                     const readBytes = file.rawRead(header[]).length;
                     const sniffed = attachmentImageKindForBytes(
                         header[0 .. readBytes]);
-                    if (sniffed.length > 0) return sniffed;
+                    return sniffed;
                 }
             }
         }
@@ -313,33 +316,30 @@ public ChatImageAttachment attachmentImageForData(string mimeType, string name,
     return image;
 }
 
-/// Encoded bytes Aurora aims to keep one inline image under. Base64 inflates by
-/// a third, and many gateways reject a multi-megabyte body, which the user sees
-/// as a turn that produced no reply. Past this budget a PNG is downscaled and
-/// re-encoded instead of being sent at its original size.
-public immutable size_t attachmentImageInlineBytes = 1024 * 1024;
-
-/// The inline image payload for a user-supplied image, re-encoded when it is too
-/// large to send as-is. A PNG is decoded, downscaled and sent as JPEG (the same
-/// treatment saved screenshots get); other formats, and payloads already within
-/// budget, pass through unchanged. Never throws: on any failure the original
-/// bytes are used.
+/// A shared, bounded derivative for every normal image entry point. The full
+/// original is archived with the derivative so crops and explicit original reads
+/// can retrieve it without depending on the source file still being present.
+public immutable size_t attachmentImageInlineBytes = 512 * 1024;
 public ChatImageAttachment attachmentImageForInlineData(string mimeType,
-    string name, in ubyte[] data)
+    string name, in ubyte[] data, bool original = false,
+    auroraopencode.imagenormalization.ImageCrop crop = auroraopencode.imagenormalization.ImageCrop.init)
 {
-    if (data.length > attachmentImageInlineBytes && mimeType == "image/png")
-    {
-        import auroraopencode.screenshotimage : pngToInlineJpeg;
-        try
-        {
-            const jpeg = pngToInlineJpeg(data);
-            if (jpeg !is null && jpeg.length > 0 && jpeg.length < data.length)
-                return attachmentImageForData("image/jpeg",
-                    inlineImageName(name), jpeg);
-        }
-        catch (Exception) {}
-    }
-    return attachmentImageForData(mimeType, name, data);
+    import auroraopencode.attachmentstore : AttachmentStore;
+    import auroraopencode.core : opencodeStateDirectory;
+    import auroraopencode.imagenormalization : normalizeImage;
+    const normalized = normalizeImage(data, mimeType, original, crop);
+    auto image = attachmentImageForData(normalized.mimeType,
+        normalized.mimeType == mimeType ? name : inlineImageName(name), normalized.bytes);
+    auto store = AttachmentStore(buildPath(opencodeStateDirectory(), "attachments"));
+    image.originalBlob = store.put(base64Encode(data));
+    image.originalMimeType = mimeType;
+    image.normalizationVersion = 1;
+    image.originalDetail = original;
+    image.width = normalized.width;
+    image.height = normalized.height;
+    image.originalWidth = normalized.originalWidth;
+    image.originalHeight = normalized.originalHeight;
+    return image;
 }
 
 /// Rename an inline image whose bytes were re-encoded to JPEG so the data URL

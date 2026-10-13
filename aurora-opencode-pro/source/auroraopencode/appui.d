@@ -88,11 +88,12 @@ import auroraopencode.preferencewriter : PreferenceWriter;
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
     Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
-    attachmentForText, attachmentImageForInlineData, attachmentImageMaxBytes,
+    attachmentForText, attachmentImageForInlineData, attachmentImageMaxBytes, attachmentImageInputMaxBytes,
     attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
     attachmentStripHeight, attachmentVisibleSummary,
     attachmentsContainImage, experimentalAttachmentsEnabled;
-import auroraopencode.imagehistory : requestHistoryImages, pruneHistoryImages, isScreenshot;
+import auroraopencode.imagecontext : retireImagesSessionError;
+import auroraopencode.imagehistory : requestHistoryImages, pruneHistoryImages, isScreenshot, completedReplyImageIds;
 import auroraopencode.screenshotimage : pngScreenshotToJpeg;
 import auroraopencode.clipboardimage : clipboardImagePng;
 // Optional floating mini chat overlay (always-on-top recent messages + input);
@@ -13271,6 +13272,7 @@ private string _suggestExcludeId;
         JSONValue payload;
         payload["role"] = message.role;
         payload["content"] = message.content;
+        if (message.retiredImages.length) payload["retiredImages"] = message.retiredImages;
         payload["parentId"] = message.parentId;
         if (message.reasoning.length > 0)
             payload["reasoning"] = message.reasoning;
@@ -13321,13 +13323,7 @@ private string _suggestExcludeId;
             JSONValue images = JSONValue(string[].init);
             foreach (image; message.images)
             {
-                JSONValue value;
-                value["mimeType"] = image.mimeType;
-                value["base64Data"] = image.base64Data;
-                if (image.blob.length) value["blob"] = image.blob;
-                if (image.error.length) value["attachmentError"] = image.error;
-                if (image.name.length > 0) value["name"] = image.name;
-                images.array ~= value;
+                images.array ~= imageAttachmentToJson(image);
             }
             payload["images"] = images;
         }
@@ -13421,8 +13417,20 @@ private string _suggestExcludeId;
         foreach (ref message; session.messages)
             foreach (ref image; message.images)
             {
-                if (!isScreenshot(message, image) || image.mimeType != "image/png" ||
-                    image.base64Data.length == 0) continue;
+                if (!isScreenshot(message, image))
+                {
+                    if (image.normalizationVersion || !image.base64Data.length) continue;
+                    try
+                    {
+                        auto upgraded = attachmentImageForInlineData(image.mimeType, image.name,
+                            Base64.decode(image.base64Data));
+                        image = upgraded;
+                        changed = true;
+                    }
+                    catch (Exception error) { image.error = "Image optimization failed: " ~ error.msg; }
+                    continue;
+                }
+                if (image.mimeType != "image/png" || image.base64Data.length == 0) continue;
                 try
                 {
                     auto jpeg = pngScreenshotToJpeg(Base64.decode(image.base64Data));
@@ -16333,6 +16341,9 @@ private void pollButtonSuggestionRequest()
                 recordTurnUsage(*message, totalTokens, promptTokens,
                     completionTokens, requestId);
             message.tokensPerSecondTenths = _turnTokenRateTenths;
+            if (!cancelled && terminal && _settings.toolsEnabled && _settings.autoRetireImages)
+                message.retiredImages = completedReplyImageIds(_sessions[sessionIndex], message.id,
+                    experimentalImageHistoryLimit());
             publishMessageEvent(AgentEventKind.itemUpdated,
                 _sessions[sessionIndex], *message);
         }
@@ -17674,10 +17685,13 @@ private void pollButtonSuggestionRequest()
         const subplanError = !event.toolFailed &&
             event.toolName == "update_subplan"
             ? nestedPlanError(*session, toolArgs) : "";
+        const imageError = !event.toolFailed && event.toolName == "retire_images"
+            ? retireImagesSessionError(*session, toolArgs) : "";
         const toolFailed = event.toolFailed || planError.length > 0 ||
-            subplanError.length > 0;
+            subplanError.length > 0 || imageError.length > 0;
         const toolText = planError.length > 0 ? planError :
-            subplanError.length > 0 ? subplanError : event.text;
+            subplanError.length > 0 ? subplanError :
+            imageError.length > 0 ? imageError : event.text;
         ChatMessage toolMessage;
         toolMessage.role = "tool";
         toolMessage.content = toolText;
@@ -18767,7 +18781,7 @@ private void pollButtonSuggestionRequest()
         if (!experimentalAttachmentsEnabled()) return false;
         try
         {
-            auto png = clipboardImagePng(attachmentImageMaxBytes);
+            auto png = clipboardImagePng(attachmentImageInputMaxBytes);
             if (png.length == 0) return false;
             Attachment attachment;
             attachment.name = "Pasted image.png";
@@ -22601,6 +22615,25 @@ private void pollButtonSuggestionRequest()
         titleRow.add(titleCheck);
         optionsBody.add(titleRow);
 
+        auto retireRow = new HBox(8);
+        retireRow.layoutHints().preferredHeight = 32;
+        auto retireCheck = new CheckBox("Retire images after a successful answer");
+        retireCheck.setId("oc-auto-retire-images");
+        retireCheck.setChecked(_settings.autoRetireImages, false);
+        retireCheck.onChanged = delegate(bool value)
+        {
+            _settings.autoRetireImages = value;
+            saveSettingsNow();
+        };
+        retireRow.add(retireCheck);
+        optionsBody.add(retireRow);
+        auto retireHint = optionsBody.add(new Label(
+            "Speeds later replies by retaining the answer and archived originals " ~
+            "instead of resending pixels. The agent can inspect originals again. " ~
+            "Applies when Tools is enabled; turn off to keep images active between answers."));
+        retireHint.setScale(1);
+        retireHint.setColor(opencodeMuted);
+
         // Diff rows: hide the `@@ -old,+new @@` hunk headers. They are patch
         // bookkeeping, so the default keeps them out of the rendered diff.
         auto hunkRow = new HBox(8);
@@ -25606,6 +25639,7 @@ private void pollButtonSuggestionRequest()
             messageJson["authorId"] = message.authorId;
         messageJson["role"] = message.role;
         messageJson["content"] = message.content;
+        if (message.retiredImages.length) messageJson["retiredImages"] = message.retiredImages;
         if (message.reasoning.length > 0)
             messageJson["reasoning"] = message.reasoning;
         if (message.time.length > 0)
@@ -25668,13 +25702,7 @@ private void pollButtonSuggestionRequest()
             JSONValue images = JSONValue(string[].init);
             foreach (image; message.images)
             {
-                JSONValue imageJson;
-                imageJson["mimeType"] = image.mimeType;
-                imageJson["base64Data"] = image.base64Data;
-                if (image.blob.length) imageJson["blob"] = image.blob;
-                if (image.error.length) imageJson["attachmentError"] = image.error;
-                if (image.name.length > 0) imageJson["name"] = image.name;
-                images.array ~= imageJson;
+                images.array ~= imageAttachmentToJson(image);
             }
             messageJson["images"] = images;
         }
@@ -26177,24 +26205,18 @@ private void pollButtonSuggestionRequest()
                 else if (f.type == JSONType.float_)
                     message.workedSeconds = f.floating;
             }
+            if (auto f = "retiredImages" in messageValue.object)
+                if (f.type == JSONType.array)
+                    foreach (id; f.array)
+                        if (id.type == JSONType.string) message.retiredImages ~= id.str;
             if (auto f = "images" in messageValue.object)
             {
                 if (f.type == JSONType.array)
                     foreach (imageValue; f.array)
                     {
                         if (imageValue.type != JSONType.object) continue;
-                        ChatImageAttachment image;
-                        if (auto g = "mimeType" in imageValue.object)
-                            image.mimeType = g.str;
-                        if (auto g = "base64Data" in imageValue.object)
-                            image.base64Data = g.str;
-                        if (auto g = "name" in imageValue.object)
-                            image.name = g.str;
-                        if (auto g = "blob" in imageValue.object)
-                            if (g.type == JSONType.string) image.blob = g.str;
-                        if (auto g = "attachmentError" in imageValue.object)
-                            if (g.type == JSONType.string) image.error = g.str;
-                        if (image.base64Data.length > 0 || image.blob.length > 0)
+                        auto image = imageAttachmentFromJson(imageValue);
+                        if (image.base64Data.length > 0 || image.blob.length > 0 || image.originalBlob.length > 0)
                             message.images ~= image;
                     }
             }
@@ -26650,6 +26672,10 @@ private void pollButtonSuggestionRequest()
                                         else if (f.type == JSONType.float_)
                                             message.workedSeconds = f.floating;
                                     }
+                                    if (auto f = "retiredImages" in messageValue.object)
+                                        if (f.type == JSONType.array)
+                                            foreach (id; f.array)
+                                                if (id.type == JSONType.string) message.retiredImages ~= id.str;
                                     if (auto f = "images" in messageValue.object)
                                     {
                                         if (f.type == JSONType.array)
@@ -26659,21 +26685,8 @@ private void pollButtonSuggestionRequest()
                                                 if (imageValue.type !=
                                                     JSONType.object)
                                                     continue;
-                                                ChatImageAttachment image;
-                                                if (auto g = "mimeType" in
-                                                    imageValue.object)
-                                                    image.mimeType = g.str;
-                                                if (auto g = "base64Data" in
-                                                    imageValue.object)
-                                                    image.base64Data = g.str;
-                                                if (auto g = "name" in
-                                                    imageValue.object)
-                                                    image.name = g.str;
-                                                if (auto g = "blob" in imageValue.object)
-                                                    if (g.type == JSONType.string) image.blob = g.str;
-                                                if (auto g = "attachmentError" in imageValue.object)
-                                                    if (g.type == JSONType.string) image.error = g.str;
-                                                if (image.base64Data.length > 0 || image.blob.length > 0)
+                                                auto image = imageAttachmentFromJson(imageValue);
+                                                if (image.base64Data.length > 0 || image.blob.length > 0 || image.originalBlob.length > 0)
                                                     message.images ~= image;
                                             }
                                         }
@@ -29650,6 +29663,9 @@ private void pollButtonSuggestionRequest()
                     group.setCollapsed(false);
             }
     }
+
+    public void setAutoRetireImagesForTesting(bool enabled) { _settings.autoRetireImages = enabled; }
+    public void setImageToolsEnabledForTesting(bool enabled) { _settings.toolsEnabled = enabled; }
 
     public void beginStreamForTesting()
     {

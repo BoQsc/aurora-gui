@@ -297,6 +297,16 @@ private string toolPolicySection(in SystemPromptContext ctx)
         "Avoid a broader duplicate after successful discovery unless it " ~
         "answers a different named question. Tool schemas contain exact " ~
         "syntax and parameter requirements.\n";
+    text ~= "Images add processing cost to every request while their pixels remain active. " ~
+        "Inspect needed visual details first. Once later work can use the extracted facts, " ~
+        "call retire_images with the imageIds and a useful visual summary before continuing " ~
+        "text or code work. Keep images active while still comparing them or inspecting " ~
+        "uncertain details. Originals remain available through view_image attachmentBlob; " ~
+        "use a crop or detail=original when optimized pixels are insufficient. " ~
+        "Automatic image retirement may archive prior images after a successful final " ~
+        "answer, using that answer as later text context. Record the visual findings " ~
+        "needed for subsequent work before finishing. For a new visual question, reload " ~
+        "the archived original when the needed details are absent from those findings.\n";
     text ~= "Use the native `open` tool to open files, folders, or web " ~
         "pages. Never reconstruct platform launch commands such as Windows " ~
         "`start` or PowerShell `Start-Process`.\n";

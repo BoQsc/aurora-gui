@@ -13,6 +13,8 @@ import std.uuid : randomUUID;
 import std.conv : to;
 import std.string : indexOf;
 import std.stdio : writeln;
+import core.thread : Thread;
+import core.time : MonoTime, seconds, msecs;
 
 private void validateToolPairs(const(ChatRequestMessage)[] messages)
 {
@@ -147,6 +149,14 @@ int main(string[] args)
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
+    scope (exit) root.shutdownClient();
+    const startup = MonoTime.currTime + 5.seconds;
+    while (root.startupPendingForTesting() && MonoTime.currTime < startup)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(5.msecs);
+    }
+    assert(!root.startupPendingForTesting());
     string[] roles = ["user"];
     string[] contents = ["Durable objective: finish the screenshot optimization."];
     foreach (round; 0 .. 240)

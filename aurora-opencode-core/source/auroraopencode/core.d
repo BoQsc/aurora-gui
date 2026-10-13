@@ -619,6 +619,73 @@ public struct ChatImageAttachment
     string name;        // original file name, for display and diagnostics
     string blob;        // durable reference, retained if the attachment is unavailable
     string error;
+    string originalBlob;     // archived original, independent of the wire derivative
+    string originalMimeType;
+    uint normalizationVersion;
+    bool originalDetail;
+    int width, height, originalWidth, originalHeight;
+}
+
+public JSONValue imageAttachmentToJson(const ref ChatImageAttachment image)
+{
+    JSONValue value;
+    value["mimeType"] = image.mimeType;
+    value["base64Data"] = image.base64Data;
+    if (image.name.length) value["name"] = image.name;
+    if (image.blob.length) value["blob"] = image.blob;
+    if (image.error.length) value["attachmentError"] = image.error;
+    if (image.originalBlob.length) value["originalBlob"] = image.originalBlob;
+    if (image.originalMimeType.length) value["originalMimeType"] = image.originalMimeType;
+    if (image.normalizationVersion) value["normalizationVersion"] = image.normalizationVersion;
+    if (image.originalDetail) value["originalDetail"] = true;
+    if (image.width > 0) value["width"] = image.width;
+    if (image.height > 0) value["height"] = image.height;
+    if (image.originalWidth > 0) value["originalWidth"] = image.originalWidth;
+    if (image.originalHeight > 0) value["originalHeight"] = image.originalHeight;
+    return value;
+}
+
+public ChatImageAttachment imageAttachmentFromJson(const ref JSONValue value)
+{
+    ChatImageAttachment image;
+    if (value.type != JSONType.object) return image;
+    foreach (key; ["mimeType", "base64Data", "name", "blob", "attachmentError",
+            "originalBlob", "originalMimeType"])
+        if (auto field = key in value.object)
+            if (field.type == JSONType.string)
+            {
+                switch (key)
+                {
+                    case "mimeType": image.mimeType = field.str; break;
+                    case "base64Data": image.base64Data = field.str; break;
+                    case "name": image.name = field.str; break;
+                    case "blob": image.blob = field.str; break;
+                    case "attachmentError": image.error = field.str; break;
+                    case "originalBlob": image.originalBlob = field.str; break;
+                    case "originalMimeType": image.originalMimeType = field.str; break;
+                    default: break;
+                }
+            }
+    if (auto field = "originalDetail" in value.object)
+        if (field.type == JSONType.true_ || field.type == JSONType.false_) image.originalDetail = field.boolean;
+    if (auto field = "normalizationVersion" in value.object)
+        if (field.type == JSONType.integer && field.integer >= 0)
+            image.normalizationVersion = cast(uint) field.integer;
+    foreach (key; ["width", "height", "originalWidth", "originalHeight"])
+        if (auto field = key in value.object)
+            if (field.type == JSONType.integer && field.integer > 0 && field.integer <= 32768)
+            {
+                const n = cast(int) field.integer;
+                switch (key)
+                {
+                    case "width": image.width = n; break;
+                    case "height": image.height = n; break;
+                    case "originalWidth": image.originalWidth = n; break;
+                    case "originalHeight": image.originalHeight = n; break;
+                    default: break;
+                }
+            }
+    return image;
 }
 
 /// One message sent in a chat request. Richer than the parallel role/content
@@ -666,6 +733,9 @@ public struct ChatMessage
     // session so a continued or replayed conversation still reaches the model
     // as a vision request instead of silently degrading to text.
     ChatImageAttachment[] images;
+    // Successful completed answers can retire image pixels from later requests.
+    // The answer is the retained analysis; the original image stays in history.
+    string[] retiredImages;
     // Message graph: every message names its parent, so an edited prompt or a
     // regenerated reply can be kept alongside the run it replaced (a sibling
     // branch) instead of being discarded. `id` is unique within a session and
@@ -885,6 +955,7 @@ public ChatSession[] snapshotChatSessions(ChatSession[] source)
         {
             session.messages[i].toolCalls = message.toolCalls.dup;
             session.messages[i].images = message.images.dup;
+            session.messages[i].retiredImages = message.retiredImages.dup;
         }
         session.taskSteps = original.taskSteps.dup;
         session.nestedPlans = original.nestedPlans.dup;
@@ -1218,6 +1289,7 @@ public struct Settings
     // Hide the `@@ -old,+new @@` hunk headers in rendered diffs: they carry no
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
+    bool autoRetireImages = true; // use completed visual answers as later text context
     bool hideHunkHeaders = true;
     // Split a tool round into runs of the same kind of action, so each run
     // gets its own header ("Explored a file", then "Edited a file") instead of
@@ -1531,6 +1603,9 @@ public Settings loadSettings()
                 if (auto found = "quickTitle" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.quickTitle = found.type == JSONType.true_;
+                if (auto found = "autoRetireImages" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.autoRetireImages = found.type == JSONType.true_;
                 if (auto found = "hideHunkHeaders" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.hideHunkHeaders = found.type == JSONType.true_;
@@ -1857,6 +1932,7 @@ public void saveSettings(const ref Settings settings)
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
     root["quickTitle"] = settings.quickTitle;
+    root["autoRetireImages"] = settings.autoRetireImages;
     root["hideHunkHeaders"] = settings.hideHunkHeaders;
     root["groupSameAction"] = settings.groupSameAction;
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
