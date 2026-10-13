@@ -23,7 +23,7 @@ private bool allowedDetail(string key)
 {
     foreach (allowed; ["turn", "toolCallId", "tool", "workspace", "scope",
         "path", "phase", "elapsedMs", "queuedMs", "lastActivityMs",
-        "files", "folders", "bytes", "matches", "candidateFiles",
+        "files", "folders", "bytes", "totalBytes", "line", "collectedLines", "matches", "candidateFiles",
         "processedFiles", "totalsKnown", "partial", "pendingTools",
         "outputBytes", "failed", "cancelled", "verificationPassed",
         "taskStatus", "turnStatus", "verificationStatus", "finishReason",

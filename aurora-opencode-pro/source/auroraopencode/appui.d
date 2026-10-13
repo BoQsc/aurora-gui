@@ -8,6 +8,7 @@ import auroraopencode.latency : RequestLatency, LatencyStage, LatencySnapshot;
 import auroraopencode.transferprogress : TransferProgress, decodeTransferProgress,
     transferProgressText;
 import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress, searchProgressText;
+import auroraopencode.readprogress : ReadProgress, decodeReadProgress, readProgressText;
 
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.computeruse : ComputerUseContext;
@@ -4533,6 +4534,8 @@ private final class LiveToolRow : Widget
     private TransferProgress _transferProgress;
     private bool _hasSearchProgress;
     private SearchProgress _searchProgress;
+    private bool _hasReadProgress;
+    private ReadProgress _readProgress;
     // Live wall-clock timer: shown while the command runs, so a long command
     // displays its elapsed time the same way a settled row shows its duration.
     private MonoTime _started;
@@ -4601,7 +4604,7 @@ private final class LiveToolRow : Widget
         if (_toolName == toolName && _title == title && _subtitle == subtitle)
             return;
         _toolName = toolName;
-        _expandable = toolName == "grep" || toolName == "glob" || toolName == "dshell";
+        _expandable = toolName == "read" || toolName == "grep" || toolName == "glob" || toolName == "dshell";
         _title = title;
         _subtitle = subtitle;
         invalidate();
@@ -4626,8 +4629,10 @@ private final class LiveToolRow : Widget
             decodeTransferProgress(detail, _transferProgress);
         _hasSearchProgress = (_toolName == "grep" || _toolName == "glob" || _toolName == "dshell") &&
             decodeSearchProgress(detail, _searchProgress);
+        _hasReadProgress = _toolName == "read" && decodeReadProgress(detail, _readProgress);
         _detail = _hasTransferProgress ? transferProgressText(_transferProgress) :
             _hasSearchProgress ? searchProgressText(_searchProgress) :
+            _hasReadProgress ? readProgressText(_readProgress) :
             _expandable && _requestDetail.length && detail != _requestDetail ? _requestDetail ~ "\n\nStatus: " ~ detail : detail;
         rebuildDetailLines();
         if (oldHeight != detailHeight() + progressHeight() && onSizeChanged !is null)
@@ -4642,8 +4647,8 @@ private final class LiveToolRow : Widget
         if (_detail.length == 0) return;
         import std.string : splitLines;
         const lines = splitLines(_detail);
-        const lineLimit = _hasSearchProgress ? 24 : _outputPreview ? 8 : maxDetailLines;
-        const first = _outputPreview && !_hasSearchProgress && lines.length > lineLimit
+        const lineLimit = _hasSearchProgress || _hasReadProgress ? 24 : _outputPreview ? 8 : maxDetailLines;
+        const first = _outputPreview && !_hasSearchProgress && !_hasReadProgress && lines.length > lineLimit
             ? lines.length - lineLimit : 0;
         _detailTruncated = first > 0;
         foreach (index, raw; lines)
@@ -4674,8 +4679,10 @@ private final class LiveToolRow : Widget
     bool hasMeasuredSearchProgressForTesting() const
     { return _hasSearchProgress && _toolName == "grep" && _searchProgress.totalsKnown; }
     double searchFractionForTesting() const { return _searchProgress.fraction(); }
+    bool hasReadProgressForTesting() const { return _hasReadProgress; }
+    double readFractionForTesting() const { return _readProgress.fraction(); }
 
-    private int progressHeight() const { return _hasTransferProgress || hasMeasuredSearchProgressForTesting() ? 12 : 0; }
+    private int progressHeight() const { return _hasReadProgress || _hasTransferProgress || hasMeasuredSearchProgressForTesting() ? 12 : 0; }
 
     private int headerHeight()
     {
@@ -4792,6 +4799,9 @@ private final class LiveToolRow : Widget
             else if (hasMeasuredSearchProgressForTesting())
                 canvas.fillRect(Rect(track.x, track.y,
                     cast(int) (track.width * _searchProgress.fraction()), track.height), opencodeAccent);
+            else if (_hasReadProgress && _readProgress.totalKnown)
+                canvas.fillRect(Rect(track.x, track.y,
+                    cast(int) (track.width * _readProgress.fraction()), track.height), opencodeAccent);
             else
             {
                 const width = maxInt(1, track.width / 4);
@@ -10633,6 +10643,7 @@ private string _suggestExcludeId;
             if (session.messages.length > 0 && session.turnStatus == "running")
             {
                 session.turnStatus = "interrupted";
+                recordInterruptedReads(session);
                 logInfo("turn marked interrupted by restart (no resume note): " ~
                     session.id);
                 changed = true;
@@ -10779,6 +10790,7 @@ private string _suggestExcludeId;
             if (session.messages.length > 0 && session.turnStatus == "running")
             {
                 session.turnStatus = "interrupted";
+                recordInterruptedReads(session);
                 logInfo("turn marked interrupted by restart: session=" ~
                     session.id);
             }
@@ -13721,6 +13733,34 @@ private string _suggestExcludeId;
         }
     }
 
+    private bool recordInterruptedReads(ref ChatSession session)
+    {
+        auto path = activeMessagePath(session);
+        size_t first;
+        foreach (i, index; path)
+            if (session.messages[index].role == "user" && !session.messages[index].internal)
+                first = i + 1;
+        bool[string] answered;
+        foreach (index; path[first .. $])
+            if (session.messages[index].role == "tool") answered[session.messages[index].toolCallId] = true;
+        OpenCodeToolCall[] missing;
+        foreach (index; path[first .. $])
+            foreach (call; session.messages[index].toolCalls)
+                if (call.name == "read" && call.id.length && call.id !in answered)
+                {
+                    missing ~= call;
+                    answered[call.id] = true;
+                }
+        if (!missing.length) return false;
+        appendSkippedToolResults(session, missing,
+            "Interrupted: no completed Read result was saved before this turn ended. " ~
+            "The file contents are unavailable. Retry this read before relying on them; " ~
+            "the old call has not been executed again automatically.");
+        JSONValue details; details["toolCount"] = cast(long) missing.length;
+        logAgentLifecycle(session.id, 0, "read.interrupted_results_recorded", details);
+        return true;
+    }
+
     /// Horizontal inset for a tool result nested under the assistant turn that
     /// requested it. Kept at 0 so every collapsible transcript row — a nested
     /// tool result, a top-level "Explored" group, a live/Thinking row, the
@@ -15590,6 +15630,13 @@ private void pollButtonSuggestionRequest()
         if (previewToolDiff(call.name, call.arguments, additions, deletions))
             row.setDiff(additions, deletions);
         row._requestDetail = humanToolDetail(call.name, call.arguments);
+        if (call.name == "read")
+        {
+            const requested = partialStringArg(call.arguments, "filePath");
+            const workspace = workspaceForSession(turnOwnerSessionIndex());
+            const filePath = buildNormalizedPath(isAbsolute(requested) ? requested : buildPath(workspace, requested));
+            row._requestDetail = "File: " ~ filePath ~ "\nArguments: " ~ call.arguments ~ "\nNo file contents received yet.";
+        }
         if (call.name == "grep" || call.name == "glob")
         {
             const requested = partialStringArg(call.arguments, "path");
@@ -17726,7 +17773,7 @@ private void pollButtonSuggestionRequest()
         _reportedToolCallIds = null;
         _liveToolCalls = calls.dup;
         foreach (call; calls)
-            _liveToolOutputs[call.id] = "Waiting for durable tool dispatch. The search has not started yet.";
+            _liveToolOutputs[call.id] = "Waiting for conversation storage before starting this tool. No file activity yet.";
         _pendingToolResults = cast(int) calls.length;
         updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
         // Each running call already gets its own live row (or the aggregated
@@ -17806,7 +17853,7 @@ private void pollButtonSuggestionRequest()
             result.toolName = call.name;
             result.toolFailed = true;
             result.text = "Error: tool dispatch did not start within 30 seconds while waiting for conversation storage. " ~
-                "This search did not scan files. Its queued admission was revoked; retry after storage recovers.";
+                "This tool did not access files. Its queued admission was revoked; retry after storage recovers.";
             applyToolResult(result);
         }
     }
@@ -18313,6 +18360,22 @@ private void pollButtonSuggestionRequest()
             _streamBubble.setStreaming(false);
             _streamBubble = null;
         }
+        foreach (call; _pendingToolCalls)
+            if (call.name == "read" && call.id !in _reportedToolCallIds)
+            {
+                auto reason = "Stopped: no completed Read result was recorded. File contents are incomplete; retry this read to obtain them.";
+                if (auto payload = call.id in _liveToolOutputs)
+                {
+                    ReadProgress progress;
+                    if (decodeReadProgress(*payload, progress))
+                    {
+                        progress.phase = "Read stopped - incomplete";
+                        progress.terminal = true;
+                        reason ~= "\nLast read activity (incomplete):\n" ~ readProgressText(progress);
+                    }
+                }
+                appendSkippedToolResults(_sessions[sessionIndex], [call], reason);
+            }
         cancelPendingTools();
 
         auto session = &_sessions[sessionIndex];
@@ -21041,6 +21104,8 @@ private void pollButtonSuggestionRequest()
                 break;
             }
         if (!onActivePath) return false;
+
+        if (session.turnStatus == "interrupted") recordInterruptedReads(*session);
 
         ChatMessage continuation;
         continuation.role = "user";
@@ -26208,6 +26273,7 @@ private void pollButtonSuggestionRequest()
                 }
                 if (!loadThreadMessages(session)) return false;
                 *flag = true;
+                if (session.turnStatus == "interrupted" && recordInterruptedReads(session)) markDirty();
                 return true;
             }
         return false;
@@ -29777,6 +29843,18 @@ private void pollButtonSuggestionRequest()
         return fractions;
     }
 
+    public double[] liveReadFractionsForTesting()
+    {
+        double[] fractions;
+        foreach (child; messageColumnVisuals())
+            if (auto group = cast(ToolGroupBubble) child)
+                foreach (part; group._parts)
+                    if (auto row = cast(LiveToolRow) part)
+                        if (row.hasReadProgressForTesting() && row._readProgress.totalKnown)
+                            fractions ~= row.readFractionForTesting();
+        return fractions;
+    }
+
     public void injectToolOutputForTesting(string id, string text)
     {
         OpenCodeEvent event;
@@ -29994,6 +30072,8 @@ private void pollButtonSuggestionRequest()
     {
         finishAssistantMessage(true);
     }
+
+    public void stopActiveTurnForTesting() { stopActiveTurn(); }
 
     public void finishStreamInSessionForTesting(int sessionIndex)
     {

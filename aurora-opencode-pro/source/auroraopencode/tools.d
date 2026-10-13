@@ -7,6 +7,7 @@ import auroraopencode.filetransfer : transferFiles;
 import auroraopencode.download : downloadFile, checksumFile, validSha256;
 import auroraopencode.searchprogress : SearchProgress, SearchReporter,
     encodeSearchProgress, decodeSearchProgress, searchProgressText;
+import auroraopencode.readprogress : ReadProgress, encodeReadProgress, decodeReadProgress, readProgressText;
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall,
     OpenCodeToolDef, ensureStateDirectory, opencodeStateDirectory;
@@ -172,6 +173,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     }
     catch (Exception) {}
     if (call.name == "grep") timeoutMs += 5000;
+    if (call.name == "read" && timeoutMs > 30_000) timeoutMs = 30_000;
     if (cancellation !is null && cancellation.cancelled())
         return ToolExecution(call.name, "Stopped: filesystem tool cancelled before it started.", true);
     // Short filenames avoid a potentially blocking write to a child stdin pipe.
@@ -183,6 +185,7 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
     bool running;
     string scanCursor;
     SearchProgress searchProgress;
+    ReadProgress readProgress;
     bool searchCall;
     scope (exit)
     {
@@ -220,6 +223,16 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
         }
         request["arguments"] = arguments;
         const searchArgs = parseJSON(arguments);
+        if (call.name == "read")
+        {
+            readProgress.phase = "Starting read host";
+            readProgress.path = resolveToolPath(jsonString(searchArgs, "filePath"), workspace);
+            if (auto offset = "offset" in searchArgs.object)
+                if (offset.type == JSONType.integer && offset.integer > 0) readProgress.offset = cast(ulong) offset.integer;
+            if (auto limit = "limit" in searchArgs.object)
+                if (limit.type == JSONType.integer && limit.integer > 0) readProgress.limit = cast(ulong) limit.integer;
+            if (observer !is null) observer(encodeReadProgress(readProgress));
+        }
         searchCall = call.name == "grep" || call.name == "glob" ||
             (call.name == "dshell" && scanCursor.length > 0);
         if (searchCall)
@@ -263,6 +276,8 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                             latestProgress = snapshot; lastProgressAt = MonoTime.currTime;
                             SearchProgress update;
                             if (searchCall && decodeSearchProgress(snapshot, update)) searchProgress = update;
+                            ReadProgress readUpdate;
+                            if (call.name == "read" && decodeReadProgress(snapshot, readUpdate)) readProgress = readUpdate;
                         }
                     }
                 }
@@ -272,6 +287,12 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                     searchProgress.elapsedMs = (MonoTime.currTime - started).total!"msecs";
                     searchProgress.lastActivityMs = (MonoTime.currTime - lastProgressAt).total!"msecs";
                     if (observer !is null) observer(encodeSearchProgress(searchProgress));
+                }
+                else if (call.name == "read")
+                {
+                    readProgress.elapsedMs = (MonoTime.currTime - started).total!"msecs";
+                    readProgress.lastActivityMs = (MonoTime.currTime - lastProgressAt).total!"msecs";
+                    if (observer !is null) observer(encodeReadProgress(readProgress));
                 }
                 else observer("Filesystem host PID " ~ to!string(pid.processID) ~
                     " | elapsed " ~ to!string((MonoTime.currTime - started).total!"seconds") ~
@@ -296,6 +317,8 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
                             SearchProgress update;
                             if (searchCall && decodeSearchProgress(finalProgress, update))
                                 observer(encodeSearchProgress(update));
+                            else if (call.name == "read" && decodeReadProgress(finalProgress, readProgress))
+                                observer(encodeReadProgress(readProgress));
                             else observer("Filesystem host finished\n" ~ finalProgress);
                         }
                     }
@@ -304,6 +327,13 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
             }
             string searchInterruption(string phase)
             {
+                if (call.name == "read")
+                {
+                    readProgress.phase = phase;
+                    readProgress.terminal = true;
+                    if (observer !is null) observer(encodeReadProgress(readProgress));
+                    return "\nLast read activity (incomplete):\n" ~ readProgressText(readProgress);
+                }
                 if (!searchCall) return "";
                 searchProgress.phase = phase;
                 searchProgress.terminal = true;
@@ -314,11 +344,12 @@ private ToolExecution runFilesystemTool(const ref OpenCodeToolCall call,
             }
             if (cancellation !is null && cancellation.cancelled())
                 return ToolExecution(call.name, "Stopped: filesystem tool cancelled; its host was terminated." ~
-                    searchInterruption("Search stopped — incomplete") ~ directoryScanResumeHint(scanCursor), true);
+                    searchInterruption(call.name == "read" ? "Read stopped — incomplete" : "Search stopped — incomplete") ~ directoryScanResumeHint(scanCursor), true);
             if (MonoTime.currTime >= deadline)
                 return ToolExecution(call.name, "Error: filesystem tool timed out after " ~ to!string(timeoutMs) ~ " ms; its host was terminated." ~
-                    searchInterruption("Search timed out — incomplete") ~
+                    searchInterruption(call.name == "read" ? "Read timed out — incomplete" : "Search timed out — incomplete") ~
                     (scanCursor.length > 0 ? directoryScanResumeHint(scanCursor)
+                        : call.name == "read" ? " Retry a smaller line window after the file or storage responds."
                         : " Narrow the path or increase timeout."), true);
         }
         output.close();
@@ -3323,10 +3354,8 @@ private struct LineWindow
 private enum size_t maxLineChars = 2000;
 
 /// Stream a file line-by-line and return at most `limit` lines starting at
-/// 1-indexed `offset`, capped at `maxBytes` of line content. Lines are read
-/// through `File.byLine`, so a huge file is never materialised in memory.
-/// `totalLines` still reports the real line count because scanning continues
-/// past `offset` to the end of file.
+/// 1-indexed `offset`, capped at `maxBytes` of line content. Fixed-size chunks
+/// bound memory; paging stops when the requested window is collected.
 private LineWindow readLineWindow(string path, size_t offset, size_t limit,
     size_t maxBytes, ToolCancellation cancellation = null, ToolOutputObserver observer = null)
 {
@@ -3334,8 +3363,29 @@ private LineWindow readLineWindow(string path, size_t offset, size_t limit,
     window.firstLine = offset;
     auto started = MonoTime.currTime;
     auto nextProgress = started;
+    ReadProgress progress;
+    progress.path = path; progress.offset = offset; progress.limit = limit;
+    progress.phase = "Opening file";
+    void publish(bool force = false)
+    {
+        if (observer is null || (!force && MonoTime.currTime < nextProgress)) return;
+        progress.elapsedMs = (MonoTime.currTime - started).total!"msecs";
+        observer(encodeReadProgress(progress));
+        nextProgress = MonoTime.currTime + msecs(200);
+    }
+    publish(true);
+    scope (failure)
+    {
+        progress.phase = "Read failed - incomplete";
+        progress.terminal = true;
+        publish(true);
+    }
     auto file = File(path, "rb");
     scope (exit) collectException(file.close());
+    try { progress.totalBytes = file.size(); progress.totalKnown = true; }
+    catch (Exception) {}
+    progress.phase = "Reading file";
+    publish(true);
     size_t lineNo = 1, bytes, scanned;
     ubyte[65536] buffer;
     ubyte[] line;
@@ -3351,11 +3401,15 @@ private LineWindow readLineWindow(string path, size_t offset, size_t limit,
             const rendered = to!string(lineNo).length + 2 + text.length + 1;
             if (bytes + rendered > maxBytes) { window.hasMore = true; stop = true; return; }
             window.lines ~= text;
+            progress.preview ~= to!string(lineNo) ~ ": " ~ text;
+            if (progress.preview.length > 6) progress.preview = progress.preview[$ - 6 .. $].dup;
+            progress.collected = window.lines.length;
             bytes += rendered;
             if (limit > 0 && window.lines.length >= limit)
             { window.hasMore = true; stop = true; }
         }
         ++lineNo;
+        progress.line = lineNo - 1;
         line.length = 0;
         truncated = false;
         pendingLine = false;
@@ -3368,13 +3422,7 @@ private LineWindow readLineWindow(string path, size_t offset, size_t limit,
             throw new Exception("Read scan limit reached after " ~ to!string(scanned) ~
                 " bytes at line " ~ to!string(lineNo) ~
                 ". Use a smaller offset or search the file with grep. Stop cancels the current turn.");
-        if (observer !is null && MonoTime.currTime >= nextProgress)
-        {
-            observer("Reading " ~ path ~ "\nScanned " ~ to!string(scanned) ~
-                " bytes; line " ~ to!string(lineNo) ~ "; collected " ~
-                to!string(window.lines.length) ~ " lines.\n10s / 64 MiB scan limit. Stop cancels this turn.");
-            nextProgress = MonoTime.currTime + msecs(500);
-        }
+        publish();
         auto chunk = file.rawRead(buffer[]);
         if (!chunk.length)
         {
@@ -3382,6 +3430,7 @@ private LineWindow readLineWindow(string path, size_t offset, size_t limit,
             break;
         }
         scanned += chunk.length;
+        progress.bytesRead = scanned;
         foreach (ch; chunk)
         {
             if (ch == '\n') { emitLine(); if (stop) break; }
@@ -3398,6 +3447,10 @@ private LineWindow readLineWindow(string path, size_t offset, size_t limit,
     }
     if (window.lines.length > 0)
         window.lastLine = window.firstLine + window.lines.length - 1;
+    progress.line = window.totalLines;
+    progress.phase = window.hasMore ? "Requested line window returned - more file content remains" : "Read complete - end of file";
+    progress.terminal = true;
+    publish(true);
     return window;
 }
 
@@ -3426,23 +3479,44 @@ private ToolExecution runRead(string args, string workspace,
         return ToolExecution("read",
             "Error: read requires a `filePath` argument.", true);
     const path = resolveToolPath(filePath, workspace);
+    ReadProgress checking;
+    checking.path = path; checking.offset = offset; checking.limit = limit;
+    checking.phase = "Checking file path";
+    if (observer !is null) observer(encodeReadProgress(checking));
     if (!exists(path) || !isFile(path))
+    {
+        checking.phase = "Read failed - file not found";
+        checking.terminal = true;
+        if (observer !is null) observer(encodeReadProgress(checking));
         return ToolExecution("read", "Error: file not found: " ~ path, true);
+    }
 
     // Numbered line window (line numbers give the model stable edit anchors).
     // Leave headroom under the byte cap for the `N: ` prefixes and the footer.
     LineWindow window;
+    ReadProgress latest;
+    void reportRead(string payload)
+    {
+        ReadProgress update;
+        if (decodeReadProgress(payload, update)) latest = update;
+        if (observer !is null) observer(payload);
+    }
     try window = readLineWindow(path, offset, limit,
         maxOutputBytes > 8192 ? maxOutputBytes - 8192 : maxOutputBytes,
-        cancellation, observer);
+        cancellation, &reportRead);
     catch (Exception error)
-        return ToolExecution("read", "Error: " ~ error.msg, true);
+        return ToolExecution("read", "Error: " ~ error.msg ~
+            "\nLast read activity (incomplete):\n" ~ readProgressText(latest), true);
     if (window.lines.length == 0)
     {
         if (offset > 1)
+        {
+            latest.phase = "Read failed - requested line is outside the file";
+            if (observer !is null) observer(encodeReadProgress(latest));
             return ToolExecution("read", "Error: offset " ~ to!string(offset) ~
                 " is out of range (file has " ~
                 to!string(window.totalLines) ~ " lines).", true);
+        }
         return ToolExecution("read", "", false);
     }
     auto builder = appender!string();

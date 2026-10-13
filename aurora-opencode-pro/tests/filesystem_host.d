@@ -31,7 +31,18 @@ int main(string[] args)
                         scan.lines = 50000; scan.bytes = 8 * 1024 * 1024;
                         scan.matches = 2;
                         scan.latest = ["large-log.txt:15: needle", "large-log.txt:29: needle"];
-                        write(request["progressPath"].str, encodeSearchProgress(scan));
+                        if (request["name"].str == "read")
+                        {
+                            import auroraopencode.readprogress : ReadProgress, encodeReadProgress;
+                            ReadProgress reading;
+                            reading.phase = "Reading file";
+                            reading.path = buildPath(scan.root, fields["filePath"].str);
+                            reading.totalKnown = true; reading.totalBytes = 10000; reading.bytesRead = 2500;
+                            reading.line = 30; reading.collected = 2;
+                            reading.preview = ["29: first returned line", "30: second returned line"];
+                            write(request["progressPath"].str, encodeReadProgress(reading));
+                        }
+                        else write(request["progressPath"].str, encodeSearchProgress(scan));
                     }
                 write(buildPath(request["workspace"].str,
                     "host-" ~ to!string(thisProcessID) ~ ".pid"), "ready");

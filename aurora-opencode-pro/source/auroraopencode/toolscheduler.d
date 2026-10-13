@@ -12,6 +12,7 @@ import core.sync.condition : Condition;
 import core.time : MonoTime, seconds;
 import auroraopencode.lifecyclediagnostics : logAgentLifecycle;
 import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress;
+import auroraopencode.readprogress : ReadProgress, decodeReadProgress;
 
 private __gshared Mutex _instanceMutex;
 private __gshared WorkScheduler _scheduler;
@@ -237,8 +238,10 @@ private final class ToolJob : WorkItem
     {
         SearchProgress search;
         const decoded = decodeSearchProgress(output, search);
+        ReadProgress read;
+        const decodedRead = decodeReadProgress(output, read);
         if (lastDiagnosticAt == MonoTime.init ||
-            MonoTime.currTime - lastDiagnosticAt >= 5.seconds || (decoded && search.terminal))
+            MonoTime.currTime - lastDiagnosticAt >= 5.seconds || (decoded && search.terminal) || (decodedRead && read.terminal))
         {
             JSONValue details;
             if (decoded)
@@ -255,6 +258,17 @@ private final class ToolJob : WorkItem
                 details["totalsKnown"] = search.totalsKnown;
                 details["lastActivityMs"] = search.lastActivityMs;
                 details["partial"] = search.partial;
+            }
+            if (decodedRead)
+            {
+                details["path"] = read.path;
+                details["phase"] = read.phase;
+                details["bytes"] = cast(long) read.bytesRead;
+                details["totalBytes"] = cast(long) read.totalBytes;
+                details["line"] = cast(long) read.line;
+                details["collectedLines"] = cast(long) read.collected;
+                details["totalsKnown"] = read.totalKnown;
+                details["lastActivityMs"] = read.lastActivityMs;
             }
             diagnostic("tool.progress", details);
             lastDiagnosticAt = MonoTime.currTime;
