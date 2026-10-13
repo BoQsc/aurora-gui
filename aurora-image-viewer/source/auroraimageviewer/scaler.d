@@ -24,6 +24,9 @@ final class MipImage
     private ubyte[] _pixels;
     private bool _hasAlpha;
 
+    /// Unsharp-mask strength applied to downscaled renders (0 = off).
+    private enum double downscaleSharpen = 0.8;
+
     this(int width, int height, const(ubyte)[] rgba, bool hasAlpha)
     {
         build(width, height, rgba, hasAlpha);
@@ -119,6 +122,12 @@ final class MipImage
             else
                 renderArea(base, _width, _height, output, viewWidth,
                     destX0, destY0, destX1, destY1, srcX, srcY, zoom);
+            // Area averaging is a clean low-pass but reads slightly softer than
+            // a bicubic/Lanczos resample. A mild unsharp mask restores the edge
+            // contrast that makes the result look as sharp as typical photo
+            // viewers, without the ringing/aliasing of a raw sharpen-first pass.
+            sharpenRegion(rgb, viewWidth, destX0, destY0, destX1, destY1,
+                downscaleSharpen);
             return;
         }
 
@@ -388,6 +397,9 @@ final class MipImage
     }
 
     /// Exact area-average downscale of an opaque image (full-resolution level).
+    /// Measured sharpest option: a widened bicubic degenerates into a wider
+    /// low-pass for decimation and scores lower acutance than this box average,
+    /// so the box average plus a light unsharp mask is used instead.
     private static void renderArea(const(ubyte)[] pixels, int bw, int bh,
         ubyte* output, int viewWidth, int x0, int y0, int x1, int y1,
         double srcX, double srcY, double zoom)
@@ -498,6 +510,46 @@ final class MipImage
                 o += 3;
             }
         }
+    }
+
+    /// Mild unsharp mask over a rectangular region of an RGB24 viewport. The
+    /// area-averaged downscale is a clean low-pass; this restores the edge
+    /// contrast that makes the result look as crisp as a bicubic resample.
+    private static void sharpenRegion(ubyte[] rgb, int viewWidth, int x0, int y0,
+        int x1, int y1, double amount)
+    {
+        const int rw = x1 - x0 + 1;
+        const int rh = y1 - y0 + 1;
+        if (rw < 3 || rh < 3 || amount <= 0.0) return;
+        auto src = new ubyte[cast(size_t) rw * rh * 3];
+        foreach (ry; 0 .. rh)
+        {
+            const size_t srcRow = (cast(size_t) (y0 + ry) * viewWidth +
+                cast(size_t) x0) * 3;
+            src[cast(size_t) ry * rw * 3 .. cast(size_t) ry * rw * 3 +
+                cast(size_t) rw * 3] =
+                rgb[srcRow .. srcRow + cast(size_t) rw * 3];
+        }
+        foreach (ry; 1 .. rh - 1)
+            foreach (rx; 1 .. rw - 1)
+            {
+                const size_t off = (cast(size_t) ry * rw + rx) * 3;
+                foreach (c; 0 .. 3)
+                {
+                    int sum = 0;
+                    foreach (dy; -1 .. 2)
+                        foreach (dx; -1 .. 2)
+                            sum += src[(cast(size_t) (ry + dy) * rw +
+                                (rx + dx)) * 3 + c];
+                    const int blurred = (sum + 4) / 9;
+                    const int center = src[off + c];
+                    int value = center + cast(int) (amount * (center - blurred));
+                    if (value < 0) value = 0;
+                    else if (value > 255) value = 255;
+                    rgb[(cast(size_t) (y0 + ry) * viewWidth + (x0 + rx)) * 3 + c] =
+                        cast(ubyte) value;
+                }
+            }
     }
 
     private static int clampIndex(int value, int size) @safe pure nothrow @nogc

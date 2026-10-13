@@ -1,0 +1,17 @@
+Aurora OpenCode rebuild report
+time:    2026-Oct-13 20:00:30.943888
+command: dub build --build=release
+dir:     C:\Users\windows10\Documents\github_repositories\aurora-gui\aurora-opencode-pro
+exit:    2
+
+compiler errors (0):
+  (no line matched 'error:'; see C:\Users\windows10\Documents\github_repositories\aurora-gui\aurora-opencode-pro\build.log for the full output)
+
+full output (tail):
+    Starting Performing "release" build using C:\D\dmd2\windows\bin64\dmd.exe for x86_64.
+    Building aurora-opencode-core 0.66.10: building configuration [library]
+    Building aurora-opencode-pro 0.66.12: building configuration [application]
+   Pre-build Running commands
+     Linking aurora-opencode-pro
+Error C:\Users\windows10\Documents\github_repositories\aurora-gui\aurora-opencode-pro\aurora-opencode-pro.exe: Access is denied.
+

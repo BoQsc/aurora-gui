@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply task continuation recovery",
+  "reason": "Fix-rebuild-supervisor-handoff",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
-  "dir": "C:\\Users\\windows10\\.codex\\worktrees\\unfinished-task-recovery\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-13 14:03:38.281243 UTC",
-  "finishedAt": "2026-10-13 14:05:00.1462702 UTC",
-  "durationMs": 81865,
+  "dir": "C:\\Users\\windows10\\.codex\\worktrees\\developer-update-button\\aurora-gui\\aurora-opencode-pro",
+  "startedAt": "2026-10-13 17:12:44.1283392 UTC",
+  "finishedAt": "2026-10-13 17:13:57.7152861 UTC",
+  "durationMs": 73587,
   "exitCode": 0,
   "errors": []
 }

@@ -2854,14 +2854,46 @@ private void jpegStoreBlock(ref JpegComponent component, int blockX, int blockY,
     }
 }
 
-/// Sample a component plane at full-resolution (x, y), nearest-neighbour.
+/// Fetch a component sample with edge clamping.
+private int jpegPlane(ref JpegComponent c, int sx, int sy)
+    @safe pure nothrow @nogc
+{
+    if (c.stride <= 0) return 0;
+    if (sx < 0) sx = 0;
+    else if (sx >= c.stride) sx = c.stride - 1;
+    const int rows = cast(int) (c.samples.length / c.stride);
+    if (sy < 0) sy = 0;
+    else if (sy >= rows) sy = rows - 1;
+    return c.samples[sy * c.stride + sx];
+}
+
+private int jpegFloor(double value) @safe pure nothrow @nogc
+{
+    const int truncated = cast(int) value;
+    return value < cast(double) truncated ? truncated - 1 : truncated;
+}
+
+/// Sample a component plane at full-resolution (x, y) with centre-aligned
+/// BILINEAR interpolation. For a full-resolution component (hSample == maxH and
+/// vSample == maxV) this reduces to an exact fetch; for subsampled chroma it
+/// smoothly upsamples instead of the blocky nearest-neighbour result, which is
+/// what makes colour edges look sharp rather than stepped.
 private int jpegSample(ref JpegComponent component, int x, int y, int maxH,
     int maxV) @safe pure nothrow @nogc
 {
-    const sx = x * component.hSample / maxH;
-    const sy = y * component.vSample / maxV;
-    const at = sy * component.stride + sx;
-    return at >= 0 && at < component.samples.length ? component.samples[at] : 0;
+    const double u = (x + 0.5) * cast(double) component.hSample / maxH - 0.5;
+    const double v = (y + 0.5) * cast(double) component.vSample / maxV - 0.5;
+    const int x0 = jpegFloor(u);
+    const int y0 = jpegFloor(v);
+    const double fx = u - x0;
+    const double fy = v - y0;
+    const int p00 = jpegPlane(component, x0, y0);
+    const int p10 = jpegPlane(component, x0 + 1, y0);
+    const int p01 = jpegPlane(component, x0, y0 + 1);
+    const int p11 = jpegPlane(component, x0 + 1, y0 + 1);
+    const double top = p00 + cast(double) (p10 - p00) * fx;
+    const double bottom = p01 + cast(double) (p11 - p01) * fx;
+    return cast(int) (top + (bottom - top) * fy + 0.5);
 }
 
 unittest
