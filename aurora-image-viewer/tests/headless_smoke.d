@@ -1,6 +1,7 @@
 ﻿module auroraimageviewer_headless_smoke;
 
 import aurora;
+import aurora.image : RgbaImage, encodePng;
 import auroraimageviewer.appui : ViewerRoot, imageViewerTheme;
 import auroraimageviewer.decoder : DecodedImage, decodeImageFile;
 import auroraimageviewer.imageview : ImageView;
@@ -77,41 +78,10 @@ private ubyte[] solidRgba(int width, int height, int r, int g, int b, int a = 25
     return pixels;
 }
 
-private ubyte[] pngChunk(string type, const(ubyte)[] data)
-{
-    ubyte[] buf;
-    appendU32BE(buf, cast(uint) data.length);
-    buf ~= cast(ubyte[]) type;
-    buf ~= data;
-    appendU32BE(buf, crc32(0, cast(ubyte[]) type ~ data));
-    return buf;
-}
-
+/// Write a PNG using the repository's single shared encoder.
 private void writePng(string path, int width, int height, const(ubyte)[] rgba)
 {
-    const stride = width * 4;
-    ubyte[] raw;
-    raw.length = (cast(size_t) stride + 1) * cast(size_t) height;
-    foreach (y; 0 .. height)
-    {
-        const row = cast(size_t) y * (cast(size_t) stride + 1);
-        raw[row] = 0;
-        raw[row + 1 .. row + 1 + stride] = rgba[cast(size_t) y * stride .. cast(size_t) (y + 1) * stride];
-    }
-    ubyte[] header;
-    appendU32BE(header, cast(uint) width);
-    appendU32BE(header, cast(uint) height);
-    header ~= 8;  // bit depth
-    header ~= 6;  // color type RGBA
-    header ~= 0;  // compression
-    header ~= 0;  // filter
-    header ~= 0;  // interlace
-    ubyte[] buf;
-    buf ~= [137, 80, 78, 71, 13, 10, 26, 10];
-    buf ~= pngChunk("IHDR", header);
-    buf ~= pngChunk("IDAT", compress(raw));
-    buf ~= pngChunk("IEND", []);
-    write(path, buf);
+    write(path, encodePng(new RgbaImage(width, height, rgba)));
 }
 
 private void writeBmp(string path, int width, int height, const(ubyte)[] rgba)

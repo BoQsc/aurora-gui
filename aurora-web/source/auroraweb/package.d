@@ -296,8 +296,12 @@ final class WebPage
                         auto bytes = _resourceLoader(*src);
                         if (bytes.length)
                         {
-                            import aurora.image : decodePngImage;
-                            auto img = decodePngImage(cast(const(ubyte)[]) bytes, *src);
+                            // Shared decoder: any supported format (PNG, JPEG,
+                            // GIF, BMP, TGA, PNM, ...), not just PNG.
+                            import aurora.image : decodeImage, RgbaImage;
+                            RgbaImage img;
+                            try img = decodeImage(cast(const(ubyte)[]) bytes, *src);
+                            catch (Exception) img = null;
                             if (img !is null)
                             {
                                 e.image = img;
@@ -327,8 +331,12 @@ final class WebPage
                         auto bytes = _resourceLoader(url);
                         if (bytes.length)
                         {
-                            import aurora.image : decodePngImage;
-                            auto img = decodePngImage(cast(const(ubyte)[]) bytes, url);
+                            // Shared decoder so CSS background images work for
+                            // every supported format, not just PNG.
+                            import aurora.image : decodeImage, RgbaImage;
+                            RgbaImage img;
+                            try img = decodeImage(cast(const(ubyte)[]) bytes, url);
+                            catch (Exception) img = null;
                             if (img !is null)
                                 e.backgroundImage = img;
                         }

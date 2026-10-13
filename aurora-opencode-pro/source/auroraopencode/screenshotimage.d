@@ -38,34 +38,31 @@ public enum int inlineImageMaxEdge = 1400;
 public ubyte[] pngToInlineJpeg(const(ubyte)[] png,
     int maxEdge = inlineImageMaxEdge)
 {
-    import aurora.image : decodePngImage, RgbaImage;
+    import aurora.image : decodePngImage, fitImage, RgbaImage;
     RgbaImage image;
     try image = decodePngImage(png, "inline image");
     catch (Exception) return null;
-    const width = image.width;
-    const height = image.height;
+    const width = image.width();
+    const height = image.height();
     if (width <= 0 || height <= 0) return null;
-    const rgba = image.pixels;
-    const longest = width > height ? width : height;
-    int factor = 1;
-    if (maxEdge > 0 && longest > maxEdge)
-        factor = (longest + maxEdge - 1) / maxEdge;
-    const outWidth = (width + factor - 1) / factor;
-    const outHeight = (height + factor - 1) / factor;
+
+    // Use the repository's shared resampler rather than a private downscale
+    // loop: fitImage preserves aspect ratio and box-averages on shrink.
+    auto scaled = maxEdge > 0 && (width > maxEdge || height > maxEdge)
+        ? fitImage(image, maxEdge) : image;
+    const outWidth = scaled.width();
+    const outHeight = scaled.height();
+    const rgba = scaled.pixels();
     auto rgb = new ubyte[cast(size_t) outWidth * outHeight * 3];
     foreach (y; 0 .. outHeight)
-    {
-        const sy = y * factor < height ? y * factor : height - 1;
         foreach (x; 0 .. outWidth)
         {
-            const sx = x * factor < width ? x * factor : width - 1;
-            const src = (cast(size_t) sy * width + sx) * 4;
+            const src = (cast(size_t) y * outWidth + x) * 4;
             const dst = (cast(size_t) y * outWidth + x) * 3;
             rgb[dst] = rgba[src];
             rgb[dst + 1] = rgba[src + 1];
             rgb[dst + 2] = rgba[src + 2];
         }
-    }
     return encodeScreenshotJpeg(outWidth, outHeight, rgb);
 }
 

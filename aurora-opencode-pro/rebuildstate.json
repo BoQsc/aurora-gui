@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Image context retirement and shared image optimization",
+  "reason": "Apply task continuation recovery",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
-  "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-13 05:31:15.6421432 UTC",
-  "finishedAt": "2026-10-13 05:32:16.7777606 UTC",
-  "durationMs": 61136,
+  "dir": "C:\\Users\\windows10\\.codex\\worktrees\\unfinished-task-recovery\\aurora-gui\\aurora-opencode-pro",
+  "startedAt": "2026-10-13 14:03:38.281243 UTC",
+  "finishedAt": "2026-10-13 14:05:00.1462702 UTC",
+  "durationMs": 81865,
   "exitCode": 0,
   "errors": []
 }

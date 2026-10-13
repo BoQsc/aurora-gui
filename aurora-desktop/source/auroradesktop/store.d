@@ -108,6 +108,7 @@ IconKind iconKindFromName(string name)
         case "battery": return IconKind.battery;
         case "batteryCharging": return IconKind.batteryCharging;
         case "power": return IconKind.power;
+        case "user": return IconKind.user;
         default: return IconKind.none;
     }
 }
@@ -147,6 +148,7 @@ string iconKindName(IconKind kind)
         case IconKind.battery: return "battery";
         case IconKind.batteryCharging: return "batteryCharging";
         case IconKind.power: return "power";
+        case IconKind.user: return "user";
         case IconKind.none: return "none";
     }
 }
