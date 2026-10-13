@@ -4,11 +4,14 @@ module app;
  * Aurora Browser — a desktop web browser shell built on Aurora-D.
  *
  * The window chrome and page rendering live in `aurorabrowser.appui`
- * (`BrowserRoot`); this module is the slim entry point.
+ * (`BrowserRoot`); this module is the slim entry point. The window is
+ * frameless: `BrowserRoot` carries the `BrowserTitleBar` (an Aurora
+ * `FramelessWindowTitleBar`) plus a snap-preview overlay and 1 px window
+ * border, matching the current Aurora window-shell pattern.
  */
 
 import aurora;
-import aurorabrowser.appui : BrowserRoot;
+import aurorabrowser.appui : BrowserRoot, browserTheme;
 
 private int runScreenshot(string path)
 {
@@ -16,9 +19,10 @@ private int runScreenshot(string path)
     options.title = "Aurora Browser";
     options.width = 1080;
     options.height = 680;
+    options.decorated = false;
     options.darkTitleBar = false;
     options.renderer = RendererPreference.software;
-    auto window = new GuiWindow(options, Theme.light());
+    auto window = new GuiWindow(options, browserTheme());
     auto root = new BrowserRoot(window);
     window.setRoot(root);
     auto driver = new UiTestDriver(window);
@@ -49,8 +53,14 @@ private int runBrowser(string startUrl)
     options.width = 1080;
     options.height = 680;
     options.resizable = true;
+    options.decorated = false;
     options.darkTitleBar = false;
-    auto window = new GuiWindow(options, Theme.light());
+    options.lowLatency = true;
+    options.vsync = true;
+    // Keep the native pointer during titlebar drags; Aurora's synchronized
+    // drawn cursor is meant for dragging retained compositor layers.
+    options.synchronizedDragPointer = false;
+    auto window = new GuiWindow(options, browserTheme());
     auto root = new BrowserRoot(window);
     window.setRoot(root);
     if (startUrl.length > 0)

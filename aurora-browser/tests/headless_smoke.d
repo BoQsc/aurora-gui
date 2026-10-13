@@ -9,7 +9,7 @@ module headless_smoke;
  */
 
 import aurora;
-import aurorabrowser.appui : BrowserRoot;
+import aurorabrowser.appui : BrowserRoot, TabButton, browserTheme;
 import auroraweb.dom : Element;
 
 import core.thread : Thread;
@@ -52,7 +52,7 @@ int main(string[] args)
     options.height = 680;
     options.darkTitleBar = false;
     options.renderer = RendererPreference.software;
-    auto window = new GuiWindow(options, Theme.light());
+    auto window = new GuiWindow(options, browserTheme());
     auto root = new BrowserRoot(window);
     window.setRoot(root);
     auto driver = new UiTestDriver(window);
@@ -338,6 +338,78 @@ int main(string[] args)
     Thread.sleep(50.msecs);
     check("--url opens target in first tab",
         root.currentUrlForTesting() == "auroraweb:links");
+
+    // --- Latest window-shell chrome: frameless titlebar + overlays. ---
+    auto bar = root.titleBarForTesting();
+    check("frameless titlebar present", bar !is null);
+    if (bar !is null)
+    {
+        check("titlebar height applied", bar.barHeight() == 32);
+        check("titlebar carries the browser icon",
+            bar.iconKind() == IconKind.computer);
+        check("titlebar shows the window title",
+            to!string(bar.title()).indexOf("Aurora Browser") >= 0);
+    }
+    check("snap preview present and input-transparent",
+        root.snapPreviewForTesting() !is null &&
+        !root.snapPreviewForTesting().enabled());
+
+    // --- Real tab strip: one clickable TabButton per open tab. ---
+    auto tabs = root.tabButtonsForTesting();
+    check("tab strip has one button per tab",
+        tabs.length == root.tabCountForTesting());
+    if (tabs.length >= 2)
+    {
+        check("tab buttons are laid out with positive width",
+            tabs[0].bounds().width > 0 && tabs[1].bounds().width > 0);
+        // Click the first tab's body: it becomes the active tab.
+        const body = tabs[0].localToGlobal(Point(tabs[0].bounds().width / 2,
+            tabs[0].bounds().height / 2));
+        driver.click(body);
+        root.tickTree(0.02);
+        driver.paint();   // switching tabs rebuilds the strip; re-lay it out
+        check("clicking a tab body activates it",
+            root.activeTabForTesting() == 0);
+        // Click the second tab's close region: it closes.
+        tabs = root.tabButtonsForTesting();
+        const before = root.tabCountForTesting();
+        if (tabs.length >= 2)
+        {
+            const region = tabs[1].closeRect();
+            const closePoint = tabs[1].localToGlobal(Point(
+                region.x + region.width / 2, region.y + region.height / 2));
+            driver.click(closePoint);
+            root.tickTree(0.02);
+            driver.paint();
+            check("clicking a tab close button closes it",
+                root.tabCountForTesting() == before - 1);
+        }
+    }
+
+    // --- Dedicated forward icon button. ---
+    check("forward button present", findById(root, "br-forward") !is null);
+
+    // --- Light/dark theme toggle is a working component. ---
+    auto themeButton = cast(Button) findById(root, "br-theme");
+    check("theme toggle present", themeButton !is null);
+    if (themeButton !is null)
+    {
+        import std.file : mkdirRecurse;
+        mkdirRecurse("build/headless-smoke");
+        const wasDark = root.isDarkForTesting();
+        themeButton.onClick();
+        root.tickTree(0.02);
+        driver.paint();
+        check("theme toggle flips dark mode",
+            root.isDarkForTesting() != wasDark);
+        window.saveScreenshot("build/headless-smoke/browser-dark.ppm");
+        themeButton.onClick();
+        root.tickTree(0.02);
+        driver.paint();
+        check("theme toggle flips back",
+            root.isDarkForTesting() == wasDark);
+        window.saveScreenshot("build/headless-smoke/browser-light.ppm");
+    }
 
     writeln("headless_smoke: ", failures == 0 ? "ALL PASSED" :
         to!string(failures) ~ " FAILURES");

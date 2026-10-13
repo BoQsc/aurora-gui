@@ -3,10 +3,18 @@ module aurorabrowser.appui;
 /**
  * Aurora Browser UI — the chrome and page-view widgets.
  *
- * The chrome is an Aurora-D widget tree (toolbar buttons, address field, tab
- * strip, status bar). Page content is rendered by the `aurora-web` engine
- * (`WebPage`) into a `WebPageView` widget that overrides `Widget.onPaint` and
- * drives `WebPage.layout`/`WebPage.paint` from the real Aurora `Canvas`.
+ * The shell follows the repository's current window-shell pattern: a manual
+ * top-level `Widget` root (`BrowserRoot`) places every region explicitly, a
+ * `FramelessWindowTitleBar` subclass (`BrowserTitleBar`) owns native window
+ * movement, work-area maximize/restore, restore-on-drag, aero snapping, the
+ * snap-preview overlay, and the owner-drawn system menu, and a disabled
+ * `WindowBorder` paints the one-pixel frame. The tab strip is a row of real
+ * per-tab `TabButton` widgets (activate on body click, close on the ✕ region),
+ * not a single concatenated label.
+ *
+ * Page content is rendered by the `aurora-web` engine (`WebPage`) into a
+ * `WebPageView` widget that overrides `Widget.onPaint` and drives
+ * `WebPage.layout`/`WebPage.paint` from the real Aurora `Canvas`.
  *
  * Navigation: `auroraweb:` URLs resolve against a small built-in scheme backed
  * by constant HTML test pages so the shell runs without any network; `http://`
@@ -23,9 +31,79 @@ import std.algorithm : startsWith;
 import std.conv : to;
 import std.file : exists, getcwd, readText, write;
 import std.path : baseName, buildPath;
-import std.range : empty;
 import std.string : indexOf, lastIndexOf, strip, toLower;
 import std.utf : toUTF32;
+
+// ---------------------------------------------------------------------------
+// Chrome metrics (logical pixels)
+// ---------------------------------------------------------------------------
+
+private enum int BrowserTitleBarHeight = 32;
+private enum int BrowserTabStripHeight = 34;
+private enum int BrowserTabHeight = 30;
+private enum int BrowserTabCloseWidth = 22;
+private enum int BrowserToolbarHeight = 44;
+private enum int BrowserBookmarksHeight = 28;
+private enum int BrowserStatusHeight = 24;
+private enum int BrowserNewTabWidth = 32;
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+
+/// Windows-10-style light browser palette, shared by the shell and titlebar.
+Theme browserTheme()
+{
+    auto theme = Theme.light();
+    theme.windowBackground = Color.fromHex(0xf3f3f3);
+    theme.panelBackground = Color.fromHex(0xf7f7f7);
+    theme.panelElevated = Color.fromHex(0xffffff);
+    theme.text = Color.fromHex(0x1a1a1a);
+    theme.textMuted = Color.fromHex(0x5f6368);
+    theme.border = Color.fromHex(0xd6d6d6);
+    theme.accent = Color.fromHex(0x0078d4);
+    theme.accentHover = Color.fromHex(0x106ebe);
+    theme.accentPressed = Color.fromHex(0x005a9e);
+    theme.selection = Color.fromHex(0xcce8ff);
+    theme.selectionText = Color.fromHex(0x1a1a1a);
+    theme.fieldBackground = Color.fromHex(0xffffff);
+    theme.buttonBackground = Color.fromHex(0xefefef);
+    theme.buttonHover = Color.fromHex(0xe2e2e2);
+    theme.buttonPressed = Color.fromHex(0xd4d4d4);
+    theme.disabled = Color.fromHex(0xb0b0b0);
+    theme.danger = Color.fromHex(0xe81123);
+    theme.cornerRadius = 4;
+    theme.controlHeight = 30;
+    theme.fontScale = cast(int) TextScale.caption;
+    return theme;
+}
+
+/// Windows-10-style dark browser palette.
+Theme darkBrowserTheme()
+{
+    auto theme = Theme.dark();
+    theme.windowBackground = Color.fromHex(0x202020);
+    theme.panelBackground = Color.fromHex(0x262626);
+    theme.panelElevated = Color.fromHex(0x2b2b2b);
+    theme.text = Color.fromHex(0xffffff);
+    theme.textMuted = Color.fromHex(0xa0a0a0);
+    theme.border = Color.fromHex(0x3f3f3f);
+    theme.accent = Color.fromHex(0x4f8cff);
+    theme.accentHover = Color.fromHex(0x6ca0ff);
+    theme.accentPressed = Color.fromHex(0x3974df);
+    theme.selection = Color.fromHex(0x1e6fbf);
+    theme.selectionText = Color.fromHex(0xffffff);
+    theme.fieldBackground = Color.fromHex(0x1e1e1e);
+    theme.buttonBackground = Color.fromHex(0x333333);
+    theme.buttonHover = Color.fromHex(0x3c3c3c);
+    theme.buttonPressed = Color.fromHex(0x4a4a4a);
+    theme.disabled = Color.fromHex(0x6e6e6e);
+    theme.danger = Color.fromHex(0xff6b6b);
+    theme.cornerRadius = 4;
+    theme.controlHeight = 30;
+    theme.fontScale = cast(int) TextScale.caption;
+    return theme;
+}
 
 // ---------------------------------------------------------------------------
 // Offline page source
@@ -736,6 +814,230 @@ final class WebPageView : Widget
 }
 
 // ---------------------------------------------------------------------------
+// Window chrome pieces (latest Aurora window-shell pattern)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Aurora Browser titlebar. Product identity lives here; Aurora's
+ * `FramelessWindowTitleBar` owns movement, work-area maximize/restore,
+ * restore-on-drag, snap-preview mapping, and the owner-drawn system menu.
+ */
+final class BrowserTitleBar : FramelessWindowTitleBar
+{
+    this(GuiWindow window)
+    {
+        super(window);
+        setTitle("Aurora Browser");
+        setIcon(IconKind.computer);
+        setBarHeight(BrowserTitleBarHeight);
+        setIconSize(16);
+        setCornerRadius(0);
+        setTitleAlign(HorizontalAlign.left);
+        setCaptionButtonWidth(46);
+        setTitleFontSize(12);
+        setDarkMode(false);
+    }
+
+    /// Re-apply the light or dark Windows-10 palette to the titlebar.
+    void setDarkMode(bool dark)
+    {
+        if (dark)
+        {
+            setBackground(Color.fromHex(0x2b2b2b));
+            setInactiveBackground(Color.fromHex(0x222222));
+            setBorderColor(Color.rgba(0, 0, 0, 0));
+            setTextColor(Color.fromHex(0xffffff));
+            setMutedTextColor(Color.fromHex(0xa0a0a0));
+            setButtonHoverColor(Color.fromHex(0x3c3c3c));
+            setButtonPressedColor(Color.fromHex(0x4a4a4a));
+        }
+        else
+        {
+            setBackground(Color.fromHex(0xf7f7f7));
+            setInactiveBackground(Color.fromHex(0xefefef));
+            setBorderColor(Color.rgba(0, 0, 0, 0));
+            setTextColor(Color.fromHex(0x1a1a1a));
+            setMutedTextColor(Color.fromHex(0x5f6368));
+            setButtonHoverColor(Color.fromHex(0xe2e2e2));
+            setButtonPressedColor(Color.fromHex(0xd4d4d4));
+        }
+        setCloseHoverColor(Color.fromHex(0xe81123));
+        setClosePressedColor(Color.fromHex(0xc42b1c));
+    }
+}
+
+/**
+ * A one-pixel border painted over every edge so the frameless window looks
+ * like a real Windows-10 window. Created disabled so it never intercepts
+ * pointer input (the host's hit test skips disabled widgets, exactly like the
+ * snap-preview overlay).
+ */
+final class WindowBorder : Widget
+{
+    this()
+    {
+        setEnabled(false);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        canvas.strokeRect(Rect(0, 0, bounds().width, bounds().height),
+            theme().border, 1);
+    }
+}
+
+/**
+ * One browser tab: a title, an active highlight, and a close (✕) region.
+ * Clicking the body activates the tab; clicking the close region asks the
+ * shell to close it. This replaces the old single concatenated label, which
+ * could not be clicked, switched, or closed.
+ */
+final class TabButton : Widget
+{
+    private dstring _title;
+    private bool _active;
+    private bool _pressed;
+    private bool _closeHover;
+
+    void delegate() onActivate;
+    void delegate() onClose;
+
+    this(string title = "")
+    {
+        setFocusable(true);
+        setCursor(CursorKind.hand);
+        layoutHints().preferredHeight = BrowserTabHeight;
+        layoutHints().minWidth = 110;
+        setTitle(title);
+    }
+
+    dstring title() const @safe pure nothrow @nogc { return _title; }
+    bool active() const @safe pure nothrow @nogc { return _active; }
+
+    void setTitle(string value)
+    {
+        const next = toUTF32(value);
+        if (next == _title) return;
+        _title = next;
+        recomputeWidth();
+        invalidate();
+    }
+
+    void setActive(bool value)
+    {
+        if (_active == value) return;
+        _active = value;
+        invalidate();
+    }
+
+    private void recomputeWidth()
+    {
+        const palette = theme();
+        TextLayoutOptions options;
+        options.role = FontRole.ui;
+        options.overrideFace = cast() palette.uiFont;
+        options.pixelSize = fontPixelSize(palette.fontScale);
+        options.wrap = false;
+        int textWidth;
+        try
+            textWidth = fontSystem().textEngine.layout(_title, options)
+                .measuredSize().width;
+        catch (Exception)
+            textWidth = cast(int) _title.length * 8;
+        layoutHints().preferredWidth =
+            clampInt(textWidth + 40 + BrowserTabCloseWidth, 120, 240);
+    }
+
+    /// The ✕ close hit region at the tab's right edge.
+    Rect closeRect() const @safe pure nothrow @nogc
+    {
+        return Rect(maxInt(0, bounds().width - BrowserTabCloseWidth - 4),
+            maxInt(0, (bounds().height - 18) / 2), BrowserTabCloseWidth, 18);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const palette = theme();
+        const w = bounds().width;
+        const h = bounds().height;
+        if (_active)
+            canvas.fillRoundedRect(Rect(0, 3, w, maxInt(1, h - 3)), 5,
+                palette.panelElevated);
+        else if (hovered())
+            canvas.fillRoundedRect(Rect(0, 3, w, maxInt(1, h - 3)), 5,
+                palette.buttonHover);
+        if (_active)
+            canvas.fillRect(Rect(0, 0, w, 3), palette.accent);
+
+        const textRight = BrowserTabCloseWidth + 10;
+        canvas.drawTextInRect(
+            Rect(12, 0, maxInt(0, w - 12 - textRight), h),
+            _title, _active ? palette.text : palette.textMuted,
+            palette.fontScale, HorizontalAlign.left, VerticalAlign.middle, true);
+
+        // Close affordance.
+        const region = closeRect();
+        if (_closeHover)
+            canvas.fillRoundedRect(region, 4, palette.buttonPressed);
+        const cx = region.x + region.width / 2;
+        const cy = region.y + region.height / 2;
+        const glyph = _active ? palette.text : palette.textMuted;
+        canvas.drawLine(Point(cx - 4, cy - 4), Point(cx + 4, cy + 4), glyph, 2);
+        canvas.drawLine(Point(cx + 4, cy - 4), Point(cx - 4, cy + 4), glyph, 2);
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (!enabled() || event.button != MouseButton.left) return false;
+        _pressed = true;
+        _closeHover = closeRect().contains(event.position);
+        requestFocus();
+        captureMouse();
+        invalidate();
+        return true;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const over = closeRect().contains(event.position);
+        if (over != _closeHover)
+        {
+            _closeHover = over;
+            invalidate();
+        }
+        return true;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left || !_pressed) return false;
+        _pressed = false;
+        releaseMouse();
+        const inClose = closeRect().contains(event.position);
+        _closeHover = false;
+        invalidate();
+        if (inClose)
+        {
+            if (onClose !is null) onClose();
+        }
+        else if (containsLocal(event.position))
+        {
+            if (onActivate !is null) onActivate();
+        }
+        return true;
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (_closeHover)
+        {
+            _closeHover = false;
+            invalidate();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Address field
 // ---------------------------------------------------------------------------
 
@@ -794,9 +1096,20 @@ private struct Tab
 // Browser root
 // ---------------------------------------------------------------------------
 
-final class BrowserRoot : VBox
+/**
+ * The Aurora Browser root. A manual-layout `Widget` (the current window-shell
+ * pattern): `onLayout` places the titlebar, tab strip, toolbar, bookmarks bar,
+ * content area, status band, snap-preview overlay, and window border
+ * explicitly, while each region keeps automatic inner layout (HBox/VBox).
+ */
+final class BrowserRoot : Widget
 {
     private GuiWindow _window;
+    private BrowserTitleBar _titleBar;
+    private TitleBarSnapPreview _snapPreview;
+    private WindowBorder _windowBorder;
+    private bool _dark;
+
     private Tab[] _tabs;
     private int _active;
 
@@ -808,79 +1121,88 @@ final class BrowserRoot : VBox
     private Button _goButton;
     private Button _newTabButton;
     private Button _bookmarkButton;
+    private Button _themeButton;
+    private HBox _toolbar;
     private HBox _tabStrip;
-    private Label _status;
-    private Label _tabsLabel;
-    private VBox _content;
     private HBox _bookmarksBar;
+    private VBox _content;
+    private Panel _statusBand;
+    private Label _status;
+    private TabButton[] _tabButtons;
+
     private string[] _bookmarks;   /// bookmarked URLs (order preserved)
     private string _homeUrl;       /// configured home page (persisted)
     private bool _loading;         /// page currently loading (status/button state)
 
     this(GuiWindow window)
     {
-        super(0);
         _window = window;
         _homeUrl = loadHomeUrl();
-        buildChrome();
+
+        _titleBar = add(new BrowserTitleBar(window));
+
+        // Regions, top to bottom. Each is a Box that lays out its own row.
+        _tabStrip = add(new HBox(4, Insets(6, 2)));
+        _tabStrip.setBackground(browserTheme().panelBackground);
+        _toolbar = add(new HBox(6, Insets(8, 7)));
+        _toolbar.setBackground(browserTheme().panelElevated);
+        _bookmarksBar = add(new HBox(4, Insets(6, 4)));
+        _bookmarksBar.setBackground(browserTheme().panelBackground);
+        _content = add(new VBox(0));
+        _content.setBackground(Color.rgb(255, 255, 255));
+        _statusBand = add(new Panel(browserTheme().panelBackground));
+        _status = _statusBand.add(new Label("Ready"));
+        _status.setId("br-status");
+        _status.setScale(1);
+
+        buildToolbar();
+        refreshBookmarksBar();
+
+        // Overlays: added last so they paint above all content. The preview is
+        // created disabled, so it never intercepts pointer input.
+        _snapPreview = add(new TitleBarSnapPreview());
+        _titleBar.setSnapPreview(_snapPreview);
+        _windowBorder = add(new WindowBorder());
+
         newTab(_homeUrl);
-        updateStatus("Aurora Browser ready — offline pages only "
-            ~ "(auroraweb:hello, auroraweb:css, auroraweb:js, "
-            ~ "auroraweb:links).");
+        updateStatus("Aurora Browser ready — type a URL or search term, or open "
+            ~ "auroraweb:hello, auroraweb:css, auroraweb:js, auroraweb:links.");
         updateChrome();
     }
 
-    /// Configure the home page (also persists it to home.txt).
-    private void setHomeUrl(string url)
-    {
-        if (url == _homeUrl) return;
-        _homeUrl = url;
-        saveHomeUrl(url);
-    }
+    // --- chrome construction ---------------------------------------------
 
-    /// Open `url` in the first tab on startup (used by the `--url` CLI arg).
-    /// Called after the constructor created the initial tab.
-    public void openUrlAtStartup(string url)
+    private void buildToolbar()
     {
-        if (_tabs.length == 0) return;
-        _active = 0;
-        switchTab(0);
-        navigateTo(url);
-        updateChrome();
-    }
-
-    private void buildChrome()
-    {
-        // Toolbar row: back / forward / reload, address field, Go.
-        auto toolbar = add(new HBox(6, Insets(8, 6)));
-        toolbar.layoutHints().preferredHeight = 48;
-
-        _backButton = toolbar.add(new Button("", IconKind.up));
+        _backButton = _toolbar.add(new Button("", IconKind.up));
         _backButton.setId("br-back");
         _backButton.setIconSize(16);
-        _backButton.layoutHints().preferredWidth = 36;
+        _backButton.setFlat(true);
+        _backButton.layoutHints().preferredWidth = 34;
         _backButton.onClick = delegate() { navigateBack(); };
 
-        _forwardButton = toolbar.add(new Button("", IconKind.up));
+        _forwardButton = _toolbar.add(new Button("", IconKind.chevronRight));
         _forwardButton.setId("br-forward");
         _forwardButton.setIconSize(16);
-        _forwardButton.layoutHints().preferredWidth = 36;
-        // No dedicated forward glyph; mirror the back arrow for now.
+        _forwardButton.setFlat(true);
+        _forwardButton.layoutHints().preferredWidth = 34;
         _forwardButton.onClick = delegate() { navigateForward(); };
 
-        _reloadButton = toolbar.add(new Button("", IconKind.refresh));
+        _reloadButton = _toolbar.add(new Button("", IconKind.refresh));
         _reloadButton.setId("br-reload");
         _reloadButton.setIconSize(16);
-        _reloadButton.layoutHints().preferredWidth = 36;
+        _reloadButton.setFlat(true);
+        _reloadButton.layoutHints().preferredWidth = 34;
         _reloadButton.onClick = delegate() { reloadPage(); };
 
-        _homeButton = toolbar.add(new Button("", IconKind.home));
+        _homeButton = _toolbar.add(new Button("", IconKind.home));
         _homeButton.setId("br-home");
         _homeButton.setIconSize(16);
-        _homeButton.layoutHints().preferredWidth = 36;
+        _homeButton.setFlat(true);
+        _homeButton.layoutHints().preferredWidth = 34;
         _homeButton.onClick = delegate() { goHome(); };
 
-        _address = toolbar.add(new AddressField(""));
+        _address = _toolbar.add(new AddressField(""));
         _address.setId("br-address");
         _address.setPlaceholder("Enter a URL or search term");
         _address.layoutHints().flex = 1.0;
@@ -893,41 +1215,58 @@ final class BrowserRoot : VBox
             _address.selectAll();
         };
 
-        _goButton = toolbar.add(new Button("Go"));
+        _goButton = _toolbar.add(new Button("Go"));
         _goButton.setId("br-go");
         _goButton.setAccent(true);
         _goButton.onClick = delegate() { go(); };
 
-        _newTabButton = toolbar.add(new Button("New tab", IconKind.newDocument));
-        _newTabButton.setId("br-newtab");
-        _newTabButton.onClick = delegate() { newTab("auroraweb:hello"); };
-
-        _bookmarkButton = toolbar.add(new Button("★"));
+        _bookmarkButton = _toolbar.add(new Button("☆"));
         _bookmarkButton.setId("br-bookmark");
+        _bookmarkButton.setFlat(true);
         _bookmarkButton.layoutHints().preferredWidth = 34;
         _bookmarkButton.onClick = delegate() { toggleBookmark(); };
 
-        // Bookmarks bar: a horizontal row of saved links.
-        _bookmarksBar = add(new HBox(4, Insets(6, 2)));
-        _bookmarksBar.layoutHints().preferredHeight = 26;
-        refreshBookmarksBar();
+        _themeButton = _toolbar.add(new Button("", IconKind.settings));
+        _themeButton.setId("br-theme");
+        _themeButton.setIconSize(16);
+        _themeButton.setFlat(true);
+        _themeButton.layoutHints().preferredWidth = 34;
+        _themeButton.onClick = delegate() { toggleDarkMode(); };
+    }
 
-        // Tab strip: one label per tab (no per-tab close buttons yet).
-        _tabStrip = add(new HBox(4, Insets(6, 2)));
-        _tabStrip.layoutHints().preferredHeight = 30;
-        _tabsLabel = _tabStrip.add(new Label(""));
-        _tabsLabel.setId("br-tabs");
+    /// Rebuild the tab strip: one `TabButton` per tab, then the "+" button,
+    /// then a flex spacer so the tabs stay left-clustered.
+    private void refreshTabStrip()
+    {
+        if (_tabStrip is null) return;
+        _tabStrip.clearChildren();
+        _tabButtons = [];
+        foreach (index, tab; _tabs)
+        {
+            const title = tab.title.length > 0 ? tab.title : "New tab";
+            auto button = _tabStrip.add(new TabButton(title));
+            button.setId("br-tab-" ~ to!string(index));
+            button.setActive(cast(int) index == _active);
+            bindTabButton(button, cast(int) index);
+            _tabButtons ~= button;
+        }
+        _newTabButton = _tabStrip.add(new Button("", IconKind.newDocument));
+        _newTabButton.setId("br-newtab");
+        _newTabButton.setIconSize(16);
+        _newTabButton.setFlat(true);
+        _newTabButton.layoutHints().preferredWidth = BrowserNewTabWidth;
+        _newTabButton.onClick = delegate() { newTab(_homeUrl); };
+        _tabStrip.add(new Spacer(1.0));
+    }
 
-        // Content area: hosts the active tab's page view (reparented during
-        // switchTab).
-        _content = add(new VBox(0));
-        _content.layoutHints().flex = 1.0;
-
-        // Status bar.
-        _status = add(new Label("Ready"));
-        _status.setId("br-status");
-        _status.layoutHints().preferredHeight = 26;
-        _status.setScale(1);
+    /// Bind a tab button's callbacks. `index` is a function parameter, so each
+    /// call has its own stack slot and its delegates do not share the loop
+    /// counter (a delegate created directly inside the `foreach` body would
+    /// capture one reused variable and every tab would act on the last index).
+    private void bindTabButton(TabButton button, int index)
+    {
+        button.onActivate = delegate() { switchTab(index); };
+        button.onClose = delegate() { closeTab(index); };
     }
 
     // --- navigation -------------------------------------------------------
@@ -967,7 +1306,6 @@ final class BrowserRoot : VBox
         if (!success)
         {
             tab.position = prevPosition;
-            _tabs[_active] = *tab;
             updateChrome();
             updateStatus("Failed to load " ~ url);
             return;
@@ -978,7 +1316,6 @@ final class BrowserRoot : VBox
         tab.history ~= url;
         tab.position = cast(int) tab.history.length - 1;
         tab.title = pageTitle(tab.view);
-        _tabs[_active] = *tab;
         updateChrome();
         updateStatus("Loaded " ~ url);
     }
@@ -1010,11 +1347,9 @@ final class BrowserRoot : VBox
         if (updateChrome)
         {
             _address.setText(url, false);
-            _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
-                "Aurora Browser");
+            setWindowTitle(tab.title);
             _bookmarkButton.setText(isBookmarked(url) ? "★" : "☆");
         }
-        _tabs[_active] = *tab;
         return success;
     }
 
@@ -1027,7 +1362,6 @@ final class BrowserRoot : VBox
         loadUrl(url);
         tab.title = pageTitle(tab.view);
         updateStatus(statusPrefix ~ " " ~ url);
-        _tabs[_active] = *tab;
         updateChrome();
     }
 
@@ -1055,10 +1389,9 @@ final class BrowserRoot : VBox
         auto tab = &_tabs[_active];
         loadUrl(tab.view.currentUrl());
         tab.title = pageTitle(tab.view);
-        _window.setTitle(tab.title.length > 0 ? tab.title ~ " — Aurora Browser" :
-            "Aurora Browser");
+        setWindowTitle(tab.title);
         updateStatus("Reloaded " ~ tab.view.currentUrl());
-        _tabs[_active] = *tab;
+        updateChrome();
     }
 
     private void goHome()
@@ -1084,16 +1417,24 @@ final class BrowserRoot : VBox
         _tabs ~= tab;
         _active = cast(int) _tabs.length - 1;
         switchTab(_active);
+
         // Commit the initial URL to history only when it loads successfully;
         // otherwise the history entry is dropped and an error page shown.
         // The address bar is cleared so the next typed URL replaces it.
-        _address.setText("", false);
-        if (!loadUrl(url, false))
+        const loaded = loadUrl(url, false);
+        if (loaded)
         {
-            tab.history.length = 0;
-            tab.position = 0;
-            tab.title = pageTitle(view);
-            _tabs[_active] = tab;
+            _tabs[_active].title = pageTitle(_tabs[_active].view);
+            _address.setText("", false);
+            setWindowTitle(_tabs[_active].title);
+            updateChrome();
+            updateStatus("Loaded " ~ url);
+        }
+        else
+        {
+            _tabs[_active].history.length = 0;
+            _tabs[_active].position = 0;
+            _tabs[_active].title = pageTitle(_tabs[_active].view);
             updateChrome();
         }
     }
@@ -1107,6 +1448,26 @@ final class BrowserRoot : VBox
         view.layoutHints().flex = 1.0;
         _content.add(view);
         updateChrome();
+    }
+
+    private void closeTab(int index)
+    {
+        if (index < 0 || index >= cast(int) _tabs.length) return;
+        _tabs = _tabs[0 .. index] ~ _tabs[index + 1 .. $];
+        if (_tabs.length == 0)
+        {
+            newTab(_homeUrl);
+            return;
+        }
+        if (index < _active) --_active;
+        else if (_active >= cast(int) _tabs.length)
+            _active = cast(int) _tabs.length - 1;
+        switchTab(_active);
+    }
+
+    private void closeActiveTab()
+    {
+        closeTab(_active);
     }
 
     /// Re-extract the page title from the DOM (best effort).
@@ -1142,40 +1503,57 @@ final class BrowserRoot : VBox
         return "";
     }
 
+    private void setWindowTitle(string pageTitleText)
+    {
+        const title = pageTitleText.length > 0 ? pageTitleText : "New tab";
+        const full = title ~ " — Aurora Browser";
+        _window.setTitle(full);
+        if (_titleBar !is null) _titleBar.setTitle(full);
+    }
+
     private void updateChrome()
     {
-        const canBack = _active >= 0 && _active < cast(int) _tabs.length &&
-            _tabs[cast(size_t) _active].position > 0;
-        const canForward = _active >= 0 && _active < cast(int) _tabs.length &&
+        const valid = _active >= 0 && _active < cast(int) _tabs.length;
+        const canBack = valid && _tabs[cast(size_t) _active].position > 0;
+        const canForward = valid &&
             _tabs[cast(size_t) _active].position + 1 <
             cast(int) _tabs[cast(size_t) _active].history.length;
 
-        _backButton.setEnabled(canBack);
-        _forwardButton.setEnabled(canForward);
-
-        // Tab strip label: "Tab 1 · Tab 2 ..." with the active one in caps.
-        if (_tabs.length > 0)
-        {
-            string label;
-            foreach (index, tab; _tabs)
-            {
-                if (index > 0) label ~= "   ";
-                const title = tab.title.length > 0 ? tab.title : "New tab";
-                if (cast(int) index == _active)
-                    label ~= "[ " ~ title ~ " ]";
-                else
-                    label ~= title;
-            }
-            _tabsLabel.setText(label);
-        }
-        else
-            _tabsLabel.setText("");
+        if (_backButton !is null) _backButton.setEnabled(canBack);
+        if (_forwardButton !is null) _forwardButton.setEnabled(canForward);
+        refreshTabStrip();
     }
 
     private void updateStatus(string text)
     {
         _status.setText(text);
     }
+
+    private void toggleDarkMode()
+    {
+        _dark = !_dark;
+        _window.setTheme(_dark ? darkBrowserTheme() : browserTheme());
+        if (_titleBar !is null) _titleBar.setDarkMode(_dark);
+        if (_tabStrip !is null)
+            _tabStrip.setBackground(_dark ? darkBrowserTheme().panelBackground :
+                browserTheme().panelBackground);
+        if (_toolbar !is null)
+            _toolbar.setBackground(_dark ? darkBrowserTheme().panelElevated :
+                browserTheme().panelElevated);
+        if (_bookmarksBar !is null)
+            _bookmarksBar.setBackground(_dark ? darkBrowserTheme().panelBackground :
+                browserTheme().panelBackground);
+        if (_statusBand !is null)
+            _statusBand.setBackground(_dark ? darkBrowserTheme().panelBackground :
+                browserTheme().panelBackground);
+        if (_window is null) return;
+        _window.setFrameDark(_dark);
+        updateStatus(_dark ? "Dark theme enabled" : "Light theme enabled");
+        invalidate();
+    }
+
+    /// Test-only: current theme mode.
+    public bool isDarkForTesting() const { return _dark; }
 
     // --- bookmarks --------------------------------------------------------
 
@@ -1204,6 +1582,7 @@ final class BrowserRoot : VBox
             updateStatus("Bookmarked: " ~ url);
         }
         refreshBookmarksBar();
+        _bookmarkButton.setText(isBookmarked(url) ? "★" : "☆");
     }
 
     /// Rebuild the bookmarks bar buttons.
@@ -1221,12 +1600,19 @@ final class BrowserRoot : VBox
         {
             auto b = _bookmarksBar.add(new Button(bookmarkLabel(url)));
             b.setId("br-bookmark-" ~ to!string(index));
-            const capturedUrl = url;
-            b.onClick = delegate() {
-                if (_active >= 0 && _active < cast(int) _tabs.length)
-                    navigateTo(capturedUrl);
-            };
+            b.setFlat(true);
+            bindBookmarkButton(b, url);
         }
+    }
+
+    /// Bind a bookmark button's click callback (parameter-scoped so the URL is
+    /// not shared across loop iterations).
+    private void bindBookmarkButton(Button button, string url)
+    {
+        button.onClick = delegate() {
+            if (_active >= 0 && _active < cast(int) _tabs.length)
+                navigateTo(url);
+        };
     }
 
     private string bookmarkLabel(string url)
@@ -1281,32 +1667,43 @@ final class BrowserRoot : VBox
         return false;
     }
 
-    private void closeActiveTab()
-    {
-        if (_active < 0 || _active >= cast(int) _tabs.length) return;
-        _tabs = _tabs[0 .. _active] ~ _tabs[_active + 1 .. $];
-        if (_tabs.length == 0)
-        {
-            newTab(_homeUrl);
-            return;
-        }
-        if (_active >= cast(int) _tabs.length)
-            _active = cast(int) _tabs.length - 1;
-        switchTab(_active);
-    }
-
     // --- layout -----------------------------------------------------------
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        canvas.fillRect(Rect(0, 0, bounds().width, bounds().height),
+            theme().windowBackground);
+    }
 
     protected override void onLayout()
     {
-        // Ensure the active tab's view fills the content area.
-        if (_active >= 0 && _active < cast(int) _tabs.length)
-        {
-            auto view = _tabs[cast(size_t) _active].view;
-            view.setBounds(Rect(0, 0, _content.size().width,
-                _content.size().height));
-        }
-        super.onLayout();
+        const w = bounds().width;
+        const h = bounds().height;
+        int y = 0;
+
+        const titleH = _titleBar !is null ? _titleBar.barHeight() :
+            BrowserTitleBarHeight;
+        _titleBar.setBounds(Rect(0, y, w, titleH));
+        y += titleH;
+
+        _tabStrip.setBounds(Rect(0, y, w, BrowserTabStripHeight));
+        y += BrowserTabStripHeight;
+
+        _toolbar.setBounds(Rect(0, y, w, BrowserToolbarHeight));
+        y += BrowserToolbarHeight;
+
+        _bookmarksBar.setBounds(Rect(0, y, w, BrowserBookmarksHeight));
+        y += BrowserBookmarksHeight;
+
+        const statusH = BrowserStatusHeight;
+        const contentH = maxInt(0, h - y - statusH);
+        _content.setBounds(Rect(0, y, w, contentH));
+        y += contentH;
+
+        _statusBand.setBounds(Rect(0, y, w, maxInt(0, h - y)));
+
+        _snapPreview.setBounds(Rect(0, 0, w, h));
+        _windowBorder.setBounds(Rect(0, 0, w, h));
     }
 
     // --- test accessors ---------------------------------------------------
@@ -1391,15 +1788,76 @@ final class BrowserRoot : VBox
         return to!string(_status.text());
     }
 
-    /// Test-only: the tab strip label text.
+    /// Test-only: a summary of the tab strip ("[ active ] other · other").
+    /// Kept label-shaped so existing callers keep working even though the
+    /// strip is now a row of real `TabButton` widgets.
     public string tabStripLabelForTesting() const
     {
-        return to!string(_tabsLabel.text());
+        string label;
+        foreach (index, tab; _tabs)
+        {
+            if (index > 0) label ~= "   ";
+            const title = tab.title.length > 0 ? tab.title : "New tab";
+            if (cast(int) index == _active)
+                label ~= "[ " ~ title ~ " ]";
+            else
+                label ~= title;
+        }
+        return label;
+    }
+
+    /// Test-only: the tab strip's real `TabButton` widgets.
+    public TabButton[] tabButtonsForTesting()
+    {
+        return _tabButtons.dup;
+    }
+
+    /// Test-only: switch the active tab (as clicking a tab would).
+    public void switchTabForTesting(int index)
+    {
+        switchTab(index);
+    }
+
+    /// Test-only: close a tab (as clicking a tab's ✕ would).
+    public void closeTabForTesting(int index)
+    {
+        closeTab(index);
+    }
+
+    /// Test-only: the titlebar widget.
+    public BrowserTitleBar titleBarForTesting()
+    {
+        return _titleBar;
+    }
+
+    /// Test-only: the snap-preview overlay.
+    public TitleBarSnapPreview snapPreviewForTesting()
+    {
+        return _snapPreview;
     }
 
     /// Test-only: set the home page (also persists it to home.txt).
     public void setHomeForTesting(string url)
     {
         setHomeUrl(url);
+    }
+
+    /// Configure the home page (also persists it to home.txt).
+    private void setHomeUrl(string url)
+    {
+        if (url == _homeUrl) return;
+        _homeUrl = url;
+        saveHomeUrl(url);
+    }
+
+    /// Open `url` in the first tab on startup (used by the `--url` CLI arg).
+    /// Called after the constructor created the initial tab.
+    public void openUrlAtStartup(string url)
+    {
+        if (_tabs.length == 0) return;
+        _active = 0;
+        switchTab(0);
+        navigateTo(url);
+        updateChrome();
     }
 }

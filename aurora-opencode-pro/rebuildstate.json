@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Recognize legacy Aurora source packages without shared/rebuild.d, recover the existing Git checkout, and offer source setup from Publish and Rebuild",
+  "reason": "Image context retirement and shared image optimization",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-12 16:56:42.2187103 UTC",
-  "finishedAt": "2026-10-12 16:57:27.1033743 UTC",
-  "durationMs": 44884,
+  "startedAt": "2026-10-13 05:31:15.6421432 UTC",
+  "finishedAt": "2026-10-13 05:32:16.7777606 UTC",
+  "durationMs": 61136,
   "exitCode": 0,
   "errors": []
 }
