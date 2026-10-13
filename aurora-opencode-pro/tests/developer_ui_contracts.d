@@ -6,6 +6,7 @@ import auroraopencode.core : Settings, saveSettings,
 import auroraopencode.tools : executeTool, syncRequestHandler, rebuildRequestHandler, rebuildSourceCheckHandler,
     builtinToolDefinitions, nativeOnlyToolDefinitions;
 import auroraopencode.developerworkflow : DeveloperSyncResult;
+import auroraopencode.updater : UpdateCheck;
 import core.thread : Thread;
 import core.time : msecs, seconds;
 import std.json : parseJSON, JSONValue;
@@ -45,7 +46,7 @@ void main(string[] args)
         mkdirRecurse(state);
         const packaged = buildPath(state, "Aurora OpenCode.exe");
         copy(thisExePath(), packaged);
-        foreach (scenario; ["configured", "recovered", "stale", "repository", "source-subdirectory", "snapshot", "flat", "nested", "recipe", "reported", "chosen", "missing"])
+        foreach (scenario; ["configured", "narrow", "recovered", "stale", "repository", "source-subdirectory", "snapshot", "flat", "nested", "recipe", "reported", "chosen", "missing"])
         {
             auto result = execute([packaged, scenario], null, Config.suppressConsole);
             assert(result.status == 0, scenario ~ ": " ~ result.output);
@@ -104,13 +105,58 @@ void main(string[] args)
             "Source resolver mismatch: expected " ~ source ~ " got " ~
             findDeveloperSourceDirectory(settings.developerSourceDir, state, thisExePath()));
     WindowOptions options;
-    options.width = 1200; options.height = 900;
+    options.width = scenario == "narrow" ? 1000 : 1200; options.height = 900;
     options.renderer = RendererPreference.software;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
     auto driver = new UiTestDriver(window);
     assert(driver.paint());
+    auto update = cast(Button) find(root, "oc-update");
+    assert(update !is null, "Update button missing: " ~ scenario);
+    assert(update !is null && update.visible() && update.bounds().width > 0 &&
+        update.bounds().right() <= update.parent().bounds().width,
+        "Update must stay visible on every Developer install: " ~ scenario);
+    assert(update.text() == "Update"d);
+    auto toolbarRebuild = cast(Button) find(root, "oc-rebuild");
+    assert(toolbarRebuild !is null && toolbarRebuild.visible() && toolbarRebuild !is update,
+        "Developer installs need separate Update and Rebuild buttons, including source setup");
+    assert(toolbarRebuild.bounds().right() <= toolbarRebuild.parent().bounds().width);
+    if (scenario == "configured" || scenario == "missing")
+    {
+        bool checked, installed;
+        root.updateCheckForTesting = (string executable, string directory) {
+            assert(executable == thisExePath() && directory == state);
+            checked = true;
+            return UpdateCheck(true, "fixture-update.exe", "fixture-hash", "");
+        };
+        root.updateInstallForTesting = (string executable, string staged, string directory, string hash) {
+            assert(executable == thisExePath() && staged == "fixture-update.exe" &&
+                directory == state && hash == "fixture-hash");
+            installed = true;
+            return false; // Exercise installation routing without replacing the harness.
+        };
+        update.activate();
+        assert(find(root, "oc-update-message") !is null &&
+            find(root, "oc-rebuild-source-blocked") is null,
+            "Update must open the binary-update dialog even with local source");
+        const deadline = MonoTime.currTime + seconds(5);
+        auto install = cast(Button) find(root, "oc-update-install");
+        while (!install.visible() && MonoTime.currTime < deadline)
+        {
+            root.tickTree(0.02);
+            Thread.sleep(msecs(10));
+        }
+        assert(checked && install.visible());
+        install.activate();
+        assert(installed && !root.rebuildPendingForTesting(),
+            "Binary updates must use the installer without starting a source rebuild");
+        if (scenario == "configured")
+            assert(readText(buildPath(source, "source", "local-work.d")) == "developer's unfinished changes");
+        (cast(Button) find(root, "oc-update-close")).activate();
+        assert(driver.paint());
+        writeln("PASS: visible Developer Update checks and installs the maintainer binary separately from Rebuild: ", scenario);
+    }
     if (scenario != "missing" && scenario != "chosen")
         assert(root.introSuggestionPromptsForTesting().join("\n").indexOf(source) >= 0,
             "Developer starters must target the recovered source folder on a packaged installation: " ~ scenario ~

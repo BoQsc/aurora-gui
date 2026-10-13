@@ -47,8 +47,10 @@ source is on `codex/portable-crt-experiment`; `main` contains an older app.
 Publish source commits to the selected branch before delivering the binary
 update. Change the asset when moving the release channel to a different branch.
 
-Developer mode directs app updates through source sync and rebuild so the public
-executable cannot replace a customized build. Public releases record the exact
+Update remains visible in Developer mode and installs the maintainer's published
+executable. Rebuild separately compiles the selected local source. A binary update
+leaves local source files intact; use Sync source to integrate maintainer source
+updates and Rebuild to apply local customizations again. Public releases record the exact
 source commit, branch and build-input fingerprint. Publishing rejects dirty or
 unpublished source, an executable changed since its build record, or source that
 changed during compilation. CI follows the selected source branch; update its
