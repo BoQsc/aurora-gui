@@ -74,3 +74,9 @@ unpublished source, an executable changed since its build record, or source that
 changed during compilation. CI follows the selected source branch; update its
 branch trigger when moving the channel. Developer Update verifies that the
 release's source commit is available on that branch before integrating it.
+
+Rebuild and Update record a handoff for the running process before closing it.
+The supervisor consumes that request and leaves relaunching to the replacement
+helper, including when shutdown crashes. Ordinary unexpected exits still use
+the supervisor's recovery path. Linker failures such as an executable locked by
+another process appear in the rebuild report alongside compilation errors.

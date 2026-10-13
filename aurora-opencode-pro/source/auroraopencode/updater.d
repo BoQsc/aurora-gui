@@ -12,6 +12,7 @@ import std.path : buildPath;
 import std.process : Config, execute, spawnProcess, thisProcessID;
 import std.stdio : stderr, stdin, stdout;
 import std.string : strip, toLower;
+import rebuild : writeSupervisorHandoff, clearSupervisorHandoff;
 
 version (Windows)
 {
@@ -155,12 +156,17 @@ bool launchUpdateHelper(string exePath, string stagedPath, string stateDir,
                 remove(pending);
                 return false;
             }
+            if (!writeSupervisorHandoff(stateDir, exePath, thisProcessID)) return false;
             spawnProcess([helper, "--apply-update", exePath, pending, suffix,
                 buildPath(stateDir, "update-error.txt")], stdin, stdout,
                 stderr, null, Config.detached | Config.suppressConsole);
             return true;
         }
-        catch (Exception) return false;
+        catch (Exception)
+        {
+            clearSupervisorHandoff(stateDir, thisProcessID);
+            return false;
+        }
     }
     else return false;
 }

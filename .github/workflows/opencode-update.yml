@@ -41,7 +41,7 @@ jobs:
       - name: Test unfinished task continuation
         run: python -X utf8 -B aurora-opencode-pro/tests/test_task_continuation.py
       - name: Test Developer Update and source recovery
-        run: python -X utf8 aurora-opencode-pro/tests/run_architecture_checks.py updater_contracts developer_ui_contracts developer_safety_contracts developer_workflow_contracts
+        run: python -X utf8 aurora-opencode-pro/tests/run_architecture_checks.py updater_contracts developer_ui_contracts developer_safety_contracts developer_workflow_contracts rebuild_handoff_contracts
       - name: Build update
         working-directory: aurora-opencode-pro
         env:
