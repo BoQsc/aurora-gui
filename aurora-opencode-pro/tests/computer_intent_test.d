@@ -7,6 +7,8 @@ import auroraopencode.core : Settings, saveSettings,
 import auroraopencode.computeruse : requestComputerUseAbort, computerUseAbortActive,
     beginComputerUseUserRequest, clearComputerUseAbort, experimentalComputerUseExecute,
     setComputerUseSetting;
+import core.thread : Thread;
+import core.time : MonoTime, seconds, msecs;
 import std.file : tempDir, mkdirRecurse, rmdirRecurse;
 import std.path : buildPath;
 import std.uuid : randomUUID;
@@ -32,6 +34,14 @@ int main()
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
+    scope(exit) root.shutdownClient();
+    const ready = MonoTime.currTime + 5.seconds;
+    while (root.startupPendingForTesting() && MonoTime.currTime < ready)
+    {
+        root.tickTree(0.02);
+        Thread.sleep(5.msecs);
+    }
+    assert(!root.startupPendingForTesting());
     root.pauseToolContinuationForTesting();
     root.addConversationForTesting(["user", "assistant"], ["Play the tutorial", "Starting"]);
     root.setTaskStateForTesting("Play the tutorial", "active", "not_required");

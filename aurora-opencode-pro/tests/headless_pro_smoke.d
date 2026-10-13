@@ -3772,8 +3772,8 @@ int main(string[] args)
             "view_image was not advertised in every tool mode");
 
         const imagePath = buildPath(workspaceDir, "pixel.png");
-        ubyte[] pngHeader = [0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A];
-        write(imagePath, pngHeader);
+        import std.base64 : Base64;
+        write(imagePath, Base64.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="));
         root.newChatForTesting();
         root.addConversationForTesting(["user", "assistant"],
             ["What is in pixel.png?", ""]);

@@ -188,7 +188,7 @@ int main()
 
     auto prompt = buildSystemPrompt(true, state, "win32");
     assert(prompt.indexOf("before substantial inspection") >= 0);
-    assert(prompt.indexOf("before moving to the next phase") >= 0);
+    assert(prompt.indexOf("update at phase boundaries") >= 0);
     assert(prompt.indexOf("single edits") >= 0);
     window.close();
     return 0;
