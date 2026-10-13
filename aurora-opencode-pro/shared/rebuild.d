@@ -39,7 +39,9 @@ import std.array : join;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
 import std.file : append, copy, dirEntries, exists, getSize, isDir, mkdirRecurse,
-    readText, remove, SpanMode, timeLastModified, write;
+    read, readText, remove, SpanMode, timeLastModified, write;
+import std.digest.sha : sha256Of;
+import std.digest : toHexString;
 import std.json : JSONType, parseJSON;
 import std.path : baseName, buildPath, buildNormalizedPath, dirName;
 import std.process : Config, spawnProcess, wait;
@@ -1267,8 +1269,14 @@ private void restoreExe(string exePath, string backup, bool haveBackup,
         appendLine(logPath, "could not restore the exe: " ~ error.msg);
 }
 
-/// Build output may live in AppData while the running app lives elsewhere.
-/// Replace the same installed executable and retain its previous image on failure.
+private void removeRebuildStage(string path)
+{
+    try { if (exists(path) && !isDir(path)) remove(path); }
+    catch (Exception) {}
+}
+
+/// Build output may live in AppData while the installed app lives elsewhere.
+/// Carry its matching source record with it and preserve both on failure.
 public bool installRebuiltImage(string built, string installed, out string error)
 {
     error = "";
@@ -1276,15 +1284,38 @@ public bool installRebuiltImage(string built, string installed, out string error
         return true;
     const staged = installed ~ ".rebuild-new";
     const backup = installed ~ ".bak";
+    const builtMetadata = buildPath(dirName(built), "build-source-" ~ baseName(built) ~ ".json");
+    const installedMetadata = buildPath(dirName(installed), "build-source-" ~ baseName(installed) ~ ".json");
+    const stagedMetadata = installedMetadata ~ ".rebuild-new";
     bool backedUp;
+    bool metadataTouched, hadMetadata;
+    void[] previousMetadata;
+    scope (exit)
+    {
+        removeRebuildStage(staged);
+        removeRebuildStage(stagedMetadata);
+    }
     try
     {
         if (!exists(built) || getSize(built) == 0)
             throw new Exception("Rebuilt executable is missing or empty: " ~ built);
         copy(built, staged);
+        const haveBuildMetadata = exists(builtMetadata);
+        if (haveBuildMetadata)
+        {
+            const metadata = readText(builtMetadata);
+            const record = parseJSON(metadata);
+            if (record["binary_sha256"].str != sha256Of(read(staged)).toHexString().idup.toLower())
+                throw new Exception("Rebuilt executable does not match its source metadata");
+            write(stagedMetadata, metadata);
+        }
+        hadMetadata = exists(installedMetadata);
+        if (hadMetadata) previousMetadata = read(installedMetadata);
         if (exists(installed)) { copy(installed, backup); backedUp = true; }
         copy(staged, installed);
-        remove(staged);
+        metadataTouched = true;
+        if (haveBuildMetadata) copy(stagedMetadata, installedMetadata);
+        else if (hadMetadata) remove(installedMetadata);
         return true;
     }
     catch (Exception e)
@@ -1294,6 +1325,15 @@ public bool installRebuiltImage(string built, string installed, out string error
         {
             try { copy(backup, installed); }
             catch (Exception restoreError) { error ~= "; restore failed: " ~ restoreError.msg; }
+        }
+        if (metadataTouched)
+        {
+            try
+            {
+                if (hadMetadata) write(installedMetadata, previousMetadata);
+                else if (exists(installedMetadata)) remove(installedMetadata);
+            }
+            catch (Exception restoreError) { error ~= "; metadata restore failed: " ~ restoreError.msg; }
         }
         return false;
     }

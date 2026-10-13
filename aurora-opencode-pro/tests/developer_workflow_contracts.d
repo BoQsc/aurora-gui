@@ -7,11 +7,13 @@ import core.time : MonoTime, seconds;
 import std.algorithm : canFind;
 import std.array : join;
 import std.conv : to;
-import std.file : exists, mkdirRecurse, readText, write, tempDir, thisExePath;
+import std.file : exists, mkdirRecurse, readText, write, remove, tempDir, thisExePath;
+import std.digest.sha : sha256Of;
+import std.digest : toHexString;
 import std.path : buildPath;
 import std.process : environment;
 import std.stdio : writeln;
-import std.string : indexOf, startsWith, strip;
+import std.string : indexOf, startsWith, strip, toLower;
 
 string git;
 string command(string dir, string[] args)
@@ -265,8 +267,12 @@ void main(string[] args)
     assert(timed.status != 0 && timed.output.indexOf("timed out") >= 0);
     writeln("PASS: stalled commands have a bounded lifetime");
 
-    const build = buildPath(root, "built.exe");
-    const installed = buildPath(root, "installed.exe");
+    const buildDirectory = buildPath(root, "source-build");
+    const installedDirectory = buildPath(root, "desktop");
+    mkdirRecurse(buildDirectory);
+    mkdirRecurse(installedDirectory);
+    const build = buildPath(buildDirectory, "aurora-opencode-pro.exe");
+    const installed = buildPath(installedDirectory, "Aurora (1).exe");
     write(build, "new executable");
     write(installed, "previous executable");
     string error;
@@ -276,5 +282,22 @@ void main(string[] args)
     assert(!installRebuiltImage(buildPath(root, "missing.exe"), installed, error));
     assert(readText(installed) == "new executable");
     writeln("PASS: rebuilding from a separate source folder replaces the original installed app; failed output preserves it");
+    const builtMetadata = buildPath(buildDirectory, "build-source-aurora-opencode-pro.exe.json");
+    const installedMetadata = buildPath(installedDirectory, "build-source-Aurora (1).exe.json");
+    const metadata = "{\"source_commit\":\"fixture\",\"binary_sha256\":\"" ~
+        sha256Of("new executable").toHexString().idup.toLower() ~ "\"}";
+    write(builtMetadata, metadata);
+    write(installedMetadata, "previous metadata");
+    assert(installRebuiltImage(build, installed, error), error);
+    assert(readText(installedMetadata) == metadata, "Source provenance must follow the installed/renamed executable");
+    write(build, "changed after provenance capture");
+    assert(!installRebuiltImage(build, installed, error));
+    assert(readText(installed) == "new executable" && readText(installedMetadata) == metadata,
+        "Mismatched build metadata must leave the previous image and metadata intact");
+    remove(builtMetadata);
+    assert(installRebuiltImage(build, installed, error), error);
+    assert(!exists(installedMetadata), "A legacy build must not retain another binary's source metadata");
+    assert(!exists(installed ~ ".rebuild-new") && !exists(installedMetadata ~ ".rebuild-new"));
+    writeln("PASS: cross-folder rebuild installs matching provenance and rejects stale metadata without changing the old image");
     writeln("ARTIFACTS ", root);
 }
