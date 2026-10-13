@@ -15,6 +15,7 @@ import auroraopencode.computeruse : ComputerUseContext;
 import aurora;
 import auroraopencode.core;
 import auroraopencode.logging : logError, logInfo, setLogDirectory;
+import auroraopencode.lifecyclediagnostics : logAgentLifecycle, lifecycleErrorCategory;
 import auroraopencode.crashguard : noteActivity;
 import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
     localPathTokens, paintMarkdownBackgrounds, paintMarkdownGlyphs,
@@ -10340,6 +10341,7 @@ private string _suggestExcludeId;
             return *existing;
         auto created = new ConversationRuntime(_settings.baseUrl,
             activeApiKey(_settings));
+        created.threadId = id;
         created.client.setEventWake(_window.serviceWake());
         // The headless harness can pause automatic continuations globally;
         // carry that test mode into chats created afterward.
@@ -13316,6 +13318,19 @@ private string _suggestExcludeId;
         const ref ChatSession session, string turnId = "", string itemId = "",
         string itemKind = "", string payloadJson = "{}")
     {
+        if (kind == AgentEventKind.turnStarted || kind == AgentEventKind.turnCompleted ||
+            kind == AgentEventKind.turnFailed || kind == AgentEventKind.turnInterrupted)
+        {
+            JSONValue details;
+            details["turn"] = turnId;
+            details["taskStatus"] = session.taskStatus;
+            details["turnStatus"] = session.turnStatus;
+            details["verificationStatus"] = session.verificationStatus;
+            const stage = kind == AgentEventKind.turnStarted ? "turn.started"
+                : kind == AgentEventKind.turnCompleted ? "turn.completed"
+                : kind == AgentEventKind.turnFailed ? "turn.failed" : "turn.interrupted";
+            logAgentLifecycle(session.id, _activeRequestId, stage, details);
+        }
         if (_runtime is null || session.id.length == 0) return;
         AgentRuntimeEvent event;
         event.kind = kind;
@@ -18272,6 +18287,10 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
 
+        JSONValue stopDetails;
+        stopDetails["pendingTools"] = _pendingToolResults;
+        logAgentLifecycle(_sessions[sessionIndex].id, _activeRequestId,
+            "turn.stop_requested", stopDetails);
         _execution.stop();
         // Stop means stop: drop any auto-retry this turn had lined up.
         cancelAutoResend();
@@ -19831,6 +19850,10 @@ private void pollButtonSuggestionRequest()
         const requestId = ++_nextRequestId;
         _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
             activeApiKey(_settings));
+        JSONValue summaryDetails;
+        summaryDetails["contextBudget"] = contextLimit;
+        summaryDetails["messageBytes"] = cast(long) source.length;
+        logAgentLifecycle(session.id, requestId, "compaction.started", summaryDetails);
         if (runtime.compactionClient.startChatMessages(
             [instruction, sourceMessage], null, session.model, false, requestId) != ChatStartResult.accepted)
         {
@@ -19850,31 +19873,43 @@ private void pollButtonSuggestionRequest()
         runtime.compactionClient.drain(runtime.compactionEvents);
         bool finished;
         bool succeeded;
+        ulong summaryRequestId;
+        string summaryErrorCategory, summaryFinishReason;
         foreach (event; runtime.compactionEvents)
         {
+            summaryRequestId = event.requestId;
             if (event.kind == OpenCodeEventKind.delta && !event.reasoning)
                 runtime.compactionOutput ~= event.text;
             else if (event.kind == OpenCodeEventKind.done)
             {
                 finished = true;
                 succeeded = !event.cancelled;
+                summaryFinishReason = event.finishReason;
                 recordRequestTokenUsage(event.requestId, event.totalTokens,
                     event.promptTokens, event.completionTokens);
             }
             else if (event.kind == OpenCodeEventKind.error)
             {
                 finished = true;
+                summaryErrorCategory = lifecycleErrorCategory(event.text);
                 _requestTokenKeyIds.remove(event.requestId);
             }
         }
         runtime.compactionEvents.length = 0;
         if (!finished) return;
         auto session = &_sessions[sessionIndex];
-        if (succeeded && applyModelCompactionSummary(*session,
+        const applied = succeeded && applyModelCompactionSummary(*session,
             runtime.compactionAnchor, runtime.compactionLeaf,
             runtime.compactionOutput, testContextLimit > 0
-                ? testContextLimit : requestContextBudget(session.model)))
-            markDirty();
+                ? testContextLimit : requestContextBudget(session.model));
+        if (applied) markDirty();
+        JSONValue summaryDetails;
+        summaryDetails["applied"] = applied;
+        summaryDetails["failed"] = !succeeded;
+        summaryDetails["finishReason"] = summaryFinishReason;
+        summaryDetails["errorCategory"] = summaryErrorCategory;
+        summaryDetails["outputBytes"] = cast(long) runtime.compactionOutput.length;
+        logAgentLifecycle(session.id, summaryRequestId, "compaction.finished", summaryDetails);
         runtime.compactionClient.closeSession();
         runtime.compactionClient = null;
         runtime.compactionOutput = "";
@@ -20608,6 +20643,16 @@ private void pollButtonSuggestionRequest()
         _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
             activeApiKey(_settings));
         _client.setEventWake(_window.serviceWake());
+        JSONValue requestDetails;
+        requestDetails["turn"] = runtimeTurnId(*session);
+        requestDetails["contextBudget"] = requestContextBudget(orchestratorModel);
+        requestDetails["messageBytes"] = cast(long) (requestMessageBytes(messages) + requestToolDefinitionBytes(tools));
+        requestDetails["messageCount"] = cast(long) messages.length;
+        requestDetails["toolCount"] = cast(long) tools.length;
+        requestDetails["forceCompact"] = forceCompact;
+        requestDetails["checkpointCreated"] = checkpointCreated;
+        requestDetails["fallbackCompacted"] = fallbackCompacted;
+        logAgentLifecycle(session.id, requestId, "request.prepared", requestDetails);
         auto receiver = _client;
         const requestThinking = session.thinking;
         const requestBudget = llamaCpp ? reasoningControl.budgetTokens : 0;

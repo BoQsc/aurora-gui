@@ -8,19 +8,28 @@ import auroraopencode.execution;
 import auroraopencode.repository;
 import auroraopencode.opencode_client;
 import auroraopencode.searchprogress;
+import auroraopencode.logging : setLogDirectory, flushLogs;
+import auroraopencode.lifecyclediagnostics : logAgentLifecycle;
 import core.time : MonoTime, seconds, msecs;
 import core.thread : Thread;
-import std.file : mkdirRecurse, write;
+import std.file : mkdirRecurse, write, readText;
 import std.path : absolutePath, buildPath;
-import std.json : JSONValue;
+import std.json : JSONValue, parseJSON;
 import std.conv : to;
-import std.string : indexOf;
+import std.string : indexOf, splitLines;
 import std.stdio : writeln;
 
 int main()
 {
     const workspace = absolutePath("grep-dispatch-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(workspace);
+    const diagnosticsDirectory = buildPath(workspace, "diagnostics");
+    mkdirRecurse(diagnosticsDirectory);
+    setLogDirectory(diagnosticsDirectory);
+    JSONValue privateDetails;
+    privateDetails["arguments"] = "PRIVATE_ARGUMENTS";
+    privateDetails["content"] = "PRIVATE_CONTENT";
+    logAgentLifecycle("diag-thread", 10, "privacy_probe", privateDetails);
     mkdirRecurse(buildPath(workspace, ".git"));
     setOpencodeStateDirectoryForTesting(buildPath(workspace, "state"));
     scope (exit) setOpencodeStateDirectoryForTesting("");
@@ -32,6 +41,7 @@ int main()
     scope (exit) repository.close();
     auto journal = new RepositoryRuntime(repository, buildPath(workspace, "journal.jsonl"));
     auto engine = new ThreadEngine("http://127.0.0.1:9", "");
+    engine.threadId = "diag-thread";
     scope (exit) engine.close();
     OpenCodeToolCall[] calls;
     foreach (i, name; [".", "one.d", "two.d", "three.d"])
@@ -43,8 +53,11 @@ int main()
         calls ~= OpenCodeToolCall("grep-" ~ to!string(i), "grep", args.toString());
     }
     engine.acceptRequest(10);
+    ChangeContext diagnosticContext;
+    diagnosticContext.conversationId = "diag-thread";
+    diagnosticContext.turnId = "diag-turn";
     assert(engine.dispatchAfterCommit(journal, 10, delegate() {
-        scheduleToolBatch(engine.client, 10, calls, workspace, new ToolCancellation(), ChangeContext.init);
+        scheduleToolBatch(engine.client, 10, calls, workspace, new ToolCancellation(), diagnosticContext);
     }));
     const deadline = MonoTime.currTime + 8.seconds;
     size_t results, progress;
@@ -68,6 +81,26 @@ int main()
     }
     assert(results == 4, "Four grep requests never reached terminal results");
     assert(progress > 0);
+    assert(flushLogs());
+    const diagnostics = readText(buildPath(diagnosticsDirectory, "errors.log"));
+    assert(diagnostics.indexOf("PRIVATE_ARGUMENTS") < 0 && diagnostics.indexOf("PRIVATE_CONTENT") < 0);
+    bool[string] queued, started, finished;
+    foreach (line; splitLines(diagnostics))
+    {
+        const offset = line.indexOf("agent-lifecycle ");
+        if (offset < 0) continue;
+        const row = parseJSON(line[cast(size_t) offset + "agent-lifecycle ".length .. $]);
+        if (auto id = "toolCallId" in row.object)
+        {
+            assert(row["thread"].str == "diag-thread" && row["request"].integer == 10);
+            const stage = row["stage"].str;
+            if (stage == "tool.queued") queued[id.str] = true;
+            if (stage == "tool.started") { assert(id.str in queued); started[id.str] = true; }
+            if (stage == "tool.finished") { assert(id.str in started); finished[id.str] = true; }
+        }
+    }
+    assert(finished.length == 4, "Every search needs correlated queue/start/end diagnostics");
+    writeln("PASS tool lifecycle records correlate four searches without persisting tool arguments or result text");
     repository.flush();
     writeln("PASS durable dispatch starts all four source-tree greps and returns each result with live activity");
     developerSourceDirectoryHandler = null;

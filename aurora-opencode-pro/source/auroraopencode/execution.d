@@ -6,6 +6,8 @@ import auroraopencode.tools : ToolCancellation;
 import auroraopencode.repository : RepositoryRuntime;
 import core.time : MonoTime, msecs;
 import core.sync.mutex : Mutex;
+import auroraopencode.lifecyclediagnostics : logAgentLifecycle, lifecycleErrorCategory;
+import std.json : JSONValue;
 
 public import auroraopencode.executionstate : RequestPhase;
 import auroraopencode.executionstate : ExecutionState, ExecutionCommand,
@@ -43,6 +45,7 @@ private final class EffectAdmission
 /// are copied through a shared root when another conversation is serviced.
 public class ThreadEngine
 {
+    string threadId;
     OpenCodeClient client;
     // experimental: orchestrator - one extra client per participant, so each
     // agent talks to the gateway on its own connection/route exactly like a
@@ -146,12 +149,32 @@ public class ThreadEngine
 
     void acceptRequest(ulong requestId)
     {
+        logAgentLifecycle(threadId, requestId, "request.accepted");
         _protocol = reduceExecution(_protocol,
             ExecutionCommand(ExecutionCommandKind.accept, requestId)).state;
     }
 
     void observe(const ref OpenCodeEvent event)
     {
+        if (event.kind == OpenCodeEventKind.chatBegin ||
+            event.kind == OpenCodeEventKind.toolCalls ||
+            event.kind == OpenCodeEventKind.done || event.kind == OpenCodeEventKind.error)
+        {
+            JSONValue details;
+            details["cancelled"] = event.cancelled;
+            details["finishReason"] = event.finishReason;
+            details["promptTokens"] = event.promptTokens;
+            details["completionTokens"] = event.completionTokens;
+            if (event.kind == OpenCodeEventKind.error)
+            {
+                details["errorCategory"] = lifecycleErrorCategory(event.text);
+                details["outputIssue"] = event.outputIssue;
+            }
+            const stage = event.kind == OpenCodeEventKind.chatBegin ? "request.stream_started"
+                : event.kind == OpenCodeEventKind.toolCalls ? "request.tools_requested"
+                : event.kind == OpenCodeEventKind.done ? "request.done" : "request.failed";
+            logAgentLifecycle(threadId, event.requestId, stage, details);
+        }
         ExecutionCommand command;
         command.requestId = event.requestId;
         command.cancelled = event.cancelled;
@@ -169,6 +192,8 @@ public class ThreadEngine
 
     void stop()
     {
+        if (turnInFlight || pendingToolResults > 0 || _queuedEffect !is null)
+            logAgentLifecycle(threadId, activeRequestId, "execution.cancelled");
         _protocol = reduceExecution(_protocol, ExecutionCommand(ExecutionCommandKind.stop)).state;
         turnCancelled = true;
         cancellation.cancel();
@@ -190,9 +215,11 @@ public class ThreadEngine
         auto queued = new EffectAdmission(admission);
         _queuedEffect = queued;
         auto receiver = client;
+        logAgentLifecycle(threadId, requestId, "effect.waiting_for_commit");
         void fail(string error)
         {
             if (admission.cancelled()) return;
+            logAgentLifecycle(threadId, requestId, "effect.commit_failed");
             OpenCodeEvent event;
             event.kind = OpenCodeEventKind.error;
             event.requestId = requestId;
@@ -200,7 +227,14 @@ public class ThreadEngine
             receiver.pushLocalEvent(event);
         }
         return journal.afterCommitted(delegate() {
-            if (queued.start()) effect();
+            if (queued.start())
+            {
+                JSONValue details;
+                details["queuedMs"] = (MonoTime.currTime - queued.queued).total!"msecs";
+                logAgentLifecycle(threadId, requestId, "effect.started", details);
+                effect();
+            }
+            else logAgentLifecycle(threadId, requestId, "effect.revoked");
         }, &fail);
     }
 
@@ -208,7 +242,9 @@ public class ThreadEngine
     /// admission never reaches the scheduler. Revocation fences late callbacks.
     bool expireQueuedEffect(long timeoutMs = 30_000)
     {
-        return _queuedEffect !is null && _queuedEffect.expire(timeoutMs);
+        const expired = _queuedEffect !is null && _queuedEffect.expire(timeoutMs);
+        if (expired) logAgentLifecycle(threadId, activeRequestId, "effect.commit_deadline");
+        return expired;
     }
 
     struct ResultAdmission { bool accepted; string arguments; }
@@ -241,6 +277,7 @@ public class ThreadEngine
 
     void close()
     {
+        logAgentLifecycle(threadId, activeRequestId, "execution.closed");
         stop();
         client.closeSession();
         foreach (agent; agentClients) agent.closeSession();

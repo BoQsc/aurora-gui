@@ -4,12 +4,14 @@ import auroraopencode.core : OpenCodeToolCall;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool,
     toolStatusHandler, developerToolSourceDirectory, installDeveloperToolSource, restoreDeveloperToolSource;
-import std.json : JSONValue;
+import std.json : JSONValue, JSONType;
 import auroraopencode.workscheduler : WorkItem, WorkScheduler;
 import auroraopencode.computeruse : installComputerUseContext;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
 import core.time : MonoTime, seconds;
+import auroraopencode.lifecyclediagnostics : logAgentLifecycle;
+import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress;
 
 private __gshared Mutex _instanceMutex;
 private __gshared WorkScheduler _scheduler;
@@ -128,6 +130,7 @@ public final class ToolBatch
         {
             // Each receiver owns its call. No reused loop delegate captures.
             auto job = new ToolJob(this, calls[i]);
+            job.diagnostic("tool.queued");
             job.progress("Queued: waiting for a tool worker or workspace lease. Stop cancels this turn.");
             // Process inspection and termination must remain available while
             // workspace commands occupy the normal workers and writer lease.
@@ -165,12 +168,14 @@ private final class ToolJob : WorkItem
     OpenCodeToolCall call;
     ToolExecution result;
     MonoTime queueDeadline;
+    MonoTime queuedAt, startedAt, lastDiagnosticAt;
     this(ToolBatch batch, const ref OpenCodeToolCall call)
     {
         this.batch = batch;
         this.call = call;
         label = call.name;
-        queueDeadline = MonoTime.currTime + 30.seconds;
+        queuedAt = MonoTime.currTime;
+        queueDeadline = queuedAt + 30.seconds;
         workspace = batch.workspace;
         exclusive = !parallelTool(call) && !controlTool(call.name);
         if (call.name == "computer") resource = "desktop";
@@ -183,6 +188,7 @@ private final class ToolJob : WorkItem
 
     override void queueAbandoned()
     {
+        diagnostic(batch.cancellation.cancelled() ? "tool.cancelled_before_start" : "tool.queue_deadline");
         result = ToolExecution(call.name, batch.cancellation.cancelled()
             ? "Stopped: queued tool cancelled before it started."
             : "Error: tool could not acquire a worker or workspace lease within 30 seconds; " ~
@@ -193,6 +199,8 @@ private final class ToolJob : WorkItem
 
     override void execute()
     {
+        startedAt = MonoTime.currTime;
+        diagnostic("tool.started");
         auto previousSource = installDeveloperToolSource(batch.developerSource);
         scope (exit) restoreDeveloperToolSource(previousSource);
         if (batch.cancellation.cancelled())
@@ -227,6 +235,30 @@ private final class ToolJob : WorkItem
 
     private void progress(string output)
     {
+        SearchProgress search;
+        const decoded = decodeSearchProgress(output, search);
+        if (lastDiagnosticAt == MonoTime.init ||
+            MonoTime.currTime - lastDiagnosticAt >= 5.seconds || (decoded && search.terminal))
+        {
+            JSONValue details;
+            if (decoded)
+            {
+                details["scope"] = search.root;
+                details["path"] = search.path;
+                details["phase"] = search.phase;
+                details["files"] = cast(long) search.files;
+                details["folders"] = cast(long) search.directories;
+                details["bytes"] = cast(long) search.bytes;
+                details["matches"] = cast(long) search.matches;
+                details["candidateFiles"] = cast(long) search.candidateFiles;
+                details["processedFiles"] = cast(long) search.processedFiles;
+                details["totalsKnown"] = search.totalsKnown;
+                details["lastActivityMs"] = search.lastActivityMs;
+                details["partial"] = search.partial;
+            }
+            diagnostic("tool.progress", details);
+            lastDiagnosticAt = MonoTime.currTime;
+        }
         OpenCodeEvent event;
         event.kind = OpenCodeEventKind.toolResult;
         event.toolRunning = true;
@@ -240,6 +272,12 @@ private final class ToolJob : WorkItem
     override void settle(ulong revision)
     {
         scope (exit) batch.completed();
+        JSONValue details;
+        details["failed"] = result.failed;
+        details["cancelled"] = batch.cancellation.cancelled();
+        details["outputBytes"] = cast(long) result.output.length;
+        details["verificationPassed"] = result.verification.passed;
+        diagnostic("tool.finished", details);
         OpenCodeEvent event;
         event.kind = OpenCodeEventKind.toolResult;
         event.text = result.output;
@@ -261,5 +299,18 @@ private final class ToolJob : WorkItem
         event.effectRevision = revision;
         event.workspaceChanged = changed;
         batch.client.pushLocalEvent(event);
+    }
+
+    private void diagnostic(string stage, JSONValue details = JSONValue.init)
+    {
+        if (details.type != JSONType.object) details = JSONValue.emptyObject;
+        details["toolCallId"] = call.id;
+        details["tool"] = call.name;
+        details["workspace"] = workspace;
+        details["turn"] = batch.context.turnId;
+        details["queuedMs"] = ((startedAt == MonoTime.init ? MonoTime.currTime : startedAt) - queuedAt).total!"msecs";
+        if (startedAt != MonoTime.init)
+            details["elapsedMs"] = (MonoTime.currTime - startedAt).total!"msecs";
+        logAgentLifecycle(batch.context.conversationId, batch.requestId, stage, details);
     }
 }
