@@ -13891,6 +13891,33 @@ private string _suggestExcludeId;
         updateStatus("Project manager opened for " ~ name ~ ".");
     }
 
+    /// experimental: project manager - make sure every enabled project's
+    /// manager conversation is pinned, including one that a build before
+    /// auto-pin created. Called after the history restore and when the master
+    /// switch is turned on.
+    private void reconcileProjectManagerPins()
+    {
+        if (!_settings.experimentalProjectManager) return;
+        bool changed;
+        foreach (driver; _projectState.drivers)
+        {
+            if (!driver.enabled || driver.managerSessionId.length == 0) continue;
+            if (_pinnedSessionIds.canFind(driver.managerSessionId)) continue;
+            foreach (i, session; _sessions)
+                if (session.id == driver.managerSessionId)
+                {
+                    _pinnedSessionIds ~= driver.managerSessionId;
+                    changed = true;
+                    break;
+                }
+        }
+        if (changed)
+        {
+            savePinnedSessions();
+            updateSessionList(false);
+        }
+    }
+
     /// Read the project's recent conversations and open a new working
     /// conversation seeded with a review prompt, so the manager can move the
     /// project forward. The prompt is staged in the composer for the user to
@@ -23929,6 +23956,7 @@ private void pollButtonSuggestionRequest()
             saveSettingsNow();
             // Reflect the rail badge immediately.
             updateProjectRail();
+            reconcileProjectManagerPins();
             if (value)
             {
                 // Turn the feature on for the project being viewed and open its
@@ -29012,6 +29040,9 @@ private void pollButtonSuggestionRequest()
         {
             _startupLoadPending = false;
             loadStartupState();
+            // experimental: project manager - pin enabled managers restored
+            // from disk, including ones created before auto-pin existed.
+            reconcileProjectManagerPins();
         }
         drainUpdateResult();
         drainSourceFetch();
