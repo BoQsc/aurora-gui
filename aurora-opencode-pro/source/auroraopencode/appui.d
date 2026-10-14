@@ -9070,6 +9070,11 @@ public final class SessionListView : ListView
     // cursor-following ghost; `active` is false on release to hide it.
     void delegate(bool active, string title, string action, Point globalPosition)
         onDragGhost;
+    // Cross-project drag support: the project row under a global point (or -1),
+    // the display name of a project index, and the drop callback.
+    int delegate(Point globalPosition) projectIndexAtGlobal;
+    string delegate(int projectIndex) projectNameAt;
+    void delegate(int row, int projectIndex) onMoveToProjectRequested;
 
     private int _hoverRow = -1;
     // True while the pointer sits over the hovered row's archive button.
@@ -9123,6 +9128,10 @@ public final class SessionListView : ListView
     private bool _pressRowPinned;
     private Point _pressPosition;
     private DragIntent _dragIntent;
+    // Project row the pointer is currently over during a drag, or -1. When set,
+    // releasing moves the dragged conversation into that project instead of
+    // changing its pin state.
+    private int _dragProjectIndex = -1;
 
     // Delayed hover tooltip revealing a conversation's full title when the row
     // is too narrow to show all of it. Whether the hovered row's title is
@@ -9574,7 +9583,17 @@ public final class SessionListView : ListView
                 _dragging = true;
             if (_dragging)
             {
-                const intent = dropIntentAt(event.position);
+                // A drop over the project rail moves the conversation into that
+                // project; otherwise the pin/unpin zones inside the list apply.
+                const projectIndex = projectIndexAtGlobal !is null
+                    ? projectIndexAtGlobal(event.globalPosition) : -1;
+                if (projectIndex != _dragProjectIndex)
+                {
+                    _dragProjectIndex = projectIndex;
+                    invalidate();
+                }
+                const intent = projectIndex >= 0 ? DragIntent.none
+                    : dropIntentAt(event.position);
                 if (intent != _dragIntent)
                 {
                     _dragIntent = intent;
@@ -9595,8 +9614,10 @@ public final class SessionListView : ListView
         const title = _pressRow >= 0 &&
             _pressRow < cast(int) items().length
             ? items()[cast(size_t) _pressRow].text : cast(dstring) "";
-        immutable string action = _dragIntent == DragIntent.pin ? "Pin"
-            : (_dragIntent == DragIntent.unpin ? "Unpin" : "");
+        immutable string action = _dragProjectIndex >= 0 && projectNameAt !is null
+            ? "Move to " ~ projectNameAt(_dragProjectIndex)
+            : (_dragIntent == DragIntent.pin ? "Pin"
+                : (_dragIntent == DragIntent.unpin ? "Unpin" : ""));
         onDragGhost(true, toUTF8(title), action, globalPosition);
     }
 
@@ -9840,6 +9861,7 @@ public final class SessionListView : ListView
         _pressing = true;
         _dragging = false;
         _dragIntent = DragIntent.none;
+        _dragProjectIndex = -1;
         _pressRow = row;
         _pressRowPinned = row >= 0 && row < _pinnedRows;
         _pressPosition = event.position;
@@ -9853,13 +9875,18 @@ public final class SessionListView : ListView
         const row = _pressRow;
         const wasDragging = _dragging;
         const intent = _dragIntent;
+        const projectIndex = _dragProjectIndex;
         _pressing = false;
         _dragging = false;
         _dragIntent = DragIntent.none;
+        _dragProjectIndex = -1;
         _pressRow = -1;
         releaseMouse();
         if (wasDragging) hideDragGhost();
-        if (wasDragging && intent != DragIntent.none && row >= 0 &&
+        if (wasDragging && row >= 0 && projectIndex >= 0 &&
+            onMoveToProjectRequested !is null)
+            onMoveToProjectRequested(row, projectIndex);
+        else if (wasDragging && intent != DragIntent.none && row >= 0 &&
             onPinDropRequested !is null)
             onPinDropRequested(row, intent == DragIntent.pin);
         invalidate();
@@ -13022,6 +13049,27 @@ private string _suggestExcludeId;
         {
             if (active) _dragGhost.showAt(title, action, position);
             else _dragGhost.hide();
+        };
+        // Dragging a conversation over the project rail retargets it; the drop
+        // callback maps the visible row to its session and moves it.
+        _sessionList.projectIndexAtGlobal = delegate(Point globalPosition)
+        {
+            return _projectRail is null ? -1
+                : _projectRail.indexAt(_projectRail.globalToLocal(globalPosition));
+        };
+        _sessionList.projectNameAt = delegate(int projectIndex)
+        {
+            return projectIndex >= 0 &&
+                projectIndex < cast(int) _projectState.projects.length
+                ? _projectState.projects[cast(size_t) projectIndex].name : "";
+        };
+        _sessionList.onMoveToProjectRequested = delegate(int row, int projectIndex)
+        {
+            if (row < 0 || row >= cast(int) _sessionIndices.length) return;
+            if (projectIndex < 0 ||
+                projectIndex >= cast(int) _projectState.projects.length) return;
+            moveSessionToProject(_sessionIndices[row],
+                _projectState.projects[cast(size_t) projectIndex].id);
         };
 
         applyProjectsRailState();
@@ -25666,6 +25714,21 @@ private void pollButtonSuggestionRequest()
                 deleteSession(sessionIndex);
             }, "Del"),
         ];
+        // Move this conversation into another project. Rendered as a cascade so
+        // every project is reachable without a dialog; the conversation's own
+        // project is checked and re-selecting it is a no-op.
+        ContextMenuItem[] moveChildren;
+        const currentProject = sessionProjectId(_sessions[sessionIndex]);
+        foreach (project; _projectState.projects)
+        {
+            const targetId = project.id;
+            moveChildren ~= ContextMenuItem.check(project.name,
+                targetId == currentProject,
+                delegate() { moveSessionToProject(sessionIndex, targetId); });
+        }
+        if (moveChildren.length > 0)
+            items ~= ContextMenuItem.submenuItem("Move to project",
+                IconKind.folder, moveChildren);
         // Copy this conversation into a fresh chat and compact the copy, so a
         // long thread can keep going under a checkpoint without carrying its
         // full history. Offered for every conversation.
@@ -25675,6 +25738,30 @@ private void pollButtonSuggestionRequest()
                 duplicateSessionCompacted(sessionIndex);
             });
         return items;
+    }
+
+    /// Move a conversation into another project: retarget its project id, mark
+    /// it and the state dirty so the change is persisted, and refresh the
+    /// sidebar. The conversation stays open even when it leaves the active
+    /// project's list.
+    private void moveSessionToProject(int sessionIndex, string projectId)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return;
+        if (projectId.length == 0) return;
+        auto session = &_sessions[cast(size_t) sessionIndex];
+        if (sessionProjectId(*session) == projectId) return;
+        string name;
+        foreach (project; _projectState.projects)
+            if (project.id == projectId) { name = project.name; break; }
+        if (name.length == 0) return;
+        session.projectId = projectId;
+        session.updatedAt = Clock.currTime.toUnixTime();
+        _dirtyThreads[session.id] = true;
+        markDirty();
+        updateSessionList();
+        updateSessionsHeader();
+        updateStatus("Moved conversation to \"" ~ name ~ "\".");
     }
 
     // -- Pinned conversations --------------------------------------------
