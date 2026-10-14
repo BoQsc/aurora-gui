@@ -88,6 +88,8 @@ recent conversations.
 - Project header: "Move forward" button.
 - Context menu: "Project driver…" (configure) and "Run now".
 - Spawned chat: titled "Project review — <date>", badged in the session list.
+- The manager conversation is **auto-pinned** to the top of its project's
+  conversation list when it is opened or created.
 
 ## Expectations
 

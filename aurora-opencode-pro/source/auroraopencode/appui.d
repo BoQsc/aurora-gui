@@ -13856,6 +13856,9 @@ private string _suggestExcludeId;
                 if (session.id == managerId)
                 {
                     selectSession(cast(int) i);
+                    // experimental: project manager - keep it pinned to the top
+                    // of the project's conversation list.
+                    setSessionPinned(cast(int) i, true);
                     return;
                 }
         // First time: create the manager thread in this project.
@@ -13879,6 +13882,9 @@ private string _suggestExcludeId;
             _projectState.drivers[cast(size_t) index].managerSessionId = session.id;
         }
         _projectsWriter.save(_projectState);
+        // experimental: project manager - pin the manager so it stays at the
+        // top of the project's conversation list.
+        setSessionPinned(_current, true);
         markDirty();
         updateSessionList();
         updateProjectRail();
