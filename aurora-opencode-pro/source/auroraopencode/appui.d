@@ -21275,6 +21275,10 @@ private void pollButtonSuggestionRequest()
         }
         // A turn is about to read and extend this conversation's transcript.
         if (!ensureThreadLoaded(sessionIndex)) return;
+        // Continue, Regenerate and queued prompts also open user turns. Stop's
+        // latch belongs to the old turn; leaving it set discards the new turn's
+        // native tool progress/results even though those tools execute.
+        if (userTurn) _turnCancelled = false;
         auto session = &_sessions[sessionIndex];
         if (_pendingDeveloperNote.length > 0 &&
             isSelfProjectWorkspace(workspaceForSession(sessionIndex)))
