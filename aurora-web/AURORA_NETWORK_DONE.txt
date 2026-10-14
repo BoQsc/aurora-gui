@@ -1,0 +1,94 @@
+AURORA WEB NETWORK STACK - IMPLEMENTED & VERIFIED
+=================================================
+
+The browser no longer borrows an operating-system HTTP client. It carries its
+own cross-platform network stack, built on Phobos `std.socket` and its own
+crypto: TCP transport -> HTTP/1.1 client -> TLS 1.3 -> the engine's document and
+subresource fetches. WinINet is gone from `aurora-web` and `aurora-browser`.
+
+NEW MODULES
+-----------
+aurora-web/source/auroraweb/transport.d
+  A tiny cross-platform byte-transport layer over `std.socket` (Winsock on
+  Windows, BSD sockets elsewhere) with no `version`-specific socket code.
+  `TcpTransport.connect` resolves every address (IPv4/IPv6) and connects under a
+  deadline using non-blocking sockets + `Socket.select`; `readSome`/`writeAll`
+  loop with per-op deadlines. Implements the `ByteTransport` interface that the
+  HTTP and TLS layers both speak.
+
+aurora-web/source/auroraweb/crypto.d
+  The crypto the TLS layer needs, written from scratch on druntime/Phobos
+  (`std.digest` + `core.int128`) only:
+    - SHA-256, HMAC-SHA256
+    - HKDF-Extract/Expand and the TLS 1.3 HKDF-Expand-Label
+    - AES-128 (FIPS-197) and AES-128-GCM (GHASH + CTR)
+    - X25519 (RFC 7748) over GF(2^255-19), 4x64-bit limbs
+  Every routine is checked against its published vector in unittests.
+
+aurora-web/source/auroraweb/tls.d
+  A TLS 1.3 client (RFC 8446): ClientHello with SNI/ALPN/x25519 key share, the
+  key schedule, the AEAD record layer, server Finished verification, client
+  Finished, and the switch to application keys. `TlsTransport` implements
+  `ByteTransport`, so HTTPS is transparent to the HTTP client. OS entropy comes
+  from RtlGenRandom (Windows) / /dev/urandom (Posix).
+
+REWRITTEN
+---------
+aurora-web/source/auroraweb/net.d
+  The old WinINet client is replaced by a real HTTP/1.1 client on top of
+  `ByteTransport`: request serialization, status/header parsing, both
+  `Content-Length` and `Transfer-Encoding: chunked` framing, redirects, cookies
+  and gzip/deflate (std.zlib) - all in D, identical on every platform. `httpFetch`
+  now picks `TcpTransport` for http and `TlsTransport` for https.
+
+aurora-web/source/auroraweb/package.d
+  `loadImages` no longer needs an injected loader: `<img src>` and CSS
+  `background-image` URLs are resolved against the document URL and fetched
+  through the network stack.
+
+aurora-web/dub.json, aurora-browser/dub.json
+  `libs-windows` drops `wininet`; adds `ws2_32` and `advapi32`.
+
+VERIFICATION (exact)
+--------------------
+- crypto.d unittests: SHA-256("abc"); HMAC-SHA256 (RFC 4231 case 1); HKDF
+  (RFC 5869 case 1); AES-128 (FIPS-197); AES-128-GCM (NIST SP 800-38D cases 1-2)
+  plus round-trips; X25519 (RFC 7748 sections 5.2 and 6.1, incl. DH agreement).
+  All pass.
+- net.d/transport.d unittests: loopback HTTP server exercising Content-Length,
+  chunked, gzip and a 302 redirect; socket-pair read/write/EOF/timeout; large
+  (200 KB) transfer. All pass.
+- `dub test --compiler=dmd` (aurora-web): 52 modules passed unittests.
+- Live HTTPS through the engine's own `httpFetch`:
+    https://example.com/    -> 200, 577 bytes
+    https://www.iana.org/    -> 200, 6253 bytes
+    http://example.com/      -> 200, 577 bytes
+- Headless browser smoke: ALL PASSED (71 checks).
+- `aurora-browser --url https://example.com/` renders the live page (tab and
+  titlebar show "Example Domain"; the real page text is painted), proving the
+  full stack end to end in the shipped application.
+
+NEW: CERTIFICATE VERIFICATION
+-----------------------------
+The server's CertificateVerify signature is now verified with our own code. The
+client extracts the leaf certificate's public key (ECDSA P-256 or RSA) and
+checks the signature over the RFC 8446 section 4.4.3 signed content:
+  - ECDSA P-256 / SHA-256 (`crypto.d`: P-256 field/group arithmetic +
+    `ecdsaP256VerifySha256`; RFC 6979 A.2.5 vector in the unittests)
+  - RSASSA-PSS / SHA-256 (`crypto.d`: Montgomery modular exponentiation +
+    MGF1 + `rsaPssVerifySha256`)
+Verified live through `httpFetch`:
+    example.com, www.iana.org, www.cloudflare.com, www.google.com,
+    en.wikipedia.org  (ECDSA P-256)  -> 200
+    www.bing.com                      (RSA-PSS)      -> 200
+
+The certificate's identity is also checked: the leaf's subjectAltName DNS names
+are extracted and matched against the requested host (RFC 6125, single-label `*`
+wildcards), so a certificate for the wrong host is rejected.
+
+STATUS / NEXT
+-------------
+Still to do: chain-of-trust validation against a bundled root store (requires
+shipping CA certificates), and HTTP keep-alive connection reuse. Page-script
+errors are now non-fatal: a page whose JS exceeds the engine still renders
+(`WebPage.executeScripts` catches per-script failures).

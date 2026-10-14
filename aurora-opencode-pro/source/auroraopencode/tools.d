@@ -1229,6 +1229,14 @@ private string changeWorkspaceDirectory(string workspace)
     return root;
 }
 
+/// Absolute path to a workspace's append-only change journal. Exposed so the
+/// optional checkpoint feature (source/auroraopencode/checkpoint.d) can record a
+/// cheap append boundary. Delete with that feature.
+public string changeJournalPath(string workspace)
+{
+    return buildPath(changeWorkspaceDirectory(workspace), "journal.jsonl");
+}
+
 public enum safetySnapshotFileLimit = 8 * 1024 * 1024;
 private enum safetySnapshotTotalLimit = 16 * 1024 * 1024;
 private enum safetySnapshotEntryLimit = 10_000;

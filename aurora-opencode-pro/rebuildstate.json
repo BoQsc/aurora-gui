@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Install verified Stop and resume tool handoff fix",
+  "reason": "Deploy: Changes button moved into the Checkpoint dropdown as a subitem; checkpoint restore pruning fixed; dependent headless test updated.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-14 21:52:57.0472394 UTC",
-  "finishedAt": "2026-10-14 21:53:42.1105043 UTC",
-  "durationMs": 45063,
+  "startedAt": "2026-10-14 23:35:02.3601809 UTC",
+  "finishedAt": "2026-10-14 23:35:39.394053 UTC",
+  "durationMs": 37034,
   "exitCode": 0,
   "errors": []
 }

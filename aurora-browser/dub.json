@@ -18,7 +18,8 @@
     "user32",
     "gdi32",
     "shell32",
-    "wininet"
+    "ws2_32",
+    "advapi32"
   ],
   "buildTypes": {
     "portable-release": {

@@ -97,6 +97,11 @@ import auroraopencode.attachments :
     attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
     attachmentStripHeight, attachmentVisibleSummary,
     attachmentsContainImage, experimentalAttachmentsEnabled;
+// experimental: checkpoint - save/return file/folder state. Delete with
+// source/auroraopencode/checkpoint.d (see its header for the full removal list).
+import auroraopencode.checkpoint : checkpointAge, checkpointFeatureEnabled,
+    createCheckpoint, listCheckpoints, restoreCheckpoint,
+    setCheckpointFeatureEnabled;
 import auroraopencode.imagecontext : retireImagesSessionError;
 import auroraopencode.imagehistory : requestHistoryImages, pruneHistoryImages, isScreenshot, completedReplyImageIds;
 import auroraopencode.screenshotimage : pngScreenshotToJpeg;
@@ -7264,7 +7269,6 @@ private immutable string thinkingToggleTooltipText =
 /// Deliberately terse: these panels render in HoverTooltip's compact mode, so
 /// a phrase or two is the whole budget.
 private immutable string exportButtonTooltipText = "Save chat to a file";
-private immutable string changesButtonTooltipText = "Review file changes";
 private immutable string profileButtonTooltipText = "Usage and account";
 private immutable string settingsButtonTooltipText = "Settings and providers";
 private immutable string rebuildButtonTooltipText =
@@ -7274,6 +7278,9 @@ private immutable string railToggleTooltipText = "Show or hide projects";
 private immutable string newProjectTooltipText = "New sandbox project";
 private immutable string openFolderTooltipText = "Open this folder";
 private immutable string newChatTooltipText = "Start a new chat";
+// experimental: checkpoint - delete with source/auroraopencode/checkpoint.d
+private immutable string checkpointButtonTooltipText =
+    "Save a checkpoint, or return the workspace to one";
 private immutable string sendButtonTooltipText = "Send (Enter)";
 private immutable string stopButtonTooltipText = "Stop";
 
@@ -10719,6 +10726,8 @@ private string _suggestExcludeId;
     public DeveloperSyncResult delegate(string, bool) rebuildSourceCheckForTesting;
     private Button _updateButton;
     private Button _toolbarRebuildButton;
+    // experimental: checkpoint - delete with source/auroraopencode/checkpoint.d
+    private Button _checkpointButton;
     private bool _updateChecking;
     private bool _updateResultPending;
     private UpdateCheck _updateReady;
@@ -12747,10 +12756,14 @@ private string _suggestExcludeId;
         exportButton.onClick = delegate() { exportCurrentConversation(); };
         addButtonTooltip(exportButton, exportButtonTooltipText);
 
-        auto changesButton = toolbar.add(new Button("Changes", IconKind.folder));
-        changesButton.setId("oc-changes");
-        changesButton.onClick = delegate() { showChangesDialog(); };
-        addButtonTooltip(changesButton, changesButtonTooltipText);
+        // experimental: checkpoint - return the workspace's files and folders to
+        // a saved point. Delete with source/auroraopencode/checkpoint.d. The
+        // Changes view is a subitem of this menu rather than its own button.
+        _checkpointButton = toolbar.add(new Button("Checkpoint", IconKind.save));
+        _checkpointButton.setId("oc-checkpoint");
+        _checkpointButton.setVisible(checkpointFeatureEnabled());
+        _checkpointButton.onClick = delegate() { showCheckpointMenu(); };
+        addButtonTooltip(_checkpointButton, checkpointButtonTooltipText);
 
         auto profileButton = toolbar.add(new Button("Profile", IconKind.user));
         profileButton.setId("oc-profile");
@@ -14094,6 +14107,12 @@ private string _suggestExcludeId;
         updateSessionList();
         markDirty();
         _input.requestFocus();
+        // experimental: checkpoint - the conversation's first checkpoint, so
+        // every file/folder change this chat makes can be undone at once.
+        // Delete with source/auroraopencode/checkpoint.d.
+        if (checkpointFeatureEnabled())
+            createCheckpoint(workspaceForSession(_current), session.id,
+                "Start of conversation");
         updateStatus("New conversation. Ask away!");
         refreshUsageBadge();
         refreshTimerBadge(true);
@@ -23460,6 +23479,77 @@ private void pollButtonSuggestionRequest()
         openPopup(popup);
     }
 
+    // -- checkpoints ------------------------------------------------------
+    // experimental: checkpoint - delete with source/auroraopencode/checkpoint.d
+
+    /// The workspace the checkpoint button acts on: the current conversation's
+    /// project, so a chat pinned to another project cannot save/return a
+    /// different folder's state.
+    private string checkpointWorkspace()
+    {
+        if (_current >= 0 && _current < cast(int) _sessions.length)
+            return workspaceForSession(_current);
+        return activeWorkspace();
+    }
+
+    /// Toolbar dropdown: save a checkpoint now, or return the workspace to one
+    /// already saved.
+    private void showCheckpointMenu()
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+        if (_checkpointButton !is null)
+            showContextMenuBelow(_checkpointButton, checkpointMenuItems());
+    }
+
+    /// The Checkpoint dropdown's entries. The Changes view is a subitem here
+    /// (it used to be its own toolbar button); the checkpoint save/return
+    /// entries appear only while the checkpoint feature is enabled.
+    private ContextMenuItem[] checkpointMenuItems()
+    {
+        ContextMenuItem[] items;
+        if (checkpointFeatureEnabled())
+        {
+            items ~= ContextMenuItem.command("Save checkpoint now", IconKind.save,
+                delegate() { saveCheckpointNow(); });
+            auto checkpoints = listCheckpoints(checkpointWorkspace());
+            if (checkpoints.length > 0)
+            {
+                items ~= ContextMenuItem.separatorItem();
+                items ~= ContextMenuItem.command("Return to checkpoint",
+                    delegate() {}, "", false);
+                foreach (cp; checkpoints)
+                    items ~= ContextMenuItem.command(
+                        cp.label ~ "  ·  " ~ checkpointAge(cp.createdAt),
+                        IconKind.refresh, delegate()
+                        {
+                            returnToCheckpoint(cp.id);
+                        });
+            }
+            items ~= ContextMenuItem.separatorItem();
+        }
+        items ~= ContextMenuItem.command("File changes", IconKind.folder,
+            delegate() { showChangesDialog(); });
+        return items;
+    }
+
+    private void saveCheckpointNow()
+    {
+        const conversationId = _current >= 0 &&
+            _current < cast(int) _sessions.length ? _sessions[_current].id : "";
+        const created = createCheckpoint(checkpointWorkspace(), conversationId,
+            "Manual checkpoint");
+        updateStatus(created.id.length > 0
+            ? "Checkpoint saved." : "Could not save a checkpoint.");
+    }
+
+    private void returnToCheckpoint(string checkpointId)
+    {
+        const workspace = checkpointWorkspace();
+        const message = restoreCheckpoint(workspace, checkpointId);
+        invalidateToolWorkspace(workspace);
+        updateStatus(message);
+    }
+
     /// Preview then perform a scoped restore (a file, a folder, or a whole
     /// change). The plan lists every path and flags the ones that changed since
     /// Aurora recorded them; those are kept, so a restore never clobbers newer
@@ -23950,6 +24040,23 @@ private void pollButtonSuggestionRequest()
         };
         overseerRow.add(overseerCheck);
         optionsBody.add(overseerRow);
+
+        // experimental: checkpoint - save the workspace's file/folder state and
+        // return to it later. Delete with source/auroraopencode/checkpoint.d.
+        auto checkpointRow = new HBox(8);
+        checkpointRow.layoutHints().preferredHeight = 32;
+        auto checkpointCheck =
+            new CheckBox("Checkpoints (save/return file state)");
+        checkpointCheck.setId("oc-checkpoint-feature");
+        checkpointCheck.setChecked(checkpointFeatureEnabled(), false);
+        checkpointCheck.onChanged = delegate(bool value)
+        {
+            setCheckpointFeatureEnabled(value);
+            if (_checkpointButton !is null) _checkpointButton.setVisible(value);
+            updateStatus(value ? "Checkpoints on." : "Checkpoints off.");
+        };
+        checkpointRow.add(checkpointCheck);
+        optionsBody.add(checkpointRow);
 
         // experimental: project manager - master switch. When off, the feature
         // is hidden everywhere. Delete with the rest of the feature.
@@ -29821,6 +29928,13 @@ private void pollButtonSuggestionRequest()
             label);
     }
 
+    /// Test-only: invoke a Checkpoint menu entry by label, exactly as a click
+    /// would. Used to reach the Changes view now that it is a subitem there.
+    public bool invokeCheckpointMenuItemForTesting(string label)
+    {
+        return invokeContextMenuItem(checkpointMenuItems(), label);
+    }
+
     /// Invoke the first item whose label matches and whose action is set,
     /// descending into cascading submenus. Lets a test drive entries such as the
     /// per-project "Move to project" children exactly as a click would.
@@ -32225,6 +32339,8 @@ private void pollButtonSuggestionRequest()
                 return cast(int) menu.items().length;
         return -3;
     }
+
+
 
     /// Test-only: open Settings, open the real Provider dropdown, invoke the
     /// item at `index` through its context-menu action, and return the

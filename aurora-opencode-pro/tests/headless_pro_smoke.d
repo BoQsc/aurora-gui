@@ -633,13 +633,15 @@ int main(string[] args)
         verifyStopPreservesTranscript(root, driver, stateDir);
         return 0;
     }
-    // Git-independent Changes view is always available from the toolbar,
-    // including in an ordinary non-repository workspace.
-    auto changesButton = requireWidget!Button(root, "oc-changes");
-    changesButton.onClick();
+    // Git-independent Changes view is reached through the Checkpoint dropdown
+    // (it is no longer its own toolbar button), including in an ordinary
+    // non-repository workspace.
+    requireWidget!Button(root, "oc-checkpoint");
+    assert(root.invokeCheckpointMenuItemForTesting("File changes"),
+        "Checkpoint menu is missing the File changes entry");
     root.tickTree(0.02);
     assert(findById(root, "oc-changes-list") !is null,
-        "Changes button did not open the snapshot view");
+        "File changes did not open the snapshot view");
     assert(findById(root, "oc-changes-latest") !is null,
         "Just-the-last-change control is unavailable");
     requireWidget!Button(root, "oc-changes-expand").onClick();
@@ -650,7 +652,7 @@ int main(string[] args)
         "Restore control is unavailable");
     requireWidget!Button(root, "oc-changes-close").onClick();
     root.tickTree(0.02);
-    writeln("Standalone Changes view opens without Git");
+    writeln("Changes view opens from the Checkpoint menu without Git");
 
     // Context meter starts empty: the restored replies have no API usage yet.
     auto usageBadge = requireWidget!Widget(root, "oc-usage");

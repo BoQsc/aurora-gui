@@ -25,7 +25,7 @@ import auroraweb.eventloop : EventLoop;
 import auroraweb.html : parseHtml;
 import auroraweb.js : JsRuntime, JsValue, JsKind, JsScope, Node, parseScript;
 import auroraweb.layout : applyStylesAndLayout;
-import auroraweb.net : HttpResponse, httpFetch;
+import auroraweb.net : HttpResponse, httpFetch, resolveUrl;
 import auroraweb.paint : paintTree;
 
 import std.string : indexOf, lastIndexOf, strip, startsWith, toLower;
@@ -252,12 +252,21 @@ final class WebPage
         }
         foreach (code; _pendingScripts)
         {
-            auto program = _js.parseInto(code);
-            _js.runProgram(program, _js.makeObject());
+            try
+            {
+                auto program = _js.parseInto(code);
+                _js.runProgram(program, _js.makeObject());
+            }
+            catch (Exception exc)
+            {
+                // A page script the engine cannot parse or run must not abort
+                // the whole navigation: keep the rendered document and go on.
+            }
         }
         _pendingScripts = [];
         // Run queued microtasks (Promise/async continuations).
-        _js.pumpMicrotasks();
+        try _js.pumpMicrotasks();
+        catch (Exception exc) {}
     }
 
     /// Parse CSS and append to the stylesheet.
@@ -340,7 +349,6 @@ final class WebPage
     /// any CSS `background-image: url("...")` references.
     private void loadImages()
     {
-        if (_resourceLoader is null) return;
         void walk(Element e)
         {
             // <img src="...">
@@ -351,7 +359,7 @@ final class WebPage
                 {
                     try
                     {
-                        auto bytes = _resourceLoader(*src);
+                        auto bytes = fetchBytes(resolveUrl(_currentUrl, *src));
                         if (bytes.length)
                         {
                             // Shared decoder: any supported format (PNG, JPEG,
@@ -386,7 +394,7 @@ final class WebPage
                 {
                     try
                     {
-                        auto bytes = _resourceLoader(url);
+                        auto bytes = fetchBytes(resolveUrl(_currentUrl, url));
                         if (bytes.length)
                         {
                             // Shared decoder so CSS background images work for
