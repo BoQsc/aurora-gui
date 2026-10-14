@@ -288,6 +288,26 @@ private int runHeadless(string message)
     return 0;
 }
 
+/// Project name the command-line session files its conversations under, so
+/// console chats are kept apart from the GUI's conversations.
+private enum string consoleConversationProject = "Command Line Conversations";
+
+/// Point a command-line session at a fresh conversation in its own project.
+/// The saved history must finish restoring first, or the deferred load would
+/// replace the new conversation with the last GUI one.
+private void beginConsoleConversation(ref OffscreenUi ui)
+{
+    import std.file : getcwd;
+    const deadline = MonoTime.currTime + seconds(60);
+    while (ui.root.startupPendingForTesting() && MonoTime.currTime < deadline)
+    {
+        ui.root.tickTree(0.05);
+        Thread.sleep(20.msecs);
+        ui.driver.paint();
+    }
+    ui.root.startConversationInProject(consoleConversationProject, getcwd());
+}
+
 /// Interactive automation: keep one offscreen UI alive and run one prompt per
 /// line of stdin, printing each reply as it completes. Reusing the session
 /// avoids paying the conversation-restore startup cost for every prompt;
@@ -301,6 +321,9 @@ private int runHeadlessLoop(string firstPrompt = "")
         ui.root.shutdownClient();
         ui.window.close();
     }
+    // Each console run is its own conversation, filed under the command-line
+    // project so it never mixes with the GUI's history.
+    beginConsoleConversation(ui);
     // Replies reach the console; the turn's live progress is drawn in place on
     // stderr while it streams, so a slow reply shows it is still working.
     if (firstPrompt.length > 0)

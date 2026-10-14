@@ -29315,6 +29315,40 @@ private void pollButtonSuggestionRequest()
         updateSessionList(false);
     }
 
+    /// Open a fresh conversation under the project named `name`, creating that
+    /// project (whose tool folder is `workspace`) when none carries the name yet
+    /// and making it active. A command-line session uses this so its chats live
+    /// in their own project instead of mixing with the GUI's conversations.
+    public void startConversationInProject(string name, string workspace)
+    {
+        // The saved history must be restored first, or the deferred load would
+        // replace the conversation this creates.
+        if (_startupLoadPending) return;
+        int index = -1;
+        foreach (i, project; _projectState.projects)
+            if (project.name == name) { index = cast(int) i; break; }
+        if (index < 0)
+        {
+            Project project;
+            project.id = newProjectId();
+            project.name = name;
+            project.path = workspace;
+            ensureProjectDirectory(project);
+            _projectState.projects ~= project;
+            index = cast(int) _projectState.projects.length - 1;
+        }
+        else if (workspace.length > 0)
+        {
+            // Follow the shell's current folder so tools run where it was opened.
+            _projectState.projects[cast(size_t) index].path = workspace;
+        }
+        _projectState.activeId = _projectState.projects[cast(size_t) index].id;
+        _projectsWriter.save(_projectState);
+        updateProjectRail();
+        updateSessionsHeader();
+        newChat();
+    }
+
     /// Test-only: append a conversation (parallel role/content arrays) without
     /// network activity, then rebuild the message column.
     public void addConversationForTesting(const(string)[] roles,
