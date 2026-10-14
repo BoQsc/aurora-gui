@@ -20964,13 +20964,22 @@ private void pollButtonSuggestionRequest()
         const requestId = ++_nextRequestId;
         _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(
             activeApiKey(_settings));
-        if (runtime.titleClient.startChatMessages([instruction, request],
-            null, session.model, false, requestId) != ChatStartResult.accepted)
+        const started = runtime.titleClient.startChatMessages(
+            [instruction, request], null, session.model, false, requestId);
+        if (started != ChatStartResult.accepted)
         {
             _requestTokenKeyIds.remove(requestId);
             runtime.titleClient.closeSession();
             runtime.titleClient = null;
-            runtime.titlePending = false;
+            // Refusing because the endpoint is busy or at capacity is
+            // transient: leave the rewrite pending so retryQuickTitle runs it
+            // once this conversation and a provider slot are free. Clearing it
+            // here dropped the rewrite for good and left that conversation
+            // with its raw first message as a permanent name. The attempt
+            // already counted, so quickTitleMaxAttempts still bounds repeats;
+            // only a terminal refusal ends the rewrite.
+            if (started == ChatStartResult.closed || started == ChatStartResult.failed)
+                runtime.titlePending = false;
         }
     }
 
