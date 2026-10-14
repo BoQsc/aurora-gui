@@ -13782,7 +13782,11 @@ private string _suggestExcludeId;
         if (field == "enabled")
         {
             updateProjectRail();
-            if (value) openProjectManager(projectIndex);
+            if (value)
+            {
+                dismissPopup();
+                openProjectManager(projectIndex);
+            }
         }
     }
 
@@ -13819,7 +13823,11 @@ private string _suggestExcludeId;
         // Refresh the rail dot now, and make enabling visibly do something by
         // opening the manager instead of only flipping state.
         updateProjectRail();
-        if (enabled) openProjectManager(projectIndex);
+        if (enabled)
+        {
+            dismissPopup();
+            openProjectManager(projectIndex);
+        }
         updateStatus(enabled
             ? "Project manager enabled for " ~ name ~ "."
             : "Project manager disabled for " ~ name ~ ".");
@@ -23915,6 +23923,19 @@ private void pollButtonSuggestionRequest()
             saveSettingsNow();
             // Reflect the rail badge immediately.
             updateProjectRail();
+            if (value)
+            {
+                // Turn the feature on for the project being viewed and open its
+                // manager, so enabling has an immediate, visible effect instead
+                // of only revealing settings rows.
+                const index = activeProjectIndex();
+                if (index >= 0)
+                {
+                    dismissPopup();
+                    setProjectDriverFlag(cast(int) index, "enabled", true);
+                    return;
+                }
+            }
             // Rebuild the dialog so the per-project section appears/disappears.
             showSettingsDialog();
         };

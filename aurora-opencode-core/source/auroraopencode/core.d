@@ -2428,3 +2428,21 @@ public void ensureProjectDirectory(const ref Project project)
         logError("failed to create project directory: " ~ error.msg);
     }
 }
+
+unittest
+{
+    // experimental: project manager - the master switch must survive a
+    // save/load round trip. When it is dropped from the settings file it resets
+    // to false on the next launch and the whole feature silently hides, which is
+    // exactly the "I enabled it and nothing changed" symptom.
+    import std.file : tempDir;
+    import std.path : buildPath;
+    const dir = buildPath(tempDir(), "aurora-opencode-settings-roundtrip-test");
+    setOpencodeStateDirectoryForTesting(dir);
+    scope (exit) setOpencodeStateDirectoryForTesting("");
+    ensureStateDirectory();
+    Settings saved;
+    saved.experimentalProjectManager = true;
+    saveSettings(saved);
+    assert(loadSettings().experimentalProjectManager);
+}
