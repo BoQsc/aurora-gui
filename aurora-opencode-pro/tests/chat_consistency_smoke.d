@@ -217,5 +217,35 @@ int main()
             "Paging materialized the entire history to preserve its anchor");
     }
     writeln("Repeated virtual paging anchors variable-height rows without constructing the full history");
+
+    // Regression: reaching the top by scrolling must keep pulling pages with no
+    // click, even when an inserted page anchors in place (the virtualized path
+    // leaves the reader inside the top zone). The near-top latch has to re-arm.
+    root.setExperimentalChatRedesignForTesting(false);
+    root.newChatForTesting();
+    roles.length = bodies.length = 0;
+    foreach (i; 0 .. 750)
+    {
+        roles ~= i % 2 == 0 ? "user" : "assistant";
+        string body = "Scroll history " ~ to!string(i);
+        foreach (_; 0 .. 1 + i % 5)
+            body ~= "\n\nA paragraph with **formatting** and enough text to wrap across the viewport.";
+        bodies ~= body;
+    }
+    root.addConversationForTesting(roles, bodies);
+    root.tickTree(0.02); driver.paint();
+    const scrollCenter = view.localToGlobal(Point(view.bounds().width / 2,
+        view.bounds().height / 2));
+    root.scrollToForTesting(int.max);
+    root.tickTree(0.02); driver.paint();
+    foreach (_; 0 .. 4000)
+    {
+        driver.wheel(scrollCenter, 6);
+        root.tickTree(0.005);
+        if (root.hiddenHistoryCountForTesting() == 0) break;
+    }
+    assert(root.hiddenHistoryCountForTesting() == 0,
+        "scrolling to the top stopped auto-loading older history");
+    writeln("Scrolling to the top keeps pulling older pages without a click");
     return 0;
 }
