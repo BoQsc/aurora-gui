@@ -137,9 +137,12 @@ private string finishOffscreen(ref OffscreenUi ui, string screenshotPath)
 /// `--screenshot*` and `--headless` entry points so an unattended run
 /// exercises the same code as the GUI.
 private string driveOffscreen(string message, string screenshotPath,
-    bool verbose, RendererPreference renderer)
+    bool verbose, RendererPreference renderer, bool consoleProject = false)
 {
     auto ui = openOffscreen("Aurora OpenCode", renderer);
+    // A command-line run gets its own conversation under the console project so
+    // it never appends to the GUI's history.
+    if (consoleProject) beginConsoleConversation(ui);
     if (message.length > 0) submitPrompt(ui, message, verbose);
     return finishOffscreen(ui, screenshotPath);
 }
@@ -276,7 +279,8 @@ private string readAllStdin()
 private int runHeadless(string message)
 {
     if (message == "-") message = readAllStdin();
-    const reply = driveOffscreen(message, "", false, RendererPreference.software);
+    const reply = driveOffscreen(message, "", false,
+        RendererPreference.software, true);
     writeln(reply);
     stdout.flush();
     if (reply.length == 0)
