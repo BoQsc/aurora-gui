@@ -131,6 +131,48 @@ int main(string[] args)
     Thread.sleep(50.msecs);
     check("async page loaded", root.currentUrlForTesting() == "auroraweb:async");
     check("async page has title", root.tabTitleForTesting().length > 0);
+    // The page's async/await body resolves a Promise and writes the computed
+    // result into #status. This exercises the whole chain: inline script runs
+    // (parseInto), the await continuation is queued as a microtask on the event
+    // loop, and element.textContent = "..." mutates the DOM.
+    auto asyncView = root.activeViewForTesting();
+    string statusText = "";
+    if (asyncView !is null && asyncView.page() !is null)
+    {
+        Element statusEl = null;
+        void findStatus(Element e)
+        {
+            if (statusEl !is null) return;
+            if (e.hasId("status")) { statusEl = e; return; }
+            foreach (c; e.elements) findStatus(c);
+        }
+        findStatus(asyncView.page().root());
+        statusText = statusEl is null ? "" : statusEl.textContent();
+    }
+    check("async await updated the DOM",
+        statusText.indexOf("300") >= 0);
+
+    // --- Event loop: setTimeout / setInterval / requestAnimationFrame driven
+    // by the browser host's per-tick pump. Each tickTree advances the page's
+    // event-loop clock by 20 ms, so a handful of ticks resolves every timer. ---
+    root.navigateForTesting("auroraweb:timer");
+    driver.paint();
+    Thread.sleep(30.msecs);
+    check("timer page loaded", root.currentUrlForTesting() == "auroraweb:timer");
+    for (int i = 0; i < 4; ++i)
+    {
+        root.tickTree(0.02);
+        driver.paint();
+    }
+    auto timerView = root.activeViewForTesting();
+    string timerText = (timerView !is null && timerView.page() !is null &&
+        timerView.page().root() !is null)
+        ? timerView.page().root().textContent() : "";
+    check("setTimeout fired", timerText.indexOf("timeout fired") >= 0);
+    check("setInterval ran then cleared",
+        timerText.indexOf("interval ticks: 3") >= 0);
+    check("requestAnimationFrame chain ran",
+        timerText.indexOf("raf frames: 3") >= 0);
 
     // Bookmarks: toggle the current page (auroraweb:js) and verify the bar.
     root.navigateForTesting("auroraweb:hello");

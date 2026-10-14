@@ -1,0 +1,89 @@
+AURORA WEB EVENT LOOP - IMPLEMENTED & VERIFIED
+==============================================
+
+NEW MODULE
+----------
+aurora-web/source/auroraweb/eventloop.d
+
+The cross-platform HTML event loop: the scheduler that powers the whole
+browser. It owns the task queues, the microtask checkpoint, the timer engine,
+requestAnimationFrame and the render step, and it never touches an OS API --
+the host pumps it with a monotonic clock, so the same code drives Windows, X11,
+macOS and `dub test`.
+
+  - TaskSource enum + priority order (userInteraction > postedMessage > timer
+    > networking > scripting > domManipulation > navigation); each source is a
+    FIFO so one kind of work cannot starve another.
+  - runOneTask()/runUntilIdle(): run the highest-priority task, then a
+    microtask checkpoint; then any expired timers. Bounded by maxIdleTasks so a
+    self-requeueing task cannot hang the host.
+  - Microtask checkpoint: drains to empty including microtasks queued by other
+    microtasks; re-entrant checkpoints are ignored.
+  - Timers: setTimeout/setInterval/clearTimeout/clearInterval with whole-ms
+    truncation, ordering by (dueAt, insertion), and the HTML nesting clamp
+    (a timer scheduled from inside a timer inherits level+1; past level 5 its
+    delay is floored at 4 ms so zero-delay recursion cannot spin).
+  - Animation frames: requestAnimationFrame/cancelAnimationFrame run inside
+    runFrame(timestamp); a callback that re-requests is deferred to the next
+    frame; render callbacks run every frame.
+  - hasPendingWork()/framePending()/nextTimerDue() for host scheduling.
+
+INTEGRATION
+-----------
+aurora-web/source/auroraweb/js.d
+  - JsRuntime owns an EventLoop. setTimeout/setInterval/requestAnimationFrame/
+    queueMicrotask route through it (clearTimeout/clearInterval/
+    cancelAnimationFrame added), so page timers, frames and Promise microtasks
+    share one scheduler and one clock. Microtask callbacks are wrapped so a
+    thrown script error cannot unwind the host loop.
+
+aurora-web/source/auroraweb/package.d
+  - WebPage resets the loop on setHtml (a navigation cannot leak stale work)
+    and exposes eventLoop()/serviceEventLoop(nowMs)/serviceAnimationFrame(ts)/
+    hasPendingTasks()/animationFramePending() for the host.
+
+aurora-browser/source/aurorabrowser/appui.d
+  - WebPageView.onTick(deltaSeconds) pumps the loop once per Aurora tick
+    (Aurora's native loop ticks continuously ~4 ms), then repaints when a
+    callback may have changed the DOM. This is what makes a page's
+    setTimeout/setInterval/requestAnimationFrame actually fire while idle.
+  - Added built-in page `auroraweb:timer`.
+
+TWO ENGINE BUGS THE WORK EXPOSED (both fixed)
+---------------------------------------------
+1. js.d `parseInto` returned `nodes[$ - 1]` -- the LAST node of the script --
+   instead of the Program node, so `WebPage.executeScripts` ran only the final
+   statement of every page script. It now returns the Program node appended at
+   the parse start index.
+2. dombind.d `makeElementSetHandler` only special-cased value/checked; writing
+   `el.textContent = "..."` stored a shadow property on the JS wrapper and the
+   DOM never changed. textContent/innerText writes now call setTextContent.
+
+Note: float fields default to NaN in D, so EventLoop._nowMs is explicitly 0.0
+(a NaN clock made every timer "always due").
+
+VERIFICATION OUTPUTS (exact)
+----------------------------
+[1] Engine unittests (dom, css, html, js, layout, paint, net, dombind, eventloop)
+    compiled with `dmd -unittest` and run:
+      ok
+      33 modules passed unittests
+    Includes regression tests for both fixes:
+      - js.d: `parseInto` returns the Program node, so every statement of a
+        multi-statement script runs (and two parseInto calls do not cross wires).
+      - dombind.d: `el.textContent`/`el.innerText = "..."` round-trips and
+        mutates the DOM node itself.
+
+[2] Headless browser smoke (aurora-browser/tests/headless_smoke.d), which now
+    asserts the DOM after an async/await page and after driving `auroraweb:timer`
+    for a few ticks:
+      PASS  async await updated the DOM   (parseInto + microtask loop + textContent)
+      PASS  setTimeout fired
+      PASS  setInterval ran then cleared
+      PASS  requestAnimationFrame chain ran
+      ...
+      headless_smoke: ALL PASSED
+
+[3] `dub build --compiler=dmd --force` (workdir aurora-browser):
+      Building aurora-browser 0.66.3: building configuration [application]
+       Linking aurora-browser

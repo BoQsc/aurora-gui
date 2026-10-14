@@ -21,6 +21,7 @@ import aurora.surface : Surface;
 import auroraweb.css : parseStylesheet, Rule;
 import auroraweb.dom : Element, TextNode;
 import auroraweb.dombind : bindDocument;
+import auroraweb.eventloop : EventLoop;
 import auroraweb.html : parseHtml;
 import auroraweb.js : JsRuntime, JsValue, JsKind, JsScope, Node, parseScript;
 import auroraweb.layout : applyStylesAndLayout;
@@ -194,6 +195,9 @@ final class WebPage
     /// called (after the DOM is bound).
     void setHtml(string html)
     {
+        // A new document starts with a clean scheduler: no stale timers,
+        // animation frames or microtasks leak across a navigation.
+        resetEventLoop();
         _root = parseHtml(html);
         _rules = [];
         extractStyles();
@@ -269,6 +273,60 @@ final class WebPage
         auto program = _js.parseInto(source);
         _js.runProgram(program, _js.makeObject());
         _js.pumpMicrotasks();
+    }
+
+    // -----------------------------------------------------------------------
+    // Event loop (the browser's cross-platform scheduler)
+    // -----------------------------------------------------------------------
+
+    /// The page's event loop. It is owned by the JS runtime so `setTimeout`,
+    /// `requestAnimationFrame` and Promise microtasks all share one scheduler
+    /// and one clock. The host pumps it a tick at a time.
+    EventLoop eventLoop()
+    {
+        return _js.eventLoop;
+    }
+
+    /// Install a fresh event loop and discard everything queued on the old one.
+    /// Called automatically on `setHtml` so navigation cannot leak stale work.
+    void resetEventLoop()
+    {
+        _js.eventLoop = new EventLoop();
+    }
+
+    /// Feed the loop a fresh monotonic time (ms) and run everything currently
+    /// due: queued tasks, expired timers and microtask checkpoints. Returns
+    /// true if any work ran, so the host can request a repaint. The host calls
+    /// this once per frame/tick with its real clock.
+    bool serviceEventLoop(double nowMs)
+    {
+        auto loop = _js.eventLoop;
+        if (loop is null) return false;
+        loop.setNow(nowMs);
+        return loop.runUntilIdle() > 0;
+    }
+
+    /// Run the "update the rendering" step: the queued animation-frame
+    /// callbacks with `timestamp`, then any registered render callbacks.
+    /// Returns true if a frame ran. The browser calls this once per repaint.
+    bool serviceAnimationFrame(double timestamp)
+    {
+        auto loop = _js.eventLoop;
+        return loop !is null && loop.runFrame(timestamp);
+    }
+
+    /// Whether the page still has pending timers, tasks or animation frames.
+    bool hasPendingTasks()
+    {
+        auto loop = _js.eventLoop;
+        return loop !is null && loop.hasPendingWork();
+    }
+
+    /// Whether an animation frame is waiting to run.
+    bool animationFramePending()
+    {
+        auto loop = _js.eventLoop;
+        return loop !is null && loop.framePending();
     }
 
     /// Re-layout after DOM/style mutation.

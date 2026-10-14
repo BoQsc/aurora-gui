@@ -30,6 +30,8 @@ import std.conv : to;
 import std.math : isNaN;
 import std.string : strip, toLower, toUpper, indexOf, startsWith, endsWith;
 
+import auroraweb.eventloop : EventLoop;
+
 // ---------------------------------------------------------------------------
 // Values
 // ---------------------------------------------------------------------------
@@ -260,6 +262,12 @@ final class JsRuntime
     /// Null (default) means no `fetch` is exposed to page scripts.
     JsValue delegate(JsValue url, JsValue options, ref JsRuntime rt) fetchHandler;
 
+    /// The shared event loop. Every runtime owns one so `setTimeout`,
+    /// `requestAnimationFrame` and microtasks funnel through a single scheduler
+    /// and clock; the browser host drives it a tick at a time and `WebPage`
+    /// exposes it to the shell.
+    EventLoop eventLoop;
+
     /// Microtask queue for Promise continuations.
     JsValue[] _microtasks;
     /// Await-resume frames for async functions.
@@ -292,12 +300,33 @@ final class JsRuntime
 
     void queueMicrotask(JsValue continuation)
     {
+        if (eventLoop !is null)
+        {
+            // Route JS microtasks through the shared loop so script, timers and
+            // rendering share a single microtask checkpoint.
+            auto fn = continuation;
+            eventLoop.queueMicrotask(() { runJsMicrotask(fn); });
+            return;
+        }
         _microtasks ~= continuation;
+    }
+
+    /// Run one queued JS microtask, containing any script error so a bad
+    /// continuation cannot unwind the host's event-loop thread.
+    private void runJsMicrotask(JsValue fn)
+    {
+        try callFunction(fn, JsValue(JsKind.object, globalObject), []);
+        catch (Exception) { lastHadException = true; }
     }
 
     /// Run all pending microtasks synchronously.
     void pumpMicrotasks()
     {
+        if (eventLoop !is null)
+        {
+            eventLoop.performMicrotaskCheckpoint();
+            return;
+        }
         while (_microtasks.length)
         {
             auto tasks = _microtasks;
@@ -363,6 +392,7 @@ final class JsRuntime
         globalScope = new JsScope("global", null);
         globalObject = new JsObject();
         globalObject.kind = "Object";
+        eventLoop = new EventLoop();
         installBuiltins();
     }
 
@@ -765,9 +795,14 @@ final class JsRuntime
     /// the same globals), returning the Program node to execute.
     Node parseInto(string source)
     {
+        // The Program node is appended first by `parseProgram`; remember where
+        // this parse begins so we return its Program node, not some later
+        // node. Returning `nodes[$ - 1]` (as before) handed back the LAST node
+        // of the script, so `executeScripts` ran only the final statement.
+        auto startIndex = nodes.length;
         auto parser = Parser(source, this);
         parser.parseProgram();
-        return nodes[$ - 1];
+        return startIndex < nodes.length ? nodes[startIndex] : null;
     }
 
     /// Execute a previously parsed program node in the global scope.
@@ -1904,18 +1939,79 @@ final class JsRuntime
         return false;
     }
 
-    /// setTimeout / setInterval.
+    /// Run a scheduled JS callback (timer / animation frame), containing any
+    /// script error so one misbehaving callback cannot tear down the loop.
+    private void runScheduled(JsValue fn, JsValue[] args = null)
+    {
+        try callFunction(fn, JsValue(JsKind.object, globalObject), args);
+        catch (Exception) { lastHadException = true; }
+    }
+
+    /// setTimeout / setInterval / clearTimeout / clearInterval /
+    /// requestAnimationFrame / cancelAnimationFrame / queueMicrotask.
+    ///
+    /// These route through the runtime's `EventLoop`, so page timers, animation
+    /// frames and microtasks all share the browser's single scheduler and clock
+    /// and interleave with the render step exactly as the platform does.
     private void installTimerBuiltins()
     {
         globalScope.declare("setTimeout", makeNativeFunc((thisValue, args, rt) {
             if (args.length == 0 || args[0].kind != JsKind.func) return rt.makeNumber(0);
             auto delay = args.length > 1 ? args[1].numValue : 0;
-            return rt.makeNumber(cast(double) rt.installTimer(args[0], delay, false));
+            auto fn = args[0];
+            auto self = rt;
+            if (rt.eventLoop !is null)
+                return rt.makeNumber(cast(double) rt.eventLoop.setTimeout(()
+                {
+                    self.runScheduled(fn);
+                }, delay));
+            return rt.makeNumber(cast(double) rt.installTimer(fn, delay, false));
         }));
         globalScope.declare("setInterval", makeNativeFunc((thisValue, args, rt) {
             if (args.length == 0 || args[0].kind != JsKind.func) return rt.makeNumber(0);
             auto delay = args.length > 1 ? args[1].numValue : 0;
-            return rt.makeNumber(cast(double) rt.installTimer(args[0], delay, true));
+            auto fn = args[0];
+            auto self = rt;
+            if (rt.eventLoop !is null)
+                return rt.makeNumber(cast(double) rt.eventLoop.setInterval(()
+                {
+                    self.runScheduled(fn);
+                }, delay));
+            return rt.makeNumber(cast(double) rt.installTimer(fn, delay, true));
+        }));
+        globalScope.declare("clearTimeout", makeNativeFunc((thisValue, args, rt) {
+            // With no loop attached there is nothing scheduled to cancel.
+            if (rt.eventLoop !is null && args.length)
+                rt.eventLoop.clearTimeout(cast(long) args[0].numValue);
+            return rt.makeUndefined();
+        }));
+        globalScope.declare("clearInterval", makeNativeFunc((thisValue, args, rt) {
+            if (rt.eventLoop !is null && args.length)
+                rt.eventLoop.clearInterval(cast(long) args[0].numValue);
+            return rt.makeUndefined();
+        }));
+        globalScope.declare("requestAnimationFrame", makeNativeFunc((thisValue, args, rt) {
+            if (args.length == 0 || args[0].kind != JsKind.func) return rt.makeNumber(0);
+            auto fn = args[0];
+            auto self = rt;
+            if (rt.eventLoop !is null)
+                return rt.makeNumber(cast(double) rt.eventLoop.requestAnimationFrame(
+                    (double ts)
+                    {
+                        JsValue[] a; a ~= self.makeNumber(ts);
+                        self.runScheduled(fn, a);
+                    }));
+            // A detached runtime has no scheduler, so the frame never runs.
+            return rt.makeNumber(0);
+        }));
+        globalScope.declare("cancelAnimationFrame", makeNativeFunc((thisValue, args, rt) {
+            if (rt.eventLoop !is null && args.length)
+                rt.eventLoop.cancelAnimationFrame(cast(long) args[0].numValue);
+            return rt.makeUndefined();
+        }));
+        globalScope.declare("queueMicrotask", makeNativeFunc((thisValue, args, rt) {
+            if (args.length && args[0].kind == JsKind.func) rt.queueMicrotask(args[0]);
+            return rt.makeUndefined();
         }));
     }
 
@@ -4754,4 +4850,27 @@ unittest
     assert(oc.kind == JsKind.number && oc.numValue == 5, "optional chain 5");
     auto od = rt.globalScope.get("od");
     assert(od.kind == JsKind.undefined, "optional chain missing undefined");
+}
+
+unittest
+{
+    // Regression: `parseInto` must return the Program node for the parse it
+    // just performed. It previously returned `nodes[$ - 1]` (the script's LAST
+    // node), so `WebPage.executeScripts` ran only the final statement of every
+    // page script. Every statement here must execute.
+    auto rt = new JsRuntime();
+    auto program = rt.parseInto("var a = 1; var b = 2; a = a + b + 4;");
+    rt.runProgram(program, rt.makeObject());
+    auto a = rt.globalScope.get("a");
+    assert(a.kind == JsKind.number && a.numValue == 7,
+        "all statements must run (a = 1+2+4 = 7), got " ~ rt.toJsString(a));
+    auto b = rt.globalScope.get("b");
+    assert(b.kind == JsKind.number && b.numValue == 2, "second statement must run");
+
+    // Two `parseInto` calls on one runtime must not cross wires.
+    auto rt2 = new JsRuntime();
+    rt2.runProgram(rt2.parseInto("var first = 10;"), rt2.makeObject());
+    rt2.runProgram(rt2.parseInto("var second = 20;"), rt2.makeObject());
+    assert(rt2.globalScope.get("first").numValue == 10, "first program must run");
+    assert(rt2.globalScope.get("second").numValue == 20, "second program must run");
 }

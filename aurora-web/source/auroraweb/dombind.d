@@ -645,6 +645,10 @@ private final class DocumentBinder
             auto el2 = unwrap(thisValue);
             return rt2.makeString(el2 is null ? "" : el2.textContent());
         }));
+        obj.set("__get_innerText", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            return rt2.makeString(el2 is null ? "" : el2.textContent());
+        }));
         obj.set("__get_style", rt.makeNativeFunc((thisValue, args, rt2) {
             return thisValue.obj.get("__styleObj");
         }));
@@ -1395,6 +1399,16 @@ private final class DocumentBinder
             {
                 if (args[1].isTruthy()) el.attrs["checked"] = "true";
                 else el.attrs.remove("checked");
+                return rt2.makeUndefined();
+            }
+            // `textContent`/`innerText` writes replace the element's children
+            // with a single text node. Without this the assignment only stored
+            // a shadow property on the JS wrapper, so `el.textContent = "..."`
+            // never changed what the element rendered (and `__get_textContent`
+            // still read the unchanged DOM text).
+            if (prop == "textContent" || prop == "innerText")
+            {
+                setTextContent(el, value);
                 return rt2.makeUndefined();
             }
             // Unknown props fall back to plain storage on the wrapper so
@@ -2424,4 +2438,39 @@ unittest
     checkBool("__stopBubbled", true);
     checkBool("__stopStoppedMain", true);
     checkStr("__keyHandled", "Enter/keydown");
+}
+
+unittest
+{
+    import auroraweb.html : parseHtml;
+    import auroraweb.js : parseScript;
+
+    // Regression: `el.textContent = "..."` must replace the element's children
+    // (previously it only stored a shadow property on the JS wrapper, so the
+    // DOM never changed and reads returned the old text). `innerText` is an
+    // alias for the same read/write.
+    auto root = parseHtml(`<html><body><p id="p">old</p></body></html>`);
+    auto rt = parseScript(
+        `var el = document.getElementById("p");` ~
+        `el.textContent = "new";` ~
+        `__read = el.textContent;` ~
+        `__inner = el.innerText;`);
+    bindDocument(root, rt, rt.globalScope);
+    rt.runScript(rt.makeObject());
+    auto read = rt.globalScope.get("__read");
+    assert(read.kind == JsKind.string && read.strValue == "new",
+        "textContent round-trip failed: " ~ rt.toJsString(read));
+    auto inner = rt.globalScope.get("__inner");
+    assert(inner.kind == JsKind.string && inner.strValue == "new",
+        "innerText round-trip failed: " ~ rt.toJsString(inner));
+    // The DOM node itself must hold the new text.
+    string domText;
+    void walk(Element e)
+    {
+        if (domText.length) return;
+        if (e.tag == "p") { domText = e.textContent(); return; }
+        foreach (c; e.elements) walk(c);
+    }
+    walk(root);
+    assert(domText == "new", "DOM text node not updated, got '" ~ domText ~ "'");
 }

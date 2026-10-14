@@ -191,6 +191,8 @@ private string builtInPage(string path)
         return scrollPageHtml();
     if (p == "async")
         return asyncPageHtml();
+    if (p == "timer")
+        return timerPageHtml();
     if (p == "complex")
         return complexPageHtml();
     if (p == "remote")
@@ -199,7 +201,7 @@ private string builtInPage(string path)
         return error404PageHtml();
     return errorPageHtml(p, "Unknown page '" ~ p ~ "'. Try auroraweb:hello, " ~
         "auroraweb:css, auroraweb:js, auroraweb:links, auroraweb:async, " ~
-        "auroraweb:remote or auroraweb:complex.");
+        "auroraweb:timer, auroraweb:remote or auroraweb:complex.");
 }
 
 /// Tall page to exercise vertical scrolling.
@@ -238,6 +240,44 @@ private string asyncPageHtml()
       document.getElementById("status").textContent = "3 * 10 * 10 = " + b;
     }
     run();
+  </script>
+</body>
+</html>`;
+}
+
+/// Event-loop showcase: the inline script schedules a one-shot timeout, a
+/// repeating interval (cleared after a few ticks) and a chain of
+/// requestAnimationFrame callbacks. All three are driven by the cross-platform
+/// event loop that the browser host pumps from its per-frame tick.
+private string timerPageHtml()
+{
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <title>Aurora Event Loop</title>
+</head>
+<body style="background:#f6f8fa;color:#1b1f23;padding:32px">
+  <h1>Event Loop</h1>
+  <p id="t">timeout pending</p>
+  <p id="iv">interval pending</p>
+  <p id="raf">raf pending</p>
+  <script>
+    var frames = 0;
+    function step() {
+      frames++;
+      document.getElementById("raf").textContent = "raf frames: " + frames;
+      if (frames < 3) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+    setTimeout(function() {
+      document.getElementById("t").textContent = "timeout fired";
+    }, 20);
+    var ticks = 0;
+    var handle = setInterval(function() {
+      ticks++;
+      document.getElementById("iv").textContent = "interval ticks: " + ticks;
+      if (ticks >= 3) clearInterval(handle);
+    }, 10);
   </script>
 </body>
 </html>`;
@@ -460,6 +500,8 @@ final class WebPageView : Widget
     private int _contentHeight;
     private string _lastError;   /// reason of the last failed load ("" if ok)
     private string _failedUrl;   /// URL that failed; "" if the last load succeeded
+    /// Accumulated host time (ms) fed to the page's event loop each tick.
+    private double _loopClockMs;
 
     this(WebPage page)
     {
@@ -559,6 +601,9 @@ final class WebPageView : Widget
             _page.resize(_viewportWidth, _viewportHeight);
         _page.layout();
         resetScroll();
+        // A fresh document resets its event loop; restart the host clock with it
+        // so a page's first timers are measured from load, not from app start.
+        _loopClockMs = 0.0;
         _contentHeight = contentHeight();
 
         // Failure detection now that styles are computed and the DOM is laid
@@ -747,6 +792,27 @@ final class WebPageView : Widget
     void setCurrentUrl(string value)
     {
         _url = value;
+    }
+
+    /**
+     * Pump the page's event loop once per host tick. Aurora's native loop ticks
+     * continuously (~4 ms quantum), so this is where a page's `setTimeout`,
+     * `setInterval` and `requestAnimationFrame` callbacks actually fire while
+     * the browser sits idle. When a callback may have changed the DOM we
+     * invalidate so the next paint re-runs style, layout and paint.
+     */
+    protected override void onTick(double deltaSeconds)
+    {
+        super.onTick(deltaSeconds);
+        if (_page is null) return;
+        // Guard against a NaN/absurd delta poisoning the clock forever.
+        if (deltaSeconds > 0.0 && deltaSeconds < 10.0)
+            _loopClockMs += deltaSeconds * 1000.0;
+        bool changed = _page.serviceEventLoop(_loopClockMs);
+        if (_page.animationFramePending())
+            changed = _page.serviceAnimationFrame(_loopClockMs) || changed;
+        if (changed)
+            invalidate();
     }
 
     protected override void onBoundsChanged()
