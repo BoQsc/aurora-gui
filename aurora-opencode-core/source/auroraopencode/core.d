@@ -1691,6 +1691,11 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ ||
                         found.type == JSONType.false_)
                         settings.overseerObserver = found.type == JSONType.true_;
+                if (auto found = "experimentalProjectManager" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.experimentalProjectManager =
+                            found.type == JSONType.true_;
                 if (auto found = "developerMode" in value.object)
                     if (found.type == JSONType.true_ ||
                         found.type == JSONType.false_)
@@ -1982,6 +1987,7 @@ public void saveSettings(const ref Settings settings)
     root["floatingMiniChatLines"] = settings.floatingMiniChatLines;
     root["emergencyReport"] = settings.emergencyReport;
     root["overseerObserver"] = settings.overseerObserver;
+    root["experimentalProjectManager"] = settings.experimentalProjectManager;
     root["developerMode"] = settings.developerMode;
     root["developerSourceDir"] = settings.developerSourceDir;
     root["developerAutoReapply"] = settings.developerAutoReapply;

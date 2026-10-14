@@ -9916,6 +9916,20 @@ public final class ProjectListView : ListView
 
     private int _hoverRow = -1;
 
+    /// Fired on drop: move the project at `from` to the insertion slot `to`
+    /// (0 .. project count), the position between rows the pointer released on.
+    void delegate(int from, int to) onReorderRequested;
+
+    // Drag-to-reorder state. A left press arms a drag, moving past
+    // `dragThreshold` promotes it, and the insertion slot under the pointer on
+    // release decides where the project lands.
+    private enum int dragThreshold = 4;
+    private bool _pressing;
+    private bool _dragging;
+    private int _pressRow = -1;
+    private Point _pressPosition;
+    private int _dropRow = -1;
+
     /// experimental: project manager - true when a row's project has the
     /// manager enabled; the row then shows a small accent dot.
     bool delegate(int index) onManagedQuery;
@@ -9978,12 +9992,46 @@ public final class ProjectListView : ListView
                 content.fillRoundedRect(dot, 3, opencodeAccent);
             }
         }
+
+        // Insertion indicator: a hairline at the slot the dragged project would
+        // land on, drawn over the rows so the drop target is unambiguous.
+        if (_dragging && _dropRow >= 0 && _dropRow <= count)
+        {
+            const slotY = _dropRow * rowHeight - offset;
+            content.fillRect(Rect(4, slotY - 1, maxInt(0, width - 8), 2),
+                opencodeAccent);
+        }
     }
 
     override bool onMouseMove(ref Event event)
     {
-        setCursor(CursorKind.arrow);
         const next = indexAt(event.position);
+        if (_pressing && _pressRow >= 0)
+        {
+            int dx = event.position.x - _pressPosition.x;
+            int dy = event.position.y - _pressPosition.y;
+            if (dx < 0) dx = -dx;
+            if (dy < 0) dy = -dy;
+            if (!_dragging && maxInt(dx, dy) >= dragThreshold)
+            {
+                _dragging = true;
+                _hoverRow = -1;
+            }
+            if (_dragging)
+            {
+                // The row under the pointer is the insertion slot the project
+                // would drop into; keep the move cursor while the drag is live.
+                setCursor(CursorKind.move);
+                const target = dropTargetAt(event.position);
+                if (target != _dropRow)
+                {
+                    _dropRow = target;
+                    invalidate();
+                }
+                return true;
+            }
+        }
+        setCursor(CursorKind.arrow);
         if (next != _hoverRow)
         {
             _hoverRow = next;
@@ -9995,7 +10043,7 @@ public final class ProjectListView : ListView
     override void onMouseLeave()
     {
         _hoverRow = -1;
-        setCursor(CursorKind.arrow);
+        if (!_dragging) setCursor(CursorKind.arrow);
     }
 
     override bool onMouseDown(ref Event event)
@@ -10007,7 +10055,56 @@ public final class ProjectListView : ListView
                 onContextMenuRequested(row, localToGlobal(event.position));
             return true;
         }
-        return super.onMouseDown(event);
+        if (event.button != MouseButton.left)
+            return super.onMouseDown(event);
+        const handled = super.onMouseDown(event);
+        // Arm a drag-to-reorder. Capturing the pointer keeps the drop landing
+        // here even if the cursor leaves the narrow rail before release.
+        if (onReorderRequested !is null)
+        {
+            _pressRow = indexAt(event.position);
+            if (_pressRow >= 0)
+            {
+                _pressing = true;
+                _dragging = false;
+                _dropRow = -1;
+                _pressPosition = event.position;
+                captureMouse();
+            }
+        }
+        return handled;
+    }
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left)
+            return super.onMouseUp(event);
+        const wasPressing = _pressing && _pressRow >= 0;
+        const wasDragging = _dragging;
+        const from = _pressRow;
+        const to = _dropRow;
+        _pressing = false;
+        _dragging = false;
+        _pressRow = -1;
+        _dropRow = -1;
+        if (wasPressing)
+        {
+            releaseMouse();
+            if (wasDragging && onReorderRequested !is null)
+                onReorderRequested(from, to);
+        }
+        invalidate();
+        return true;
+    }
+
+    // Insertion slot (0 .. project count) a pointer position implies: above a
+    // row's vertical midpoint inserts before it, below inserts after the last.
+    private int dropTargetAt(Point position) const @safe pure nothrow @nogc
+    {
+        const rh = rowHeight();
+        if (rh <= 0) return 0;
+        const contentY = position.y + scrollOffset();
+        return clampInt((contentY + rh / 2) / rh, 0, cast(int) items().length);
     }
 }
 
@@ -12719,6 +12816,10 @@ private string _suggestExcludeId;
         {
             showProjectContextMenu(row, point);
         };
+        _projectRail.onReorderRequested = delegate(int from, int to)
+        {
+            moveProject(from, to);
+        };
         _newProjectButton = projectsColumn.add(
             new Button("New project", IconKind.newDocument));
         _newProjectButton.setId("oc-new-project");
@@ -13320,6 +13421,29 @@ private string _suggestExcludeId;
         _input.requestFocus();
     }
 
+    /// Reorder the project rail: move the project at `from` so it lands at the
+    /// insertion slot `to` (0 .. count) that ProjectListView reports on drop. The
+    /// slot is clamped, a drop inside the row's own slot is a no-op, and the
+    /// active project keeps its identity (the persisted `activeId`, not an index).
+    private void moveProject(int from, int to)
+    {
+        const count = cast(int) _projectState.projects.length;
+        if (from < 0 || from >= count) return;
+        to = clampInt(to, 0, count);
+        const destination = to > from ? to - 1 : to;
+        if (destination == from) return;
+        Project moved = _projectState.projects[cast(size_t) from];
+        auto rest = _projectState.projects[0 .. cast(size_t) from]
+            ~ _projectState.projects[cast(size_t) from + 1 .. $];
+        _projectState.projects = rest[0 .. cast(size_t) destination]
+            ~ [moved] ~ rest[cast(size_t) destination .. $];
+        _projectsWriter.save(_projectState);
+        updateProjectRail();
+        updateSessionsHeader();
+        updateSessionList(false);
+        updateStatus("Moved project " ~ moved.name ~ ".");
+    }
+
     // "New project" simply adds another numbered sandbox: the next free
     // "sandbox N" folder under the sandbox root, with a matching name. There is
     // nothing to pick here; to point a project at a real folder use the
@@ -13655,6 +13779,11 @@ private string _suggestExcludeId;
             default: break;
         }
         _projectsWriter.save(_projectState);
+        if (field == "enabled")
+        {
+            updateProjectRail();
+            if (value) openProjectManager(projectIndex);
+        }
     }
 
     /// experimental: project manager - a settings checkbox wired to one driver
@@ -13687,6 +13816,10 @@ private string _suggestExcludeId;
         else
             _projectState.drivers[cast(size_t) found].enabled = enabled;
         _projectsWriter.save(_projectState);
+        // Refresh the rail dot now, and make enabling visibly do something by
+        // opening the manager instead of only flipping state.
+        updateProjectRail();
+        if (enabled) openProjectManager(projectIndex);
         updateStatus(enabled
             ? "Project manager enabled for " ~ name ~ "."
             : "Project manager disabled for " ~ name ~ ".");
@@ -13740,6 +13873,7 @@ private string _suggestExcludeId;
         _projectsWriter.save(_projectState);
         markDirty();
         updateSessionList();
+        updateProjectRail();
         updateStatus("Project manager opened for " ~ name ~ ".");
     }
 
@@ -23775,6 +23909,8 @@ private void pollButtonSuggestionRequest()
         {
             _settings.experimentalProjectManager = value;
             saveSettingsNow();
+            // Reflect the rail badge immediately.
+            updateProjectRail();
             // Rebuild the dialog so the per-project section appears/disappears.
             showSettingsDialog();
         };
@@ -29727,6 +29863,12 @@ private void pollButtonSuggestionRequest()
     public void selectProjectForTesting(int index)
     {
         selectProject(index);
+    }
+
+    /// Test-only: reorder the project rail the way a completed drag drop does.
+    public void reorderProjectForTesting(int from, int to)
+    {
+        moveProject(from, to);
     }
 
     /// Test-only: the sessions/chat divider ratio.

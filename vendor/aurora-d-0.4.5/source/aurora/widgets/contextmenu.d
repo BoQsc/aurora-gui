@@ -953,7 +953,12 @@ private final class ContextMenuTestRoot : Widget
 {
 }
 
-version (unittest)
+// Standalone test entry point for building this module's tests on their own.
+// Guarding it behind `version(unittest)` collides with the generated test
+// runner of any project that consumes aurora-d as a source dependency (dub
+// reports "only one entry point main is allowed"), so gate it behind a
+// dedicated version that must be opted into explicitly.
+version (AuroraDStandaloneTestMain)
 {
     int main() { return 0; }
 }

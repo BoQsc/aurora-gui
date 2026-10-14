@@ -490,3 +490,22 @@ render through one default face. Per-user Windows fonts and explicit `.ttf`,
   and Desktop is preselected in Places.
 - `widgets/filedialog.d` places open on a single click (`setActivateOnSingleClick`)
   instead of a double click; the file list keeps select-then-open.
+
+## aurora-web library tests vs. vendored `contextmenu` main (2026-10-15)
+
+- `source/aurora/widgets/contextmenu.d` (aurora-d): the module's standalone test
+  entry point `int main() { return 0; }` was guarded by `version (unittest)`.
+  That collides with the generated test runner of any project that consumes
+  aurora-d as a source dependency, so `dub test` for `aurora-web` failed to link
+  with "only one entry point `main` ... is allowed". The block is now gated
+  behind `version (AuroraDStandaloneTestMain)`, which nothing defines by
+  default; a build that genuinely wants the standalone main opts in explicitly.
+- `vendor/aurora-d-0.4.5/MANIFEST.sha256` re-digested for `widgets/contextmenu.d`
+  plus the previously stale entries for `image.d`, `platform/base.d`,
+  `platform/win32.d`, `widget.d`, `widgets/button.d`, `widgets/filedialog.d`,
+  `widgets/popup.d`, `widgets/splitpane.d`, `widgets/texteditor.d`, `window.d`.
+  The manifest now matches the shipped tree end-to-end (156 files, verified
+  with a recompute-and-compare pass).
+- Effect: `dub test --compiler=dmd` in `aurora-web` links and runs again
+  (50 modules passed unittests). Non-unittest builds are unaffected (the block
+  is compiled out either way).
