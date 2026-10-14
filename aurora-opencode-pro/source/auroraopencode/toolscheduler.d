@@ -13,6 +13,7 @@ import core.time : MonoTime, seconds;
 import auroraopencode.lifecyclediagnostics : logAgentLifecycle;
 import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress;
 import auroraopencode.readprogress : ReadProgress, decodeReadProgress;
+import auroraopencode.checkout : checkoutIdentity;
 
 private __gshared Mutex _instanceMutex;
 private __gshared WorkScheduler _scheduler;
@@ -48,7 +49,8 @@ private string toolStatus()
 private bool controlTool(string name)
 {
     return name == "process" || name == "tool_status" || name == "update_plan" ||
-        name == "update_subplan" || name == "open";
+        name == "update_subplan" || name == "open" || name == "retire_images" ||
+        name == "task_blocker";
 }
 
 private WorkScheduler scheduler()
@@ -219,7 +221,10 @@ private final class ToolJob : WorkItem
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
             changed = mutationCandidate() && result.verification.check.length == 0 &&
                 !result.workspaceUnchanged;
-            if (changed && batch.developerSource.length && (call.name == "sync" || call.name == "run" || call.name == "bash"))
+            const separateSourceUnobserved = result.workspaceObservationOnly &&
+                batch.developerSource.length && checkoutIdentity(batch.developerSource) != checkoutIdentity(workspace);
+            if ((changed || separateSourceUnobserved) && batch.developerSource.length &&
+                (call.name == "sync" || call.name == "run" || call.name == "bash"))
                 invalidateToolWorkspace(batch.developerSource);
         }
         catch (Throwable error)
@@ -292,6 +297,9 @@ private final class ToolJob : WorkItem
         details["cancelled"] = batch.cancellation.cancelled();
         details["outputBytes"] = cast(long) result.output.length;
         details["verificationPassed"] = result.verification.passed;
+        details["workspaceChanged"] = changed;
+        details["workspaceUnchanged"] = result.workspaceUnchanged;
+        details["observationScoped"] = result.workspaceObservationOnly;
         diagnostic("tool.finished", details);
         OpenCodeEvent event;
         event.kind = OpenCodeEventKind.toolResult;

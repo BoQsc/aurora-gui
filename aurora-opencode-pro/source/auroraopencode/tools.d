@@ -955,6 +955,9 @@ public struct ToolExecution
     // Established by a known read-only command or an unchanged worktree
     // snapshot. This does not count as passing code verification.
     bool workspaceUnchanged;
+    // The bounded command snapshot covers the active checkout, not a separate
+    // self-host source checkout that still needs conservative invalidation.
+    bool workspaceObservationOnly;
 }
 
 public __gshared string delegate() toolStatusHandler;
@@ -2283,6 +2286,7 @@ private ToolExecution runProgramTool(string args, string workspace,
             "run");
     size_t gitCommandAt;
     const effect = workspaceCommandEffect(program, argv, gitCommandAt);
+    const check = verificationCheck(program, argv);
     string[] gitPrefix;
     string repositoryRoot, beforeFiles;
     if (effect == WorkspaceCommandEffect.repositoryMetadata)
@@ -2296,11 +2300,23 @@ private ToolExecution runProgramTool(string args, string workspace,
             beforeFiles = repositoryFilesFingerprint(gitPrefix, repositoryRoot, resolvedWorkdir, cancellation);
         }
     }
+    // An ordinary foreground executable is not necessarily a mutation. Only a
+    // complete bounded observation may preserve existing verification; this
+    // never certifies the command itself as a checker. The scheduler keeps a
+    // separate developer checkout conservative when this observation is local.
+    import auroraopencode.workspacefingerprint : workspaceFingerprint;
+    string observedRoot, beforeWorkspace;
+    if (effect == WorkspaceCommandEffect.unknown && check.length == 0)
+    {
+        observedRoot = checkoutIdentity(workspace);
+        beforeWorkspace = workspaceFingerprint(observedRoot,
+            cancellation is null ? null : &cancellation.cancelled);
+    }
     int exitCode = int.min;
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
         cancellation, observer, &exitCode);
     auto execution = ToolExecution("run", truncateOutput(result[0]), result[1]);
-    execution.verification.check = verificationCheck(program, argv);
+    execution.verification.check = check;
     execution.verification.workspace = resolvedWorkdir;
     execution.verification.exitCode = exitCode;
     execution.verification.passed = !result[1] && exitCode == 0 && execution.verification.check.length > 0;
@@ -2308,6 +2324,12 @@ private ToolExecution runProgramTool(string args, string workspace,
     if (beforeFiles.length && exitCode != int.min)
         execution.workspaceUnchanged = beforeFiles ==
             repositoryFilesFingerprint(gitPrefix, repositoryRoot, resolvedWorkdir, cancellation);
+    if (beforeWorkspace.length && !result[1] && exitCode == 0)
+    {
+        execution.workspaceUnchanged = beforeWorkspace == workspaceFingerprint(observedRoot,
+            cancellation is null ? null : &cancellation.cancelled);
+        execution.workspaceObservationOnly = execution.workspaceUnchanged;
+    }
     return execution;
 }
 
@@ -5659,7 +5681,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         auto targets = mutationTargetPaths(call, workspace);
         auto leasePaths = targets.dup;
         const control = call.name == "process" || call.name == "tool_status" ||
-            call.name == "update_plan" || call.name == "update_subplan" || call.name == "open";
+            call.name == "update_plan" || call.name == "update_subplan" || call.name == "open" ||
+            call.name == "retire_images" || call.name == "task_blocker";
         JSONValue input;
         try input = parseJSON(call.arguments); catch (Exception) {}
         auto operationDir = workspace;

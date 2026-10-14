@@ -26,6 +26,7 @@ private bool allowedDetail(string key)
         "files", "folders", "bytes", "totalBytes", "line", "collectedLines", "matches", "candidateFiles",
         "processedFiles", "totalsKnown", "partial", "pendingTools",
         "outputBytes", "failed", "cancelled", "verificationPassed",
+        "workspaceChanged", "workspaceUnchanged", "observationScoped",
         "taskStatus", "turnStatus", "verificationStatus", "finishReason",
         "promptTokens", "completionTokens", "errorCategory", "outputIssue",
         "contextBudget", "messageBytes", "messageCount", "toolCount",
