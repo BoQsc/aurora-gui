@@ -46,8 +46,12 @@ private OffscreenUi openOffscreen(string title, RendererPreference renderer)
 }
 
 /// Submit one prompt through the real input widget and wait for the turn to
-/// finish. Returns the assistant's final text for the active conversation.
-private string submitPrompt(ref OffscreenUi ui, string message, bool verbose)
+/// finish. Returns the assistant's final text for the active conversation. With
+/// `showProgress`, the live phase and output-token count are updated in place
+/// on stderr while the reply streams, so a console session shows the turn
+/// advancing instead of going silent until it completes.
+private string submitPrompt(ref OffscreenUi ui, string message, bool verbose,
+    bool showProgress = false)
 {
     auto inputWidget = findById(ui.root, "oc-input");
     if (inputWidget !is null)
@@ -62,12 +66,17 @@ private string submitPrompt(ref OffscreenUi ui, string message, bool verbose)
     }
     ui.root.tickTree(0.02);
     if (verbose) printDiagnostics(ui.root, "after send");
-    const deadline = MonoTime.currTime + seconds(120);
+    // A turn that calls tools can run well past two minutes; wait generously so
+    // a slow reply is not cut off and reported as "no reply" while it is still
+    // working. The console session is interactive, so the user can interrupt.
+    const deadline = MonoTime.currTime + seconds(1800);
+    auto progressAt = MonoTime.currTime;
     while (MonoTime.currTime < deadline)
     {
         ui.root.tickTree(0.03);
         Thread.sleep(30.msecs);
         ui.driver.paint();
+        if (showProgress) showReplyProgress(ui.root, progressAt);
         auto sendWidget = findById(ui.root, "oc-send");
         if (sendWidget !is null)
         {
@@ -75,8 +84,41 @@ private string submitPrompt(ref OffscreenUi ui, string message, bool verbose)
             if (button.text() == "Send") break;
         }
     }
+    if (showProgress) clearProgressLine();
     if (verbose) printDiagnostics(ui.root, "after done");
     return ui.root.lastAssistantContentForTesting();
+}
+
+/// Width the in-place console progress line is padded to, so a shorter update
+/// overwrites a longer previous one instead of leaving its tail behind.
+private enum int consoleProgressWidth = 72;
+
+/// Draw the live reply progress on stderr as a carriage-return update: the
+/// status phase plus the running output-token count, throttled so it is legible
+/// rather than a per-frame flicker.
+private void showReplyProgress(OpenCodeRoot root, ref MonoTime last)
+{
+    const now = MonoTime.currTime;
+    if ((now - last).total!"msecs" < 200) return;
+    last = now;
+    string phase;
+    if (auto status = cast(Label) findById(root, "oc-status"))
+        phase = to!string(status.text());
+    string line = phase.length ? phase : "working";
+    const tokens = root.streamLiveTokensForTesting();
+    if (tokens > 0) line ~= "  " ~ to!string(tokens) ~ " tokens";
+    while (line.length < consoleProgressWidth) line ~= ' ';
+    stderr.write("\r", line);
+    stderr.flush();
+}
+
+/// Erase the in-place progress line so the final reply prints on a clean line.
+private void clearProgressLine()
+{
+    string blank;
+    while (blank.length < consoleProgressWidth) blank ~= ' ';
+    stderr.write("\r", blank, "\r");
+    stderr.flush();
 }
 
 /// Optionally save a screenshot, then tear the offscreen UI down. Returns the
@@ -109,13 +151,11 @@ private int runScreenshot(string path, bool withChat, string message)
     return 0;
 }
 
-/// The exe links as a GUI-subsystem binary, so Windows attaches no console and
-/// any CLI output (`--headless`, usage, errors) would go nowhere. Before the
-/// first write, join the console the exe was launched from so the text lands in
-/// that cmd window (a fresh `AllocConsole` window pops up and vanishes with the
-/// process). When there is no parent console - launched from Explorer - create
-/// one. When standard output is already a pipe or a redirected file, leave the
-/// streams alone so callers can capture the text.
+/// The exe links as a console-subsystem binary, so a shell launch already owns
+/// the invoking cmd window and CLI output (`--headless`, usage, errors) lands
+/// there. Before the first write, join the console the exe was launched from
+/// when it has none too (a detached launch). When standard output is already a
+/// pipe or a redirected file, leave the streams alone so callers can capture it.
 private void attachCliConsole()
 {
     version (Windows)
@@ -143,16 +183,39 @@ private void attachCliConsole()
     }
 }
 
-/// Whether the process was started from a console (a shell). The GUI subsystem
-/// hides that console, so it is probed once at startup and released again; the
-/// answer decides between an interactive console and the desktop window.
+/// Kernel32, declared here so the module does not depend on the druntime
+/// `wincon` version exporting it.
+extern (Windows) uint GetConsoleProcessList(uint* lpdwProcessList,
+    uint dwProcessCount);
+
+/// Whether the process was started from a shell (cmd/PowerShell) rather than by
+/// Explorer. The exe is a console-subsystem binary: a shell launch shares cmd's
+/// console, which then waits for us, while an Explorer double-click gets a
+/// console the OS creates for this process alone. The two are told apart by how
+/// many processes the console serves.
 private __gshared bool startedFromShell;
 
-/// Interactive sessions need a console this process alone reads from. cmd does
-/// not wait for a GUI-subsystem exe, so the shell keeps its own console and
-/// typed lines go to the shell, not here (the session looks dead). Take a fresh
-/// console instead - its window is the session. Piped or redirected stdin is a
-/// script feed, so it is left untouched.
+/// True when the console this process runs on is shared with another process,
+/// i.e. it was inherited from the shell that launched us. A console the OS
+/// created for a lone double-clicked process lists this process by itself, and
+/// a process with no console at all lists none. The process count is the only
+/// reliable signal: `GetConsoleWindow` is null for a windowless/pseudoconsole
+/// host (Windows Terminal), even though the console is real and shared.
+private bool launchedFromShell()
+{
+    version (Windows)
+    {
+        uint[4] pids;
+        return GetConsoleProcessList(pids.ptr, 4) > 1;
+    }
+    else return false;
+}
+
+/// Give the interactive console session a console to read from and write to. A
+/// shell launch already owns cmd's console and the shell waits for us, so the
+/// session runs in that window; only a detached launch with no console falls
+/// back to a fresh one. Piped or redirected stdin is a script feed, so it is
+/// left untouched.
 private void ensureInteractiveConsole()
 {
     version (Windows)
@@ -238,22 +301,34 @@ private int runHeadlessLoop(string firstPrompt = "")
         ui.root.shutdownClient();
         ui.window.close();
     }
-    // Plain output: only the assistant replies reach the console - no banner
-    // or prompt chrome.
+    // Replies reach the console; the turn's live progress is drawn in place on
+    // stderr while it streams, so a slow reply shows it is still working.
     if (firstPrompt.length > 0)
-    {
-        writeln(submitPrompt(ui, firstPrompt, false));
-        stdout.flush();
-    }
+        emitConsoleReply(ui, firstPrompt);
     foreach (line; stdin.byLine())
     {
         const prompt = strip(line).idup;
         if (prompt == "exit" || prompt == "quit") break;
         if (prompt.length == 0) continue;
-        writeln(submitPrompt(ui, prompt, false));
-        stdout.flush();
+        emitConsoleReply(ui, prompt);
     }
     return 0;
+}
+
+/// Run one console prompt with live progress and print the reply, or a short
+/// diagnostic when the turn produced none (so a failed turn is not mistaken for
+/// a hang).
+private void emitConsoleReply(ref OffscreenUi ui, string prompt)
+{
+    const reply = submitPrompt(ui, prompt, false, true);
+    writeln(reply);
+    stdout.flush();
+    if (reply.length == 0)
+    {
+        stderr.writeln("aurora-opencode-pro: no reply was produced " ~
+            "(check the API key/settings; see logs/errors.log)");
+        stderr.flush();
+    }
 }
 
 private void printDiagnostics(OpenCodeRoot root, string stage)
@@ -316,16 +391,11 @@ int main(string[] args)
 /// The real entry point; wrapped by `main` so any uncaught Throwable is logged.
 private int runApp(string[] args)
 {
-    // The GUI subsystem hides the console the exe was started from, so probe
-    // for it once and release it again: the flag decides between an interactive
-    // console (shell launch) and the desktop window (Explorer/double-click).
+    // A console-subsystem exe already owns its console; probe once to learn
+    // whether it was inherited from a shell (interactive console) or created by
+    // Explorer for this process alone (desktop window).
     version (Windows)
-    {
-        import core.sys.windows.wincon : AttachConsole, ATTACH_PARENT_PROCESS,
-            FreeConsole;
-        startedFromShell = AttachConsole(ATTACH_PARENT_PROCESS) != 0;
-        if (startedFromShell) FreeConsole();
-    }
+        startedFromShell = launchedFromShell();
 
     const bool hasArg = args.length >= 2;
     const string arg1 = hasArg ? args[1] : "";
@@ -396,6 +466,14 @@ private int runApp(string[] args)
     {
         ensureInteractiveConsole();
         return runHeadlessLoop();
+    }
+    // Console-subsystem launch from Explorer: the OS opened a console window
+    // that would sit behind the desktop window. Release it so only the window
+    // remains; a shell launch never reaches this path. Harmless with no console.
+    version (Windows)
+    {
+        import core.sys.windows.wincon : FreeConsole;
+        FreeConsole();
     }
 
     WindowOptions options;

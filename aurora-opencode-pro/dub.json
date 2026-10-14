@@ -99,7 +99,7 @@
     }
   },
   "lflags-windows": [
-    "/SUBSYSTEM:WINDOWS",
+    "/SUBSYSTEM:CONSOLE",
     "/ENTRY:mainCRTStartup"
   ],
   "libs-linux": [

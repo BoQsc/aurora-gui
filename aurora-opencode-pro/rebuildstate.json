@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "User-approved: rebuild the reverted source so the running app drops the PATH hint (tools.d is back to its committed state).",
+  "reason": "Raise the console/headless per-turn wait from 120s to 1800s so long tool-calling turns are not cut off and misreported as \"no reply\".",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-14 13:31:05.6891321 UTC",
-  "finishedAt": "2026-10-14 13:31:42.7460313 UTC",
-  "durationMs": 37056,
+  "startedAt": "2026-10-14 14:17:49.0513937 UTC",
+  "finishedAt": "2026-10-14 14:18:25.6304103 UTC",
+  "durationMs": 36578,
   "exitCode": 0,
   "errors": []
 }
