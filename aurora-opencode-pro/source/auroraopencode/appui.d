@@ -29342,11 +29342,19 @@ private void pollButtonSuggestionRequest()
             // Follow the shell's current folder so tools run where it was opened.
             _projectState.projects[cast(size_t) index].path = workspace;
         }
-        _projectState.activeId = _projectState.projects[cast(size_t) index].id;
+        const projectId = _projectState.projects[cast(size_t) index].id;
+        // Start the conversation in `name`'s project, but leave the app's
+        // persisted active project as it was. Moving it here would make the GUI
+        // (and its automatic emergency diagnostic chat) open its own new chats
+        // in the command-line project too. Only this session runs against the
+        // project; the previous active project is what gets saved to disk.
+        const previousActive = _projectState.activeId;
+        _projectState.activeId = projectId;
+        newChat();
+        _projectState.activeId = previousActive;
         _projectsWriter.save(_projectState);
         updateProjectRail();
         updateSessionsHeader();
-        newChat();
     }
 
     /// Test-only: append a conversation (parallel role/content arrays) without
