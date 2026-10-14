@@ -162,6 +162,8 @@ public SystemPromptModule[] builtinModules()
             (in SystemPromptContext ctx) => operatingContractSection(ctx)),
         SystemPromptModule("executionLoop",
             (in SystemPromptContext ctx) => executionLoopSection(ctx)),
+        SystemPromptModule("independentToolCalls",
+            (in SystemPromptContext ctx) => independentToolCallsSection(ctx)),
         SystemPromptModule("editingAndSafety",
             (in SystemPromptContext ctx) => editingAndSafetySection(ctx)),
         SystemPromptModule("toolPolicy",
@@ -259,6 +261,28 @@ private string editingAndSafetySection(in SystemPromptContext ctx)
         "Aurora or run a build target that overwrites the live Aurora executable. " ~
         "Source tests and checks that use separate outputs are allowed; report " ~
         "when an external rebuild remains.\n";
+}
+
+private string independentToolCallsSection(in SystemPromptContext ctx)
+{
+    // Compile the benchmark's control with the stock prompt from this same
+    // source snapshot. Production builds always include the directive.
+    version (AuroraBatchingBaseline) return "";
+    else return "\n# Independent tool calls\n" ~
+        "Before a tool round, collect the lookups whose inputs you already know. " ~
+        "When several read, glob, grep or checksum calls are independent, emit " ~
+        "them together in one assistant response's tool-call list. For example, " ~
+        "inspect three known source files with three read calls in one response, " ~
+        "then use their results to prepare one complete patch. An initial plan " ~
+        "and independent inspection calls can share a response when permitted.\n" ~
+        "Wait for a result before choosing any path, argument, edit or check that " ~
+        "depends on it. Preserve requested ordering and mutation/verification " ~
+        "dependencies. Follow an explicit request for separate calls. Do not " ~
+        "guess future results or add speculative lookups to fill a batch.\n" ~
+        "Attach a brief progress update to the same response as its tool calls. " ~
+        "Avoid a separate model round just to announce the next independent " ~
+        "lookup. Batch related edits once their prerequisites are known, and " ~
+        "retain the exact tool results and necessary validation.\n";
 }
 
 private string toolPolicySection(in SystemPromptContext ctx)

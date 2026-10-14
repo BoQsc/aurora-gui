@@ -37,3 +37,28 @@ does not prove that a new prompt will cause the agent to batch in every task.
 No finite matrix establishes a universal speedup or preserves every possible fact
 after lossy compaction. Keep explicit user reasoning/context choices unless a
 scoped change has adequate evidence, including the relevant correctness checks.
+
+## Comparing a batching prompt change
+
+Build both controls from the same source snapshot, then run the counterbalanced
+live-provider comparison:
+
+```powershell
+python aurora-opencode-pro/benchmarks/compare_batching_policy.py --build baseline --output aurora-opencode-pro/build/batching-policy/results.json
+python aurora-opencode-pro/benchmarks/compare_batching_policy.py --build candidate --output aurora-opencode-pro/build/batching-policy/results.json
+python aurora-opencode-pro/benchmarks/compare_batching_policy.py --repeats 2 --output aurora-opencode-pro/build/batching-policy/results.json
+```
+
+The baseline defines `AuroraBatchingBaseline` to omit only the new independent
+tool-call prompt section. Production includes it. Both profiles use high reasoning
+and the same configured provider/model, with fresh synthetic workspaces. Six cases
+cover known independent reads, two coding tasks, dependent reads, explicit separate
+reads, and missing input. Coding outcomes use independent compilation and behavior
+checks. Other cases check exact results, read order, and unintended file mutations.
+
+Acceptance requires every outcome and guard to pass, fewer aggregate inspection
+rounds on the independent/coding cases, and no increase in their model rounds.
+Inspect individual attempts as well as aggregates: a single long recovery loop can
+dominate the totals. Passing this screen does not establish causation or a reliable
+speedup for every task. Provider first-token time is reported separately from total
+wall time; wall time includes generation, tools and app overhead.

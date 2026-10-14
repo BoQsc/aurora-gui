@@ -11,6 +11,8 @@ import std.file : exists, mkdirRecurse, readText;
 import std.process : environment;
 import std.stdio : stderr, writeln;
 import auroraopencode.tools : runFilesystemHelperMode;
+import auroraopencode.logging : setLogDirectory, flushLogs;
+import std.path : buildPath;
 
 // Drives the same conversation root as the desktop app with a software window.
 // The Python benchmark owns fresh workspace/state directories and removes the
@@ -52,6 +54,9 @@ int main(string[] args)
         return 3;
     }
     mkdirRecurse(stateDir);
+    mkdirRecurse(buildPath(stateDir, "logs"));
+    setLogDirectory(buildPath(stateDir, "logs"));
+    scope(exit) flushLogs();
     setOpencodeStateDirectoryForTesting(stateDir);
     Settings settings;
     settings.baseUrl = environment.get("AURORA_BENCH_BASE", saved.baseUrl);
