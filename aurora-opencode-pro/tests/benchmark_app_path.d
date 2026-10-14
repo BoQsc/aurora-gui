@@ -3,19 +3,22 @@ module auroraopencode_pro_benchmark_app_path;
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : Settings, loadSettings, opencodeTheme,
-    saveSettings, setOpencodeStateDirectoryForTesting;
+    saveSettings, setOpencodeStateDirectoryForTesting, setReasoningControlForModel;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, readText;
 import std.process : environment;
 import std.stdio : stderr, writeln;
+import auroraopencode.tools : runFilesystemHelperMode;
 
 // Drives the same conversation root as the desktop app with a software window.
 // The Python benchmark owns fresh workspace/state directories and removes the
 // state directory, which temporarily contains a copy of the configured key.
 int main(string[] args)
 {
+    const helper = runFilesystemHelperMode(args);
+    if (helper >= 0) return helper;
     if (args.length != 6)
     {
         stderr.writeln("usage: benchmark_app_path <workspace> <state> " ~
@@ -51,13 +54,22 @@ int main(string[] args)
     mkdirRecurse(stateDir);
     setOpencodeStateDirectoryForTesting(stateDir);
     Settings settings;
-    settings.baseUrl = saved.baseUrl;
+    settings.baseUrl = environment.get("AURORA_BENCH_BASE", saved.baseUrl);
     settings.apiKey = apiKey;
     settings.model = model;
     settings.thinking = saved.thinking;
+    const effort = environment.get("AURORA_BENCH_EFFORT", "");
+    if (effort.length)
+    {
+        if (effort != "off" && effort != "low" && effort != "high") return 2;
+        settings.thinking = effort != "off";
+        setReasoningControlForModel(settings, settings.baseUrl, model,
+            effort == "off" ? "low" : effort, 0);
+    }
     settings.verbosity = saved.verbosity;
     settings.toolsEnabled = true;
     settings.legacyTools = false;
+    settings.quickTitle = false;
     settings.workspace = workspace;
     saveSettings(settings);
 
@@ -68,16 +80,23 @@ int main(string[] args)
     options.renderer = RendererPreference.software;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window);
+    scope(exit) root.shutdownClient();
     window.setRoot(root);
     root.isolateClipboardForTesting(true);
-    root.tickTree(0.02);
+    const ready = MonoTime.currTime + 5.seconds;
+    while (root.startupPendingForTesting() && MonoTime.currTime < ready)
+    {
+        window.onNativeTick(0.02);
+        Thread.sleep(5.msecs);
+    }
+    if (root.startupPendingForTesting()) return 4;
     root.setInputForTesting(readText(promptFile));
     root.sendForTesting();
 
     const deadline = MonoTime.currTime + timeoutSeconds.seconds;
     while (MonoTime.currTime < deadline)
     {
-        root.tickTree(0.02);
+        window.onNativeTick(0.02);
         if (root.currentSessionForTesting() >= 0 &&
             !root.turnBusyForTesting() &&
             root.lastAssistantContentForTesting().length > 0)
