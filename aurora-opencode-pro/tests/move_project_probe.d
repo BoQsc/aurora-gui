@@ -148,6 +148,17 @@ int main()
         "the moved conversation should appear under the target project");
     writeln("Drag onto a project moves the conversation");
 
+    // Move it back with the context-menu item (the cascading submenu child).
+    const sandboxName = root.projectNamesForTesting()[0];
+    assert(root.invokeSessionContextMenuItemForTesting(0, sandboxName),
+        "'Move to project' did not offer the sandbox ('" ~ sandboxName ~ "')");
+    root.tickTree(0.02);
+    assert(root.sessionProjectForTesting(sessionIndex) == startedProject,
+        "the context-menu move did not return the conversation to the sandbox");
+    assert(root.visibleSessionCountForTesting() == 0,
+        "the conversation should leave the target project's list");
+    writeln("Context-menu 'Move to project' moves the conversation");
+
     root.flushRepositoryForTesting();
     writeln("PASS: move to project works");
     return 0;

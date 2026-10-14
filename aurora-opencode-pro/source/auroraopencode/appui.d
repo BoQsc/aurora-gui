@@ -25725,12 +25725,8 @@ private void pollButtonSuggestionRequest()
         ContextMenuItem[] moveChildren;
         const currentProject = sessionProjectId(_sessions[sessionIndex]);
         foreach (project; _projectState.projects)
-        {
-            const targetId = project.id;
-            moveChildren ~= ContextMenuItem.check(project.name,
-                targetId == currentProject,
-                delegate() { moveSessionToProject(sessionIndex, targetId); });
-        }
+            moveChildren ~= moveToProjectMenuItem(sessionIndex, project,
+                project.id == currentProject);
         if (moveChildren.length > 0)
             items ~= ContextMenuItem.submenuItem("Move to project",
                 IconKind.folder, moveChildren);
@@ -25743,6 +25739,17 @@ private void pollButtonSuggestionRequest()
                 duplicateSessionCompacted(sessionIndex);
             });
         return items;
+    }
+
+    /// A factory, so each "Move to project" child captures its own target id.
+    /// Capturing the id inside the loop shares one slot, which would point every
+    /// child at the same (last) project.
+    private ContextMenuItem moveToProjectMenuItem(int sessionIndex,
+        const ref Project project, bool isCurrent)
+    {
+        const targetId = project.id;
+        return ContextMenuItem.check(project.name, isCurrent,
+            delegate() { moveSessionToProject(sessionIndex, targetId); });
     }
 
     /// Move a conversation into another project: retarget its project id, mark
@@ -29219,12 +29226,26 @@ private void pollButtonSuggestionRequest()
     public bool invokeSessionContextMenuItemForTesting(int row, string label)
     {
         if (row < 0 || row >= cast(int) _sessionIndices.length) return false;
-        foreach (item; sessionContextMenuItems(_sessionIndices[row]))
-            if (to!string(item.label) == label && item.action !is null)
+        return invokeContextMenuItem(sessionContextMenuItems(_sessionIndices[row]),
+            label);
+    }
+
+    /// Invoke the first item whose label matches and whose action is set,
+    /// descending into cascading submenus. Lets a test drive entries such as the
+    /// per-project "Move to project" children exactly as a click would.
+    private static bool invokeContextMenuItem(ContextMenuItem[] items, string label)
+    {
+        foreach (item; items)
+        {
+            if (item.action !is null && to!string(item.label) == label)
             {
                 item.action();
                 return true;
             }
+            if (item.submenu.length > 0 &&
+                invokeContextMenuItem(item.submenu, label))
+                return true;
+        }
         return false;
     }
 
