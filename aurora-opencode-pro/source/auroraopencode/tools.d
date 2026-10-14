@@ -2,7 +2,8 @@ module auroraopencode.tools;
 import auroraopencode.core : imageAttachmentToJson, imageAttachmentFromJson;
 import auroraopencode.imagecontext : retireImagesArgumentsError;
 import auroraopencode.imagenormalization : ImageCrop;
-import auroraopencode.verification : VerificationEvidence, verificationCheck;
+import auroraopencode.verification : VerificationEvidence, verificationCheck,
+    WorkspaceCommandEffect, workspaceCommandEffect;
 import auroraopencode.filetransfer : transferFiles;
 import auroraopencode.download : downloadFile, checksumFile, validSha256;
 import auroraopencode.searchprogress : SearchProgress, SearchReporter,
@@ -951,6 +952,9 @@ public struct ToolExecution
     // Keeping them off the `tool` message preserves strict tool-call ordering.
     ChatImageAttachment[] images;
     VerificationEvidence verification;
+    // Established by a known read-only command or an unchanged worktree
+    // snapshot. This does not count as passing code verification.
+    bool workspaceUnchanged;
 }
 
 public __gshared string delegate() toolStatusHandler;
@@ -2258,6 +2262,21 @@ private ToolExecution runProgramTool(string args, string workspace,
     if (background)
         return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
             "run");
+    size_t gitCommandAt;
+    const effect = workspaceCommandEffect(program, argv, gitCommandAt);
+    string[] gitPrefix;
+    string repositoryRoot, beforeFiles;
+    if (effect == WorkspaceCommandEffect.repositoryMetadata)
+    {
+        gitPrefix = fullArgv[0 .. gitCommandAt + 1];
+        const root = runProcess(gitPrefix ~ ["rev-parse", "--show-toplevel"],
+            resolvedWorkdir, 5000, "repository snapshot", cancellation);
+        if (!root[1])
+        {
+            repositoryRoot = root[0].strip();
+            beforeFiles = repositoryFilesFingerprint(gitPrefix, repositoryRoot, resolvedWorkdir, cancellation);
+        }
+    }
     int exitCode = int.min;
     auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
         cancellation, observer, &exitCode);
@@ -2266,7 +2285,61 @@ private ToolExecution runProgramTool(string args, string workspace,
     execution.verification.workspace = resolvedWorkdir;
     execution.verification.exitCode = exitCode;
     execution.verification.passed = !result[1] && exitCode == 0 && execution.verification.check.length > 0;
+    execution.workspaceUnchanged = effect == WorkspaceCommandEffect.readOnly;
+    if (beforeFiles.length && exitCode != int.min)
+        execution.workspaceUnchanged = beforeFiles ==
+            repositoryFilesFingerprint(gitPrefix, repositoryRoot, resolvedWorkdir, cancellation);
     return execution;
+}
+
+/// Bound metadata-operation checks without trusting a success exit code or
+/// assuming that Git hooks/filters leave source files alone.
+private string repositoryFilesFingerprint(string[] gitPrefix, string root, string workdir,
+    ToolCancellation cancellation)
+{
+    import std.digest.sha : SHA256;
+    import std.digest : toHexString;
+    import std.string : split;
+    try
+    {
+        const listed = runProcess(gitPrefix ~ ["ls-files", "--cached", "--others",
+            "--exclude-standard", "-z"], workdir, 5000, "repository snapshot",
+            cancellation, null, null, 1024 * 1024);
+        if (listed[1]) return "";
+        if (listed[0] != "(no output)" && (listed[0].length == 0 || listed[0][$ - 1] != '\0'))
+            return "";
+        auto paths = listed[0] == "(no output)" ? new string[0] : listed[0].split('\0');
+        if (paths.length > 20_000) return "";
+        sort(paths);
+        SHA256 hash;
+        ulong bytes;
+        const deadline = MonoTime.currTime + 5.seconds;
+        auto buffer = new ubyte[64 * 1024];
+        foreach (path; paths)
+        {
+            if (!path.length) continue;
+            if (MonoTime.currTime >= deadline ||
+                (cancellation !is null && cancellation.cancelled())) return "";
+            hash.put(cast(const(ubyte)[]) path); hash.put(cast(const(ubyte)[]) "\0");
+            const filePath = buildPath(root, path);
+            if (!exists(filePath)) { hash.put(cast(const(ubyte)[]) "missing\0"); continue; }
+            if (!isFile(filePath)) return "";
+            bytes += getSize(filePath);
+            if (bytes > 512UL * 1024 * 1024) return "";
+            hash.put(cast(const(ubyte)[]) to!string(getSize(filePath))); hash.put(cast(const(ubyte)[]) "\0");
+            auto file = File(filePath, "rb");
+            scope (exit) file.close();
+            while (!file.eof())
+            {
+                if (MonoTime.currTime >= deadline ||
+                    (cancellation !is null && cancellation.cancelled())) return "";
+                hash.put(file.rawRead(buffer));
+            }
+            hash.put(cast(const(ubyte)[]) "\0");
+        }
+        return hash.finish().toHexString().idup;
+    }
+    catch (Exception) { return ""; }
 }
 
 /// The D-native `webfetch` tool: fetch an HTTP(S) URL through the system
@@ -3121,10 +3194,11 @@ private string processOutputTail(string path, ulong length, size_t cap = 8192)
 
 private Tuple!(string, bool) runProcess(string[] argv, string workdir,
     int timeoutMs, string toolName, ToolCancellation cancellation = null,
-    ToolOutputObserver observer = null, int* actualExitCode = null)
+    ToolOutputObserver observer = null, int* actualExitCode = null, size_t outputLimit = 0)
 {
     import std.typecons : tuple;
     import core.atomic : atomicLoad;
+    const captureLimit = outputLimit ? outputLimit : maxOutputBytes;
 
     // A stop may have been requested after the previous command finished but
     // before this one launched; honor it without starting the process at all.
@@ -3276,12 +3350,12 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
             // per-byte mapping for legacy OEM-codepage output. Either way the
             // result is valid UTF-8 and safe to persist into JSON sessions.
             const length = getSize(outPath);
-            if (length <= maxOutputBytes)
+            if (length <= captureLimit)
                 output = decodeBytesLenient(cast(const(ubyte)[]) read(outPath));
             else
             {
                 auto file = File(outPath, "rb");
-                const head = file.rawRead(new ubyte[maxOutputBytes / 4]);
+                const head = file.rawRead(new ubyte[captureLimit / 4]);
                 auto savedPath = saveToolOutput("", outPath);
                 if (savedPath.length == 0)
                 {
@@ -3290,7 +3364,7 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
                 }
                 output = decodeBytesLenient(head[0 .. utf8SafeCut(head)]) ~
                     "\n…(middle of output omitted; latest output follows)\n" ~
-                    processOutputTail(outPath, length, maxOutputBytes / 4) ~
+                    processOutputTail(outPath, length, captureLimit / 4) ~
                     toolOutputReference(savedPath);
             }
         }

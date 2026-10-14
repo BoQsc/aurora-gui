@@ -217,7 +217,8 @@ private final class ToolJob : WorkItem
         try
         {
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
-            changed = mutationCandidate() && result.verification.check.length == 0;
+            changed = mutationCandidate() && result.verification.check.length == 0 &&
+                !result.workspaceUnchanged;
             if (changed && batch.developerSource.length && (call.name == "sync" || call.name == "run" || call.name == "bash"))
                 invalidateToolWorkspace(batch.developerSource);
         }

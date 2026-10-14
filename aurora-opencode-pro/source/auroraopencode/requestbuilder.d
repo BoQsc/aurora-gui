@@ -8,6 +8,7 @@ import std.conv : to;
 import auroraopencode.outputguard : outputFailurePrefix;
 import std.string : startsWith;
 import auroraopencode.grepformat : compactGrepHistory;
+import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
 public ChatRequestMessage[] projectRequestMessages(
@@ -16,6 +17,11 @@ public ChatRequestMessage[] projectRequestMessages(
     {
         ChatRequestMessage[] messages;
         const path = activeMessagePath(session);
+        size_t controlBoundary;
+        foreach (i, index; path)
+            if (session.messages[index].internal &&
+                session.messages[index].content.startsWith(controlHistoryBoundary))
+                controlBoundary = i;
         size_t slot = 0;
         if (afterMessageId.length > 0)
             foreach (i, index; path)
@@ -30,6 +36,14 @@ public ChatRequestMessage[] projectRequestMessages(
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
+            // History remains in the durable graph. Only superseded internal
+            // control state before a recorded turn boundary leaves the wire.
+            if ((slot < controlBoundary && supersededControlState(message)) ||
+                (message.internal && message.content.startsWith(controlHistoryBoundary)))
+            {
+                ++slot;
+                continue;
+            }
             // Keep failed output in the transcript, but do not teach recovery
             // requests to imitate leaked XML or looping prose.
             if (message.role == "assistant" && message.failed &&

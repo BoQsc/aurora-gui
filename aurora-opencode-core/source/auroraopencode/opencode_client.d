@@ -603,11 +603,29 @@ final class OpenCodeClient
     /// Snapshot the current wait breakdown. Safe to poll from the UI thread.
     WaitBreakdown waitBreakdown()
     {
-        _mutex.lock();
-        scope (exit) _mutex.unlock();
-        return WaitBreakdown(_waitConnectMs, _waitSentMs, _waitHeadersMs,
-            _waitFirstByteMs, _waitFirstTokenMs, _lastRequestBytes,
-            _lastRequestImages, _lastRequestBytes > 0 || _waitSentMs >= 0);
+        WaitBreakdown result;
+        AsyncHttpRequest http;
+        MonoTime started;
+        synchronized (_mutex)
+        {
+            result = WaitBreakdown(_waitConnectMs, _waitSentMs, _waitHeadersMs,
+                _waitFirstByteMs, _waitFirstTokenMs, _lastRequestBytes,
+                _lastRequestImages, _lastRequestBytes > 0 || _waitSentMs >= 0);
+            http = _httpRequest;
+            started = _waitStart;
+        }
+        // send() waits for response headers. Poll the transport's callback
+        // timestamps while it is waiting, without holding the client mutex.
+        if (http !is null)
+        {
+            const timing = http.timing();
+            long elapsed(long ticks) { return cast(long)
+                (cast(double) (ticks - started.ticks) * 1000 / MonoTime.ticksPerSecond); }
+            if (timing.connected >= 0) result.connect = elapsed(timing.connected);
+            if (timing.sent >= 0) result.sent = elapsed(timing.sent);
+            if (timing.headers >= 0) result.headers = elapsed(timing.headers);
+        }
+        return result;
     }
 
     private static extern(Windows) void chatRequestStatus(HINTERNET handle,

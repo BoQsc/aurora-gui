@@ -29,11 +29,13 @@ LatencySnapshot complete(string base, string model, ulong id, bool local = false
     client.setEventWake(delegate() { atomicOp!"+="(notifications, 1); });
     assert(client.startChatMessages(null, null, model, false, id, "", 0, local) == ChatStartResult.accepted);
     const deadline = MonoTime.currTime + 8.seconds;
-    bool done, sawFirstBeforeDone;
+    bool done, sawFirstBeforeDone, sawLiveUpload;
     string text;
     OpenCodeEvent[] events;
     while (!done && MonoTime.currTime < deadline)
     {
+        const wait = client.waitBreakdown();
+        if (wait.sent >= 0 && wait.headers < 0) sawLiveUpload = true;
         client.drain(events);
         foreach (event; events)
         {
@@ -50,6 +52,8 @@ LatencySnapshot complete(string base, string model, ulong id, bool local = false
     }
     assert(done && text == "firstlast" && sawFirstBeforeDone,
         "Stream buffered its first chunk until completion, or lost bytes");
+    if (model == "delayed-headers")
+        assert(sawLiveUpload, "Live status kept reporting upload during provider wait");
     assert(atomicLoad(notifications) >= 2, "Empty-to-nonempty queue notifications were lost");
     const released = MonoTime.currTime + 2.seconds;
     while (budget.active() && MonoTime.currTime < released) Thread.sleep(1.msecs);

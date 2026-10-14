@@ -10,6 +10,8 @@ import std.path : absolutePath, buildPath;
 import std.process : environment;
 import std.string : indexOf;
 import std.stdio : writeln;
+import auroraopencode.tools : executeTool;
+import std.json : JSONValue;
 
 int main()
 {
@@ -60,6 +62,25 @@ int main()
     }
     assert(root.lastAssistantContentForTesting() == "All six outcomes completed.");
     writeln("PASS real HTTP/tools/UI continue five premature partial replies through all six outcomes");
+
+    // Prepare a repository outside the conversation; the actual commit-only
+    // turn then runs through the real scheduler, tool results and done handler.
+    foreach (args; [["init"], ["config", "user.name", "Fixture"], ["config", "user.email", "fixture@example.invalid"]])
+    {
+        JSONValue value; value["program"] = "git"; value["args"] = JSONValue.emptyArray;
+        foreach (arg; args) value["args"].array ~= JSONValue(arg);
+        const result = executeTool(OpenCodeToolCall("setup", "run", value.toString()), workspace);
+        assert(!result.failed, result.output);
+    }
+    root.newChatForTesting();
+    send("Commit existing work only.");
+    settled();
+    assert(root.taskStatusForTesting() == "completed");
+    assert(root.verificationStatusForTesting() == "not_required");
+    assert(root.lastAssistantContentForTesting() == "Existing work committed; working tree checked.");
+    root.persistForTesting(); root.reloadSessionsForTesting();
+    assert(root.taskStatusForTesting() == "completed" && root.verificationStatusForTesting() == "not_required");
+    writeln("PASS a verified commit-only turn finishes without redundant continuation, including after reload");
 
     root.newChatForTesting();
     send("Implement the fixture stalled task.");

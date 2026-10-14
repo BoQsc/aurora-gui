@@ -18,6 +18,7 @@ prompts = {
     "Implement the fixture task requiring a missing deployment address.": "input",
     "What does the fixture pending plan mean?": "question",
     "Finish the fixture cancellation task.": "cancel",
+    "Commit existing work only.": "commit",
 }
 
 
@@ -77,6 +78,14 @@ class Provider(http.server.BaseHTTPRequestHandler):
                     call(f"write{stage}", "write", {"filePath": f"step{stage}.md", "content": f"outcome{stage}"})]
             else:
                 content = "All six outcomes completed." if stage == 5 else f"Partial outcome {stage} landed. Say the word and I will continue."
+        elif scenario == "commit":
+            if "commit-status" not in results:
+                tools = [call("commit-add", "run", {"program": "git", "args": ["add", "-A"]}),
+                         call("commit-create", "run", {"program": "git", "args": ["commit", "-m", "fixture checkpoint"]}),
+                         call("commit-status", "run", {"program": "git", "args": ["status", "--porcelain"]}),
+                         call("commit-plan", "update_plan", {"plan": [{"step": "Commit and check existing work", "status": "completed"}]})]
+            else:
+                content = "Existing work committed; working tree checked."
         elif scenario in ("stall", "input", "cancel"):
             if "pending-plan" not in results:
                 tools = [call("pending-plan", "update_plan", {
@@ -120,10 +129,10 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
     subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"), "--release",
-                    "task_continuation_contracts", "task_continuation_ui_contracts"],
+                    "latency_cleanup_contracts", "task_continuation_contracts", "task_continuation_ui_contracts"],
                    cwd=package.parent, env=env, check=True, timeout=300)
     assert not failures, failures
-    assert rounds == {"work": 12, "stall": 5, "input": 3, "question": 1, "cancel": 2}, rounds
+    assert rounds == {"work": 12, "commit": 2, "stall": 5, "input": 3, "question": 1, "cancel": 2}, rounds
     print("PASS bounded real request counts", dict(rounds))
 finally:
     server.shutdown()

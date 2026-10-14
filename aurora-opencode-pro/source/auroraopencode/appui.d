@@ -13761,10 +13761,8 @@ private string _suggestExcludeId;
         return prompt.data;
     }
 
-    private enum durableTaskCheckpointPrefix =
-        "Durable task-state checkpoint. This supersedes earlier task-state " ~
-        "checkpoints; keep the transcript and tool results in their original " ~
-        "order.";
+    private import auroraopencode.controlhistory : durableTaskCheckpointPrefix,
+        controlHistoryBoundary, controlHistoryCompactionNeeded;
 
     /// Persist changing task state at the point where it becomes visible to the
     /// model. Rebuilding it inside message zero on every request invalidates the
@@ -13776,10 +13774,20 @@ private string _suggestExcludeId;
     {
         const state = durableTaskPrompt(session, nestedEnabled);
         if (state.length == 0) return false;
+        if (controlHistoryCompactionNeeded(session))
+        {
+            ChatMessage boundary;
+            boundary.role = "user";
+            boundary.internal = true;
+            boundary.content = controlHistoryBoundary;
+            appendMessage(session, boundary);
+        }
         const content = durableTaskCheckpointPrefix ~ state;
         foreach_reverse (index; activeMessagePath(session))
         {
             const message = session.messages[index];
+            if (message.internal && message.content.startsWith(controlHistoryBoundary))
+                break;
             if (!message.internal ||
                 !message.content.startsWith(durableTaskCheckpointPrefix))
                 continue;
