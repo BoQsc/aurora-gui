@@ -5,13 +5,41 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import os
+import shutil
 import subprocess
 
 UPSTREAM_URL = "https://github.com/BoQsc/aurora-gui.git"
 
 
+def _git_executable() -> str:
+    """Locate git even when the launching environment omits it from PATH.
+
+    The rebuild helper inherits the environment of whatever process started
+    the app; a launcher without git on PATH would otherwise fail the entire
+    build here. Prefer PATH, then the usual Windows install locations.
+    """
+    found = shutil.which("git")
+    if found:
+        return found
+    candidates = []
+    for key in ("ProgramFiles", "ProgramFiles(x86)"):
+        base = os.environ.get(key)
+        if base:
+            candidates.append(Path(base) / "Git" / "cmd" / "git.exe")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.extend(sorted(
+            (Path(local) / "GitHubDesktop").glob(
+                "app-*/resources/app/git/cmd/git.exe"), reverse=True))
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return "git"
+
+
 def git(package: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(package), *args],
+    result = subprocess.run([_git_executable(), "-C", str(package), *args],
                             capture_output=True, text=True, timeout=60)
     if result.returncode:
         raise RuntimeError("Could not verify build source: " + result.stderr.strip())

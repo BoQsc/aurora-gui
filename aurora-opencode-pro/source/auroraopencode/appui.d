@@ -8043,6 +8043,22 @@ private final class ChatScrollView : ScrollView
         }
     }
 
+    override bool onMouseWheel(ref Event event)
+    {
+        const beforeY = scrollY();
+        const handled = super.onMouseWheel(event);
+        // A wheel-up with the viewport already at the very top cannot move it,
+        // so no scroll change fires and the following older page would need a
+        // click. Re-check the near-top load after such a no-op wheel so a
+        // reader who keeps scrolling at the top keeps pulling older pages.
+        if (handled && scrollY() == beforeY && atTopZone() && !_topNotified)
+        {
+            _topNotified = true;
+            if (onReachedTop !is null) onReachedTop();
+        }
+        return handled;
+    }
+
     /// True when the reader has scrolled away from the auto-follow position and
     /// there is something to scroll back to, so the "jump to latest" pill is
     /// worth offering.
@@ -8078,6 +8094,22 @@ private final class ChatScrollView : ScrollView
     {
         if (delta <= 0) return;
         _anchorGrow += delta;
+    }
+
+    /// Re-arm the near-top auto-load after a page has been pulled in. When the
+    /// inserted page does not move the reader out of the top zone (the
+    /// virtualized path anchors in place), leaving `_topNotified` set would
+    /// stop every later page from loading on scroll and force a click on the
+    /// loader. Re-arm so scrolling at the top keeps pulling older pages.
+    void rearmTopLoad()
+    {
+        if (scrollY() <= topLoadThreshold) _topNotified = false;
+    }
+
+    /// True while the reader is inside the near-top auto-load zone.
+    bool atTopZone()
+    {
+        return scrollY() <= topLoadThreshold;
     }
 }
 
@@ -14065,7 +14097,14 @@ private string _suggestExcludeId;
         const after = transcriptContentHeight();
         if (!virtualHistory && after > before && _messagesScroll !is null)
             _messagesScroll.anchorAfterTopInsert(after - before);
-        if (_messagesScroll !is null) _messagesScroll.invalidate();
+        if (_messagesScroll !is null)
+        {
+            _messagesScroll.invalidate();
+            // A page that anchors in place (the virtualized path) can leave the
+            // reader inside the top zone; without re-arming, the near-top latch
+            // would block every later page and force a click on the loader.
+            _messagesScroll.rearmTopLoad();
+        }
     }
 
     /// Measured height of the transcript's content at the viewport width,
