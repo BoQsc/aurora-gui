@@ -159,7 +159,32 @@ int main()
         "the conversation should leave the target project's list");
     writeln("Context-menu 'Move to project' moves the conversation");
 
-    root.flushRepositoryForTesting();
+    // Persistence: a move must survive a save + reload.
+    const targetName = root.projectNamesForTesting()[1];
+    const movedId = root.sessionIdForTesting(sessionIndex);
+    root.selectProjectForTesting(0);
+    root.tickTree(0.02);
+    assert(root.invokeSessionContextMenuItemForTesting(0, targetName),
+        "'Move to project' did not offer '" ~ targetName ~ "'");
+    root.tickTree(0.02);
+    const movedProject = root.sessionProjectForTesting(sessionIndex);
+    assert(movedProject.length > 0 && movedProject != startedProject,
+        "the menu move did not retarget the conversation");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    root.tickTree(0.02);
+    int reloaded = -1;
+    foreach (i; 0 .. root.sessionCountForTesting())
+        if (root.sessionIdForTesting(cast(int) i) == movedId)
+        {
+            reloaded = cast(int) i;
+            break;
+        }
+    assert(reloaded >= 0, "the conversation vanished after a reload");
+    assert(root.sessionProjectForTesting(reloaded) == movedProject,
+        "the move did not survive a save + reload");
+    writeln("Move persists across a save + reload");
+
     writeln("PASS: move to project works");
     return 0;
 }
