@@ -1,0 +1,154 @@
+module move_project_probe;
+
+// Focused headless probe for the "Move to project" conversation action and for
+// dragging a conversation onto a project tile: both must retarget the
+// conversation's project id. Runs offline against a private state directory.
+
+import aurora;
+import auroraopencode.appui : OpenCodeRoot, SessionListView;
+import auroraopencode.core : opencodeTheme, setOpencodeStateDirectoryForTesting;
+
+import std.file : exists, mkdirRecurse, rmdirRecurse, tempDir, write;
+import std.json : JSONValue;
+import std.path : buildPath;
+import std.stdio : writeln;
+
+private Widget findById(Widget widget, string requestedId)
+{
+    if (widget is null) return null;
+    if (widget.id() == requestedId) return widget;
+    foreach (child; widget.children())
+    {
+        auto found = findById(child, requestedId);
+        if (found !is null) return found;
+    }
+    return null;
+}
+
+private T requireWidget(T)(Widget root, string requestedId)
+{
+    auto widget = cast(T) findById(root, requestedId);
+    assert(widget !is null, "Missing or wrong widget type for id: " ~ requestedId);
+    return widget;
+}
+
+private bool paintProjection(OpenCodeRoot root, UiTestDriver driver)
+{
+    root.projectTranscriptForTesting();
+    return driver.paint();
+}
+
+private void writeState(string stateDir)
+{
+    JSONValue settings;
+    settings["apiKey"] = "";
+    settings["baseUrl"] = "http://Probe.Local/v1/";
+    settings["model"] = "probe-model";
+    write(buildPath(stateDir, "settings.json"), settings.toString());
+
+    JSONValue root;
+    JSONValue sessions = JSONValue(string[].init);
+    JSONValue session;
+    session["id"] = "t-move-source";
+    session["title"] = "Move source";
+    session["model"] = "probe-model";
+    session["thinking"] = false;
+    JSONValue messages = JSONValue(string[].init);
+    JSONValue message;
+    message["role"] = "user";
+    message["content"] = "hello";
+    message["id"] = "mm-1";
+    messages.array ~= message;
+    session["messages"] = messages;
+    session["activeLeaf"] = "mm-1";
+    sessions.array ~= session;
+    root["sessions"] = sessions;
+    root["current"] = 0;
+    write(buildPath(stateDir, "sessions.json"), root.toString());
+}
+
+int main()
+{
+    const stateDir = buildPath(tempDir(), "aurora-move-project-probe");
+    if (exists(stateDir)) rmdirRecurse(stateDir);
+    mkdirRecurse(stateDir);
+    setOpencodeStateDirectoryForTesting(stateDir);
+    writeState(stateDir);
+
+    WindowOptions options;
+    options.title = "Aurora move-project probe";
+    options.width = 1200;
+    options.height = 800;
+    options.renderer = RendererPreference.software;
+
+    auto window = new GuiWindow(options, opencodeTheme());
+    auto root = new OpenCodeRoot(window);
+    window.setRoot(root);
+    auto driver = new UiTestDriver(window);
+    assert(paintProjection(root, driver), "Initial paint failed");
+    root.tickTree(0.02);
+
+    // The conversation menu must offer the move action.
+    bool sawMove;
+    foreach (label; root.sessionContextMenuLabelsForTesting(0))
+        if (label == "Move to project") sawMove = true;
+    assert(sawMove, "the conversation menu never offered 'Move to project'");
+    writeln("Menu offers 'Move to project'");
+
+    // Create a second project. addProjectForTesting activates it, so switch
+    // back to the sandbox (index 0) to make the source conversation visible.
+    root.addProjectForTesting("Target Project", buildPath(stateDir, "target"));
+    root.tickTree(0.02);
+    assert(root.projectCountForTesting() == 2, "rail should hold two projects");
+    root.selectProjectForTesting(0);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Sandbox repaint failed");
+    assert(root.visibleSessionCountForTesting() == 1,
+        "the sandbox conversation should be visible");
+
+    auto sessions = requireWidget!SessionListView(root, "oc-sessions");
+    auto projects = requireWidget!ListView(root, "oc-projects");
+    const rowH = sessions.rowHeight();
+    const railRowH = projects.rowHeight();
+
+    const row = 0;
+    const sessionIndex = root.visibleSessionIndexAtRowForTesting(row);
+    assert(sessionIndex >= 0, "no conversation row to drag");
+    // The restored conversation belongs to the sandbox project.
+    const startedProject = root.sessionProjectForTesting(sessionIndex);
+    assert(startedProject.length > 0,
+        "the restored conversation has no project id");
+
+    // Drag the conversation onto the 'Target Project' tile (rail index 1).
+    const from = sessions.localToGlobal(Point(20, row * rowH + rowH / 2));
+    const to = projects.localToGlobal(Point(20, 1 * railRowH + railRowH / 2));
+    driver.moveTo(from);
+    driver.mouseDown();
+    driver.moveTo(to);
+    root.tickTree(0.02);
+    assert(root.sessionDragGhostForTesting().length > 0,
+        "dragging over the rail should keep a ghost");
+    const ghostAction = root.sessionDragGhostActionForTesting();
+    assert(ghostAction.length >= 4 && ghostAction[0 .. 4] == "Move",
+        "the drag ghost should announce the move, got '" ~ ghostAction ~ "'");
+    writeln("Drag ghost announces: ", ghostAction);
+    driver.mouseUp();
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Post-drop repaint failed");
+
+    // The conversation must have left the sandbox and belong to the target.
+    assert(root.sessionProjectForTesting(sessionIndex) != startedProject &&
+        root.sessionProjectForTesting(sessionIndex).length > 0,
+        "the drop did not retarget the conversation's project");
+    assert(root.visibleSessionCountForTesting() == 0,
+        "the moved conversation should leave the sandbox list");
+    root.selectProjectForTesting(1);
+    root.tickTree(0.02);
+    assert(root.visibleSessionCountForTesting() == 1,
+        "the moved conversation should appear under the target project");
+    writeln("Drag onto a project moves the conversation");
+
+    root.flushRepositoryForTesting();
+    writeln("PASS: move to project works");
+    return 0;
+}
