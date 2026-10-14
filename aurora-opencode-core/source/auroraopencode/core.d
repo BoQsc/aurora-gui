@@ -1194,6 +1194,33 @@ public struct ProjectState
     // The project rail starts as a narrow strip of icon tiles; the user can
     // expand it to show the project names and the New project button.
     bool projectsCollapsed = true;
+    // Optional per-project "project manager" settings. Absent for projects that
+    // never enabled the feature; see ProjectDriver below.
+    ProjectDriver[] drivers;
+}
+
+/// Optional per-project "project manager": one special conversation that
+/// reviews a project's recent conversations and moves the project forward. It is
+/// off unless enabled for the project, and persisted with the project list
+/// (projects.json) so the choice and the manager thread survive a restart. The
+/// manager is identified by session id, so it stays an ordinary ChatSession
+/// with no extra persisted field of its own. See docs/project-driver.md.
+public struct ProjectDriver
+{
+    string projectId;
+    bool enabled;
+    // Empty until the manager is opened for the first time.
+    string managerSessionId;
+    // experimental: triggers and autonomy. All off by default; the settings are
+    // only consulted while Settings.experimentalProjectManager is on.
+    bool idleReviews;          // review after the project goes quiet
+    int idleMinutes = 30;
+    bool intervalReviews;      // review on a fixed cadence
+    int intervalMinutes = 60;
+    bool reviewOnTurnEnd;      // review when a turn in the project finishes
+    bool autoRun;              // send the review automatically (else staged)
+    bool planOnly;             // auto-run constrained to planning
+    int lookbackConversations = 5;
 }
 
 /**
@@ -1264,6 +1291,13 @@ public struct Settings
     // stops (a runaway turn), then fire the same emergency diagnostic. Off by
     // default; the Settings dialog owns the switch.
     bool overseerObserver;
+    // Experimental opt-in: the per-project "project manager" - one special
+    // conversation per project that reviews the project's recent conversations
+    // and starts the next step. Off by default. To drop the feature: delete
+    // source/auroraopencode/projectdriver.d, this switch, the ProjectDriver
+    // struct and its load/save code below, and the "experimental: project
+    // manager" hooks in appui.d.
+    bool experimentalProjectManager;
     // Developer mode: reveal the Developer section (source folder, toolchain
     // status, logs, repository/pull-request actions) and let the agent treat
     // this build as self-hosted even outside a source checkout. Off by default;
@@ -2266,6 +2300,56 @@ public ProjectState loadProjects()
                     if (found.type == JSONType.true_ ||
                         found.type == JSONType.false_)
                         state.projectsCollapsed = found.type == JSONType.true_;
+                if (auto found = "drivers" in value.object)
+                {
+                    if (found.type == JSONType.array)
+                    {
+                        foreach (driverValue; found.array)
+                        {
+                            if (driverValue.type != JSONType.object) continue;
+                            ProjectDriver driver;
+                            if (auto f = "projectId" in driverValue.object)
+                                driver.projectId = f.str;
+                            if (auto f = "enabled" in driverValue.object)
+                                if (f.type == JSONType.true_ ||
+                                    f.type == JSONType.false_)
+                                    driver.enabled = f.type == JSONType.true_;
+                            if (auto f = "managerSessionId" in driverValue.object)
+                                driver.managerSessionId = f.str;
+                            if (auto f = "idleReviews" in driverValue.object)
+                                if (f.type == JSONType.true_ ||
+                                    f.type == JSONType.false_)
+                                    driver.idleReviews = f.type == JSONType.true_;
+                            if (auto f = "idleMinutes" in driverValue.object)
+                                if (f.type == JSONType.integer)
+                                    driver.idleMinutes = cast(int) f.integer;
+                            if (auto f = "intervalReviews" in driverValue.object)
+                                if (f.type == JSONType.true_ ||
+                                    f.type == JSONType.false_)
+                                    driver.intervalReviews = f.type == JSONType.true_;
+                            if (auto f = "intervalMinutes" in driverValue.object)
+                                if (f.type == JSONType.integer)
+                                    driver.intervalMinutes = cast(int) f.integer;
+                            if (auto f = "reviewOnTurnEnd" in driverValue.object)
+                                if (f.type == JSONType.true_ ||
+                                    f.type == JSONType.false_)
+                                    driver.reviewOnTurnEnd = f.type == JSONType.true_;
+                            if (auto f = "autoRun" in driverValue.object)
+                                if (f.type == JSONType.true_ ||
+                                    f.type == JSONType.false_)
+                                    driver.autoRun = f.type == JSONType.true_;
+                            if (auto f = "planOnly" in driverValue.object)
+                                if (f.type == JSONType.true_ ||
+                                    f.type == JSONType.false_)
+                                    driver.planOnly = f.type == JSONType.true_;
+                            if (auto f = "lookbackConversations" in driverValue.object)
+                                if (f.type == JSONType.integer)
+                                    driver.lookbackConversations = cast(int) f.integer;
+                            if (driver.projectId.length == 0) continue;
+                            state.drivers ~= driver;
+                        }
+                    }
+                }
             }
         }
         catch (Exception error)
@@ -2301,6 +2385,24 @@ public void saveProjects(const ref ProjectState state)
     root["active"] = state.activeId;
     root["sessionsRatio"] = state.sessionsRatio;
     root["projectsCollapsed"] = state.projectsCollapsed;
+    JSONValue drivers = JSONValue(string[].init);
+    foreach (driver; state.drivers)
+    {
+        JSONValue item;
+        item["projectId"] = driver.projectId;
+        item["enabled"] = driver.enabled;
+        item["managerSessionId"] = driver.managerSessionId;
+        item["idleReviews"] = driver.idleReviews;
+        item["idleMinutes"] = driver.idleMinutes;
+        item["intervalReviews"] = driver.intervalReviews;
+        item["intervalMinutes"] = driver.intervalMinutes;
+        item["reviewOnTurnEnd"] = driver.reviewOnTurnEnd;
+        item["autoRun"] = driver.autoRun;
+        item["planOnly"] = driver.planOnly;
+        item["lookbackConversations"] = driver.lookbackConversations;
+        drivers.array ~= item;
+    }
+    root["drivers"] = drivers;
     try write(projectsStorePath(), root.toString());
     catch (Exception error)
     {

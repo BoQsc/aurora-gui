@@ -109,9 +109,11 @@ import auroraopencode.emergency : emergencyHeartbeat,
     emergencyLastReportPath, emergencySetContext, emergencyTakePendingFreeze,
     emergencyTrigger, overseerStallSeconds, setEmergencyReportEnabled,
     setOverseerEnabled, startEmergencyWatchdog;
+// Optional per-project project manager (see docs/project-driver.md).
+import auroraopencode.projectdriver : buildProjectReviewPrompt;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, minutes, seconds;
-import std.algorithm : canFind, endsWith, max;
+import std.algorithm : canFind, endsWith, max, sort;
 import std.array : appender, join;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
@@ -9914,6 +9916,10 @@ public final class ProjectListView : ListView
 
     private int _hoverRow = -1;
 
+    /// experimental: project manager - true when a row's project has the
+    /// manager enabled; the row then shows a small accent dot.
+    bool delegate(int index) onManagedQuery;
+
     private static dchar upperInitial(dstring text)
     {
         if (text.length == 0) return '?';
@@ -9965,6 +9971,12 @@ public final class ProjectListView : ListView
             content.drawTextInRect(Rect(textLeft, tile.y, textWidth, tile.height),
                 item.text, titleColor, theme().fontScale,
                 HorizontalAlign.left, VerticalAlign.middle, true);
+            if (onManagedQuery !is null && onManagedQuery(index))
+            {
+                const dot = Rect(tile.right() - 14,
+                    tile.y + (tile.height - 6) / 2, 6, 6);
+                content.fillRoundedRect(dot, 3, opencodeAccent);
+            }
         }
     }
 
@@ -10204,6 +10216,13 @@ public final class OpenCodeRoot : VBox
     // that never stops can be reported by the overseer.
     private SysTime[string] _overseerBusySince;
     private bool[string] _overseerReported;
+    // experimental: project manager - per-project trigger bookkeeping. Delete
+    // with the rest of the feature (see source/auroraopencode/projectdriver.d).
+    private SysTime[string] _managerLastReview;
+    private SysTime[string] _managerIntervalAnchor;
+    private bool[string] _managerWasBusy;
+    private MonoTime _managerNextCheck;
+    private enum double managerCooldownSeconds = 300.0;
     private Button _modelButton;
     private ThinkingControl _thinkingBox;
     private CheckBox _toolsBox;
@@ -13237,6 +13256,12 @@ private string _suggestExcludeId;
         foreach (project; _projectState.projects)
             items ~= ListItem(project.name, IconKind.none, "");
         _projectRail.setItems(items);
+        // experimental: project manager - mark enabled projects with a dot.
+        _projectRail.onManagedQuery = delegate(int i)
+        {
+            return _settings.experimentalProjectManager &&
+                projectManagerEnabledForIndex(i);
+        };
         const index = activeProjectIndex();
         if (index >= 0) _projectRail.setSelectedIndex(index, false);
     }
@@ -13470,6 +13495,26 @@ private string _suggestExcludeId;
                 delegate() { showRenameProjectDialog(index); });
         items ~= ContextMenuItem.command("Change folder", IconKind.open,
             delegate() { showChangeProjectFolderDialog(index); });
+        // experimental: project manager - delete with the rest of the feature.
+        if (_settings.experimentalProjectManager)
+        {
+            const driverIndex = projectDriverIndex(project.id);
+            const managerOn = driverIndex >= 0 &&
+                _projectState.drivers[cast(size_t) driverIndex].enabled;
+            items ~= ContextMenuItem.command(
+                managerOn ? "Disable project manager" : "Enable project manager",
+                IconKind.settings,
+                delegate() { setProjectManagerEnabled(index, !managerOn); });
+            if (managerOn)
+            {
+                items ~= ContextMenuItem.command("Open project manager",
+                    IconKind.terminal,
+                    delegate() { openProjectManager(index); });
+                items ~= ContextMenuItem.command("Review project now",
+                    IconKind.open,
+                    delegate() { reviewProjectNow(index); });
+            }
+        }
         items ~= ContextMenuItem.command("New chat here", IconKind.terminal,
             delegate()
             {
@@ -13554,6 +13599,274 @@ private string _suggestExcludeId;
         syncCurrentToActiveProject();
         updateSessionList(false);
         updateStatus("Removed project " ~ project.name ~ ".");
+    }
+
+    // -- optional per-project project manager ------------------------------
+
+    /// Index of a project's driver config in `_projectState.drivers`, or -1 when
+    /// the project has none yet.
+    private int projectDriverIndex(string projectId)
+    {
+        foreach (i, driver; _projectState.drivers)
+            if (driver.projectId == projectId) return cast(int) i;
+        return -1;
+    }
+
+    /// experimental: project manager - the driver config for a project,
+    /// creating an empty one when absent. The pointer is valid until the next
+    /// `_projectState.drivers` append.
+    private ProjectDriver* ensureProjectDriver(string projectId)
+    {
+        const found = projectDriverIndex(projectId);
+        if (found >= 0) return &_projectState.drivers[cast(size_t) found];
+        ProjectDriver driver;
+        driver.projectId = projectId;
+        _projectState.drivers ~= driver;
+        return &_projectState.drivers[$ - 1];
+    }
+
+    /// experimental: project manager - true when a project (by rail index) has
+    /// the manager enabled and the feature is on.
+    private bool projectManagerEnabledForIndex(int index)
+    {
+        if (!_settings.experimentalProjectManager) return false;
+        if (index < 0 || index >= cast(int) _projectState.projects.length)
+            return false;
+        const found = projectDriverIndex(
+            _projectState.projects[cast(size_t) index].id);
+        return found >= 0 && _projectState.drivers[cast(size_t) found].enabled;
+    }
+
+    /// experimental: project manager - persist one driver flag change.
+    private void setProjectDriverFlag(int projectIndex, string field, bool value)
+    {
+        if (projectIndex < 0 || projectIndex >= cast(int) _projectState.projects.length)
+            return;
+        auto driver = ensureProjectDriver(
+            _projectState.projects[cast(size_t) projectIndex].id);
+        switch (field)
+        {
+            case "enabled": driver.enabled = value; break;
+            case "autoRun": driver.autoRun = value; break;
+            case "planOnly": driver.planOnly = value; break;
+            case "idleReviews": driver.idleReviews = value; break;
+            case "intervalReviews": driver.intervalReviews = value; break;
+            case "reviewOnTurnEnd": driver.reviewOnTurnEnd = value; break;
+            default: break;
+        }
+        _projectsWriter.save(_projectState);
+    }
+
+    /// experimental: project manager - a settings checkbox wired to one driver
+    /// flag.
+    private CheckBox managerFlagCheck(string id, string label, bool initial,
+        void delegate(bool) onChanged)
+    {
+        auto check = new CheckBox(label);
+        check.setId(id);
+        check.setChecked(initial, false);
+        check.onChanged = onChanged;
+        return check;
+    }
+
+    /// Turn the optional per-project manager on or off and persist the choice.
+    private void setProjectManagerEnabled(int projectIndex, bool enabled)
+    {
+        if (projectIndex < 0 || projectIndex >= cast(int) _projectState.projects.length)
+            return;
+        const name = _projectState.projects[cast(size_t) projectIndex].name;
+        const projectId = _projectState.projects[cast(size_t) projectIndex].id;
+        const found = projectDriverIndex(projectId);
+        if (found < 0)
+        {
+            ProjectDriver driver;
+            driver.projectId = projectId;
+            driver.enabled = enabled;
+            _projectState.drivers ~= driver;
+        }
+        else
+            _projectState.drivers[cast(size_t) found].enabled = enabled;
+        _projectsWriter.save(_projectState);
+        updateStatus(enabled
+            ? "Project manager enabled for " ~ name ~ "."
+            : "Project manager disabled for " ~ name ~ ".");
+    }
+
+    /// Open the project's manager conversation, creating it the first time. The
+    /// manager is an ordinary chat in the project; its session id is remembered
+    /// so reopening finds it again.
+    private void openProjectManager(int projectIndex)
+    {
+        if (projectIndex < 0 || projectIndex >= cast(int) _projectState.projects.length)
+            return;
+        if (_startupLoadPending)
+        {
+            updateStatus("Loading conversations — one moment…");
+            return;
+        }
+        selectProject(projectIndex);
+        const name = _projectState.projects[cast(size_t) projectIndex].name;
+        const projectId = _projectState.projects[cast(size_t) projectIndex].id;
+        const found = projectDriverIndex(projectId);
+        const managerId = found >= 0
+            ? _projectState.drivers[cast(size_t) found].managerSessionId : "";
+        if (managerId.length > 0)
+            foreach (i, session; _sessions)
+                if (session.id == managerId)
+                {
+                    selectSession(cast(int) i);
+                    return;
+                }
+        // First time: create the manager thread in this project.
+        newChat();
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        auto session = &_sessions[_current];
+        session.title = "Project manager — " ~ name;
+        session.objective = "Project manager for " ~ name;
+        const index = projectDriverIndex(projectId);
+        if (index < 0)
+        {
+            ProjectDriver driver;
+            driver.projectId = projectId;
+            driver.enabled = true;
+            driver.managerSessionId = session.id;
+            _projectState.drivers ~= driver;
+        }
+        else
+        {
+            _projectState.drivers[cast(size_t) index].enabled = true;
+            _projectState.drivers[cast(size_t) index].managerSessionId = session.id;
+        }
+        _projectsWriter.save(_projectState);
+        markDirty();
+        updateSessionList();
+        updateStatus("Project manager opened for " ~ name ~ ".");
+    }
+
+    /// Read the project's recent conversations and open a new working
+    /// conversation seeded with a review prompt, so the manager can move the
+    /// project forward. The prompt is staged in the composer for the user to
+    /// send; nothing is dispatched on its own.
+    private void reviewProjectNow(int projectIndex, bool autoSend = false,
+        bool planOnly = false)
+    {
+        if (projectIndex < 0 || projectIndex >= cast(int) _projectState.projects.length)
+            return;
+        if (_startupLoadPending)
+        {
+            updateStatus("Loading conversations — one moment…");
+            return;
+        }
+        if (turnIsBusy())
+        {
+            updateStatus("A turn is still running. Finish or stop it, then review.");
+            return;
+        }
+        selectProject(projectIndex);
+        const name = _projectState.projects[cast(size_t) projectIndex].name;
+        const projectPath = _projectState.projects[cast(size_t) projectIndex].path;
+        const projectId = _projectState.projects[cast(size_t) projectIndex].id;
+        const found = projectDriverIndex(projectId);
+        const managerId = found >= 0
+            ? _projectState.drivers[cast(size_t) found].managerSessionId : "";
+
+        // The project's conversations, excluding the manager thread itself so a
+        // review does not feed on its own output.
+        ChatSession[] recent;
+        foreach (ref session; _sessions)
+        {
+            if (sessionProjectId(session) != projectId) continue;
+            if (session.id == managerId) continue;
+            recent ~= session;
+        }
+        sort!((a, b) => a.updatedAt > b.updatedAt)(recent);
+
+        const lookback = found >= 0
+            ? _projectState.drivers[cast(size_t) found].lookbackConversations : 5;
+        const prompt = buildProjectReviewPrompt(name, projectPath, recent,
+            lookback > 0 ? cast(size_t) lookback : 5, 6, planOnly);
+        newChat();
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        auto session = &_sessions[_current];
+        session.title = "Project review — " ~ name;
+        session.objective = "Review and advance project " ~ name;
+        if (_input !is null)
+        {
+            _input.setText(prompt, false);
+            _input.requestFocus();
+        }
+        markDirty();
+        updateSessionList();
+        if (autoSend)
+        {
+            sendMessage();
+            updateStatus("Project manager started a review for " ~ name ~ ".");
+        }
+        else
+            updateStatus("Project review ready — press Send to move the project forward.");
+    }
+
+    /// experimental: project manager - fire a review for the ACTIVE project
+    /// when its driver asks for one. Only the active project is considered, so
+    /// a background review never yanks the user into another project. Guarded
+    /// by a one-second throttle, a cooldown, and the busy/startup checks.
+    private void runProjectManagerTriggers()
+    {
+        if (!_settings.experimentalProjectManager) return;
+        if (_startupLoadPending || turnIsBusy()) return;
+        const mono = MonoTime.currTime;
+        if (mono < _managerNextCheck) return;
+        _managerNextCheck = mono + seconds(1);
+        const index = activeProjectIndex();
+        if (index < 0) return;
+        const project = _projectState.projects[cast(size_t) index];
+        const driverIndex = projectDriverIndex(project.id);
+        if (driverIndex < 0) return;
+        const driver = _projectState.drivers[cast(size_t) driverIndex];
+        if (!driver.enabled) return;
+
+        // Turn-end detection runs every evaluation to see the busy->idle edge,
+        // before the cooldown gate can skip the rest.
+        bool endedTurn;
+        if (driver.reviewOnTurnEnd)
+            foreach (i, session; _sessions)
+            {
+                if (sessionProjectId(session) != project.id) continue;
+                const busy = sessionIsBusy(cast(int) i);
+                const was = session.id in _managerWasBusy
+                    ? _managerWasBusy[session.id] : false;
+                _managerWasBusy[session.id] = busy;
+                if (was && !busy) endedTurn = true;
+            }
+        const now = Clock.currTime;
+        if (project.id in _managerLastReview &&
+            (now - _managerLastReview[project.id]).total!"seconds" <
+                managerCooldownSeconds)
+            return;
+
+        bool fire = endedTurn;
+        if (!fire && driver.idleReviews && driver.idleMinutes > 0)
+        {
+            long latest;
+            foreach (session; _sessions)
+                if (sessionProjectId(session) == project.id &&
+                    session.updatedAt > latest)
+                    latest = session.updatedAt;
+            if (latest > 0 && now.toUnixTime() - latest >= driver.idleMinutes * 60L)
+                fire = true;
+        }
+        if (!fire && driver.intervalReviews && driver.intervalMinutes > 0)
+        {
+            auto anchor = project.id in _managerIntervalAnchor;
+            if (anchor is null) _managerIntervalAnchor[project.id] = now;
+            else if ((now - *anchor).total!"seconds" >=
+                driver.intervalMinutes * 60.0)
+                fire = true;
+        }
+        if (!fire) return;
+        _managerLastReview[project.id] = now;
+        _managerIntervalAnchor[project.id] = now;
+        reviewProjectNow(cast(int) index, driver.autoRun, driver.planOnly);
     }
 
     // -- sessions ---------------------------------------------------------
@@ -23088,6 +23401,57 @@ private void pollButtonSuggestionRequest()
             "oc-settings-developer", _settings.developerMode,
             delegate() { resizeSettingsPopup(popup, content); });
 
+        // experimental: project manager - per-project settings. Only shown while
+        // the master switch is on; delete with the rest of the feature.
+        if (_settings.experimentalProjectManager)
+        {
+            auto managerBody = addSettingsSection(sections, "Project manager",
+                "oc-settings-manager", false,
+                delegate() { resizeSettingsPopup(popup, content); });
+            auto managerHint = managerBody.add(new Label(
+                "Give a project one manager conversation that reviews its "
+                ~ "recent conversations and starts the next step. Idle/interval "
+                ~ "reviews run for the project you are viewing; right-click a "
+                ~ "project in the rail to open the manager and review now."));
+            managerHint.setScale(1);
+            foreach (index, project; _projectState.projects)
+            {
+                const driverIndex = projectDriverIndex(project.id);
+                const driver = driverIndex >= 0
+                    ? _projectState.drivers[cast(size_t) driverIndex]
+                    : ProjectDriver.init;
+                const projectIndex = cast(int) index;
+                auto rowA = new HBox(8);
+                rowA.layoutHints().preferredHeight = 32;
+                auto nameLabel = rowA.add(new Label(
+                    project.name.length > 0 ? project.name : project.id));
+                nameLabel.setScale(1);
+                nameLabel.layoutHints().preferredWidth = 150;
+                rowA.add(managerFlagCheck("oc-manager-enable-" ~ to!string(index),
+                    "Enabled", driver.enabled,
+                    delegate(bool v) { setProjectDriverFlag(projectIndex, "enabled", v); }));
+                rowA.add(managerFlagCheck("oc-manager-autorun-" ~ to!string(index),
+                    "Auto-run", driver.autoRun,
+                    delegate(bool v) { setProjectDriverFlag(projectIndex, "autoRun", v); }));
+                rowA.add(managerFlagCheck("oc-manager-planonly-" ~ to!string(index),
+                    "Plan only", driver.planOnly,
+                    delegate(bool v) { setProjectDriverFlag(projectIndex, "planOnly", v); }));
+                managerBody.add(rowA);
+                auto rowB = new HBox(8);
+                rowB.layoutHints().preferredHeight = 32;
+                rowB.add(managerFlagCheck("oc-manager-idle-" ~ to!string(index),
+                    "Idle review", driver.idleReviews,
+                    delegate(bool v) { setProjectDriverFlag(projectIndex, "idleReviews", v); }));
+                rowB.add(managerFlagCheck("oc-manager-interval-" ~ to!string(index),
+                    "Interval review", driver.intervalReviews,
+                    delegate(bool v) { setProjectDriverFlag(projectIndex, "intervalReviews", v); }));
+                rowB.add(managerFlagCheck("oc-manager-turnend-" ~ to!string(index),
+                    "On turn end", driver.reviewOnTurnEnd,
+                    delegate(bool v) { setProjectDriverFlag(projectIndex, "reviewOnTurnEnd", v); }));
+                managerBody.add(rowB);
+            }
+        }
+
         // Provider preset picker: choosing one fills the base URL, key and
         // model fields below, all of which stay editable.
         auto providerRow = new HBox(8);
@@ -23398,6 +23762,24 @@ private void pollButtonSuggestionRequest()
         };
         overseerRow.add(overseerCheck);
         optionsBody.add(overseerRow);
+
+        // experimental: project manager - master switch. When off, the feature
+        // is hidden everywhere. Delete with the rest of the feature.
+        auto managerMasterRow = new HBox(8);
+        managerMasterRow.layoutHints().preferredHeight = 32;
+        auto managerMasterCheck = new CheckBox(
+            "Experimental: project manager (per-project auto-review)");
+        managerMasterCheck.setId("oc-project-manager-master");
+        managerMasterCheck.setChecked(_settings.experimentalProjectManager, false);
+        managerMasterCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalProjectManager = value;
+            saveSettingsNow();
+            // Rebuild the dialog so the per-project section appears/disappears.
+            showSettingsDialog();
+        };
+        managerMasterRow.add(managerMasterCheck);
+        optionsBody.add(managerMasterRow);
 
         // Optional: rewrite a brand-new chat's name once with a tiny,
         // no-thinking request instead of the raw first message. Off by default.
@@ -28441,6 +28823,8 @@ private void pollButtonSuggestionRequest()
         updateEmergencyContext();
         drainEmergency();
         runOverseer();
+        // experimental: project manager - optional per-project auto-reviews.
+        runProjectManagerTriggers();
         // Run the transcript rebuild a busy turn coalesced into this tick (see
         // rebuildMessageColumn). Doing it here caps a turn at one full rebuild
         // per frame instead of several stacked inside one event, which is what

@@ -19,6 +19,7 @@ Settings preferenceSnapshot(Settings value)
 ProjectState preferenceSnapshot(ProjectState value)
 {
     value.projects = value.projects.dup;
+    value.drivers = value.drivers.dup;
     return value;
 }
 
