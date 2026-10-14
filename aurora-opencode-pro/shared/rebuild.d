@@ -53,6 +53,7 @@ version (Windows)
 {
     import core.sys.windows.windows;
     import core.sys.windows.tlhelp32;
+    import aurora.platform.gdi : GdiRect, GdiTextFormat, gdiDrawText, gdiFillRect;
 }
 
 /// The argv token that turns a copy of the app into the rebuild agent. It is
@@ -837,10 +838,11 @@ private void drawProgress(HWND hwnd)
 
     RECT client;
     GetClientRect(hwnd, &client);
-    auto background = CreateSolidBrush(rgb(24, 24, 28));
-    FillRect(dc, &client, background);
-    DeleteObject(background);
-    SetBkMode(dc, TRANSPARENT);
+    const clientWidth = client.right - client.left;
+    const clientHeight = client.bottom - client.top;
+    const innerWidth = clientWidth - 40;
+    gdiFillRect(cast(void*) dc, GdiRect(0, 0, clientWidth, clientHeight),
+        rgb(24, 24, 28));
 
     string title, detail, phase;
     double fraction;
@@ -851,55 +853,30 @@ private void drawProgress(HWND hwnd)
     phase = _progressPhase;
     fraction = _progressFraction;
 
-    SetTextColor(dc, rgb(240, 240, 245));
-    RECT titleRect = client;
-    titleRect.left = 20;
-    titleRect.top = 14;
-    titleRect.right -= 20;
-    titleRect.bottom = titleRect.top + 28;
-    auto titleWide = wideString(title);
-    DrawTextW(dc, titleWide.ptr, -1, &titleRect, DT_LEFT | DT_SINGLELINE);
-
-    SetTextColor(dc, rgb(170, 175, 190));
-    RECT phaseRect = titleRect;
-    phaseRect.top = titleRect.bottom;
-    phaseRect.bottom = phaseRect.top + 22;
-    auto phaseWide = wideString(phase);
-    DrawTextW(dc, phaseWide.ptr, -1, &phaseRect, DT_LEFT | DT_SINGLELINE);
+    gdiDrawText(cast(void*) dc, title, GdiRect(20, 14, innerWidth, 28),
+        rgb(240, 240, 245), GdiTextFormat.left | GdiTextFormat.singleLine);
+    gdiDrawText(cast(void*) dc, phase, GdiRect(20, 42, innerWidth, 22),
+        rgb(170, 175, 190), GdiTextFormat.left | GdiTextFormat.singleLine);
 
     // The bar: a darker track, then the filled portion. An unknown duration
     // sweeps on a fixed stride, so the window keeps moving while a step of
     // indeterminate length runs - a frozen bar and a hung tool look identical.
-    RECT track;
-    track.left = 20;
-    track.right = client.right - 20;
-    track.top = client.bottom - 54;
-    track.bottom = track.top + 10;
-    auto trackBrush = CreateSolidBrush(rgb(46, 48, 56));
-    FillRect(dc, &track, trackBrush);
-    DeleteObject(trackBrush);
+    const trackTop = clientHeight - 54;
+    gdiFillRect(cast(void*) dc, GdiRect(20, trackTop, innerWidth, 10),
+        rgb(46, 48, 56));
 
     double shown = fraction;
     if (shown < 0.0)
         shown = cast(double) (GetTickCount() % 2400) / 2400.0;
     if (shown > 1.0) shown = 1.0;
     if (shown < 0.02) shown = 0.02;
-    RECT fill = track;
-    auto fillWidth = cast(int) (cast(long) (track.right - track.left) * shown);
-    fill.right = track.left + fillWidth;
-    auto fillBrush = CreateSolidBrush(rgb(96, 176, 240));
-    FillRect(dc, &fill, fillBrush);
-    DeleteObject(fillBrush);
+    const fillWidth = cast(int) (cast(long) innerWidth * shown);
+    gdiFillRect(cast(void*) dc, GdiRect(20, trackTop, fillWidth, 10),
+        rgb(96, 176, 240));
 
-    SetTextColor(dc, rgb(140, 145, 158));
-    RECT detailRect;
-    detailRect.left = 20;
-    detailRect.right = client.right - 20;
-    detailRect.top = track.bottom + 10;
-    detailRect.bottom = detailRect.top + 22;
-    auto detailWide = wideString(detail);
-    DrawTextW(dc, detailWide.ptr, -1, &detailRect,
-        DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+    gdiDrawText(cast(void*) dc, detail, GdiRect(20, trackTop + 20, innerWidth, 22),
+        rgb(140, 145, 158), GdiTextFormat.left | GdiTextFormat.singleLine |
+        GdiTextFormat.endEllipsis);
 }
 
 private extern (Windows) LRESULT progressProc(HWND hwnd, UINT message,

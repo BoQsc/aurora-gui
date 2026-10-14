@@ -30,6 +30,7 @@ module auroraopencode.computeruse;
 
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolDef;
 import auroraopencode.screenshotimage : encodeScreenshotJpeg;
+import aurora.platform.gdi : ScreenCapture;
 import auroraopencode.computerprogress : DesktopClickProgress, DesktopDragProgress,
     observeDesktop, desktopVisiblyChanged, cropDesktop;
 import auroraopencode.requestintent : explanationOnlyRequest;
@@ -1797,49 +1798,19 @@ version (Windows)
             return capture;
         }
 
-        void* screenDc = GetDC(null);
-        if (screenDc is null)
+        // Whole-screen native capture through the shared GDI helper
+        // (aurora.platform.gdi); the DIB/RGBA plumbing lives there now.
+        static ScreenCapture screen;
+        if (screen is null || screen.width() != width ||
+            screen.height() != height)
         {
-            capture.error = "Error: could not get the screen device context.";
-            return capture;
+            screen = new ScreenCapture(width, height);
+            screen.capturePrimaryScreen();
         }
-        void* memDc = CreateCompatibleDC(screenDc);
-        void* bitmap = CreateCompatibleBitmap(screenDc, width, height);
-        if (memDc is null || bitmap is null)
+        auto pixels = screen.captureFrame();
+        if (pixels is null || pixels.length < cast(size_t) width * height * 4)
         {
-            if (bitmap !is null) DeleteObject(bitmap);
-            if (memDc !is null) DeleteDC(memDc);
-            ReleaseDC(null, screenDc);
-            capture.error = "Error: could not create a capture surface.";
-            return capture;
-        }
-        void* previous = SelectObject(memDc, bitmap);
-        scope (exit)
-        {
-            SelectObject(memDc, previous);
-            DeleteObject(bitmap);
-            DeleteDC(memDc);
-            ReleaseDC(null, screenDc);
-        }
-
-        if (!BitBlt(memDc, 0, 0, width, height, screenDc, 0, 0, SRCCOPY))
-        {
-            capture.error = "Error: screen capture (BitBlt) failed.";
-            return capture;
-        }
-
-        BITMAPINFO info;
-        info.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
-        info.bmiHeader.biWidth = width;
-        info.bmiHeader.biHeight = -height; // top-down rows
-        info.bmiHeader.biPlanes = 1;
-        info.bmiHeader.biBitCount = 32;
-        info.bmiHeader.biCompression = 0; // BI_RGB
-        auto pixels = new ubyte[cast(size_t) width * height * 4];
-        if (GetDIBits(memDc, bitmap, 0, cast(UINT) height, pixels.ptr,
-            &info, DIB_RGB_COLORS) == 0)
-        {
-            capture.error = "Error: could not read captured pixels.";
+            capture.error = "Error: screen capture failed.";
             return capture;
         }
 
@@ -1880,9 +1851,9 @@ version (Windows)
                 const sx = min(srcX + ox * step, width - 1);
                 const src = (cast(size_t) sy * width + sx) * 4;
                 const dst = (cast(size_t) oy * outWidth + ox) * 3;
-                rgb[dst] = pixels[src + 2];     // R
+                rgb[dst] = pixels[src];         // R
                 rgb[dst + 1] = pixels[src + 1]; // G
-                rgb[dst + 2] = pixels[src];     // B
+                rgb[dst + 2] = pixels[src + 2]; // B
             }
         }
         capture.ok = true;

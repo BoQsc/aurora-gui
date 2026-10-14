@@ -20,6 +20,7 @@ version (Windows)
     import std.path : buildPath;
     import std.utf : toUTF16z;
     import std.uuid : randomUUID;
+    import aurora.platform.gdiplus : GdiPlus;
 
     private enum size_t maxDibBytes = 128 * 1024 * 1024;
 
@@ -83,46 +84,24 @@ version (Windows)
         if (pixelOffset >= dib.length)
             throw new Exception("Clipboard bitmap pixels are missing.");
 
-        auto library = LoadLibraryW("gdiplus.dll"w.ptr);
-        if (library is null)
+        // Shared GDI+ session (aurora.platform.gdiplus) instead of a private
+        // LoadLibrary/GdiplusStartup bootstrap.
+        GdiPlus gp;
+        if (!gp.start())
             throw new Exception("Windows image conversion is unavailable.");
-        scope (exit) FreeLibrary(library);
+        scope (exit) gp.stop();
 
-        alias Startup = extern(Windows) int function(size_t*, const(void)*,
-            void*);
-        alias Shutdown = extern(Windows) void function(size_t);
         alias CreateBitmap = extern(Windows) int function(const(void)*,
             void*, void**);
         alias SaveImage = extern(Windows) int function(void*, const(wchar)*,
             const(GdiGuid)*, const(void)*);
         alias DisposeImage = extern(Windows) int function(void*);
-
-        auto startup = cast(Startup) GetProcAddress(library, "GdiplusStartup");
-        auto shutdown = cast(Shutdown) GetProcAddress(library, "GdiplusShutdown");
         auto createBitmap = cast(CreateBitmap)
-            GetProcAddress(library, "GdipCreateBitmapFromGdiDib");
-        auto saveImage = cast(SaveImage)
-            GetProcAddress(library, "GdipSaveImageToFile");
-        auto disposeImage = cast(DisposeImage)
-            GetProcAddress(library, "GdipDisposeImage");
-        if (startup is null || shutdown is null || createBitmap is null ||
-            saveImage is null || disposeImage is null)
+            gp.proc("GdipCreateBitmapFromGdiDib");
+        auto saveImage = cast(SaveImage) gp.proc("GdipSaveImageToFile");
+        auto disposeImage = cast(DisposeImage) gp.proc("GdipDisposeImage");
+        if (createBitmap is null || saveImage is null || disposeImage is null)
             throw new Exception("Windows image conversion is unavailable.");
-
-        struct StartupInput
-        {
-            uint version_;
-            void* debugCallback;
-            int suppressBackgroundThread;
-            int suppressExternalCodecs;
-        }
-        StartupInput input;
-        input.version_ = 1;
-        size_t token;
-        ubyte[32] output;
-        if (startup(&token, &input, output.ptr) != 0)
-            throw new Exception("Windows image conversion could not start.");
-        scope (exit) shutdown(token);
 
         void* bitmap;
         if (createBitmap(dib.ptr, cast(void*) (dib.ptr + pixelOffset),

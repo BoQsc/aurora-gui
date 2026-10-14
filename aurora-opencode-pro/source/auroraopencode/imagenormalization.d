@@ -48,11 +48,12 @@ version (Windows)
     private NormalizedImage windowsNormalize(const(ubyte)[] bytes,
         string mimeType, bool original, ImageCrop crop)
     {
-        auto library = LoadLibraryW("gdiplus.dll"w.ptr);
-        if (library is null) throw new Exception("Windows image conversion unavailable.");
-        scope (exit) FreeLibrary(library);
-        alias Startup = extern(Windows) int function(size_t*, const(void)*, void*);
-        alias Shutdown = extern(Windows) void function(size_t);
+        // Shared GDI+ session (aurora.platform.gdiplus) instead of a private
+        // LoadLibrary/GdiplusStartup bootstrap.
+        import aurora.platform.gdiplus : GdiPlus;
+        GdiPlus gp;
+        if (!gp.start()) throw new Exception("Windows image conversion unavailable.");
+        scope (exit) gp.stop();
         alias Load = extern(Windows) int function(const(wchar)*, void**);
         alias Dimension = extern(Windows) int function(void*, uint*);
         alias Dispose = extern(Windows) int function(void*);
@@ -65,31 +66,24 @@ version (Windows)
         alias Save = extern(Windows) int function(void*, const(wchar)*, const(Guid)*, const(void)*);
         alias PropertySize = extern(Windows) int function(void*, uint, uint*);
         alias Property = extern(Windows) int function(void*, uint, uint, void*);
-        auto startup = cast(Startup) GetProcAddress(library, "GdiplusStartup");
-        auto shutdown = cast(Shutdown) GetProcAddress(library, "GdiplusShutdown");
-        auto load = cast(Load) GetProcAddress(library, "GdipLoadImageFromFile");
-        auto getWidth = cast(Dimension) GetProcAddress(library, "GdipGetImageWidth");
-        auto getHeight = cast(Dimension) GetProcAddress(library, "GdipGetImageHeight");
-        auto dispose = cast(Dispose) GetProcAddress(library, "GdipDisposeImage");
-        auto create = cast(Create) GetProcAddress(library, "GdipCreateBitmapFromScan0");
-        auto graphics = cast(Graphics) GetProcAddress(library, "GdipGetImageGraphicsContext");
-        auto deleteGraphics = cast(Dispose) GetProcAddress(library, "GdipDeleteGraphics");
-        auto clear = cast(Clear) GetProcAddress(library, "GdipGraphicsClear");
-        auto interpolation = cast(Mode) GetProcAddress(library, "GdipSetInterpolationMode");
-        auto draw = cast(Draw) GetProcAddress(library, "GdipDrawImageRectRectI");
-        auto save = cast(Save) GetProcAddress(library, "GdipSaveImageToFile");
-        auto propertySize = cast(PropertySize) GetProcAddress(library, "GdipGetPropertyItemSize");
-        auto property = cast(Property) GetProcAddress(library, "GdipGetPropertyItem");
-        auto rotate = cast(Mode) GetProcAddress(library, "GdipImageRotateFlip");
-        if (startup is null || shutdown is null || load is null || getWidth is null ||
+        auto load = cast(Load) gp.proc("GdipLoadImageFromFile");
+        auto getWidth = cast(Dimension) gp.proc("GdipGetImageWidth");
+        auto getHeight = cast(Dimension) gp.proc("GdipGetImageHeight");
+        auto dispose = cast(Dispose) gp.proc("GdipDisposeImage");
+        auto create = cast(Create) gp.proc("GdipCreateBitmapFromScan0");
+        auto graphics = cast(Graphics) gp.proc("GdipGetImageGraphicsContext");
+        auto deleteGraphics = cast(Dispose) gp.proc("GdipDeleteGraphics");
+        auto clear = cast(Clear) gp.proc("GdipGraphicsClear");
+        auto interpolation = cast(Mode) gp.proc("GdipSetInterpolationMode");
+        auto draw = cast(Draw) gp.proc("GdipDrawImageRectRectI");
+        auto save = cast(Save) gp.proc("GdipSaveImageToFile");
+        auto propertySize = cast(PropertySize) gp.proc("GdipGetPropertyItemSize");
+        auto property = cast(Property) gp.proc("GdipGetPropertyItem");
+        auto rotate = cast(Mode) gp.proc("GdipImageRotateFlip");
+        if (load is null || getWidth is null ||
             getHeight is null || dispose is null || create is null || graphics is null ||
             deleteGraphics is null || clear is null || interpolation is null || draw is null || save is null)
             throw new Exception("Windows image converter is incomplete.");
-        struct StartupInput { uint version_ = 1; void* callback; int suppressThread, suppressCodecs; }
-        StartupInput input;
-        size_t token;
-        if (startup(&token, &input, null) != 0) throw new Exception("Image converter could not start.");
-        scope (exit) shutdown(token);
         const path = buildPath(tempDir(), "aurora-image-" ~ randomUUID().toString());
         scope (exit) removeTemporary(path);
         write(path, bytes);

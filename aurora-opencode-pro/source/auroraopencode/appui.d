@@ -20368,7 +20368,11 @@ private void pollButtonSuggestionRequest()
         auto runtime = runtimeForSession(sessionIndex);
         if (runtime is null || !runtime.titlePending ||
             runtime.titleClient !is null) return;
-        if (anyTurnIsBusy()) return;
+        // Only this conversation's own work defers the rewrite. Waiting for
+        // every conversation to fall idle starved the name whenever any other
+        // chat had a turn running, so a new conversation kept its raw first
+        // message as its title.
+        if (runtime.busy()) return;
         if (runtime.titleAttempts >= quickTitleMaxAttempts)
         {
             runtime.titlePending = false;

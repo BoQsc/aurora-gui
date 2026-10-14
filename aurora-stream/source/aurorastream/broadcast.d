@@ -7,6 +7,7 @@ import aurorastream.gamecapture : GameCaptureSession, GameCaptureFrame,
     gameCaptureHookPath;
 import aurorastream.windowsources : windowExists, windowIsMinimized,
     windowLabelIsProcess, windowProcessImageName;
+import aurora.platform.gdi : GdiBgraScaler = BgraFrameScaler;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, dur, msecs;
@@ -2308,112 +2309,28 @@ final class BroadcastWorker
     }
 
     /// Resizes a hook frame into the fixed source canvas expected by FFmpeg.
-    /// This matches the later scale/pad graph: preserve aspect ratio, center
-    /// the image, and leave unused canvas pixels black.
-    version (Windows)
+    /// The GDI aspect-fit/black-pad scaling now lives in aurora.platform.gdi;
+    /// this wrapper keeps the same behavior for the game-capture pump.
     version (Windows)
     private final class BgraFrameScaler
     {
-        private int _targetWidth;
-        private int _targetHeight;
-        private HDC _targetDC;
-        private HBITMAP _targetBitmap;
-        private HGDIOBJ _targetPrevious;
-        private void* _targetBits;
+        private GdiBgraScaler _scaler;
 
         this(int targetWidth, int targetHeight)
         {
-            _targetWidth = targetWidth;
-            _targetHeight = targetHeight;
-        }
-
-        ~this()
-        {
-            close();
+            _scaler = new GdiBgraScaler(targetWidth, targetHeight);
         }
 
         void close()
         {
-            if (_targetDC !is null && _targetPrevious !is null)
-                SelectObject(_targetDC, _targetPrevious);
-            _targetPrevious = null;
-            if (_targetBitmap !is null) DeleteObject(_targetBitmap);
-            _targetBitmap = null;
-            if (_targetDC !is null) DeleteDC(_targetDC);
-            _targetDC = null;
-            _targetBits = null;
-        }
-
-        private bool ensureTargetSurface()
-        {
-            if (_targetDC !is null && _targetBits !is null) return true;
-            auto screenDC = GetDC(null);
-            if (screenDC is null) return false;
-            scope(exit) ReleaseDC(null, screenDC);
-            _targetDC = CreateCompatibleDC(screenDC);
-            if (_targetDC is null) return false;
-
-            BITMAPINFO info;
-            info.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
-            info.bmiHeader.biWidth = _targetWidth;
-            info.bmiHeader.biHeight = -_targetHeight;
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            info.bmiHeader.biCompression = BI_RGB;
-            _targetBitmap = CreateDIBSection(_targetDC, &info,
-                DIB_RGB_COLORS, &_targetBits, null, 0);
-            if (_targetBitmap is null || _targetBits is null) return false;
-            _targetPrevious = SelectObject(_targetDC,
-                cast(HGDIOBJ) _targetBitmap);
-            SetStretchBltMode(_targetDC, HALFTONE);
-            return _targetPrevious !is null;
+            _scaler.close();
         }
 
         bool fit(const GameCaptureFrame source, ubyte[] target)
         {
-            const targetBytes = cast(size_t) _targetWidth * _targetHeight * 4;
-            if (source is null || target.length < targetBytes ||
-                source.width == 0 || source.height == 0 ||
-                source.pixels.length <
-                    cast(size_t) source.width * source.height * 4)
-                return false;
-            if (source.width == _targetWidth &&
-                source.height == _targetHeight)
-            {
-                memcpy(target.ptr, source.pixels.ptr, targetBytes);
-                return true;
-            }
-
-            if (!ensureTargetSurface()) return false;
-            ulong scaledWidth = _targetWidth;
-            ulong scaledHeight = cast(ulong) _targetWidth * source.height /
-                source.width;
-            if (scaledHeight > _targetHeight)
-            {
-                scaledHeight = _targetHeight;
-                scaledWidth = cast(ulong) _targetHeight * source.width /
-                    source.height;
-            }
-            if (scaledWidth == 0 || scaledHeight == 0) return false;
-            const offsetX = (_targetWidth - cast(int) scaledWidth) / 2;
-            const offsetY = (_targetHeight - cast(int) scaledHeight) / 2;
-
-            BITMAPINFO sourceInfo;
-            sourceInfo.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
-            sourceInfo.bmiHeader.biWidth = cast(int) source.width;
-            sourceInfo.bmiHeader.biHeight = -cast(int) source.height;
-            sourceInfo.bmiHeader.biPlanes = 1;
-            sourceInfo.bmiHeader.biBitCount = 32;
-            sourceInfo.bmiHeader.biCompression = BI_RGB;
-            memset(_targetBits, 0, targetBytes);
-            const copiedLines = StretchDIBits(_targetDC, offsetX, offsetY,
-                cast(int) scaledWidth, cast(int) scaledHeight, 0, 0,
-                cast(int) source.width, cast(int) source.height,
-                source.pixels.ptr, &sourceInfo, DIB_RGB_COLORS, SRCCOPY);
-            if (copiedLines == 0 || copiedLines == cast(int) GDI_ERROR)
-                return false;
-            memcpy(target.ptr, _targetBits, targetBytes);
-            return true;
+            if (source is null) return false;
+            return _scaler.fit(source.pixels, cast(int) source.width,
+                cast(int) source.height, target);
         }
     }
 

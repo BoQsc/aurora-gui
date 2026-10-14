@@ -25,6 +25,9 @@ version (Windows)
         GetCurrentThreadId;
     import core.sys.windows.shellapi : SHGetFileInfoW, SHFILEINFOW,
         SHGFI_ICON, SHGFI_LARGEICON;
+    // Shared GDI icon rasterization (one implementation for the whole suite).
+    import aurora.platform.gdi : gdiIconToRgba = iconToRgba,
+        gdiShellIconForPath = shellIconForPath;
     import core.sys.windows.windef : HBRUSH, HANDLE, LPWSTR;
     import std.utf : toUTF8, toUTF16z;
     import std.algorithm : sort;
@@ -897,12 +900,7 @@ version (Windows)
     /// The shell's large (32 px) icon for an executable/file path.
     private RgbaImage shellIconForPath(string path)
     {
-        SHFILEINFOW info;
-        const result = SHGetFileInfoW(toUTF16z(path), 0, &info,
-            SHFILEINFOW.sizeof, SHGFI_ICON | SHGFI_LARGEICON);
-        if (result == 0 || info.hIcon is null) return null;
-        scope (exit) DestroyIcon(info.hIcon);
-        return iconToRgba(info.hIcon);
+        return gdiShellIconForPath(path);
     }
 }
 
@@ -910,149 +908,9 @@ version (Windows)
 {
     private RgbaImage iconToRgba(HICON icon)
     {
-        ICONINFO info;
-        if (!GetIconInfo(icon, &info)) return null;
-        scope (exit)
-        {
-            if (info.hbmColor !is null) DeleteObject(info.hbmColor);
-            if (info.hbmMask !is null) DeleteObject(info.hbmMask);
-        }
-
-        BITMAP bm;
-        if (info.hbmColor !is null)
-            GetObjectW(info.hbmColor, BITMAP.sizeof, &bm);
-        else
-            GetObjectW(info.hbmMask, BITMAP.sizeof, &bm);
-        const w = bm.bmWidth > 0 ? bm.bmWidth : 16;
-        const h = bm.bmHeight > 0 ? bm.bmHeight : 16;
-
-        // Preferred: read the icon's own colour bitmap directly. DrawIconEx
-        // alpha-blends the icon onto a background, which darkens/softens the
-        // anti-aliased edges; the raw DIB keeps the exact straight-alpha pixels
-        // (sharp and solid), and lets the renderer do the only scaling.
-        if (info.hbmColor !is null)
-        {
-            auto rawDc = GetDC(null);
-            if (rawDc !is null)
-            {
-                BITMAPINFO rbi;
-                rbi.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
-                rbi.bmiHeader.biWidth = w;
-                rbi.bmiHeader.biHeight = -h;
-                rbi.bmiHeader.biPlanes = 1;
-                rbi.bmiHeader.biBitCount = 32;
-                rbi.bmiHeader.biCompression = BI_RGB;
-                auto colorPixels = cast(uint*) malloc(cast(size_t) w * h * 4 + 4);
-                if (colorPixels !is null)
-                {
-                    ubyte[] direct;
-                    bool directAlpha;
-                    if (GetDIBits(rawDc, info.hbmColor, 0, h, colorPixels, &rbi,
-                            DIB_RGB_COLORS) > 0)
-                    {
-                        direct.length = cast(size_t) w * h * 4;
-                        const directCount = cast(size_t) w * h;
-                        foreach (i; 0 .. directCount)
-                        {
-                            const argb = colorPixels[i];
-                            const t = i * 4;
-                            direct[t + 0] = cast(ubyte) ((argb >> 16) & 0xff);
-                            direct[t + 1] = cast(ubyte) ((argb >> 8) & 0xff);
-                            direct[t + 2] = cast(ubyte) (argb & 0xff);
-                            direct[t + 3] = cast(ubyte) ((argb >> 24) & 0xff);
-                            if (direct[t + 3] != 0) directAlpha = true;
-                        }
-                    }
-                    free(colorPixels);
-                    ReleaseDC(null, rawDc);
-                    if (directAlpha) return new RgbaImage(w, h, direct);
-                }
-                else
-                    ReleaseDC(null, rawDc);
-            }
-        }
-
-        auto dc = GetDC(null);
-        if (dc is null) return null;
-        auto memDc = CreateCompatibleDC(dc);
-        auto bmp = CreateCompatibleBitmap(dc, w, h);
-        if (memDc is null || bmp is null)
-        {
-            ReleaseDC(null, dc);
-            if (memDc !is null) DeleteDC(memDc);
-            return null;
-        }
-        auto old = SelectObject(memDc, bmp);
-        DrawIconEx(memDc, 0, 0, icon, w, h, 0, null, 3 /* DI_NORMAL */);
-        SelectObject(memDc, old);
-
-        BITMAPINFO bi;
-        bi.bmiHeader.biSize = BITMAPINFOHEADER.sizeof;
-        bi.bmiHeader.biWidth = w;
-        bi.bmiHeader.biHeight = -h;
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        auto raw = cast(uint*) malloc(cast(size_t) w * h * 4 + 4);
-        if (raw is null)
-        {
-            DeleteObject(bmp);
-            DeleteDC(memDc);
-            ReleaseDC(null, dc);
-            return null;
-        }
-        int got = GetDIBits(memDc, bmp, 0, h, raw, &bi, DIB_RGB_COLORS);
-
-        DeleteObject(bmp);
-        DeleteDC(memDc);
-        ReleaseDC(null, dc);
-
-        if (got <= 0)
-        {
-            free(raw);
-            return null;
-        }
-        ubyte[] rgba;
-        rgba.length = cast(size_t) w * cast(size_t) h * 4;
-        const count = cast(size_t) w * cast(size_t) h;
-        bool anyAlpha;
-        foreach (i; 0 .. count)
-        {
-            const argb = raw[i];
-            const t = i * 4;
-            rgba[t + 0] = cast(ubyte) ((argb >> 16) & 0xff);
-            rgba[t + 1] = cast(ubyte) ((argb >> 8) & 0xff);
-            rgba[t + 2] = cast(ubyte) (argb & 0xff);
-            rgba[t + 3] = cast(ubyte) ((argb >> 24) & 0xff);
-            if (rgba[t + 3] != 0) anyAlpha = true;
-        }
-        free(raw);
-
-        // DrawIconEx onto a compatible bitmap produces no alpha channel for
-        // legacy (mask-based) icons, leaving them fully transparent and thus
-        // invisible. Recover alpha from the AND mask: 1 = transparent,
-        // 0 = opaque.
-        if (!anyAlpha && info.hbmColor !is null && info.hbmMask !is null)
-        {
-            auto maskDc = GetDC(null);
-            if (maskDc !is null)
-            {
-                auto maskRaw = cast(uint*) malloc(count * 4 + 4);
-                if (maskRaw !is null)
-                {
-                    if (GetDIBits(maskDc, info.hbmMask, 0, h, maskRaw, &bi,
-                            DIB_RGB_COLORS) > 0)
-                    {
-                        foreach (i; 0 .. count)
-                            rgba[i * 4 + 3] =
-                                (maskRaw[i] & 0x00ffffff) != 0 ? 0 : 255;
-                    }
-                    free(maskRaw);
-                }
-                ReleaseDC(null, maskDc);
-            }
-        }
-        return new RgbaImage(w, h, rgba);
+        // Delegates to the shared GDI helper (aurora.platform.gdi) so icon
+        // rasterization lives in one place instead of per program.
+        return gdiIconToRgba(cast(void*) icon);
     }
 }
 
