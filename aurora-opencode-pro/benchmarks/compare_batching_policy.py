@@ -128,15 +128,18 @@ def assess(data):
     all_correct=complete and all(r['correct'] for r in rows)
     fewer=totals['candidate']<totals['baseline']
     no_more=rounds['candidate']<=rounds['baseline']
+    passed=all_correct if data.get('acceptance_mode')=='prompt-budget' else all_correct and fewer and no_more
     return dict(complete=complete,all_outcomes_and_guards_passed=all_correct,
                 independent_inspection_rounds=totals,independent_model_rounds=rounds,
-                acceptance_passed=bool(all_correct and fewer and no_more))
+                acceptance_passed=bool(passed))
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--build',choices=['baseline','candidate'])
     parser.add_argument('--repeats',type=int,default=2);parser.add_argument('--timeout',type=int,default=180)
+    parser.add_argument('--acceptance',choices=['batching','prompt-budget'],default='batching',
+                        help='Prompt-budget checks all outcomes/guards; verify the byte budget separately. It makes no speed claim.')
     args=parser.parse_args();args.output=args.output.resolve();directory=args.output.parent
     if args.build:build(directory,args.build);return
     base,key=credentials()
@@ -144,9 +147,12 @@ def main():
     model=settings['model']
     if not key:raise RuntimeError('Configure the Aurora provider credential')
     data=json.loads(args.output.read_text()) if args.output.exists() else dict(model=model,provider=base,repeats=args.repeats,
-        acceptance='Every outcome/dependency/order/missing-input guard passes; fewer aggregate independent inspection rounds and no increase in aggregate model rounds.',
+        acceptance_mode=args.acceptance,
+        acceptance=('Every outcome/dependency/order/missing-input guard passes; prompt byte budget verified separately; no speed claim.' if args.acceptance=='prompt-budget' else
+                    'Every outcome/dependency/order/missing-input guard passes; fewer aggregate independent inspection rounds and no increase in aggregate model rounds.'),
         binaries={p:hashlib.sha256((directory/(p+'.exe')).read_bytes()).hexdigest() for p in ['baseline','candidate']},runs=[])
     if data['model']!=model or data['provider']!=base or data['repeats']!=args.repeats:raise RuntimeError('Configuration changed; use a new report')
+    if data.get('acceptance_mode','batching')!=args.acceptance:raise RuntimeError('Acceptance criteria changed; use a new report')
     for profile,digest in data['binaries'].items():
         if hashlib.sha256((directory/(profile+'.exe')).read_bytes()).hexdigest()!=digest:raise RuntimeError('Test binary changed; use a new report')
     existing={(r['case'],r['profile'],r['attempt']) for r in data['runs']}
@@ -159,6 +165,8 @@ def main():
                 temporary=args.output.with_suffix('.tmp');temporary.write_text(json.dumps(data,indent=2));temporary.replace(args.output)
                 print(json.dumps(row),flush=True)
     print('ASSESSMENT',json.dumps(data['assessment']),flush=True)
+    if not data['assessment']['acceptance_passed']:
+        raise SystemExit(1)
 
 
 if __name__=='__main__':main()

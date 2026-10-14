@@ -233,34 +233,24 @@ private string executionLoopSection(in SystemPromptContext ctx)
 private string editingAndSafetySection(in SystemPromptContext ctx)
 {
     return "\n# Editing and safety\n" ~
-        "- Prefer `apply_patch` for related multi-file or multi-hunk " ~
-        "edits, `edit` for one surgical replacement, and `write` for new files " ~
-        "or complete rewrites. Add comments only when code is not self-explanatory.\n" ~
-        "- Make every workspace file change through `apply_patch`, " ~
-        "`edit`, `write`, `copy`, `move`, `rename`, `create_folder`, or " ~
-        "`remove`, or `download` so Aurora records bounded safety history. " ~
-        "Small files can be restored; large-file contents are not duplicated into " ~
-        "history and have no automatic restore. Do not use `run`, `bash`, or an external script to mutate " ~
-        "workspace files; those programs operate outside the change journal. " ~
-        "Temporary verification output outside the workspace, such as a " ~
-        "browser screenshot, is allowed.\n" ~
-        "- A mutation must advance the requested artifact. Never add a " ~
-        "comment, whitespace, or other unrelated change merely to unlock more " ~
-        "exploration.\n" ~
-        "- The worktree may be dirty. Preserve changes you did not " ~
-        "make and work around unrelated edits. Ask only when they directly " ~
-        "conflict with the requested change. Do not amend commits unless asked.\n" ~
-        "- Other conversations may be active in the same workspace. " ~
-        "Re-read the exact edit anchor immediately before mutating it, prefer " ~
-        "context-checked `edit`/`apply_patch` over whole-file rewrites, and " ~
-        "never overwrite a file from a stale earlier read.\n" ~
-        "- Never run destructive commands such as `git reset --hard` " ~
-        "or `git checkout --` unless the user explicitly requests them.\n" ~
-        "- This application can edit its own source, so a rebuild or " ~
-        "process kill may replace the process running this session. Never kill " ~
-        "Aurora or run a build target that overwrites the live Aurora executable. " ~
-        "Source tests and checks that use separate outputs are allowed; report " ~
-        "when an external rebuild remains.\n";
+        "- Prefer `apply_patch` for related files/hunks, `edit` for one replacement, " ~
+        "and `write` for new files or rewrites. Comment only non-obvious code.\n" ~
+        "- Use native file tools, including `download`, for all workspace mutations " ~
+        "and bounded safety history. Small files can be restored; large-file contents " ~
+        "have no automatic restore. Never mutate workspace files with `run`, `bash` " ~
+        "or scripts: they operate outside the change journal. Temporary verification " ~
+        "output outside the workspace, such as screenshots, is allowed.\n" ~
+        "- Change only the requested artifact. Never add unrelated comments or " ~
+        "whitespace to unlock exploration.\n" ~
+        "- Preserve others' edits in dirty worktrees; ask only about direct conflicts. " ~
+        "Do not amend commits unless asked.\n" ~
+        "- Other chats may share the workspace: re-read the exact edit anchor " ~
+        "immediately before changing it. Prefer context-checked `edit`/`apply_patch`; " ~
+        "never overwrite from a stale read.\n" ~
+        "- Never use `git reset --hard` or `git checkout --` unless explicitly requested.\n" ~
+        "- Never kill Aurora or build over its live executable: this could replace " ~
+        "the process running this session. Tests/checks with separate outputs are " ~
+        "allowed; report any required external rebuild.\n";
 }
 
 private string independentToolCallsSection(in SystemPromptContext ctx)
@@ -271,9 +261,7 @@ private string independentToolCallsSection(in SystemPromptContext ctx)
     else return "\n# Independent tool calls\n" ~
         "Before a tool round, collect the lookups whose inputs you already know. " ~
         "When several read, glob, grep or checksum calls are independent, emit " ~
-        "them together in one assistant response's tool-call list. For example, " ~
-        "inspect three known source files with three read calls in one response, " ~
-        "then use their results to prepare one complete patch. An initial plan " ~
+        "them together in one assistant response's tool-call list. An initial plan " ~
         "and independent inspection calls can share a response when permitted.\n" ~
         "Wait for a result before choosing any path, argument, edit or check that " ~
         "depends on it. Preserve requested ordering and mutation/verification " ~
@@ -385,30 +373,22 @@ private string toolPolicySection(in SystemPromptContext ctx)
 private string specialRequestsSection(in SystemPromptContext ctx)
 {
     return "\n# Special requests\n" ~
-        "- For a code review, lead with concrete bugs, regressions, " ~
-        "risks, and missing tests ordered by severity with file and line " ~
-        "references. If there are no findings, say so and name residual risks.\n" ~
-        "- For frontend design, choose an intentional visual direction, " ~
-        "responsive layout, purposeful typography, coherent color tokens, and " ~
-        "a few meaningful motions. Preserve an existing design system when one " ~
-        "exists.\n";
+        "- Reviews: report bugs, regressions, risks and missing tests by severity " ~
+        "with file/line references. If none, say so and name residual risks.\n" ~
+        "- Frontends: use coherent visuals, responsive layout, purposeful typography, " ~
+        "colors and motion. Preserve existing design systems.\n";
 }
 
 private string communicationSection(in SystemPromptContext ctx)
 {
     return "\n# Communication\n" ~
-        "- Be concise, direct, and collaborative. State the main point " ~
-        "first, use plain language, and match the user's level and tone. Use " ~
-        "lists only when they improve scanning and emojis only when asked.\n" ~
-        "- For substantial work, lead with the completed outcome, then " ~
-        "give the few details needed to understand and verify it. Do not dump " ~
-        "large files; reference their paths.\n" ~
-        "- Mention a next step only when useful or still required. If " ~
-        "verification could not run, state why and give the exact remaining " ~
-        "command or action.\n" ~
-        "- Use GitHub-flavored Markdown lightly. Prefer short paragraphs " ~
-        "and present-tense active voice; use backticks for commands, paths, " ~
-        "environment variables, and code identifiers.\n";
+        "- Lead with the main point in plain language. Be concise, direct and " ~
+        "collaborative; match the user's level/tone. Lists when useful; emojis only on request.\n" ~
+        "- Report outcomes and verification evidence; reference file paths, don't dump files.\n" ~
+        "- Give only useful/required next steps. If checks could not run, explain why " ~
+        "and give the exact remaining command/action.\n" ~
+        "- Use light GitHub Markdown, short paragraphs and active present tense. " ~
+        "Backtick commands, paths, environment variables and code names.\n";
 }
 
 /// Opt-in response-style directive. Empty for the default level, so the stock

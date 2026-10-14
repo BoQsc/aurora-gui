@@ -2259,6 +2259,25 @@ private ToolExecution runProgramTool(string args, string workspace,
         }
     }
 
+    version (Windows)
+    {
+        // GUI launches may inherit a PATH without Git even though sync already
+        // knows an installed/private copy. Preserve explicit and local paths;
+        // discovery is read-only and never installs or downloads a tool.
+        if (fullArgv[0] == program &&
+            (program.toLower() == "git" || program.toLower() == "git.exe"))
+        {
+            import auroraopencode.developerworkflow : findDeveloperTool;
+            try
+            {
+                const found = findDeveloperTool("git", opencodeStateDirectory());
+                if (found.length && isAbsolute(found) && isFile(found))
+                    fullArgv[0] = found;
+            }
+            catch (Exception) {} // Let the normal spawn error describe absence.
+        }
+    }
+
     if (background)
         return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
             "run");
