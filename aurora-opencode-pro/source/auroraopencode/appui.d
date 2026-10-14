@@ -13054,8 +13054,13 @@ private string _suggestExcludeId;
         // callback maps the visible row to its session and moves it.
         _sessionList.projectIndexAtGlobal = delegate(Point globalPosition)
         {
-            return _projectRail is null ? -1
-                : _projectRail.indexAt(_projectRail.globalToLocal(globalPosition));
+            if (_projectRail is null) return -1;
+            // ListView row math only looks at Y, so a point over the sidebar
+            // would otherwise match a project at the same height. Require the
+            // pointer to actually sit inside the rail's rectangle first.
+            const local = _projectRail.globalToLocal(globalPosition);
+            if (!_projectRail.containsLocal(local)) return -1;
+            return _projectRail.indexAt(local);
         };
         _sessionList.projectNameAt = delegate(int projectIndex)
         {
