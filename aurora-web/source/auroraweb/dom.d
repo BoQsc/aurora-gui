@@ -34,6 +34,8 @@ final class Element
     Box box;               /// Filled by the layout pass.
     Object image;          /// Loaded image (aurora.image.RgbaImage) for <img>, if any.
     Object backgroundImage; /// Decoded image for `background-image`, if any.
+    bool imageLoadTried;      /// <img> fetch already attempted (avoid re-fetching).
+    bool backgroundLoadTried; /// `background-image` fetch already attempted.
 
     this(string tag)
     {

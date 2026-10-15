@@ -826,7 +826,7 @@ final class WebPageView : Widget
             _viewportWidth = maxInt(1, w);
             _viewportHeight = maxInt(1, h);
             _page.resize(_viewportWidth, _viewportHeight);
-            _page.layout();
+            _page.layoutIfNeeded();
             _contentHeight = contentHeight();
             invalidate();
         }
@@ -849,7 +849,7 @@ final class WebPageView : Widget
             _viewportHeight = maxInt(1, h);
             _page.resize(_viewportWidth, _viewportHeight);
         }
-        _page.layout();
+        _page.layoutIfNeeded();
         _contentHeight = contentHeight();
         // Clip to the widget and translate by the scroll offset.
         auto clipped = canvas.clipped(Rect(0, 0, size().width, size().height));

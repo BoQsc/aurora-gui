@@ -41,6 +41,9 @@ final class WebPage
     int _width;
     int _height;
     bool _documentBound;
+    bool _layoutDirty = true;   /// Document/style/viewport changed since last layout.
+    int _laidOutWidth = -1;     /// Viewport width used by the most recent layout.
+    int _laidOutHeight = -1;    /// Viewport height used by the most recent layout.
     /// Resource loader callback: given a URL, return the raw bytes or null.
     /// Used for both <img> decoding and `fetchText`/`fetchBytes`/`fetch`.
     ubyte[] delegate(string url) @safe _resourceLoader;
@@ -183,8 +186,11 @@ final class WebPage
     /// Re-target the next `layout()` to a new viewport size.
     void resize(int width, int height)
     {
-        _width = width > 0 ? width : 1;
-        _height = height > 0 ? height : 1;
+        const int w = width > 0 ? width : 1;
+        const int h = height > 0 ? height : 1;
+        if (w != _width || h != _height) _layoutDirty = true;
+        _width = w;
+        _height = h;
     }
 
     int width() { return _width; }
@@ -199,6 +205,7 @@ final class WebPage
         // animation frames or microtasks leak across a navigation.
         resetEventLoop();
         _root = parseHtml(html);
+        _layoutDirty = true;
         _rules = [];
         extractStyles();
         collectScripts();
@@ -267,12 +274,17 @@ final class WebPage
         // Run queued microtasks (Promise/async continuations).
         try _js.pumpMicrotasks();
         catch (Exception exc) {}
+        _layoutDirty = true; // scripts may have mutated the DOM
     }
 
     /// Parse CSS and append to the stylesheet.
     void setStylesheet(string css)
     {
-        if (css.length) _rules ~= parseStylesheet(css);
+        if (css.length)
+        {
+            _rules ~= parseStylesheet(css);
+            _layoutDirty = true;
+        }
     }
 
     /// Parse and execute a script string in the page's runtime.
@@ -282,6 +294,7 @@ final class WebPage
         auto program = _js.parseInto(source);
         _js.runProgram(program, _js.makeObject());
         _js.pumpMicrotasks();
+        _layoutDirty = true;
     }
 
     // -----------------------------------------------------------------------
@@ -312,7 +325,10 @@ final class WebPage
         auto loop = _js.eventLoop;
         if (loop is null) return false;
         loop.setNow(nowMs);
-        return loop.runUntilIdle() > 0;
+        const bool ran = loop.runUntilIdle() > 0;
+        // Script/timer work may have mutated the DOM: relayout on next paint.
+        if (ran) _layoutDirty = true;
+        return ran;
     }
 
     /// Run the "update the rendering" step: the queued animation-frame
@@ -321,7 +337,10 @@ final class WebPage
     bool serviceAnimationFrame(double timestamp)
     {
         auto loop = _js.eventLoop;
-        return loop !is null && loop.runFrame(timestamp);
+        if (loop is null) return false;
+        const bool ran = loop.runFrame(timestamp);
+        if (ran) _layoutDirty = true; // rAF callbacks commonly mutate the DOM
+        return ran;
     }
 
     /// Whether the page still has pending timers, tasks or animation frames.
@@ -343,7 +362,22 @@ final class WebPage
     {
         applyStylesAndLayout(_root, _rules, _width, _height);
         loadImages();
+        _laidOutWidth = _width;
+        _laidOutHeight = _height;
+        _layoutDirty = false;
     }
+
+    /// Lay out only when the document, style or viewport changed since the last
+    /// layout. Paint calls this so an unchanged frame does no layout work.
+    void layoutIfNeeded()
+    {
+        if (!_layoutDirty && _width == _laidOutWidth && _height == _laidOutHeight)
+            return;
+        layout();
+    }
+
+    /// Mark the document as needing a re-layout (DOM/style/JS mutation).
+    void markLayoutDirty() { _layoutDirty = true; }
 
     /// Find <img> elements without a decoded image and load them, and decode
     /// any CSS `background-image: url("...")` references.
@@ -352,11 +386,15 @@ final class WebPage
         void walk(Element e)
         {
             // <img src="...">
-            if (e.tag == "img" && e.image is null)
+            if (e.tag == "img" && e.image is null && !e.imageLoadTried)
             {
                 auto src = "src" in e.attrs;
                 if (src !is null && (*src).length)
                 {
+                    // Mark BEFORE fetching: a failing/absent URL must not be
+                    // re-fetched on every layout (that repeated real network I/O
+                    // once per frame while the image stayed unset).
+                    e.imageLoadTried = true;
                     try
                     {
                         auto bytes = fetchBytes(resolveUrl(_currentUrl, *src));
@@ -386,12 +424,14 @@ final class WebPage
                 }
             }
             // CSS background-image: url("...")
-            if (e.backgroundImage is null && e.style.backgroundImage.length > 4 &&
+            if (e.backgroundImage is null && !e.backgroundLoadTried &&
+                e.style.backgroundImage.length > 4 &&
                 e.style.backgroundImage[0 .. 4].toLower() == "url(")
             {
                 auto url = urlFromBackgroundImage(e.style.backgroundImage);
                 if (url.length)
                 {
+                    e.backgroundLoadTried = true;
                     try
                     {
                         auto bytes = fetchBytes(resolveUrl(_currentUrl, url));
@@ -415,7 +455,7 @@ final class WebPage
             }
             foreach (child; e.elements) walk(child);
         }
-        walk(_root);
+        if (_root !is null) walk(_root);
     }
 
     /// Extract the URL inside `url("...")`/`url('...')`/`url(...)`.
@@ -435,7 +475,9 @@ final class WebPage
     /// Paint the document into a canvas at the given offset.
     void paint(Canvas canvas, int offsetX, int offsetY)
     {
-        layout();
+        // Only relayout when the document changed: an unchanged frame is a pure
+        // re-draw of boxes already computed by the last layout.
+        layoutIfNeeded();
         fillCanvasBackground(canvas, _root, _width, _height);
         paintTree(_root, canvas);
     }

@@ -24,6 +24,7 @@ import aurora.image : RgbaImage;
 import aurora.text.layout : TextLayout, TextLayoutOptions;
 import aurora.types : Point, Rect, maxInt, minInt;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
+import auroraweb.shaping : shapeTextCached;
 
 import std.conv : to;
 import std.string : indexOf, lastIndexOf, split, startsWith, strip, toLower;
@@ -334,14 +335,6 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
     // Parse font size from style.
     auto pixelSize = style.fontSizePx > 0 ? style.fontSizePx : 16;
 
-    dchar[] dtext;
-    foreach (ch; text) dtext ~= ch;
-
-    import aurora.text.layout : TextLayoutOptions;
-    import aurora.text.atlas : FontSystem;
-    TextLayoutOptions options;
-    options.role = FontRole.ui;
-    options.pixelSize = max(1, pixelSize);
     // Wrapping width is the content width that layout stored, which is the
     // measured text width truncated to int. Re-wrap with one extra pixel so a
     // run whose measured width rounds down does not drop its final glyph onto
@@ -349,9 +342,9 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
     // `white-space: nowrap`/`pre` never wrap: paint the run on one line even if
     // it overflows its (narrow) box, matching the layout measure.
     const bool noWrap = style.whiteSpace == "nowrap" || style.whiteSpace == "pre";
-    options.maxWidth = (maxWidth > 0 && !noWrap) ? maxWidth + 1 : 0;
-    options.wrap = options.maxWidth > 0;
-    auto layout = FontSystem.sharedInstance().textEngine.layout(dtext, options);
+    const int wrapW = (maxWidth > 0 && !noWrap) ? maxWidth + 1 : 0;
+    // Memoized: the layout pass already shaped this exact run.
+    auto layout = shapeTextCached(text, pixelSize, wrapW, wrapW > 0);
     auto color = parseColorOrDefault(style.color, Color.rgb(0, 0, 0));
     // `background-clip: text` gradient text: the glyphs take the background
     // color (the gradient's fallback) rather than the (transparent) text color.

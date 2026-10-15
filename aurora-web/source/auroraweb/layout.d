@@ -22,6 +22,7 @@ module auroraweb.layout;
 
 import auroraweb.css : Rule, cascadeFor, applyMediaRules, parseStylesheet, keyframeEndState;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
+import auroraweb.shaping : shapeTextCached;
 import aurora.image : RgbaImage;
 import aurora.font : FontRole;
 import aurora.text.atlas : FontSystem;
@@ -36,22 +37,8 @@ import std.string : endsWith, indexOf, lastIndexOf, split, strip, toLower;
 /// on failure). This is what makes layout match painting.
 private TextLayout shapeText(string text, int pixelSize, int maxWidth)
 {
-    try
-    {
-        auto fonts = FontSystem.sharedInstance();
-        dchar[] dtext;
-        foreach (ch; text) dtext ~= ch;
-        TextLayoutOptions options;
-        options.role = FontRole.ui;
-        options.pixelSize = max(1, pixelSize);
-        options.maxWidth = maxWidth;
-        options.wrap = maxWidth > 0;
-        return fonts.textEngine.layout(dtext, options);
-    }
-    catch (Exception)
-    {
-        return null;
-    }
+    // Memoized: layout measures every run, and paint then shapes the same runs.
+    return shapeTextCached(text, pixelSize, maxWidth, maxWidth > 0);
 }
 
 /// Measure the wrapped height of a text run at the given width. Returns the
