@@ -20,8 +20,9 @@ module auroraweb.layout;
  * - Percentage lengths, min/max-width, min/max-height.
  */
 
-import auroraweb.css : Rule, cascadeFor, applyMediaRules, parseStylesheet, keyframeEndState;
-import auroraweb.dom : ComputedStyle, Element, TextNode;
+import auroraweb.css : Rule, cascadeFor, applyMediaRules, parseStylesheet,
+    keyframeEndState, pseudoElementRules;
+import auroraweb.dom : ComputedStyle, Element, InlineFragment, TextNode;
 import auroraweb.shaping : shapeTextCached;
 import aurora.image : RgbaImage;
 import aurora.font : FontRole;
@@ -162,7 +163,7 @@ private int minContentWidth(Element e, int percentBase)
 }
 
 /// Resolve styles for every element using the cascade, then lay out.
-void applyStylesAndLayout(Element root, in Rule[] rules, int viewportWidth, int viewportHeight)
+void applyStylesAndLayout(Element root, Rule[] rules, int viewportWidth, int viewportHeight)
 {
     auto active = applyMediaRules(rules, viewportWidth, viewportHeight);
     resolveStyles(root, active, viewportWidth, viewportHeight);
@@ -170,10 +171,11 @@ void applyStylesAndLayout(Element root, in Rule[] rules, int viewportWidth, int 
 }
 
 /// Resolve computed style for each element and its children.
-private void resolveStyles(Element element, in Rule[] rules, int viewportWidth, int viewportHeight)
+private void resolveStyles(Element element, Rule[] rules, int viewportWidth, int viewportHeight)
 {
     string[string] noCustom;
-    resolveStylesInto(element, rules, viewportWidth, viewportHeight, noCustom);
+    resolveStylesInto(element, rules, viewportWidth, viewportHeight, noCustom,
+        16, 16, pseudoElementRules(rules, "before"), pseudoElementRules(rules, "after"));
 }
 
 /// Resolve styles, inheriting CSS custom properties (`--name`) down the tree.
@@ -247,9 +249,9 @@ private int resolveFontSize(in ComputedStyle style, int parentPx)
     return v >= 0 ? v : parentPx;
 }
 
-private void resolveStylesInto(Element element, in Rule[] rules, int viewportWidth,
+private void resolveStylesInto(Element element, Rule[] rules, int viewportWidth,
     int viewportHeight, string[string] inheritedCustom, int parentFontPx = 16,
-    int rootFontPx = 16)
+    int rootFontPx = 16, in Rule[] beforeRules = null, in Rule[] afterRules = null)
 {
     auto cascade = cascadeFor(element, rules);
     // Custom properties: inherit the parent's (already-settled) map and only
@@ -291,9 +293,50 @@ private void resolveStylesInto(Element element, in Rule[] rules, int viewportWid
         element.style.color = element.parent.style.color;
     // The root element establishes the `rem` base for all its descendants.
     const int childRootFont = (element.parent is null) ? element.style.fontSizePx : rootFontPx;
+    // Generated pseudo-elements (CSS 12): build the ::before/::after boxes now
+    // that this element's style (and inherited custom properties) are settled.
+    element.pseudoBefore = buildPseudoElement(element, "before", beforeRules,
+        custom, parentFontPx, childRootFont);
+    element.pseudoAfter = buildPseudoElement(element, "after", afterRules,
+        custom, parentFontPx, childRootFont);
     foreach (child; element.elements)
         resolveStylesInto(child, rules, viewportWidth, viewportHeight, custom,
-            element.style.fontSizePx, childRootFont);
+            element.style.fontSizePx, childRootFont, beforeRules, afterRules);
+}
+
+/// Build one generated pseudo-element box, or null when the page has no usable
+/// `::before`/`::after` rule for this element (no `content`, or no match). The
+/// box is deliberately kept OUT of `children`/`elements` so DOM and script APIs
+/// never see it, while layout and paint treat it like any other element.
+private Element buildPseudoElement(Element element, string which, in Rule[] rules,
+    string[string] custom, int parentFontPx, int rootFontPx)
+{
+    if (rules.length == 0) return null;
+    auto cascade = cascadeFor(element, rules);
+    auto contentValue = "content" in cascade;
+    if (contentValue is null) return null;
+    auto raw = (*contentValue).strip();
+    if (raw.length == 0 || raw == "none" || raw == "normal") return null;
+
+    auto pseudo = new Element("::" ~ which);
+    pseudo.parent = element;
+    pseudo.style = computedStyle(pseudo, rules, cascade, custom);
+    // Park the resolved `content` on the node so paint can use it as the box text.
+    pseudo.style.content = raw;
+
+    // `content: "text"` / 'text' — strip one surrounding quote pair.
+    string text = raw;
+    if (text.length >= 2 &&
+        ((text[0] == '"' && text[$ - 1] == '"') ||
+         (text[0] == '\'' && text[$ - 1] == '\'')))
+        text = text[1 .. $ - 1];
+    if (text.length)
+    {
+        auto node = new TextNode(pseudo, text);
+        node.parent = pseudo;
+        pseudo.children ~= node;
+    }
+    return pseudo;
 }
 
 /// Compute the style map for one element from cascade plus inline style.
@@ -330,6 +373,15 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
     // style, so a property missing from it never arrives (which is how a
     // landscape figure with aspect-ratio: 1200/520 kept a zero height).
     applyDeclaration(style, "aspect-ratio", cascade.get("aspect-ratio", ""));
+    // Same trap this list already documents for `aspect-ratio`: a property that
+    // is not named here never reaches the style, however well `applyDeclaration`
+    // handles it. `mask-image` and the generated `content` are both needed by
+    // real pages (`body::before` fades a grid layer with a gradient mask).
+    applyDeclaration(style, "mask-image", cascade.get("mask-image", ""));
+    applyDeclaration(style, "-webkit-mask-image",
+        cascade.get("-webkit-mask-image", ""));
+    applyDeclaration(style, "content", cascade.get("content", ""));
+    applyDeclaration(style, "inset", cascade.get("inset", ""));
     applyDeclaration(style, "background-repeat", cascade.get("background-repeat", ""));
     applyDeclaration(style, "font-size", cascade.get("font-size", ""));
     applyDeclaration(style, "font-weight", cascade.get("font-weight", ""));
@@ -1010,6 +1062,16 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         // elements in the wrong place.
         case "transform": style.transform = value.strip(); break;
         case "object-fit": style.objectFit = value.strip().toLower(); break;
+        // `mask-image`: the fading linear-gradient mask pages use to soften a
+        // decorative layer. Its alpha multiplies everything the element paints.
+        case "mask-image", "-webkit-mask-image":
+            style.maskImage = value.strip();
+            break;
+        // `content` — generates the text of a ::before/::after box. A box is only
+        // generated when `content` is present, so this is the switch for the
+        // whole feature.
+        case "content": style.content = value.strip(); break;
+
         case "flex":
             // flex: <grow> <shrink> <basis> — use grow.
             {
@@ -1967,6 +2029,14 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                         const int llx = (li == 0) ? cursorX : leftEdge;
                         const int lw = cast(int) layout.lines[li].width;
                         noteLine(lineIndex + li, llx, llx + lw);
+                        // The wrapping inline box this run belongs to is
+                        // fragmented per line (CSS 9.4.2), so its background and
+                        // border follow every line it covers rather than just
+                        // the first.
+                        auto inlineParent = cast(Element) text.parent;
+                        if (inlineParent !is null && inlineParent.style.display == "inline")
+                            inlineParent.inlineFragments ~=
+                                InlineFragment(llx, cursorY + li * lineH, lw, lineH);
                     }
                     // More than one line: consume the extra lines, then place
                     // the cursor at the start of the next line (the run's last
@@ -1978,6 +2048,10 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 else
                 {
                     noteLine(lineIndex, cursorX, cursorX + cast(int) layout.width);
+                    auto inlineParent = cast(Element) text.parent;
+                    if (inlineParent !is null && inlineParent.style.display == "inline")
+                        inlineParent.inlineFragments ~= InlineFragment(
+                            cursorX, cursorY, cast(int) layout.width, lineH);
                     cursorX += cast(int) layout.width;
                 }
                 maxBottom = max(maxBottom, cursorY + lineH);
@@ -2184,6 +2258,15 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             }
         }
     }
+}
+
+/// True when an inset (`top`/`left`/`right`/`bottom`) was actually declared. The
+/// sign cannot be used: insets may legitimately be negative (`right: -0.9rem`
+/// hangs an ornament off the right edge), which `>= 0` would read as unset.
+private bool insetGiven(string value)
+{
+    const s = value.strip().toLower();
+    return s.length > 0 && s != "auto";
 }
 
 /// Shift an inline element and all its descendant inline text runs by `shift`
@@ -2423,6 +2506,21 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     const rightV = style.resolveLength(style.right, cbW);
     const bottomV = style.resolveLength(style.bottom, cbH);
 
+    // "Given" must be decided from the declaration, not from the sign: insets may
+    // legitimately be NEGATIVE (`right: -0.9rem` is how a real page hangs a
+    // decorative ornament off the right edge). Treating `>= 0` as the given test
+    // made a negative inset look unset, so such an element fell back to the left
+    // edge instead of the right one.
+    bool insetGiven(string value)
+    {
+        const s = value.strip().toLower();
+        return s.length > 0 && s != "auto";
+    }
+    const bool topGiven = insetGiven(style.top);
+    const bool leftGiven = insetGiven(style.left);
+    const bool rightGiven = insetGiven(style.right);
+    const bool bottomGiven = insetGiven(style.bottom);
+
     // `margin: auto` is detected from the style text: the per-side longhand
     // wins over the `margin` shorthand, and `auto` is still a keyword here
     // (the resolver reports it only as a value, not as a flag).
@@ -2435,7 +2533,7 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     // solved from the containing block instead of stretching to the full width
     // (and the element then ignores `right` entirely).
     int absW = w;
-    if (style.resolveLength(style.width, cbW) < 0 && leftV >= 0 && rightV >= 0)
+    if (style.resolveLength(style.width, cbW) < 0 && leftGiven && rightGiven)
     {
         absW = max(0, cbW - leftV - rightV - element.box.marginLeft -
             element.box.marginRight - element.box.paddingLeft -
@@ -2446,7 +2544,7 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     // Same rule vertically (CSS 10.6.4): `height: auto` with both insets is
     // solved from the containing block rather than collapsing or stretching.
     int absH = h;
-    if (style.resolveLength(style.height, cbH) < 0 && topV >= 0 && bottomV >= 0)
+    if (style.resolveLength(style.height, cbH) < 0 && topGiven && bottomGiven)
     {
         absH = max(0, cbH - topV - bottomV - element.box.marginTop -
             element.box.marginBottom - element.box.paddingTop -
@@ -2458,7 +2556,7 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     // `margin: auto` on an axis whose two insets are both given distributes the
     // leftover space (CSS 10.3.7 horizontal / 10.6.4 vertical) — this is how
     // absolutely positioned overlays centre themselves.
-    if (leftV >= 0 && rightV >= 0 &&
+    if (leftGiven && rightGiven &&
         (sideAuto(style.marginLeft, 3) || sideAuto(style.marginRight, 1)))
     {
         const spare = max(0, cbW - leftV - rightV - absW);
@@ -2469,7 +2567,7 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
         else
             element.box.marginRight = spare;
     }
-    if (topV >= 0 && bottomV >= 0 &&
+    if (topGiven && bottomGiven &&
         (sideAuto(style.marginTop, 0) || sideAuto(style.marginBottom, 2)))
     {
         const spare = max(0, cbH - topV - bottomV - absH);
@@ -2481,16 +2579,16 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
             element.box.marginBottom = spare;
     }
 
-    if (leftV >= 0)
+    if (leftGiven)
         element.box.x = cbX + leftV + element.box.marginLeft;
-    else if (rightV >= 0)
+    else if (rightGiven)
         element.box.x = cbX + cbW - absW - rightV - element.box.marginRight;
     else
         element.box.x = cbX + element.box.marginLeft;
 
-    if (topV >= 0)
+    if (topGiven)
         element.box.y = cbY + topV + element.box.marginTop;
-    else if (bottomV >= 0)
+    else if (bottomGiven)
         element.box.y = cbY + cbH - absH - bottomV - element.box.marginBottom;
     else
         element.box.y = cbY + element.box.marginTop;
@@ -2506,6 +2604,34 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     // Honor the element's OWN display (a flex/grid popup lays its children as
     // items, not as stacked blocks).
     layoutContents(element, childFlow, element);
+
+    // CSS 10.6.4: an absolutely positioned box with `height: auto` shrink-to-fits
+    // its content (unless both vertical insets are given, which was solved above).
+    // It used to be forced to exactly 0, so every auto-height overlay, tooltip
+    // and decorative absolutely positioned ornament collapsed to nothing — a real
+    // page's hero ornament measured 0x0 with its artwork laid out inside it.
+    if (style.resolveLength(style.height, cbH) < 0 && !(topGiven && bottomGiven))
+    {
+        const int contentTop = element.box.y + element.box.paddingTop +
+            element.box.borderTop;
+        int contentBottom = contentTop;
+        foreach (child; element.children)
+        {
+            auto childEl = cast(Element) child;
+            if (childEl !is null)
+            {
+                if (childEl.style.display == "none") continue;
+                contentBottom = max(contentBottom, childEl.box.y + childEl.box.height);
+                continue;
+            }
+            auto childText = cast(TextNode) child;
+            if (childText !is null)
+                contentBottom = max(contentBottom, childText.layoutY +
+                    (style.fontSizePx > 0 ? style.fontSizePx : 16));
+        }
+        element.box.height = clampMinMaxHeight(element,
+            max(0, contentBottom - contentTop));
+    }
 }
 
 /// Lay out a `position:fixed` element relative to the viewport (0,0). The
@@ -2525,6 +2651,29 @@ private void layoutFixed(Element element, int containingWidth, int viewportWidth
     const h = style.resolveLength(style.height, cbH);
     element.box.width = w;
     element.box.height = h >= 0 ? clampMinMaxHeight(element, max(0, h)) : 0;
+
+    // With `width`/`height` auto and BOTH insets given, the used size fills the
+    // inset rectangle (CSS 10.3.7 horizontal / 10.6.4 vertical). A fixed layer
+    // declared as `inset: 0` used to collapse to zero height, so a real page's
+    // full-viewport decorative grid layer never covered anything.
+    const bool fixedLeft = insetGiven(style.left);
+    const bool fixedRight = insetGiven(style.right);
+    const bool fixedTop = insetGiven(style.top);
+    const bool fixedBottom = insetGiven(style.bottom);
+    const int fixedLeftV = style.resolveLength(style.left, cbW);
+    const int fixedRightV = style.resolveLength(style.right, cbW);
+    const int fixedTopV = style.resolveLength(style.top, cbH);
+    const int fixedBottomV = style.resolveLength(style.bottom, cbH);
+    if (style.resolveLength(style.width, cbW) < 0 && fixedLeft && fixedRight)
+        element.box.width = max(0, cbW - fixedLeftV - fixedRightV -
+            element.box.marginLeft - element.box.marginRight -
+            element.box.paddingLeft - element.box.paddingRight -
+            element.box.borderLeft - element.box.borderRight);
+    if (style.resolveLength(style.height, cbH) < 0 && fixedTop && fixedBottom)
+        element.box.height = max(0, cbH - fixedTopV - fixedBottomV -
+            element.box.marginTop - element.box.marginBottom -
+            element.box.paddingTop - element.box.paddingBottom -
+            element.box.borderTop - element.box.borderBottom);
 
     const topV = style.resolveLength(style.top, cbH);
     const leftV = style.resolveLength(style.left, cbW);
@@ -2569,6 +2718,65 @@ private void layoutFixed(Element element, int containingWidth, int viewportWidth
 ///    before each block added hundreds of pixels of blank space to real pages.
 private void layoutChildren(Element element, ref FlowContext flow, Element positionedAncestor)
 {
+    // Generated `::before`/`::after` boxes (CSS 12) take part in this flow even
+    // though they are deliberately NOT in `children`/`elements` afterwards (so
+    // DOM and script APIs never observe them). They are spliced into the child
+    // lists for the duration of this pass only, `::before` first and `::after`
+    // last, exactly where CSS places generated content — so the out-of-flow loop
+    // below and in-flow placement (including inline and inline-block runs) both
+    // work unchanged, and script never sees the extra nodes.
+    auto savedChildren = element.children;
+    auto savedElements = element.elements;
+    scope(exit)
+    {
+        element.children = savedChildren;
+        element.elements = savedElements;
+    }
+    if (element.pseudoBefore !is null || element.pseudoAfter !is null)
+    {
+        typeof(element.children) splicedChildren;
+        typeof(element.elements) splicedElements;
+        if (element.pseudoBefore !is null)
+        {
+            splicedChildren ~= element.pseudoBefore;
+            splicedElements ~= element.pseudoBefore;
+        }
+        splicedChildren ~= savedChildren;
+        splicedElements ~= savedElements;
+        if (element.pseudoAfter !is null)
+        {
+            splicedChildren ~= element.pseudoAfter;
+            splicedElements ~= element.pseudoAfter;
+        }
+        element.children = splicedChildren;
+        element.elements = splicedElements;
+    }
+
+    // Absolutely/fixed positioned children are out of this flow, so the loops
+    // below skip them — and nobody laid them out afterwards: they kept their
+    // default 0x0 box. A real page's decorative ornament (`position: absolute`
+    // with a declared height, inside a grid item) measured 0x0 for exactly this
+    // reason. Placement only depends on the containing block, never on sibling
+    // layout, so doing it up front is correct and order-independent.
+    foreach (child; element.children)
+    {
+        auto positioned = cast(Element) child;
+        if (positioned is null) continue;
+        if (positioned.style.position != "absolute" &&
+            positioned.style.position != "fixed") continue;
+        auto cb = (element.style.position == "relative" ||
+                   element.style.position == "absolute" ||
+                   element.style.position == "fixed") ? element : positionedAncestor;
+        // `fixed` is relative to the viewport and ignores positioned ancestors.
+        if (positioned.style.position == "fixed")
+            layoutFixed(positioned, flow.width, positioned.style.viewportWidth,
+                positioned.style.viewportHeight);
+        else
+            layoutAbsolute(positioned, flow.width, cb);
+    }
+
+
+
     size_t runStart = 0;
     bool runPending = false;
     // Only runs that contain an inline ELEMENT are flushed at a block
@@ -3093,10 +3301,23 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         }
     }
 
-    // align-items: center.
-    if (style.alignItems == "center")
+    // align-items on the row's cross axis (CSS Flexbox 8.3). Only `center` used
+    // to be honoured, so a toolbar declaring `align-items: flex-start` centred
+    // its buttons and one declaring `flex-end` packed them to the top. `stretch`
+    // needs no work here: items already resolve their own height.
+    if (style.alignItems == "flex-start" || style.alignItems == "start")
     {
-        foreach (i, ce; items)
+        foreach (ce; items)
+            ce.box.y = innerY;
+    }
+    else if (style.alignItems == "flex-end" || style.alignItems == "end")
+    {
+        foreach (ce; items)
+            ce.box.y = innerY + maxChildHeight - ce.box.height;
+    }
+    else if (style.alignItems == "center")
+    {
+        foreach (ce; items)
             ce.box.y = innerY + (maxChildHeight - ce.box.height) / 2;
     }
 
@@ -3442,6 +3663,41 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
     totalH += element.box.paddingBottom + element.box.borderBottom;
     const hPx2 = element.style.resolveLength(element.style.height, style.containingHeight);
     element.box.height = hPx2 >= 0 ? hPx2 : max(0, totalH);
+
+    // Second pass: the items were laid during the measuring pass, while row
+    // heights were still estimates, so absolutely positioned descendants were
+    // placed against a not-yet-sized containing block and came out 0x0 (a real
+    // page's decorative hero ornament disappeared). Re-lay each item in its final
+    // cell now that the row heights are known.
+    {
+        int px = innerX;
+        int py = innerY;
+        int pr = 0;
+        int pc = 0;
+        foreach (ce; items)
+        {
+            if (pc >= cast(int) tracks.length)
+            {
+                pc = 0;
+                pr++;
+                px = innerX;
+                if (pr - 1 < cast(int) rowHeights.length)
+                    py += rowHeights[pr - 1] + rowGap;
+            }
+            ce.box.x = px;
+            ce.box.y = py;
+            ce.box.width = tracks[pc];
+            auto itemFlow = FlowContext();
+            itemFlow.x = px;
+            itemFlow.y = py;
+            itemFlow.width = tracks[pc];
+            itemFlow.height = pr < cast(int) rowHeights.length ? rowHeights[pr] : 0;
+            itemFlow.lineEnd = px + tracks[pc];
+            layoutContents(ce, itemFlow, ce);
+            px += tracks[pc] + colGap;
+            pc++;
+        }
+    }
 
     layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
 
@@ -4186,6 +4442,146 @@ unittest
     // --- an <img> with height:auto uses the image's intrinsic ratio ---
     // --- `color` inherits from an ancestor when the element sets none ---
     // --- aspect-ratio derives an auto height from the used width ---
+    // --- align-items shifts flex items on the cross axis ---
+    {
+        auto rulesA = parseStylesheet(`
+            body { margin: 0; }
+            .rowA { display: flex; align-items: flex-end; }
+            .tallA { width: 20px; height: 40px; }
+            .shortA2 { width: 20px; height: 10px; }
+        `, 200, 200);
+        auto docA = new Element("body");
+        auto rowA = new Element("div");
+        rowA.attrs["class"] = "rowA";
+        docA.children ~= rowA;
+        docA.elements ~= rowA;
+        rowA.parent = docA;
+        auto tallA = new Element("div");
+        tallA.attrs["class"] = "tallA";
+        auto shortA = new Element("div");
+        shortA.attrs["class"] = "shortA2";
+        rowA.children ~= tallA;
+        rowA.elements ~= tallA;
+        tallA.parent = rowA;
+        rowA.children ~= shortA;
+        rowA.elements ~= shortA;
+        shortA.parent = rowA;
+        applyStylesAndLayout(docA, rulesA, 200, 200);
+        assert(shortA.box.y == tallA.box.y + tallA.box.height - shortA.box.height,
+            "align-items:flex-end must pack items to the cross-axis end, got y=" ~
+            to!string(shortA.box.y) ~ " want " ~
+            to!string(tallA.box.y + tallA.box.height - shortA.box.height));
+    }
+
+    // --- generated ::before/::after boxes take part in the flow ---
+    {
+        auto rulesP = parseStylesheet(`
+            body { margin: 0; }
+            .gen::before { content: "->"; display: inline-block; width: 20px;
+                           height: 10px; }
+            .gen::after { content: ""; display: block; height: 24px; }
+        `, 200, 200);
+        auto docP = new Element("body");
+        auto gen = new Element("div");
+        gen.attrs["class"] = "gen";
+        docP.children ~= gen;
+        docP.elements ~= gen;
+        gen.parent = docP;
+        auto label = new TextNode(gen, "word");
+        label.parent = gen;
+        gen.children ~= label;
+        applyStylesAndLayout(docP, rulesP, 200, 200);
+
+        assert(gen.pseudoBefore !is null && gen.pseudoAfter !is null,
+            "a matching ::before/::after rule with content must generate a box");
+        // The generated boxes are NOT visible to DOM/script APIs.
+        assert(gen.children.length == 1 && gen.elements.length == 0,
+            "generated boxes must stay out of children/elements, got " ~
+            to!string(gen.children.length) ~ " children and " ~
+            to!string(gen.elements.length) ~ " elements");
+        assert(gen.pseudoBefore.box.width == 20 && gen.pseudoBefore.box.height == 10,
+            "an in-flow generated box must be laid out, got " ~
+            to!string(gen.pseudoBefore.box.width) ~ "x" ~
+            to!string(gen.pseudoBefore.box.height));
+        assert(gen.pseudoAfter.box.height == 24,
+            "a block generated box must be laid out, got height " ~
+            to!string(gen.pseudoAfter.box.height));
+    }
+
+    // --- a NEGATIVE inset is a value, not "unset" ---
+    {
+        auto rulesN = parseStylesheet(`
+            body { margin: 0; }
+            .ornN { position: absolute; top: 0; right: -10px; width: 100px;
+                    height: 20px; }
+        `, 400, 300);
+        auto docN = new Element("body");
+        auto ornN = new Element("div");
+        ornN.attrs["class"] = "ornN";
+        docN.children ~= ornN;
+        docN.elements ~= ornN;
+        ornN.parent = docN;
+        applyStylesAndLayout(docN, rulesN, 400, 300);
+        assert(ornN.box.x == 310,
+            "right:-10px with width:100px in a 400px box starts at x=310 " ~
+            "(a negative inset must not read as unset), got " ~
+            to!string(ornN.box.x));
+    }
+
+    // --- absolutely positioned descendants of a grid item get a real box ---
+    {
+        auto rulesG = parseStylesheet(`
+            body { margin: 0; }
+            .g { display: grid; }
+            .item { position: relative; }
+            .orn { position: absolute; top: 0; height: 40px; width: 20px; }
+        `, 400, 300);
+        auto docG = new Element("body");
+        auto g = new Element("div");
+        g.attrs["class"] = "g";
+        auto item = new Element("div");
+        item.attrs["class"] = "item";
+        auto orn = new Element("div");
+        orn.attrs["class"] = "orn";
+        item.children ~= orn;
+        item.elements ~= orn;
+        orn.parent = item;
+        g.children ~= item;
+        g.elements ~= item;
+        item.parent = g;
+        docG.children ~= g;
+        docG.elements ~= g;
+        g.parent = docG;
+        applyStylesAndLayout(docG, rulesG, 400, 300);
+        assert(orn.box.height == 40,
+            "an absolutely positioned descendant of a grid item must be placed " ~
+            "against the sized item, got height " ~ to!string(orn.box.height));
+    }
+
+    // --- an absolutely positioned box with auto height shrink-to-fits ---
+    {
+        auto rulesA = parseStylesheet(`
+            body { margin: 0; }
+            .ornament { position: absolute; top: 8px; left: 0; width: 40px; }
+            .ornament .dot { display: block; height: 32px; }
+        `, 400, 300);
+        auto docA = new Element("body");
+        auto orn = new Element("div");
+        orn.attrs["class"] = "ornament";
+        auto dot = new Element("div");
+        dot.attrs["class"] = "dot";
+        orn.children ~= dot;
+        orn.elements ~= dot;
+        dot.parent = orn;
+        docA.children ~= orn;
+        docA.elements ~= orn;
+        orn.parent = docA;
+        applyStylesAndLayout(docA, rulesA, 400, 300);
+        assert(orn.box.height == 32,
+            "an auto-height absolutely positioned box must shrink to fit its " ~
+            "content (CSS 10.6.4), got " ~ to!string(orn.box.height));
+    }
+
     // --- SVG metadata (<desc>/<title>/<defs>) must never render as text ---
     // --- markup indentation is not content (white-space: normal) ---
     {

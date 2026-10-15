@@ -92,9 +92,133 @@ void paintTree(Element root, Canvas canvas)
     paintElement(root, canvas);
 }
 
+/// Translate an element's whole box tree (element boxes and text runs) so a
+/// subtree can be painted into a layer whose origin is the element's box corner.
+private void translateBoxTree(Element el, int dx, int dy)
+{
+    el.box.x += dx;
+    el.box.y += dy;
+    foreach (child; el.children)
+    {
+        auto t = cast(TextNode) child;
+        if (t !is null)
+        {
+            t.layoutX += dx;
+            t.layoutY += dy;
+            continue;
+        }
+        auto ce = cast(Element) child;
+        if (ce !is null) translateBoxTree(ce, dx, dy);
+    }
+}
+
+/// Rasterise a `linear-gradient(...)` mask at a box size (null when the value is
+/// not a supported gradient). Straight-alpha RGBA8, so the alpha channel is the
+/// mask's coverage.
+private RgbaImage gradientMaskImage(string css, int w, int h)
+{
+    import auroraweb.svg : gradientToSvg, decodeSvg;
+    const g = css.strip();
+    if (g.length < 16) return null;
+    if (g[0 .. 16].toLower() != "linear-gradient(") return null;
+    auto svg = gradientToSvg(g, max(1, w), max(1, h));
+    if (svg.length == 0) return null;
+    try return decodeSvg(cast(const(ubyte)[]) svg);
+    catch (Throwable) return null;
+}
+
+/// Paint `element` (and its subtree) through its `mask-image`.
+///
+/// A mask cannot be applied to the shared canvas directly: `Canvas` is a vendor
+/// struct whose surface is private and the app paints through a DrawList. So the
+/// subtree is painted into a layer surface, that layer's premultiplied ARGB is
+/// multiplied by the mask's alpha, and the layer is drawn back as an image.
+/// Returns false when there is nothing to mask (the caller then paints normally).
+private bool paintMaskedLayer(Element element, Canvas canvas)
+{
+    auto mask = gradientMaskImage(element.style.maskImage, element.box.width,
+        element.box.height);
+    if (mask is null) return false;
+    const int w = element.box.width;
+    const int h = element.box.height;
+    if (w <= 0 || h <= 0) return false;
+
+    import aurora.surface : Surface;
+    auto layerSurface = new Surface(w, h);
+    layerSurface.clear(Color(0, 0, 0, 0));
+
+    // Paint the subtree into the layer at the layer's origin, with the element's
+    // own mask disabled so this cannot recurse.
+    const int bx = element.box.x;
+    const int by = element.box.y;
+    const string savedMask = element.style.maskImage;
+    element.style.maskImage = "none";
+    translateBoxTree(element, -bx, -by);
+    try paintElement(element, Canvas(layerSurface));
+    catch (Throwable) { }
+    translateBoxTree(element, bx, by);
+    element.style.maskImage = savedMask;
+
+    // Multiply the layer's premultiplied ARGB by the mask's alpha.
+    auto lp = layerSurface.pixels();
+    auto mp = mask.pixels();
+    const int mw = mask.width();
+    const int mh = mask.height();
+    foreach (y; 0 .. h)
+    {
+        const int my = (y * mh) / h;
+        foreach (x; 0 .. w)
+        {
+            const int mx = (x * mw) / w;
+            const size_t mi = (cast(size_t) my * mw + mx) * 4 + 3;
+            const uint ma = mi < mp.length ? cast(uint) mp[mi] : 0;
+            if (ma == 255) continue;
+            const size_t li = cast(size_t) y * w + x;
+            const uint p = lp[li];
+            lp[li] = ((((p >> 24) & 0xff) * ma / 255) << 24 |
+                      (((p >> 16) & 0xff) * ma / 255) << 16 |
+                      (((p >> 8) & 0xff) * ma / 255) << 8 |
+                      ((p & 0xff) * ma / 255));
+        }
+    }
+
+    // Back to straight-alpha RGBA8 for the canvas (Surface is premultiplied).
+    auto rgba = new ubyte[](cast(size_t) w * h * 4);
+    foreach (y; 0 .. h)
+        foreach (x; 0 .. w)
+        {
+            const uint p = lp[cast(size_t) y * w + x];
+            const uint a = (p >> 24) & 0xff;
+            uint r = (p >> 16) & 0xff;
+            uint g = (p >> 8) & 0xff;
+            uint b2 = p & 0xff;
+            if (a > 0 && a < 255)
+            {
+                r = min(255, (r * 255 + a / 2) / a);
+                g = min(255, (g * 255 + a / 2) / a);
+                b2 = min(255, (b2 * 255 + a / 2) / a);
+            }
+            const size_t i = (cast(size_t) y * w + x) * 4;
+            rgba[i] = cast(ubyte) r;
+            rgba[i + 1] = cast(ubyte) g;
+            rgba[i + 2] = cast(ubyte) b2;
+            rgba[i + 3] = cast(ubyte) a;
+        }
+    canvas.drawImage(Rect(bx, by, w, h), new RgbaImage(w, h, rgba), false);
+    return true;
+}
+
 /// Paint one element (and its children). Boxes carry absolute coordinates.
 private void paintElement(Element element, Canvas canvas)
 {
+    // `mask-image`: paint the whole element through its mask instead of directly.
+    if (element.style.maskImage.length && element.style.maskImage != "none" &&
+        element.style.display != "none" && element.style.visibility != "hidden" &&
+        element.style.display != "inline-block" &&
+        element.style.display != "inline" && element.style.display != "inline-flex" &&
+        paintMaskedLayer(element, canvas))
+        return;
+
     // `visibility: hidden` hides the whole subtree. The engine does not inherit
     // `visibility` into unspecified children, so painting a hidden box's
     // descendants would wrongly reveal them; the CSS escape hatch (a descendant
@@ -168,9 +292,23 @@ private void paintElement(Element element, Canvas canvas)
             bg.color.a == _canvasBg.color.a;
         if (bg.present && !textClip && !redundantCanvasBg)
         {
-            fillRoundedBox(canvas, absX, absY, borderW, borderH,
-                cornerRadii(element, borderW, borderH),
-                withOpacity(bg.color, element.style.opacity));
+            // A wrapping inline box is fragmented across lines (CSS 9.4.2), and
+            // its background belongs on every line it covers — painting only the
+            // element's single box decorated the first line and left the rest of
+            // a wrapped inline link bare.
+            if (element.inlineFragments.length > 1)
+            {
+                foreach (frag; element.inlineFragments)
+                    fillRoundedBox(canvas, frag.x, frag.y, frag.width, frag.height,
+                        cornerRadii(element, frag.width, frag.height),
+                        withOpacity(bg.color, element.style.opacity));
+            }
+            else
+            {
+                fillRoundedBox(canvas, absX, absY, borderW, borderH,
+                    cornerRadii(element, borderW, borderH),
+                    withOpacity(bg.color, element.style.opacity));
+            }
         }
 
         // CSS background-image (drawn over the solid background color).
@@ -455,6 +593,10 @@ private void paintElement(Element element, Canvas canvas)
 
     // Children, positioned elements painted last and sorted by z-index
     // (higher z-index on top).
+    // Generated `::before` content paints under the element's own children and
+    // `::after` above them (CSS 12 paint order).
+    if (element.pseudoBefore !is null)
+        paintElement(element.pseudoBefore, contentCanvas);
     if (element.style.display != "inline" &&
         element.style.display != "inline-block" &&
         element.style.display != "inline-flex")
@@ -493,6 +635,8 @@ private void paintElement(Element element, Canvas canvas)
         foreach (child; element.elements)
             paintElement(child, contentCanvas);
     }
+    if (element.pseudoAfter !is null)
+        paintElement(element.pseudoAfter, contentCanvas);
 
     // overflow: scroll/auto — draw a scrollbar indicator on the right edge
     // when the content is taller than the box (like WebPageView does).
@@ -1316,6 +1460,88 @@ unittest
 {
     import aurora.surface : Surface;
     import std.conv : to;
+
+    // --- a wrapping inline box paints its background on every line fragment ---
+    {
+        import aurora.surface : Surface;
+        import auroraweb.css : parseStylesheet;
+        import auroraweb.layout : applyStylesAndLayout;
+
+        auto rulesW = parseStylesheet(`
+            body { margin: 0; width: 60px; }
+            .wrapLinkA { background: #ff0000; }
+        `, 60, 200);
+        auto docW = new Element("body");
+        auto link = new Element("span");
+        link.attrs["class"] = "wrapLinkA";
+        docW.children ~= link;
+        docW.elements ~= link;
+        link.parent = docW;
+        auto wrapped = new TextNode(link,
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa");
+        wrapped.parent = link;
+        link.children ~= wrapped;
+        applyStylesAndLayout(docW, rulesW, 60, 200);
+
+        assert(link.inlineFragments.length >= 2,
+            "a wrapping inline box must be fragmented per line, got " ~
+            to!string(link.inlineFragments.length));
+
+        auto wrapSurface = new Surface(60, 200);
+        wrapSurface.clear(Color.rgb(255, 255, 255));
+        paintElement(docW, Canvas(wrapSurface));
+        foreach (i, frag; link.inlineFragments)
+        {
+            // A single sample could land on a glyph, so scan the fragment's own
+            // band for the background colour.
+            bool painted = false;
+            foreach (dx; 0 .. frag.width)
+                foreach (dy; 0 .. min(frag.height, 4))
+                {
+                    const int sx = frag.x + dx;
+                    const int sy = frag.y + dy;
+                    if (sx < 0 || sy < 0 || sx >= 60 || sy >= 200) continue;
+                    const uint px = wrapSurface.pixel(sx, sy);
+                    if (((px >> 16) & 0xff) > 200 && ((px >> 8) & 0xff) < 60)
+                    {
+                        painted = true;
+                        break;
+                    }
+                }
+            assert(painted,
+                "fragment " ~ to!string(i) ~ " at (" ~ to!string(frag.x) ~ "," ~
+                to!string(frag.y) ~ " " ~ to!string(frag.width) ~ "x" ~
+                to!string(frag.height) ~ ") must carry the inline background");
+        }
+    }
+
+    // --- mask-image multiplies the painted layer's alpha ---
+    {
+        import aurora.surface : Surface;
+        import std.conv : to;
+
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.background = "#ffffff";
+        el.style.maskImage = "linear-gradient(180deg, rgba(0,0,0,1), rgba(0,0,0,0))";
+        el.box.x = 0;
+        el.box.y = 0;
+        el.box.width = 20;
+        el.box.height = 20;
+
+        auto surf = new Surface(20, 20);
+        surf.clear(Color(0, 0, 0, 0));
+        paintElement(el, Canvas(surf));
+
+        const uint top = surf.pixel(10, 1);
+        const uint bottom = surf.pixel(10, 18);
+        assert(((top >> 24) & 0xff) > 200,
+            "a fading mask must leave the start of the layer painted; alpha " ~
+            to!string((top >> 24) & 0xff));
+        assert(((bottom >> 24) & 0xff) < 40,
+            "the faded end of a mask must be nearly transparent; alpha " ~
+            to!string((bottom >> 24) & 0xff));
+    }
 
     // --- a wrapped text run paints every line from the block's left edge ---
     {

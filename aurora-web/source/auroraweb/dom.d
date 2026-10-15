@@ -15,6 +15,16 @@ import std.algorithm : canFind;
 import std.conv : to;
 import std.string : split, strip;
 
+/// One line fragment of an inline box. Kept in this module (which has no
+/// dependency on `aurora.types`) so `Element` can carry fragments cheaply.
+struct InlineFragment
+{
+    int x;
+    int y;
+    int width;
+    int height;
+}
+
 /** Attribute storage: a plain associative array of attribute name -> value. */
 alias AttrMap = string[string];
 
@@ -34,7 +44,25 @@ final class Element
     Box box;               /// Filled by the layout pass.
     Object image;          /// Loaded image (aurora.image.RgbaImage) for <img>, if any.
     Object backgroundImage; /// Decoded image for `background-image`, if any.
-    bool imageLoadTried;      /// <img> fetch already attempted (avoid re-fetching).
+    bool imageLoadTried;
+    /// Set once an inline SVG's rasterisation has been retried, so a genuinely
+    /// unreadable SVG cannot keep the document permanently dirty. Without the
+    /// retry, a rasterisation that failed on an early pass (the element's
+    /// inherited colour is not resolved yet on the first pass) was marked as
+    /// tried and never attempted again, leaving a real page's decorative artwork
+    /// with a permanent 0x0 box.
+    bool imageRetried;
+    /// One line fragment of a wrapping inline box (CSS 9.4.2): an inline element
+    /// that spans several lines is split into one fragment per line, and its
+    /// background/border must follow each of them rather than only the first.
+    /// `x`/`width` cover the content the fragment holds; `height` is the line
+    /// height. Empty for block boxes and single-line inlines.
+    InlineFragment[] inlineFragments;
+    /// Generated `::before`/`::after` boxes (CSS 12). They are deliberately NOT
+    /// in `children`/`elements`, so DOM and script APIs never see them, while
+    /// layout and paint place and draw them like any other element.
+    Element pseudoBefore;
+    Element pseudoAfter;      /// <img> fetch already attempted (avoid re-fetching).
     bool backgroundLoadTried; /// `background-image` fetch already attempted.
     bool imageFallbackTried;  /// Chosen srcset/<picture> candidate failed; `src` retried.
     bool hovered;             /// Pointer is over this element (drives `:hover`).
@@ -142,6 +170,12 @@ struct ComputedStyle
     string backgroundRepeat = "repeat"; /// CSS initial value: background images tile.
     string transform = "none"; /// CSS `transform` (translate() supported so far).
     string objectFit = "fill";   /// `object-fit` for <img>: fill/contain/cover/none/scale-down
+    /// `mask-image` (the `linear-gradient(...)` form real pages use to fade a
+    /// decorative layer out); "none" paints the layer unmasked.
+    string maskImage = "none";
+    /// `content` for a generated pseudo-element box; empty means none was given.
+    string content = "";
+
     string fontSize = "16px";
     string fontWeight = "400";
     string fontStyle = "normal";

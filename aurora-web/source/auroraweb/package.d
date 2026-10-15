@@ -945,6 +945,17 @@ final class WebPage
                 {
                     // Malformed icon markup must never take the browser down.
                 }
+                // A failure here can be an ordering problem rather than bad
+                // markup (the inherited colour the SVG paints with is only known
+                // once styles are resolved), so retry exactly once on the next
+                // pass. Without this the element stayed 0x0 forever.
+                if (e.image is null && !e.imageRetried)
+                {
+                    e.imageRetried = true;
+                    e.imageLoadTried = false;
+                    _imagesPending = true;
+                    _layoutDirty = true;
+                }
             }
             // <img src="...">
             if (e.tag == "img" && e.image is null && !e.imageLoadTried)

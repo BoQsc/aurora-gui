@@ -60,6 +60,32 @@ private bool g_screenMedia = true;
 /// an element, so callers can apply this end state statically.
 __gshared Declaration[][string] g_keyframes;
 
+/// The `::before`/`::after` rules for `which` ("before"/"after"), rewritten as
+/// ordinary selectors so the existing matcher can match them against the element
+/// the pseudo-element belongs to. `isPseudoElement` is the renderer's
+/// "never matches a real element" flag, so it is cleared on the copy; the
+/// genuine pseudo-element name is kept in `pseudoElement` by the parser.
+Rule[] pseudoElementRules(Rule[] rules, string which)
+{
+    Rule[] outRules;
+    foreach (rule; rules)
+    {
+        Selector[] kept;
+        foreach (sel; rule.selectors)
+            if (sel.pseudoElement == which)
+            {
+                auto copied = sel;
+                copied.isPseudoElement = false;
+                kept ~= copied;
+            }
+        if (kept.length == 0) continue;
+        auto r = rule;
+        r.selectors = kept;
+        outRules ~= r;
+    }
+    return outRules;
+}
+
 /// The end-state (`to`/`100%`) declarations for an animation name, or null.
 Declaration[] keyframeEndState(string name)
 {
@@ -94,6 +120,12 @@ struct Selector
     bool attrHasValue;      /// Whether a value was given.
     bool isRoot;            /// `:root` — matches the document root element.
     bool isPseudoElement;   /// `::before`/`::after` — generated content; never a real element.
+    /// "before"/"after" when this compound names a generated pseudo-element
+    /// (empty otherwise). Kept apart from `isPseudoElement`, which also covers
+    /// pseudo-classes the renderer cannot evaluate and therefore never matches:
+    /// a genuine `::before`/`::after` rule must survive parsing so the layout can
+    /// build the generated box its declarations describe.
+    string pseudoElement;
     bool isHover;           /// `:hover` — pointer is over the element.
     bool isFocus;           /// `:focus`/`:focus-visible` — element has focus.
     bool isActive;          /// `:active` — mouse button held on the element.
@@ -404,7 +436,7 @@ private Selector[] parseSelectorList(string text)
     foreach (part; text.split(','))
     {
         auto sel = parseSelector(part.strip());
-        if (sel.isPseudoElement ||
+        if ((sel.isPseudoElement && sel.pseudoElement.length == 0) ||
             (!sel.isRoot && !sel.isUniversal && sel.typeName.length == 0 && sel.className.length == 0 &&
             sel.idName.length == 0 && sel.attrName.length == 0 &&
             !sel.isHover && !sel.isFocus && !sel.isActive &&
@@ -472,6 +504,7 @@ private Selector parseSelector(string text)
     result.attrHasValue = leaf.attrHasValue;
     result.isRoot = leaf.isRoot;
     result.isPseudoElement = leaf.isPseudoElement;
+    result.pseudoElement = leaf.pseudoElement;
     result.isHover = leaf.isHover;
     result.isFocus = leaf.isFocus;
     result.isActive = leaf.isActive;
@@ -581,7 +614,10 @@ private void parseCompound(string part, out Selector compound)
             auto pname = part[start .. min(i, part.length)].toLower();
             if (pname == "root") compound.isRoot = true;
             else if (pname == "before" || pname == "after")
+            {
                 compound.isPseudoElement = true;
+                compound.pseudoElement = pname;
+            }
             // State pseudo-classes the renderer CAN evaluate against the
             // element's tracked interaction state.
             else if (pname == "hover") compound.isHover = true;
