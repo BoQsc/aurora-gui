@@ -95,7 +95,12 @@ void paintTree(Element root, Canvas canvas)
 /// Paint one element (and its children). Boxes carry absolute coordinates.
 private void paintElement(Element element, Canvas canvas)
 {
-    if (element.style.display == "none" || element.style.visibility == "hidden")
+    // `visibility: hidden` hides the whole subtree. The engine does not inherit
+    // `visibility` into unspecified children, so painting a hidden box's
+    // descendants would wrongly reveal them; the CSS escape hatch (a descendant
+    // declaring `visibility: visible`) is therefore not supported.
+    if (element.style.display == "none" || element.style.visibility == "hidden"
+        || element.style.visibility == "collapse")
         return;
 
     const absX = element.box.x;
@@ -151,12 +156,9 @@ private void paintElement(Element element, Canvas canvas)
             bg.color.a == _canvasBg.color.a;
         if (bg.present && !textClip && !redundantCanvasBg)
         {
-            if (radius > 0)
-                canvas.fillRoundedRect(Rect(absX, absY, borderW, borderH), radius,
-                    withOpacity(bg.color, element.style.opacity));
-            else
-                canvas.fillRect(Rect(absX, absY, borderW, borderH),
-                    withOpacity(bg.color, element.style.opacity));
+            fillRoundedBox(canvas, absX, absY, borderW, borderH,
+                cornerRadii(element, borderW, borderH),
+                withOpacity(bg.color, element.style.opacity));
         }
 
         // CSS background-image (drawn over the solid background color).
@@ -168,19 +170,94 @@ private void paintElement(Element element, Canvas canvas)
                 canvas.drawImage(dst, bgImage);
         }
 
-        // Border: draw per-side around the border box.
-        const bColor = withOpacity(parseColorOrDefault(element.style.borderColor,
-            Color.rgb(0, 0, 0)), element.style.opacity);
-        if (element.box.borderTop > 0)
-            canvas.fillRect(Rect(absX, absY, borderW, element.box.borderTop), bColor);
-        if (element.box.borderBottom > 0)
-            canvas.fillRect(Rect(absX, absY + borderH - element.box.borderBottom,
-                borderW, element.box.borderBottom), bColor);
-        if (element.box.borderLeft > 0)
-            canvas.fillRect(Rect(absX, absY, element.box.borderLeft, borderH), bColor);
-        if (element.box.borderRight > 0)
-            canvas.fillRect(Rect(absX + borderW - element.box.borderRight, absY,
-                element.box.borderRight, borderH), bColor);
+        // Border: draw per-side around the border box. Each side resolves its
+        // own colour — `border-<side>-color`, then the colour carried inside a
+        // `border-<side>`/`border` shorthand, then the `border-color` shorthand,
+        // and only then black. A page writing `border-bottom: 1px solid #ccc`
+        // must not get a black line.
+        const defaultBorderColor = Color.rgb(0, 0, 0);
+        auto bst = element.style;
+        auto widthSource(string infix, string perSide)
+        {
+            return perSide.length ? perSide : (infix.length ? infix : bst.border);
+        }
+        Color sideBorderColor(string perSideColor, string widthSrc, int sideIndex)
+        {
+            foreach (candidate; [perSideColor, borderColorToken(widthSrc),
+                sideToken(bst.borderColor, sideIndex)])
+                if (candidate.length)
+                    return withOpacity(parseColorOrDefault(candidate, defaultBorderColor),
+                        bst.opacity);
+            return withOpacity(defaultBorderColor, bst.opacity);
+        }
+        auto topColor = sideBorderColor(bst.borderTopColor,
+            widthSource(bst.borderWidth, bst.borderTopWidth), 0);
+        auto bottomColor = sideBorderColor(bst.borderBottomColor,
+            widthSource(bst.borderWidth, bst.borderBottomWidth), 2);
+        auto leftColor = sideBorderColor(bst.borderLeftColor,
+            widthSource(bst.borderWidth, bst.borderLeftWidth), 3);
+        auto rightColor = sideBorderColor(bst.borderRightColor,
+            widthSource(bst.borderWidth, bst.borderRightWidth), 1);
+        // Rounded borders: flat side rectangles would leave SQUARE corners on a
+        // rounded box, so when the box has a radius, a solid background and a
+        // single border colour the border is drawn as the outer rounded box in
+        // the border colour with the padding box punched back out in the
+        // background colour. Skipping the flat rectangles is what removes the
+        // square corners; the punch only runs over a plain background colour, so
+        // background art is never erased.
+        const borderRadii = cornerRadii(element, borderW, borderH);
+        const bool roundedBorder = borderRadii.maxR() > 0 && bg.present &&
+            bgImage is null && sameColor(topColor, bottomColor) &&
+            sameColor(topColor, leftColor) && sameColor(topColor, rightColor);
+        if (roundedBorder)
+        {
+            fillRoundedBox(canvas, absX, absY, borderW, borderH, borderRadii, topColor);
+            CornerRadii inner = borderRadii;
+            const bwL = element.box.borderLeft;
+            const bwT = element.box.borderTop;
+            const bwR = element.box.borderRight;
+            const bwB = element.box.borderBottom;
+            inner.tl = max(0, inner.tl - max(bwL, bwT));
+            inner.tr = max(0, inner.tr - max(bwR, bwT));
+            inner.br = max(0, inner.br - max(bwR, bwB));
+            inner.bl = max(0, inner.bl - max(bwL, bwB));
+            fillRoundedBox(canvas, absX + bwL, absY + bwT,
+                max(0, borderW - bwL - bwR), max(0, borderH - bwT - bwB), inner,
+                withOpacity(bg.color, element.style.opacity));
+        }
+        else
+        {
+            if (element.box.borderTop > 0)
+                canvas.fillRect(Rect(absX, absY, borderW, element.box.borderTop), topColor);
+            if (element.box.borderBottom > 0)
+                canvas.fillRect(Rect(absX, absY + borderH - element.box.borderBottom,
+                    borderW, element.box.borderBottom), bottomColor);
+            if (element.box.borderLeft > 0)
+                canvas.fillRect(Rect(absX, absY, element.box.borderLeft, borderH), leftColor);
+            if (element.box.borderRight > 0)
+                canvas.fillRect(Rect(absX + borderW - element.box.borderRight, absY,
+                    element.box.borderRight, borderH), rightColor);
+        }
+
+        // outline: drawn OUTSIDE the border box (shifted by `outline-offset`)
+        // and never part of layout — this is what focus rings use.
+        const outlinePx = outlineWidthPx(bst.outlineWidth.length
+            ? bst.outlineWidth : bst.outline);
+        if (outlinePx > 0)
+        {
+            const offPx = bst.outlineOffset.length ? max(0, bst.pxLength(bst.outlineOffset)) : 0;
+            const d = outlinePx + offPx;
+            const outlineColorValue = bst.outlineColor.length
+                ? bst.outlineColor : borderColorToken(bst.outline);
+            const oc = withOpacity(parseColorOrDefault(outlineColorValue, Color.rgb(0, 0, 0)),
+                bst.opacity);
+            canvas.fillRect(Rect(absX - d, absY - d, borderW + 2 * d, outlinePx), oc);
+            canvas.fillRect(Rect(absX - d, absY + borderH + d - outlinePx,
+                borderW + 2 * d, outlinePx), oc);
+            canvas.fillRect(Rect(absX - d, absY - d, outlinePx, borderH + 2 * d), oc);
+            canvas.fillRect(Rect(absX + borderW + d - outlinePx, absY - d,
+                outlinePx, borderH + 2 * d), oc);
+        }
     }
 
     // The content box: inside the border and padding.
@@ -231,13 +308,83 @@ private void paintElement(Element element, Canvas canvas)
     if (selfVisible && element.tag == "img" && contentW > 0 && contentH > 0)
     {
         auto image = cast(RgbaImage) element.image;
+        const box = Rect(innerX, innerY, contentW, contentH);
         if (image !is null)
-            contentCanvas.drawImage(Rect(innerX, innerY, contentW, contentH), image);
+        {
+            // Honor `object-fit`: "fill" stretches (the CSS default); the others
+            // preserve the aspect ratio and are clipped to the content box.
+            auto dst = objectFitRect(element, image, box);
+            if (dst.width > 0 && dst.height > 0)
+            {
+                if (element.style.objectFit == "fill" ||
+                    element.style.objectFit.length == 0)
+                    contentCanvas.drawImage(dst, image);
+                else
+                    contentCanvas.clipped(box).drawImage(dst, image);
+            }
+        }
         else
         {
-            // Placeholder box while the image loads.
-            contentCanvas.fillRect(Rect(innerX, innerY, contentW, contentH),
-                Color.rgb(220, 220, 220));
+            // No image (still loading, or the fetch failed): a placeholder box
+            // plus the `alt` text, which is what a browser shows meanwhile.
+            contentCanvas.fillRect(box, Color.rgb(228, 228, 232));
+            auto alt = "alt" in element.attrs;
+            if (alt !is null && (*alt).length)
+            {
+                const altSize = element.style.fontSizePx > 0 ?
+                    element.style.fontSizePx : 14;
+                auto altLayout = shapeTextCached(*alt, altSize,
+                    maxInt(1, contentW - 8), true);
+                if (altLayout !is null)
+                    contentCanvas.drawLayout(Point(innerX + 4, innerY + 4),
+                        altLayout, Color.rgb(70, 70, 78));
+            }
+        }
+    }
+
+    // Form controls: paint the control's `value` inside its content box, so
+    // typed text is visible (a value is not a child text node).
+    if (selfVisible && (element.tag == "input" || element.tag == "textarea"))
+    {
+        auto value = "value" in element.attrs;
+        const textSize = element.style.fontSizePx > 0 ? element.style.fontSizePx : 13;
+        const textColor = parseColorOrDefault(element.style.color, Color.rgb(0, 0, 0));
+        auto shown = (value !is null) ? *value : "";
+        bool placeholderShown = false;
+        if (shown.length == 0)
+        {
+            // An empty field shows its placeholder, like a browser.
+            auto ph = "placeholder" in element.attrs;
+            if (ph !is null && (*ph).length)
+            {
+                shown = *ph;
+                placeholderShown = true;
+            }
+        }
+        if (shown.length)
+        {
+            auto layout = shapeTextCached(shown, textSize,
+                maxInt(1, contentW - 6), false);
+            if (layout !is null)
+                contentCanvas.drawLayout(Point(innerX + 3, innerY + 3), layout,
+                    placeholderShown ? Color.rgb(150, 150, 156) : textColor);
+        }
+        // A focused field paints a caret at its caret offset.
+        if (element.focused && !placeholderShown)
+        {
+            size_t at = element.caret;
+            if (at > shown.length) at = shown.length;
+            int caretX = innerX + 3;
+            if (at > 0)
+            {
+                auto head = shapeTextCached(shown[0 .. at], textSize,
+                    maxInt(1, contentW - 6), false);
+                if (head !is null) caretX += cast(int) head.width;
+            }
+            const caretTop = innerY + 3;
+            const caretHeight = maxInt(4, textSize);
+            if (caretX >= innerX && caretX < innerX + contentW)
+                contentCanvas.fillRect(Rect(caretX, caretTop, 1, caretHeight), textColor);
         }
     }
 
@@ -321,6 +468,104 @@ private int contentBottom(Element element)
     }
     walk(element);
     return bottom;
+}
+
+/// Destination rect for an `<img>` honoring `object-fit`. "fill" (the CSS
+/// default) stretches into the box; the others keep the aspect ratio and are
+/// centered, and the caller clips them to the content box.
+private Rect objectFitRect(Element element, RgbaImage image, Rect box)
+{
+    const fit = element.style.objectFit;
+    const iw = image.width();
+    const ih = image.height();
+    if (iw <= 0 || ih <= 0) return box;
+    if (fit.length == 0 || fit == "fill") return box;
+
+    const double sx = cast(double) box.width / iw;
+    const double sy = cast(double) box.height / ih;
+    double s;
+    if (fit == "contain") s = (sx < sy) ? sx : sy;
+    else if (fit == "cover") s = (sx > sy) ? sx : sy;
+    else if (fit == "none") s = 1.0;
+    else if (fit == "scale-down")
+    {
+        const double t = (sx < sy) ? sx : sy;
+        s = (t > 1.0) ? 1.0 : t;
+    }
+    else s = (sx < sy) ? sx : sy;   // unknown keyword behaves like `contain`
+
+    const w = maxInt(1, cast(int) (iw * s + 0.5));
+    const h = maxInt(1, cast(int) (ih * s + 0.5));
+    return Rect(box.x + (box.width - w) / 2, box.y + (box.height - h) / 2, w, h);
+}
+
+unittest
+{
+    // A focused empty field paints a caret at its content origin; an empty
+    // field with a `placeholder` paints that text in a muted colour.
+    auto field = new Element("input");
+    field.box.x = 0;
+    field.box.y = 0;
+    field.box.width = 100;
+    field.box.height = 20;
+    field.style.fontSizePx = 13;
+    field.style.color = "#000000";
+    field.attrs["value"] = "";
+    field.focused = true;
+    field.caret = 0;
+
+    import aurora.surface : Surface;
+    auto s1 = new Surface(100, 20);
+    s1.clear(Color.rgb(255, 255, 255));
+    paintElement(field, Canvas(s1));
+    bool dark = false;
+    foreach (y; 4 .. 18)
+        if (((s1.pixel(3, y) >> 16) & 0xff) < 128) dark = true;
+    assert(dark, "a focused empty field must paint a caret at the content origin");
+
+    field.focused = false;
+    field.attrs["placeholder"] = "Name";
+    auto s2 = new Surface(100, 20);
+    s2.clear(Color.rgb(255, 255, 255));
+    paintElement(field, Canvas(s2));
+    bool text = false;
+    foreach (x; 0 .. 100)
+        foreach (y; 0 .. 20)
+            if (((s2.pixel(x, y) >> 16) & 0xff) < 200) text = true;
+    assert(text, "an empty field must paint its placeholder text");
+}
+
+unittest
+{
+    // object-fit: `fill` stretches; `contain`/`cover` preserve the aspect
+    // ratio (and center); `none` keeps the intrinsic size; `scale-down` never
+    // upscales.
+    ubyte[4 * 2 * 4] px;
+    auto img = new RgbaImage(4, 2, px);
+    auto el = new Element("img");
+    const box = Rect(0, 0, 20, 20);
+
+    el.style.objectFit = "fill";
+    auto r = objectFitRect(el, img, box);
+    assert(r.width == 20 && r.height == 20, "fill must stretch into the box");
+
+    el.style.objectFit = "contain";
+    r = objectFitRect(el, img, box);
+    assert(r.width == 20 && r.height == 10, "contain must fit inside the box");
+    assert(r.y == 5, "contain must center vertically");
+
+    el.style.objectFit = "cover";
+    r = objectFitRect(el, img, box);
+    assert(r.width == 40 && r.height == 20, "cover must cover the box");
+    assert(r.x == -10, "cover must center horizontally");
+
+    el.style.objectFit = "none";
+    r = objectFitRect(el, img, box);
+    assert(r.width == 4 && r.height == 2, "none must keep the intrinsic size");
+
+    el.style.objectFit = "scale-down";
+    r = objectFitRect(el, img, box);
+    assert(r.width == 4 && r.height == 2, "scale-down must not upscale");
 }
 
 /// Compute the destination rect for a CSS background-image honoring
@@ -446,13 +691,80 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
 }
 
 /// The element's border-radius in px (0 when not rounded). The single-value
+/// The colour token inside a `border` / `border-<side>` shorthand (`1px solid
+/// red` -> `red`), or "" when the shorthand declares no colour.
+private static string borderColorToken(string value)
+{
+    foreach (token; value.split())
+        if (looksLikeColorToken(token)) return token;
+    return "";
+}
+
+/// True when a border shorthand token is a colour rather than a width or a
+/// border-style keyword.
+private static bool looksLikeColorToken(string token)
+{
+    if (token.length == 0) return false;
+    foreach (unit; ["px", "em", "rem", "%", "vh", "vw"])
+        if (token.length > unit.length && token[$ - unit.length .. $] == unit)
+            return false;
+    switch (token)
+    {
+        case "none": case "hidden": case "solid": case "dashed": case "dotted":
+        case "double": case "groove": case "ridge": case "inset": case "outset":
+            return false;
+        default:
+            return true;
+    }
+}
+
+/// One side out of a 1-4 value colour shorthand (`border-color: a b c d`).
+/// The width of an `outline` / `outline-width` value, in px (0 when there is
+/// none). `auto` — the browser focus ring — is treated as a thin 2px ring.
+private static int outlineWidthPx(string value)
+{
+    import auroraweb.dom : cssInt;
+    foreach (token; value.split())
+    {
+        auto t = token.strip();
+        if (t.length >= 2 && t[$ - 2 .. $] == "px") return max(0, cssInt(t[0 .. $ - 2].strip()));
+        if (t == "auto") return 2;
+        if (t == "thin") return 1;
+        if (t == "medium") return 3;
+        if (t == "thick") return 5;
+    }
+    return 0;
+}
+
+private static string sideToken(string value, int sideIndex)
+{
+    auto parts = value.split();
+    switch (parts.length)
+    {
+        case 0: return "";
+        case 1: return parts[0];
+        case 2: return (sideIndex % 2 == 0) ? parts[0] : parts[1];
+        case 3:
+            return (sideIndex == 0) ? parts[0] : ((sideIndex == 2) ? parts[2] : parts[1]);
+        default: return parts[sideIndex];
+    }
+}
+
 /// and four-value syntaxes (`Npx Npx Npx Npx` = top-left top-right bottom-right
 /// bottom-left) are parsed; the largest corner radius drives the paint pass.
 private int roundedRadius(Element element, int width, int height)
 {
+    return cornerRadii(element, width, height).maxR();
+}
+
+/// The per-corner border-radius for an element's current box size. An
+/// elliptical value (`10px / 20px`) uses its first group; each corner is
+/// clamped to half the box, as browsers do.
+private CornerRadii cornerRadii(Element element, int width, int height)
+{
     import auroraweb.dom : cssInt;
     const s = element.style.borderRadius.strip();
-    if (s.length == 0 || s == "0") return 0;
+    if (s.length == 0 || s == "0") return CornerRadii();
     // The token parse depends only on the string; memoize it and apply the
     // percentage against the current box size.
     RadiusTok[] toks;
@@ -462,6 +774,7 @@ private int roundedRadius(Element element, int width, int height)
         foreach (part; s.split())
         {
             auto t = part.strip();
+            if (t == "/") break; // elliptical: the first group is enough
             if (t.length >= 2 && t[$ - 2 .. $] == "px")
                 toks ~= RadiusTok(cssInt(t[0 .. $ - 2].strip()), false);
             else if (t.length >= 1 && t[$ - 1] == '%')
@@ -472,10 +785,78 @@ private int roundedRadius(Element element, int width, int height)
         if (_radiusCache.length >= MaxPaintCache) _radiusCache = null;
         _radiusCache[s] = toks;
     }
-    int r = 0;
+    int[] values;
     foreach (t; toks)
-        r = max(r, t.percent ? (min(width, height) * t.value) / 100 : t.value);
+        values ~= (t.percent ? (min(width, height) * t.value) / 100 : t.value);
+    CornerRadii r;
+    switch (values.length)
+    {
+        case 0: break;
+        case 1: r.tl = r.tr = r.br = r.bl = values[0]; break;
+        case 2: r.tl = r.br = values[0]; r.tr = r.bl = values[1]; break;
+        case 3: r.tl = values[0]; r.tr = r.bl = values[1]; r.br = values[2]; break;
+        default: r.tl = values[0]; r.tr = values[1]; r.br = values[2]; r.bl = values[3]; break;
+    }
+    const limit = min(width, height) / 2;
+    if (limit > 0)
+    {
+        r.tl = min(r.tl, limit);
+        r.tr = min(r.tr, limit);
+        r.br = min(r.br, limit);
+        r.bl = min(r.bl, limit);
+    }
     return r;
+}
+
+/// A border-radius resolved per corner (CSS order: top-left, top-right,
+/// True when two colours are identical in every channel.
+private static bool sameColor(Color a, Color b)
+{
+    return a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a;
+}
+
+/// bottom-right, bottom-left).
+private struct CornerRadii
+{
+    int tl;
+    int tr;
+    int br;
+    int bl;
+
+    int maxR() const { return max(max(tl, tr), max(br, bl)); }
+    bool uniform() const { return tl == tr && tr == br && br == bl; }
+}
+
+/// Fill a box honouring per-corner radii. A uniform radius uses the canvas's
+/// single-radius primitive; otherwise the box is composed from a middle cross
+/// of square rects plus one rounded square per corner, each sized so only its
+/// rounded quadrant lands inside the box.
+private static void fillRoundedBox(Canvas canvas, int x, int y, int w, int h,
+    CornerRadii r, Color color)
+{
+    if (r.maxR() <= 0)
+    {
+        canvas.fillRect(Rect(x, y, w, h), color);
+        return;
+    }
+    if (r.uniform())
+    {
+        canvas.fillRoundedRect(Rect(x, y, w, h), r.maxR(), color);
+        return;
+    }
+    canvas.fillRect(Rect(x + max(r.tl, r.bl), y,
+        w - max(r.tl, r.bl) - max(r.tr, r.br), h), color);
+    canvas.fillRect(Rect(x, y + max(r.tl, r.tr), w,
+        h - max(r.tl, r.tr) - max(r.br, r.bl)), color);
+    void corner(int cx, int cy, int radius)
+    {
+        if (radius <= 0) return;
+        canvas.fillRoundedRect(Rect(cx, cy, 2 * radius, 2 * radius), radius, color);
+    }
+    corner(x, y, r.tl);
+    corner(x + w - 2 * r.tr, y, r.tr);
+    corner(x + w - 2 * r.br, y + h - 2 * r.br, r.br);
+    corner(x, y + h - 2 * r.bl, r.bl);
 }
 
 /// One parsed `border-radius` token (px value, or a percentage flag).
@@ -500,26 +881,38 @@ private void paintShadow(Element element, Canvas canvas,
     const offX = element.style.pxLength(element.style.boxShadowH);
     const offY = element.style.pxLength(element.style.boxShadowV);
     const blur = element.style.pxLength(element.style.boxShadowBlur);
-    if (offX < 0) return;   // negative offsets unsupported; ignore.
+    // A spread grows (or, when negative, shrinks) the shadow on every side.
+    const spread = element.style.boxShadowSpread.length
+        ? element.style.pxLength(element.style.boxShadowSpread) : 0;
     if (width <= 0 || height <= 0) return;
 
     auto color = parseColorOrDefault(shadow, Color.rgba(0, 0, 0, 76));
-    const sx = absX + offX;
-    const sy = absY + offY;
-    const radius = roundedRadius(element, width, height);
+    const sx = absX + offX - spread;
+    const sy = absY + offY - spread;
+    const sw = max(1, width + 2 * spread);
+    const sh = max(1, height + 2 * spread);
+    auto radii = cornerRadii(element, sw, sh);
+    if (spread > 0)
+    {
+        // A positive spread grows the corner radii along with the box.
+        radii.tl += spread;
+        radii.tr += spread;
+        radii.br += spread;
+        radii.bl += spread;
+    }
     // 3-rect blur approximation: a soft core with two fainter outer rims.
     if (blur > 0)
     {
         const core = withOpacity(color, 0.5);
         const mid = withOpacity(color, 0.25);
         const outer = withOpacity(color, 0.12);
-        canvas.fillRoundedRect(Rect(sx, sy, width, height), radius, outer);
-        canvas.fillRoundedRect(Rect(sx, sy, width, height), radius, mid);
-        canvas.fillRoundedRect(Rect(sx, sy, width, height), radius, core);
+        fillRoundedBox(canvas, sx, sy, sw, sh, radii, outer);
+        fillRoundedBox(canvas, sx, sy, sw, sh, radii, mid);
+        fillRoundedBox(canvas, sx, sy, sw, sh, radii, core);
     }
     else
     {
-        canvas.fillRoundedRect(Rect(sx, sy, width, height), radius, color);
+        fillRoundedBox(canvas, sx, sy, sw, sh, radii, color);
     }
 }
 
@@ -803,6 +1196,222 @@ unittest
 {
     import aurora.surface : Surface;
     import std.conv : to;
+
+    // Per-side border colours: the colour inside a `border-<side>` shorthand
+    // must be used instead of the default black.
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.borderBottomWidth = "2px solid #00ff00"; // what `border-bottom:` stores
+        el.box.x = 0;
+        el.box.y = 0;
+        el.box.width = 20;
+        el.box.height = 20;
+        el.box.borderBottom = 2;
+
+        // `box.height` is the content box, so the border box is 22px tall and
+        // the bottom border occupies rows 20..21.
+        auto surface = new Surface(24, 24);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        auto px = surface.pixel(10, 20);
+        const r = (px >> 16) & 0xff;
+        const g = (px >> 8) & 0xff;
+        const bl = px & 0xff;
+        assert(g >= 200 && r <= 60 && bl <= 60,
+            "the border-bottom shorthand colour must paint that edge, not black");
+    }
+
+    // An explicit `border-<side>-color` colours just that side.
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.borderLeftColor = "#0000ff";
+        el.style.borderLeftWidth = "3px";
+        el.box.x = 0;
+        el.box.y = 0;
+        el.box.width = 20;
+        el.box.height = 20;
+        el.box.borderLeft = 3;
+
+        auto surface = new Surface(20, 20);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        auto px = surface.pixel(1, 10);
+        const r = (px >> 16) & 0xff;
+        const bl = px & 0xff;
+        assert(bl >= 200 && r <= 60, "border-left-color must colour that side");
+    }
+
+    // Per-corner radii: `12px 0 0 0` rounds only the top-left corner.
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.background = "#ff0000";
+        el.style.borderRadius = "12px 0 0 0";
+        el.box.x = 0;
+        el.box.y = 0;
+        el.box.width = 40;
+        el.box.height = 40;
+
+        auto surface = new Surface(40, 40);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        auto center = surface.pixel(20, 20);
+        auto tl = surface.pixel(1, 1);
+        auto tr = surface.pixel(38, 1);
+        assert(((center >> 16) & 0xff) >= 250, "the box body must be painted");
+        // `Surface.pixel` returns packed ARGB, so compare the colour channels.
+        assert((tl & 0xffffff) == 0xffffff,
+            "a 12px top-left radius must round that corner away");
+        assert(((tr >> 16) & 0xff) >= 250,
+            "the top-right corner must stay square when its radius is 0");
+    }
+
+    // Outline: painted outside the border box, so it takes no layout space.
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.outline = "2px solid #ff0000";
+        el.box.x = 4;
+        el.box.y = 4;
+        el.box.width = 10;
+        el.box.height = 10;
+
+        auto surface = new Surface(20, 20);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        auto ring = surface.pixel(2, 9);    // 2px above the box's top edge
+        auto inside = surface.pixel(9, 9);  // inside the box
+        const rr = (ring >> 16) & 0xff;
+        const rg = (ring >> 8) & 0xff;
+        assert(rr >= 200 && rg <= 60, "the outline must paint outside the border box");
+        assert((inside & 0xffffff) == 0xffffff, "the outline must not fill the box interior");
+    }
+
+    // box-shadow: a negative offset still paints, on the other side.
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.background = "#0000ff";
+        el.style.boxShadowH = "-4px";
+        el.style.boxShadowV = "0px";
+        el.style.boxShadowBlur = "0px";
+        el.style.boxShadowColor = "#ff0000";
+        el.box.x = 8;
+        el.box.y = 8;
+        el.box.width = 10;
+        el.box.height = 10;
+
+        auto surface = new Surface(28, 28);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        auto left = surface.pixel(6, 13);
+        auto inside = surface.pixel(13, 13);
+        assert(((left >> 16) & 0xff) >= 200 && ((left >> 8) & 0xff) <= 60,
+            "a negative shadow offset must paint the shadow on that side");
+        assert(((inside >> 16) & 0xff) <= 60 && (inside & 0xff) >= 200,
+            "the element's background must cover the shadow inside the box");
+    }
+
+    // box-shadow: the spread extends the shadow past the box on every side.
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.background = "#0000ff";
+        el.style.boxShadowH = "0px";
+        el.style.boxShadowV = "0px";
+        el.style.boxShadowBlur = "0px";
+        el.style.boxShadowSpread = "5px";
+        el.style.boxShadowColor = "#ff0000";
+        el.box.x = 8;
+        el.box.y = 8;
+        el.box.width = 10;
+        el.box.height = 10;
+
+        auto surface = new Surface(28, 28);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        auto ring = surface.pixel(5, 13);
+        auto inside = surface.pixel(13, 13);
+        assert(((ring >> 16) & 0xff) >= 200 && ((ring >> 8) & 0xff) <= 60,
+            "the spread must extend the shadow past the box edge");
+        assert((inside & 0xff) >= 200, "the background must still cover the box interior");
+    }
+
+    // visibility:hidden hides the box and its whole subtree.
+    {
+        auto parent = new Element("div");
+        parent.style.display = "block";
+        parent.style.visibility = "hidden";
+        parent.style.background = "#ff0000";
+        parent.box.x = 0;
+        parent.box.y = 0;
+        parent.box.width = 20;
+        parent.box.height = 20;
+
+        auto child = new Element("div");
+        child.style.display = "block";
+        child.style.background = "#00ff00";
+        child.box.x = 0;
+        child.box.y = 0;
+        child.box.width = 10;
+        child.box.height = 10;
+        child.parent = parent;
+        parent.children ~= child;
+        parent.elements ~= child;
+
+        auto surface = new Surface(20, 20);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(parent, Canvas(surface));
+
+        assert((surface.pixel(15, 15) & 0xffffff) == 0xffffff,
+            "a hidden box must not paint its background");
+        assert((surface.pixel(5, 5) & 0xffffff) == 0xffffff,
+            "a hidden box's children must not paint");
+    }
+
+    // A rounded border must not leave square corners.
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.background = "#0000ff";
+        el.style.borderTopWidth = "3px solid #ff0000";
+        el.style.borderRightWidth = "3px solid #ff0000";
+        el.style.borderBottomWidth = "3px solid #ff0000";
+        el.style.borderLeftWidth = "3px solid #ff0000";
+        el.style.borderRadius = "6px";
+        el.box.x = 0;
+        el.box.y = 0;
+        el.box.width = 30;
+        el.box.height = 30;
+        el.box.borderTop = 3;
+        el.box.borderRight = 3;
+        el.box.borderBottom = 3;
+        el.box.borderLeft = 3;
+
+        auto surface = new Surface(30, 30);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        auto corner = surface.pixel(0, 0);
+        auto edge = surface.pixel(15, 1);
+        auto inside = surface.pixel(15, 15);
+        assert((corner & 0xffffff) == 0xffffff,
+            "a rounded border must not leave a square corner");
+        assert(((edge >> 16) & 0xff) >= 200 && ((edge >> 8) & 0xff) <= 60,
+            "the straight border run must still be painted");
+        assert(((inside >> 16) & 0xff) <= 60 && (inside & 0xff) >= 200,
+            "the padding box must keep its background inside a rounded border");
+    }
+
+
 
     // A display:list-item element paints a filled bullet inside its content
     // edge: the bullet area must be non-white (dark) after painting.

@@ -296,8 +296,15 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
     applyDeclaration(style, "font-style", cascade.get("font-style", ""));
     applyDeclaration(style, "font-family", cascade.get("font-family", ""));
     applyDeclaration(style, "text-align", cascade.get("text-align", ""));
+    applyDeclaration(style, "vertical-align", cascade.get("vertical-align", ""));
+    applyDeclaration(style, "clear", cascade.get("clear", ""));
     applyDeclaration(style, "white-space", cascade.get("white-space", ""));
     applyDeclaration(style, "background-clip", cascade.get("background-clip", ""));
+    applyDeclaration(style, "border-top-width", cascade.get("border-top-width", ""));
+    applyDeclaration(style, "border-right-width", cascade.get("border-right-width", ""));
+    applyDeclaration(style, "border-bottom-width", cascade.get("border-bottom-width", ""));
+    applyDeclaration(style, "border-left-width", cascade.get("border-left-width", ""));
+
     applyDeclaration(style, "-webkit-background-clip", cascade.get("-webkit-background-clip", ""));
     applyDeclaration(style, "flex-direction", cascade.get("flex-direction", ""));
     applyDeclaration(style, "width", cascade.get("width", ""));
@@ -584,7 +591,7 @@ private string uaDisplay(string tag)
             return "inline";
         case "br":
             return "inline";
-        case "img", "input":
+        case "img", "input", "textarea", "select", "button":
             return "inline-block";
         case "head", "title", "meta", "link", "style", "script", "template",
              // Inline SVG is not rendered by this engine; skipping `svg`
@@ -667,6 +674,22 @@ private void applyUserAgentDefaults(ref ComputedStyle style, string tag)
         case "code", "kbd", "samp":
             style.fontFamily = "monospace";
             break;
+        case "input", "textarea", "select", "button":
+            // Default form-control chrome. Without it these tags paint as an
+            // empty box with no border or background, so a text field is
+            // invisible and impossible to aim the pointer at.
+            style.background = "#ffffff";
+            style.color = "#000000";
+            style.border = "1px solid";
+            style.borderStyle = "solid";
+            style.borderColor = "#767676";
+            style.fontSize = "13px";
+            style.padding = (tag == "button") ? "2px 8px" : "1px 3px";
+            // Text fields have no child content, so without a default height
+            // they collapse to their padding/border and read as an empty box.
+            if (tag == "input" || tag == "select")
+                style.height = "20px";
+            break;
         default:
             break;
     }
@@ -693,7 +716,17 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 style.display = value;
             break;
         case "color": style.color = value; break;
-        case "background": style.background = solidColorFromBackground(value); break;
+        case "background":
+            style.background = solidColorFromBackground(value);
+            // The `background` SHORTHAND carries the image as well:
+            // `background: url(hero.jpg) center/cover no-repeat`. It used to be
+            // dropped, so any page declaring its imagery that way rendered with
+            // no background image at all.
+            {
+                auto u = extractUrlToken(value);
+                if (u.length) style.backgroundImage = u;
+            }
+            break;
         case "background-color": style.background = value; break;
         case "background-image":
             // url("...") or none. Anything else (linear-gradient etc.) is
@@ -721,6 +754,10 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "font-style": style.fontStyle = value; break;
         case "font-family": style.fontFamily = value; break;
         case "text-align": style.textAlign = value; break;
+        case "vertical-align":
+            style.verticalAlign = value.strip().toLower();
+            break;
+
         // Keyword-valued properties are normalized once here (trim + lower) so
         // the paint/layout hot paths compare strings without allocating.
         case "white-space": style.whiteSpace = value.strip().toLower(); break;
@@ -746,6 +783,36 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "border": style.border = value; break;
         case "border-width": style.borderWidth = value; break;
         case "border-color": style.borderColor = value; break;
+        case "border-style": style.borderStyle = value; break;
+        // Per-side width/colour longhands, so `border-bottom-width: 3px`
+        // overrides a `border` shorthand's width.
+        case "border-top-width": style.borderTopWidth = value; break;
+        case "border-right-width": style.borderRightWidth = value; break;
+        case "border-bottom-width": style.borderBottomWidth = value; break;
+        case "border-left-width": style.borderLeftWidth = value; break;
+
+        case "border-top-style": style.borderTopStyle = value; break;
+        case "border-right-style": style.borderRightStyle = value; break;
+        case "border-bottom-style": style.borderBottomStyle = value; break;
+        case "border-left-style": style.borderLeftStyle = value; break;
+        case "border-top-color": style.borderTopColor = value; break;
+        case "border-right-color": style.borderRightColor = value; break;
+        case "border-bottom-color": style.borderBottomColor = value; break;
+        case "border-left-color": style.borderLeftColor = value; break;
+        case "outline": style.outline = value; break;
+        case "outline-color": style.outlineColor = value; break;
+        case "outline-width": style.outlineWidth = value; break;
+        case "outline-style": style.outlineStyle = value; break;
+        case "outline-offset": style.outlineOffset = value; break;
+        case "inset":
+            // The modern top/right/bottom/left shorthand. Expanding it into the
+            // longhands here means a later `top:` declaration still wins, which
+            // is the correct cascade behaviour for a shorthand.
+            style.top = shorthandToken(value, 0);
+            style.right = shorthandToken(value, 1);
+            style.bottom = shorthandToken(value, 2);
+            style.left = shorthandToken(value, 3);
+            break;
         case "border-top": style.borderTopWidth = value; break;
         case "border-right": style.borderRightWidth = value; break;
         case "border-bottom": style.borderBottomWidth = value; break;
@@ -769,6 +836,7 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
             style.clear = value; break;
         case "visibility": style.visibility = value; break;
         case "overflow": style.overflow = value.strip().toLower(); break;
+        case "object-fit": style.objectFit = value.strip().toLower(); break;
         case "flex":
             // flex: <grow> <shrink> <basis> — use grow.
             {
@@ -807,6 +875,7 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                     style.boxShadowH = "0px";
                     style.boxShadowV = "0px";
                     style.boxShadowBlur = "0px";
+                    style.boxShadowSpread = "0px";
                     style.boxShadowColor = "none";
                 }
                 else if (parts.length >= 3)
@@ -814,15 +883,19 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                     style.boxShadowH = parts[0];
                     style.boxShadowV = parts[1];
                     style.boxShadowBlur = parts[2];
-                    // Everything after the third token is the color.
-                    auto rest = value.strip();
-                    auto off = parts[0].length + parts[1].length + parts[2].length;
-                    while (off < rest.length && rest[off] == ' ') off++;
-                    auto color = off < rest.length ? rest[off .. $].strip() : "";
-                    if (color.length)
-                        style.boxShadowColor = color;
-                    else
-                        style.boxShadowColor = "rgba(0, 0, 0, 0.3)";
+                    // `H V blur [spread] [color] [inset]`: the spread is the
+                    // optional fourth length — it used to be swallowed into the
+                    // colour, which then failed to parse.
+                    const hasSpread = parts.length >= 4 && isResolvableLength(parts[3]);
+                    style.boxShadowSpread = hasSpread ? parts[3] : "0px";
+                    const colorBegin = hasSpread ? 4 : 3;
+                    string color = "";
+                    foreach (i; colorBegin .. parts.length)
+                    {
+                        if (parts[i] == "inset" || parts[i] == "none") continue;
+                        color = color.length ? (color ~ " " ~ parts[i]) : parts[i];
+                    }
+                    style.boxShadowColor = color.length ? color : "rgba(0, 0, 0, 0.3)";
                 }
                 else
                 {
@@ -927,69 +1000,315 @@ private int contentHeight(Element root)
 private void resolveBoxMetrics(Element element, int containingWidth)
 {
     auto style = element.style;
+    bool autoTop, autoRight, autoBottom, autoLeft;
     // Resolve each side from per-side values or the shorthand.
-    element.box.marginTop = resolveSide(style.marginTop.length ? style.marginTop : style.margin,
-        containingWidth, 0);
-    element.box.marginRight = resolveSide(style.marginRight.length ? style.marginRight : style.margin,
-        containingWidth, 1);
-    element.box.marginBottom = resolveSide(style.marginBottom.length ? style.marginBottom : style.margin,
-        containingWidth, 2);
-    element.box.marginLeft = resolveSide(style.marginLeft.length ? style.marginLeft : style.margin,
-        containingWidth, 3);
+    element.box.marginTop = resolveSide(style, style.marginTop.length ? style.marginTop : style.margin,
+        containingWidth, 0, autoTop);
+    element.box.marginRight = resolveSide(style, style.marginRight.length ? style.marginRight : style.margin,
+        containingWidth, 1, autoRight);
+    element.box.marginBottom = resolveSide(style, style.marginBottom.length ? style.marginBottom : style.margin,
+        containingWidth, 2, autoBottom);
+    element.box.marginLeft = resolveSide(style, style.marginLeft.length ? style.marginLeft : style.margin,
+        containingWidth, 3, autoLeft);
+    // Vertical `auto` margins are 0 in normal flow; horizontal ones center.
+    element.box.marginLeftAuto = autoLeft;
+    element.box.marginRightAuto = autoRight;
+    // Keep the vertical flags too: for an absolutely positioned box with both
+    // insets they distribute the leftover space (CSS 10.6.4).
+    element.box.marginTopAuto = autoTop;
+    element.box.marginBottomAuto = autoBottom;
 
-    element.box.paddingTop = resolveSide(style.paddingTop.length ? style.paddingTop : style.padding,
-        containingWidth, 0);
-    element.box.paddingRight = resolveSide(style.paddingRight.length ? style.paddingRight : style.padding,
-        containingWidth, 1);
-    element.box.paddingBottom = resolveSide(style.paddingBottom.length ? style.paddingBottom : style.padding,
-        containingWidth, 2);
-    element.box.paddingLeft = resolveSide(style.paddingLeft.length ? style.paddingLeft : style.padding,
-        containingWidth, 3);
+    bool dummy;
+    element.box.paddingTop = resolveSide(style, style.paddingTop.length ? style.paddingTop : style.padding,
+        containingWidth, 0, dummy);
+    element.box.paddingRight = resolveSide(style, style.paddingRight.length ? style.paddingRight : style.padding,
+        containingWidth, 1, dummy);
+    element.box.paddingBottom = resolveSide(style, style.paddingBottom.length ? style.paddingBottom : style.padding,
+        containingWidth, 2, dummy);
+    element.box.paddingLeft = resolveSide(style, style.paddingLeft.length ? style.paddingLeft : style.padding,
+        containingWidth, 3, dummy);
 
-    // Borders.
-    const bTop = sideValue(style.borderTopWidth.length ? style.borderTopWidth :
-        (style.borderWidth.length ? style.borderWidth : style.border), containingWidth, 0);
-    const bRight = sideValue(style.borderRightWidth.length ? style.borderRightWidth :
-        (style.borderWidth.length ? style.borderWidth : style.border), containingWidth, 1);
-    const bBottom = sideValue(style.borderBottomWidth.length ? style.borderBottomWidth :
-        (style.borderWidth.length ? style.borderWidth : style.border), containingWidth, 2);
-    const bLeft = sideValue(style.borderLeftWidth.length ? style.borderLeftWidth :
-        (style.borderWidth.length ? style.borderWidth : style.border), containingWidth, 3);
-    element.box.borderTop = bTop;
-    element.box.borderRight = bRight;
-    element.box.borderBottom = bBottom;
-    element.box.borderLeft = bLeft;
+    // Borders. A side's width may come from its own `border-<side>` shorthand
+    // (which carries the style and colour too), from `border-width`, or from
+    // the `border` shorthand.
+
+    // A border draws — and takes space — only when it has a visible style: an
+    // explicit `border-style: none`/`hidden`, or one inside a `border`
+    // shorthand, removes the width even if a border-width was declared
+    // (CSS 8.5.3). `border-style` is itself a 1-4 value shorthand, so each side
+    // is checked against its own token.
+    bool isVisibleStyle(string token)
+    {
+        switch (token)
+        {
+            case "solid", "dashed", "dotted", "double", "groove", "ridge",
+                "inset", "outset":
+                return true;
+            default:
+                return false;
+        }
+    }
+    /// Whether this side draws at all. `none`/`hidden` block it, but the
+    /// INITIAL `border-style: none` must not block a style declared inside a
+    /// `border`/`border-<side>` shorthand (the engine cannot tell a declared
+    /// `none` from the initial value, so a shorthand style wins there).
+    bool styleVisible(string sideStyle, string sideShorthand, string list, int sideIndex)
+    {
+        bool shorthandStyle;
+        foreach (cand; [sideShorthand, style.border, list])
+            foreach (token; cand.split())
+                if (isVisibleStyle(token)) shorthandStyle = true;
+        const perSide = sideStyle.length ? shorthandToken(sideStyle, sideIndex) : "";
+        const bs = style.borderStyle.length
+            ? shorthandToken(style.borderStyle, sideIndex) : "";
+        if (!shorthandStyle)
+        {
+            if (perSide == "none" || perSide == "hidden") return false;
+            if (bs == "none" || bs == "hidden") return false;
+        }
+        if (perSide.length && isVisibleStyle(perSide)) return true;
+        if (bs.length && isVisibleStyle(bs)) return true;
+        return shorthandStyle;
+    }
+
+    // A `border`/`border-<side>` shorthand carries width, style and colour
+    // together and applies to the WHOLE side, so its width is the first length
+    // token — indexing the token list per side would pick up the style/colour
+    // token instead (which made `border: 1px solid red` give a 1px top and a 0px
+    // left, right and bottom). `border-width` IS a 1-4 value list, so that keeps
+    // the per-side resolution.
+    bool isShorthand(string source)
+    {
+        foreach (token; source.split())
+            if (isVisibleStyle(token)) return true;
+        return false;
+    }
+    int shorthandWidth(string source)
+    {
+        foreach (token; source.split())
+        {
+            const t = token.strip();
+            if (t.length == 0 || isVisibleStyle(t) || t == "none" || t == "hidden") continue;
+            const v = style.resolveLength(t, containingWidth);
+            if (v >= 0) return v;
+            if (t == "thin") return 1;
+            if (t == "medium") return 3;
+            if (t == "thick") return 5;
+        }
+        return 0;
+    }
+    /// First source that yields a positive width wins: the per-side shorthand
+    /// (`border-<side>`), then the `border` shorthand, then `border-width`. The
+    /// engine does not retain declaration order, and this covers the practical
+    /// combinations (`border: 1px solid`, `border: solid; border-width: 2px`,
+    /// `border-width: thick`, `border-bottom-width: 3px`). The `thin`/`medium`/
+    /// `thick` keywords are lengths too (1/3/5px).
+    int borderPx(string sideShorthand, string list, int sideIndex)
+    {
+        foreach (cand; [sideShorthand, style.border, list])
+        {
+            if (cand.length == 0) continue;
+            int v;
+            if (isShorthand(cand))
+                v = shorthandWidth(cand);
+            else
+            {
+                const token = shorthandToken(cand, sideIndex).strip();
+                if (token == "thin") v = 1;
+                else if (token == "medium") v = 3;
+                else if (token == "thick") v = 5;
+                else v = sideValue(style, cand, containingWidth, sideIndex);
+            }
+            if (v > 0) return v;
+        }
+        return 0;
+    }
+
+    element.box.borderTop =
+        styleVisible(style.borderTopStyle, style.borderTopWidth, style.borderWidth, 0)
+        ? borderPx(style.borderTopWidth, style.borderWidth, 0) : 0;
+    element.box.borderRight =
+        styleVisible(style.borderRightStyle, style.borderRightWidth, style.borderWidth, 1)
+        ? borderPx(style.borderRightWidth, style.borderWidth, 1) : 0;
+    element.box.borderBottom =
+        styleVisible(style.borderBottomStyle, style.borderBottomWidth, style.borderWidth, 2)
+        ? borderPx(style.borderBottomWidth, style.borderWidth, 2) : 0;
+    element.box.borderLeft =
+        styleVisible(style.borderLeftStyle, style.borderLeftWidth, style.borderWidth, 3)
+        ? borderPx(style.borderLeftWidth, style.borderWidth, 3) : 0;
 }
 
-private int resolveSide(string value, int containingWidth, int sideIndex)
+/// True when a margin/padding/border token is a length the engine can resolve.
+/// Extract the first `url(...)` token from a declaration value, or "" when the
+/// value carries no URL (used by the `background` shorthand).
+private string extractUrlToken(string value)
+{
+    const v = value.strip();
+    auto i = v.toLower().indexOf("url(");
+    if (i < 0) return "";
+    auto j = v.indexOf(")", i + 4);
+    if (j < 0) return "";
+    return v[i .. j + 1];
+}
+
+/// Keywords (`none`, `solid`, `revert`, ...) and unknown units are not, so they
+/// resolve to 0 instead of shrinking the box with an invalid negative value.
+private static bool isResolvableLength(string token)
+{
+    if (token.length >= 5 && token[0 .. 5] == "calc(") return true;
+    if (token == "0") return true;
+    foreach (unit; ["px", "rem", "%", "em", "vh", "vw", "pt", "pc", "ch", "ex"])
+        if (token.length > unit.length && token[$ - unit.length .. $] == unit)
+            return true;
+    return false;
+}
+
+/// Resolve one side of a margin/padding/border shorthand through the same
+/// length rules as every other property (px/%/em/rem/vh/vw/calc, where `em`
+/// uses THIS element's font size). `auto` is reported through `isAuto` — only
+/// margins use it, and only the horizontal ones have an effect. Anything that
+/// is not a resolvable length resolves to 0, never a negative length: a
+/// shorthand like `border: none` or `margin: 1vh` used to produce -1px.
+private int resolveSide(ComputedStyle style, string value, int base, int sideIndex,
+    out bool isAuto)
+{
+    isAuto = false;
+    const token = shorthandToken(value, sideIndex);
+    if (!token.length) return 0;
+    if (token == "auto") { isAuto = true; return 0; }
+    if (!isResolvableLength(token)) return 0;
+    // The unit is known here, so resolveLength always parses it: a -1 result is
+    // a genuine -1px (negative margins are legal), never the "invalid" marker.
+    return style.resolveLength(token, base);
+}
+
+/// Pick one side out of a 1-4 value shorthand (`margin: a b c d` rules) where
+/// sideIndex is 0=top, 1=right, 2=bottom, 3=left. "" for an empty shorthand.
+private static string shorthandToken(string value, int sideIndex)
 {
     auto parts = value.split();
-    if (parts.length == 0) return 0;
-    int px(string s)
-    {
-        import auroraweb.dom : cssInt, cssDouble;
-        if (s == "0") return 0;
-        if (s == "auto") return 0; // margins: auto resolves to 0 in normal flow
-        if (s.length >= 3 && s[$ - 2 .. $] == "px") return cssInt(s[0 .. $ - 2]);
-        if (s.length >= 2 && s[$ - 1] == '%') return (containingWidth * cssInt(s[0 .. $ - 1])) / 100;
-        if (s.length >= 3 && s[$ - 3 .. $] == "rem") return cast(int)(cssDouble(s[0 .. $ - 3]) * 16);
-        if (s.length >= 2 && s[$ - 2 .. $] == "em") return cast(int)(cssDouble(s[0 .. $ - 2]) * 16);
-        return -1;
-    }
     switch (parts.length)
     {
-        case 1: return px(parts[0]);
+        case 0: return "";
+        case 1: return parts[0];
         // 2-value shorthand is vertical horizontal: top/bottom = first,
-        // left/right = second. (sideIndex: 0=top, 1=right, 2=bottom, 3=left.)
-        case 2: return sideIndex % 2 == 0 ? px(parts[0]) : px(parts[1]);
-        case 3: switch (sideIndex) { case 0: return px(parts[0]); case 1: case 3: return px(parts[1]); default: return px(parts[2]); }
-        default: switch (sideIndex) { case 0: return px(parts[0]); case 1: return px(parts[1]); case 2: return px(parts[2]); default: return px(parts[3]); }
+        // left/right = second.
+        case 2: return (sideIndex % 2 == 0) ? parts[0] : parts[1];
+        case 3:
+            return (sideIndex == 0) ? parts[0] : ((sideIndex == 2) ? parts[2] : parts[1]);
+        default: return parts[sideIndex];
     }
 }
 
-private int sideValue(string value, int containingWidth, int sideIndex)
+private int sideValue(ComputedStyle style, string value, int containingWidth, int sideIndex)
 {
-    return resolveSide(value, containingWidth, sideIndex);
+    bool isAuto;
+    return resolveSide(style, value, containingWidth, sideIndex, isAuto);
+}
+
+/// Clamp a CONTENT height and return the resulting border-box height. For
+/// content-box sizing `min-height`/`max-height` apply to the content box, so
+/// padding and borders are added AFTER clamping (CSS 10.4). For border-box
+/// sizing they apply to the border box, so the sum is clamped instead.
+private int contentBoxHeight(Element element, int contentHeight)
+{
+    const padBorder = element.box.paddingTop + element.box.paddingBottom +
+        element.box.borderTop + element.box.borderBottom;
+    if (element.style.boxSizing == "border-box")
+        return clampMinMaxHeight(element, max(0, contentHeight + padBorder));
+    return clampMinMaxHeight(element, max(0, contentHeight)) + padBorder;
+}
+
+unittest
+{
+    // Box model: units, keyword values, auto margins and content-box min/max.
+    auto flow = FlowContext();
+    flow.x = 0;
+    flow.y = 0;
+    flow.width = 400;
+    flow.height = 300;
+
+    auto block = new Element("div");
+    block.style.display = "block";
+    block.style.width = "100px";
+    block.style.margin = "0 auto";
+    layoutBlock(block, flow, 400, null);
+    assert(block.box.marginLeftAuto && block.box.marginRightAuto,
+        "auto margins must be recorded on the box");
+    assert(block.box.marginLeft == 150 && block.box.marginRight == 150,
+        "`margin: 0 auto` must center a definite-width block");
+    assert(block.box.x == 150, "the centered block must sit at the leftover offset");
+
+    // One-sided auto: the whole leftover goes to that side.
+    auto side = new Element("div");
+    side.style.display = "block";
+    side.style.width = "100px";
+    side.style.marginLeft = "auto";
+    layoutBlock(side, flow, 400, null);
+    assert(side.box.marginLeft == 300 && side.box.marginRight == 0,
+        "a one-sided auto margin absorbs the leftover space");
+
+    // em resolves against THIS element's font size, not a fixed 16px.
+    auto em = new Element("div");
+    em.style.display = "block";
+    em.style.fontSizePx = 20;
+    em.style.padding = "1em";
+    layoutBlock(em, flow, 400, null);
+    assert(em.box.paddingTop == 20 && em.box.paddingLeft == 20,
+        "em must resolve against the element's own font size");
+
+    // vh resolves against the viewport height.
+    auto vh = new Element("div");
+    vh.style.display = "block";
+    vh.style.viewportHeight = 600;
+    vh.style.marginTop = "10vh";
+    layoutBlock(vh, flow, 400, null);
+    assert(vh.box.marginTop == 60, "vh must resolve against the viewport height");
+
+    // Percentage vertical margins resolve against the containing block WIDTH.
+    auto pc = new Element("div");
+    pc.style.display = "block";
+    pc.style.marginTop = "10%";
+    layoutBlock(pc, flow, 400, null);
+    assert(pc.box.marginTop == 40, "percentage margins use the containing width");
+
+    // Negative margins stay negative; keyword values become 0, never -1px.
+    auto neg = new Element("div");
+    neg.style.display = "block";
+    neg.style.marginTop = "-10px";
+    neg.style.border = "none";
+    layoutBlock(neg, flow, 400, null);
+    assert(neg.box.marginTop == -10, "a negative margin must be preserved");
+    assert(neg.box.borderTop == 0 && neg.box.borderLeft == 0,
+        "`border: none` must resolve to 0px, not a negative border");
+
+    // content-box: min/max clamp the CONTENT box, so padding still applies.
+    auto cb = new Element("div");
+    cb.style.display = "block";
+    cb.style.width = "100px";
+    cb.style.padding = "10px";
+    cb.style.maxWidth = "80px";
+    layoutBlock(cb, flow, 400, null);
+    assert(cb.box.width == 100,
+        "content-box max-width must clamp the content, not the border box");
+
+    // border-box: min/max clamp the border box itself.
+    auto bb = new Element("div");
+    bb.style.display = "block";
+    bb.style.boxSizing = "border-box";
+    bb.style.width = "100px";
+    bb.style.padding = "10px";
+    bb.style.maxWidth = "80px";
+    layoutBlock(bb, flow, 400, null);
+    assert(bb.box.width == 80, "border-box max-width must clamp the border box");
+
+    // min-width still wins over a smaller declared width.
+    auto mn = new Element("div");
+    mn.style.display = "block";
+    mn.style.width = "50px";
+    mn.style.minWidth = "120px";
+    layoutBlock(mn, flow, 400, null);
+    assert(mn.box.width == 120, "min-width must win over a smaller width");
 }
 
 /// Collapse two adjacent vertical margins per CSS:
@@ -1016,6 +1335,82 @@ private int resolveLineHeight(Element element, int pixelSize)
 }
 
 /// Layout a block-level element and its children in normal flow.
+/// True when a block's own top margin collapses with its first in-flow child's:
+/// nothing separates them (no top border or padding), the block is static and
+/// it does not establish a block formatting context (CSS 8.3.1).
+private static bool canCollapseWithChild(Element element)
+{
+    auto style = element.style;
+    if (element.box.borderTop != 0 || element.box.paddingTop != 0) return false;
+    if (style.position != "static") return false;
+    if (style.floatStyle != "none") return false;
+    if (style.overflow.length && style.overflow != "visible") return false;
+    switch (style.display)
+    {
+        case "block":
+        case "list-item":
+        case "table":
+            return true;
+        default:
+            return false; // flex/grid/inline-block/table-cell establish a BFC
+    }
+}
+
+/// The first child element that participates in normal flow, or null. Leading
+/// whitespace text nodes are transparent for collapsing, so they are skipped.
+private static Element firstInFlowChild(Element element)
+{
+    foreach (child; element.children)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        auto ps = ce.style.position;
+        if (ps == "absolute" || ps == "fixed") continue;
+        if (ce.style.display == "none") continue;
+        if (ce.style.floatStyle != "none") continue;
+        return ce;
+    }
+    return null;
+}
+
+/// True when a box's bottom margin collapses with its last in-flow child's:
+/// no bottom border or padding, static positioning, no formatting context
+/// (CSS 8.3.1).
+private static bool canCollapseBottom(Element element)
+{
+    auto style = element.style;
+    if (element.box.borderBottom != 0 || element.box.paddingBottom != 0) return false;
+    if (style.position != "static") return false;
+    if (style.floatStyle != "none") return false;
+    if (style.overflow.length && style.overflow != "visible") return false;
+    switch (style.display)
+    {
+        case "block":
+        case "list-item":
+        case "table":
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// The last child element that participates in normal flow, or null.
+private static Element lastInFlowChild(Element element)
+{
+    Element found = null;
+    foreach (child; element.children)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        auto ps = ce.style.position;
+        if (ps == "absolute" || ps == "fixed") continue;
+        if (ce.style.display == "none") continue;
+        if (ce.style.floatStyle != "none") continue;
+        found = ce;
+    }
+    return found;
+}
+
 private void layoutBlock(Element element, ref FlowContext flow, int containingWidth, Element positionedAncestor)
 {
     auto style = element.style;
@@ -1023,8 +1418,11 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     if (style.display == "none") { element.box.height = 0; return; }
 
     resolveBoxMetrics(element, containingWidth);
-    style.containingWidth = containingWidth;
-    style.containingHeight = flow.height;
+    // `ComputedStyle` is a struct, so writing through the `style` alias above
+    // would edit a COPY and the containing block would stay 0 — which made
+    // percentage heights and percentage min/max-height resolve against nothing.
+    element.style.containingWidth = containingWidth;
+    element.style.containingHeight = flow.height;
 
     // Absolute positioning: removed from flow, relative to positioned ancestor.
     if (style.position == "absolute")
@@ -1039,6 +1437,20 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     {
         layoutFixed(element, containingWidth, style.viewportWidth, style.viewportHeight);
         return;
+    }
+
+    // `clear` moves a block below the floats it clears (CSS 9.5.2): the flow
+    // cursor advances past the bottom of every active float on that side.
+    if (style.clear == "left" || style.clear == "right" || style.clear == "both")
+    {
+        int below = flow.y;
+        foreach (f; flow.floats)
+        {
+            if (style.clear == "left" && f.right) continue;
+            if (style.clear == "right" && !f.right) continue;
+            below = max(below, f.y + f.height);
+        }
+        if (below > flow.y) flow.y = below;
     }
 
     int width = resolveWidth(element, containingWidth);
@@ -1068,19 +1480,93 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
         return;
     }
 
+    bool collapseIntoChild = false;
+    int effectiveTop = element.box.marginTop;
+    if (flow.suppressTopMargin)
+    {
+        // This element's margin-top was already collapsed into its parent, so
+        // it must not add space again here (CSS 8.3.1).
+        flow.suppressTopMargin = false;
+        effectiveTop = 0;
+    }
+    else if (canCollapseWithChild(element))
+    {
+        // A parent's top margin collapses with its first in-flow child's when
+        // nothing separates them: the child's margin then moves the PARENT down
+        // instead of adding space inside it.
+        auto fc = firstInFlowChild(element);
+        if (fc !is null)
+        {
+            bool childTopAuto;
+            const childTop = resolveSide(fc.style,
+                fc.style.marginTop.length ? fc.style.marginTop : fc.style.margin,
+                containingWidth, 0, childTopAuto);
+            if (childTop > 0)
+            {
+                effectiveTop = collapseVerticalMargins(element.box.marginTop, childTop);
+                collapseIntoChild = true;
+            }
+        }
+    }
+
     // Margin collapsing with the previous sibling's bottom margin. A negative
     // margin-top pulls the box up (possibly overlapping the previous box); a
     // negative margin-bottom pulls following content up by the same amount.
-    element.box.y = flow.y + element.box.marginTop;
+    element.box.y = flow.y + effectiveTop;
     if (flow.hasPrevBlock)
     {
-        const collapsed = collapseVerticalMargins(flow.prevBottomMargin,
-            element.box.marginTop);
+        const collapsed = collapseVerticalMargins(flow.prevBottomMargin, effectiveTop);
         element.box.y = flow.y + (collapsed - flow.prevBottomMargin);
     }
 
     element.box.x = flow.x + element.box.marginLeft;
     element.box.width = width;
+
+    // `margin: auto` on a block with a definite width absorbs the leftover
+    // space — this is how `margin: 0 auto` centers content (CSS 10.3.3).
+    if ((element.box.marginLeftAuto || element.box.marginRightAuto) &&
+        style.width.length && style.resolveLength(style.width, containingWidth) >= 0)
+    {
+        const leftover = max(0, containingWidth - width -
+            element.box.marginLeft - element.box.marginRight);
+        if (element.box.marginLeftAuto && element.box.marginRightAuto)
+        {
+            element.box.marginLeft = leftover / 2;
+            element.box.marginRight = leftover - leftover / 2;
+        }
+        else if (element.box.marginLeftAuto)
+            element.box.marginLeft = leftover;
+        else
+            element.box.marginRight = leftover;
+        element.box.x = flow.x + element.box.marginLeft;
+    }
+
+    // `position: relative` offsets the box — and everything inside it — from
+    // its normal-flow position, without moving any other box (CSS 9.4.3). The
+    // flow advance below therefore uses the in-flow top, not the offset one.
+    const int layoutTop = element.box.y;
+    if (style.position == "relative")
+    {
+        const relLeft = style.resolveLength(style.left, containingWidth);
+        const relRight = style.resolveLength(style.right, containingWidth);
+        if (relLeft >= 0)
+            element.box.x += relLeft;
+        else if (relRight >= 0)
+            element.box.x -= relRight;
+        const relTop = style.resolveLength(style.top, flow.height);
+        const relBottom = style.resolveLength(style.bottom, flow.height);
+        if (relTop >= 0)
+            element.box.y += relTop;
+        else if (relBottom >= 0)
+            element.box.y -= relBottom;
+    }
+
+    // A DEFINITE height is known before the children are laid out, so publish it
+    // now: a child's percentage height resolves against this box's content
+    // height, and `box.height` is otherwise only assigned after the children
+    // (from the content) — which would leave the child resolving against 0.
+    if (height >= 0)
+        element.box.height = max(0, height);
 
     // Layout children in a nested flow constrained by our content box.
     auto childFlow = FlowContext();
@@ -1088,23 +1574,50 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     childFlow.y = element.box.y + element.box.paddingTop + element.box.borderTop;
     childFlow.width = max(0, width - element.box.paddingLeft - element.box.paddingRight -
         element.box.borderLeft - element.box.borderRight);
-    childFlow.height = flow.height;
+    // A child's percentage height resolves against a DEFINITE containing-block
+    // height (CSS 10.5) — this box's own content height, which `box.height`
+    // holds — and only falls back to the flow height when this box's height is
+    // auto. (`box.height` is assigned above, before any child flow is built.)
+    childFlow.height = height >= 0 ? element.box.height : flow.height;
+    // The first child's margin-top was already collapsed into this box.
+    childFlow.suppressTopMargin = collapseIntoChild;
     childFlow.lineEnd = childFlow.x + childFlow.width;
 
     layoutChildren(element, childFlow, element);
-    // Lay out any direct text content inline (wrapping at the content width).
-    layoutDirectText(element, childFlow);
 
     // Compute this block's height from explicit style or its content.
     int finalHeight = height;
     if (height < 0)
     {
-        auto innerBottom = childFlow.y + max(childFlow.contentBottom, 0);
+        auto innerBottom = max(childFlow.y, childFlow.inlineBottomAbs);
         innerBottom += element.box.paddingBottom + element.box.borderBottom;
         finalHeight = max(0, innerBottom - element.box.y);
     }
     finalHeight = clampMinMaxHeight(element, finalHeight);
     element.box.height = finalHeight;
+
+    // A parent with an auto height collapses its bottom margin with its last
+    // in-flow child's, so that margin escapes to the parent's bottom edge
+    // (CSS 8.3.1). The child's margin is already inside the measured content
+    // height, so move it out of the box and fold it into this box's own bottom
+    // margin — the flow advance below then keeps following content in place.
+    if (height < 0 && canCollapseBottom(element))
+    {
+        auto lc = lastInFlowChild(element);
+        if (lc !is null)
+        {
+            bool childBottomAuto;
+            const childBottom = resolveSide(lc.style,
+                lc.style.marginBottom.length ? lc.style.marginBottom : lc.style.margin,
+                containingWidth, 2, childBottomAuto);
+            if (childBottom > 0)
+            {
+                element.box.height = max(0, finalHeight - childBottom);
+                element.box.marginBottom = collapseVerticalMargins(element.box.marginBottom,
+                    childBottom);
+            }
+        }
+    }
 
     // Positioned (absolute/fixed) children are laid out now that this box's
     // size is known, so their percentage top/bottom/left/right resolve against
@@ -1125,7 +1638,7 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     // margin-bottom pulls following content up by the same amount (may overlap).
     flow.prevBottomMargin = element.box.marginBottom;
     flow.hasPrevBlock = true;
-    const bottom = element.box.y + element.box.height + element.box.marginBottom;
+    const bottom = layoutTop + element.box.height + element.box.marginBottom;
     if (bottom > flow.y) flow.y = bottom;
 }
 
@@ -1133,7 +1646,8 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
 /// shared inline line, advancing a horizontal cursor and wrapping at the
 /// block's content width using real shaped measurement. Whitespace-only text
 /// nodes between block elements are skipped.
-private void layoutDirectText(Element element, ref FlowContext flow)
+private void layoutDirectText(Element element, ref FlowContext flow,
+    size_t from = 0, size_t to = size_t.max)
 {
     const pixelSize = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
     // line-height: an explicit px value sizes the line boxes; a percentage
@@ -1186,8 +1700,9 @@ private void layoutDirectText(Element element, ref FlowContext flow)
     Element[] placedElements;
     int[] placedElementLines;
 
-    foreach (child; element.children)
+    foreach (childIndex, child; element.children)
     {
+        if (childIndex < from || (to != size_t.max && childIndex >= to)) continue;
         auto text = cast(TextNode) child;
         if (text !is null)
         {
@@ -1311,7 +1826,20 @@ private void layoutDirectText(Element element, ref FlowContext flow)
                     cw = cast(int)(ce.textContent().length * 8);
             }
             wrapTo(leftEdge, rightEdge);
-            ce.box.x = cursorX;
+            // The inline path must resolve its box metrics too, or an
+            // inline-level box's padding/margins are all zero here.
+            resolveBoxMetrics(ce, flow.width);
+            // Inline-level boxes honour their horizontal margin and padding: the
+            // box starts after margin-left, and the content that follows starts
+            // after the box's right padding/border/margin (CSS 8.3/8.4 for
+            // inline-level boxes). Without this an inline-block icon's margins
+            // and padding consumed no line space at all.
+            const bool inlineBox = ce.style.display == "inline-block";
+            const int leadIn = inlineBox ? ce.box.marginLeft : 0;
+            const int leadOut = inlineBox
+                ? ce.box.marginRight + ce.box.borderLeft + ce.box.borderRight +
+                    ce.box.paddingLeft + ce.box.paddingRight : 0;
+            ce.box.x = cursorX + leadIn;
             ce.box.y = cursorY;
             ce.box.width = cw;
             ce.box.height = ceLines * lineH;
@@ -1323,14 +1851,29 @@ private void layoutDirectText(Element element, ref FlowContext flow)
                 const ih = resolveHeight(ce);
                 if (ih >= 0) ce.box.height = ih;
             }
-            // Inline-block baseline alignment: the element has no explicit
-            // vertical-align, so its BOTTOM aligns with the line's text
-            // baseline (baseline = cursorY + ascent, ascent ~= font-size).
-            // Raise the box so its bottom edge lands exactly on the baseline.
+            // Inline vertical alignment. The line box spans
+            // `cursorY .. cursorY + lineH`; `baseline` (the default) puts the
+            // box's bottom edge on the text baseline (cursorY + ascent, with
+            // ascent ~= font-size), the other keywords position it against the
+            // line box.
             if (ce.style.display == "inline-block")
             {
                 const int baseline = cursorY + pixelSize;
-                ce.box.y = baseline - ce.box.height;
+                switch (ce.style.verticalAlign)
+                {
+                    case "top", "text-top":
+                        ce.box.y = cursorY;
+                        break;
+                    case "bottom", "text-bottom":
+                        ce.box.y = cursorY + lineH - ce.box.height;
+                        break;
+                    case "middle":
+                        ce.box.y = cursorY + (lineH - ce.box.height) / 2;
+                        break;
+                    default: // baseline (and any unit length, approximated)
+                        ce.box.y = baseline - ce.box.height;
+                        break;
+                }
             }
             noteLine(lineIndex, cursorX, cursorX + cw);
             placedElements ~= ce;
@@ -1345,13 +1888,17 @@ private void layoutDirectText(Element element, ref FlowContext flow)
             }
             else
             {
-                cursorX += cw;
+                cursorX += cw + leadIn + leadOut;
             }
             // Layout the inline element's own children (text inside <b>, <i>, ...).
             auto sub = FlowContext();
-            sub.x = ce.box.x;            // text starts at this element's left
+            // Text inside an inline-block starts after its own left padding and
+            // border, not on the box's outer edge.
+            sub.x = ce.box.x + (inlineBox ? ce.box.borderLeft + ce.box.paddingLeft : 0);
             sub.y = ce.box.y;            // ... and its top line
-            sub.width = flow.width;
+            sub.width = max(0, flow.width -
+                (inlineBox ? ce.box.borderLeft + ce.box.borderRight +
+                    ce.box.paddingLeft + ce.box.paddingRight : 0));
             sub.height = flow.height;
             sub.lineEnd = rightEdge;
             sub.lineCount = lineIndex;
@@ -1367,6 +1914,7 @@ private void layoutDirectText(Element element, ref FlowContext flow)
     {
         flow.contentBottom = max(flow.contentBottom, maxBottom - flow.y);
         flow.lineCount = max(flow.lineCount, lineIndex + 1);
+        if (maxBottom > flow.inlineBottomAbs) flow.inlineBottomAbs = maxBottom;
     }
 
     // text-align: center/right — shift each finished line so it sits inside
@@ -1466,11 +2014,14 @@ private int resolveWidth(Element element, int containingWidth)
     int width;
     if (widthPx >= 0)
     {
+        // min/max apply to the CONTENT box for content-box sizing and to the
+        // border box for border-box sizing (CSS 10.4). Clamping after padding
+        // was added made `width:100px; padding:10px; max-width:80px` wrong.
+        const padBorder = element.box.paddingLeft + element.box.paddingRight +
+            element.box.borderLeft + element.box.borderRight;
         if (style.boxSizing == "border-box")
-            width = widthPx; // includes padding+border
-        else
-            width = widthPx + element.box.paddingLeft + element.box.paddingRight +
-                element.box.borderLeft + element.box.borderRight;
+            return clampMinMaxWidth(element, max(0, widthPx));
+        return clampMinMaxWidth(element, max(0, widthPx)) + padBorder;
     }
     else if (style.display == "inline-block")
     {
@@ -1508,10 +2059,12 @@ private int resolveHeight(Element element)
     auto heightPx = style.resolveLength(style.height, style.containingHeight);
     if (heightPx >= 0)
     {
+        const padBorder = element.box.paddingTop + element.box.paddingBottom +
+            element.box.borderTop + element.box.borderBottom;
         if (style.boxSizing == "border-box")
             return clampMinMaxHeight(element, max(0, heightPx));
-        return clampMinMaxHeight(element, max(0, heightPx + element.box.paddingTop + element.box.paddingBottom +
-            element.box.borderTop + element.box.borderBottom));
+        // content-box: clamp the content, then add padding+border (CSS 10.4).
+        return clampMinMaxHeight(element, max(0, heightPx)) + padBorder;
     }
     // An inline-block with a decoded image and no explicit height uses the
     // image's intrinsic height. -1 means "auto — caller measures content".
@@ -1549,17 +2102,75 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     const rightV = style.resolveLength(style.right, cbW);
     const bottomV = style.resolveLength(style.bottom, cbH);
 
+    // `margin: auto` is detected from the style text: the per-side longhand
+    // wins over the `margin` shorthand, and `auto` is still a keyword here
+    // (the resolver reports it only as a value, not as a flag).
+    bool sideAuto(string perSide, int idx)
+    {
+        return shorthandToken(perSide.length ? perSide : style.margin, idx) == "auto";
+    }
+
+    // CSS 10.3.7: with `width: auto` and BOTH insets given, the used width is
+    // solved from the containing block instead of stretching to the full width
+    // (and the element then ignores `right` entirely).
+    int absW = w;
+    if (style.resolveLength(style.width, cbW) < 0 && leftV >= 0 && rightV >= 0)
+    {
+        absW = max(0, cbW - leftV - rightV - element.box.marginLeft -
+            element.box.marginRight - element.box.paddingLeft -
+            element.box.paddingRight - element.box.borderLeft -
+            element.box.borderRight);
+        element.box.width = absW;
+    }
+    // Same rule vertically (CSS 10.6.4): `height: auto` with both insets is
+    // solved from the containing block rather than collapsing or stretching.
+    int absH = h;
+    if (style.resolveLength(style.height, cbH) < 0 && topV >= 0 && bottomV >= 0)
+    {
+        absH = max(0, cbH - topV - bottomV - element.box.marginTop -
+            element.box.marginBottom - element.box.paddingTop -
+            element.box.paddingBottom - element.box.borderTop -
+            element.box.borderBottom);
+        element.box.height = absH;
+    }
+
+    // `margin: auto` on an axis whose two insets are both given distributes the
+    // leftover space (CSS 10.3.7 horizontal / 10.6.4 vertical) — this is how
+    // absolutely positioned overlays centre themselves.
+    if (leftV >= 0 && rightV >= 0 &&
+        (sideAuto(style.marginLeft, 3) || sideAuto(style.marginRight, 1)))
+    {
+        const spare = max(0, cbW - leftV - rightV - absW);
+        if (sideAuto(style.marginLeft, 3) && sideAuto(style.marginRight, 1))
+            element.box.marginLeft = element.box.marginRight = spare / 2;
+        else if (sideAuto(style.marginLeft, 3))
+            element.box.marginLeft = spare;
+        else
+            element.box.marginRight = spare;
+    }
+    if (topV >= 0 && bottomV >= 0 &&
+        (sideAuto(style.marginTop, 0) || sideAuto(style.marginBottom, 2)))
+    {
+        const spare = max(0, cbH - topV - bottomV - absH);
+        if (sideAuto(style.marginTop, 0) && sideAuto(style.marginBottom, 2))
+            element.box.marginTop = element.box.marginBottom = spare / 2;
+        else if (sideAuto(style.marginTop, 0))
+            element.box.marginTop = spare;
+        else
+            element.box.marginBottom = spare;
+    }
+
     if (leftV >= 0)
         element.box.x = cbX + leftV + element.box.marginLeft;
     else if (rightV >= 0)
-        element.box.x = cbX + cbW - w - rightV - element.box.marginRight;
+        element.box.x = cbX + cbW - absW - rightV - element.box.marginRight;
     else
         element.box.x = cbX + element.box.marginLeft;
 
     if (topV >= 0)
         element.box.y = cbY + topV + element.box.marginTop;
     else if (bottomV >= 0)
-        element.box.y = cbY + cbH - h - bottomV - element.box.marginBottom;
+        element.box.y = cbY + cbH - absH - bottomV - element.box.marginBottom;
     else
         element.box.y = cbY + element.box.marginTop;
 
@@ -1567,7 +2178,7 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     auto childFlow = FlowContext();
     childFlow.x = element.box.x + element.box.paddingLeft + element.box.borderLeft;
     childFlow.y = element.box.y + element.box.paddingTop + element.box.borderTop;
-    childFlow.width = max(0, w - element.box.paddingLeft - element.box.paddingRight -
+    childFlow.width = max(0, absW - element.box.paddingLeft - element.box.paddingRight -
         element.box.borderLeft - element.box.borderRight);
     childFlow.height = cbH;
     childFlow.lineEnd = childFlow.x + childFlow.width;
@@ -1624,39 +2235,78 @@ private void layoutFixed(Element element, int containingWidth, int viewportWidth
     layoutChildren(element, childFlow, element);
 }
 
+/// Lay out an element's in-flow children IN DOCUMENT ORDER. A run of inline
+/// content is laid out as soon as a following block-level box appears, so a
+/// later block can never jump above earlier inline content (an inline-block
+/// button followed by a block used to render with the block on top).
+///
+/// Two details matter for not perturbing existing pages:
+///  * inter-block whitespace does not start a run, and
+///  * a run is only flushed at a block boundary when it contains an inline
+///    element. Text-only runs keep accumulating and are laid out at the end,
+///    exactly as before — flushing every stray text node onto its own line
+///    before each block added hundreds of pixels of blank space to real pages.
 private void layoutChildren(Element element, ref FlowContext flow, Element positionedAncestor)
 {
-    foreach (child; element.children)
+    size_t runStart = 0;
+    bool runPending = false;
+    // Only runs that contain an inline ELEMENT are flushed at a block
+    // boundary. Text-only runs keep accumulating and are laid out at the end
+    // exactly as before, because laying stray text out on its own line before
+    // every block added hundreds of pixels of blank space to real pages.
+    bool runHasElement = false;
+    foreach (childIndex, child; element.children)
     {
         auto childElement = cast(Element) child;
-        if (childElement !is null)
+        if (childElement is null)
         {
-            auto childStyle = childElement.style;
-            // Positioned children are removed from flow; the container lays
-            // them out AFTER its own size is computed (see layoutBlock), so
-            // their percentage offsets resolve against the final box.
-            if (childStyle.position == "absolute" || childStyle.position == "fixed")
+            // Whitespace between block boxes does not start an inline run: the
+            // block structure already separates the content, and treating it as
+            // inline content adds a line box before every block (which is why
+            // an earlier attempt at ordering the children added hundreds of
+            // pixels of blank space to real pages).
+            auto textChild = cast(TextNode) child;
+            if (textChild !is null && textChild.data.strip().length == 0)
                 continue;
-            // Direct inline children are laid out on the block's inline line by
-            // layoutDirectText; skip them here so they don't become 0x0 blocks.
-            // Positioned children (absolute/fixed) are never laid out inline —
-            // they are removed from flow and positioned independently.
-            if ((childStyle.display == "inline" || childStyle.display == "inline-block") &&
-                childStyle.position != "absolute" && childStyle.position != "fixed")
-                continue;
-            if (childStyle.display == "flex" || childStyle.display == "inline-flex")
-                layoutFlex(childElement, flow, positionedAncestor);
-            else if (childStyle.display == "grid")
-                layoutGrid(childElement, flow, positionedAncestor);
-            else if (childStyle.display == "table" || childElement.tag == "table")
-                layoutTable(childElement, flow, positionedAncestor);
-            else if (childStyle.display == "table-row" || childElement.tag == "tr")
-                layoutTableRow(childElement, flow, positionedAncestor);
-            else if (childStyle.display == "table-cell" || childElement.tag == "td" || childElement.tag == "th")
-                layoutTableCell(childElement, flow, positionedAncestor);
-            else
-                layoutBlock(childElement, flow, flow.width, positionedAncestor);
+            if (!runPending) { runPending = true; runStart = childIndex; }
+            continue;
         }
+        auto childStyle = childElement.style;
+        if (childStyle.position == "absolute" || childStyle.position == "fixed")
+            continue;
+        if (childStyle.display == "inline" || childStyle.display == "inline-block")
+        {
+            if (!runPending) { runPending = true; runStart = childIndex; }
+            runHasElement = true;
+            continue;
+        }
+        if (runPending && runHasElement)
+        {
+            const savedX = flow.x;
+            layoutDirectText(element, flow, runStart, childIndex);
+            flow.x = savedX;
+            if (flow.inlineBottomAbs > flow.y) flow.y = flow.inlineBottomAbs;
+            runPending = false;
+            runHasElement = false;
+        }
+        if (childStyle.display == "flex" || childStyle.display == "inline-flex")
+            layoutFlex(childElement, flow, positionedAncestor);
+        else if (childStyle.display == "grid")
+            layoutGrid(childElement, flow, positionedAncestor);
+        else if (childStyle.display == "table" || childElement.tag == "table")
+            layoutTable(childElement, flow, positionedAncestor);
+        else if (childStyle.display == "table-row" || childElement.tag == "tr")
+            layoutTableRow(childElement, flow, positionedAncestor);
+        else if (childStyle.display == "table-cell" || childElement.tag == "td" || childElement.tag == "th")
+            layoutTableCell(childElement, flow, positionedAncestor);
+        else
+            layoutBlock(childElement, flow, flow.width, positionedAncestor);
+    }
+    if (runPending)
+    {
+        const savedX = flow.x;
+        layoutDirectText(element, flow, runStart, element.children.length);
+        flow.x = savedX;
     }
 }
 
@@ -1893,15 +2543,14 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
             layoutContents(ce, sub, ce);
             const int contentH = max(sub.contentBottom, sub.y - subTop);
             ce.box.height = hExp >= 0 ? hExp
-                : max(0, contentH + ce.box.paddingTop + ce.box.paddingBottom);
+                : contentBoxHeight(ce, contentH);
             cy += ce.box.height + gapPx;
             totalH += ce.box.height + gapPx;
         }
         if (items.length) totalH -= gapPx;
         const int hExp2 = element.style.resolveLength(element.style.height, style.containingHeight);
         element.box.height = hExp2 >= 0 ? hExp2
-            : clampMinMaxHeight(element, max(0, totalH + element.box.paddingTop +
-                element.box.paddingBottom + element.box.borderTop + element.box.borderBottom));
+            : contentBoxHeight(element, totalH);
         layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
         foreach (child; element.children)
         {
@@ -2068,10 +2717,7 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
 
     // Container height = tallest child (+ padding/border).
     const hPx = resolveHeight(element);
-    int finalH = hPx >= 0 ? hPx : maxChildHeight + element.box.paddingTop + element.box.paddingBottom +
-        element.box.borderTop + element.box.borderBottom;
-    finalH = clampMinMaxHeight(element, max(0, finalH));
-    element.box.height = finalH;
+    element.box.height = hPx >= 0 ? hPx : contentBoxHeight(element, maxChildHeight);
 
     layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
 
@@ -2479,10 +3125,13 @@ private struct FlowContext
     int height;
     int lineEnd;          /// Right edge of the current line.
     int contentBottom;    /// Bottom of the deepest inline content.
+    int inlineBottomAbs;  /// Absolute bottom of the deepest inline content.
     int floatLeft;        /// Rightmost float left edge.
     FloatRect[] floats;   /// Active float rects for line shaping.
     int prevBottomMargin; /// Previous block's bottom margin (for collapsing).
     bool hasPrevBlock;    /// Whether any block has been laid out in this flow.
+    bool suppressTopMargin; /// Parent/child collapsing already counted this
+                            /// element's own margin-top above it.
     int lineCount;        /// Number of lines laid out so far.
 
     /// The usable left edge of the current line, after any left floats.

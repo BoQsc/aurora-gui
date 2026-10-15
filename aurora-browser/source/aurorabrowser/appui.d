@@ -189,6 +189,8 @@ private string builtInPage(string path)
         return linksPageHtml();
     if (p == "scroll")
         return scrollPageHtml();
+    if (p == "interact")
+        return interactPageHtml();
     if (p == "async")
         return asyncPageHtml();
     if (p == "timer")
@@ -202,6 +204,30 @@ private string builtInPage(string path)
     return errorPageHtml(p, "Unknown page '" ~ p ~ "'. Try auroraweb:hello, " ~
         "auroraweb:css, auroraweb:js, auroraweb:links, auroraweb:async, " ~
         "auroraweb:timer, auroraweb:remote or auroraweb:complex.");
+}
+
+/// Page for exercising real interactivity end to end: an inline-`onclick`
+/// button, a `:hover` style, and a text input.
+private string interactPageHtml()
+{
+    return `<html><head><style>
+      body { background: #f2f2f5; color: #101014; padding: 16px; }
+      #btn { display: inline-block; padding: 10px 16px; background: #e8e8ee; font-size: 16px; }
+      #btn:hover { background: #ffd54a; font-size: 20px; }
+      #out { font-size: 16px; margin-top: 12px; }
+      #field { font-size: 16px; width: 220px; }
+    </style></head><body>
+      <div id="btn" onclick='document.getElementById("out").textContent = "clicked";'
+        onwheel='this.setAttribute("wheeled","1")'
+        ondblclick='this.setAttribute("dbl","1")'
+        onmouseenter='this.setAttribute("entered","1")'
+        onmouseleave='this.setAttribute("left","1")'
+        oncontextmenu='event.preventDefault(); this.setAttribute("menu","1")'>Click me</div>
+      <div id="out">not clicked</div>
+      <input id="field" value="type here" />
+      <input id="field2" value="" placeholder="Search the docs" />
+      <div style="height:600px"></div>
+    </body></html>`;
 }
 
 /// Tall page to exercise vertical scrolling.
@@ -758,6 +784,11 @@ final class WebPageView : Widget
 
     override bool onMouseMove(ref Event event)
     {
+        // Pointer over the page: track `:hover` and run mouseover/mousemove
+        // handlers. Repaint only when the styled state actually changed.
+        if (_page !is null &&
+            _page.pointerMove(event.position.x, event.position.y + _scrollY))
+            invalidate();
         if (isOverLink(event.position.x, event.position.y))
             setCursor(CursorKind.hand);
         else
@@ -767,16 +798,91 @@ final class WebPageView : Widget
 
     override bool onMouseDown(ref Event event)
     {
+        if (event.button == MouseButton.right)
+        {
+            // A page `contextmenu` handler may cancel the host's own menu.
+            if (_page !is null)
+                _page.contextMenu(event.position.x, event.position.y + _scrollY);
+            return true;
+        }
         if (event.button != MouseButton.left)
             return super.onMouseDown(event);
-        const href = hitTestLink(event.position.x, event.position.y + _scrollY);
-        if (href.length > 0)
+        requestFocus();
+        if (_page !is null)
         {
-            if (onLinkClicked !is null)
+            // Real click: run the page's DOM handlers (inline `onclick`,
+            // `addEventListener`), focus whatever is under the pointer, and —
+            // when nothing called preventDefault() — follow a link.
+            const href = _page.click(event.position.x, event.position.y + _scrollY);
+            invalidate();
+            if (href.length > 0 && onLinkClicked !is null)
                 onLinkClicked(resolveHref(href));
             return true;
         }
         return super.onMouseDown(event);
+    }
+
+    /// UI key -> DOM `event.key` name ("" when the page should not see it;
+    /// printable characters arrive through onTextInput instead).
+    private static string domKeyName(Key key)
+    {
+        switch (key)
+        {
+            case Key.backspace: return "Backspace";
+            case Key.tab: return "Tab";
+            case Key.enter: return "Enter";
+            case Key.escape: return "Escape";
+            case Key.pageUp: return "PageUp";
+            case Key.pageDown: return "PageDown";
+            case Key.end: return "End";
+            case Key.home: return "Home";
+            case Key.left: return "ArrowLeft";
+            case Key.up: return "ArrowUp";
+            case Key.right: return "ArrowRight";
+            case Key.down: return "ArrowDown";
+            case Key.insert: return "Insert";
+            case Key.deleteKey: return "Delete";
+            default: break;
+        }
+        return "";
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        // Only when a page control has focus, and only for editing/navigation
+        // keys — printable text comes through onTextInput.
+        if (_page !is null && _page.focusedElement() !is null)
+        {
+            const name = domKeyName(event.key);
+            if (name.length > 0)
+            {
+                _page.sendKey(name);
+                invalidate();
+                return true;
+            }
+        }
+        return super.onKeyDown(event);
+    }
+
+    override bool onTextInput(ref Event event)
+    {
+        if (_page is null || _page.focusedElement() is null || event.text.length == 0)
+            return false;
+        import std.utf : encode;
+        bool handled = false;
+        foreach (ch; event.text)
+        {
+            if (ch < 0x20 || ch == 0x7f) continue;
+            char[4] buf;
+            const len = encode(buf, ch);
+            if (_page.sendKey(buf[0 .. len].idup)) handled = true;
+        }
+        if (handled)
+        {
+            invalidate();
+            return true;
+        }
+        return super.onTextInput(event);
     }
 
     /// Resolve a possibly-relative `href` against the current URL.
@@ -894,12 +1000,48 @@ final class WebPageView : Widget
         }
     }
 
+    /// Double-click detection state (the host window may not report clickCount).
+    private long _lastClickMs;
+    private int _lastClickX;
+    private int _lastClickY;
+
+    override bool onMouseUp(ref Event event)
+    {
+        if (event.button != MouseButton.left || _page is null)
+            return super.onMouseUp(event);
+        // A double click is a second press soon after, at (nearly) the same
+        // spot — the same heuristic a browser uses when no click count arrives.
+        const x = event.position.x;
+        const y = event.position.y;
+        const dx = (x > _lastClickX) ? x - _lastClickX : _lastClickX - x;
+        const dy = (y > _lastClickY) ? y - _lastClickY : _lastClickY - y;
+        const dt = event.timestampMs - _lastClickMs;
+        const isDouble = event.clickCount >= 2 ||
+            (_lastClickMs != 0 && dt >= 0 && dt <= 500 && dx <= 4 && dy <= 4);
+        _lastClickMs = event.timestampMs;
+        _lastClickX = x;
+        _lastClickY = y;
+        if (isDouble)
+        {
+            _page.doubleClick(x, y + _scrollY);
+            invalidate();
+            return true;
+        }
+        return super.onMouseUp(event);
+    }
+
     override bool onMouseWheel(ref Event event)
     {
         if (event.wheelY == 0) return false;
+        // A page `wheel` handler may consume the gesture (zoom, carousel); when
+        // it cancels the event the view must not also scroll.
+        if (_page !is null && _page.wheel(event.position.x,
+            event.position.y + _scrollY, event.wheelY))
+            return true;
         const maxScroll = maxInt(0, _contentHeight - size().height);
         if (maxScroll == 0) return false;
         _scrollY = clampInt(_scrollY - event.wheelY * 24, 0, maxScroll);
+        if (_page !is null) _page.notifyScroll(_scrollY);
         invalidate();
         return true;
     }
@@ -1497,6 +1639,9 @@ final class BrowserRoot : Widget
             maxInt(1, _content.size().height));
         auto view = new WebPageView(page);
         view.setCurrentUrl(url);
+        // The page view must be able to take keyboard focus so typed text and
+        // edit keys reach the page's focused control.
+        view.setFocusable(true);
         view.onLinkClicked = delegate(string target) { navigateTo(target); };
 
         Tab tab;

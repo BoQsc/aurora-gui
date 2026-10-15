@@ -1,3 +1,15 @@
+## Vendor patch: `Tab` reaches the focused widget first (`aurora/window.d`)
+
+- `Window.handleKey` intercepted `Tab`/`Shift+Tab` and called `cycleFocus`
+  before dispatching to the focused widget, so an embedded page view could
+  never move focus between its own controls (a browser keeps `Tab` inside the
+  page) and a text editor could never insert a tab.
+- `Tab` is now offered to the focused widget first; the window cycles widget
+  focus only when the widget does not handle the key, so chrome focus traversal
+  is unchanged for every widget that does not consume `Tab`.
+- Vendor sources are checksummed by `vendor/aurora-d-0.4.5/MANIFEST.sha256`;
+  the entry for `source/aurora/window.d` is updated with this patch.
+
 ## Application icon on the executable (aurora-opencode-pro)
 
 - Two independent halves, because a Windows app shows two icons:

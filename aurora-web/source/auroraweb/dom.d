@@ -36,6 +36,10 @@ final class Element
     Object backgroundImage; /// Decoded image for `background-image`, if any.
     bool imageLoadTried;      /// <img> fetch already attempted (avoid re-fetching).
     bool backgroundLoadTried; /// `background-image` fetch already attempted.
+    bool hovered;             /// Pointer is over this element (drives `:hover`).
+    bool focused;             /// This element has focus (drives `:focus`).
+    bool active;              /// Mouse button held on this element (`:active`).
+    size_t caret;             /// Caret offset inside a focused text control.
 
     this(string tag)
     {
@@ -128,11 +132,15 @@ struct ComputedStyle
     string background = "transparent";
     string backgroundImage = "none";
     string backgroundSize = "auto";
+    string objectFit = "fill";   /// `object-fit` for <img>: fill/contain/cover/none/scale-down
     string fontSize = "16px";
     string fontWeight = "400";
     string fontStyle = "normal";
     string fontFamily = "system-ui";
     string textAlign = "left";
+    /// `vertical-align` for inline/inline-box sizing (`baseline` by default).
+    string verticalAlign = "baseline";
+
     string width = "auto";
     string height = "auto";
     string margin = "0px";
@@ -172,7 +180,20 @@ struct ComputedStyle
     string paddingBottom = "";
     string paddingLeft = "";
     string boxSizing = "content-box";
+    string borderTopStyle = "";
+    string borderRightStyle = "";
+    string borderBottomStyle = "";
+    string borderLeftStyle = "";
     string gridTemplateColumns = "";
+    string borderTopColor = "";
+    string borderRightColor = "";
+    string borderBottomColor = "";
+    string borderLeftColor = "";
+    string outline = "";
+    string outlineColor = "";
+    string outlineWidth = "";
+    string outlineStyle = "";
+    string outlineOffset = "";
     string gridTemplateRows = "";
     string columnGap = "";
     string rowGap = "";
@@ -180,6 +201,7 @@ struct ComputedStyle
     string boxShadowH = "0px";
     string boxShadowV = "0px";
     string boxShadowBlur = "0px";
+    string boxShadowSpread = "0px";
     string boxShadowColor = "none";
     string textDecoration = "none";
 
@@ -245,6 +267,28 @@ struct ComputedStyle
             return (viewportHeight * cssInt(s[0 .. $ - 2].strip())) / 100;
         if (s.length >= 2 && s[$ - 2 .. $] == "vw")
             return (viewportWidth * cssInt(s[0 .. $ - 2].strip())) / 100;
+
+        // Physical and typographic units: without these the value was reported
+        // as "not a length" (-1) and a margin resolver stored that as a real
+        // -1px margin (the same trap unitless `0` fell into). 1pt = 96/72px,
+        // 1pc = 12pt = 16px, and `ch`/`ex` are approximated at half an em.
+        if (s.length >= 2 && s[$ - 2 .. $] == "pt")
+            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * (96.0 / 72.0));
+        if (s.length >= 2 && s[$ - 2 .. $] == "pc")
+            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * 16.0);
+        if (s.length >= 2 && s[$ - 2 .. $] == "ch")
+            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * (fontSizePx * 0.5));
+        if (s.length >= 2 && s[$ - 2 .. $] == "ex")
+            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * (fontSizePx * 0.5));
+
+        // A unitless zero is a valid length in CSS (`margin: 0`, `top: 0`,
+        // `left: 0`). Without this the value was reported as "not a length"
+        // (-1) and the margin resolver stored that as a real -1px margin, which
+        // shifted every element declaring `margin: 0` one pixel up and left and
+        // accumulated through nested blocks.
+        if (s == "0" || s == "0.0" || s == "-0" || s == "+0")
+            return 0;
+
         return -1;
     }
 
@@ -392,6 +436,14 @@ struct Box
     int borderRight;
     int borderBottom;
     int borderLeft;
+    /// `margin: auto` on a horizontal side (used to center a block that has a
+    /// definite width, per CSS 10.3.3).
+    bool marginLeftAuto;
+    bool marginRightAuto;
+    /// `margin: auto` on a vertical side (distributes the leftover space for an
+    /// absolutely positioned box with both vertical insets, per CSS 10.6.4).
+    bool marginTopAuto;
+    bool marginBottomAuto;
 }
 
 unittest

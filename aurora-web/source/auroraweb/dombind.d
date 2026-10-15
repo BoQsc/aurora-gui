@@ -26,15 +26,75 @@ JsValue bindDocument(Element root, JsRuntime rt, ref JsScope jsScope,
     ubyte[] delegate(string url) @safe resourceLoader = null)
 {
     auto binder = new DocumentBinder(rt);
+    _hostBinders[rt] = binder;
     return binder.bind(root, jsScope, resourceLoader);
 }
 
+/// One binder per bound document/runtime, so the HOST (the browser shell) can
+/// dispatch real user interactions — clicks, key presses, text input — into a
+/// page's DOM handlers. Without this, only page-script-initiated
+/// `element.dispatchEvent(...)` could ever fire a listener.
+private DocumentBinder[JsRuntime] _hostBinders;
+
+/// Fire a NON-bubbling host event (`mouseenter`/`mouseleave`) on one element.
+bool dispatchHostEventNoBubble(JsRuntime rt, Element element, string type)
+{
+    if (rt is null || element is null || type.length == 0) return false;
+    if (auto b = rt in _hostBinders)
+        return (*b).dispatchForHost(element, type, "", 0, false);
+    return false;
+}
+
+/// Fire a host-initiated DOM event (`click`, `mousedown`, `mouseup`, `input`,
+/// `keydown`, ...) on `element`, bubbling through its ancestors exactly like a
+/// real event. `key` populates `event.key` for keyboard events. Returns true
+/// when a handler called `preventDefault()`.
+bool dispatchHostEvent(JsRuntime rt, Element element, string type, string key = "")
+{
+    if (rt is null || element is null || type.length == 0) return false;
+    if (auto b = rt in _hostBinders)
+        return (*b).dispatchForHost(element, type, key, 0);
+    return false;
+}
+
+/// Same as above, with a numeric detail (used by `wheel` for `event.deltaY`).
+bool dispatchHostEvent(JsRuntime rt, Element element, string type, int deltaY)
+{
+    if (rt is null || element is null || type.length == 0) return false;
+    if (auto b = rt in _hostBinders)
+        return (*b).dispatchForHost(element, type, "", deltaY);
+    return false;
+}
+
 /// Internal binder state: the wrapper cache and the runtime.
+/// Fire a document/window-level host event (`scroll`, `resize`, ...): the
+/// document's own listener, then any `window` listener. Returns true when a
+/// handler called `preventDefault()`.
+bool dispatchDocumentEvent(JsRuntime rt, string type)
+{
+    if (rt is null || type.length == 0) return false;
+    if (auto b = rt in _hostBinders)
+        return (*b).dispatchOnDocument(type);
+    return false;
+}
+
+/// Expose the viewport scroll offset to the page (`window.scrollY`,
+/// `window.pageYOffset`, `document.documentElement.scrollTop`), which is what
+/// scrolling pages actually read.
+void setDocumentScroll(JsRuntime rt, int scrollY)
+{
+    if (rt is null) return;
+    if (auto b = rt in _hostBinders)
+        (*b).setViewportScroll(scrollY);
+}
+
 private final class DocumentBinder
 {
     JsObject[Element] wrappers;
     JsObject[Element] datasets;
     JsRuntime rt;
+    JsValue documentValue;   /// The bound `document` object (for document events).
+    JsValue windowValue;     /// The bound `window` object (for window events).
 
     this(JsRuntime rt)
     {
@@ -169,6 +229,26 @@ private final class DocumentBinder
         docObj.set("body", wrap(bodyEl));
         docObj.set("documentElement", wrap(root));
 
+        // document.addEventListener: store under the same `__event_<name>` slot
+        // the host fires when it dispatches a document-level event (`scroll`,
+        // ...). Without this the document object had no addEventListener at all,
+        // so document-level listeners silently never ran — and the page could
+        // not observe e.g. `window.scrollY` from a `scroll` handler.
+        docObj.set("addEventListener", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2) return rt2.makeUndefined();
+            const evtName = rt2.toJsString(args[0]);
+            if (thisValue.obj !is null)
+                thisValue.obj.set("__event_" ~ evtName, args[1]);
+            return rt2.makeUndefined();
+        }));
+        docObj.set("removeEventListener", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2) return rt2.makeUndefined();
+            const evtName = rt2.toJsString(args[0]);
+            if (thisValue.obj !is null)
+                thisValue.obj.props.remove("__event_" ~ evtName);
+            return rt2.makeUndefined();
+        }));
+
         auto docVal = JsValue(JsKind.object, docObj);
         jsScope.declare("document", docVal);
 
@@ -186,6 +266,9 @@ private final class DocumentBinder
             if (args.length < 2) return rt2.makeUndefined();
             auto name = rt2.toJsString(args[0]);
             rt2.globalScope.declare("__window_" ~ name, args[1]);
+            // Also keep it on the window object so the host can fire it.
+            if (thisValue.obj !is null)
+                thisValue.obj.set("__event_" ~ name, args[1]);
             return rt2.makeUndefined();
         }));
         windowObj.set("document", docVal);
@@ -223,6 +306,8 @@ private final class DocumentBinder
             rt.installFetchBuiltin();
         }
 
+        documentValue = docVal;
+        windowValue = JsValue(JsKind.object, windowObj);
         return docVal;
     }
 
@@ -347,6 +432,18 @@ private final class DocumentBinder
         obj.set("className", rt.makeString(el.attrs.get("class", "")));
         obj.set("style", rt.makeString(el.attrs.get("style", "")));
         obj.set("textContent", rt.makeString(el.textContent()));
+
+        // Inline event-handler attributes (`onclick`, `oninput`, `onchange`,
+        // ...): compile the attribute source into a handler function and
+        // register it exactly like `addEventListener`, so events dispatched by
+        // the host (real clicks/keystrokes) run the page's inline handlers.
+        foreach (name, source; el.attrs)
+        {
+            if (name.length <= 2 || name[0 .. 2] != "on") continue;
+            if (source.length == 0) continue;
+            const evt = name[2 .. $].toLower();
+            obj.set("__event_" ~ evt, makeInlineHandler(evt));
+        }
 
         obj.set("getAttribute", rt.makeNativeFunc((thisValue, args, rt2) {
             if (args.length == 0) return rt2.makeNull();
@@ -1429,7 +1526,90 @@ private final class DocumentBinder
         el.textNodes ~= tn;
     }
 
+    /// A handler for an inline `on<eventName>="..."` attribute. The attribute
+    /// source is read at FIRE time (so `setAttribute` updates take effect) and
+    /// runs with `this` bound to the element and the event object available as
+    /// the free variable `event`, like a real browser inline handler.
+    private JsValue makeInlineHandler(string evtName)
+    {
+        const attrName = "on" ~ evtName;
+        return rt.makeNativeFunc((thisValue, args, rt2) {
+            auto el2 = unwrap(thisValue);
+            if (el2 is null) return rt2.makeUndefined();
+            auto it = attrName in el2.attrs;
+            if (it is null || (*it).length == 0) return rt2.makeUndefined();
+            try
+            {
+                rt2.globalScope.declare("__evt",
+                    args.length ? args[0] : rt2.makeUndefined());
+                auto program = rt2.parseInto("var event = __evt;\n" ~ (*it));
+                rt2.runProgram(program, thisValue);
+            }
+            catch (Exception)
+            {
+                // A page's broken inline handler must not abort the interaction.
+            }
+            return rt2.makeUndefined();
+        });
+    }
+
+    /// Fire a host-initiated event on `el` (a real user interaction). The event
+    /// bubbles through ancestors. Returns true when a handler called
+    /// `preventDefault()`.
+    bool dispatchForHost(Element el, string type, string key = "", int deltaY = 0,
+        bool bubbles = true)
+    {
+        auto wrapper = wrap(el);
+        auto evt = makeEventObject(rt, type, wrapper);
+        if (key.length)
+            evt.obj.set("key", rt.makeString(key));
+        if (deltaY != 0)
+            evt.obj.set("deltaY", rt.makeNumber(deltaY));
+        fireEventChain(wrapper, rt, type, evt, bubbles);
+        auto cancelled = evt.obj.get("defaultPrevented");
+        return cancelled.kind == JsKind.boolean && cancelled.boolValue;
+    }
+
     /// Build a minimal Event object with preventDefault support.
+    /// Fire a document/window-level event (`scroll`) at the object a page
+    /// listened on. Returns true when a handler cancelled the event.
+    bool dispatchOnDocument(string type)
+    {
+        auto target = (documentValue.obj !is null) ? documentValue : windowValue;
+        if (target.obj is null) return false;
+        auto evt = makeEventObject(rt, type, target);
+        void run(JsValue holder)
+        {
+            if (holder.obj is null) return;
+            auto handler = holder.obj.get("__event_" ~ type);
+            if (handler.kind != JsKind.func) return;
+            evt.obj.set("currentTarget", holder);
+            JsValue[] callArgs;
+            callArgs ~= evt;
+            rt.callFunction(handler, holder, callArgs);
+        }
+        run(documentValue);
+        run(windowValue);
+        auto cancelled = evt.obj.get("defaultPrevented");
+        return cancelled.kind == JsKind.boolean && cancelled.boolValue;
+    }
+
+    /// Publish the viewport scroll offset to the page's globals.
+    void setViewportScroll(int scrollY)
+    {
+        if (windowValue.obj !is null)
+        {
+            windowValue.obj.set("scrollY", rt.makeNumber(scrollY));
+            windowValue.obj.set("pageYOffset", rt.makeNumber(scrollY));
+        }
+        if (documentValue.obj !is null)
+        {
+            auto docEl = documentValue.obj.get("documentElement");
+            if (docEl.obj !is null)
+                docEl.obj.set("scrollTop", rt.makeNumber(scrollY));
+        }
+    }
+
     private JsValue makeEventObject(JsRuntime rt2, string evtName, JsValue target)
     {
         auto evt = rt2.makeObject();
@@ -1456,7 +1636,8 @@ private final class DocumentBinder
 
     /// Fire a leaf handler, then bubble up ancestors. The submit event is
     /// dispatched through this same bubbling path.
-    private void fireEventChain(JsValue targetValue, JsRuntime rt2, string evtName, JsValue evt)
+    private void fireEventChain(JsValue targetValue, JsRuntime rt2, string evtName,
+        JsValue evt, bool bubbles = true)
     {
         auto cur = targetValue;
         auto curEl = unwrap(cur);
@@ -1477,6 +1658,7 @@ private final class DocumentBinder
                 if (stopped.kind == JsKind.boolean && stopped.boolValue) break;
             }
             // Move to parent.
+            if (!bubbles) break;
             if (curEl is null || curEl.parent is null) break;
             curEl = curEl.parent;
             cur = wrap(curEl);

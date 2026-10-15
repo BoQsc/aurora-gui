@@ -1776,14 +1776,20 @@ final class GuiWindow : WidgetHost, NativeWindowSink
                 return;
             }
         }
-        if (down && event.key == Key.tab && !event.control() && !event.alt() && !event.meta())
+        auto target = _focused !is null ? _focused : _root;
+        // Tab: offer the key to the focused widget first. A text editor inserts
+        // a tab, and an embedded page view moves focus between the page's own
+        // controls (like a browser, which keeps Tab inside the page). The window
+        // only cycles widget focus when the widget does not handle the key.
+        bool handled = false;
+        if (target !is null)
+            handled = dispatchToBubble(target, event);
+        if (!handled && down && event.key == Key.tab && !event.control() &&
+            !event.alt() && !event.meta())
         {
             cycleFocus(event.shift());
             return;
         }
-        auto target = _focused !is null ? _focused : _root;
-        if (target !is null)
-            dispatchToBubble(target, event);
     }
 
     private void handleText(ref Event event)

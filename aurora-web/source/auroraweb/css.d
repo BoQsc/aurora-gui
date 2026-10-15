@@ -94,6 +94,12 @@ struct Selector
     bool attrHasValue;      /// Whether a value was given.
     bool isRoot;            /// `:root` — matches the document root element.
     bool isPseudoElement;   /// `::before`/`::after` — generated content; never a real element.
+    bool isHover;           /// `:hover` — pointer is over the element.
+    bool isFocus;           /// `:focus`/`:focus-visible` — element has focus.
+    bool isActive;          /// `:active` — mouse button held on the element.
+    bool isFirstChild;      /// `:first-child`.
+    bool isLastChild;       /// `:last-child`.
+    bool isChecked;         /// `:checked` — a checked input.
 }
 
 /**
@@ -400,7 +406,9 @@ private Selector[] parseSelectorList(string text)
         auto sel = parseSelector(part.strip());
         if (sel.isPseudoElement ||
             (!sel.isRoot && !sel.isUniversal && sel.typeName.length == 0 && sel.className.length == 0 &&
-            sel.idName.length == 0 && sel.attrName.length == 0)
+            sel.idName.length == 0 && sel.attrName.length == 0 &&
+            !sel.isHover && !sel.isFocus && !sel.isActive &&
+            !sel.isFirstChild && !sel.isLastChild && !sel.isChecked)
             )
             continue;
         result ~= sel;
@@ -464,6 +472,12 @@ private Selector parseSelector(string text)
     result.attrHasValue = leaf.attrHasValue;
     result.isRoot = leaf.isRoot;
     result.isPseudoElement = leaf.isPseudoElement;
+    result.isHover = leaf.isHover;
+    result.isFocus = leaf.isFocus;
+    result.isActive = leaf.isActive;
+    result.isFirstChild = leaf.isFirstChild;
+    result.isLastChild = leaf.isLastChild;
+    result.isChecked = leaf.isChecked;
     if (compounds.length > 1)
     {
         foreach_reverse (k; 0 .. compounds.length - 1)
@@ -507,7 +521,11 @@ private void parseCompound(string part, out Selector compound)
         {
             auto start = i + 1;
             i = start;
-            while (i < n && part[i] != '.' && part[i] != '#' && part[i] != '[') i++;
+            // Stop at `:` too, so `:hover`/`:focus`/... after a class or id is
+            // parsed as a pseudo-class instead of being swallowed into the name
+            // (`.btn:hover` used to become the class "btn:hover").
+            while (i < n && part[i] != '.' && part[i] != '#' && part[i] != '[' &&
+                part[i] != ':') i++;
             if (start > i) compound.className = "";
             else compound.className = part[start .. min(i, part.length)];
         }
@@ -515,7 +533,8 @@ private void parseCompound(string part, out Selector compound)
         {
             auto start = i + 1;
             i = start;
-            while (i < n && part[i] != '.' && part[i] != '#' && part[i] != '[') i++;
+            while (i < n && part[i] != '.' && part[i] != '#' && part[i] != '[' &&
+                part[i] != ':') i++;
             if (start > i) compound.idName = "";
             else compound.idName = part[start .. min(i, part.length)];
         }
@@ -563,6 +582,15 @@ private void parseCompound(string part, out Selector compound)
             if (pname == "root") compound.isRoot = true;
             else if (pname == "before" || pname == "after")
                 compound.isPseudoElement = true;
+            // State pseudo-classes the renderer CAN evaluate against the
+            // element's tracked interaction state.
+            else if (pname == "hover") compound.isHover = true;
+            else if (pname == "focus" || pname == "focus-visible")
+                compound.isFocus = true;
+            else if (pname == "active") compound.isActive = true;
+            else if (pname == "first-child") compound.isFirstChild = true;
+            else if (pname == "last-child") compound.isLastChild = true;
+            else if (pname == "checked") compound.isChecked = true;
             else
                 // A pseudo-class we cannot evaluate (:hover, :focus-within,
                 // :nth-child, :not(...), ...). Never match the compound:
@@ -701,6 +729,35 @@ private Element previousElementSibling(Element element)
     return null;
 }
 
+/// Is there an element sibling before `e` (so `:first-child` fails)?
+private bool hasElementBefore(Element e)
+{
+    if (e.parent is null) return false;
+    foreach (child; e.parent.children)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        if (ce is e) return false;
+        return true;
+    }
+    return false;
+}
+
+/// Is there an element sibling after `e` (so `:last-child` fails)?
+private bool hasElementAfter(Element e)
+{
+    if (e.parent is null) return false;
+    bool seen = false;
+    foreach (child; e.parent.children)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        if (ce is e) { seen = true; continue; }
+        if (seen) return true;
+    }
+    return false;
+}
+
 private bool compoundMatches(in Selector compound, Element element)
 {
     // `::before`/`::after` are generated content, not real elements.
@@ -716,6 +773,14 @@ private bool compoundMatches(in Selector compound, Element element)
         if (it is null) return false;
         if (compound.attrHasValue && *it != compound.attrValue) return false;
     }
+    // Interaction state (`:hover`/`:focus`/`:active`), structural
+    // (`:first-child`/`:last-child`) and form (`:checked`) pseudo-classes.
+    if (compound.isHover && !element.hovered) return false;
+    if (compound.isFocus && !element.focused) return false;
+    if (compound.isActive && !element.active) return false;
+    if (compound.isChecked && ("checked" in element.attrs) is null) return false;
+    if (compound.isFirstChild && hasElementBefore(element)) return false;
+    if (compound.isLastChild && hasElementAfter(element)) return false;
     return true;
 }
 

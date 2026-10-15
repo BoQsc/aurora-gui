@@ -389,6 +389,114 @@ int main(string[] args)
         }
     }
 
+    // --- Interactivity: real click / hover / typing routed through the view ---
+    root.navigateForTesting("auroraweb:interact");
+    driver.paint();
+    Thread.sleep(50.msecs);
+    check("interact page loaded", root.currentUrlForTesting() == "auroraweb:interact");
+    auto interactView = root.activeViewForTesting();
+    check("interact view present", interactView !is null);
+    if (interactView !is null && interactView.page() !is null)
+    {
+        auto pageRoot = interactView.page().root();
+        Element findEl(Element e, string id)
+        {
+            auto it = "id" in e.attrs;
+            if (it !is null && *it == id) return e;
+            foreach (c; e.elements)
+            {
+                auto r = findEl(c, id);
+                if (r !is null) return r;
+            }
+            return null;
+        }
+        Element btn = findEl(pageRoot, "btn");
+        Element outEl = findEl(pageRoot, "out");
+        Element field = findEl(pageRoot, "field");
+        check("interact controls present",
+            btn !is null && outEl !is null && field !is null);
+        if (btn !is null && outEl !is null && field !is null)
+        {
+            // Inline content must keep document order relative to a following
+            // block (a block must never jump above an earlier inline-block).
+            check("inline-block keeps document order before a block",
+                btn.box.y + btn.box.height <= outEl.box.y);
+
+            // Hover: a real pointer move applies `:hover` to the element.
+            auto btnLocal = Point(btn.box.x + btn.box.width / 2, btn.box.y + 2);
+            driver.moveTo(interactView.localToGlobal(btnLocal));
+            root.tickTree(0.02);
+            check("real pointer move sets :hover",
+                interactView.page().hoveredElement() is btn);
+            check("real pointer move ran the page's onmouseenter",
+                ("entered" in btn.attrs) !is null);
+            // The computed style is refreshed by a layout, which paint drives.
+            driver.paint();
+            check(":hover styling applied", btn.style.fontSizePx == 20);
+
+            // Click: the page's inline onclick handler runs.
+            driver.click(interactView.localToGlobal(btnLocal));
+            root.tickTree(0.02);
+            driver.paint();
+            Thread.sleep(30.msecs);
+            check("click ran the inline onclick",
+                outEl.textContent().indexOf("clicked") >= 0);
+
+            // Focus + typing into the input.
+            auto fieldLocal = Point(field.box.x + 4, field.box.y + 4);
+            driver.click(interactView.localToGlobal(fieldLocal));
+            root.tickTree(0.02);
+            check("click focuses the input",
+                interactView.page().focusedElement() is field);
+            driver.text("Hi"d);
+            root.tickTree(0.02);
+            // The field starts pre-filled ("type here"), so typed text appends.
+            check("typing reaches the input",
+                field.attrs.get("value", "").indexOf("Hi") >= 0);
+
+            // Tab moves focus to the next control: the window now offers Tab to
+            // the focused widget first, so the page view consumes it.
+            auto field2 = findEl(pageRoot, "field2");
+            check("second interact field present", field2 !is null);
+            driver.keyDown(Key.tab);
+            driver.keyUp(Key.tab);
+            root.tickTree(0.02);
+            check("Tab moves focus to the next page control",
+                field2 !is null && interactView.page().focusedElement() is field2);
+
+            // A real wheel gesture reaches the page's `onwheel` handler.
+            driver.wheel(interactView.localToGlobal(btnLocal), -120);
+            root.tickTree(0.02);
+            check("real wheel ran the page's onwheel",
+                ("wheeled" in btn.attrs) !is null);
+
+
+            // Double click and right click reach the page's handlers.
+            // (The wheel check above scrolled the page, so rewind first: the
+            // click checks must hit the button where it was measured.)
+            driver.wheel(interactView.localToGlobal(btnLocal), 480);
+            root.tickTree(0.02);
+            driver.doubleClick(interactView.localToGlobal(btnLocal));
+            root.tickTree(0.02);
+            check("real double click ran the page's ondblclick",
+                ("dbl" in btn.attrs) !is null);
+            driver.rightClick(interactView.localToGlobal(btnLocal));
+            root.tickTree(0.02);
+            check("real right click ran the page's oncontextmenu",
+                ("menu" in btn.attrs) !is null);
+
+            // A page scroll listener fires when the view scrolls. This is last
+            // because it changes the scroll position the click checks used.
+            interactView.page().runScript(
+                `window.addEventListener('scroll', function(){` ~
+                `document.getElementById('btn').setAttribute('scrolled','1'); });`);
+            driver.wheel(interactView.localToGlobal(btnLocal), -120);
+            root.tickTree(0.02);
+            check("page scroll listener ran on a real wheel",
+                ("scrolled" in btn.attrs) !is null);
+        }
+    }
+
     // --- --url CLI arg: opening a URL in the first tab at startup ---
     // (openUrlAtStartup is what app.d calls for `--url <target>`.)
     root.openUrlAtStartup("auroraweb:links");
