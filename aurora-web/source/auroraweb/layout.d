@@ -20,7 +20,7 @@ module auroraweb.layout;
  * - Percentage lengths, min/max-width, min/max-height.
  */
 
-import auroraweb.css : Rule, cascadeFor, applyMediaRules, parseStylesheet;
+import auroraweb.css : Rule, cascadeFor, applyMediaRules, parseStylesheet, keyframeEndState;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
 import aurora.image : RgbaImage;
 import aurora.font : FontRole;
@@ -29,7 +29,7 @@ import aurora.text.layout : TextLayout, TextLayoutOptions;
 
 import std.algorithm : max, min;
 import std.conv : to;
-import std.string : endsWith, indexOf, split, strip, toLower;
+import std.string : endsWith, indexOf, lastIndexOf, split, strip, toLower;
 
 /// Measure a text run into wrapped lines using Aurora's real text engine.
 /// `maxWidth` is the wrap width (0 = no wrap). Returns the TextLayout (or null
@@ -64,6 +64,116 @@ private int measureTextHeight(string text, int pixelSize, int maxWidth)
     return cast(int) layout.height;
 }
 
+/// Max-content (intrinsic) width of an element: a single unwrapped line for
+/// inline content, or the widest block child. Includes the element's own
+/// padding/border. Used to size auto-width flex items to their content (an
+/// item with no explicit width must not collapse to 0).
+private int intrinsicWidth(Element e, int percentBase)
+{
+    resolveBoxMetrics(e, percentBase);
+    const pixelSize = e.style.fontSizePx > 0 ? e.style.fontSizePx : 16;
+    const own = e.box.paddingLeft + e.box.paddingRight + e.box.borderLeft + e.box.borderRight;
+
+    const explicit = e.style.resolveLength(e.style.width, percentBase);
+    if (explicit >= 0) return explicit + own;
+
+    int inlineW = 0;
+    int blockW = 0;
+    bool hasBlock = false;
+    foreach (child; e.children)
+    {
+        auto t = cast(TextNode) child;
+        if (t !is null)
+        {
+            if (t.data.strip().length)
+            {
+                auto lay = shapeText(t.data, pixelSize, 1_000_000);
+                inlineW += lay !is null ? cast(int) lay.width : cast(int)(t.data.length * 8);
+            }
+            continue;
+        }
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        auto d = ce.style.display;
+        if (d == "none") continue;
+        // Out-of-flow children (popups, tooltips) do not contribute to the
+        // element's intrinsic width.
+        if (ce.style.position == "absolute" || ce.style.position == "fixed") continue;
+        if (d == "inline" || d == "inline-block" || d == "inline-flex")
+            inlineW += intrinsicWidth(ce, percentBase);
+        else
+        {
+            hasBlock = true;
+            blockW = max(blockW, intrinsicWidth(ce, percentBase));
+        }
+    }
+    int content = hasBlock ? max(blockW, inlineW) : inlineW;
+    // Fallback: no contributory child was seen (e.g. text stored only in the
+    // node's own content) — measure the element's text directly.
+    if (content == 0)
+    {
+        auto txt = e.textContent().strip();
+        if (txt.length)
+        {
+            auto lay = shapeText(txt, pixelSize, 1_000_000);
+            content = lay !is null ? cast(int) lay.width : cast(int)(txt.length * 8);
+        }
+    }
+    return content + own;
+}
+
+/// Min-content width: the widest single word for text, or the widest block
+/// child. Used as the automatic minimum size of a flex item (CSS
+/// `min-width: auto`) so a shrunk item never forces its own text to wrap.
+private int minContentWidth(Element e, int percentBase)
+{
+    resolveBoxMetrics(e, percentBase);
+    const own = e.box.paddingLeft + e.box.paddingRight + e.box.borderLeft + e.box.borderRight;
+    const explicit = e.style.resolveLength(e.style.width, percentBase);
+    if (explicit >= 0) return explicit + own;
+    const pixelSize = e.style.fontSizePx > 0 ? e.style.fontSizePx : 16;
+
+    int widestWord = 0;
+    int inlineSum = 0;
+    int blockMax = 0;
+    bool hasBlock = false;
+    foreach (child; e.children)
+    {
+        auto t = cast(TextNode) child;
+        if (t !is null)
+        {
+            foreach (word; t.data.split())
+            {
+                auto lay = shapeText(word, pixelSize, 1_000_000);
+                if (lay !is null) widestWord = max(widestWord, cast(int) lay.width);
+            }
+            continue;
+        }
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        auto d = ce.style.display;
+        if (d == "none") continue;
+        if (ce.style.position == "absolute" || ce.style.position == "fixed") continue;
+        if (d == "inline" || d == "inline-block" || d == "inline-flex")
+            inlineSum += minContentWidth(ce, percentBase);
+        else
+        {
+            hasBlock = true;
+            blockMax = max(blockMax, minContentWidth(ce, percentBase));
+        }
+    }
+    int content = max(widestWord, hasBlock ? blockMax : inlineSum);
+    if (content == 0)
+    {
+        foreach (word; e.textContent().split())
+        {
+            auto lay = shapeText(word, pixelSize, 1_000_000);
+            if (lay !is null) content = max(content, cast(int) lay.width);
+        }
+    }
+    return content + own;
+}
+
 /// Resolve styles for every element using the cascade, then lay out.
 void applyStylesAndLayout(Element root, in Rule[] rules, int viewportWidth, int viewportHeight)
 {
@@ -75,15 +185,91 @@ void applyStylesAndLayout(Element root, in Rule[] rules, int viewportWidth, int 
 /// Resolve computed style for each element and its children.
 private void resolveStyles(Element element, in Rule[] rules, int viewportWidth, int viewportHeight)
 {
-    element.style = computedStyle(element, rules);
+    string[string] noCustom;
+    resolveStylesInto(element, rules, viewportWidth, viewportHeight, noCustom);
+}
+
+/// Resolve styles, inheriting CSS custom properties (`--name`) down the tree.
+/// Resolve `font-size` to px: `px` passes through, `rem` scales the root size,
+/// `em`/`%` scale the parent size, `vw`/`vh` scale the viewport, and
+/// `clamp()/min()/max()` take their first resolvable component. An empty value
+/// inherits the parent size.
+private int resolveFontSize(in ComputedStyle style, int parentPx)
+{
+    import auroraweb.dom : cssInt, cssDouble;
+    const s = style.fontSize.strip();
+    if (s.length == 0) return parentPx;
+
+    int one(string raw)
+    {
+        const v = raw.strip();
+        if (v.length >= 3 && v[$ - 2 .. $] == "px") return cssInt(v[0 .. $ - 2].strip());
+        if (v.length >= 3 && v[$ - 3 .. $] == "rem")
+            return cast(int)(cssDouble(v[0 .. $ - 3].strip()) * style.rootFontSizePx);
+        if (v.length >= 2 && v[$ - 2 .. $] == "em")
+            return cast(int)(cssDouble(v[0 .. $ - 2].strip()) * parentPx);
+        if (v.length >= 3 && v[$ - 3 .. $] == "vw")
+            return style.viewportWidth * cssInt(v[0 .. $ - 3].strip()) / 100;
+        if (v.length >= 3 && v[$ - 3 .. $] == "vh")
+            return style.viewportHeight * cssInt(v[0 .. $ - 3].strip()) / 100;
+        if (v.length >= 2 && v[$ - 1] == '%')
+            return parentPx * cssInt(v[0 .. $ - 1].strip()) / 100;
+        return -1;
+    }
+
+    foreach (fn; ["clamp(", "min(", "max("])
+    {
+        if (s.length > fn.length && s[0 .. fn.length] == fn && s[$ - 1] == ')')
+        {
+            foreach (part; s[fn.length .. $ - 1].split(','))
+            {
+                const v = one(part);
+                if (v >= 0) return v;
+            }
+            return parentPx;
+        }
+    }
+    const v = one(s);
+    return v >= 0 ? v : parentPx;
+}
+
+private void resolveStylesInto(Element element, in Rule[] rules, int viewportWidth,
+    int viewportHeight, string[string] inheritedCustom, int parentFontPx = 16,
+    int rootFontPx = 16)
+{
+    auto cascade = cascadeFor(element, rules);
+    string[string] custom = inheritedCustom.dup;
+    foreach (prop, val; cascade)
+        if (prop.length > 2 && prop[0] == '-' && prop[1] == '-')
+            custom[prop] = val;
+    // Settle nested `var()` references between custom properties.
+    auto keys = custom.keys;
+    foreach (pass; 0 .. 3)
+        foreach (k; keys)
+            custom[k] = resolveVars(custom[k], custom, 0);
+
+    element.style = computedStyle(element, rules, cascade, custom);
     element.style.viewportWidth = viewportWidth;
     element.style.viewportHeight = viewportHeight;
+    element.style.rootFontSizePx = rootFontPx;
+    element.style.fontSizePx = resolveFontSize(element.style, parentFontPx);
+    // The root element establishes the `rem` base for all its descendants.
+    const int childRootFont = (element.parent is null) ? element.style.fontSizePx : rootFontPx;
     foreach (child; element.elements)
-        resolveStyles(child, rules, viewportWidth, viewportHeight);
+        resolveStylesInto(child, rules, viewportWidth, viewportHeight, custom,
+            element.style.fontSizePx, childRootFont);
 }
 
 /// Compute the style map for one element from cascade plus inline style.
 private ComputedStyle computedStyle(Element element, in Rule[] rules)
+{
+    string[string] empty;
+    return computedStyle(element, rules, cascadeFor(element, rules), empty);
+}
+
+/// Style computation with an inherited custom-property (`--x`) map.
+private ComputedStyle computedStyle(Element element, in Rule[] rules,
+    string[string] cascadeIn, string[string] custom)
 {
     ComputedStyle style;
     // User-agent default display.
@@ -92,7 +278,11 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules)
         style.fontWeight = "bold";
     applyUserAgentDefaults(style, element.tag);
 
-    auto cascade = cascadeFor(element, rules);
+    // `var(--x)` references are resolved to concrete values before they are
+    // applied, using this element's inherited custom-property map.
+    string[string] cascade;
+    foreach (prop, val; cascadeIn)
+        cascade[prop] = resolveVars(val, custom, 0);
     applyDeclaration(style, "display", cascade.get("display", ""));
     applyDeclaration(style, "color", cascade.get("color", ""));
     applyDeclaration(style, "background", cascade.get("background", ""));
@@ -104,6 +294,10 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules)
     applyDeclaration(style, "font-style", cascade.get("font-style", ""));
     applyDeclaration(style, "font-family", cascade.get("font-family", ""));
     applyDeclaration(style, "text-align", cascade.get("text-align", ""));
+    applyDeclaration(style, "white-space", cascade.get("white-space", ""));
+    applyDeclaration(style, "background-clip", cascade.get("background-clip", ""));
+    applyDeclaration(style, "-webkit-background-clip", cascade.get("-webkit-background-clip", ""));
+    applyDeclaration(style, "flex-direction", cascade.get("flex-direction", ""));
     applyDeclaration(style, "width", cascade.get("width", ""));
     applyDeclaration(style, "height", cascade.get("height", ""));
     applyDeclaration(style, "min-width", cascade.get("min-width", ""));
@@ -153,6 +347,33 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules)
     applyDeclaration(style, "opacity", cascade.get("opacity", ""));
     applyDeclaration(style, "z-index", cascade.get("z-index", ""));
 
+    // CSS animations are not run over time. When an animation uses a
+    // `forwards`/`both` fill mode, apply its end-state (`to`) keyframe
+    // statically -- this is what makes an intro overlay that fades out
+    // actually disappear instead of covering the page.
+    {
+        auto anim = cascade.get("animation", "");
+        auto animName = cascade.get("animation-name", "");
+        auto fill = cascade.get("animation-fill-mode", "");
+        auto combined = toLower(anim ~ " " ~ fill);
+        if (indexOf(combined, "forwards") >= 0 || indexOf(combined, "both") >= 0)
+        {
+            string[] names;
+            if (animName.length && animName != "none")
+                names = animName.split(",");
+            else
+                foreach (tok; anim.split(" "))
+                {
+                    auto t = tok.strip();
+                    if (t.length && keyframeEndState(t).length)
+                        names ~= t;
+                }
+            foreach (nm; names)
+                foreach (decl; keyframeEndState(nm.strip()))
+                    applyDeclaration(style, decl.property, resolveVars(decl.value, custom, 0));
+        }
+    }
+
     // Inline style attribute overrides everything.
     auto inlineStyle = "style" in element.attrs;
     if (inlineStyle !is null)
@@ -161,6 +382,184 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules)
             applyDeclaration(style, decl.property, decl.value);
     }
     return style;
+}
+
+/// Resolve every `var(--name[, fallback])` in `value` using `custom`.
+private string resolveVars(string value, string[string] custom, int depth)
+{
+    if (depth > 12) return value;
+    if (indexOf(value, "var(") < 0) return value;
+    string result;
+    size_t i = 0;
+    while (i < value.length)
+    {
+        auto p = indexOf(value[i .. $], "var(");
+        if (p < 0) { result ~= value[i .. $]; break; }
+        p += i;
+        result ~= value[i .. p];
+        size_t j = p + 4;
+        int d = 1;
+        while (j < value.length && d > 0)
+        {
+            if (value[j] == '(') d++;
+            else if (value[j] == ')') { d--; if (d == 0) break; }
+            j++;
+        }
+        auto inner = value[p + 4 .. (j < value.length ? j : value.length)];
+        auto comma = topLevelComma(inner);
+        auto name = ((comma < 0) ? inner : inner[0 .. comma]).strip();
+        auto fallback = (comma < 0) ? "" : inner[comma + 1 .. $].strip();
+        auto it = name in custom;
+        if (it !is null) result ~= resolveVars(*it, custom, depth + 1);
+        else if (fallback.length) result ~= resolveVars(fallback, custom, depth + 1);
+        i = (j < value.length) ? j + 1 : value.length;
+    }
+    return result;
+}
+
+private ptrdiff_t topLevelComma(string s)
+{
+    int d = 0;
+    foreach (k, ch; s)
+    {
+        if (ch == '(') d++;
+        else if (ch == ')') d--;
+        else if (ch == ',' && d == 0) return k;
+    }
+    return -1;
+}
+
+/// Best-effort solid color for a `background` that is a gradient list: the
+/// first color stop of the last gradient. Gradients are not painted, so this
+/// approximates the intended theme rather than leaving the element transparent
+/// (which would, e.g., put light text on a white page).
+private string solidColorFromBackground(string value)
+{
+    if (indexOf(value, "gradient(") < 0) return value;
+    auto last = lastIndexOf(value, "gradient(");
+    auto paren = indexOf(value[last .. $], "(");
+    if (paren < 0) return value;
+    paren += last;
+    size_t j = paren + 1;
+    int d = 1;
+    while (j < value.length && d > 0)
+    {
+        if (value[j] == '(') d++;
+        else if (value[j] == ')') { d--; if (d == 0) break; }
+        j++;
+    }
+    auto inner = value[paren + 1 .. (j < value.length ? j : value.length)];
+    auto c = firstColorInGradient(inner);
+    return c.length ? c : value;
+}
+
+private string firstColorInGradient(string inner)
+{
+    string[] parts;
+    size_t start = 0;
+    int d = 0;
+    foreach (k, ch; inner)
+    {
+        if (ch == '(') d++;
+        else if (ch == ')') d--;
+        else if (ch == ',' && d == 0) { parts ~= inner[start .. k]; start = k + 1; }
+    }
+    parts ~= inner[start .. $];
+    foreach (part; parts)
+    {
+        auto p = part.strip();
+        if (p.length == 0 || indexOf(p, "transparent") == 0) continue;
+        if (indexOf(p, "#") >= 0 || indexOf(p, "rgb") >= 0 || indexOf(p, "hsl") >= 0)
+        {
+            // Functional colors end at ')'; hex/named colors end at whitespace.
+            auto rp = indexOf(p, "rgb");
+            auto hp = indexOf(p, "hsl");
+            auto fp = (rp >= 0 && (hp < 0 || rp < hp)) ? rp : hp;
+            if (fp >= 0)
+            {
+                auto close = indexOf(p, ")", fp);
+                return (close >= 0) ? p[0 .. close + 1] : p;
+            }
+            auto sp = indexOf(p, " ");
+            return (sp < 0) ? p : p[0 .. sp];
+        }
+    }
+    return "";
+}
+
+version (unittest)
+unittest
+{
+    // CSS custom properties, var(), gradient fallback, :root, @keyframes.
+    auto rules = parseStylesheet(`
+        :root { --bg: #050506; --text: rgba(240,238,232,0.9); }
+        body { background: radial-gradient(circle, rgba(255,255,255,0.05), transparent 24%),
+               linear-gradient(180deg, #070708 0%, #040405 100%);
+               color: var(--text); margin: var(--pad, 8px); }
+        .intro { background: var(--bg); animation: hide 0.3s forwards; }
+        @keyframes hide { to { opacity: 0; visibility: hidden; } }
+    `, 1280, 800);
+
+    auto root = new Element("html");
+    auto body = new Element("body");
+    body.parent = root; root.children ~= body; root.elements ~= body;
+    auto intro = new Element("div");
+    intro.attrs["class"] = "intro";
+    intro.parent = body; body.children ~= intro; body.elements ~= intro;
+
+    applyStylesAndLayout(root, rules, 1280, 800);
+
+    assert(intro.style.background == "#050506",
+        "var(--bg) resolved on .intro: " ~ intro.style.background);
+    assert(body.style.background == "#070708",
+        "gradient fallback color: " ~ body.style.background);
+    assert(body.style.margin == "8px", "var() fallback: " ~ body.style.margin);
+    assert(body.style.color == "rgba(240,238,232,0.9)", "var(--text): " ~ body.style.color);
+    assert(intro.style.opacity == 0.0, "keyframes opacity: " ~ to!string(intro.style.opacity));
+    assert(intro.style.visibility == "hidden", "keyframes visibility: " ~ intro.style.visibility);
+
+    // `::before`/`::after` must not match the element they decorate.
+    auto rules2 = parseStylesheet(
+        `body { background: #101010; } body::before { background: red; }`, 100, 100);
+    auto r2 = new Element("body");
+    applyStylesAndLayout(r2, rules2, 100, 100);
+    assert(r2.style.background == "#101010", "::before must not override body: " ~ r2.style.background);
+
+    // A functional color inside a gradient is extracted whole (not cut at a
+    // comma/space inside the parentheses).
+    auto rules3 = parseStylesheet(
+        `p { background: linear-gradient(90deg, transparent 0 1px, rgba(1, 2, 3, 0.5) 1px 2px); }`,
+        100, 100);
+    auto p3 = new Element("p");
+    applyStylesAndLayout(p3, rules3, 100, 100);
+    assert(p3.style.background == "rgba(1, 2, 3, 0.5)", "functional color whole: " ~ p3.style.background);
+}
+
+version (unittest)
+unittest
+{
+    // minmax()/calc()/var() grid tracks resolve to real columns (the boqsc.eu
+    // hero split: minmax(0, calc(var(--ratio) * 100%)) minmax(0, 1fr)).
+    auto rules = parseStylesheet(`
+        :root { --hero-split-ratio: 0.38; }
+        .hero { display: grid; width: 1000px;
+                grid-template-columns: minmax(0, calc(var(--hero-split-ratio) * 100%)) minmax(0, 1fr); }
+    `, 1000, 800);
+    auto hero = new Element("div");
+    hero.attrs["class"] = "hero";
+    auto root = new Element("div");
+    root.attrs["style"] = "width: 1000px;";
+    hero.parent = root; root.children ~= hero; root.elements ~= hero;
+    auto a = new Element("div");
+    auto b = new Element("div");
+    a.parent = hero; b.parent = hero;
+    hero.children ~= a; hero.children ~= b;
+    hero.elements ~= a; hero.elements ~= b;
+
+    applyStylesAndLayout(root, rules, 1000, 800);
+    assert(a.box.width == 380, "col0 width (38%): " ~ a.box.width.to!string);
+    assert(b.box.width == 620, "col1 width (1fr): " ~ b.box.width.to!string);
+    assert(b.box.x == 380, "col1 x: " ~ b.box.x.to!string);
 }
 
 private string uaDisplay(string tag)
@@ -185,7 +584,14 @@ private string uaDisplay(string tag)
             return "inline";
         case "img", "input":
             return "inline-block";
-        case "head", "title", "meta", "link", "style", "script", "template":
+        case "head", "title", "meta", "link", "style", "script", "template",
+             // Inline SVG is not rendered by this engine; skipping `svg`
+             // (and its lowercase element names) stops its <text> from being
+             // laid out as ordinary page text.
+             "svg", "defs", "symbol", "g", "text", "tspan", "path", "rect",
+             "circle", "ellipse", "line", "polyline", "polygon", "stop",
+             "use", "mask", "clippath", "lineargradient", "radialgradient",
+             "marker", "pattern", "filter", "foreignobject":
             return "none";
         default:
             return "inline";
@@ -267,7 +673,14 @@ private void applyUserAgentDefaults(ref ComputedStyle style, string tag)
 private void applyDeclaration(ref ComputedStyle style, string property, string value)
 {
     if (value.length == 0) return;
-    switch (property)
+    // Strip a vendor prefix (`-webkit-background-clip` == `background-clip`).
+    auto name = property;
+    if (name.length > 1 && name[0] == '-')
+    {
+        auto dash = name[1 .. $].indexOf('-');
+        if (dash >= 0) name = name[dash + 2 .. $];
+    }
+    switch (name)
     {
         case "display":
             if (value == "block" || value == "inline" || value == "inline-block" ||
@@ -278,7 +691,7 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 style.display = value;
             break;
         case "color": style.color = value; break;
-        case "background": style.background = value; break;
+        case "background": style.background = solidColorFromBackground(value); break;
         case "background-color": style.background = value; break;
         case "background-image":
             // url("...") or none. Anything else (linear-gradient etc.) is
@@ -306,6 +719,8 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "font-style": style.fontStyle = value; break;
         case "font-family": style.fontFamily = value; break;
         case "text-align": style.textAlign = value; break;
+        case "white-space": style.whiteSpace = value; break;
+        case "background-clip": style.backgroundClip = value; break;
         case "width": style.width = value; break;
         case "height": style.height = value; break;
         case "min-width": style.minWidth = value; break;
@@ -329,9 +744,15 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "border-right": style.borderRightWidth = value; break;
         case "border-bottom": style.borderBottomWidth = value; break;
         case "border-left": style.borderLeftWidth = value; break;
-        case "position": if (value == "static" || value == "relative" || value == "absolute" ||
-            value == "fixed")
-            style.position = value; break;
+        case "position":
+            // `sticky` is approximated as `relative`: it stays in flow but is
+            // still a containing block for absolutely-positioned descendants.
+            if (value == "sticky")
+                style.position = "relative";
+            else if (value == "static" || value == "relative" || value == "absolute" ||
+                value == "fixed")
+                style.position = value;
+            break;
         case "top": style.top = value; break;
         case "left": style.left = value; break;
         case "right": style.right = value; break;
@@ -360,6 +781,11 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 style.alignItems = value;
             break;
         case "gap": style.gap = value; break;
+        case "flex-direction":
+            if (value == "row" || value == "row-reverse" || value == "column" ||
+                value == "column-reverse")
+                style.flexDirection = value;
+            break;
         case "line-height": style.lineHeight = value; break;
         case "box-sizing":
             if (value == "border-box" || value == "content-box") style.boxSizing = value;
@@ -535,11 +961,13 @@ private int resolveSide(string value, int containingWidth, int sideIndex)
     if (parts.length == 0) return 0;
     int px(string s)
     {
-        import auroraweb.dom : cssInt;
+        import auroraweb.dom : cssInt, cssDouble;
         if (s == "0") return 0;
         if (s == "auto") return 0; // margins: auto resolves to 0 in normal flow
         if (s.length >= 3 && s[$ - 2 .. $] == "px") return cssInt(s[0 .. $ - 2]);
         if (s.length >= 2 && s[$ - 1] == '%') return (containingWidth * cssInt(s[0 .. $ - 1])) / 100;
+        if (s.length >= 3 && s[$ - 3 .. $] == "rem") return cast(int)(cssDouble(s[0 .. $ - 3]) * 16);
+        if (s.length >= 2 && s[$ - 2 .. $] == "em") return cast(int)(cssDouble(s[0 .. $ - 2]) * 16);
         return -1;
     }
     switch (parts.length)
@@ -672,6 +1100,21 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     finalHeight = clampMinMaxHeight(element, finalHeight);
     element.box.height = finalHeight;
 
+    // Positioned (absolute/fixed) children are laid out now that this box's
+    // size is known, so their percentage top/bottom/left/right resolve against
+    // the final containing block rather than a not-yet-measured one.
+    foreach (child; element.children)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        auto ps = ce.style.position;
+        if (ps != "absolute" && ps != "fixed") continue;
+        if (ps == "fixed")
+            layoutFixed(ce, width, style.viewportWidth, style.viewportHeight);
+        else
+            layoutAbsolute(ce, width, (style.position != "static") ? element : positionedAncestor);
+    }
+
     // Advance the flow past this box (including bottom margin). A negative
     // margin-bottom pulls following content up by the same amount (may overlap).
     flow.prevBottomMargin = element.box.marginBottom;
@@ -686,12 +1129,15 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
 /// nodes between block elements are skipped.
 private void layoutDirectText(Element element, ref FlowContext flow)
 {
-    const px = element.style.pxLength(element.style.fontSize);
-    const pixelSize = px >= 0 ? px : 16;
+    const pixelSize = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
     // line-height: an explicit px value sizes the line boxes; a percentage
     // resolves against THIS element's font-size; otherwise fall back to
     // font-size + 8px breathing room.
     const lineH = resolveLineHeight(element, pixelSize);
+    // `white-space: nowrap` (and `pre`) never wrap a line: measure without a
+    // wrap width so a narrow box cannot split the text into stray fragments.
+    const bool noWrapText = element.style.whiteSpace == "nowrap" ||
+        element.style.whiteSpace == "pre";
     int cursorX = flow.x;
     int cursorY = flow.y;
     int lineIndex = flow.lineCount;
@@ -741,6 +1187,23 @@ private void layoutDirectText(Element element, ref FlowContext flow)
         {
             if (text.data.strip().length == 0)
             {
+                // Preformatted text (`<pre>` / white-space: pre|pre-line|
+                // pre-wrap) preserves newlines as real line breaks (e.g. the
+                // "Find me online." link list), instead of collapsing them to
+                // a space.
+                const bool preformatted = element.tag == "pre" ||
+                    element.style.whiteSpace == "pre" ||
+                    element.style.whiteSpace == "pre-wrap" ||
+                    element.style.whiteSpace == "pre-line";
+                if (preformatted && indexOf(text.data, "\n") >= 0)
+                {
+                    cursorY += lineH;
+                    lineIndex++;
+                    cursorX = flow.lineLeft(cursorY, lineH);
+                    maxBottom = max(maxBottom, cursorY + lineH);
+                    text.layoutX = 0; text.layoutY = 0; text.layoutWidth = 0; text.lineIndex = 0;
+                    continue;
+                }
                 // Whitespace-only node: collapse to a single space between
                 // inline runs, but ignore if it's the only content on a line
                 // (i.e. a newline between block elements).
@@ -751,7 +1214,8 @@ private void layoutDirectText(Element element, ref FlowContext flow)
             const int leftEdge = flow.lineLeft(cursorY, lineH);
             const int rightEdge = flow.lineRight(cursorY, lineH);
             const int innerW = max(0, rightEdge - cursorX);
-            auto layout = shapeText(text.data, pixelSize, innerW);
+            auto layout = shapeText(text.data, pixelSize,
+                noWrapText ? 1_000_000 : innerW);
             if (layout !is null && layout.lines.length > 0)
             {
                 // The run may wrap internally to multiple lines. Advance the
@@ -808,6 +1272,19 @@ private void layoutDirectText(Element element, ref FlowContext flow)
             // out on the inline cursor.
             if (ce.style.position == "absolute" || ce.style.position == "fixed")
                 continue;
+            // `<br>` forces a line break on the inline cursor.
+            if (ce.tag == "br")
+            {
+                cursorY += lineH;
+                lineIndex++;
+                cursorX = flow.lineLeft(cursorY, lineH);
+                ce.box.x = cursorX;
+                ce.box.y = cursorY;
+                ce.box.width = 0;
+                ce.box.height = lineH;
+                maxBottom = max(maxBottom, cursorY + lineH);
+                continue;
+            }
             const int leftEdge = flow.lineLeft(cursorY, lineH);
             const int rightEdge = flow.lineRight(cursorY, lineH);
             // Measure the inline element's text content.
@@ -817,7 +1294,8 @@ private void layoutDirectText(Element element, ref FlowContext flow)
                 cw = resolveWidth(ce, flow.width);
             else
             {
-                auto lay = shapeText(ce.textContent(), pixelSize, max(0, rightEdge - cursorX));
+                auto lay = shapeText(ce.textContent(), pixelSize,
+                    noWrapText ? 1_000_000 : max(0, rightEdge - cursorX));
                 if (lay !is null && lay.lines.length > 0)
                 {
                     cw = cast(int) lay.width;
@@ -999,8 +1477,7 @@ private int resolveWidth(Element element, int containingWidth)
             width = img.width();
         else
         {
-            const px = style.pxLength(style.fontSize);
-            const pixelSize = px >= 0 ? px : 16;
+            const pixelSize = style.fontSizePx > 0 ? style.fontSizePx : 16;
             const content = element.textContent();
             if (content.strip().length)
             {
@@ -1088,7 +1565,9 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
         element.box.borderLeft - element.box.borderRight);
     childFlow.height = cbH;
     childFlow.lineEnd = childFlow.x + childFlow.width;
-    layoutChildren(element, childFlow, element);
+    // Honor the element's OWN display (a flex/grid popup lays its children as
+    // items, not as stacked blocks).
+    layoutContents(element, childFlow, element);
 }
 
 /// Lay out a `position:fixed` element relative to the viewport (0,0). The
@@ -1147,6 +1626,11 @@ private void layoutChildren(Element element, ref FlowContext flow, Element posit
         if (childElement !is null)
         {
             auto childStyle = childElement.style;
+            // Positioned children are removed from flow; the container lays
+            // them out AFTER its own size is computed (see layoutBlock), so
+            // their percentage offsets resolve against the final box.
+            if (childStyle.position == "absolute" || childStyle.position == "fixed")
+                continue;
             // Direct inline children are laid out on the block's inline line by
             // layoutDirectText; skip them here so they don't become 0x0 blocks.
             // Positioned children (absolute/fixed) are never laid out inline —
@@ -1277,19 +1761,71 @@ private void layoutInlineBlock(Element element, ref FlowContext flow, Element po
     layoutChildren(element, flow, positionedAncestor);
 }
 
-private void layoutFlex(Element element, ref FlowContext flow, Element positionedAncestor)
+/// Lay out an element's children according to the element's OWN display type.
+/// Used for grid/flex items, which may themselves be flex/grid containers
+/// (nested flex/grid); `positioned` means the element's box is already placed
+/// by its parent, so it must not be repositioned here.
+private void layoutContents(Element element, ref FlowContext flow, Element positionedAncestor)
+{
+    auto d = element.style.display;
+    if (d == "flex" || d == "inline-flex")
+        layoutFlex(element, flow, positionedAncestor, true);
+    else if (d == "grid")
+        layoutGrid(element, flow, positionedAncestor, true);
+    else if (d == "table" || element.tag == "table")
+        layoutTable(element, flow, positionedAncestor);
+    else if (d == "table-row" || element.tag == "tr")
+        layoutTableRow(element, flow, positionedAncestor);
+    else if (d == "table-cell" || element.tag == "td" || element.tag == "th")
+        layoutTableCell(element, flow, positionedAncestor);
+    else
+    {
+        layoutChildren(element, flow, positionedAncestor);
+        // Lay the item's own direct text (e.g. an inline `span` flex item):
+        // otherwise its text has no position and paints at the origin.
+        layoutDirectText(element, flow);
+    }
+}
+
+/// Lay a flex/grid container's OWN direct text (an anonymous item) inside its
+/// content box, so text like a `<button>Label</button>` does not paint at (0,0).
+private void layOwnDirectText(Element element, int innerX, int innerY, int innerW,
+    int containingHeight)
+{
+    bool has = false;
+    foreach (ch; element.children)
+    {
+        auto t = cast(TextNode) ch;
+        if (t !is null && t.data.strip().length) { has = true; break; }
+    }
+    if (!has) return;
+    auto tf = FlowContext();
+    tf.x = innerX;
+    tf.y = innerY;
+    tf.width = max(0, innerW);
+    tf.lineEnd = innerX + max(0, innerW);
+    tf.height = containingHeight;
+    layoutDirectText(element, tf);
+}
+
+private void layoutFlex(Element element, ref FlowContext flow, Element positionedAncestor,
+    bool positioned = false)
 {
     const bool inline = element.style.display == "inline-flex";
-    resolveBoxMetrics(element, flow.width);
-    element.box.x = flow.x + element.box.marginLeft;
-    element.box.y = flow.y + element.box.marginTop;
+    if (!positioned)
+    {
+        resolveBoxMetrics(element, flow.width);
+        element.box.x = flow.x + element.box.marginLeft;
+        element.box.y = flow.y + element.box.marginTop;
 
-    int width = resolveWidth(element, flow.width);
-    // An inline-flex container with no explicit width sizes to its content
-    // (like an inline-block), never filling the containing block.
-    if (inline && element.style.resolveLength(element.style.width, flow.width) < 0)
-        width = 0;
-    element.box.width = width;
+        int width = resolveWidth(element, flow.width);
+        // An inline-flex container with no explicit width sizes to its content
+        // (like an inline-block), never filling the containing block.
+        if (inline && element.style.resolveLength(element.style.width, flow.width) < 0)
+            width = 0;
+        element.box.width = width;
+    }
+    int width = element.box.width;
 
     // Content box.
     const innerX = element.box.x + element.box.paddingLeft + element.box.borderLeft;
@@ -1299,7 +1835,8 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
 
     // Children flex items.
     auto style = element.style;
-    const gapPx = style.pxLength(style.gap) >= 0 ? style.pxLength(style.gap) : 0;
+    // `gap` may be px/rem/em/%/calc — resolve it, not just px.
+    const gapPx = max(0, style.resolveLength(style.gap, innerW));
 
     int[] itemWidths;
     int totalFlex = 0;
@@ -1308,6 +1845,9 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     {
         auto ce = cast(Element) child;
         if (ce is null) continue;
+        // Positioned children are removed from the flex flow.
+        if (ce.style.position == "absolute" || ce.style.position == "fixed")
+            continue;
         items ~= ce;
         resolveBoxMetrics(ce, innerW);
         import auroraweb.dom : cssInt;
@@ -1315,7 +1855,61 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         int grow = growStr.length ? cssInt(growStr) : 0;
         totalFlex += grow;
         auto basis = ce.style.resolveLength(ce.style.width, innerW);
+        // Auto width: a growing item starts at 0 and takes a share of the
+        // remaining space; a non-growing item sizes to its content.
+        if (basis < 0)
+            basis = grow == 0 ? intrinsicWidth(ce, innerW) : 0;
         itemWidths ~= basis >= 0 ? basis : 0;
+    }
+
+    // flex-direction: column — the main axis is vertical. Items stack top to
+    // bottom and, by default (align-items: stretch), fill the content width.
+    if (style.flexDirection == "column" || style.flexDirection == "column-reverse")
+    {
+        int cy = innerY;
+        int totalH = 0;
+        foreach (ce; items)
+        {
+            resolveBoxMetrics(ce, innerW);
+            const int wExp = ce.style.resolveLength(ce.style.width, innerW);
+            const int w = wExp >= 0 ? wExp : innerW;
+            ce.box.x = innerX;
+            ce.box.y = cy;
+            ce.box.width = w;
+            const int hExp = ce.style.resolveLength(ce.style.height, style.containingHeight);
+            auto sub = FlowContext();
+            sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+            sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+            sub.width = max(0, w - ce.box.paddingLeft - ce.box.paddingRight -
+                ce.box.borderLeft - ce.box.borderRight);
+            sub.lineEnd = sub.x + sub.width;
+            const int subTop = sub.y;
+            layoutContents(ce, sub, ce);
+            const int contentH = max(sub.contentBottom, sub.y - subTop);
+            ce.box.height = hExp >= 0 ? hExp
+                : max(0, contentH + ce.box.paddingTop + ce.box.paddingBottom);
+            cy += ce.box.height + gapPx;
+            totalH += ce.box.height + gapPx;
+        }
+        if (items.length) totalH -= gapPx;
+        const int hExp2 = element.style.resolveLength(element.style.height, style.containingHeight);
+        element.box.height = hExp2 >= 0 ? hExp2
+            : clampMinMaxHeight(element, max(0, totalH + element.box.paddingTop +
+                element.box.paddingBottom + element.box.borderTop + element.box.borderBottom));
+        layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
+        foreach (child; element.children)
+        {
+            auto ce = cast(Element) child;
+            if (ce is null) continue;
+            if (ce.style.position != "absolute" && ce.style.position != "fixed") continue;
+            auto cb = (element.style.position == "relative" ||
+                       element.style.position == "absolute" ||
+                       element.style.position == "fixed") ? element : positionedAncestor;
+            layoutAbsolute(ce, innerW, cb);
+        }
+        flow.prevBottomMargin = element.box.marginBottom;
+        flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
+        return;
     }
 
     const int fixedTotal = sumWidths(itemWidths);
@@ -1347,6 +1941,15 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         itemWidths[i] = clampMinMaxWidth(ce, max(0, itemWidths[i]));
     }
 
+    // Automatic minimum size: a flex item with `width:auto` never shrinks
+    // below its min-content width, or its own text would wrap needlessly.
+    foreach (i, ce; items)
+    {
+        if (ce.style.resolveLength(ce.style.width, innerW) >= 0) continue;
+        ce.style.containingWidth = innerW;
+        itemWidths[i] = max(itemWidths[i], minContentWidth(ce, innerW));
+    }
+
     // justify-content.
     int cursor = innerX;
     const int used = sumWidths(itemWidths) + gapTotal;
@@ -1364,10 +1967,26 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         ce.box.x = cursor;
         ce.box.y = innerY;
         ce.box.width = itemWidths[i];
-        ce.box.height = resolveHeight(ce) >= 0 ? resolveHeight(ce) : 0;
+        resolveBoxMetrics(ce, innerW);
+        const itemH = resolveHeight(ce);
+        ce.box.height = itemH >= 0 ? itemH : 0;
         xs ~= cursor;
         cursor += itemWidths[i] + gapPx;
-        layoutChildren(ce, flow, ce);
+        // Lay out the item's children inside the item's OWN box (not the
+        // container's), then grow the item to fit its content. Without this,
+        // flex items had zero height and their text all painted at (0,0),
+        // overlapping other content.
+        auto sub = FlowContext();
+        sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+        sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+        sub.width = max(0, ce.box.width - ce.box.paddingLeft - ce.box.paddingRight -
+            ce.box.borderLeft - ce.box.borderRight);
+        sub.lineEnd = sub.x + sub.width;
+        const int subTop = sub.y;
+        layoutContents(ce, sub, ce);
+        const int contentH = max(sub.contentBottom, sub.y - subTop);
+        if (itemH < 0 && contentH > 0)
+            ce.box.height = max(0, contentH + ce.box.paddingTop + ce.box.paddingBottom);
         maxChildHeight = max(maxChildHeight, ce.box.height);
     }
 
@@ -1448,6 +2067,20 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     finalH = clampMinMaxHeight(element, max(0, finalH));
     element.box.height = finalH;
 
+    layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
+
+    // Lay out absolutely/fixed positioned children, which are not flex items.
+    foreach (child; element.children)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        if (ce.style.position != "absolute" && ce.style.position != "fixed") continue;
+        auto cb = (element.style.position == "relative" ||
+                   element.style.position == "absolute" ||
+                   element.style.position == "fixed") ? element : positionedAncestor;
+        layoutAbsolute(ce, innerW, cb);
+    }
+
     flow.prevBottomMargin = element.box.marginBottom;
     flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
 }
@@ -1466,9 +2099,11 @@ private int[] resolveGridTracks(string value, int innerW)
     int[] result;
     int fixedTotal = 0;
     int frCount = 0;
+    auto parts = splitGridTracks(value);
     // First pass: fixed lengths + count fr.
-    foreach (part; value.split())
+    foreach (rawPart; parts)
     {
+        auto part = normalizeTrack(rawPart);
         if (part.length == 0) continue;
         if (part == "auto" || part == "1fr" || part.endsWith("fr"))
         {
@@ -1487,8 +2122,9 @@ private int[] resolveGridTracks(string value, int innerW)
     // Second pass: fill fr slots with remaining / frCount.
     const remaining = innerW - fixedTotal;
     int[] finalTracks;
-    foreach (part; value.split())
+    foreach (rawPart; parts)
     {
+        auto part = normalizeTrack(rawPart);
         if (part.length == 0) continue;
         if (part == "auto" || part.endsWith("fr"))
         {
@@ -1511,14 +2147,104 @@ private int[] resolveGridTracks(string value, int innerW)
     return finalTracks;
 }
 
-/// Grid layout: auto-placement across template columns, fr sizing.
-private void layoutGrid(Element element, ref FlowContext flow, Element positionedAncestor)
+/// Split a track list on top-level whitespace (spaces inside `(...)` ignored).
+private string[] splitGridTracks(string value)
 {
-    resolveBoxMetrics(element, flow.width);
-    element.box.x = flow.x + element.box.marginLeft;
-    element.box.y = flow.y + element.box.marginTop;
-    const width = resolveWidth(element, flow.width);
-    element.box.width = width;
+    string[] parts;
+    string buf;
+    int depth = 0;
+    foreach (ch; value)
+    {
+        if (ch == '(') { depth++; buf ~= ch; }
+        else if (ch == ')') { depth--; buf ~= ch; }
+        else if ((ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f') && depth == 0)
+        {
+            if (buf.length) { parts ~= buf; buf = ""; }
+        }
+        else buf ~= ch;
+    }
+    if (buf.length) parts ~= buf;
+    return parts;
+}
+
+/// Reduce `minmax(a, b)`/`calc(...)` track tokens to a simple length token.
+private string normalizeTrack(string token)
+{
+    auto t = token.strip();
+    if (t.length > 7 && t[$ - 1] == ')' && t[0 .. 7] == "minmax(")
+    {
+        auto inner = t[7 .. $ - 1];
+        auto comma = topLevelCommaAt(inner);
+        if (comma >= 0) t = inner[comma + 1 .. $].strip();
+    }
+    if (t.length > 5 && t[$ - 1] == ')' && t[0 .. 5] == "calc(")
+        t = evalSimpleCalc(t[5 .. $ - 1]);
+    return t;
+}
+
+private ptrdiff_t topLevelCommaAt(string s)
+{
+    int d = 0;
+    foreach (k, ch; s)
+    {
+        if (ch == '(') d++;
+        else if (ch == ')') d--;
+        else if (ch == ',' && d == 0) return k;
+    }
+    return -1;
+}
+
+private struct Len { double value; string unit; }
+
+private Len parseLen(string s)
+{
+    s = s.strip();
+    size_t i = 0;
+    while (i < s.length && (s[i] == '.' || s[i] == '+' || s[i] == '-' ||
+        (s[i] >= '0' && s[i] <= '9')))
+        i++;
+    Len l;
+    if (i > 0)
+        try l.value = to!double(s[0 .. i]);
+        catch (Exception) l.value = 0;
+    l.unit = s[i .. $].strip();
+    return l;
+}
+
+/// Evaluate a simple `calc()`: `<n><u> * <n><u>`, `<n><u> + <n><u>`, or a
+/// single length. Enough for `calc(var(--x) * 100%)`.
+private string evalSimpleCalc(string expr)
+{
+    auto e = expr.strip();
+    foreach (op; ['*', '+'])
+    {
+        auto idx = indexOf(e, op);
+        if (idx > 0)
+        {
+            auto l = parseLen(e[0 .. idx]);
+            auto r = parseLen(e[idx + 1 .. $]);
+            double n = (op == '*') ? l.value * r.value : l.value + r.value;
+            auto unit = l.unit.length ? l.unit : r.unit;
+            if (unit.length)
+                return to!string(cast(long) (n + (n < 0 ? -0.5 : 0.5))) ~ unit;
+            return to!string(n);
+        }
+    }
+    return e;
+}
+
+/// Grid layout: auto-placement across template columns, fr sizing.
+private void layoutGrid(Element element, ref FlowContext flow, Element positionedAncestor,
+    bool positioned = false)
+{
+    if (!positioned)
+    {
+        resolveBoxMetrics(element, flow.width);
+        element.box.x = flow.x + element.box.marginLeft;
+        element.box.y = flow.y + element.box.marginTop;
+        element.box.width = resolveWidth(element, flow.width);
+    }
+    const width = element.box.width;
 
     const innerX = element.box.x + element.box.paddingLeft + element.box.borderLeft;
     const innerY = element.box.y + element.box.paddingTop + element.box.borderTop;
@@ -1539,6 +2265,10 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
     {
         auto ce = cast(Element) child;
         if (ce is null) continue;
+        // Absolutely/fixed positioned children are out of the grid flow (they
+        // are laid out separately below) and must not consume a grid cell.
+        if (ce.style.position == "absolute" || ce.style.position == "fixed")
+            continue;
         items ~= ce;
     }
 
@@ -1578,9 +2308,15 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
         sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
         sub.width = max(0, ce.box.width - ce.box.paddingLeft - ce.box.paddingRight);
         sub.lineEnd = sub.x + sub.width;
-        layoutChildren(ce, sub, ce);
-        if (sub.contentBottom > 0)
-            itemH = max(itemH, sub.contentBottom + ce.box.paddingTop + ce.box.paddingBottom);
+        const int subTop = sub.y;
+        layoutContents(ce, sub, ce);
+        // Content height = the deeper of the inline-text bottom and how far
+        // block children advanced the flow. (Block children only move `flow.y`;
+        // using contentBottom alone made every grid row ~one line tall, so rows
+        // overlapped.)
+        const int contentH = max(sub.contentBottom, sub.y - subTop);
+        if (contentH > 0)
+            itemH = max(itemH, contentH + ce.box.paddingTop + ce.box.paddingBottom);
         ce.box.height = itemH;
         // Apply an explicit row track height if one is defined for this row.
         int rowH = itemH;
@@ -1619,6 +2355,21 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
     totalH += element.box.paddingBottom + element.box.borderBottom;
     const hPx2 = element.style.resolveLength(element.style.height, style.containingHeight);
     element.box.height = hPx2 >= 0 ? hPx2 : max(0, totalH);
+
+    layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
+
+    // Lay out absolutely/fixed positioned children, which are not grid items.
+    foreach (child; element.children)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null) continue;
+        if (ce.style.position != "absolute" && ce.style.position != "fixed") continue;
+        auto cb = (element.style.position == "relative" ||
+                   element.style.position == "absolute" ||
+                   element.style.position == "fixed") ? element : positionedAncestor;
+        layoutAbsolute(ce, innerW, cb);
+    }
+
     flow.prevBottomMargin = element.box.marginBottom;
     flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
 }
@@ -2453,6 +3204,7 @@ unittest
         auto container = new Element("div");
         container.style.display = "block";
         container.style.fontSize = "16px";
+        container.style.fontSizePx = 16;
         container.style.lineHeight = "200%";
         auto textNode = new TextNode(container, "Double spaced");
         container.children ~= textNode;
@@ -2472,6 +3224,7 @@ unittest
         auto container = new Element("div");
         container.style.display = "block";
         container.style.fontSize = "40px";
+        container.style.fontSizePx = 40;
         container.style.lineHeight = "200%";
         auto textNode = new TextNode(container, "Child sized");
         container.children ~= textNode;
@@ -2491,6 +3244,7 @@ unittest
         auto container = new Element("div");
         container.style.display = "block";
         container.style.fontSize = "16px";
+        container.style.fontSizePx = 16;
         auto tn = new TextNode(container, "ab");
         auto ib = new Element("span");
         ib.style.display = "inline-block";

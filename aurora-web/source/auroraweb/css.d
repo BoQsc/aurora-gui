@@ -54,6 +54,19 @@ struct MediaQuery
 /// never apply while we render on screen.
 private bool g_screenMedia = true;
 
+/// Parsed `@keyframes` end states: animation name -> the declarations of the
+/// `to`/`100%` keyframe. The engine does not animate over time, but pages
+/// routinely rely on an animation (usually with `forwards`) to reveal or hide
+/// an element, so callers can apply this end state statically.
+__gshared Declaration[][string] g_keyframes;
+
+/// The end-state (`to`/`100%`) declarations for an animation name, or null.
+Declaration[] keyframeEndState(string name)
+{
+    auto it = name in g_keyframes;
+    return it is null ? null : *it;
+}
+
 /// Set the current media type. Pass false when rendering for print.
 void setScreenMedia(bool isScreen)
 {
@@ -79,6 +92,8 @@ struct Selector
     string attrName;        /// "[href]" presence attribute selector.
     string attrValue;       /// "[href=\"...\"]" value test.
     bool attrHasValue;      /// Whether a value was given.
+    bool isRoot;            /// `:root` — matches the document root element.
+    bool isPseudoElement;   /// `::before`/`::after` — generated content; never a real element.
 }
 
 /**
@@ -150,17 +165,26 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
         if (typeNegated)
             typeKeyword = (typeKeyword == "screen") ? "print" : (typeKeyword == "print") ? "screen" : "all";
         // Evaluate each group; keep the first that matches (OR semantics).
+        // When conditions are present but none match, return a query carrying
+        // those conditions (anyCondition == false) so the rule is stored and
+        // re-evaluated against the real viewport by `applyMediaRules` -- rather
+        // than being treated as condition-free (which made e.g. a
+        // `max-width: 1180px` block apply at 1350px).
+        MediaQuery firstCondQuery;
+        bool haveFirstCond = false;
         foreach (group; groups)
         {
             MediaQuery g;
             g.mediaType = typeKeyword;
             bool hasCond = false;
             auto parts = group.split("and");
-            bool ok = true;
             foreach (partRaw; parts)
             {
                 auto part = partRaw.strip();
                 if (part.length == 0) continue;
+                auto lower = part.toLower();
+                if (lower == "screen" || lower == "print" || lower == "all" || lower == "only")
+                    continue;                    // media type, not a feature condition
                 hasCond = true;
                 auto paren = indexOf(part, "(");
                 auto parenEnd = lastIndexOf(part, ")");
@@ -176,11 +200,16 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
                 else if (prop == "max-height") g.maxHeight = num;
                 else if (prop == "min-height") g.minHeight = num;
             }
-            if (hasCond && g.matches(viewportWidth, viewportHeight))
-                return g;  // this OR-group matches
+            if (hasCond)
+            {
+                if (g.matches(viewportWidth, viewportHeight))
+                    return g;                    // this OR-group matches
+                if (!haveFirstCond) { firstCondQuery = g; haveFirstCond = true; }
+            }
         }
-        // Bare `@media screen { ... }` or `@media print { ... }`: no length
-        // condition, but the media type still decides whether it applies.
+        if (haveFirstCond)
+            return firstCondQuery;               // stored; filtered per viewport
+        // Bare `@media screen { ... }` / `@media print { ... }` (no condition).
         if (typeKeyword == "screen" || typeKeyword == "print" || typeKeyword == "all")
         {
             MediaQuery typeOnly;
@@ -188,7 +217,6 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
             typeOnly.anyCondition = true;
             return typeOnly;
         }
-        // No group matched; return an empty condition that will not match.
         return MediaQuery(-2, -2, -2, -2, false, false, "");
     }
 
@@ -238,6 +266,25 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
         }
     }
 
+    // Capture the end state of an `@keyframes` block (only `to`/`100%`).
+    void parseKeyframeEnd(string name, ptrdiff_t start, ptrdiff_t end)
+    {
+        if (name.length == 0) return;
+        auto j = start;
+        while (j < end)
+        {
+            auto brace = indexOf(css, "{", j);
+            if (brace < 0 || brace >= end) break;
+            auto sel = css[j .. brace].strip().toLower();
+            auto declStart = brace + 1;
+            auto braceEnd = indexOf(css, "}", declStart);
+            if (braceEnd < 0 || braceEnd > end) braceEnd = end;
+            if (sel == "to" || sel == "100%")
+                g_keyframes[name] = parseDeclarations(css[declStart .. braceEnd]);
+            j = braceEnd + 1;
+        }
+    }
+
     while (i < n)
     {
         skipWhitespace();
@@ -261,12 +308,47 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
                     else if (css[k] == '}') { depth--; if (depth == 0) { k++; break; } }
                     k++;
                 }
-                // Only include inner rules if the media query matches.
-                if (mq.matches(viewportWidth, viewportHeight) || mq.anyCondition)
-                    parseInner(brace + 1, k > 0 ? k - 1 : k, mq);
+                // Store the inner rules with their media condition; the render
+                // pass (`applyMediaRules`) decides whether they apply. This way
+                // a rule is re-evaluated against the real viewport width.
+                parseInner(brace + 1, k > 0 ? k - 1 : k, mq);
                 i = k;
                 continue;
             }
+
+            // @keyframes / @-webkit-keyframes <name> { ... }
+            {
+                bool isKf = false;
+                size_t nameStart = 0;
+                if (i + 10 <= n && css[i + 1 .. i + 10].toLower() == "keyframes")
+                {
+                    isKf = true;
+                    nameStart = i + 10;
+                }
+                else if (i + 18 <= n && css[i + 1 .. i + 18].toLower() == "-webkit-keyframes")
+                {
+                    isKf = true;
+                    nameStart = i + 18;
+                }
+                if (isKf)
+                {
+                    auto brace = indexOf(css, "{", i);
+                    if (brace < 0) { i = n; continue; }
+                    auto name = css[nameStart .. brace].strip();
+                    int depth = 0;
+                    auto k = brace;
+                    while (k < n)
+                    {
+                        if (css[k] == '{') depth++;
+                        else if (css[k] == '}') { depth--; if (depth == 0) { k++; break; } }
+                        k++;
+                    }
+                    parseKeyframeEnd(name, brace + 1, k > 0 ? k - 1 : k);
+                    i = k;
+                    continue;
+                }
+            }
+
             skipImport();
             continue;
         }
@@ -316,8 +398,10 @@ private Selector[] parseSelectorList(string text)
     foreach (part; text.split(','))
     {
         auto sel = parseSelector(part.strip());
-        if (!sel.isUniversal && sel.typeName.length == 0 && sel.className.length == 0 &&
+        if (sel.isPseudoElement ||
+            (!sel.isRoot && !sel.isUniversal && sel.typeName.length == 0 && sel.className.length == 0 &&
             sel.idName.length == 0 && sel.attrName.length == 0)
+            )
             continue;
         result ~= sel;
     }
@@ -378,6 +462,8 @@ private Selector parseSelector(string text)
     result.attrName = leaf.attrName;
     result.attrValue = leaf.attrValue;
     result.attrHasValue = leaf.attrHasValue;
+    result.isRoot = leaf.isRoot;
+    result.isPseudoElement = leaf.isPseudoElement;
     if (compounds.length > 1)
     {
         foreach_reverse (k; 0 .. compounds.length - 1)
@@ -462,6 +548,37 @@ private void parseCompound(string part, out Selector compound)
                 }
             }
             i = end + 1;
+        }
+        else if (part[i] == ':')
+        {
+            // Pseudo-class / pseudo-element: consume the name and any `(...)`
+            // arguments. `:root` is honored; other pseudo-classes (:hover,
+            // :last-child, ::before, ...) are ignored rather than poisoning the
+            // compound with a bogus type name.
+            i++;
+            while (i < n && part[i] == ':') i++;
+            auto start = i;
+            while (i < n && (isIdentChar(part[i]) || part[i] == '-')) i++;
+            auto pname = part[start .. min(i, part.length)].toLower();
+            if (pname == "root") compound.isRoot = true;
+            else if (pname == "before" || pname == "after")
+                compound.isPseudoElement = true;
+            else
+                // A pseudo-class we cannot evaluate (:hover, :focus-within,
+                // :nth-child, :not(...), ...). Never match the compound:
+                // otherwise state-based rules would act as if permanently
+                // active, e.g. revealing every tooltip and dropdown menu.
+                compound.isPseudoElement = true;
+            if (i < n && part[i] == '(')
+            {
+                int d = 0;
+                while (i < n)
+                {
+                    if (part[i] == '(') d++;
+                    else if (part[i] == ')') { d--; i++; if (d == 0) break; continue; }
+                    i++;
+                }
+            }
         }
         else if (isIdentChar(part[i]))
         {
@@ -586,6 +703,9 @@ private Element previousElementSibling(Element element)
 
 private bool compoundMatches(in Selector compound, Element element)
 {
+    // `::before`/`::after` are generated content, not real elements.
+    if (compound.isPseudoElement) return false;
+    if (compound.isRoot && element.parent !is null) return false;
     if (compound.idName.length && !element.hasId(compound.idName)) return false;
     if (compound.className.length && !element.hasClass(compound.className)) return false;
     if (compound.typeName.length && compound.typeName != "*" && element.tag != compound.typeName)
@@ -752,6 +872,20 @@ unittest
     assert(screenOnly.length == 1, "bare @media screen parses to one rule");
     auto screenActive = applyMediaRules(screenOnly, 100, 100);
     assert(screenActive.length == 1, "bare @media screen applies on screen");
+}
+
+version (unittest)
+unittest
+{
+    import std.conv : to;
+    // A width condition that does not match must not apply. (Regression: the
+    // type-only fallback used to return an always-matching query because the
+    // default media type is "all", so e.g. `max-width: 1180px` applied at 1350.)
+    auto rules = parseStylesheet(`@media (max-width: 1180px) { .a { color: red; } }
+        .b { color: blue; }`, 1350, 800);
+    assert(applyMediaRules(rules, 1350, 800).length == 1, "only .b applies at 1350");
+    assert(applyMediaRules(rules, 1180, 800).length == 2, "the max-width:1180 rule applies at 1180");
+    assert(applyMediaRules(rules, 1280, 800).length == 1, "max-width:1180 must not apply at 1280");
 }
 
 unittest

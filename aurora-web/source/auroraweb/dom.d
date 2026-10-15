@@ -201,6 +201,9 @@ struct ComputedStyle
     int rootFontSizePx = 16;     /// Root font size in px.
     int viewportWidth = 1280;
     int viewportHeight = 800;
+    string whiteSpace;           /// "normal", "pre", "pre-line", "pre-wrap".
+    string backgroundClip;       /// "text" = paint the background as glyph fill.
+    string flexDirection = "row"; /// "row" | "row-reverse" | "column" | "column-reverse".
 
     /// Parse a px value from a CSS length string; returns -1 if not a px length.
     int pxLength(string prop) const
@@ -225,19 +228,94 @@ struct ComputedStyle
     {
         const s = prop.strip();
         if (s.length == 0) return -1;
+        // calc( <expr> ): evaluate over lengths/percentages/numbers.
+        if (s.length > 6 && s[0 .. 5] == "calc(" && s[$ - 1] == ')')
+            return cast(int) calcEval(s[5 .. $ - 1], base).px;
         if (s.length >= 2 && s[$ - 2 .. $] == "px")
             return cssInt(s[0 .. $ - 2].strip());
         if (s.length >= 2 && s[$ - 1] == '%')
             return (base * cssInt(s[0 .. $ - 1].strip())) / 100;
-        if (s.length >= 2 && s[$ - 2 .. $] == "em")
-            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * fontSizePx);
         if (s.length >= 3 && s[$ - 3 .. $] == "rem")
             return cast(int)(cssDouble(s[0 .. $ - 3].strip()) * rootFontSizePx);
+        if (s.length >= 2 && s[$ - 2 .. $] == "em")
+            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * fontSizePx);
         if (s.length >= 2 && s[$ - 2 .. $] == "vh")
             return (viewportHeight * cssInt(s[0 .. $ - 2].strip())) / 100;
         if (s.length >= 2 && s[$ - 2 .. $] == "vw")
             return (viewportWidth * cssInt(s[0 .. $ - 2].strip())) / 100;
         return -1;
+    }
+
+    /// A value produced while evaluating a `calc()` expression.
+    private struct CalcVal { double px; bool isLength; }
+
+    /// Evaluate a simple `calc()` expression (operands are lengths/percentages
+    /// or plain numbers, combined with + - * / and parentheses).
+    private CalcVal calcEval(string expr, int base) const
+    {
+        auto e = expr.strip();
+        if (e.length == 0) return CalcVal(0, false);
+        // Lowest precedence at top level: the LAST top-level '+'/'-'.
+        int depth = 0;
+        int opPos = -1;
+        char opCh = 0;
+        foreach (i, c; e)
+        {
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (depth == 0 && i > 0 && (c == '+' || c == '-')) { opPos = cast(int) i; opCh = c; }
+        }
+        if (opPos > 0)
+        {
+            auto l = calcEval(e[0 .. opPos], base);
+            auto r = calcEval(e[opPos + 1 .. $], base);
+            return CalcVal(opCh == '+' ? l.px + r.px : l.px - r.px, l.isLength || r.isLength);
+        }
+        depth = 0;
+        opPos = -1;
+        opCh = 0;
+        foreach (i, c; e)
+        {
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (depth == 0 && i > 0 && (c == '*' || c == '/')) { opPos = cast(int) i; opCh = c; }
+        }
+        if (opPos > 0)
+        {
+            auto l = calcEval(e[0 .. opPos], base);
+            auto r = calcEval(e[opPos + 1 .. $], base);
+            auto v = (opCh == '*') ? l.px * r.px : (r.px != 0 ? l.px / r.px : 0.0);
+            return CalcVal(v, l.isLength || r.isLength);
+        }
+        if (e.length >= 2 && e[0] == '(' && e[$ - 1] == ')')
+            return calcEval(e[1 .. $ - 1], base);
+        // Operand: number + optional unit.
+        size_t k = 0;
+        while (k < e.length && (e[k] == '.' || e[k] == '+' || e[k] == '-' ||
+            (e[k] >= '0' && e[k] <= '9')))
+            k++;
+        auto num = k > 0 ? cssDouble(e[0 .. k]) : 0.0;
+        auto unit = e[k .. $].strip();
+        if (unit == "px") return CalcVal(num, true);
+        if (unit == "%") return CalcVal(base * num / 100.0, true);
+        if (unit == "rem") return CalcVal(num * rootFontSizePx, true);
+        if (unit == "em") return CalcVal(num * fontSizePx, true);
+        if (unit == "vh") return CalcVal(viewportHeight * num / 100.0, true);
+        if (unit == "vw") return CalcVal(viewportWidth * num / 100.0, true);
+        return CalcVal(num, false);
+    }
+
+    unittest
+    {
+        ComputedStyle s;
+        s.rootFontSizePx = 16;
+        s.fontSizePx = 16;
+        s.viewportWidth = 1000;
+        s.viewportHeight = 800;
+        assert(s.resolveLength("calc(100% - 88px)", 400) == 312, "calc subtraction");
+        assert(s.resolveLength("calc(50% + 10px)", 400) == 210, "calc addition");
+        assert(s.resolveLength("calc(0.38 * 100%)", 1000) == 380, "calc multiplication");
+        assert(s.resolveLength("calc(1rem + 4px)", 400) == 20, "calc rem + px");
     }
 }
 

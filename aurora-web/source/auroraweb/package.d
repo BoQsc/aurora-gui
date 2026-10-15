@@ -26,7 +26,7 @@ import auroraweb.html : parseHtml;
 import auroraweb.js : JsRuntime, JsValue, JsKind, JsScope, Node, parseScript;
 import auroraweb.layout : applyStylesAndLayout;
 import auroraweb.net : HttpResponse, httpFetch, resolveUrl;
-import auroraweb.paint : paintTree;
+import auroraweb.paint : paintTree, fillCanvasBackground;
 
 import std.string : indexOf, lastIndexOf, strip, startsWith, toLower;
 
@@ -436,6 +436,7 @@ final class WebPage
     void paint(Canvas canvas, int offsetX, int offsetY)
     {
         layout();
+        fillCanvasBackground(canvas, _root, _width, _height);
         paintTree(_root, canvas);
     }
 

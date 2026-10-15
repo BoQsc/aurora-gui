@@ -30,6 +30,27 @@ import std.string : indexOf, lastIndexOf, split, startsWith, strip, toLower;
 import std.algorithm : max, min, sort;
 import std.math : abs;
 
+/// Fill the canvas with the page background color: the `<body>` background
+/// (falling back to the root element's), the way a browser paints the "canvas
+/// background". Without this, a dark page body would sit on a white canvas.
+void fillCanvasBackground(Canvas canvas, Element root, int width, int height)
+{
+    if (root is null) return;
+    Element bgEl = null;
+    foreach (e; root.elements)
+        if (e.tag == "body")
+        {
+            bgEl = e;
+            break;
+        }
+    auto value = (bgEl !is null) ? bgEl.style.background : "";
+    if (value.length == 0) value = root.style.background;
+    if (value.length == 0) return;
+    auto bg = parseColor(value);
+    if (bg.present)
+        canvas.fillRect(Rect(0, 0, width, height), bg.color);
+}
+
 /// Paint a full tree into a surface's canvas.
 void paintTree(Element root, Canvas canvas)
 {
@@ -63,8 +84,12 @@ private void paintElement(Element element, Canvas canvas)
     const radius = roundedRadius(element, borderW, borderH);
 
     // Background over the padding/border box (rounded corners when radius > 0).
+    // `background-clip: text` (gradient text) does NOT paint the box — the
+    // background becomes the glyph fill, so skip the box fill and paint the
+    // text in the background color instead.
+    const bool textClip = element.style.backgroundClip.strip().toLower() == "text";
     const bg = parseColor(element.style.background);
-    if (bg.present)
+    if (bg.present && !textClip)
     {
         if (radius > 0)
             canvas.fillRoundedRect(Rect(absX, absY, borderW, borderH), radius,
@@ -134,7 +159,7 @@ private void paintElement(Element element, Canvas canvas)
             if (text !is null)
             {
                 drawTextRun(contentCanvas, text.data, Point(text.layoutX, text.layoutY),
-                    element.style, innerWidth, text);
+                    element.style, innerWidth, text, textClip);
                 continue;
             }
         }
@@ -302,13 +327,12 @@ private Rect backgroundDestRect(Element element, RgbaImage image)
 /// pixelSize) so paint and layout agree; `canvas.layoutText` takes a
 /// typographic *scale* (2 = body ~17px), not a pixel size.
 private void drawTextRun(Canvas canvas, string text, Point origin,
-    ComputedStyle style, int maxWidth, TextNode node)
+    ComputedStyle style, int maxWidth, TextNode node, bool useBackgroundColor = false)
 {
     if (text.length == 0) return;
 
     // Parse font size from style.
-    auto px = style.pxLength(style.fontSize);
-    auto pixelSize = px >= 0 ? px : 16;
+    auto pixelSize = style.fontSizePx > 0 ? style.fontSizePx : 16;
 
     dchar[] dtext;
     foreach (ch; text) dtext ~= ch;
@@ -322,10 +346,20 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
     // measured text width truncated to int. Re-wrap with one extra pixel so a
     // run whose measured width rounds down does not drop its final glyph onto
     // a second line (which scattered inline <b>/<i>/<a> runs across lines).
-    options.maxWidth = maxWidth > 0 ? maxWidth + 1 : 0;
+    // `white-space: nowrap`/`pre` never wrap: paint the run on one line even if
+    // it overflows its (narrow) box, matching the layout measure.
+    const bool noWrap = style.whiteSpace == "nowrap" || style.whiteSpace == "pre";
+    options.maxWidth = (maxWidth > 0 && !noWrap) ? maxWidth + 1 : 0;
     options.wrap = options.maxWidth > 0;
     auto layout = FontSystem.sharedInstance().textEngine.layout(dtext, options);
     auto color = parseColorOrDefault(style.color, Color.rgb(0, 0, 0));
+    // `background-clip: text` gradient text: the glyphs take the background
+    // color (the gradient's fallback) rather than the (transparent) text color.
+    if (useBackgroundColor)
+    {
+        auto bc = parseColor(style.background);
+        if (bc.present) color = bc.color;
+    }
     if (style.opacity < 1.0)
         color = withOpacity(color, style.opacity);
     canvas.drawLayout(origin, layout, color);
