@@ -115,6 +115,79 @@ immutable string defaultHomeUrl = "auroraweb:hello";
 /// Small settings file that persists the home page across launches.
 immutable string homeSettingsFile = "home.txt";
 
+/// Settings file that persists bookmarks across launches (one URL per line).
+immutable string bookmarksSettingsFile = "bookmarks.txt";
+
+/// Serialise bookmarks for the settings file: one URL per line.
+string bookmarksToText(in string[] urls)
+{
+    string text;
+    foreach (url; urls)
+        if (url.length) text ~= url ~ "\n";
+    return text;
+}
+
+/// Parse the bookmarks settings file back to a URL list.
+string[] bookmarksFromText(string text)
+{
+    string[] urls;
+    size_t pos;
+    while (pos < text.length)
+    {
+        auto nl = indexOf(text, "\n", pos);
+        auto line = nl < 0 ? text[pos .. $] : text[pos .. nl];
+        line = line.strip();
+        if (line.length)
+        {
+            bool seen = false;
+            foreach (u; urls) if (u == line) { seen = true; break; }
+            if (!seen) urls ~= line;
+        }
+        if (nl < 0) break;
+        pos = nl + 1;
+    }
+    return urls;
+}
+
+/// Path of the bookmarks settings file (same directory as home.txt).
+private string bookmarksSettingsPath()
+{
+    try
+    {
+        return buildPath(getcwd(), baseName(bookmarksSettingsFile));
+    }
+    catch (Exception)
+    {
+        return bookmarksSettingsFile;
+    }
+}
+
+/// Read persisted bookmarks (empty when the file is missing or unreadable).
+private string[] loadBookmarks()
+{
+    try
+    {
+        if (exists(bookmarksSettingsPath()))
+            return bookmarksFromText(readText(bookmarksSettingsPath()));
+    }
+    catch (Exception)
+    {
+    }
+    return [];
+}
+
+/// Persist bookmarks (best-effort: never fail the interaction for settings).
+private void saveBookmarks(in string[] urls)
+{
+    try
+    {
+        write(bookmarksSettingsPath(), bookmarksToText(urls));
+    }
+    catch (Exception)
+    {
+    }
+}
+
 /// Path of the settings file, rooted at the browser working directory (the
 /// repo's `aurora-browser/` when run through dub / the bat file).
 private string homeSettingsPath()
@@ -934,6 +1007,11 @@ final class WebPageView : Widget
         bool changed = _page.serviceEventLoop(_loopClockMs);
         if (_page.animationFramePending())
             changed = _page.serviceAnimationFrame(_loopClockMs) || changed;
+        // Images load a few per pass, so keep asking for frames while the
+        // document still has pending work. Without this the browser painted
+        // once and left every remaining image unfetched.
+        if (_page.layoutPending())
+            changed = true;
         if (changed)
             invalidate();
     }
@@ -1372,6 +1450,9 @@ final class BrowserRoot : Widget
     {
         _window = window;
         _homeUrl = loadHomeUrl();
+        // Bookmarks are loaded before the bar is built so saved favourites are
+        // on screen immediately instead of vanishing between launches.
+        _bookmarks = loadBookmarks();
 
         _titleBar = add(new BrowserTitleBar(window));
 
@@ -1382,6 +1463,7 @@ final class BrowserRoot : Widget
         _toolbar.setBackground(browserTheme().panelElevated);
         _bookmarksBar = add(new HBox(4, Insets(6, 4)));
         _bookmarksBar.setBackground(browserTheme().panelBackground);
+        refreshBookmarksBar();
         _content = add(new VBox(0));
         _content.setBackground(Color.rgb(255, 255, 255));
         _statusBand = add(new Panel(browserTheme().panelBackground));
@@ -1819,6 +1901,7 @@ final class BrowserRoot : Widget
             updateStatus("Bookmarked: " ~ url);
         }
         refreshBookmarksBar();
+        saveBookmarks(_bookmarks);
         _bookmarkButton.setText(isBookmarked(url) ? "★" : "☆");
     }
 

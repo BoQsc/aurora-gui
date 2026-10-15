@@ -46,6 +46,17 @@ private Widget findById(Widget widget, string requestedId)
 
 int main(string[] args)
 {
+    // Favourites persist in bookmarks.txt beside the executable, so a previous
+    // run would leave entries behind and the "one entry" assertions below would
+    // fail. Move the file aside for the duration of the test and restore it at
+    // the end, so the suite is deterministic without touching real data.
+    import std.file : exists, rename;
+    const bkPath = "bookmarks.txt";
+    const bkBackup = "bookmarks.smoke-backup.txt";
+    const hadBookmarks = exists(bkPath);
+    if (hadBookmarks)
+        rename(bkPath, bkBackup);
+
     WindowOptions options;
     options.title = "Aurora Browser";
     options.width = 1080;
@@ -186,11 +197,24 @@ int main(string[] args)
         root.isBookmarkedForTesting("auroraweb:hello"));
     check("bookmarks list has one entry",
         root.bookmarksForTesting().length == 1);
+    // Favourites must survive a restart, so the persisted text format has to
+    // round-trip exactly (this is what bookmarks.txt stores).
+    {
+        import aurorabrowser.appui : bookmarksFromText, bookmarksToText;
+        auto saved = root.bookmarksForTesting();
+        auto reloaded = bookmarksFromText(bookmarksToText(saved));
+        check("bookmarks round-trip through the settings format",
+            saved.length == 1 && reloaded.length == saved.length &&
+            reloaded[0] == saved[0]);
+    }
     // Toggle again removes it.
     bookmarkBtn.onClick();
     root.tickTree(0.02);
     check("unbookmark removes entry",
         root.bookmarksForTesting().length == 0);
+    // Put the user's favourites back exactly as they were.
+    if (hadBookmarks)
+        rename(bkBackup, bkPath);
 
     // --- Loading indicator / busy state ---
     // Loads are synchronous in this engine, so the busy flag flips on and off

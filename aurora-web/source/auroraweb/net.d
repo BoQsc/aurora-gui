@@ -631,6 +631,13 @@ private string resolveLocation(string baseUrl, string location)
     if (!base.ok) return "";
     if (indexOf(loc, "://") >= 0) return loc;
 
+    // Protocol-relative reference (`//cdn.example/i.png`): a host-qualified URL
+    // that inherits the base scheme. Treating it as a path produced
+    // `https://currenthost//cdn.example/i.png`, so every such image 404'd —
+    // a very common source of silently missing images.
+    if (loc.length >= 2 && loc[0] == '/' && loc[1] == '/')
+        return base.scheme ~ ":" ~ loc;
+
     auto q = indexOf(loc, "?");
     auto locPath = q >= 0 ? loc[0 .. q] : loc;
     auto locQuery = q >= 0 ? loc[q + 1 .. $] : "";

@@ -36,6 +36,7 @@ final class Element
     Object backgroundImage; /// Decoded image for `background-image`, if any.
     bool imageLoadTried;      /// <img> fetch already attempted (avoid re-fetching).
     bool backgroundLoadTried; /// `background-image` fetch already attempted.
+    bool imageFallbackTried;  /// Chosen srcset/<picture> candidate failed; `src` retried.
     bool hovered;             /// Pointer is over this element (drives `:hover`).
     bool focused;             /// This element has focus (drives `:focus`).
     bool active;              /// Mouse button held on this element (`:active`).
@@ -116,6 +117,11 @@ final class TextNode
     int layoutY;
     int layoutWidth;
     int lineIndex;
+    /// The run as layout collapsed it for painting: under `white-space: normal`
+    /// the markup's newlines and tabs collapse to single spaces, and leading and
+    /// trailing whitespace is dropped. Paint shapes this string so it agrees with
+    /// what layout measured. Empty means "use `data` unchanged".
+    string paintText;
 
     this(Element parent, string data)
     {
@@ -132,6 +138,9 @@ struct ComputedStyle
     string background = "transparent";
     string backgroundImage = "none";
     string backgroundSize = "auto";
+    string backgroundGradient = "none"; /// A CSS gradient token, rasterised to backgroundImage.
+    string backgroundRepeat = "repeat"; /// CSS initial value: background images tile.
+    string transform = "none"; /// CSS `transform` (translate() supported so far).
     string objectFit = "fill";   /// `object-fit` for <img>: fill/contain/cover/none/scale-down
     string fontSize = "16px";
     string fontWeight = "400";
@@ -228,6 +237,8 @@ struct ComputedStyle
     string whiteSpace;           /// "normal", "pre", "pre-line", "pre-wrap".
     string backgroundClip;       /// "text" = paint the background as glyph fill.
     string flexDirection = "row"; /// "row" | "row-reverse" | "column" | "column-reverse".
+    string aspectRatio;          /// "auto", "<w> / <h>" or a bare number (CSS
+                                 /// aspect-ratio; derives an auto height).
 
     /// Parse a px value from a CSS length string; returns -1 if not a px length.
     int pxLength(string prop) const
@@ -255,6 +266,48 @@ struct ComputedStyle
         // calc( <expr> ): evaluate over lengths/percentages/numbers.
         if (s.length > 6 && s[0 .. 5] == "calc(" && s[$ - 1] == ')')
             return cast(int) calcEval(s[5 .. $ - 1], base).px;
+        // clamp()/min()/max(): each argument is itself a length (often a calc).
+        // CSS picks clamp(min, val, max) = the value clamped between the bounds,
+        // min() the smallest argument and max() the largest. The resolver used
+        // to take the FIRST resolvable argument, so every clamp() collapsed to
+        // its floor - a real page's `clamp(4rem, 11vw, 11rem)` inset became 4rem
+        // (64px instead of 148px at a 1350px viewport), which shifted its dock
+        // bar to x=0 and made the whole top of the page look broken.
+        foreach (fn; ["clamp(", "min(", "max("])
+        {
+            if (s.length > fn.length && s[0 .. fn.length] == fn && s[$ - 1] == ')')
+            {
+                const inner = s[fn.length .. $ - 1];
+                long[] vals;
+                int depth = 0;
+                size_t start = 0;
+                foreach (i, ch; inner)
+                {
+                    if (ch == '(') ++depth;
+                    else if (ch == ')') --depth;
+                    else if (ch == ',' && depth == 0)
+                    {
+                        vals ~= resolveLength(inner[start .. i].strip(), base);
+                        start = i + 1;
+                    }
+                }
+                vals ~= resolveLength(inner[start .. $].strip(), base);
+                long[] ok;
+                foreach (v; vals)
+                    if (v >= 0) ok ~= v;
+                if (ok.length == 0) return -1;
+                import std.algorithm : max, min;
+                long result = ok[0];
+                if (fn == "clamp(" && vals.length >= 3 && vals[0] >= 0 &&
+                    vals[1] >= 0 && vals[2] >= 0)
+                    result = max(vals[0], min(vals[1], vals[2]));
+                else if (fn == "min(")
+                    foreach (v; ok) result = min(result, v);
+                else if (fn == "max(")
+                    foreach (v; ok) result = max(result, v);
+                return cast(int) result;
+            }
+        }
         if (s.length >= 2 && s[$ - 2 .. $] == "px")
             return cssInt(s[0 .. $ - 2].strip());
         if (s.length >= 2 && s[$ - 1] == '%')

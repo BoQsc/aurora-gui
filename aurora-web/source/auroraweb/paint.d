@@ -106,6 +106,18 @@ private void paintElement(Element element, Canvas canvas)
     const absX = element.box.x;
     const absY = element.box.y;
 
+    // CSS `transform: translate(...)`: shift this element's painting, and via the
+    // canvas offset its whole subtree (interact.d mirrors this for hit-testing).
+    // Ignoring transforms left every element that pages centre with
+    // `translate(-50%, -50%)` in the wrong place.
+    int tdx = 0;
+    int tdy = 0;
+    import auroraweb.layout : transformTranslate;
+    transformTranslate(element.style.transform, element.box.width,
+        element.box.height, tdx, tdy);
+    if (tdx != 0 || tdy != 0)
+        canvas = canvas.translated(tdx, tdy);
+
     // `box.x/box.y` is the border-box origin and `box.width/height` is the
     // CONTENT box (that is what layout stores). Reconstruct the border box so
     // backgrounds, borders and shadows cover padding + border, and use the real
@@ -167,7 +179,35 @@ private void paintElement(Element element, Canvas canvas)
         {
             auto dst = backgroundDestRect(element, bgImage);
             if (dst.width > 0 && dst.height > 0)
-                canvas.drawImage(dst, bgImage);
+            {
+                const rep = element.style.backgroundRepeat;
+                if (rep == "no-repeat")
+                    canvas.drawImage(dst, bgImage);
+                else
+                {
+                    // CSS tiles background images by default, from the padding
+                    // box origin. Drawing the image once left everything past
+                    // the first tile blank (background-repeat was unimplemented).
+                    const int bx = absX + element.box.borderLeft;
+                    const int by = absY + element.box.borderTop;
+                    const int bw = element.box.width;
+                    const int bh = element.box.height;
+                    const bool tileX = rep == "repeat" || rep == "repeat-x";
+                    const bool tileY = rep == "repeat" || rep == "repeat-y";
+                    const int sx = tileX ? bx : dst.x;
+                    const int sy = tileY ? by : dst.y;
+                    for (int y = sy; y < by + bh; y += dst.height)
+                    {
+                        for (int x = sx; x < bx + bw; x += dst.width)
+                        {
+                            auto tile = dst;
+                            tile.x = x;
+                            tile.y = y;
+                            canvas.drawImage(tile, bgImage);
+                        }
+                    }
+                }
+            }
         }
 
         // Border: draw per-side around the border box. Each side resolves its
@@ -297,15 +337,32 @@ private void paintElement(Element element, Canvas canvas)
             auto text = cast(TextNode) child;
             if (text !is null)
             {
-                drawTextRun(contentCanvas, text.data, Point(text.layoutX, text.layoutY),
-                    element.style, innerWidth, text, textClip);
+                // Paint must shape exactly what layout collapsed for this run,
+                // otherwise the markup's indentation reappears as a first-line
+                // indent and the lines break differently from the measured box.
+                // An inline-level element's box is the fragment it occupied, not
+                // the line it sits on: re-wrapping paint's copy to that box broke
+                // a link mid-URL and dropped "2026" off the article date. Inline
+                // content wraps at the LINE width, i.e. its containing block's
+                // content width, so use that (and never less than the run's own
+                // measured width).
+                const int parentWrap = element.parent !is null
+                    ? max(0, element.parent.box.width) : innerWidth;
+                const int runWrap = element.style.display == "inline"
+                    ? max(max(innerWidth, parentWrap), text.layoutWidth) : innerWidth;
+                drawTextRun(contentCanvas,
+                    text.paintText.length ? text.paintText : text.data,
+                    Point(text.layoutX, text.layoutY),
+                    element.style, runWrap, text, textClip);
                 continue;
             }
         }
     }
 
-    // Image element (painted inside the content box).
-    if (selfVisible && element.tag == "img" && contentW > 0 && contentH > 0)
+    // Image element (painted inside the content box). Inline <svg> markup is
+    // rasterised on load and painted the same way.
+    if (selfVisible && (element.tag == "img" || element.tag == "svg") &&
+        contentW > 0 && contentH > 0)
     {
         auto image = cast(RgbaImage) element.image;
         const box = Rect(innerX, innerY, contentW, contentH);
@@ -1132,6 +1189,8 @@ unittest
         element.style.display = "block";
         element.style.background = "rgb(0, 0, 255)";
         element.style.backgroundSize = "auto";
+        // CSS tiles by default; this case checks the single-image placement.
+        element.style.backgroundRepeat = "no-repeat";
         element.backgroundImage = img;
         element.box.x = 10;
         element.box.y = 10;
@@ -1153,6 +1212,67 @@ unittest
         // The image was drawn over the blue solid background.
         auto corner = surface.pixel(12, 12);
         assert((corner & 0xff) >= 250, "blue background should show at the corner, got " ~ (corner & 0xff).to!string);
+    }
+
+    // CSS transform: translate shifts an element's painting.
+    {
+        auto tel = new Element("div");
+        tel.style.display = "block";
+        tel.style.background = "rgb(255, 0, 0)";
+        tel.style.transform = "translate(6px, 0)";
+        tel.box.x = 10;
+        tel.box.y = 10;
+        tel.box.width = 4;
+        tel.box.height = 4;
+        auto tsurf = new Surface(40, 40);
+        tsurf.clear(Color.rgb(255, 255, 255));
+        auto tcan = Canvas(tsurf);
+        paintElement(tel, tcan);
+        auto moved = tsurf.pixel(16, 12);
+        // Packed ARGB: red has green 0, white has green 255, so green is what
+        // separates them here.
+        assert(((moved >> 8) & 0xff) < 50,
+            "a translated element must paint 6px right (red at 16,12), got " ~
+            to!string(moved));
+        auto unmoved = tsurf.pixel(10, 12);
+        assert(((unmoved >> 8) & 0xff) >= 200,
+            "the untranslated position must stay unpainted, got " ~
+            to!string(unmoved));
+    }
+
+    // background-repeat defaults to tiling: a 2x2 image repeats across the box.
+    {
+        ubyte[4 * 2 * 2] tex;
+        foreach (i, ref b; tex) b = 0;
+        // One opaque red pixel at the tile's top-left; the rest transparent.
+        tex[0] = 255;
+        tex[1] = 0;
+        tex[2] = 0;
+        tex[3] = 255;
+        auto tileImg = new RgbaImage(2, 2, tex);
+        auto el2 = new Element("div");
+        el2.style.display = "block";
+        el2.style.background = "rgb(0, 0, 255)";
+        el2.backgroundImage = tileImg;
+        el2.box.x = 0;
+        el2.box.y = 0;
+        el2.box.width = 6;
+        el2.box.height = 6;
+        auto surf2 = new Surface(8, 8);
+        surf2.clear(Color.rgb(0, 0, 0));
+        auto canvas2 = Canvas(surf2);
+        paintElement(el2, canvas2);
+        // The tile step is 2px, so the red pixel lands at every even offset.
+        foreach (py; 0 .. 3)
+        {
+            foreach (px; 0 .. 3)
+            {
+                auto q = surf2.pixel(px * 2, py * 2);
+                assert(((q >> 16) & 0xff) >= 200,
+                    "the default repeat must tile the image; offset (" ~
+                    to!string(px * 2) ~ "," ~ to!string(py * 2) ~ ") = " ~ to!string(q));
+            }
+        }
     }
 
     // background-size: cover scales the image to fill the box (aspect kept).
@@ -1196,6 +1316,67 @@ unittest
 {
     import aurora.surface : Surface;
     import std.conv : to;
+
+    // --- a wrapped text run paints every line from the block's left edge ---
+    {
+        auto el = new Element("p");
+        el.style.display = "block";
+        el.style.fontSize = "16px";
+        el.style.color = "#000000";
+        el.box.x = 0;
+        el.box.y = 0;
+        el.box.width = 160;
+        el.box.height = 90;
+        el.box.paddingTop = 0;
+        el.box.paddingLeft = 0;
+
+        auto tn = new TextNode(el,
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu");
+        tn.layoutX = 0;
+        tn.layoutY = 0;
+        tn.layoutWidth = 160;
+        el.children ~= tn;
+
+        auto surface = new Surface(220, 100);
+        surface.clear(Color.rgb(255, 255, 255));
+        auto canvas = Canvas(surface);
+        paintElement(el, canvas);
+
+        // Group contiguous rows that have ink into line bands: a single row can
+        // legitimately contain only ascenders or descenders, so the start of a
+        // LINE is the leftmost ink anywhere in its band. A wrapped line painted
+        // from a runaway origin would leave its whole band starting far right.
+        int paintedRows = 0;
+        int bandMin = -1;
+        foreach (y; 0 .. 90)
+        {
+            int firstInk = -1;
+            foreach (x; 0 .. 220)
+            {
+                auto p = surface.pixel(x, y);
+                auto lum = (p & 0xff) + ((p >> 8) & 0xff) + ((p >> 16) & 0xff);
+                if (lum < 600) { firstInk = x; break; }
+            }
+            if (firstInk < 0)
+            {
+                if (bandMin >= 0)
+                {
+                    assert(bandMin <= 8,
+                        "a wrapped line must start at the block's left edge, but " ~
+                        "a line begins at x=" ~ to!string(bandMin));
+                    bandMin = -1;
+                }
+                continue;
+            }
+            paintedRows++;
+            bandMin = bandMin < 0 ? firstInk : (firstInk < bandMin ? firstInk : bandMin);
+        }
+        if (bandMin >= 0)
+            assert(bandMin <= 8,
+                "a wrapped line must start at the block's left edge, but the " ~
+                "last line begins at x=" ~ to!string(bandMin));
+        assert(paintedRows > 0, "the text run must paint something");
+    }
 
     // Per-side border colours: the colour inside a `border-<side>` shorthand
     // must be used instead of the default black.
@@ -1510,6 +1691,35 @@ unittest
         assert(((pHalf >> 16) & 0xff) > ((pFull >> 16) & 0xff),
             "opacity 0.5 blue on white must be lighter than opacity 1, red=" ~
             ((pHalf >> 16) & 0xff).to!string ~ " vs " ~ ((pFull >> 16) & 0xff).to!string);
+    }
+
+    // --- SVG: the engine's own rasteriser must paint the right pixels ---
+    // An 8x8 solid green rectangle decoded from SVG must come out green.
+    {
+        import auroraweb.svg : looksLikeSvg, decodeSvg;
+        auto svgSrc = "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>" ~
+            "<rect width='8' height='8' fill='#00ff00'/></svg>";
+        assert(looksLikeSvg(cast(const(ubyte)[]) svgSrc), "SVG must be detected");
+        auto svgImg = decodeSvg(cast(const(ubyte)[]) svgSrc);
+        assert(svgImg !is null, "the SVG must rasterise");
+
+        auto svgEl = new Element("div");
+        svgEl.style.display = "block";
+        // White behind the image, so a drawn image is unambiguous, and an
+        // explicit size so the image is actually scaled into the box.
+        svgEl.style.background = "#ffffff";
+        svgEl.style.backgroundSize = "auto";
+        svgEl.backgroundImage = svgImg;
+        svgEl.box.x = 0;
+        svgEl.box.y = 0;
+        svgEl.box.width = 8;
+        svgEl.box.height = 8;
+        auto svgSurface = new Surface(8, 8);
+        paintElement(svgEl, Canvas(svgSurface));
+        auto svgPx = svgSurface.pixel(4, 4);
+        // Surface pixels are packed ARGB, so green is bits 8..15.
+        assert(((svgPx >> 8) & 0xff) >= 200 && ((svgPx >> 16) & 0xff) <= 60,
+            "an SVG fill must paint green; got " ~ svgPx.to!string);
     }
 
     // --- box-shadow: semi-transparent offset rect paints outside the box ---

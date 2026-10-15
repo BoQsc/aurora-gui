@@ -231,7 +231,9 @@ private static string effectiveImageSrc(Element img, int viewportWidth)
         if (picked.length) return picked;
     }
     auto src = "src" in img.attrs;
-    return src is null ? "" : *src;
+    // HTML allows a URL attribute to wrap onto following lines; the value is
+    // trimmed before use, so a wrapped `src` still resolves to a real URL.
+    return src is null ? "" : (*src).strip();
 }
 
 unittest
@@ -274,6 +276,8 @@ unittest
     page.setHtml(`<html><body><img id="i" style="width:300px" ` ~
         `srcset="small.png 200w, large.png 600w" src="fallback.png" /></body></html>`);
     page.layout();
+    // Images load progressively (one per pass), so settle before asserting.
+    foreach (settle; 0 .. 4) page.layout();
     assert(requested.length == 1, "exactly one candidate must be fetched");
     assert(requested[0].indexOf("large.png") >= 0,
         "600w must be chosen for a 300px box: " ~ requested[0]);
@@ -286,6 +290,7 @@ unittest
         `<source srcset="mid.png" />` ~
         `<img id="p" src="fallback.png" /></picture></body></html>`);
     pic.layout();
+    foreach (settle; 0 .. 4) pic.layout();
     assert(requested.length == 1, "exactly one picture source must be fetched");
     assert(requested[0].indexOf("mid.png") >= 0,
         "the first matching <source> wins: " ~ requested[0]);
@@ -347,6 +352,7 @@ final class WebPage
     int _height;
     bool _documentBound;
     bool _layoutDirty = true;   /// Document/style/viewport changed since last layout.
+    bool _imagesPending;        /// A layout pass deferred image fetches (see loadImages).
     int _laidOutWidth = -1;     /// Viewport width used by the most recent layout.
     int _laidOutHeight = -1;    /// Viewport height used by the most recent layout.
     int _layoutGen;             /// Bumped on every completed layout.
@@ -579,6 +585,45 @@ final class WebPage
         walk(_root);
     }
 
+    /// Serialise an element subtree back to markup, so the SVG rasteriser can
+    /// read inline `<svg>` markup exactly as a standalone .svg file.
+    private static string svgMarkup(Element root)
+    {
+        import auroraweb.dom : TextNode;
+        import std.array : appender;
+        auto sb = appender!string();
+        void emit(Element n)
+        {
+            sb.put('<');
+            sb.put(n.tag);
+            foreach (k, v; n.attrs)
+            {
+                sb.put(' ');
+                sb.put(k);
+                sb.put(`="`);
+                sb.put(v);
+                sb.put('"');
+            }
+            sb.put('>');
+            foreach (c; n.children)
+            {
+                auto t = cast(TextNode) c;
+                if (t !is null)
+                {
+                    sb.put(t.data);
+                    continue;
+                }
+                auto el = cast(Element) c;
+                if (el !is null) emit(el);
+            }
+            sb.put("</");
+            sb.put(n.tag);
+            sb.put('>');
+        }
+        emit(root);
+        return sb.data;
+    }
+
     /// True when a <link> element carries a stylesheet relation.
     private static bool isStylesheetLink(Element e)
     {
@@ -796,7 +841,11 @@ final class WebPage
         loadImages();
         _laidOutWidth = _width;
         _laidOutHeight = _height;
-        _layoutDirty = false;
+        // Images are fetched a few per pass, so a pass that deferred work leaves
+        // the document dirty: the next paint loads more. Clearing this
+        // unconditionally stranded every image after the first pass, which is
+        // why a live browser showed none of them.
+        _layoutDirty = _imagesPending;
         ++_layoutGen;
     }
 
@@ -817,18 +866,96 @@ final class WebPage
     /// Mark the document as needing a re-layout (DOM/style/JS mutation).
     void markLayoutDirty() { _layoutDirty = true; }
 
+    /// True while the document still needs layout work — including images that
+    /// load progressively — so a host keeps requesting frames until it settles.
+    bool layoutPending() const { return _layoutDirty; }
+
+    /// The CSS `color` an SVG inherits, so `fill="currentColor"` icons draw in
+    /// the page's text colour instead of rasterising black and vanishing against
+    /// a dark background — the usual form for toolbar and social icons.
+    private auto svgInkColor(Element e)
+    {
+        import auroraweb.svg : svgCssColor;
+        return svgCssColor(e is null ? "" : e.style.color);
+    }
+
     /// Find <img> elements without a decoded image and load them, and decode
     /// any CSS `background-image: url("...")` references.
     private void loadImages()
     {
+        _imagesPending = false;
+        // Network images are fetched a few per layout pass. A page then becomes
+        // visible as soon as its markup and styles are in, instead of waiting
+        // for every (often large) image — the difference between a blank second
+        // and an instant-feeling load. Local `data:` images are never budgeted.
+        // The first layout of a document paints markup and styles only, so the
+        // page is visible immediately; later passes fetch one image each and the
+        // app repaints as they arrive. (A fresh budget per call would never load
+        // an image at all, so this keys off the completed-layout count.)
+        // Only the very first paint of the document skips network images (so the
+        // page appears immediately). Every later pass fetches without limit, so
+        // an image can never be stranded waiting for its turn.
+        int networkFetchesLeft = _layoutGen > 0 ? int.max : 0;
+        bool deferredFetch = false;
         void walk(Element e)
         {
+            // Decide whether this element needs the network. Local work — a
+            // `data:` image, inline SVG, or nothing to load — is never budgeted.
+            bool needsNetwork = false;
+            if (e.tag == "img" && e.image is null && !e.imageLoadTried)
+            {
+                auto candidate = effectiveImageSrc(e, _width);
+                needsNetwork = candidate.length > 0 &&
+                    !(candidate.length >= 5 && candidate[0 .. 5].toLower() == "data:");
+            }
+            else if (e.backgroundImage is null && !e.backgroundLoadTried &&
+                e.style.backgroundImage.length > 4 &&
+                e.style.backgroundImage[0 .. 4].toLower() == "url(")
+            {
+                needsNetwork = true;
+            }
+
+            // Once this pass's budget is spent, stop visiting: the remaining
+            // elements stay untouched (so they are not marked as tried) and the
+            // document is marked dirty so the next frame continues.
+            if (needsNetwork)
+            {
+                if (networkFetchesLeft <= 0)
+                {
+                    deferredFetch = true;
+                    _imagesPending = true;
+                    _layoutDirty = true;
+                    return;
+                }
+                networkFetchesLeft--;
+            }
+            // Inline <svg> markup — the shape most icon markup takes in HTML.
+            // Serialise the subtree and let the engine's own rasteriser read it.
+            if (e.tag == "svg" && e.image is null && !e.imageLoadTried)
+            {
+                e.imageLoadTried = true;
+                try
+                {
+                    import auroraweb.svg : decodeSvg;
+                    auto img = decodeSvg(cast(const(ubyte)[]) svgMarkup(e),
+                        svgInkColor(e));
+                    if (img !is null) e.image = img;
+                }
+                catch (Throwable)
+                {
+                    // Malformed icon markup must never take the browser down.
+                }
+            }
             // <img src="...">
             if (e.tag == "img" && e.image is null && !e.imageLoadTried)
             {
                 // `<picture>`/`srcset` selection picks the candidate for this
                 // layout; a plain `src` is used when neither is present.
-                auto effective = effectiveImageSrc(e, _width);
+                auto srcAttr = "src" in e.attrs;
+                // Once a chosen candidate has failed, fall back to the plain
+                // `src` — what a browser does with <picture>/srcset.
+                auto effective = e.imageFallbackTried && srcAttr !is null
+                    ? (*srcAttr).strip() : effectiveImageSrc(e, _width);
                 if (!effective.length)
                 {
                     // Lazy-loading markup keeps the real URL in a data-*
@@ -868,14 +995,49 @@ final class WebPage
                             srcValue[0 .. 5].toLower() == "data:") ?
                             decodeDataUrl(srcValue) :
                             fetchBytes(target);
+                        // A candidate that returned nothing (404, unsupported
+                        // format) must fall back to the plain `src`, like a
+                        // browser, instead of leaving a blank image.
+                        if (bytes.length == 0 && !e.imageFallbackTried &&
+                            srcAttr !is null && (*srcAttr).strip().length)
+                        {
+                            e.imageFallbackTried = true;
+                            e.imageLoadTried = false;
+                            _imagesPending = true;
+                            _layoutDirty = true;
+                        }
                         if (bytes.length)
                         {
                             // Shared decoder: any supported format (PNG, JPEG,
-                            // GIF, BMP, TGA, PNM, ...), not just PNG.
+                            // GIF, BMP, TGA, PNM, ...) plus the engine's own SVG
+                            // rasteriser for the icon/artwork files real pages
+                            // serve as SVG.
                             import aurora.image : decodeImage, RgbaImage;
+                            import auroraweb.svg : looksLikeSvg, decodeSvg;
                             RgbaImage img;
-                            try img = decodeImage(cast(const(ubyte)[]) bytes, srcValue);
-                            catch (Exception) img = null;
+                            try
+                            {
+                                if (looksLikeSvg(bytes))
+                                    img = decodeSvg(bytes, svgInkColor(e));
+                                else
+                                    img = decodeImage(cast(const(ubyte)[]) bytes, srcValue);
+                            }
+                            // Throwable, not Exception: the SVG scanner runs on
+                            // untrusted markup, and a malformed file must not be
+                            // able to take the browser down.
+                            catch (Throwable) img = null;
+                            if (img is null && !e.imageFallbackTried &&
+                                srcAttr !is null && (*srcAttr).strip().length)
+                            {
+                                // The selected candidate did not load or decode.
+                                // Retry once with the fallback `src`, so an
+                                // unsupported srcset entry does not leave a
+                                // blank image where a browser would show one.
+                                e.imageFallbackTried = true;
+                                e.imageLoadTried = false;
+                                _imagesPending = true;
+                                _layoutDirty = true;
+                            }
                             if (img !is null)
                             {
                                 e.image = img;
@@ -911,11 +1073,43 @@ final class WebPage
                         if (bytes.length)
                         {
                             // Shared decoder so CSS background images work for
-                            // every supported format, not just PNG.
+                            // every supported format plus SVG.
                             import aurora.image : decodeImage, RgbaImage;
+                            import auroraweb.svg : looksLikeSvg, decodeSvg,
+                                gradientToSvg;
                             RgbaImage img;
-                            try img = decodeImage(cast(const(ubyte)[]) bytes, url);
-                            catch (Exception) img = null;
+                            // A CSS gradient is real content: rasterise it by
+                            // synthesising an SVG and reusing the SVG gradient
+                            // code, sized to the element's content box.
+                            import std.algorithm : max;
+                            const auto grad = e.style.backgroundGradient;
+                            if (e.backgroundImage is null && grad.length &&
+                                grad != "none")
+                            {
+                                const int gw = max(1, e.box.width -
+                                    e.box.paddingLeft - e.box.paddingRight);
+                                const int gh = max(1, e.box.height -
+                                    e.box.paddingTop - e.box.paddingBottom);
+                                auto gsvg = gradientToSvg(grad, gw, gh);
+                                if (gsvg.length)
+                                {
+                                    try img = decodeSvg(cast(const(ubyte)[]) gsvg,
+                                        svgInkColor(e));
+                                    catch (Throwable) img = null;
+                                }
+                            }
+                            try
+                            {
+                                if (img is null && bytes.length)
+                                {
+                                    if (looksLikeSvg(bytes))
+                                        img = decodeSvg(bytes, svgInkColor(e));
+                                    else
+                                        img = decodeImage(cast(const(ubyte)[]) bytes, url);
+                                }
+                            }
+                            // See above: untrusted SVG markup must not crash.
+                            catch (Throwable) img = null;
                             if (img !is null)
                                 e.backgroundImage = img;
                         }
@@ -1643,6 +1837,110 @@ unittest
         assert(lzi !is null, "lazy-load fixture must exist");
         assert(lzi.image !is null, "a data-src image must be fetched and decoded");
     }
+
+    // Inline <svg> markup must be rasterised like an <img>, including intrinsic
+    // sizing from its width/height attributes.
+    {
+        auto isvg = new WebPage(200, 100);
+        isvg.setHtml(`<html><body><svg id="ivi" width="8" height="8">` ~
+            `<rect width="8" height="8" fill="#ff0000"/></svg></body></html>`);
+        isvg.layout();
+        // The image is decoded during layout, so the intrinsic size lands on
+        // the following pass — exactly as it does for <img>.
+        isvg.layout();
+        auto ivi = findId(isvg.root(), "ivi");
+        assert(ivi !is null, "inline svg fixture must exist");
+        assert(ivi.image !is null, "inline <svg> markup must be rasterised");
+        assert(ivi.box.width == 8 && ivi.box.height == 8,
+            "an inline svg needs intrinsic sizing; got " ~ to!string(ivi.box.width) ~
+            "x" ~ to!string(ivi.box.height));
+    }
+
+    // Protocol-relative URLs must keep the base's scheme: `//host/x.png` is a
+    // host-qualified reference, not a path. Treating it as a path made those
+    // images 404 (they resolved to https://currenthost//host/x.png).
+    assert(resolveUrl("https://a.example/dir/page.html", "//cdn.example/i.png") ==
+        "https://cdn.example/i.png", "protocol-relative keeps the https scheme");
+    assert(resolveUrl("http://a.example/dir/page.html", "//cdn.example/i.png") ==
+        "http://cdn.example/i.png", "protocol-relative keeps the http scheme");
+    // Sanity: ordinary relative and root-relative forms still behave.
+    assert(resolveUrl("https://a.example/dir/page.html", "img/x.png") ==
+        "https://a.example/dir/img/x.png", "a relative path resolves in place");
+    assert(resolveUrl("https://a.example/dir/page.html", "/img/x.png") ==
+        "https://a.example/img/x.png", "a root-relative path replaces the path");
+
+    // A srcset candidate that fails to load must fall back to the plain `src`,
+    // exactly as a browser does with <picture>/srcset.
+    {
+        static ubyte[] selective(string url)
+        {
+            if (indexOf(url, "missing.png") >= 0) return null;
+            ubyte[] bytes;
+            foreach (ch; "P6\n1 1\n255\n") bytes ~= cast(ubyte) ch;
+            foreach (v; [0, 255, 0]) bytes ~= cast(ubyte) v;
+            return bytes;
+        }
+        auto fallbackPage = new WebPage(400, 300);
+        fallbackPage.setResourceLoader((string url) @safe { return selective(url); });
+        fallbackPage.setHtml(`<html><body><img id="fb" srcset="missing.png 1x" ` ~
+            `src="good.png" /></body></html>`);
+        foreach (pass; 0 .. 8) fallbackPage.layout();
+        auto fb = findId(fallbackPage.root(), "fb");
+        assert(fb !is null, "fallback fixture must exist");
+        assert(fb.image !is null,
+            "a failed srcset candidate must fall back to the plain src");
+    }
+
+    // Progressive image loading must leave the document dirty until every image
+    // is in. Otherwise a host paints once, sees a clean document, and never
+    // fetches the rest — the live browser showed no images at all.
+    {
+        static ubyte[] oneAtATime(string url)
+        {
+            ubyte[] bytes;
+            foreach (ch; "P6\n1 1\n255\n") bytes ~= cast(ubyte) ch;
+            foreach (v; [10, 20, 30]) bytes ~= cast(ubyte) v;
+            return bytes;
+        }
+        static string[] asked;
+        asked = [];
+        auto prog = new WebPage(400, 300);
+        prog.setResourceLoader((string url) @safe { asked ~= url; return oneAtATime(url); });
+        prog.setHtml(`<html><body>` ~
+            `<img id="a" src="a.png" /><img id="b" src="b.png" />` ~
+            `<img id="c" src="c.png" /></body></html>`);
+        // The first pass fetches at most one image and must report pending work.
+        prog.layout();
+        assert(prog.layoutPending(),
+            "a pass that deferred images must leave the document dirty");
+        // Keep servicing frames until it settles; every image must arrive.
+        int passes = 0;
+        while (prog.layoutPending() && passes < 12)
+        {
+            prog.layout();
+            ++passes;
+        }
+        assert(!prog.layoutPending(), "image loading must eventually settle");
+        foreach (id; ["a", "b", "c"])
+        {
+            auto el = findId(prog.root(), id);
+            assert(el !is null, "image element " ~ id ~ " must exist");
+        }
+        // The contract that matters for a live host: the first paint defers the
+        // network images (leaving work pending), and the following passes fetch
+        // every one of them. Asserted on the fetches, not on decoded pixels,
+        // because this fixture's loader serves a synthetic PNM body.
+        foreach (want; ["a.png", "b.png", "c.png"])
+        {
+            bool fetched = false;
+            foreach (u; asked) if (u == want) { fetched = true; break; }
+            assert(fetched,
+                "every image must be fetched across passes; " ~ want ~
+                " missing from " ~ to!string(asked));
+        }
+    }
+
+
 
     // `vertical-align` positions an inline box against its own line box.
     auto va2 = new WebPage(300, 200);

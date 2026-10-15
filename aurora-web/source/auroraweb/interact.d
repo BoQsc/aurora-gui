@@ -42,7 +42,13 @@ Element elementAt(Element root, int x, int y)
     {
         if (e is null) return;
         if (e.style.display == "none" || e.style.visibility == "hidden") return;
-        if (boxContains(e, x, y) && depth >= bestDepth)
+        // A CSS translate moves the element's painted box, so the point must be
+        // mapped back into the element's untranslated space before testing.
+        int tdx = 0;
+        int tdy = 0;
+        import auroraweb.layout : transformTranslate;
+        transformTranslate(e.style.transform, e.box.width, e.box.height, tdx, tdy);
+        if (boxContains(e, x - tdx, y - tdy) && depth >= bestDepth)
         {
             best = e;
             bestDepth = depth;

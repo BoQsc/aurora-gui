@@ -208,12 +208,39 @@ private int resolveFontSize(in ComputedStyle style, int parentPx)
     {
         if (s.length > fn.length && s[0 .. fn.length] == fn && s[$ - 1] == ')')
         {
-            foreach (part; s[fn.length .. $ - 1].split(','))
+            // Resolve every component, then combine: clamp(min, val, max) picks
+            // the value clamped between its bounds, min() the smallest and max()
+            // the largest. Taking the first resolvable component was wrong, so a
+            // clamped font size landed on its floor instead of its middle value.
+            const inner = s[fn.length .. $ - 1];
+            long[] vals;
+            int depth = 0;
+            size_t start = 0;
+            foreach (i, ch; inner)
             {
-                const v = one(part);
-                if (v >= 0) return v;
+                if (ch == '(') ++depth;
+                else if (ch == ')') --depth;
+                else if (ch == ',' && depth == 0)
+                {
+                    vals ~= one(inner[start .. i]);
+                    start = i + 1;
+                }
             }
-            return parentPx;
+            vals ~= one(inner[start .. $]);
+            long[] ok;
+            foreach (v; vals)
+                if (v >= 0) ok ~= v;
+            if (ok.length == 0) return parentPx;
+            import std.algorithm : max, min;
+            long result = ok[0];
+            if (fn == "clamp(" && vals.length >= 3 && vals[0] >= 0 &&
+                vals[1] >= 0 && vals[2] >= 0)
+                result = max(vals[0], min(vals[1], vals[2]));
+            else if (fn == "min(")
+                foreach (v; ok) result = min(result, v);
+            else if (fn == "max(")
+                foreach (v; ok) result = max(result, v);
+            return cast(int) result;
         }
     }
     const v = one(s);
@@ -255,6 +282,13 @@ private void resolveStylesInto(Element element, in Rule[] rules, int viewportWid
     element.style.viewportHeight = viewportHeight;
     element.style.rootFontSizePx = rootFontPx;
     element.style.fontSizePx = resolveFontSize(element.style, parentFontPx);
+    // `color` is an inherited property: an element that declares no colour of
+    // its own uses its parent's. Without this every such element defaulted to
+    // black, so a real page's hero wordmark (`.hero h1` sets no colour, body does)
+    // painted black-on-black and looked missing.
+    if (element.parent !is null && ("color" !in cascade) &&
+        element.style.color == "black")
+        element.style.color = element.parent.style.color;
     // The root element establishes the `rem` base for all its descendants.
     const int childRootFont = (element.parent is null) ? element.style.fontSizePx : rootFontPx;
     foreach (child; element.elements)
@@ -291,6 +325,12 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
     applyDeclaration(style, "background-color", cascade.get("background-color", ""));
     applyDeclaration(style, "background-image", cascade.get("background-image", ""));
     applyDeclaration(style, "background-size", cascade.get("background-size", ""));
+    // `aspect-ratio` must be applied here as well as handled in
+    // applyDeclaration: this list is what actually feeds the cascade into the
+    // style, so a property missing from it never arrives (which is how a
+    // landscape figure with aspect-ratio: 1200/520 kept a zero height).
+    applyDeclaration(style, "aspect-ratio", cascade.get("aspect-ratio", ""));
+    applyDeclaration(style, "background-repeat", cascade.get("background-repeat", ""));
     applyDeclaration(style, "font-size", cascade.get("font-size", ""));
     applyDeclaration(style, "font-weight", cascade.get("font-weight", ""));
     applyDeclaration(style, "font-style", cascade.get("font-style", ""));
@@ -339,6 +379,7 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
     applyDeclaration(style, "clear", cascade.get("clear", ""));
     applyDeclaration(style, "visibility", cascade.get("visibility", ""));
     applyDeclaration(style, "overflow", cascade.get("overflow", ""));
+    applyDeclaration(style, "transform", cascade.get("transform", ""));
     applyDeclaration(style, "flex", cascade.get("flex", ""));
     applyDeclaration(style, "flex-grow", cascade.get("flex-grow", ""));
     applyDeclaration(style, "justify-content", cascade.get("justify-content", ""));
@@ -439,6 +480,87 @@ private ptrdiff_t topLevelComma(string s)
 }
 
 /// Best-effort solid color for a `background` that is a gradient list: the
+/// Resolve a CSS `transform` list's translation in pixels. Percentages resolve
+/// against the element's OWN box, which is what makes the ubiquitous
+/// `transform: translate(-50%, -50%)` centring trick work.
+void transformTranslate(in string transform, int selfW, int selfH,
+    out int dx, out int dy)
+{
+    import std.conv : to;
+    dx = 0;
+    dy = 0;
+    if (transform.length == 0) return;
+    const lower = transform.toLower();
+    if (lower == "none") return;
+
+    static int one(string arg, int base_)
+    {
+        auto a = arg.strip();
+        if (a.length == 0) return 0;
+        if (a[$ - 1] == '%')
+        {
+            double p = 0;
+            try p = to!double(a[0 .. $ - 1].strip());
+            catch (Exception) return 0;
+            return cast(int) (p * base_ / 100.0);
+        }
+        if (a.length > 2 && a[$ - 2 .. $].toLower() == "px") a = a[0 .. $ - 2];
+        double v = 0;
+        try v = to!double(a.strip());
+        catch (Exception) return 0;
+        return cast(int) v;
+    }
+
+    size_t i = 0;
+    while (i < lower.length)
+    {
+        const open = indexOf(lower[i .. $], '(');
+        if (open < 0) break;
+        const absOpen = i + open;
+        const close = indexOf(lower[absOpen .. $], ')');
+        if (close < 0) break;
+        const absClose = absOpen + close;
+        auto name = lower[i .. absOpen].strip();
+        auto args = transform[absOpen + 1 .. absClose];
+        if (name == "translate" || name == "translatex" || name == "translatey")
+        {
+            auto parts = args.split(',');
+            if (name != "translatey" && parts.length >= 1)
+                dx += one(parts[0], selfW);
+            if (name == "translatey" && parts.length >= 1)
+                dy += one(parts[0], selfH);
+            else if (name == "translate" && parts.length >= 2)
+                dy += one(parts[1], selfH);
+        }
+        i = absClose + 1;
+    }
+}
+
+/// Extract a `linear-gradient(...)` / `radial-gradient(...)` token, balancing
+/// nested parentheses so colours like `rgba(1, 2, 3, 0.5)` survive intact.
+private string extractGradientToken(string value)
+{
+    const lower = value.toLower();
+    ptrdiff_t start = -1;
+    foreach (kw; ["linear-gradient(", "radial-gradient("])
+    {
+        const at = indexOf(lower, kw);
+        if (at >= 0 && (start < 0 || at < start)) start = at;
+    }
+    if (start < 0) return "";
+    int depth = 0;
+    for (auto i = start; i < cast(ptrdiff_t) value.length; i++)
+    {
+        if (value[i] == '(') depth++;
+        else if (value[i] == ')')
+        {
+            depth--;
+            if (depth == 0) return value[start .. i + 1].strip();
+        }
+    }
+    return "";
+}
+
 /// first color stop of the last gradient. Gradients are not painted, so this
 /// approximates the intended theme rather than leaving the element transparent
 /// (which would, e.g., put light text on a white page).
@@ -591,13 +713,17 @@ private string uaDisplay(string tag)
             return "inline";
         case "br":
             return "inline";
-        case "img", "input", "textarea", "select", "button":
+        case "img", "svg", "input", "textarea", "select", "button":
             return "inline-block";
         case "head", "title", "meta", "link", "style", "script", "template",
-             // Inline SVG is not rendered by this engine; skipping `svg`
-             // (and its lowercase element names) stops its <text> from being
-             // laid out as ordinary page text.
-             "svg", "defs", "symbol", "g", "text", "tspan", "path", "rect",
+             // The root `svg` box is painted as a rasterised image, so the SVG
+             // *inner* element names stay hidden: <text>/<path>/<rect> must not
+             // also be laid out as ordinary page boxes or page text. `desc` and
+             // `metadata` are accessibility metadata too: without them here a
+             // real page painted its illustration's description ("A dark ink-style
+             // landscape with mountains, trees, and water.") as visible page text.
+             "desc", "metadata",
+             "defs", "symbol", "g", "text", "tspan", "path", "rect",
              "circle", "ellipse", "line", "polyline", "polygon", "stop",
              "use", "mask", "clippath", "lineargradient", "radialgradient",
              "marker", "pattern", "filter", "foreignobject":
@@ -611,6 +737,23 @@ private string uaDisplay(string tag)
 /// cascade and inline `style=""`, so page CSS still overrides it. Without this,
 /// headings, paragraphs and lists had no default margins or type sizes and
 /// every block sat flush against the previous one.
+/// Expand tabs to eight spaces. The shaper's own tab advance is unreliable - a
+/// real page's `white-space: pre-wrap` link list (whose markup indents each link
+/// with tabs) came out LEFT of its content box and was clipped - and an explicit
+/// expansion is always positive and predictable.
+private string expandTabs(string s)
+{
+    if (s.length == 0) return s;
+    bool hasTab = false;
+    foreach (char c; s) if (c == '\t') { hasTab = true; break; }
+    if (!hasTab) return s;
+    string result;
+    result.reserve(s.length + 32);
+    foreach (char c; s)
+        result ~= (c == '\t') ? "        " : [c];
+    return result;
+}
+
 private void applyUserAgentDefaults(ref ComputedStyle style, string tag)
 {
     switch (tag)
@@ -725,6 +868,15 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
             {
                 auto u = extractUrlToken(value);
                 if (u.length) style.backgroundImage = u;
+                // The shorthand also carries a gradient (very common for heroes
+                // and cards). Without this the property painted nothing.
+                auto g = extractGradientToken(value);
+                if (g.length) style.backgroundGradient = g;
+                // The shorthand carries the repeat mode too.
+                const vl = value.toLower();
+                if (indexOf(vl, "no-repeat") >= 0) style.backgroundRepeat = "no-repeat";
+                else if (indexOf(vl, "repeat-x") >= 0) style.backgroundRepeat = "repeat-x";
+                else if (indexOf(vl, "repeat-y") >= 0) style.backgroundRepeat = "repeat-y";
             }
             break;
         case "background-color": style.background = value; break;
@@ -738,7 +890,14 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 else if (v.length >= 4 && v[0 .. 4].toLower() == "url(" && v[$ - 1] == ')')
                     style.backgroundImage = v;
                 else
+                {
+                    // A gradient is real content, not an unusable URL: keep the
+                    // token so the renderer can rasterise it (they were dropped,
+                    // so every gradient background painted nothing).
+                    auto g = extractGradientToken(v);
+                    style.backgroundGradient = g.length ? g : "none";
                     style.backgroundImage = "none";
+                }
             }
             break;
         case "background-size":
@@ -747,6 +906,15 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 const v = value.strip().toLower();
                 if (v.length == 0) break;
                 style.backgroundSize = v;
+            }
+            break;
+        case "background-repeat":
+            // repeat | repeat-x | repeat-y | no-repeat (CSS tiles by default).
+            {
+                const v = value.strip().toLower();
+                if (v == "repeat" || v == "repeat-x" || v == "repeat-y" ||
+                    v == "no-repeat")
+                    style.backgroundRepeat = v;
             }
             break;
         case "font-size": style.fontSize = value; break;
@@ -836,6 +1004,11 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
             style.clear = value; break;
         case "visibility": style.visibility = value; break;
         case "overflow": style.overflow = value.strip().toLower(); break;
+        // CSS `transform`. Only the translate functions are honoured so far;
+        // they are by far the most common (hover nudges and the ubiquitous
+        // `translate(-50%, -50%)` centring trick), and ignoring them left such
+        // elements in the wrong place.
+        case "transform": style.transform = value.strip(); break;
         case "object-fit": style.objectFit = value.strip().toLower(); break;
         case "flex":
             // flex: <grow> <shrink> <basis> — use grow.
@@ -847,7 +1020,7 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "flex-grow": style.flexGrow = value; break;
         case "justify-content":
             if (value == "flex-start" || value == "center" || value == "space-between" ||
-                value == "space-around" || value == "flex-end")
+                value == "space-around" || value == "space-evenly" || value == "flex-end")
                 style.justifyContent = value;
             break;
         case "align-items":
@@ -855,6 +1028,9 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 style.alignItems = value;
             break;
         case "gap": style.gap = value; break;
+        case "aspect-ratio":
+            style.aspectRatio = value == "auto" ? "" : value;
+            break;
         case "flex-direction":
             if (value == "row" || value == "row-reverse" || value == "column" ||
                 value == "column-reverse")
@@ -1593,6 +1769,17 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
         innerBottom += element.box.paddingBottom + element.box.borderBottom;
         finalHeight = max(0, innerBottom - element.box.y);
     }
+    // `aspect-ratio` with an auto height: the box height follows the used width
+    // (CSS Sizing 4). A real page's landscape figure declares
+    // width: min(100%, 35.7rem) with aspect-ratio: 1200 / 520; without this it
+    // stayed 444x0, its artwork drew nothing, and the column collapsed with it.
+    {
+        const ratio = parseAspectRatio(element.style.aspectRatio);
+        if (ratio > 0.0 && element.box.width > 0 &&
+            element.style.resolveLength(element.style.height,
+                element.style.containingHeight) < 0)
+            finalHeight = cast(int) (element.box.width / ratio);
+    }
     finalHeight = clampMinMaxHeight(element, finalHeight);
     element.box.height = finalHeight;
 
@@ -1646,6 +1833,21 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
 /// shared inline line, advancing a horizontal cursor and wrapping at the
 /// block's content width using real shaped measurement. Whitespace-only text
 /// nodes between block elements are skipped.
+/// Height of a shaped run's glyphs, used for CSS half-leading inside a taller
+/// line box. Falls back to the font size when the shaper reports no height.
+private int fontHeightOf(T)(T layout, int pixelSize)
+{
+    try
+    {
+        const h = cast(int) layout.measuredSize().height;
+        if (h > 0) return h;
+    }
+    catch (Exception)
+    {
+    }
+    return pixelSize;
+}
+
 private void layoutDirectText(Element element, ref FlowContext flow,
     size_t from = 0, size_t to = size_t.max)
 {
@@ -1735,7 +1937,9 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             const int leftEdge = flow.lineLeft(cursorY, lineH);
             const int rightEdge = flow.lineRight(cursorY, lineH);
             const int innerW = max(0, rightEdge - cursorX);
-            auto layout = shapeText(text.data, pixelSize,
+            const string runText = collapsibleText(element, text);
+            text.paintText = runText;
+            auto layout = shapeText(runText, pixelSize,
                 noWrapText ? 1_000_000 : innerW);
             if (layout !is null && layout.lines.length > 0)
             {
@@ -1744,7 +1948,13 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 // content continues correctly instead of overlapping.
                 wrapTo(leftEdge, rightEdge);
                 text.layoutX = cursorX;
-                text.layoutY = cursorY;
+                // CSS half-leading: when the line box is taller than the run
+                // (a generous line-height, a stretched flex item, a 48px dock
+                // row), the glyphs are centred in the line, not pinned to its
+                // top. Painting at the top made every such label sit high —
+                // the visible "labels detached from their icons".
+                const int runH = fontHeightOf(layout, pixelSize);
+                text.layoutY = cursorY + max(0, (lineH - runH) / 2);
                 text.layoutWidth = cast(int) layout.width;
                 text.lineIndex = lineIndex;
                 const nLines = cast(int) layout.lines.length;
@@ -1774,10 +1984,11 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 continue;
             }
             // Fallback: no shaped layout.
-            const int textWidth = cast(int)(text.data.length * 8);
+            const int textWidth = cast(int)(runText.length * 8);
             wrapTo(leftEdge, rightEdge);
             text.layoutX = cursorX;
-            text.layoutY = cursorY;
+            // Same half-leading rule for the fallback (unshaped) case.
+            text.layoutY = cursorY + max(0, (lineH - pixelSize) / 2);
             text.layoutWidth = textWidth;
             text.lineIndex = lineIndex;
             noteLine(lineIndex, cursorX, cursorX + textWidth);
@@ -1811,6 +2022,13 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             // Measure the inline element's text content.
             int cw;
             int ceLines = 1;
+            // Advance to the next line *before* shaping this run. Shaping against
+            // a cursor that the previous inline content had already pushed past
+            // the line's right edge gave the run a far too narrow width, so an
+            // inline element wrapped mid-content (a URL broke after a few
+            // characters, and the article date fell onto a second line) even
+            // though the line had room for it.
+            wrapTo(leftEdge, rightEdge);
             if (ce.style.display == "inline-block")
                 cw = resolveWidth(ce, flow.width);
             else
@@ -1970,6 +2188,28 @@ private void layoutDirectText(Element element, ref FlowContext flow,
 
 /// Shift an inline element and all its descendant inline text runs by `shift`
 /// px. Used by the text-align pass so a moved inline box carries its text.
+/// Shift an element's whole box tree — every descendant element box and text
+/// run — by `shift` px. Used when a flex item is repositioned after its contents
+/// were laid out: the inline-only helper below left block children behind, so a
+/// real nav's links overlapped their neighbour.
+private void shiftBoxTree(Element ce, int shift)
+{
+    if (shift == 0) return;
+    ce.box.x += shift;
+    foreach (child; ce.children)
+    {
+        auto t = cast(TextNode) child;
+        if (t !is null)
+        {
+            if (t.layoutWidth > 0) t.layoutX += shift;
+            continue;
+        }
+        auto e2 = cast(Element) child;
+        if (e2 is null) continue;
+        shiftBoxTree(e2, shift);
+    }
+}
+
 private void shiftSubtree(Element ce, int shift)
 {
     if (shift == 0) return;
@@ -2053,6 +2293,67 @@ private int resolveWidth(Element element, int containingWidth)
     return clampMinMaxWidth(element, max(0, width));
 }
 
+/// The text as it must be shaped and painted. For every `white-space` other than
+/// `pre`/`pre-wrap`/`pre-line`, runs of whitespace collapse to a single space and
+/// leading/trailing whitespace is dropped (CSS Text 3). Markup indentation is not
+/// content: without this the newlines and tabs preceding a block's text were
+/// shaped as real advance, so a real page's paragraph began ~141px into its own
+/// box and gained a blank first line.
+private string collapsibleText(Element element, TextNode node)
+{
+    const preserved = element.tag == "pre" ||
+        element.style.whiteSpace == "pre" ||
+        element.style.whiteSpace == "pre-wrap" ||
+        element.style.whiteSpace == "pre-line";
+    if (preserved) return expandTabs(node.data);
+    string result;
+    bool pendingSpace = false;
+    bool started = false;
+    foreach (char c; node.data)
+    {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
+        {
+            if (started) pendingSpace = true;
+            continue;
+        }
+        if (pendingSpace)
+        {
+            result ~= ' ';
+            pendingSpace = false;
+        }
+        result ~= c;
+        started = true;
+    }
+    // Keep one trailing space: CSS keeps a run's trailing whitespace so that
+    // following inline content ("Date added: <time>…</time>") still gets its
+    // separating space. At the end of a block it is not painted, so it is safe.
+    if (pendingSpace) result ~= ' ';
+    return result;
+}
+
+/// Parse `aspect-ratio: <w> / <h>` (or a bare number) into width/height. Returns
+/// 0 when the value is unusable (`auto`, empty, or a zero/degenerate ratio).
+private double parseAspectRatio(string value)
+{
+    import auroraweb.dom : cssDouble;
+    import std.string : indexOf;
+    const s = value.strip();
+    if (s.length == 0 || s == "auto") return 0.0;
+    const slash = indexOf(s, "/");
+    if (slash < 0)
+    {
+        const v = cssDouble(s);
+        return v > 0.0 ? v : 0.0;
+    }
+    const left = s[0 .. slash].strip();
+    const right = s[slash + 1 .. $].strip();
+    if (left.length == 0 || right.length == 0) return 0.0;
+    const w = cssDouble(left);
+    const h = cssDouble(right);
+    if (w <= 0.0 || h <= 0.0) return 0.0;
+    return w / h;
+}
+
 private int resolveHeight(Element element)
 {
     auto style = element.style;
@@ -2066,13 +2367,33 @@ private int resolveHeight(Element element)
         // content-box: clamp the content, then add padding+border (CSS 10.4).
         return clampMinMaxHeight(element, max(0, heightPx)) + padBorder;
     }
-    // An inline-block with a decoded image and no explicit height uses the
-    // image's intrinsic height. -1 means "auto — caller measures content".
-    if (style.display == "inline-block")
+    // `aspect-ratio` (CSS Sizing 4): with a definite width, an auto height is
+    // width / ratio. A real page's landscape figure declares
+    // `aspect-ratio: 1200 / 520` (with width: min(100%, 35.7rem)); without this
+    // it measured 444x0, so the whole illustration drew nothing and the column
+    // above it collapsed.
     {
-        auto img = cast(RgbaImage) element.image;
-        if (img !is null)
-            return clampMinMaxHeight(element, max(0, img.height()));
+        const ratio = parseAspectRatio(style.aspectRatio);
+        if (ratio > 0.0 && element.box.width > 0)
+        {
+            const derived = cast(int) (element.box.width / ratio);
+            return clampMinMaxHeight(element, max(0, derived));
+        }
+    }
+    // A replaced element with a decoded image and no explicit height uses the
+    // image's intrinsic ratio: height = used width * intrinsicHeight /
+    // intrinsicWidth (CSS 10.6.2). Limiting this to `inline-block` left a
+    // block-level <img> with `height: auto` at ZERO height — a real page's
+    // 1920x1080 lead photo laid out as a 735x0 sliver, so the image was there
+    // but invisible. -1 means "auto — caller measures content".
+    auto img = cast(RgbaImage) element.image;
+    if (img !is null && img.width() > 0 && img.height() > 0)
+    {
+        const used = element.box.width;
+        const scaled = used > 0
+            ? cast(int) ((cast(long) used * img.height()) / img.width())
+            : img.height();
+        return clampMinMaxHeight(element, max(0, scaled));
     }
     return -1; // auto — caller measures content.
 }
@@ -2339,7 +2660,9 @@ private void layoutInlineChildren(Element element, ref FlowContext flow, Element
         auto text = cast(TextNode) child;
         if (text !is null)
         {
-            const int textWidth = cast(int)(text.data.length * 8);
+            const string runText = collapsibleText(element, text);
+            text.paintText = runText;
+            const int textWidth = cast(int)(runText.length * 8);
             // Shape the line around active floats.
             const int leftEdge = flow.lineLeft(currentLineY, lineHeight);
             const int rightEdge = flow.lineRight(currentLineY, lineHeight);
@@ -2489,6 +2812,8 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     const innerW = max(0, width - element.box.paddingLeft - element.box.paddingRight -
         element.box.borderLeft - element.box.borderRight);
 
+
+
     // Children flex items.
     auto style = element.style;
     // `gap` may be px/rem/em/%/calc — resolve it, not just px.
@@ -2504,6 +2829,11 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         // Positioned children are removed from the flex flow.
         if (ce.style.position == "absolute" || ce.style.position == "fixed")
             continue;
+        // `display: none` removes the element from the box tree entirely, so it
+        // must not take a flex slot or contribute width. A hidden sibling link
+        // widened a real page's social row by 63px and made the next item
+        // overlap its neighbour.
+        if (ce.style.display == "none") continue;
         items ~= ce;
         resolveBoxMetrics(ce, innerW);
         import auroraweb.dom : cssInt;
@@ -2569,7 +2899,16 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
 
     const int fixedTotal = sumWidths(itemWidths);
     const int gapTotal = gapPx * cast(int)max(0, items.length - 1);
-    const int remaining = innerW - fixedTotal - gapTotal;
+    // Items occupy their OUTER size on the main axis (content + padding + border
+    // + margins). Free space and the grow distribution must be measured against
+    // that, or a centred row of padded items is off by their padding (a test
+    // showed 110 instead of 90).
+    int outerTotal = 0;
+    foreach (i, ce; items)
+        outerTotal += itemWidths[i] + ce.box.paddingLeft + ce.box.paddingRight +
+            ce.box.borderLeft + ce.box.borderRight +
+            ce.box.marginLeft + ce.box.marginRight;
+    const int remaining = innerW - outerTotal - gapTotal;
     if (totalFlex > 0)
     {
         // Distribute remaining proportionally to flex-grow.
@@ -2607,26 +2946,70 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
 
     // justify-content.
     int cursor = innerX;
-    const int used = sumWidths(itemWidths) + gapTotal;
+    // Measured AFTER the grow pass: it changes itemWidths, so a pre-grow total
+    // overstates the free space and pushes a centred row off its container
+    // (the real page's toolbar jumped to x=1292 before this was fixed).
+    int used = gapTotal;
+    foreach (i, ce; items)
+        used += itemWidths[i] + ce.box.paddingLeft + ce.box.paddingRight +
+            ce.box.borderLeft + ce.box.borderRight +
+            ce.box.marginLeft + ce.box.marginRight;
+    // Free space is never negative: browsers keep overflowing content inside the
+    // container (the overflow-safe behaviour). Without this clamp a centred row
+    // whose items overflowed began to the LEFT of its own content box - a real
+    // page's nav link started 24px left of its container and clipped its
+    // neighbour.
+    const int freeSpace = innerW > used ? innerW - used : 0;
     if (style.justifyContent == "center")
-        cursor = innerX + (innerW - used) / 2;
+        cursor = innerX + freeSpace / 2;
     else if (style.justifyContent == "flex-end")
-        cursor = innerX + (innerW - used);
-    else if (style.justifyContent == "space-between")
-        cursor = innerX; // gap handled below via distributed extra
+        cursor = innerX + freeSpace;
+    // space-between / space-around / space-evenly distribute the free space as
+    // extra gaps. These were accepted by the parser but never applied, so every
+    // navbar, toolbar and card row using them packed to the left instead.
+    int gapExtra = 0;
+    int lead = 0;
+    if (items.length > 0 && innerW > used)
+    {
+        const int free = innerW - used;
+        const int n = cast(int) items.length;
+        if (style.justifyContent == "space-between")
+            gapExtra = n > 1 ? free / (n - 1) : 0;
+        else if (style.justifyContent == "space-around")
+        {
+            gapExtra = free / n;
+            lead = gapExtra / 2;
+        }
+        else if (style.justifyContent == "space-evenly")
+        {
+            gapExtra = free / (n + 1);
+            lead = gapExtra;
+        }
+    }
+    if (lead > 0) cursor = innerX + lead;
 
     int maxChildHeight = 0;
     int[] xs;
     foreach (i, ce; items)
     {
-        ce.box.x = cursor;
-        ce.box.y = innerY;
+        // CSS places the item's border box after its own left/top margin, and
+        // the cursor then advances by the item's outer size. Ignoring margins
+        // made margined items sit too far left and overlap their neighbour -
+        // the nav's "Home" link (margin-left) landed on top of "Contact".
+        ce.box.x = cursor + ce.box.marginLeft;
+        ce.box.y = innerY + ce.box.marginTop;
         ce.box.width = itemWidths[i];
         resolveBoxMetrics(ce, innerW);
         const itemH = resolveHeight(ce);
         ce.box.height = itemH >= 0 ? itemH : 0;
-        xs ~= cursor;
-        cursor += itemWidths[i] + gapPx;
+        xs ~= cursor + ce.box.marginLeft;
+        // box.width is the CONTENT box, so the row must advance by the item's
+        // outer size: content + padding + border + margins. Counting only the
+        // content width overlapped every padded or bordered item - toolbar
+        // buttons, pills, cards (a test showed the next item at 40 instead of 70).
+        cursor += itemWidths[i] + ce.box.paddingLeft + ce.box.paddingRight +
+            ce.box.borderLeft + ce.box.borderRight +
+            ce.box.marginLeft + ce.box.marginRight + gapPx + gapExtra;
         // Lay out the item's children inside the item's OWN box (not the
         // container's), then grow the item to fit its content. Without this,
         // flex items had zero height and their text all painted at (0,0),
@@ -2639,10 +3022,24 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         sub.lineEnd = sub.x + sub.width;
         const int subTop = sub.y;
         layoutContents(ce, sub, ce);
+        // Content height must include the flow ADVANCE as well as the painted
+        // extent: an item whose content is inline ELEMENTS (not direct text) only
+        // advances the flow, and measuring the extent alone collapsed those
+        // items to zero height (the dock's flyout labels went 48px -> 0).
         const int contentH = max(sub.contentBottom, sub.y - subTop);
         if (itemH < 0 && contentH > 0)
             ce.box.height = max(0, contentH + ce.box.paddingTop + ce.box.paddingBottom);
         maxChildHeight = max(maxChildHeight, ce.box.height);
+        // An item's own layout may have made it WIDER than the pre-layout
+        // estimate (an inline-flex item with auto width sizes to its content), so
+        // every following item must advance by the actual width. Advancing by the
+        // estimate let a real page's social row sit 36px narrower than the box it
+        // painted, and the next item overlapped it.
+        if (ce.box.width > itemWidths[i])
+        {
+            cursor += ce.box.width - itemWidths[i];
+            itemWidths[i] = ce.box.width;
+        }
     }
 
     // margin-left:auto / margin-right:auto / margin:auto on an item absorbs
@@ -2669,31 +3066,30 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         const gapPaid = gapPx * cast(int)max(0, items.length - 1);
         int leftover = innerW - itemsW - gapPaid;
         if (leftover < 0) leftover = 0;
-        foreach (idx; autoLeft)
+        // CSS gives each auto margin an equal share of the free space, and a
+        // margin only moves the items that follow it. Handing every auto item
+        // the whole leftover moved later items twice — on a real page the nav's
+        // "Home" ended up overlapping "Contact".
+        const int autoMargins = cast(int) autoLeft.length + cast(int) autoRight.length;
+        const int share = autoMargins > 0 ? leftover / autoMargins : 0;
+        if (share > 0)
         {
-            const int i = idx;
-            bool alsoRight = false;
-            foreach (r; autoRight)
-                if (r == i) { alsoRight = true; break; }
-            const int amount = alsoRight ? leftover / 2 : leftover;
-            if (amount <= 0) continue;
-            // The item's natural position (xs[i] recorded at layout time) is
-            // pushed right by `amount`, carrying all following items.
-            for (int j = i; j < cast(int) items.length; j++)
-                items[j].box.x += amount;
-        }
-        foreach (idx; autoRight)
-        {
-            const int i = idx;
-            bool alsoLeft = false;
-            foreach (l; autoLeft)
-                if (l == i) { alsoLeft = true; break; }
-            if (alsoLeft) continue; // handled (and centered) above
-            if (leftover <= 0) continue;
-            // All leftover space goes AFTER item i: pull every following item
-            // toward the right edge.
-            for (int j = i + 1; j < cast(int) items.length; j++)
-                items[j].box.x += leftover;
+            int shift = 0;
+            foreach (i, ce; items)
+            {
+                bool leftAuto = false, rightAuto = false;
+                foreach (l; autoLeft) if (l == i) { leftAuto = true; break; }
+                foreach (r; autoRight) if (r == i) { rightAuto = true; break; }
+                if (leftAuto) shift += share;
+                if (shift > 0)
+                {
+                    // Move the item AND everything inside it. Shifting only the
+                    // item box left its children behind, so a flyout's labels
+                    // were painted to the left of the item they belong to.
+                    shiftBoxTree(ce, shift);
+                }
+                if (rightAuto) shift += share;
+            }
         }
     }
 
@@ -2708,16 +3104,53 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     // the sum of its items' widths (+ gaps + padding + border).
     if (inline && element.style.resolveLength(element.style.width, flow.width) < 0)
     {
-        const itemsW = sumWidths(itemWidths) + gapPx * cast(int)max(0, items.length - 1);
+        // A bare text child is an anonymous flex item (CSS Flexbox 4.1), so its
+        // measured width must count. Without this a label such as
+        // `<summary>Tools</summary>` collapsed to its padding width (17px for a
+        // 27px label), so every toolbar entry overflowed its own box and the
+        // whole row was crammed against the viewport edge.
+        int textW = 0;
+        foreach (child; element.children)
+        {
+            auto tn = cast(TextNode) child;
+            if (tn is null) continue;
+            const px = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
+            auto lay = shapeText(tn.data, px, 0);
+            if (lay !is null) textW = max(textW, cast(int) lay.width);
+        }
+        // Sum the items' OUTER sizes (content + padding + border + margins): an
+        // auto-width container was sized from content widths alone, so it came
+        // out narrower than the boxes it held (80 instead of 110 in a test).
+        int itemsW = textW;
+        foreach (i, ce; items)
+            itemsW += itemWidths[i] + ce.box.paddingLeft + ce.box.paddingRight +
+                ce.box.borderLeft + ce.box.borderRight +
+                ce.box.marginLeft + ce.box.marginRight;
+        itemsW += gapPx * cast(int)max(0, items.length - 1);
         const totalW = itemsW + element.box.paddingLeft + element.box.paddingRight +
             element.box.borderLeft + element.box.borderRight;
         width = clampMinMaxWidth(element, max(0, totalW));
         element.box.width = width;
     }
 
-    // Container height = tallest child (+ padding/border).
+    // Container height = tallest child (+ padding/border). A flex container
+    // whose only content is its OWN direct text (`<button>Label</button>`) has
+    // no flex items at all, so maxChildHeight stayed 0 and the box collapsed:
+    // the text overflowed a zero-height box with no hit area (a real page's
+    // "Public" owner pill measured 26x0).
+    const int pxSize = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
+    int contentHeight = maxChildHeight;
+    foreach (ch; element.children)
+    {
+        auto t = cast(TextNode) ch;
+        if (t !is null && t.data.strip().length)
+        {
+            contentHeight = max(contentHeight, resolveLineHeight(element, pxSize));
+            break;
+        }
+    }
     const hPx = resolveHeight(element);
-    element.box.height = hPx >= 0 ? hPx : contentBoxHeight(element, maxChildHeight);
+    element.box.height = hPx >= 0 ? hPx : contentBoxHeight(element, contentHeight);
 
     layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
 
@@ -2921,6 +3354,8 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
         // are laid out separately below) and must not consume a grid cell.
         if (ce.style.position == "absolute" || ce.style.position == "fixed")
             continue;
+        // A hidden child consumes no grid cell either.
+        if (ce.style.display == "none") continue;
         items ~= ce;
     }
 
@@ -3467,7 +3902,8 @@ unittest
     import std.conv : to;
 
     // <img> intrinsic sizing: no CSS size -> box equals the decoded image
-    // dimensions; CSS width/height override the intrinsic size.
+    // dimensions; an explicit width with `height: auto` scales the height by the
+    // image's intrinsic ratio (CSS 10.6.2), and an explicit height overrides it.
     {
         ubyte[100 * 50 * 4] pixels;
         foreach (i, ref p; pixels) p = 200;
@@ -3492,7 +3928,11 @@ unittest
         flow2.lineEnd = 300;
         layoutInlineBlock(styled, flow2, null);
         assert(styled.box.width == 200, "img with width:200px should be 200, got " ~ styled.box.width.to!string);
-        assert(styled.box.height == 50, "img intrinsic height should remain 50, got " ~ styled.box.height.to!string);
+        // 100x50 image at width:200px -> height 200 * 50/100 = 100. Keeping the
+        // intrinsic 50 here was the bug that left real pages' images zero-height.
+        assert(styled.box.height == 100,
+            "a 100x50 img at width:200px must scale to height 100, got " ~
+            styled.box.height.to!string);
     }
 }
 
@@ -3654,8 +4094,13 @@ unittest
         assert(flow.contentBottom == 40,
             "line-height:40px should give a 40px line box, contentBottom=" ~
             flow.contentBottom.to!string);
-        // The run's y is on that first line.
-        assert(textNode.layoutY == 0, "run y=0, got " ~ textNode.layoutY.to!string);
+        // CSS half-leading: the glyphs are centred in the 40px line box instead
+        // of pinned to its top, so the run's y is the leading offset (8 for this
+        // font's 24px run). Painting at the line top made generous-line-height
+        // labels sit visibly high.
+        assert(textNode.layoutY > 0 && textNode.layoutY < 40,
+            "the run must sit inside the 40px line box, y=" ~
+            textNode.layoutY.to!string);
     }
 
     // --- display: list-item (uaDisplay for <li>) ---
@@ -3704,6 +4149,681 @@ unittest
         assert(kids[1].box.x == 54, "inline-flex child1 x=54, got " ~ kids[1].box.x.to!string);
         assert(kids[2].box.x == 108, "inline-flex child2 x=108, got " ~ kids[2].box.x.to!string);
     }
+
+    // --- inline-flex wrapping a bare text child ---
+    // A text child is an anonymous flex item (CSS Flexbox 4.1), so the label
+    // must size to its text rather than collapsing to its padding width. This
+    // is what made `<summary>Tools</summary>` measure 17px for 27px of text.
+    {
+        auto label = new Element("summary");
+        label.style.display = "inline-flex";
+        auto labelText = new TextNode(label, "Tools");
+        label.children ~= labelText;
+        auto lf = FlowContext();
+        lf.x = 0;
+        lf.y = 0;
+        lf.width = 600;
+        lf.height = 100;
+        layoutFlex(label, lf, null);
+        assert(label.box.width > 20,
+            "an inline-flex label must size to its text, got " ~
+            label.box.width.to!string);
+    }
+
+    // --- a flex container whose only content is its own direct text ---
+    // --- auto margins take equal shares and never overlap their siblings ---
+    // --- justify-content: space-between actually distributes the free space ---
+    // --- display: none children take no part in flex layout ---
+    // --- flex items advance by their ACTUAL width, not the estimate ---
+    // --- a second layout pass must not leave a child behind its container ---
+    // --- flex items honour their own margins ---
+    // --- a re-layout at a different width must reassign every box ---
+    // --- a row advances by the item's OUTER size (padding and border) ---
+    // --- centring accounts for the items' outer sizes ---
+    // --- block horizontal margins, including `margin: 0 auto` centring ---
+    // --- CSS transform: translate, percentages against the element's own box ---
+    // --- clamp()/min()/max() resolve like CSS, not to the first component ---
+    // --- an <img> with height:auto uses the image's intrinsic ratio ---
+    // --- `color` inherits from an ancestor when the element sets none ---
+    // --- aspect-ratio derives an auto height from the used width ---
+    // --- SVG metadata (<desc>/<title>/<defs>) must never render as text ---
+    // --- markup indentation is not content (white-space: normal) ---
+    {
+        auto el = new Element("p");
+        auto tn = new TextNode(el, "\n\t\t\t\t\t\t\tAlpha beta   gamma\ndelta ");
+        assert(collapsibleText(el, tn) == "Alpha beta gamma delta ",
+            "white-space:normal must collapse the markup's newlines and tabs, " ~
+            "keeping one trailing space: got '" ~ collapsibleText(el, tn) ~ "'");
+        // Preformatted text keeps every character, except tabs, which expand to
+        // spaces (see expandTabs) so their advance is always positive.
+        auto pre = new Element("pre");
+        auto ptn = new TextNode(pre, "\n\tkeep me\n");
+        assert(collapsibleText(pre, ptn) == "\n        keep me\n",
+            "<pre> must keep its whitespace, with tabs expanded: got '" ~
+            collapsibleText(pre, ptn) ~ "'");
+    }
+
+    {
+        auto root5 = new Element("body");
+        auto svg = new Element("svg");
+        auto desc = new Element("desc");
+        svg.children ~= desc;
+        svg.elements ~= desc;
+        desc.parent = svg;
+        root5.children ~= svg;
+        root5.elements ~= svg;
+        svg.parent = root5;
+        applyStylesAndLayout(root5, parseStylesheet("", 400, 300), 400, 300);
+        assert(desc.style.display == "none",
+            "an SVG <desc> is accessibility metadata, not content: a real page " ~
+            "painted its illustration description as visible page text (display=" ~
+            desc.style.display ~ ")");
+        assert(desc.box.height == 0 && desc.box.width == 0,
+            "an SVG <desc> must occupy no box");
+    }
+
+    {
+        // Through the real cascade, not by poking the field: the earlier version
+        // of this test passed while the property never reached the style.
+        auto rules4 = parseStylesheet(`
+            body { margin: 0; }
+            .scene { width: 444px; aspect-ratio: 1200 / 520; }
+        `, 1350, 800);
+        auto doc4 = new Element("body");
+        auto scene = new Element("figure");
+        scene.attrs["class"] = "scene";
+        doc4.children ~= scene;
+        doc4.elements ~= scene;
+        scene.parent = doc4;
+        applyStylesAndLayout(doc4, rules4, 1350, 800);
+        // 444 / (1200/520) = 192.4 -> 192
+        assert(scene.box.height == 192,
+            "aspect-ratio 1200/520 at width 444 is 192, got " ~
+            to!string(scene.box.height));
+
+        auto el = new Element("figure");
+        el.style.display = "block";
+        el.style.aspectRatio = "auto";
+        el.box.width = 444;
+        assert(resolveHeight(el) == -1,
+            "aspect-ratio:auto leaves an auto height to the content");
+    }
+
+    {
+        auto rules3 = parseStylesheet(`
+            body { color: #f0eee8; }
+            h1 { font-weight: 500; }
+        `, 400, 300);
+        auto doc3 = new Element("body");
+        auto h = new Element("h1");
+        doc3.children ~= h;
+        doc3.elements ~= h;
+        h.parent = doc3;
+        applyStylesAndLayout(doc3, rules3, 400, 300);
+        assert(h.style.color == "#f0eee8",
+            "an element with no colour of its own must inherit it (a real page's " ~
+            "hero wordmark painted black instead of the body colour), got '" ~
+            h.style.color ~ "'");
+    }
+
+    {
+        auto el = new Element("img");
+        el.style.display = "block"; // the real page sets img { display: block }
+        el.style.height = "auto";
+        el.image = new RgbaImage(1920, 1080, new ubyte[](1920 * 1080 * 4));
+        el.box.width = 735; // resolved from width:100%
+        const h = resolveHeight(el);
+        // 735 * 1080 / 1920 = 413
+        assert(h == 413,
+            "a block-level image with height:auto takes 735*1080/1920 = 413, got " ~
+            to!string(h));
+    }
+
+    // --- max-width caps a block's width ---
+    {
+        auto rules2 = parseStylesheet(`
+            body { margin: 0; width: 800px; }
+            #wide { width: 739px; max-width: 34rem; }
+        `, 800, 800);
+        auto doc2 = new Element("body");
+        auto wide = new Element("div");
+        wide.attrs["id"] = "wide";
+        doc2.children ~= wide;
+        doc2.elements ~= wide;
+        wide.parent = doc2;
+        applyStylesAndLayout(doc2, rules2, 800, 800);
+        assert(wide.box.width == 544,
+            "max-width:34rem must cap a 739px block at 544, got " ~
+            to!string(wide.box.width));
+    }
+
+    {
+        auto cs = ComputedStyle();
+        cs.viewportWidth = 1350;
+        cs.viewportHeight = 800;
+        cs.rootFontSizePx = 16;
+        cs.fontSizePx = 16;
+        // The exact inset a real page used for its dock bar: 11vw = 148px, which
+        // is inside [4rem, 11rem] = [64, 176], so clamp() yields 148.
+        assert(cs.resolveLength("clamp(4rem, 11vw, 11rem)", 0) == 148,
+            "clamp(4rem, 11vw, 11rem) at 1350 wide is 148, got " ~
+            to!string(cs.resolveLength("clamp(4rem, 11vw, 11rem)", 0)));
+        // Below the lower bound it clamps up to the min.
+        assert(cs.resolveLength("clamp(100px, 10px, 200px)", 0) == 100,
+            "a value below clamp()'s floor must clamp up to it");
+        // Above the upper bound it clamps down to the max.
+        assert(cs.resolveLength("clamp(10px, 300px, 200px)", 0) == 200,
+            "a value above clamp()'s ceiling must clamp down to it");
+        assert(cs.resolveLength("min(10px, 20px, 30px)", 0) == 10,
+            "min() takes the smallest argument");
+        assert(cs.resolveLength("max(10px, 20px, 30px)", 0) == 30,
+            "max() takes the largest argument");
+    }
+
+    {
+        int dx = 0;
+        int dy = 0;
+        transformTranslate("translate(-50%, -50%)", 40, 20, dx, dy);
+        assert(dx == -20 && dy == -10,
+            "translate(-50%,-50%) of a 40x20 element is (-20,-10), got (" ~
+            to!string(dx) ~ "," ~ to!string(dy) ~ ")");
+        transformTranslate("translateY(-4px)", 40, 20, dx, dy);
+        assert(dx == 0 && dy == -4,
+            "translateY(-4px) is (0,-4), got (" ~ to!string(dx) ~ "," ~
+            to!string(dy) ~ ")");
+        transformTranslate("none", 40, 20, dx, dy);
+        assert(dx == 0 && dy == 0, "transform:none must not shift");
+    }
+
+    // --- adjacent vertical margins collapse to the larger one ---
+    // --- @media width queries select the right rules ---
+    // Responsive pages put their real layout in @media blocks; ignoring the
+    // condition makes every page render with only its base styles.
+    {
+        auto mrules = parseStylesheet(`
+            body { margin: 0; }
+            #mq { width: 10px; height: 10px; }
+            @media (min-width: 600px) { #mq { width: 200px; } }
+            @media (max-width: 599px) { #mq { width: 30px; } }
+        `, 800, 800);
+        auto mdoc = new Element("body");
+        auto mq = new Element("div");
+        mq.attrs["id"] = "mq";
+        mdoc.children ~= mq;
+        mdoc.elements ~= mq;
+        mq.parent = mdoc;
+        applyStylesAndLayout(mdoc, mrules, 800, 800);
+        assert(mq.box.width == 200,
+            "at 800px wide the min-width:600px rule must apply (200 expected), " ~
+            "got " ~ to!string(mq.box.width));
+        applyStylesAndLayout(mdoc, mrules, 400, 800);
+        assert(mq.box.width == 30,
+            "at 400px wide the max-width:599px rule must apply (30 expected), " ~
+            "got " ~ to!string(mq.box.width));
+    }
+
+    // CSS collapses adjoining vertical margins: a 20px bottom margin meeting a
+    // 30px top margin leaves 30px, not 50. Adding them puts extra gaps between
+    // every stacked block on a page.
+    {
+        auto vrules = parseStylesheet(`
+            body { margin: 0; width: 300px; }
+            .a { height: 10px; margin-bottom: 20px; }
+            .b { height: 10px; margin-top: 30px; }
+        `, 300, 300);
+        auto vdoc = new Element("body");
+        auto va = new Element("div");
+        va.attrs["class"] = "a";
+        auto vb = new Element("div");
+        vb.attrs["class"] = "b";
+        foreach (it; [va, vb])
+        {
+            vdoc.children ~= it;
+            vdoc.elements ~= it;
+            it.parent = vdoc;
+        }
+        applyStylesAndLayout(vdoc, vrules, 300, 300);
+        assert(va.box.y == 0,
+            "the first block starts at the top (0 expected), got " ~
+            to!string(va.box.y));
+        assert(vb.box.y == 40,
+            "collapsed margins leave 30px between the blocks (40 expected, " ~
+            "50 would be uncollapsed), got " ~ to!string(vb.box.y));
+    }
+
+    // The most common centring technique on the web is a fixed-width block with
+    // auto left/right margins; a plain block margin must indent too.
+    {
+        auto rules = parseStylesheet(`
+            body { margin: 0; width: 300px; }
+            #indent { width: 100px; margin-left: 20px; }
+            #center { width: 100px; margin-left: auto; margin-right: auto; }
+        `, 300, 300);
+        auto bdoc = new Element("body");
+        auto bind = new Element("div");
+        bind.attrs["id"] = "indent";
+        auto bcen = new Element("div");
+        bcen.attrs["id"] = "center";
+        foreach (it; [bind, bcen])
+        {
+            bdoc.children ~= it;
+            bdoc.elements ~= it;
+            it.parent = bdoc;
+        }
+        applyStylesAndLayout(bdoc, rules, 300, 300);
+        assert(bind.box.x == 20,
+            "a block's left margin must indent it (20 expected), got " ~
+            to!string(bind.box.x));
+        assert(bcen.box.x == 100,
+            "margin:0 auto must centre a fixed-width block (100 expected), got " ~
+            to!string(bcen.box.x));
+    }
+
+    // Two padded items (60 outer each = 120) centred in 300 must start at 90.
+    // Measuring the free space from content widths alone put them 20px right.
+    {
+        auto crow2 = new Element("div");
+        crow2.style.display = "flex";
+        crow2.style.justifyContent = "center";
+        Element[] cits;
+        foreach (k; 0 .. 2)
+        {
+            auto it = new Element("a");
+            it.style.display = "inline-flex";
+            it.style.width = "40px";
+            it.style.padding = "10px";
+            crow2.children ~= it;
+            crow2.elements ~= it;
+            it.parent = crow2;
+            cits ~= it;
+        }
+        auto cf = FlowContext();
+        cf.x = 0;
+        cf.y = 0;
+        cf.width = 300;
+        cf.height = 60;
+        cf.lineEnd = 300;
+        layoutFlex(crow2, cf, null);
+        assert(cits[0].box.x == 90,
+            "centred padded items must start at 90 (outer sizes), got " ~
+            to!string(cits[0].box.x));
+        assert(cits[1].box.x == 150,
+            "the second centred item belongs at 150, got " ~
+            to!string(cits[1].box.x));
+    }
+
+    // box.width is the content box, so the next item must start after the
+    // item's content plus its padding and border. Counting only the content
+    // width would overlap every padded item - toolbar buttons, pills, cards.
+    {
+        auto prow2 = new Element("div");
+        // inline-flex with auto width also proves the container's own width
+        // counts the items' outer sizes.
+        prow2.style.display = "inline-flex";
+        auto pa2 = new Element("a");
+        pa2.style.display = "inline-flex";
+        pa2.style.width = "40px";
+        pa2.style.padding = "10px";
+        pa2.style.border = "5px solid #000";
+        auto pb2 = new Element("a");
+        pb2.style.display = "inline-flex";
+        pb2.style.width = "40px";
+        foreach (it; [pa2, pb2])
+        {
+            prow2.children ~= it;
+            prow2.elements ~= it;
+            it.parent = prow2;
+        }
+        auto pf3 = FlowContext();
+        pf3.x = 0;
+        pf3.y = 0;
+        pf3.width = 400;
+        pf3.height = 60;
+        pf3.lineEnd = 400;
+        layoutFlex(prow2, pf3, null);
+        // 40 content + 20 padding + 10 border = 70 outer.
+        assert(pb2.box.x >= 70,
+            "the next item must start after the previous item's outer size " ~
+            "(70 expected), got " ~ to!string(pb2.box.x));
+        assert(prow2.box.width >= 110,
+            "an auto-width container must span the items' outer sizes " ~
+            "(110 expected), got " ~ to!string(prow2.box.width));
+    }
+
+    // --- overflowing content stays inside the container (overflow-safe) ---
+    // A row whose items are wider than its content box must not start to the
+    // LEFT of that box: browsers align the content inside. A real page's nav
+    // link was placed 24px left of its container and clipped its neighbour.
+    {
+        auto orow2 = new Element("div");
+        orow2.style.display = "flex";
+        orow2.style.justifyContent = "center";
+        auto o1b = new Element("a");
+        o1b.style.display = "inline-flex";
+        o1b.style.width = "120px";
+        auto o2b = new Element("a");
+        o2b.style.display = "inline-flex";
+        o2b.style.width = "120px";
+        foreach (it; [o1b, o2b])
+        {
+            orow2.children ~= it;
+            orow2.elements ~= it;
+            it.parent = orow2;
+        }
+        auto oflow = FlowContext();
+        oflow.x = 0;
+        oflow.y = 0;
+        oflow.width = 200; // 240 of content in a 200 box: overflows
+        oflow.height = 60;
+        oflow.lineEnd = 200;
+        layoutFlex(orow2, oflow, null);
+        assert(o1b.box.x == 0,
+            "overflowing centred content must start at the content box, got " ~
+            to!string(o1b.box.x));
+    }
+
+    // With justify-content:center the items' x depends on the container width.
+    // A box left over from a wider pass (instead of being reassigned) is exactly
+    // how a real page's nav link kept an x from an earlier pass and clipped its
+    // neighbour.
+    {
+        auto crow = new Element("div");
+        crow.style.display = "flex";
+        crow.style.justifyContent = "center";
+        auto c1 = new Element("a");
+        c1.style.display = "inline-flex";
+        c1.style.width = "40px";
+        auto c2 = new Element("a");
+        c2.style.display = "inline-flex";
+        c2.style.width = "40px";
+        foreach (it; [c1, c2])
+        {
+            crow.children ~= it;
+            crow.elements ~= it;
+            it.parent = crow;
+        }
+        auto wide = FlowContext();
+        wide.x = 0;
+        wide.y = 0;
+        wide.width = 500;
+        wide.height = 60;
+        wide.lineEnd = 500;
+        layoutFlex(crow, wide, null);
+        // 500 - 80 = 420 free, centred: first item at 210.
+        assert(c1.box.x == 210,
+            "centred first item should be at 210, got " ~ to!string(c1.box.x));
+        // Re-lay narrower: 200 - 80 = 120 free, so the first item must move left.
+        auto narrow2 = FlowContext();
+        narrow2.x = 0;
+        narrow2.y = 0;
+        narrow2.width = 200;
+        narrow2.height = 60;
+        narrow2.lineEnd = 200;
+        layoutFlex(crow, narrow2, null);
+        assert(c1.box.x == 60,
+            "a re-layout must reassign positions (60 expected), got " ~
+            to!string(c1.box.x));
+        // Centre packs the items together (no extra gaps): c2 follows c1.
+        assert(c2.box.x == 100,
+            "the second item must be reassigned too (100 expected), got " ~
+            to!string(c2.box.x));
+    }
+
+    // CSS puts the item's border box at cursor + margin-left and advances the
+    // cursor by the item's outer size (width + margins). Ignoring that made
+    // margined items sit too far left and overlap their neighbour - the nav's
+    // "Home" link ended up on top of "Contact".
+    {
+        auto mrow = new Element("div");
+        mrow.style.display = "flex";
+        auto ma = new Element("div");
+        ma.style.width = "50px";
+        ma.style.marginLeft = "20px";
+        auto mb = new Element("div");
+        mb.style.width = "50px";
+        mb.style.marginLeft = "10px";
+        foreach (it; [ma, mb])
+        {
+            mrow.children ~= it;
+            mrow.elements ~= it;
+            it.parent = mrow;
+        }
+        auto mf = FlowContext();
+        mf.x = 0;
+        mf.y = 0;
+        mf.width = 300;
+        mf.height = 60;
+        mf.lineEnd = 300;
+        layoutFlex(mrow, mf, null);
+        assert(ma.box.x == 20,
+            "the first item's border box starts after its left margin, got " ~
+            to!string(ma.box.x));
+        assert(mb.box.x == 80,
+            "the next item starts after the previous item's outer size, got " ~
+            to!string(mb.box.x));
+    }
+
+    // The same tree laid out twice at different available widths must end
+    // consistent: every item's contents stay inside it and items never overlap.
+    // On a real page a child link kept the x from a stale pass while its
+    // container had moved, so it clipped its neighbour.
+    {
+        auto prow = new Element("div");
+        prow.style.display = "flex";
+        auto pa = new Element("div");
+        pa.style.width = "100px";
+        auto pb = new Element("div");
+        pb.style.display = "inline-flex"; // auto width: sizes to its content
+        auto pbChild = new Element("span");
+        pbChild.style.width = "150px";
+        pb.children ~= pbChild;
+        pb.elements ~= pbChild;
+        pbChild.parent = pb;
+        auto pc = new Element("div");
+        pc.style.width = "50px";
+        foreach (it; [pa, pb, pc])
+        {
+            prow.children ~= it;
+            prow.elements ~= it;
+            it.parent = prow;
+        }
+        // First pass: plenty of room.
+        auto pf1 = FlowContext();
+        pf1.x = 0;
+        pf1.y = 0;
+        pf1.width = 400;
+        pf1.height = 60;
+        pf1.lineEnd = 400;
+        layoutFlex(prow, pf1, null);
+        // Second pass: tighter, which moves every item.
+        auto pf2 = FlowContext();
+        pf2.x = 0;
+        pf2.y = 0;
+        pf2.width = 300;
+        pf2.height = 60;
+        pf2.lineEnd = 300;
+        layoutFlex(prow, pf2, null);
+        assert(pbChild.box.x >= pb.box.x,
+            "a child must not sit behind its container after relayout: child=" ~
+            to!string(pbChild.box.x) ~ " container=" ~ to!string(pb.box.x));
+        assert(pc.box.x >= pb.box.x + pb.box.width,
+            "following items must sit after the container's actual box: pb=" ~
+            to!string(pb.box.x) ~ "+" ~ to!string(pb.box.width) ~ " pc=" ~
+            to!string(pc.box.x));
+    }
+
+    // An inline-flex item with auto width sizes to its content during its own
+    // layout, which can exceed the pre-layout estimate. Following items must sit
+    // after the real box, or they overlap (a real page's social row did).
+    {
+        auto orow = new Element("div");
+        orow.style.display = "flex";
+        auto o1 = new Element("div");
+        o1.style.display = "inline-flex";
+        auto innerChild = new Element("span");
+        innerChild.style.width = "60px";
+        o1.children ~= innerChild;
+        o1.elements ~= innerChild;
+        innerChild.parent = o1;
+        auto o2 = new Element("div");
+        o2.style.width = "20px";
+        orow.children ~= o1;
+        orow.elements ~= o1;
+        o1.parent = orow;
+        orow.children ~= o2;
+        orow.elements ~= o2;
+        o2.parent = orow;
+        auto of = FlowContext();
+        of.x = 0;
+        of.y = 0;
+        of.width = 300;
+        of.height = 60;
+        of.lineEnd = 300;
+        layoutFlex(orow, of, null);
+        assert(o2.box.x >= o1.box.x + o1.box.width,
+            "a following item must sit after the previous item's actual box: o1=" ~
+            to!string(o1.box.x) ~ "+" ~ to!string(o1.box.width) ~ " o2=" ~
+            to!string(o2.box.x));
+    }
+
+    // A hidden sibling must not take a flex slot or contribute width.
+    {
+        auto hrow = new Element("div");
+        hrow.style.display = "inline-flex";
+        auto h1 = new Element("span");
+        h1.style.width = "20px";
+        auto h2 = new Element("span");
+        h2.style.display = "none";
+        h2.style.width = "40px";
+        auto h3 = new Element("span");
+        h3.style.width = "20px";
+        foreach (it; [h1, h2, h3])
+        {
+            hrow.children ~= it;
+            hrow.elements ~= it;
+            it.parent = hrow;
+        }
+        auto hf = FlowContext();
+        hf.x = 0;
+        hf.y = 0;
+        hf.width = 300;
+        hf.height = 60;
+        hf.lineEnd = 300;
+        layoutFlex(hrow, hf, null);
+        assert(hrow.box.width <= 45,
+            "a display:none child must not widen an inline-flex container, got " ~
+            hrow.box.width.to!string);
+        assert(h3.box.x == 20,
+            "visible siblings must pack together, third item at " ~
+            to!string(h3.box.x));
+    }
+
+    // Three 20px items in a 200px row: 140px free, split into two 70px gaps, so
+    // the items sit at 0, 90 and 180 with the last flush to the right edge. The
+    // parser accepted space-between without ever applying it, which packed every
+    // navbar, toolbar and card row to the left.
+    {
+        auto srow = new Element("div");
+        srow.style.display = "flex";
+        srow.style.justifyContent = "space-between";
+        Element[] three;
+        foreach (k; 0 .. 3)
+        {
+            auto it = new Element("span");
+            it.style.width = "20px";
+            srow.children ~= it;
+            srow.elements ~= it;
+            it.parent = srow;
+            three ~= it;
+        }
+        auto sf = FlowContext();
+        sf.x = 0;
+        sf.y = 0;
+        sf.width = 200;
+        sf.height = 50;
+        sf.lineEnd = 200;
+        layoutFlex(srow, sf, null);
+        assert(three[0].box.x == 0,
+            "space-between keeps the first item at the start, got " ~
+            to!string(three[0].box.x));
+        assert(three[1].box.x == 90,
+            "space-between centres the middle item, got " ~
+            to!string(three[1].box.x));
+        assert(three[2].box.x == 180,
+            "space-between puts the last item flush right, got " ~
+            to!string(three[2].box.x));
+    }
+
+    // Each auto margin gets free_space / number_of_auto_margins. Handing every
+    // auto item the whole leftover moved later items twice, so a real page's nav
+    // put "Home" on top of "Contact".
+    {
+        auto row = new Element("div");
+        row.style.display = "flex";
+        auto a1 = new Element("a");
+        a1.style.marginLeft = "auto";
+        a1.style.width = "20px";
+        auto a2 = new Element("a");
+        a2.style.marginLeft = "auto";
+        a2.style.width = "20px";
+        a2.children ~= new TextNode(a2, "Hi");
+        // A non-inline child must travel with the item too: the engine's
+        // inline-only helper left block children behind, so a real nav's links
+        // (inside a flex row) ended up overlapping their neighbour.
+        auto inner = new Element("div");
+        inner.style.display = "block";
+        a2.children ~= inner;
+        a2.elements ~= inner;
+        inner.parent = a2;
+        row.children ~= a1;
+        row.elements ~= a1;
+        a1.parent = row;
+        row.children ~= a2;
+        row.elements ~= a2;
+        a2.parent = row;
+        auto rf2 = FlowContext();
+        rf2.x = 0;
+        rf2.y = 0;
+        rf2.width = 300;
+        rf2.height = 60;
+        rf2.lineEnd = 300;
+        layoutFlex(row, rf2, null);
+        assert(a2.box.x >= a1.box.x + a1.box.width,
+            "auto-margined siblings must not overlap: a1=" ~
+            to!string(a1.box.x) ~ " w=" ~ to!string(a1.box.width) ~
+            " a2=" ~ to!string(a2.box.x));
+        // A shifted item carries its children: the text must stay inside it.
+        auto tn2 = cast(TextNode) a2.children[0];
+        assert(tn2 !is null && tn2.layoutX >= a2.box.x,
+            "a shifted flex item must carry its text: text=" ~
+            (tn2 is null ? "null".dup : to!string(tn2.layoutX)) ~
+            " box=" ~ to!string(a2.box.x));
+        assert(inner.box.x >= a2.box.x,
+            "a shifted item must carry a block child: inner=" ~
+            to!string(inner.box.x) ~ " box=" ~ to!string(a2.box.x));
+    }
+
+    // `<button>Label</button>` must be as tall as its text: with no flex items
+    // maxChildHeight stayed 0, so the box collapsed to zero height and the
+    // text overflowed it with no hit area.
+    {
+        auto btn = new Element("button");
+        btn.style.display = "inline-flex";
+        auto tn = new TextNode(btn, "Public");
+        btn.children ~= tn;
+        auto bf = FlowContext();
+        bf.x = 0;
+        bf.y = 0;
+        bf.width = 200;
+        bf.height = 200;
+        bf.lineEnd = 200;
+        layoutFlex(btn, bf, null);
+        assert(btn.box.height > 8,
+            "an inline-flex button must be as tall as its text, got " ~
+            btn.box.height.to!string);
+    }
+
+
 
     // --- z-index parse ---
     {

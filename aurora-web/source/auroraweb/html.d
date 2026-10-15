@@ -28,6 +28,34 @@ import std.ascii : isAlpha, isDigit, isHexDigit, isWhite;
 import std.conv : to;
 import std.string : indexOf, lastIndexOf, split, strip, toLower;
 
+unittest
+{
+    // HTML whitespace includes newlines and tabs, and real pages wrap long
+    // attribute lists onto following lines. The tag name used to be taken as
+    // everything before the first SPACE (and std.ascii.isWhite ignores newlines),
+    // so a wrapped tag parsed as `"img\n\t\t\t\t\tsrc=\"a.png\"..."` - matching
+    // none of its own rules. That is how a real page's lead image silently
+    // disappeared and its box styling never applied.
+    auto root = parseHtml(
+        "<div>\n\t<img\n\t\tsrc=\"a.png\"\n\t\talt=\"A\"\n\t>\n\t<p>hi</p>\n</div>");
+    Element img = null;
+    Element para = null;
+    void visit(Element e)
+    {
+        if (e is null) return;
+        if (e.tag == "img") img = e;
+        if (e.tag == "p") para = e;
+        foreach (c; e.elements) visit(c);
+    }
+    visit(root);
+    assert(img !is null,
+        "a tag whose attributes wrap onto the next line must still parse as <img>");
+    assert(img.attrs["src"] == "a.png",
+        "its src must be exactly the URL, got '" ~ img.attrs["src"] ~ "'");
+    assert(para !is null,
+        "the element after a wrapped tag must survive parsing too");
+}
+
 /// Void elements never have a closing tag.
 private immutable string[] voidElements = [
     "area", "base", "br", "col", "embed", "hr", "img", "input",
@@ -156,7 +184,8 @@ Token[] tokenize(string input)
                 if (end >= 0)
                 {
                     auto tagText = input[i + 1 .. end].strip();
-                    auto firstWord = tagText.length ? tagText.split(' ')[0].toLower() : "";
+                    auto firstWord = tagText.length
+                        ? firstTagWord(tagText).toLower() : "";
                     if (firstWord.length && canFindRaw(rawTextElements, firstWord))
                     {
                         flushText();
@@ -189,7 +218,7 @@ Token[] tokenize(string input)
                 const trimmed = inner.strip();
                 if (trimmed.length)
                 {
-                    auto tagName = trimmed.split(' ')[0].toLower();
+                    auto tagName = firstTagWord(trimmed).toLower();
                     bool selfClosing = false;
                     if (tagName.length && tagName[$ - 1] == '/')
                     {
@@ -240,28 +269,47 @@ private bool autoClosesSelf(string tag)
 }
 
 /// Parse the attribute part of an open tag ("name=value name2='v'").
+/// HTML whitespace: space, tab, newline, carriage return and form feed.
+/// `std.ascii.isWhite` only covers space and tab, so a tag whose attributes
+/// wrapped onto the next line kept its newline and everything after it inside
+/// the tag name (`"img\n\t\t\t\t\t\tsrc=\"a.png\"..."`), and that element then
+/// matched none of its own rules - its images never loaded and its box styling
+/// never applied. Splitting the tag name on a space had the same flaw.
+private bool isMarkupWhite(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
+/// The tag name: everything up to the first HTML whitespace character.
+private string firstTagWord(string tagText)
+{
+    size_t i = 0;
+    while (i < tagText.length && !isMarkupWhite(tagText[i])) ++i;
+    return tagText[0 .. i];
+}
+
 private AttrMap parseAttrs(string inner)
 {
     AttrMap attrs;
     size_t i = 0;
     const n = inner.length;
     // Skip tag name
-    while (i < n && !isWhite(inner[i])) i++;
+    while (i < n && !isMarkupWhite(inner[i])) i++;
     while (i < n)
     {
-        while (i < n && isWhite(inner[i])) i++;
+        while (i < n && isMarkupWhite(inner[i])) i++;
         if (i >= n) break;
         // Attribute name
         auto nameStart = i;
-        while (i < n && !isWhite(inner[i]) && inner[i] != '=' && inner[i] != '>') i++;
+        while (i < n && !isMarkupWhite(inner[i]) && inner[i] != '=' && inner[i] != '>') i++;
         auto name = inner[nameStart .. i].toLower();
         if (!name.length) { i++; continue; }
-        while (i < n && isWhite(inner[i])) i++;
+        while (i < n && isMarkupWhite(inner[i])) i++;
         string value = "";
         if (i < n && inner[i] == '=')
         {
             i++;
-            while (i < n && isWhite(inner[i])) i++;
+            while (i < n && isMarkupWhite(inner[i])) i++;
             if (i < n && (inner[i] == '"' || inner[i] == '\''))
             {
                 auto quote = inner[i];
@@ -274,7 +322,7 @@ private AttrMap parseAttrs(string inner)
             else
             {
                 auto valueStart = i;
-                while (i < n && !isWhite(inner[i]) && inner[i] != '>') i++;
+                while (i < n && !isMarkupWhite(inner[i]) && inner[i] != '>') i++;
                 value = inner[valueStart .. i];
             }
         }
