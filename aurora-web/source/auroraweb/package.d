@@ -26,7 +26,8 @@ import auroraweb.html : parseHtml;
 import auroraweb.js : JsRuntime, JsValue, JsKind, JsScope, Node, parseScript;
 import auroraweb.layout : applyStylesAndLayout;
 import auroraweb.net : HttpResponse, httpFetch, resolveUrl;
-import auroraweb.paint : paintTree, fillCanvasBackground;
+import auroraweb.paint : paintTree, fillCanvasBackground, canvasBackgroundColor,
+    bodyPaintsBackground;
 
 import std.string : indexOf, lastIndexOf, strip, startsWith, toLower;
 
@@ -44,6 +45,7 @@ final class WebPage
     bool _layoutDirty = true;   /// Document/style/viewport changed since last layout.
     int _laidOutWidth = -1;     /// Viewport width used by the most recent layout.
     int _laidOutHeight = -1;    /// Viewport height used by the most recent layout.
+    int _layoutGen;             /// Bumped on every completed layout.
     /// Resource loader callback: given a URL, return the raw bytes or null.
     /// Used for both <img> decoding and `fetchText`/`fetchBytes`/`fetch`.
     ubyte[] delegate(string url) @safe _resourceLoader;
@@ -365,7 +367,13 @@ final class WebPage
         _laidOutWidth = _width;
         _laidOutHeight = _height;
         _layoutDirty = false;
+        ++_layoutGen;
     }
+
+    /// Monotonic counter bumped on each completed layout, so hosts can cache
+    /// layout-derived values (content height, scroll metrics) per layout instead
+    /// of recomputing them every frame.
+    int layoutGeneration() const { return _layoutGen; }
 
     /// Lay out only when the document, style or viewport changed since the last
     /// layout. Paint calls this so an unchanged frame does no layout work.
@@ -470,6 +478,13 @@ final class WebPage
              (inner[0] == '\'' && inner[$ - 1] == '\'')))
             inner = inner[1 .. $ - 1];
         return inner.strip();
+    }
+
+    /// Whether the page paints its own canvas background, so the host can skip
+    /// clearing to its default color first (that clear is fully overwritten).
+    bool hasCanvasBackground()
+    {
+        return bodyPaintsBackground(_root);
     }
 
     /// Paint the document into a canvas at the given offset.

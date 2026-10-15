@@ -36,7 +36,29 @@ import std.math : abs;
 /// background". Without this, a dark page body would sit on a white canvas.
 void fillCanvasBackground(Canvas canvas, Element root, int width, int height)
 {
-    if (root is null) return;
+    _canvasBg = canvasBackgroundColor(root);
+    if (!_canvasBg.present) return;
+    // Fill the VISIBLE clip (mapped back to this canvas's local coordinates)
+    // rather than a page-anchored (0,0,w,h): the page-anchored rect leaves the
+    // lower viewport uncovered once the canvas is scrolled. The surface clips
+    // the fill, so the cost is exactly the visible area.
+    const clip = canvas.clipRect();
+    const off = canvas.toSurface(Point(0, 0));
+    canvas.fillRect(Rect(clip.x - off.x, clip.y - off.y, clip.width, clip.height),
+        _canvasBg.color);
+}
+
+/// The color painted across the canvas by `fillCanvasBackground`, so
+/// `paintElement` does not paint the very same color again on the `<body>` box
+/// (which would double that full-viewport fill every frame).
+private NullableColor _canvasBg;
+
+/// The color the page paints across its canvas: the `<body>` background, else
+/// the root element's. `present` is false when neither declares a paintable
+/// background — then the host's own default clear shows through.
+NullableColor canvasBackgroundColor(Element root)
+{
+    if (root is null) return NullableColor.init;
     Element bgEl = null;
     foreach (e; root.elements)
         if (e.tag == "body")
@@ -46,10 +68,22 @@ void fillCanvasBackground(Canvas canvas, Element root, int width, int height)
         }
     auto value = (bgEl !is null) ? bgEl.style.background : "";
     if (value.length == 0) value = root.style.background;
-    if (value.length == 0) return;
-    auto bg = parseColor(value);
-    if (bg.present)
-        canvas.fillRect(Rect(0, 0, width, height), bg.color);
+    if (value.length == 0) return NullableColor.init;
+    return parseColor(value);
+}
+
+/// Whether the `<body>` element itself paints a background. The body's box spans
+/// the whole document, so its own fill covers the viewport at any scroll — which
+/// makes it safe for the host to skip its default clear. (The viewport-sized
+/// canvas-background fill only covers the top of the document, so it alone is
+/// not sufficient when scrolled.)
+bool bodyPaintsBackground(Element root)
+{
+    if (root is null) return false;
+    foreach (e; root.elements)
+        if (e.tag == "body")
+            return parseColor(e.style.background).present;
+    return false;
 }
 
 /// Paint a full tree into a surface's canvas.
@@ -78,50 +112,76 @@ private void paintElement(Element element, Canvas canvas)
     const borderH = contentH + element.box.paddingTop + element.box.paddingBottom +
         element.box.borderTop + element.box.borderBottom;
 
-    // box-shadow: a semi-transparent copy of the box offset by (H,V), painted
-    // BEHIND the element so its corners round like the box they come from.
-    paintShadow(element, canvas, absX, absY, borderW, borderH);
-
-    const radius = roundedRadius(element, borderW, borderH);
-
-    // Background over the padding/border box (rounded corners when radius > 0).
     // `background-clip: text` (gradient text) does NOT paint the box — the
     // background becomes the glyph fill, so skip the box fill and paint the
     // text in the background color instead.
-    const bool textClip = element.style.backgroundClip.strip().toLower() == "text";
-    const bg = parseColor(element.style.background);
-    if (bg.present && !textClip)
-    {
-        if (radius > 0)
-            canvas.fillRoundedRect(Rect(absX, absY, borderW, borderH), radius,
-                withOpacity(bg.color, element.style.opacity));
-        else
-            canvas.fillRect(Rect(absX, absY, borderW, borderH),
-                withOpacity(bg.color, element.style.opacity));
-    }
+    const bool textClip = element.style.backgroundClip == "text";
 
-    // CSS background-image (drawn over the solid background color).
-    auto bgImage = cast(RgbaImage) element.backgroundImage;
-    if (bgImage !is null)
-    {
-        auto dst = backgroundDestRect(element, bgImage);
-        if (dst.width > 0 && dst.height > 0)
-            canvas.drawImage(dst, bgImage);
-    }
+    // Viewport culling: if the border box lies entirely outside the current
+    // clip, none of this element's own fills/border/text can be visible, so
+    // skip them. Children are still walked — a positioned descendant may
+    // overflow this box and still land inside the clip.
+    //
+    // `clipRect()` is in SURFACE coordinates, while element boxes are in the
+    // canvas's local coordinates, so map the box through `toSurface` first —
+    // otherwise a scrolled/offset canvas would cull visible elements.
+    const clip = canvas.clipRect();
+    const tl = canvas.toSurface(Point(absX, absY));
+    const br = canvas.toSurface(Point(absX + borderW, absY + borderH));
+    const bool selfVisible =
+        tl.x < clip.x + clip.width && tl.y < clip.y + clip.height &&
+        br.x > clip.x && br.y > clip.y;
 
-    // Border: draw per-side around the border box.
-    const bColor = withOpacity(parseColorOrDefault(element.style.borderColor,
-        Color.rgb(0, 0, 0)), element.style.opacity);
-    if (element.box.borderTop > 0)
-        canvas.fillRect(Rect(absX, absY, borderW, element.box.borderTop), bColor);
-    if (element.box.borderBottom > 0)
-        canvas.fillRect(Rect(absX, absY + borderH - element.box.borderBottom,
-            borderW, element.box.borderBottom), bColor);
-    if (element.box.borderLeft > 0)
-        canvas.fillRect(Rect(absX, absY, element.box.borderLeft, borderH), bColor);
-    if (element.box.borderRight > 0)
-        canvas.fillRect(Rect(absX + borderW - element.box.borderRight, absY,
-            element.box.borderRight, borderH), bColor);
+    if (selfVisible)
+    {
+        // box-shadow: a semi-transparent copy of the box offset by (H,V),
+        // painted BEHIND the element so its corners round like the box.
+        paintShadow(element, canvas, absX, absY, borderW, borderH);
+
+        const radius = roundedRadius(element, borderW, borderH);
+
+        // Background over the padding/border box (rounded corners if radius>0).
+        const bg = parseColor(element.style.background);
+        // The `<body>` background was already propagated to the canvas by
+        // `fillCanvasBackground`; painting it again here is a redundant
+        // full-viewport fill of the identical color.
+        const bool redundantCanvasBg = element.tag == "body" && bg.present &&
+            _canvasBg.present && bg.color.r == _canvasBg.color.r &&
+            bg.color.g == _canvasBg.color.g && bg.color.b == _canvasBg.color.b &&
+            bg.color.a == _canvasBg.color.a;
+        if (bg.present && !textClip && !redundantCanvasBg)
+        {
+            if (radius > 0)
+                canvas.fillRoundedRect(Rect(absX, absY, borderW, borderH), radius,
+                    withOpacity(bg.color, element.style.opacity));
+            else
+                canvas.fillRect(Rect(absX, absY, borderW, borderH),
+                    withOpacity(bg.color, element.style.opacity));
+        }
+
+        // CSS background-image (drawn over the solid background color).
+        auto bgImage = cast(RgbaImage) element.backgroundImage;
+        if (bgImage !is null)
+        {
+            auto dst = backgroundDestRect(element, bgImage);
+            if (dst.width > 0 && dst.height > 0)
+                canvas.drawImage(dst, bgImage);
+        }
+
+        // Border: draw per-side around the border box.
+        const bColor = withOpacity(parseColorOrDefault(element.style.borderColor,
+            Color.rgb(0, 0, 0)), element.style.opacity);
+        if (element.box.borderTop > 0)
+            canvas.fillRect(Rect(absX, absY, borderW, element.box.borderTop), bColor);
+        if (element.box.borderBottom > 0)
+            canvas.fillRect(Rect(absX, absY + borderH - element.box.borderBottom,
+                borderW, element.box.borderBottom), bColor);
+        if (element.box.borderLeft > 0)
+            canvas.fillRect(Rect(absX, absY, element.box.borderLeft, borderH), bColor);
+        if (element.box.borderRight > 0)
+            canvas.fillRect(Rect(absX + borderW - element.box.borderRight, absY,
+                element.box.borderRight, borderH), bColor);
+    }
 
     // The content box: inside the border and padding.
     const innerX = absX + element.box.borderLeft + element.box.paddingLeft;
@@ -132,7 +192,8 @@ private void paintElement(Element element, Canvas canvas)
     // overflow: hidden/scroll/auto — clip the content (text, inline runs, and
     // every descendant box) to this element's content box so children that
     // overflow the parent are not painted outside it.
-    const overflowValue = element.style.overflow.strip().toLower();
+    // Already normalized at storage time, so no per-frame strip/lower.
+    const overflowValue = element.style.overflow;
     const clipsChildren = overflowValue == "hidden" || overflowValue == "scroll" ||
         overflowValue == "auto";
     Canvas contentCanvas = canvas;
@@ -141,7 +202,7 @@ private void paintElement(Element element, Canvas canvas)
 
     // display:list-item — draw a small filled bullet OUTSIDE the content edge
     // (in the list's left padding/marker area) so it never sits on the text.
-    if (element.style.display == "list-item")
+    if (selfVisible && element.style.display == "list-item")
     {
         auto bulletColor = parseColorOrDefault(element.style.color, Color.rgb(0, 0, 0));
         const int bulletR = 3;
@@ -152,7 +213,7 @@ private void paintElement(Element element, Canvas canvas)
     }
 
     // Text children inline — use layout-assigned positions (absolute).
-    if (element.tag != "img" && element.tag != "input")
+    if (selfVisible && element.tag != "img" && element.tag != "input")
     {
         foreach (child; element.children)
         {
@@ -167,7 +228,7 @@ private void paintElement(Element element, Canvas canvas)
     }
 
     // Image element (painted inside the content box).
-    if (element.tag == "img" && contentW > 0 && contentH > 0)
+    if (selfVisible && element.tag == "img" && contentW > 0 && contentH > 0)
     {
         auto image = cast(RgbaImage) element.image;
         if (image !is null)
@@ -181,7 +242,7 @@ private void paintElement(Element element, Canvas canvas)
     }
 
     // hr
-    if (element.tag == "hr" && contentH > 0)
+    if (selfVisible && element.tag == "hr" && contentH > 0)
     {
         contentCanvas.drawLine(Point(innerX, innerY + contentH / 2),
             Point(innerX + contentW, innerY + contentH / 2),
@@ -194,22 +255,34 @@ private void paintElement(Element element, Canvas canvas)
         element.style.display != "inline-block" &&
         element.style.display != "inline-flex")
     {
-        Element[] normal;
-        Element[] positioned;
+        // Common case: no positioned children — paint in document order without
+        // allocating the two temporary arrays on every element every frame.
+        bool anyPositioned = false;
         foreach (child; element.elements)
+            if (child.style.isPositioned()) { anyPositioned = true; break; }
+        if (!anyPositioned)
         {
-            auto childStyle = child.style;
-            if (childStyle.isPositioned())
-                positioned ~= child;
-            else
-                normal ~= child;
+            foreach (child; element.elements)
+                paintElement(child, contentCanvas);
         }
-        if (positioned.length > 1)
-            positioned.sort!(q{ a.style.zIndex < b.style.zIndex })();
-        foreach (child; normal)
-            paintElement(child, contentCanvas);
-        foreach (child; positioned)
-            paintElement(child, contentCanvas);
+        else
+        {
+            Element[] normal;
+            Element[] positioned;
+            foreach (child; element.elements)
+            {
+                if (child.style.isPositioned())
+                    positioned ~= child;
+                else
+                    normal ~= child;
+            }
+            if (positioned.length > 1)
+                positioned.sort!(q{ a.style.zIndex < b.style.zIndex })();
+            foreach (child; normal)
+                paintElement(child, contentCanvas);
+            foreach (child; positioned)
+                paintElement(child, contentCanvas);
+        }
     }
     else
     {
@@ -380,20 +453,34 @@ private int roundedRadius(Element element, int width, int height)
     import auroraweb.dom : cssInt;
     const s = element.style.borderRadius.strip();
     if (s.length == 0 || s == "0") return 0;
-    auto parts = s.split();
-    int r = 0;
-    foreach (part; parts)
+    // The token parse depends only on the string; memoize it and apply the
+    // percentage against the current box size.
+    RadiusTok[] toks;
+    if (auto hit = s in _radiusCache) toks = *hit;
+    else
     {
-        auto t = part.strip();
-        if (t.length >= 2 && t[$ - 2 .. $] == "px")
-            r = max(r, cssInt(t[0 .. $ - 2].strip()));
-        else if (t.length >= 1 && t[$ - 1] == '%')
-            r = max(r, (min(width, height) * cssInt(t[0 .. $ - 1].strip())) / 100);
-        else
-            r = max(r, cssInt(t));
+        foreach (part; s.split())
+        {
+            auto t = part.strip();
+            if (t.length >= 2 && t[$ - 2 .. $] == "px")
+                toks ~= RadiusTok(cssInt(t[0 .. $ - 2].strip()), false);
+            else if (t.length >= 1 && t[$ - 1] == '%')
+                toks ~= RadiusTok(cssInt(t[0 .. $ - 1].strip()), true);
+            else
+                toks ~= RadiusTok(cssInt(t), false);
+        }
+        if (_radiusCache.length >= MaxPaintCache) _radiusCache = null;
+        _radiusCache[s] = toks;
     }
+    int r = 0;
+    foreach (t; toks)
+        r = max(r, t.percent ? (min(width, height) * t.value) / 100 : t.value);
     return r;
 }
+
+/// One parsed `border-radius` token (px value, or a percentage flag).
+private struct RadiusTok { int value; bool percent; }
+private RadiusTok[][string] _radiusCache;
 
 /// Scale a color's alpha by the element's opacity (0..1).
 private Color withOpacity(Color c, double opacity)
@@ -436,7 +523,7 @@ private void paintShadow(Element element, Canvas canvas,
     }
 }
 
-private struct NullableColor
+struct NullableColor
 {
     Color color;
     bool present;
@@ -445,6 +532,21 @@ private struct NullableColor
 private NullableColor parseColor(string value)
 {
     if (value.length == 0 || value == "transparent") return NullableColor.init;
+    // Memoized: paint parses the same style strings (background, border, color,
+    // shadow) for every element on every frame.
+    if (auto hit = value in _colorCache) return *hit;
+    auto result = parseColorUncached(value);
+    if (_colorCache.length >= MaxPaintCache) _colorCache = null;
+    _colorCache[value] = result;
+    return result;
+}
+
+/// Parsed-color cache keyed by the raw CSS string. Bounded; cleared when full.
+private NullableColor[string] _colorCache;
+private enum size_t MaxPaintCache = 4096;
+
+private NullableColor parseColorUncached(string value)
+{
     const v = value.strip().toLower();
     if (v[0] == '#')
     {

@@ -225,15 +225,30 @@ private void resolveStylesInto(Element element, in Rule[] rules, int viewportWid
     int rootFontPx = 16)
 {
     auto cascade = cascadeFor(element, rules);
-    string[string] custom = inheritedCustom.dup;
+    // Custom properties: inherit the parent's (already-settled) map and only
+    // copy + settle when THIS element actually declares one. The previous code
+    // duplicated the whole map and re-ran the 3-pass `var()` settling for every
+    // element on every layout, which dominated style resolution on large pages.
+    string[string] custom = inheritedCustom;
+    bool addedCustom = false;
     foreach (prop, val; cascade)
         if (prop.length > 2 && prop[0] == '-' && prop[1] == '-')
+        {
+            if (!addedCustom)
+            {
+                custom = inheritedCustom.dup;
+                addedCustom = true;
+            }
             custom[prop] = val;
-    // Settle nested `var()` references between custom properties.
-    auto keys = custom.keys;
-    foreach (pass; 0 .. 3)
-        foreach (k; keys)
-            custom[k] = resolveVars(custom[k], custom, 0);
+        }
+    if (addedCustom)
+    {
+        // Settle nested `var()` references between custom properties.
+        auto keys = custom.keys;
+        foreach (pass; 0 .. 3)
+            foreach (k; keys)
+                custom[k] = resolveVars(custom[k], custom, 0);
+    }
 
     element.style = computedStyle(element, rules, cascade, custom);
     element.style.viewportWidth = viewportWidth;
@@ -706,8 +721,12 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "font-style": style.fontStyle = value; break;
         case "font-family": style.fontFamily = value; break;
         case "text-align": style.textAlign = value; break;
-        case "white-space": style.whiteSpace = value; break;
-        case "background-clip": style.backgroundClip = value; break;
+        // Keyword-valued properties are normalized once here (trim + lower) so
+        // the paint/layout hot paths compare strings without allocating.
+        case "white-space": style.whiteSpace = value.strip().toLower(); break;
+        case "background-clip":
+            style.backgroundClip = value.strip().toLower();
+            break;
         case "width": style.width = value; break;
         case "height": style.height = value; break;
         case "min-width": style.minWidth = value; break;
@@ -749,7 +768,7 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "clear": if (value == "left" || value == "right" || value == "both" || value == "none")
             style.clear = value; break;
         case "visibility": style.visibility = value; break;
-        case "overflow": style.overflow = value; break;
+        case "overflow": style.overflow = value.strip().toLower(); break;
         case "flex":
             // flex: <grow> <shrink> <basis> — use grow.
             {

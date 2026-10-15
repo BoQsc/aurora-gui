@@ -498,6 +498,7 @@ final class WebPageView : Widget
     private string _url;
     private int _scrollY;
     private int _contentHeight;
+    private int _contentGen = -1; /// layout generation _contentHeight was computed for
     private string _lastError;   /// reason of the last failed load ("" if ok)
     private string _failedUrl;   /// URL that failed; "" if the last load succeeded
     /// Accumulated host time (ms) fed to the page's event loop each tick.
@@ -526,6 +527,22 @@ final class WebPageView : Widget
     private void resetScroll()
     {
         _scrollY = 0;
+    }
+
+    /// Recompute the content height only when the page actually relaid out:
+    /// `contentHeight()` is a full-tree walk and paint would otherwise run it on
+    /// every frame.
+    private void refreshContentHeight()
+    {
+        if (_page is null)
+        {
+            _contentHeight = 0;
+            return;
+        }
+        const gen = _page.layoutGeneration();
+        if (gen == _contentGen) return;
+        _contentHeight = contentHeight();
+        _contentGen = gen;
     }
 
     private int contentHeight()
@@ -604,7 +621,7 @@ final class WebPageView : Widget
         // A fresh document resets its event loop; restart the host clock with it
         // so a page's first timers are measured from load, not from app start.
         _loopClockMs = 0.0;
-        _contentHeight = contentHeight();
+        refreshContentHeight();
 
         // Failure detection now that styles are computed and the DOM is laid
         // out: error pages carry a pink background and (for network loads) the
@@ -827,16 +844,25 @@ final class WebPageView : Widget
             _viewportHeight = maxInt(1, h);
             _page.resize(_viewportWidth, _viewportHeight);
             _page.layoutIfNeeded();
-            _contentHeight = contentHeight();
+            refreshContentHeight();
             invalidate();
         }
     }
 
     protected override void onPaint(ref Canvas canvas)
     {
-        canvas.fillRect(Rect(0, 0, size().width, size().height),
-            Color.rgb(255, 255, 255));
-        if (_page is null) return;
+        if (_page is null)
+        {
+            canvas.fillRect(Rect(0, 0, size().width, size().height),
+                Color.rgb(255, 255, 255));
+            return;
+        }
+        // Skip the default white clear when the page paints its own canvas
+        // background: the page's fill covers the whole viewport anyway, and a
+        // full-viewport clear is a real per-frame cost.
+        if (!_page.hasCanvasBackground())
+            canvas.fillRect(Rect(0, 0, size().width, size().height),
+                Color.rgb(255, 255, 255));
         // CRITICAL: ensure the page is laid out at the ACTUAL widget size.
         // If the view had no bounds when the page was loaded (created before
         // layout), the page may still be sized 1x1 -> every character wraps to
@@ -850,7 +876,7 @@ final class WebPageView : Widget
             _page.resize(_viewportWidth, _viewportHeight);
         }
         _page.layoutIfNeeded();
-        _contentHeight = contentHeight();
+        refreshContentHeight();
         // Clip to the widget and translate by the scroll offset.
         auto clipped = canvas.clipped(Rect(0, 0, size().width, size().height));
         auto translated = clipped.translated(0, -_scrollY);

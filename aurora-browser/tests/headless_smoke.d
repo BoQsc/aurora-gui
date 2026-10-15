@@ -330,6 +330,22 @@ int main(string[] args)
         check("scroll clamps at top", view.scrollYForTesting() == 0);
     }
 
+    // --- Performance invariants (engine caching): repainting an unchanged page
+    // must not re-run layout, and must serve every text shape from the cache.
+    // These lock in the rendering-performance work against regressions. ---
+    if (view !is null && view.page() !is null)
+    {
+        import auroraweb.shaping : shapeShapingCount;
+        const genBefore = view.page().layoutGeneration();
+        const shapesBefore = shapeShapingCount();
+        foreach (i; 0 .. 3)
+            driver.paint();
+        check("idle repaint does not re-layout",
+            view.page().layoutGeneration() == genBefore);
+        check("idle repaint reuses shaped text",
+            shapeShapingCount() == shapesBefore);
+    }
+
     // Links: auroraweb:links has <a href> elements; hit-test their laid-out
     // boxes (the anchor box center maps to the element's href).
     root.navigateForTesting("auroraweb:links");
