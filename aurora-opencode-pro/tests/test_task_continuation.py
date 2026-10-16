@@ -73,9 +73,12 @@ class Provider(http.server.BaseHTTPRequestHandler):
             if f"write{stage}" not in results:
                 tools = [call(f"plan{stage}", "update_plan", {
                     "objective": "Complete six real outcomes",
-                    "plan": [{"step": f"Outcome {i}", "status": "completed" if i <= stage
-                              else "in_progress" if i == stage + 1 else "pending"} for i in range(6)]}),
+                    "plan": [{"step": f"Outcome {i}", "status": "completed" if i < stage
+                              else "in_progress" if i == stage else "pending"} for i in range(6)]}),
                     call(f"write{stage}", "write", {"filePath": f"step{stage}.md", "content": f"outcome{stage}"})]
+            elif stage == 5 and "complete-all" not in results:
+                tools = [call("complete-all", "update_plan", {
+                    "plan": [{"step": f"Outcome {i}", "status": "completed"} for i in range(6)]})]
             else:
                 content = "All six outcomes completed." if stage == 5 else f"Partial outcome {stage} landed. Say the word and I will continue."
         elif scenario == "commit":
@@ -128,11 +131,13 @@ server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Provider)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
-    subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"), "--release",
+    subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"), *([] if "--debug" in sys.argv else ["--release"]),
                     "latency_cleanup_contracts", "task_continuation_contracts", "task_continuation_ui_contracts"],
                    cwd=package.parent, env=env, check=True, timeout=300)
     assert not failures, failures
-    assert rounds == {"work": 12, "commit": 2, "stall": 5, "input": 3, "question": 1, "cancel": 2}, rounds
+    # One initial partial reply, three stalls, a changed diagnosis and three
+    # further stalls: productive work is unlimited; unchanged work is bounded.
+    assert rounds == {"work": 13, "commit": 2, "stall": 8, "input": 3, "question": 1, "cancel": 2}, rounds
     print("PASS bounded real request counts", dict(rounds))
 finally:
     server.shutdown()

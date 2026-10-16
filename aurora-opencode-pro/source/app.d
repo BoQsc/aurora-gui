@@ -296,6 +296,15 @@ private int runHeadless(string message)
 /// console chats are kept apart from the GUI's conversations.
 private enum string consoleConversationProject = "Command Line Conversations";
 
+/// Model used by non-GUI (cmd/console) sessions by default, and whether thinking
+/// is on. Measured 2026-10-16 against this endpoint: the fast route answered in
+/// ~0.87 s to first token versus ~1.60 s for `deepseek/deepseek-v4.1-flash`
+/// (12 interleaved pairs, two-sided sign test p=0.0005), and reasoning off is
+/// what an interactive shell wants. Only console runs use this; the GUI keeps
+/// the model and thinking state saved in Settings.
+private enum string consoleDefaultModel = "deepseek/deepseek-v4.1-flash-fast";
+private enum bool consoleDefaultThinking = false;
+
 /// Point a command-line session at a fresh conversation in its own project.
 /// The saved history must finish restoring first, or the deferred load would
 /// replace the new conversation with the last GUI one.
@@ -309,6 +318,9 @@ private void beginConsoleConversation(ref OffscreenUi ui)
         Thread.sleep(20.msecs);
         ui.driver.paint();
     }
+    // Console sessions run the low-latency route without changing the user's
+    // saved Settings, so the GUI is unaffected by a shell launch.
+    ui.root.setConsoleDefaultModel(consoleDefaultModel, consoleDefaultThinking);
     ui.root.startConversationInProject(consoleConversationProject, getcwd());
 }
 

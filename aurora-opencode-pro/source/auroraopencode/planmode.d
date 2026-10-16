@@ -53,8 +53,9 @@ public string trackedPlanPromptBlock()
         "never a fixed template, and never assume a research or investigation " ~
         "step is required. The first step is the smallest action that reduces " ~
         "the most uncertainty (a read, a search, a quick edit, or a question " ~
-        "to the user). Each step is a concrete outcome; when useful add " ~
-        "`done` naming how completion is proven. Keep at most one step " ~
+        "to the user). Each step is a concrete outcome with a stable ID and " ~
+        "`done` naming how completion is proven. Cite successful tool-call IDs " ~
+        "as evidence before marking outcomes completed. Keep at most one step " ~
         "in_progress, and reconcile the plan before the final answer: mark " ~
         "finished steps completed, rewrite obsolete or mixed steps, and never " ~
         "mark unfinished work completed.\n";

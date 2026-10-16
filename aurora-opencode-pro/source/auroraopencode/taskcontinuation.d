@@ -2,6 +2,7 @@ module auroraopencode.taskcontinuation;
 
 import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.requestintent : answerOnlyRequest;
+import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.json : JSONValue, JSONType, parseJSON;
@@ -20,6 +21,7 @@ struct TaskContinuation
     bool verified;
     int stalled;
     int replans;
+    string[] evidence;
 
     string guidance() const
     {
@@ -29,6 +31,7 @@ struct TaskContinuation
         state["verified"] = verified;
         state["stalled"] = action == TaskContinuationAction.replan ? 0 : stalled;
         state["replans"] = replans + (action == TaskContinuationAction.replan ? 1 : 0);
+        state["evidence"] = JSONValue(evidence);
         if (action == TaskContinuationAction.replan)
             return taskContinuationMarker ~ state.toString() ~ "\n" ~
                 "The last attempts produced no completed outcome or accepted verification. " ~
@@ -54,8 +57,17 @@ struct TaskContinuation
 
 bool unfinishedTask(const ref ChatSession session)
 {
+    auto evidenceIndex = taskEvidenceIndex(session);
     foreach (step; session.taskSteps)
-        if (step.status != "completed") return true;
+        if (step.status != "completed" ||
+            (session.contract.id.length && !supportedStep(session, step, evidenceIndex))) return true;
+    foreach (plan; session.nestedPlans)
+        foreach (step; plan.steps)
+            if (step.status != "completed" ||
+                (session.contract.id.length && !supportedStep(session, step, evidenceIndex))) return true;
+    if (session.contract.id.length && session.taskSteps.length == 0 &&
+        (session.contract.currentIntent == "implementation" || session.contract.currentIntent == "continuation") &&
+        (!taskHasActionEvidence(session) || taskRequiresPlan(session))) return true;
     return session.verificationStatus == "required" ||
         session.verificationStatus == "failed";
 }
@@ -78,6 +90,7 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
             begin = i + 1;
             request = session.messages[index].content;
         }
+    if (!request.length && session.parentSessionId.length) request = session.contract.requestedOutcome;
     if (!request.length || answerOnlyRequest(request)) return result;
 
     JSONValue previous;
@@ -119,13 +132,36 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
         evidence[key] = true;
     }
     result.tools = cast(int) evidence.length;
+    bool[string] completedEvidence;
+    auto evidenceIndex = taskEvidenceIndex(session);
     foreach (step; session.taskSteps)
-        if (step.status == "completed") ++result.completed;
+        if (supportedStep(session, step, evidenceIndex))
+        {
+            ++result.completed;
+            foreach (id; step.evidence) completedEvidence[id] = true;
+        }
+    foreach (plan; session.nestedPlans)
+        foreach (step; plan.steps)
+            if (supportedStep(session, step, evidenceIndex))
+            {
+                ++result.completed;
+                foreach (id; step.evidence) completedEvidence[id] = true;
+            }
+    foreach (id; completedEvidence.keys) result.evidence ~= id;
     result.verified = session.verificationStatus == "passed";
     if (previous.type == JSONType.object)
     {
-        const progressed = result.completed > previous["completed"].integer ||
-            (result.verified && !previous["verified"].boolean);
+        bool newEvidence;
+        if (auto prior = "evidence" in previous.object)
+            if (prior.type == JSONType.array)
+                foreach (id; result.evidence)
+                {
+                    bool known;
+                    foreach (entry; prior.array)
+                        if (entry.type == JSONType.string && entry.str == id) known = true;
+                    if (!known) newEvidence = true;
+                }
+        const progressed = newEvidence || (result.verified && !previous["verified"].boolean);
         result.stalled = progressed ? 0 : cast(int) previous["stalled"].integer + 1;
         if (!progressed)
             if (auto value = "replans" in previous.object)

@@ -7,6 +7,8 @@ import std.file : exists, isDir;
 import std.path : buildPath, dirName, isAbsolute;
 import std.regex : matchAll;
 import std.string : strip, toLower, startsWith, split;
+import auroraopencode.taskflow : taskMessagePath;
+import auroraopencode.requestintent : answerOnlyRequest;
 
 /// Only real user messages can retarget a task. Tool output, summaries and
 /// restart reasons cannot change the checkout that owns its effects/evidence.
@@ -116,9 +118,10 @@ string checkWorkspace(string program, const(string)[] args, string workdir, stri
 
 string[] requiredEvidence(const ref ChatSession session)
 {
-    string request = session.objective;
-    foreach (index; activeMessagePath(session))
-        if (session.messages[index].role == "user" && !session.messages[index].internal)
+    string request = session.contract.requestedOutcome.length ? session.contract.requestedOutcome : session.objective;
+    foreach (index; taskMessagePath(session))
+        if (session.messages[index].role == "user" && !session.messages[index].internal &&
+            !answerOnlyRequest(session.messages[index].content))
             request ~= "\n" ~ session.messages[index].content;
     request = request.toLower();
     const visual = request.canFind("render") || request.canFind("layout") ||

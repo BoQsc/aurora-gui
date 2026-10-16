@@ -41,7 +41,8 @@ int main()
         append(session, "user", decision.guidance(), true);
         append(session, "tool", "new source " ~ to!string(i), false, "edit",
             "edit-" ~ to!string(i));
-        session.taskSteps ~= TaskStep("Verified outcome " ~ to!string(i), "completed");
+        session.taskSteps ~= TaskStep("Verified outcome " ~ to!string(i), "completed",
+            "outcome-" ~ to!string(i), "edit", "Source changed", [session.messages[$ - 1].id]);
         append(session, "assistant", "Partial result. May I continue?");
     }
     assert(taskContinuation(session, true).stalled == 0);
@@ -90,6 +91,8 @@ int main()
     decision = taskContinuation(session, true);
     append(session, "user", decision.guidance(), true);
     session.taskSteps[0].status = "completed";
+    append(session, "tool", "Source changed", false, "edit", "changed");
+    session.taskSteps[0].evidence = [session.messages[$ - 1].id];
     assert(taskContinuation(session, true).stalled == 0);
     session.taskSteps[1].status = "completed";
     session.verificationStatus = "required";
@@ -104,7 +107,7 @@ int main()
     foreach (request; ["Can you fix the remaining work?", "Could you implement it?",
             "What happened? Please finish the task.", "Why did it stop? Fix it.",
             "Why is it stopping? Let's resolve it."])
-        assert(!answerOnlyRequest(request));
+        assert(!answerOnlyRequest(request), request);
     assert(taskBlockerError(`{"kind":"input","reason":"Deployment address missing","question":"Which server?"}`) == "");
     assert(taskBlockerError(`{"kind":"external","reason":"Server offline"}`) == "");
     assert(taskBlockerError(`{"kind":"input","reason":"Deployment address missing"}`).length);

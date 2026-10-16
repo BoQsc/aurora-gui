@@ -12,6 +12,7 @@ module auroraopencode.orchestrator;
 import auroraopencode.core : AgentSpec, ChatSession, OpenCodeToolDef;
 import std.algorithm.searching : canFind;
 import std.array : appender;
+import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.process : environment;
 import std.string : strip, toLower;
@@ -20,6 +21,16 @@ import std.typecons : Tuple, tuple;
 /// Only these values enable the routing tools, so an unset variable (the
 /// common case) leaves the orchestrator off.
 private enum enableValues = ["1", "on", "true", "yes", "y", "enabled", "enable"];
+
+/// experimental: orchestrator - one participant to dispatch and the
+/// self-contained task it must complete. A single `assign` may carry several,
+/// which is how the orchestrator fans work out to multiple agents in one
+/// dispatch instead of routing one hop at a time.
+public struct OrchestratorAssignment
+{
+    string agentId;
+    string task;
+}
 
 /// Whether the experimental orchestrator routing tools are active. Read on
 /// every call so a relaunch with a different environment sees the change.
@@ -56,10 +67,13 @@ public OpenCodeToolDef[] experimentalOrchestratorTools()
     return [
         OpenCodeToolDef(
             "assign",
-            "Orchestrator only. Route the next turn to another participant. " ~
-            "That agent then works on the shared conversation with its own " ~
-            "tools. Give the agent id and one short, self-contained task.",
-            `{"type":"object","properties":{"agent_id":{"type":"string","description":"Id of the participant to run next"},"task":{"type":"string","description":"Short, self-contained task for that agent"}},"required":["agent_id","task"]}`
+            "Orchestrator only. Dispatch one or more participants together. " ~
+            "Each assigned agent then works on the shared conversation with " ~
+            "its own tools as part of the same dispatch, so you assign the " ~
+            "whole batch instead of one hop at a time. Prefer the " ~
+            "`assignments` list (one {agent_id, task} per participant); " ~
+            "`agent_id` + `task` is the single-agent shorthand.",
+            `{"type":"object","properties":{"assignments":{"type":"array","description":"Participants to dispatch together in one parallel batch","items":{"type":"object","properties":{"agent_id":{"type":"string","description":"Id of the participant to dispatch"},"task":{"type":"string","description":"Short, self-contained task for that agent"}},"required":["agent_id","task"]}},"agent_id":{"type":"string","description":"Id of a single participant to dispatch"},"task":{"type":"string","description":"Short, self-contained task for that agent"}}}`
         ),
         OpenCodeToolDef(
             "ask_user",
@@ -79,11 +93,11 @@ public OpenCodeToolDef[] experimentalOrchestratorTools()
 
 /// Execute one orchestrator routing call. Returns `(output, failed)`.
 ///
-/// Pure control plumbing for now: the routing decision is emitted as the tool
-/// result so it is visible and persisted in the transcript. Driving an actual
-/// next turn needs the multi-agent substrate (per-message author + roster, see
-/// docs/multi-agent-single-conversation.md, Phase 1) and is layered on later;
-/// this stage makes the feature real, removable and observable.
+/// The routing decision is emitted as the tool result so it is visible and
+/// persisted in the transcript. `assign` records a whole batch of participants
+/// (see `OrchestratorAssignment`); the app dispatches that batch as one
+/// fan-out, so several agents are assigned together instead of one hop at a
+/// time. This module stays free of UI: the app owns presentation and dispatch.
 public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
     string args)
 {
@@ -99,18 +113,70 @@ public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
         return string.init;
     }
 
+    string objField(JSONValue obj, string key)
+    {
+        if (obj.type != JSONType.object) return string.init;
+        if (auto found = key in obj.object)
+            if (found.type == JSONType.string) return found.str;
+        return string.init;
+    }
+
     switch (name)
     {
         case "assign":
         {
-            const agent = strip(field("agent_id"));
-            const task = strip(field("task"));
-            if (agent.length == 0 || task.length == 0)
-                return tuple("Error: assign requires `agent_id` and `task`.",
+            OrchestratorAssignment[] requested;
+            // Preferred form: an explicit list dispatched as one batch.
+            if (value.type == JSONType.object)
+                if (auto list = "assignments" in value.object)
+                    if (list.type == JSONType.array)
+                        foreach (ref entry; list.array)
+                        {
+                            const agent = strip(objField(entry, "agent_id"));
+                            const task = strip(objField(entry, "task"));
+                            if (agent.length > 0 && task.length > 0)
+                                requested ~=
+                                    OrchestratorAssignment(agent, task);
+                        }
+            // Single-agent shorthand (also the backward-compatible form).
+            if (requested.length == 0)
+            {
+                const agent = strip(field("agent_id"));
+                const task = strip(field("task"));
+                if (agent.length > 0 && task.length > 0)
+                    requested ~= OrchestratorAssignment(agent, task);
+            }
+            if (requested.length == 0)
+                return tuple("Error: assign requires `agent_id` and `task`, " ~
+                    "or a non-empty `assignments` list of {agent_id, task}.",
                     true);
-            orchestratorPendingSpeaker = agent;
-            orchestratorPendingTask = task;
-            return tuple("Assigned to " ~ agent ~ ": " ~ task, false);
+            // One task per participant: keep the first for each agent id so a
+            // repeated id cannot make the same agent run twice in a batch.
+            OrchestratorAssignment[] batch;
+            foreach (assignment; requested)
+            {
+                bool seen;
+                foreach (existing; batch)
+                    if (existing.agentId == assignment.agentId)
+                    {
+                        seen = true;
+                        break;
+                    }
+                if (!seen) batch ~= assignment;
+            }
+            orchestratorPendingAssignments = batch;
+            auto summary = appender!string();
+            summary.put(batch.length == 1 ? "Assigned " : "Assigned in parallel ");
+            summary.put(to!string(batch.length));
+            summary.put(batch.length == 1 ? " agent: " : " agents: ");
+            foreach (i, assignment; batch)
+            {
+                if (i > 0) summary.put("; ");
+                summary.put(assignment.agentId);
+                summary.put(" — ");
+                summary.put(assignment.task);
+            }
+            return tuple(summary.data, false);
         }
         case "ask_user":
         {
@@ -141,27 +207,23 @@ public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
 /// Routing channel from the tool worker (which sets it) to the app (which
 /// consumes it at the next turn boundary). `__gshared` because the tool runs on
 /// a worker while the app reads it on the UI thread.
-public __gshared string orchestratorPendingSpeaker = "";
-public __gshared string orchestratorPendingTask = "";
+// Assignments queued by the last `assign` call, consumed at the next turn
+// boundary. A whole batch is taken at once so the app can dispatch the
+// participants together.
+public __gshared OrchestratorAssignment[] orchestratorPendingAssignments;
 public __gshared bool orchestratorPendingHalt = false;
 // Terminal task status requested by a routing tool: "completed" (finish) or
 // "blocked" (ask_user). Applied to the session so the durable-task
 // continuation stops re-opening turns once the dispatch is over.
 public __gshared string orchestratorPendingStatus = "";
 
-/// Consume and clear the pending next-speaker (empty when none).
-public string experimentalOrchestratorTakePendingSpeaker()
+/// Consume and clear the batch of assignments the orchestrator just made
+/// (empty when none). The caller dispatches the first immediately and queues
+/// the rest, so one assign can fan out to several agents.
+public OrchestratorAssignment[] experimentalOrchestratorTakePendingAssignments()
 {
-    const value = orchestratorPendingSpeaker;
-    orchestratorPendingSpeaker = "";
-    return value;
-}
-
-/// Consume and clear the pending assignment text (empty when none).
-public string experimentalOrchestratorTakePendingTask()
-{
-    const value = orchestratorPendingTask;
-    orchestratorPendingTask = "";
+    auto value = orchestratorPendingAssignments;
+    orchestratorPendingAssignments = null;
     return value;
 }
 
@@ -193,11 +255,15 @@ public AgentSpec[] experimentalOrchestratorRoster()
 {
     return [
         AgentSpec("orchestrator", "Orchestrator",
-            "You lead this conversation. Read the goal, then drive it: for " ~
-            "implementation call `assign` with agent_id \"builder\"; for " ~
-            "verification call `assign` with \"reviewer\"; call `ask_user` when " ~
-            "a decision belongs to the user; call `finish` when the goal is " ~
-            "met. Prefer delegating over narrating, and never just wait.",
+            "You lead this conversation in rounds. Read the goal, then drive " ~
+            "it one round at a time: in each round call `assign` with one or " ~
+            "more {agent_id, task} entries (\"builder\" to implement, " ~
+            "\"reviewer\" to verify, \"researcher\" to investigate). Every " ~
+            "assigned subagent runs at the same time in its own chat and " ~
+            "reports back; when their results arrive you lead the next round. " ~
+            "Call `ask_user` when a decision belongs to the user; call " ~
+            "`finish` when the goal is met. Prefer delegating over narrating, " ~
+            "and never just wait.",
             "", true),
         AgentSpec("builder", "Builder",
             "You are the Builder. Implement the requested work in the " ~
@@ -238,6 +304,16 @@ public bool experimentalOrchestratorIsRouter(const ref ChatSession session,
 {
     auto agent = findAgent(session, id);
     return agent is null ? false : agent.router;
+}
+
+/// The worker participants (everyone except the router), in roster order. The
+/// plan UI lists these as named subagents, each with its own nested chat.
+public AgentSpec[] experimentalOrchestratorSubagents(const ref ChatSession session)
+{
+    AgentSpec[] workers;
+    foreach (agent; session.agents)
+        if (!agent.router) workers ~= agent;
+    return workers;
 }
 
 /// The participant's model override, or empty to use the session's model.
@@ -283,12 +359,13 @@ public string experimentalOrchestratorIdentityBlock(
     text.put(".\nSpeak only as yourself; never write another participant's " ~
         "message or claim their work.\n");
     if (self !is null && self.router)
-        text.put("You lead this multi-agent conversation. You may do small " ~
-            "steps yourself, but for any real implementation you MUST call " ~
-            "assign(builder, task); for verification call " ~
-            "assign(reviewer, task). Prefer delegating over narrating. When " ~
-            "the goal is met call finish, and when a decision belongs to the " ~
-            "user call ask_user. Never just wait.\n");
+        text.put("You lead this multi-agent conversation in rounds. In each " ~
+            "round call assign with one or more {agent_id, task} entries; " ~
+            "every assigned subagent runs at the same time in its own chat " ~
+            "and reports back, then you lead the next round. Prefer " ~
+            "delegating over narrating. When the goal is met call finish, and " ~
+            "when a decision belongs to the user call ask_user. Never just " ~
+            "wait.\n");
     return text.data;
 }
 

@@ -66,7 +66,9 @@ int main()
         const deadline = MonoTime.currTime + 5.seconds;
         while ((root.toolMessageCountForTesting() < target || root.pendingToolResultsForTesting() > 0)
             && MonoTime.currTime < deadline) pump();
-        assert(root.toolMessageCountForTesting() == target);
+        assert(root.toolMessageCountForTesting() == target, "Expected " ~ to!string(target) ~
+            " tool messages, got " ~ to!string(root.toolMessageCountForTesting()) ~
+            "; last result: " ~ root.lastToolResultForTesting());
         assert(root.pendingToolResultsForTesting() == 0);
         pump();
     }

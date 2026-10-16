@@ -39,8 +39,14 @@ def _git_executable() -> str:
 
 
 def git(package: Path, *args: str) -> str:
+    # The rebuild helper runs this pre-build step detached, and there the
+    # inherited standard-input handle can be invalid; an inherited bad handle
+    # makes Popen fail with `OSError: [WinError 6] The handle is invalid`, which
+    # aborted the whole build before any compiler ran. Give the child an explicit
+    # null input so it never inherits one.
     result = subprocess.run([_git_executable(), "-C", str(package), *args],
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60,
+                            stdin=subprocess.DEVNULL)
     if result.returncode:
         raise RuntimeError("Could not verify build source: " + result.stderr.strip())
     return result.stdout.strip()

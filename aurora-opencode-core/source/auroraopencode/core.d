@@ -288,6 +288,18 @@ public string defaultReasoningEffortForModel(string model)
     return isDeepSeekV41FlashModel(model) ? "high" : "low";
 }
 
+/// Whether Thinking starts enabled for a model the user has not configured.
+///
+/// DeepSeek 4.1 Flash must reason by default: an unset route resolves to
+/// `defaultReasoningEffortForModel` (`high`) instead of the silent `none` a
+/// fresh Settings file produced. Every other model keeps the previous
+/// off-by-default behavior, so a route that rejects `reasoning_effort` is never
+/// sent one unless the composer explicitly enables Thinking for it.
+public bool defaultThinkingForModel(string model)
+{
+    return isDeepSeekV41FlashModel(model);
+}
+
 /**
  * Whether Aurora may send inline images to a model.
  *
@@ -750,6 +762,9 @@ public struct ChatMessage
     // UI-only marker: this message preceded a request whose older context was
     // compacted. It is persisted with the transcript but never sent to a model.
     bool contextCompacted;
+    string taskStateJson; // Branch-local state; persistence only, never model prose.
+    bool workspaceChanged;
+    string verificationCheck; // Accepted checker receipt, scoped to this task's source.
     // Experimental multi-agent: which participant authored this message. Empty
     // means the default single agent, so legacy transcripts are unaffected.
     // See docs/multi-agent-single-conversation.md.
@@ -776,6 +791,161 @@ public struct TaskStep
 {
     string text;
     string status; // "pending" | "in_progress" | "completed"
+    string id;
+    string kind;
+    string done;
+    string[] evidence;
+    string blocker;
+}
+
+public JSONValue taskStepsToJson(const(TaskStep)[] steps)
+{
+    JSONValue result = JSONValue.emptyArray;
+    foreach (step; steps)
+    {
+        JSONValue item;
+        item["text"] = step.text;
+        item["status"] = step.status;
+        item["id"] = step.id;
+        item["kind"] = step.kind;
+        item["done"] = step.done;
+        item["evidence"] = JSONValue(step.evidence);
+        item["blocker"] = step.blocker;
+        result.array ~= item;
+    }
+    return result;
+}
+
+public TaskStep[] taskStepsFromJson(JSONValue value)
+{
+    TaskStep[] result;
+    if (value.type != JSONType.array) return result;
+    foreach (item; value.array)
+    {
+        if (item.type != JSONType.object) continue;
+        string field(string key)
+        {
+            if (auto f = key in item.object)
+                if (f.type == JSONType.string) return f.str;
+            return "";
+        }
+        TaskStep step;
+        step.text = field("text");
+        if (!step.text.length) step.text = field("step");
+        step.status = field("status");
+        step.id = field("id"); step.kind = field("kind");
+        step.done = field("done"); step.blocker = field("blocker");
+        if (auto f = "evidence" in item.object)
+            if (f.type == JSONType.array)
+                foreach (entry; f.array)
+                    if (entry.type == JSONType.string) step.evidence ~= entry.str;
+        if (step.text.length && (step.status == "pending" ||
+            step.status == "in_progress" || step.status == "completed")) result ~= step;
+    }
+    return result;
+}
+
+public struct TaskContract
+{
+    string id;
+    string startMessageId;
+    string intent;
+    string currentIntent;
+    string requestedOutcome;
+    string[] constraints;
+    string[] decisions;
+    string blocker;
+}
+
+public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
+{
+    JSONValue value;
+    value["id"] = session.contract.id;
+    value["startMessageId"] = session.contract.startMessageId;
+    value["intent"] = session.contract.intent;
+    value["currentIntent"] = session.contract.currentIntent;
+    value["requestedOutcome"] = session.contract.requestedOutcome;
+    value["constraints"] = JSONValue(session.contract.constraints);
+    value["decisions"] = JSONValue(session.contract.decisions);
+    value["blocker"] = session.contract.blocker;
+    root["taskContract"] = value;
+    root["taskArchive"] = JSONValue(session.taskArchive);
+    root["taskSteps"] = taskStepsToJson(session.taskSteps);
+    root["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
+}
+
+public void readTaskContract(ref ChatSession session, JSONValue root)
+{
+    if (root.type != JSONType.object) return;
+    if (auto value = "taskContract" in root.object)
+        if (value.type == JSONType.object)
+        {
+            string field(string key)
+            {
+                if (auto f = key in value.object)
+                    if (f.type == JSONType.string) return f.str;
+                return "";
+            }
+            string[] list(string key)
+            {
+                string[] result;
+                if (auto f = key in value.object)
+                    if (f.type == JSONType.array)
+                        foreach (entry; f.array)
+                            if (entry.type == JSONType.string) result ~= entry.str;
+                return result;
+            }
+            session.contract = TaskContract(field("id"), field("startMessageId"),
+                field("intent"), field("currentIntent"), field("requestedOutcome"),
+                list("constraints"), list("decisions"), field("blocker"));
+        }
+    if (auto value = "taskArchive" in root.object)
+        if (value.type == JSONType.array)
+        {
+            session.taskArchive = null;
+            foreach (entry; value.array)
+                if (entry.type == JSONType.string) session.taskArchive ~= entry.str;
+        }
+    if (auto value = "taskSteps" in root.object) session.taskSteps = taskStepsFromJson(*value);
+    if (auto value = "nestedPlans" in root.object)
+        session.nestedPlans = nestedPlansFromJson(*value, session.taskSteps.length);
+}
+
+public void copyTaskContract(ref ChatSession target, const ref ChatSession source)
+{
+    JSONValue value;
+    writeTaskContract(value, source);
+    readTaskContract(target, value);
+}
+
+public string activeTaskStateJson(const ref ChatSession session)
+{
+    JSONValue state;
+    state["objective"] = session.objective;
+    state["taskStatus"] = session.taskStatus;
+    state["verificationStatus"] = session.verificationStatus;
+    writeTaskContract(state, session);
+    state.object.remove("taskArchive");
+    return state.toString();
+}
+
+public void restoreActiveTaskState(ref ChatSession session, string text)
+{
+    try
+    {
+        auto state = parseJSON(text);
+        if (state.type != JSONType.object) return;
+        foreach (key; ["objective", "taskStatus", "verificationStatus"])
+            if (auto value = key in state.object)
+                if (value.type == JSONType.string)
+                {
+                    if (key == "objective") session.objective = value.str;
+                    else if (key == "taskStatus") session.taskStatus = value.str;
+                    else session.verificationStatus = value.str;
+                }
+        readTaskContract(session, state);
+    }
+    catch (Exception) {}
 }
 
 /// Experimental one-level detail for a single top-level checklist step.
@@ -795,15 +965,7 @@ public JSONValue nestedPlansToJson(const(NestedPlan)[] plans)
         JSONValue item;
         item["parentStep"] = cast(long) plan.parentStep;
         item["expanded"] = plan.expanded;
-        JSONValue steps = JSONValue(string[].init);
-        foreach (step; plan.steps)
-        {
-            JSONValue value;
-            value["text"] = step.text;
-            value["status"] = step.status;
-            steps.array ~= value;
-        }
-        item["steps"] = steps;
+        item["steps"] = taskStepsToJson(plan.steps);
         result.array ~= item;
     }
     return result;
@@ -825,18 +987,7 @@ public NestedPlan[] nestedPlansFromJson(JSONValue value, size_t parentCount)
         plan.parentStep = cast(size_t) parent.integer;
         if (auto expanded = "expanded" in item.object)
             if (expanded.type == JSONType.false_) plan.expanded = false;
-        foreach (child; children.array)
-        {
-            if (child.type != JSONType.object) continue;
-            TaskStep step;
-            if (auto text = "text" in child.object)
-                if (text.type == JSONType.string) step.text = text.str;
-            if (auto status = "status" in child.object)
-                if (status.type == JSONType.string) step.status = status.str;
-            if (step.text.length > 0 && (step.status == "pending" ||
-                step.status == "in_progress" || step.status == "completed"))
-                plan.steps ~= step;
-        }
+        plan.steps = taskStepsFromJson(*children);
         if (plan.steps.length > 0) plans ~= plan;
     }
     return plans;
@@ -853,6 +1004,8 @@ public struct ChatSession
     bool thinking;
     string projectId;  // owning project; empty/unknown maps to the sandbox
     string objective;
+    TaskContract contract;
+    string[] taskArchive; // Immutable JSON snapshots; transcript history stays intact.
     string taskStatus; // "idle" | "active" | "reviewing" | "verifying" | "completed" | "blocked"
     // Transport/execution lifecycle is intentionally separate from the
     // durable objective. A turn can finish successfully while its objective
@@ -896,6 +1049,11 @@ public struct ChatSession
     AgentSpec[] agents;
     string activeAgentId;
     string nextSpeakerId;
+    // experimental: orchestrator - when set, this conversation is a subagent's
+    // own nested chat, opened from its parent's plan UI. Empty for an ordinary
+    // top-level conversation. `subagentId` is the roster id this chat runs as.
+    string parentSessionId;
+    string subagentId;
     // experimental multi-agent: how many participant turns the current dispatch
     // has taken, to bound a runaway orchestrator loop. Reset on a user turn.
     int agentHops;
@@ -961,6 +1119,7 @@ public ChatSession[] snapshotChatSessions(ChatSession[] source)
         session.nestedPlans = original.nestedPlans.dup;
         foreach (i, plan; original.nestedPlans)
             session.nestedPlans[i].steps = plan.steps.dup;
+        copyTaskContract(session, original);
         session.queuedGuidance = original.queuedGuidance.dup;
         session.queuedFollowUps = original.queuedFollowUps.dup;
         session.agents = original.agents.dup;
@@ -1291,6 +1450,16 @@ public struct Settings
     // stops (a runaway turn), then fire the same emergency diagnostic. Off by
     // default; the Settings dialog owns the switch.
     bool overseerObserver;
+    // >>> filecontext:begin
+    bool smartFileContext = true;
+    // <<< filecontext:end
+    // >>> pet:begin (highly experimental opt-in: a floating "pet" companion
+    // window that observes notable activity and PROPOSES actions the user must
+    // approve. Suggestion-only; it never executes anything itself. Off by
+    // default. Delete this region, its load/save regions below, and
+    // source/auroraopencode/pet.d.)
+    bool experimentalFloatingPet;
+    // <<< pet:end
     // Experimental opt-in: the per-project "project manager" - one special
     // conversation per project that reviews the project's recent conversations
     // and starts the next step. Off by default. To drop the feature: delete
@@ -1347,7 +1516,7 @@ public struct Settings
     // Optional response-verbosity selector: "default" (stock prompt),
     // "concise", or "compact". "default" is a no-op, so an existing settings
     // file that lacks the key keeps the exact previous prompt.
-    string verbosity = "default";
+    string verbosity = "concise";
 }
 
 public struct ModelContextBudget
@@ -1367,8 +1536,11 @@ public struct ModelReasoningControl
 {
     string baseUrl;
     string model;
-    // Empty keeps the model's Thinking-on default: `high` for DeepSeek 4.1
-    // Flash, `low` for everything else (see defaultReasoningEffortForModel).
+    // The user's explicit choice for this route: `low`/`medium`/`high`, or
+    // `off` when they turned Thinking off for it (an explicit `off` must keep
+    // a model default such as DeepSeek 4.1 Flash's from re-enabling Thinking).
+    // Empty keeps the model's default: `high` for DeepSeek 4.1 Flash, `low`
+    // for everything else (see defaultReasoningEffortForModel).
     string effort;
     // Zero leaves the server's reasoning budget unchanged.
     int budgetTokens;
@@ -1384,13 +1556,28 @@ public ModelReasoningControl reasoningControlForModel(const ref Settings setting
     return ModelReasoningControl(endpoint, model, "", 0);
 }
 
+/// The Thinking state a route actually uses.
+///
+/// An explicit per-route choice always wins, including `off`. Otherwise the
+/// global Thinking switch applies, and a model that must reason by default
+/// (DeepSeek 4.1 Flash) turns Thinking on even in a Settings file that never
+/// recorded a choice for it.
+public bool effectiveThinkingForModel(const ref Settings settings,
+    string baseUrl, string model)
+{
+    const control = reasoningControlForModel(settings, baseUrl, model);
+    if (control.effort == "off") return false;
+    if (control.effort.length > 0) return true;
+    return settings.thinking || defaultThinkingForModel(model);
+}
+
 public void setReasoningControlForModel(ref Settings settings,
     string baseUrl, string model, string effort, int budgetTokens)
 {
     const endpoint = normalizedBaseUrl(baseUrl);
     if (endpoint.length == 0 || model.length == 0 ||
         (effort.length > 0 && effort != "low" && effort != "medium" &&
-            effort != "high") || budgetTokens < 0 ||
+            effort != "high" && effort != "off") || budgetTokens < 0 ||
         budgetTokens > 32_768) return;
     foreach (i, control; settings.reasoningControls)
         if (control.baseUrl == endpoint && control.model == model)
@@ -1698,6 +1885,18 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ ||
                         found.type == JSONType.false_)
                         settings.overseerObserver = found.type == JSONType.true_;
+                // >>> filecontext:begin
+                if (auto found = "smartFileContext" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.smartFileContext = found.type == JSONType.true_;
+                // <<< filecontext:end
+                // >>> pet:begin
+                if (auto found = "experimentalFloatingPet" in value.object)
+                    if (found.type == JSONType.true_ ||
+                        found.type == JSONType.false_)
+                        settings.experimentalFloatingPet =
+                            found.type == JSONType.true_;
+                // <<< pet:end
                 if (auto found = "experimentalProjectManager" in value.object)
                     if (found.type == JSONType.true_ ||
                         found.type == JSONType.false_)
@@ -1996,6 +2195,12 @@ public void saveSettings(const ref Settings settings)
     root["floatingMiniChatLines"] = settings.floatingMiniChatLines;
     root["emergencyReport"] = settings.emergencyReport;
     root["overseerObserver"] = settings.overseerObserver;
+    // >>> filecontext:begin
+    root["smartFileContext"] = settings.smartFileContext;
+    // <<< filecontext:end
+    // >>> pet:begin
+    root["experimentalFloatingPet"] = settings.experimentalFloatingPet;
+    // <<< pet:end
     root["experimentalProjectManager"] = settings.experimentalProjectManager;
     root["developerMode"] = settings.developerMode;
     root["developerSourceDir"] = settings.developerSourceDir;

@@ -77,7 +77,12 @@ public void invalidateToolWorkspace(string workspace) { scheduler().invalidate(w
 public bool parallelTool(const ref OpenCodeToolCall call)
 {
     return call.name == "read" || call.name == "glob" || call.name == "grep" ||
-        call.name == "dshell" || call.name == "view_image" || call.name == "process" || call.name == "checksum";
+        call.name == "dshell" || call.name == "view_image" || call.name == "process" ||
+        call.name == "checksum" ||
+        // Pure network I/O never touches the workspace, so it must not hold the
+        // workspace writer lease: a fetch or search used to block every other
+        // tool in the same checkout, in this conversation and in any other.
+        call.name == "webfetch" || call.name == "websearch";
 }
 
 public ToolBatch scheduleToolBatch(OpenCodeClient client, ulong requestId,
@@ -212,6 +217,14 @@ private final class ToolJob : WorkItem
             return;
         }
         import auroraopencode.taskpolicy : diagnosticToolAllowed;
+        import std.algorithm : canFind;
+        if (batch.context.analysisOnly && ["write", "edit", "apply_patch", "copy", "move",
+                "rename", "create_folder", "remove", "download", "rebuild", "sync"].canFind(call.name))
+        {
+            result = ToolExecution(call.name, "Error: the current request asks for analysis. Gather evidence and report findings; implementation requires a user action request.", true);
+            changed = false;
+            return;
+        }
         if (batch.context.diagnosticReadOnly && !diagnosticToolAllowed(call.name))
         {
             result = ToolExecution(call.name, "Diagnostic review is read-only. Report the diagnosis so the task's main model can apply it.", true);

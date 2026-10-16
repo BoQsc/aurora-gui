@@ -18,6 +18,7 @@ import auroraopencode.attachmentstore : AttachmentStore;
 import std.stdio : File;
 import core.stdc.stdio : SEEK_END;
 import auroraopencode.core : ChatMessage, ChatSession, OpenCodeToolCall,
+    readTaskContract,
     ChatImageAttachment, TaskStep, ensureMessageGraph, nestedPlansFromJson;
 
 public enum AgentEventKind
@@ -589,6 +590,7 @@ private void applyThreadPayload(ref ChatSession session, JSONValue payload)
     if (auto f = "nestedPlans" in payload.object)
         session.nestedPlans = nestedPlansFromJson(*f,
             session.taskSteps.length);
+    readTaskContract(session, payload);
     if (auto f = "queuedGuidance" in payload.object)
         if (f.type == JSONType.array)
         {
@@ -630,6 +632,12 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
         message.internal = f.type == JSONType.true_;
     if (auto f = "contextCompacted" in payload.object)
         message.contextCompacted = f.type == JSONType.true_;
+    if (auto f = "taskStateJson" in payload.object)
+        if (f.type == JSONType.string) message.taskStateJson = f.str;
+    if (auto f = "workspaceChanged" in payload.object)
+        message.workspaceChanged = f.type == JSONType.true_;
+    if (auto f = "verificationCheck" in payload.object)
+        if (f.type == JSONType.string) message.verificationCheck = f.str;
     if (auto f = "toolCallId" in payload.object)
         if (f.type == JSONType.string) message.toolCallId = f.str;
     if (auto f = "toolName" in payload.object)

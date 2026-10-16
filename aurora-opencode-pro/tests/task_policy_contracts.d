@@ -88,6 +88,8 @@ int main(string[] arguments)
         assert(taskContinuation(session, true).action == TaskContinuationAction.needsAttention);
     }
     session.taskSteps[0].status = "completed";
+    append(session, "tool", "Source changed", false, "edit", "changed");
+    session.taskSteps[0].evidence = [session.messages[$ - 1].id];
     assert(taskContinuation(session, true).stalled == 0);
     writeln("PASS distinct no-match searches trigger a new diagnosis; completed outcomes restore progress");
 

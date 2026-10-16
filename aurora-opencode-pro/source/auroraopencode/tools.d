@@ -93,6 +93,22 @@ private bool filesystemTool(string name)
         name == "view_image" || name == "dshell";
 }
 
+/// Tools that never change a checkout: file inspection and pure network I/O.
+///
+/// These must not take the exclusive cross-process checkout lock. A Windows
+/// named mutex has no shared mode, so letting an observer take it made two
+/// inspections (in different conversations, or in a desktop and a command-line
+/// session) wait for each other and then fail with "Source checkout is still in
+/// use" after the 45 s wait, even though neither one writes anything. The
+/// in-process workspace lease and the workspace mutation lock still keep this
+/// process's writers from overlapping an observer, and an observation that races
+/// another process's rewrite is re-runnable.
+private bool checkoutObserver(string name)
+{
+    return filesystemTool(name) || name == "checksum" ||
+        name == "webfetch" || name == "websearch";
+}
+
 /// This mode runs before GUI construction or settings restore. The host has
 /// no mutation tools, provider credentials, or conversation state.
 public int runFilesystemHelperMode(string[] args)
@@ -521,7 +537,7 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "this again whenever a step's status changes, marking a finished step " ~
         "`completed` and the next one `in_progress`, so the checklist never " ~
         "shows finished work as pending. At most one step may be in_progress " ~
-        "at a time. Each call replaces the entire checklist. Keep the " ~
+        "at a time. Use a few concrete outcomes. Each call replaces the entire checklist; preserve every unfinished outcome and stable ID. Keep the " ~
         "original checklist when working through one of its steps; put " ~
         "temporary substeps in the conversation or use update_subplan when " ~
         "available. Set replace_entire_plan " ~
@@ -529,9 +545,9 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "Also set `objective` to a concise, rewritten one-line goal for the " ~
         "task in your own words, not a copy of the user's message or the " ~
         "chat title. Each item may optionally carry `kind` " ~
-        "(research|edit|verify|answer|other) and `done` (how completion is " ~
-        "proven); neither is required and no step order is imposed.",
-        `{"type":"object","properties":{"objective":{"type":"string","description":"A concise, rewritten statement of the task's goal in your own words, not a copy of the user's message or the chat title"},"explanation":{"type":"string","description":"Optional explanation for this plan update"},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"},"kind":{"type":"string","enum":["research","edit","verify","answer","other"],"description":"Optional step category; informational only, never required"},"done":{"type":"string","description":"Optional: the condition that proves this step complete"}},"required":["step","status"]},"description":"The full checklist, including existing steps"}},"required":["plan"]}`
+        "(research|edit|verify|answer|other), `id`, `evidence` (successful tool-call IDs), and `done` (how completion is " ~
+        "proven). Completion is accepted only with supporting evidence. Update at phase boundaries, alongside independent useful calls; no fixed step order is imposed.",
+        `{"type":"object","properties":{"objective":{"type":"string","description":"A concise, rewritten statement of the task's goal in your own words, not a copy of the user's message or the chat title"},"explanation":{"type":"string","description":"Optional explanation for this plan update"},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"},"kind":{"type":"string","enum":["research","edit","verify","answer","other"],"description":"Optional step category; informational only, never required"},"done":{"type":"string","description":"Concrete acceptance condition; preserved on later updates when omitted."},"id":{"type":"string","description":"Stable outcome ID; reuse it when updating this step. Omission reuses the matching existing step or assigns an ID."},"evidence":{"type":"array","items":{"type":"string"},"description":"Successful tool-call IDs proving this outcome. Completed outcomes require matching evidence; verification needs an accepted current check."},"blocker":{"type":"string","description":"Specific remaining blocker, when any."}},"required":["step","status"]},"description":"The full checklist, including existing steps"},"constraints":{"type":"array","items":{"type":"string"},"description":"Current user constraints, retained when omitted."},"decisions":{"type":"array","items":{"type":"string"},"description":"Established decisions and rejected hypotheses needed after compaction; retained when omitted."}},"required":["plan"]}`
     );
 }
 
@@ -600,7 +616,7 @@ private OpenCodeToolDef updateSubplanToolDefinition()
         "1-based number of that step. The plan array replaces only that " ~
         "step's substeps. Use this only when the user enabled experimental " ~
         "nested plans and a real step needs more detail. One level only.",
-        `{"type":"object","properties":{"parent_step":{"type":"integer","minimum":1,"description":"1-based top-level step number"},"explanation":{"type":"string","description":"Optional explanation"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"kind":{"type":"string","enum":["research","edit","verify","answer","other"]},"done":{"type":"string","description":"Condition that proves the substep complete"}},"required":["step","status"]}}},"required":["parent_step","plan"]}`
+        `{"type":"object","properties":{"parent_step":{"type":"integer","minimum":1,"description":"1-based top-level step number"},"explanation":{"type":"string","description":"Optional explanation"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]},"kind":{"type":"string","enum":["research","edit","verify","answer","other"]},"done":{"type":"string","description":"Concrete acceptance condition; preserved on later updates when omitted."},"id":{"type":"string","description":"Stable outcome ID; reuse it when updating this step. Omission reuses the matching existing step or assigns an ID."},"evidence":{"type":"array","items":{"type":"string"},"description":"Successful tool-call IDs proving this outcome. Completed outcomes require matching evidence; verification needs an accepted current check."},"blocker":{"type":"string","description":"Specific remaining blocker, when any."}},"required":["step","status"]}}},"required":["parent_step","plan"]}`
     );
 }
 
@@ -2652,6 +2668,7 @@ public struct ChangeContext
     string conversationId;
     string turnId;
     bool diagnosticReadOnly;
+    bool analysisOnly;
 }
 
 /// One filesystem path in Aurora's append-only mutation journal. File contents
@@ -4643,6 +4660,18 @@ private ToolExecution runUpdatePlan(string args, string workspace)
                         "edit, verify, answer or other).", true);
             }
         string done;
+        foreach (key; ["id", "done", "blocker"])
+            if (auto field = key in item.object)
+                if (field.type != JSONType.string)
+                    return ToolExecution("update_plan", "Error: " ~ key ~ " must be a string.", true);
+        if (auto field = "evidence" in item.object)
+        {
+            if (field.type != JSONType.array)
+                return ToolExecution("update_plan", "Error: evidence must be an array of tool-call IDs.", true);
+            foreach (entry; field.array)
+                if (entry.type != JSONType.string || entry.str.length == 0)
+                    return ToolExecution("update_plan", "Error: evidence IDs must be nonempty strings.", true);
+        }
         if (auto field = "done" in item.object)
             if (field.type == JSONType.string)
                 done = field.str;
@@ -5708,6 +5737,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             {
                 const path = jsonString(input, key);
                 if (path.length && !targets.length && developerSource.length &&
+                    !checkoutObserver(call.name) &&
                     checkoutIdentity(resolveToolPath(path, workspace)) == checkoutIdentity(developerSource))
                     leasePaths ~= developerSource;
             }
@@ -5715,7 +5745,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         const command = call.name == "run" || call.name == "bash";
         if (!control && (targets.length || command || call.name == "sync" || call.name == "rebuild"))
             leasePaths ~= operationDir;
-        else if (!control && developerSource.length && checkoutIdentity(operationDir) == checkoutIdentity(developerSource))
+        else if (!control && !checkoutObserver(call.name) && developerSource.length &&
+            checkoutIdentity(operationDir) == checkoutIdentity(developerSource))
             leasePaths ~= developerSource;
         if (developerSource.length && (command || call.name == "sync" || call.name == "rebuild"))
             leasePaths ~= developerSource;

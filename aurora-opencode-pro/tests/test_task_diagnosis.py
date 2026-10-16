@@ -56,11 +56,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
                            for x in request["messages"])
                 content = "Independent diagnosis: run the saved helper assertion recipe; do not infer success from searches."
         elif counts[model] == 5:
-            tools = [call("complete-plan", "update_plan", {"plan": [
-                {"step": "Verify the helper", "status": "completed"}]}),
-                call("acceptance", "verify", {"recipe": recipe})]
+            tools = [call("acceptance", "verify", {"recipe": recipe})]
             content = ""
         elif counts[model] == 6:
+            tools = [call("complete-plan", "update_plan", {"plan": [
+                {"step": "Verify the helper", "status": "completed"}]})]
+            content = ""
+        elif counts[model] == 7:
             content = "Verified the helper after diagnostic review."
         delta = {"content": content}
         if tools:
@@ -84,7 +86,7 @@ try:
     result = subprocess.run([sys.executable, str(runner), "task_diagnosis_contracts"], env=env, timeout=90)
     print("Observed routing:", counts, flush=True)
     assert result.returncode == 0
-    assert counts == {"diagnosis-main": 6, "diagnosis-review": 2}, counts
+    assert counts == {"diagnosis-main": 7, "diagnosis-review": 2}, counts
     print("PASS bounded reviewer routing: two read-only review requests; main model resumes and completes")
 finally:
     server.shutdown()
