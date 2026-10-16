@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy: Changes button moved into the Checkpoint dropdown as a subitem; checkpoint restore pruning fixed; dependent headless test updated.",
+  "reason": "",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-14 23:35:02.3601809 UTC",
-  "finishedAt": "2026-10-14 23:35:39.394053 UTC",
-  "durationMs": 37034,
+  "startedAt": "2026-10-16 11:34:05.838206 UTC",
+  "finishedAt": "2026-10-16 11:34:45.5068458 UTC",
+  "durationMs": 39668,
   "exitCode": 0,
   "errors": []
 }

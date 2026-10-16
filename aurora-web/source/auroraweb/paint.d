@@ -86,9 +86,16 @@ bool bodyPaintsBackground(Element root)
     return false;
 }
 
-/// Paint a full tree into a surface's canvas.
-void paintTree(Element root, Canvas canvas)
+/// The viewport scroll offset for the current paint. The engine scrolls by
+/// translating the canvas, so the offset is invisible in element coordinates; a
+/// `position: sticky` box needs it to know where its containing block sits.
+private int _paintScrollY;
+
+/// Paint a full tree into a surface's canvas. `scrollY` is the viewport's scroll
+/// offset in px (0 for an unscrolled paint).
+void paintTree(Element root, Canvas canvas, int scrollY = 0)
 {
+    _paintScrollY = scrollY;
     paintElement(root, canvas);
 }
 
@@ -120,11 +127,163 @@ private RgbaImage gradientMaskImage(string css, int w, int h)
     import auroraweb.svg : gradientToSvg, decodeSvg;
     const g = css.strip();
     if (g.length < 16) return null;
-    if (g[0 .. 16].toLower() != "linear-gradient(") return null;
+    // `linear-gradient(` and `radial-gradient(` are both 16 characters, and the
+    // engine's gradient-to-SVG path (and its rasteriser) already handle both.
+    const head = g[0 .. 16].toLower();
+    if (head != "linear-gradient(" && head != "radial-gradient(") return null;
     auto svg = gradientToSvg(g, max(1, w), max(1, h));
     if (svg.length == 0) return null;
     try return decodeSvg(cast(const(ubyte)[]) svg);
     catch (Throwable) return null;
+}
+
+/// Paint `element` (and its subtree) through its `filter` (CSS Filter Effects 1).
+/// Layering works exactly like `paintMaskedLayer` — the subtree goes into a layer
+/// surface and is drawn back — but the layer's colours are transformed rather
+/// than its alpha. Returns false when there is nothing to filter.
+private bool paintFilterLayer(Element element, Canvas canvas)
+{
+    const string spec = element.style.filter.strip();
+    if (spec.length == 0 || spec == "none") return false;
+    const int w = element.box.width;
+    const int h = element.box.height;
+    if (w <= 0 || h <= 0) return false;
+
+    import aurora.surface : Surface;
+    auto layerSurface = new Surface(w, h);
+    layerSurface.clear(Color(0, 0, 0, 0));
+
+    // Paint the subtree into the layer with the element's own filter disabled so
+    // this cannot recurse.
+    const int bx = element.box.x;
+    const int by = element.box.y;
+    const string savedFilter = element.style.filter;
+    element.style.filter = "none";
+    translateBoxTree(element, -bx, -by);
+    try paintElement(element, Canvas(layerSurface));
+    catch (Throwable) { }
+    translateBoxTree(element, bx, by);
+    element.style.filter = savedFilter;
+
+    auto lp = layerSurface.pixels();
+    applyColourFilterChain(lp, spec);
+
+    // Back to straight-alpha RGBA8 for the canvas (Surface is premultiplied).
+    auto rgba = new ubyte[](cast(size_t) w * h * 4);
+    foreach (y; 0 .. h)
+        foreach (x; 0 .. w)
+        {
+            const uint p = lp[cast(size_t) y * w + x];
+            const uint a = (p >> 24) & 0xff;
+            uint r = (p >> 16) & 0xff;
+            uint g = (p >> 8) & 0xff;
+            uint b = p & 0xff;
+            if (a > 0 && a < 255)
+            {
+                r = min(255, (r * 255 + a / 2) / a);
+                g = min(255, (g * 255 + a / 2) / a);
+                b = min(255, (b * 255 + a / 2) / a);
+            }
+            const size_t i = (cast(size_t) y * w + x) * 4;
+            rgba[i] = cast(ubyte) r;
+            rgba[i + 1] = cast(ubyte) g;
+            rgba[i + 2] = cast(ubyte) b;
+            rgba[i + 3] = cast(ubyte) a;
+        }
+    canvas.drawImage(Rect(bx, by, w, h), new RgbaImage(w, h, rgba), false);
+    return true;
+}
+
+/// Apply a `filter` list to a premultiplied ARGB layer, function by function in
+/// order (the spec's composition). Each function is a whole-layer pass. The
+/// colour-only functions are implemented; `blur`, `drop-shadow` and `hue-rotate`
+/// are skipped rather than approximated. A pixel is skipped only for its own
+/// function, so the rest of a list still applies.
+private void applyColourFilterChain(uint[] layer, string spec)
+{
+    import std.string : endsWith, indexOf, lastIndexOf;
+
+    foreach (raw; spec.split())
+    {
+        const auto fn = raw.strip().toLower();
+        if (fn.length == 0) continue;
+        const auto open = indexOf(fn, '(');
+        const string name = open < 0 ? fn : fn[0 .. open];
+        double amount = 1.0;
+        if (open >= 0)
+        {
+            const auto close = lastIndexOf(fn, ')');
+            if (close > open)
+            {
+                const auto inner = fn[open + 1 .. close].strip();
+                const bool pct = endsWith(inner, "%");
+                const auto num = pct ? inner[0 .. $ - 1].strip() : inner;
+                try amount = to!double(num) / (pct ? 100.0 : 1.0);
+                catch (Exception) amount = 1.0;
+            }
+        }
+
+        const bool isGray = name == "grayscale";
+        const bool isSepia = name == "sepia";
+        const bool isBright = name == "brightness";
+        const bool isInvert = name == "invert";
+        const bool isSat = name == "saturate";
+        const bool isOpacity = name == "opacity";
+        if (!isGray && !isSepia && !isBright && !isInvert && !isSat && !isOpacity)
+            continue;
+
+        foreach (ref uint p; layer)
+        {
+            const uint a = (p >> 24) & 0xff;
+            if (a == 0) continue;
+            // The spec's functions operate on straight colour, so undo the
+            // surface's premultiplication, transform, then re-premultiply.
+            double r = ((p >> 16) & 0xff) * 255.0 / a;
+            double g = ((p >> 8) & 0xff) * 255.0 / a;
+            double b = (p & 0xff) * 255.0 / a;
+            uint outAlpha = a;
+
+            if (isGray || isSat)
+            {
+                const double l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                const double t = isGray ? amount : amount;
+                r = l + (r - l) * (isGray ? (1.0 - t) : t);
+                g = l + (g - l) * (isGray ? (1.0 - t) : t);
+                b = l + (b - l) * (isGray ? (1.0 - t) : t);
+            }
+            else if (isSepia)
+            {
+                const double nr = 0.393 * r + 0.769 * g + 0.189 * b;
+                const double ng = 0.349 * r + 0.686 * g + 0.168 * b;
+                const double nb = 0.272 * r + 0.534 * g + 0.131 * b;
+                r += (nr - r) * amount;
+                g += (ng - g) * amount;
+                b += (nb - b) * amount;
+            }
+            else if (isBright)
+            {
+                r *= amount;
+                g *= amount;
+                b *= amount;
+            }
+            else if (isInvert)
+            {
+                r += ((255.0 - r) - r) * amount;
+                g += ((255.0 - g) - g) * amount;
+                b += ((255.0 - b) - b) * amount;
+            }
+            else if (isOpacity)
+                outAlpha = cast(uint) (a * amount);
+
+            r = r < 0.0 ? 0.0 : (r > 255.0 ? 255.0 : r);
+            g = g < 0.0 ? 0.0 : (g > 255.0 ? 255.0 : g);
+            b = b < 0.0 ? 0.0 : (b > 255.0 ? 255.0 : b);
+            p = (outAlpha << 24) |
+                (cast(uint) (r * a / 255.0) << 16) |
+                (cast(uint) (g * a / 255.0) << 8) |
+                cast(uint) (b * a / 255.0);
+        }
+    }
 }
 
 /// Paint `element` (and its subtree) through its `mask-image`.
@@ -211,12 +370,46 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
 /// Paint one element (and its children). Boxes carry absolute coordinates.
 private void paintElement(Element element, Canvas canvas)
 {
+    // `position: sticky`: pin the box within its containing block while the page
+    // scrolls (CSS Position 3). Done by offsetting the painted subtree, and
+    // restored afterwards, so layout geometry stays untouched.
+    if (element.style.isSticky && _paintScrollY > 0)
+    {
+        const int topInset = element.style.resolveLength(element.style.top, 0);
+        int delta = max(0, _paintScrollY + max(0, topInset) - element.box.y);
+        if (delta > 0)
+        {
+            // Never travel past the containing block's bottom edge.
+            auto parent = element.parent;
+            if (parent !is null)
+            {
+                const int room = parent.box.y + parent.box.height -
+                    (element.box.y + element.box.height);
+                delta = min(delta, max(0, room));
+            }
+            if (delta > 0)
+            {
+                translateBoxTree(element, 0, delta);
+                scope(exit) translateBoxTree(element, 0, -delta);
+            }
+        }
+    }
+
     // `mask-image`: paint the whole element through its mask instead of directly.
     if (element.style.maskImage.length && element.style.maskImage != "none" &&
         element.style.display != "none" && element.style.visibility != "hidden" &&
         element.style.display != "inline-block" &&
         element.style.display != "inline" && element.style.display != "inline-flex" &&
         paintMaskedLayer(element, canvas))
+        return;
+
+    // `filter`: same layering as the mask (it also covers the whole subtree), but
+    // it transforms the layer's colours instead of its alpha.
+    if (element.style.filter.length && element.style.filter != "none" &&
+        element.style.display != "none" && element.style.visibility != "hidden" &&
+        element.style.display != "inline-block" &&
+        element.style.display != "inline" && element.style.display != "inline-flex" &&
+        paintFilterLayer(element, canvas))
         return;
 
     // `visibility: hidden` hides the whole subtree. The engine does not inherit
@@ -697,7 +890,13 @@ private Rect objectFitRect(Element element, RgbaImage image, Rect box)
 
     const w = maxInt(1, cast(int) (iw * s + 0.5));
     const h = maxInt(1, cast(int) (ih * s + 0.5));
-    return Rect(box.x + (box.width - w) / 2, box.y + (box.height - h) / 2, w, h);
+    // `object-position` (CSS Images 3) decides where the fitted image sits: 0%
+    // aligns the leading edges, 50% (the initial value) centres, 100% the
+    // trailing edges. 0.5 reproduces the old centring exactly.
+    const double pctX = positionFraction(element.style.objectPosition, true);
+    const double pctY = positionFraction(element.style.objectPosition, false);
+    return Rect(box.x + cast(int) ((box.width - w) * pctX),
+        box.y + cast(int) ((box.height - h) * pctY), w, h);
 }
 
 unittest
@@ -836,10 +1035,40 @@ private Rect backgroundDestRect(Element element, RgbaImage image)
 
     if (w <= 0 || h <= 0) return Rect(boxX, boxY, 0, 0);
 
-    // Center the image within the box.
-    int x = boxX + (boxW - w) / 2;
-    int y = boxY + (boxH - h) / 2;
+    // Center the image within the box. (`object-position` applies to replaced
+    // content in `objectFitRect`, not to background images.)
+    // `background-position` (CSS Backgrounds 3): its initial value is the top
+    // left corner, so the default fraction for a background is 0, not 0.5.
+    const double pctX = positionFraction(element.style.backgroundPosition, true, 0.0);
+    const double pctY = positionFraction(element.style.backgroundPosition, false, 0.0);
+    int x = boxX + cast(int) ((boxW - w) * pctX);
+    int y = boxY + cast(int) ((boxH - h) * pctY);
     return Rect(x, y, w, h);
+}
+
+/// The 0..1 fraction for one axis of a position (`object-position`,
+/// `background-position`). Keywords (`left`, `center`, `right`, `top`,
+/// `bottom`) and percentages are honoured; anything else falls back to `dflt`,
+/// which is the property's own initial value (0.5 centred, 0 top/left).
+private double positionFraction(string value, bool horizontal, double dflt = 0.5)
+{
+    import std.string : endsWith;
+
+    auto parts = value.split();
+    if (parts.length == 0) return dflt;
+    auto token = parts[0];
+    if (!horizontal && parts.length >= 2)
+        token = parts[1];
+    const tok = token.strip().toLower();
+    if (tok == "left" || tok == "top") return 0.0;
+    if (tok == "right" || tok == "bottom") return 1.0;
+    if (tok == "center") return 0.5;
+    if (endsWith(tok, "%"))
+    {
+        try return to!double(tok[0 .. $ - 1]) / 100.0;
+        catch (Exception) return dflt;
+    }
+    return dflt;
 }
 
 /// Draw a text run using Aurora's TextLayout, wrapped at the given width.
@@ -863,7 +1092,8 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
     const bool noWrap = style.whiteSpace == "nowrap" || style.whiteSpace == "pre";
     const int wrapW = (maxWidth > 0 && !noWrap) ? maxWidth + 1 : 0;
     // Memoized: the layout pass already shaped this exact run.
-    auto layout = shapeTextCached(text, pixelSize, wrapW, wrapW > 0);
+    auto layout = shapeTextCached(text, pixelSize, wrapW, wrapW > 0,
+        style.letterSpacingPx());
     auto color = parseColorOrDefault(style.color, Color.rgb(0, 0, 0));
     // `background-clip: text` gradient text: the glyphs take the background
     // color (the gradient's fallback) rather than the (transparent) text color.
@@ -1333,6 +1563,9 @@ unittest
         element.style.display = "block";
         element.style.background = "rgb(0, 0, 255)";
         element.style.backgroundSize = "auto";
+        // Centred explicitly: the initial `background-position` is the top-left
+        // corner (CSS Backgrounds 3), so a centre has to be asked for.
+        element.style.backgroundPosition = "center";
         // CSS tiles by default; this case checks the single-image placement.
         element.style.backgroundRepeat = "no-repeat";
         element.backgroundImage = img;
@@ -1348,8 +1581,8 @@ unittest
 
         // The box should now contain red background-image pixels (not the
         // original white, and not the blue background at its center). With
-        // background-size:auto the 4x4 image is drawn at intrinsic size,
-        // centered: rect (28,28)-(32,32).
+        // background-size:auto and background-position:center the 4x4 image is
+        // drawn at intrinsic size in the middle: rect (28,28)-(32,32).
         auto p = surface.pixel(30, 30);
         assert((p & 0xff) == 0, "blue channel should be 0 (red image), got " ~ (p & 0xff).to!string);
         assert(((p >> 16) & 0xff) >= 250, "red channel should be ~255, got " ~ ((p >> 16) & 0xff).to!string);
@@ -1461,6 +1694,101 @@ unittest
     import aurora.surface : Surface;
     import std.conv : to;
 
+    // --- filter: grayscale drains the colour of the whole subtree ---
+    {
+        import aurora.surface : Surface;
+
+        auto elF = new Element("div");
+        elF.style.display = "block";
+        elF.style.background = "#ff0000";
+        elF.style.filter = "grayscale(1)";
+        elF.box.x = 0;
+        elF.box.y = 0;
+        elF.box.width = 20;
+        elF.box.height = 20;
+
+        auto sF = new Surface(20, 20);
+        sF.clear(Color.rgb(255, 255, 255));
+        paintElement(elF, Canvas(sF));
+        const uint pxF = sF.pixel(10, 10);
+        const uint rF = (pxF >> 16) & 0xff;
+        const uint gF = (pxF >> 8) & 0xff;
+        const uint bF = pxF & 0xff;
+        assert(gF > 40 && gF < 200 && rF == gF && gF == bF,
+            "grayscale must leave a neutral grey, got r=" ~ to!string(rF) ~
+            " g=" ~ to!string(gF) ~ " b=" ~ to!string(bF));
+        assert(((pxF >> 24) & 0xff) == 255,
+            "grayscale must not change the alpha");
+    }
+
+    // --- position: sticky pins the box while the page scrolls ---
+    {
+        import aurora.surface : Surface;
+
+        auto docK = new Element("body");
+        docK.style.display = "block";
+        docK.box.x = 0;
+        docK.box.y = 0;
+        docK.box.width = 200;
+        docK.box.height = 600;
+
+        auto bar = new Element("div");
+        bar.style.display = "block";
+        bar.style.position = "relative";
+        bar.style.isSticky = true;
+        bar.style.background = "#ff0000";
+        bar.box.x = 0;
+        bar.box.y = 50;
+        bar.box.width = 200;
+        bar.box.height = 30;
+        bar.parent = docK;
+        docK.children ~= bar;
+        docK.elements ~= bar;
+
+        auto s0 = new Surface(200, 600);
+        s0.clear(Color.rgb(255, 255, 255));
+        paintTree(docK, Canvas(s0), 0);
+        assert(((s0.pixel(100, 60) >> 16) & 0xff) > 200,
+            "at scrollY 0 a sticky box paints at its flow position");
+
+        auto s1 = new Surface(200, 600);
+        s1.clear(Color.rgb(255, 255, 255));
+        paintTree(docK, Canvas(s1), 120);
+        assert(((s1.pixel(100, 125) >> 16) & 0xff) > 200,
+            "at scrollY 120 a sticky box must be pinned near the viewport top");
+        assert(bar.box.y == 50,
+            "sticky is applied at paint time and must not move the box, got y=" ~
+            to!string(bar.box.y));
+    }
+
+    // --- a radial-gradient mask is honoured too ---
+    {
+        import aurora.surface : Surface;
+
+        auto elR = new Element("div");
+        elR.style.display = "block";
+        elR.style.background = "#ffffff";
+        elR.style.maskImage =
+            "radial-gradient(circle at 50% 50%, rgba(0,0,0,1), rgba(0,0,0,0))";
+        elR.box.x = 0;
+        elR.box.y = 0;
+        elR.box.width = 40;
+        elR.box.height = 40;
+
+        auto sr = new Surface(40, 40);
+        sr.clear(Color(0, 0, 0, 0));
+        paintElement(elR, Canvas(sr));
+
+        const uint centrePx = sr.pixel(20, 20);
+        const uint cornerPx = sr.pixel(0, 1);
+        assert(((centrePx >> 24) & 0xff) > 150,
+            "a radial mask must leave its centre painted; alpha " ~
+            to!string((centrePx >> 24) & 0xff));
+        assert(((cornerPx >> 24) & 0xff) < 60,
+            "a radial mask must fade the corner; alpha " ~
+            to!string((cornerPx >> 24) & 0xff));
+    }
+
     // --- a wrapping inline box paints its background on every line fragment ---
     {
         import aurora.surface : Surface;
@@ -1513,6 +1841,53 @@ unittest
                 to!string(frag.y) ~ " " ~ to!string(frag.width) ~ "x" ~
                 to!string(frag.height) ~ ") must carry the inline background");
         }
+    }
+
+    // --- object-position moves the fitted image inside its box ---
+    {
+        ubyte[4 * 2 * 4] px2;
+        auto img2 = new RgbaImage(4, 2, px2);
+        auto el2 = new Element("img");
+        const box2 = Rect(0, 0, 20, 20);
+
+        el2.style.objectFit = "contain";
+        el2.style.objectPosition = "50% 50%";
+        auto centred = objectFitRect(el2, img2, box2);
+        assert(centred.y == 5, "the initial object-position centres, got y=" ~
+            to!string(centred.y));
+
+        el2.style.objectPosition = "0% 0%";
+        auto topLeft = objectFitRect(el2, img2, box2);
+        assert(topLeft.x == 0 && topLeft.y == 0,
+            "object-position:0% 0% must align both leading edges; value='" ~
+            el2.style.objectPosition ~ "' box=" ~ to!string(box2.width) ~ "x" ~
+            to!string(box2.height) ~ " fitted=" ~ to!string(topLeft.width) ~ "x" ~
+            to!string(topLeft.height) ~ " fracX=" ~
+            to!string(positionFraction(el2.style.objectPosition, true)) ~
+            " fracY=" ~
+            to!string(positionFraction(el2.style.objectPosition, false)) ~
+            " got=(" ~ to!string(topLeft.x) ~ "," ~ to!string(topLeft.y) ~ ")");
+
+        // A background's default position is the top-left corner (CSS Backgrounds
+        // 3), not the centre that replaced content uses.
+        ubyte[4 * 2 * 4] pxB;
+        auto imgB = new RgbaImage(4, 2, pxB);
+        auto elB = new Element("div");
+        elB.box.x = 0;
+        elB.box.y = 0;
+        elB.box.width = 20;
+        elB.box.height = 20;
+        elB.style.backgroundSize = "contain";
+        auto bgDefault = backgroundDestRect(elB, imgB);
+        assert(bgDefault.y == 0 && bgDefault.height == 10,
+            "background-position defaults to the top-left corner, got (" ~
+            to!string(bgDefault.x) ~ "," ~ to!string(bgDefault.y) ~ ") " ~
+            to!string(bgDefault.width) ~ "x" ~ to!string(bgDefault.height));
+        elB.style.backgroundPosition = "center bottom";
+        auto bgBottom = backgroundDestRect(elB, imgB);
+        assert(bgBottom.y == 10,
+            "background-position:center bottom must sit at the bottom, got y=" ~
+            to!string(bgBottom.y));
     }
 
     // --- mask-image multiplies the painted layer's alpha ---

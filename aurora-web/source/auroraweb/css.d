@@ -112,6 +112,7 @@ struct Selector
 {
     string typeName;        /// "div", "p", or "" for universal.
     string className;       /// ".foo"
+    string[] extraClasses;  /// Further ".bar" classes in the same compound; ALL are required.
     string idName;          /// "#bar"
     Selector[] descendants; /// Ancestor selectors for descendant combinator.
     string[] combinators;   /// Per-descendant combinator: "", ">", "+".
@@ -237,6 +238,19 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
                 else if (prop == "min-width") g.minWidth = num;
                 else if (prop == "max-height") g.maxHeight = num;
                 else if (prop == "min-height") g.minHeight = num;
+                else if (prop == "prefers-color-scheme")
+                {
+                    // The engine renders the LIGHT palette, so a `dark`
+                    // preference must never match. Ignoring the unknown feature
+                    // left the query's OTHER conditions (e.g. `min-width:768px`)
+                    // to satisfy it, so a page's entire dark-theme block applied
+                    // on top of its light rules and the two themes mixed: a real
+                    // homepage kept the light banner background and took the
+                    // dark theme's mint text, which is unreadable. `light` adds
+                    // no constraint since that is what we already render.
+                    if (val.toLower() == "dark")
+                        return MediaQuery(-2, -2, -2, -2, false, false, "");
+                }
             }
             if (hasCond)
             {
@@ -282,7 +296,36 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
                 else j++;
             }
             if (j >= end) break;
-            if (css[j] == '@') { skipImport(); continue; }
+            if (css[j] == '@')
+            {
+                // An at-rule nested inside a block body (@font-face, @supports,
+                // ...). This MUST advance `j`, the cursor of THIS loop: the
+                // shared `skipImport` moves the outer `i` instead, so `j < end`
+                // stayed true forever and the parse never returned - a real
+                // stylesheet with an at-rule inside a block hung the page
+                // permanently (13 KB of CSS, never finished).
+                auto semi = indexOf(css, ";", j);
+                auto open = indexOf(css, "{", j);
+                if (open >= 0 && (semi < 0 || open < semi))
+                {
+                    int d = 0;
+                    auto k = open;
+                    while (k < end)
+                    {
+                        if (css[k] == '{') d++;
+                        else if (css[k] == '}')
+                        {
+                            d--;
+                            if (d == 0) break;
+                        }
+                        k++;
+                    }
+                    j = k < end ? k + 1 : end;
+                }
+                else
+                    j = semi < 0 ? end : semi + 1;
+                continue;
+            }
             auto brace = indexOf(css, "{", j);
             if (brace < 0 || brace >= end) break;
             const selectorText = css[j .. brace].strip();
@@ -498,6 +541,7 @@ private Selector parseSelector(string text)
     auto leaf = compounds[$ - 1];
     result.typeName = leaf.typeName;
     result.className = leaf.className;
+    result.extraClasses = leaf.extraClasses;
     result.idName = leaf.idName;
     result.attrName = leaf.attrName;
     result.attrValue = leaf.attrValue;
@@ -560,7 +604,17 @@ private void parseCompound(string part, out Selector compound)
             while (i < n && part[i] != '.' && part[i] != '#' && part[i] != '[' &&
                 part[i] != ':') i++;
             if (start > i) compound.className = "";
-            else compound.className = part[start .. min(i, part.length)];
+            else
+            {
+                // A compound can carry several classes (`.full-width.container`).
+                // Storing only one made `.a.b` match any element with `.b` alone,
+                // so a rule silently applied to elements it does not select - a
+                // real page's `.container` picked up `.full-width.container`'s
+                // `width:100%` and overflowed its viewport.
+                auto cls = part[start .. min(i, part.length)];
+                if (compound.className.length == 0) compound.className = cls;
+                else compound.extraClasses ~= cls;
+            }
         }
         else if (part[i] == '#')
         {
@@ -718,7 +772,14 @@ bool selectorMatches(in Selector sel, Element element)
     if (!compoundMatches(sel, element)) return false;
     // Walk each ancestor selector from nearest to farthest.
     auto current = element;
-    foreach_reverse (idx, desc; sel.descendants)
+    // `parseSelector` fills `descendants` nearest-first, and this walk climbs
+    // from the element upward (`current = target`), so it must consume them in
+    // that same order. Iterating them in reverse matched the OUTERMOST selector
+    // first - `.homepage` was found too low, below which the inner compounds
+    // could no longer be found - so any selector with two or more ancestors
+    // (`.homepage .copy-banner p em`) silently never matched. One-ancestor
+    // selectors were unaffected, which is why this hid for so long.
+    foreach (idx, desc; sel.descendants)
     {
         auto combinator = (idx < sel.combinators.length) ? sel.combinators[idx] : "";
         if (combinator == ">")
@@ -801,6 +862,8 @@ private bool compoundMatches(in Selector compound, Element element)
     if (compound.isRoot && element.parent !is null) return false;
     if (compound.idName.length && !element.hasId(compound.idName)) return false;
     if (compound.className.length && !element.hasClass(compound.className)) return false;
+    foreach (extra; compound.extraClasses)
+        if (!element.hasClass(extra)) return false;
     if (compound.typeName.length && compound.typeName != "*" && element.tag != compound.typeName)
         return false;
     if (compound.attrName.length)
@@ -840,12 +903,14 @@ Specificity specificityOf(in Selector sel)
     Specificity spec;
     if (sel.idName.length) spec.idCount = 1;
     if (sel.className.length) spec.classCount = 1;
+    spec.classCount += cast(int) sel.extraClasses.length;
     if (sel.attrName.length) spec.classCount++;
     if (sel.typeName.length && sel.typeName != "*") spec.typeCount = 1;
     foreach (desc; sel.descendants)
     {
         if (desc.idName.length) spec.idCount++;
         if (desc.className.length) spec.classCount++;
+        spec.classCount += cast(int) desc.extraClasses.length;
         if (desc.attrName.length) spec.classCount++;
         if (desc.typeName.length && desc.typeName != "*") spec.typeCount++;
     }
@@ -855,7 +920,7 @@ Specificity specificityOf(in Selector sel)
 private bool isUniversal(in Selector sel)
 {
     return sel.typeName == "*" && sel.className.length == 0 && sel.idName.length == 0 &&
-        sel.attrName.length == 0 && sel.descendants.length == 0;
+        sel.extraClasses.length == 0 && sel.attrName.length == 0 && sel.descendants.length == 0;
 }
 
 /**
@@ -867,6 +932,97 @@ private bool isUniversal(in Selector sel)
  */
 string[string] cascadeFor(Element element, in Rule[] rules)
 {
+    int[] all = new int[rules.length];
+    foreach (i; 0 .. rules.length) all[i] = cast(int) i;
+    return cascadeFor(element, rules, all);
+}
+
+/// Rule positions that can match `element`, ascending.
+///
+/// Rule indexing exists because `cascadeFor` scanned every rule for every
+/// element: on a real page (2274 rules) style resolution cost ~500x layout.
+/// A selector can only match when its rightmost compound - the Selector itself,
+/// since `descendants` holds the ancestors - matches, so bucketing rules by that
+/// compound's id, class or tag makes the per-element candidate set tiny.
+struct RuleIndex
+{
+    int[][string] byId;
+    int[][string] byClass;
+    int[][string] byTag;
+    int[] universal;   /// last compound with no id/class/tag: always a candidate
+}
+
+RuleIndex buildRuleIndex(in Rule[] rules)
+{
+    RuleIndex index;
+    foreach (i, ref rule; rules)
+        foreach (sel; rule.selectors)
+        {
+            // Pseudo-element selectors describe generated content; the
+            // ::before/::after lists are matched separately and stay linear.
+            if (sel.isPseudoElement) continue;
+            const int at = cast(int) i;
+            if (sel.idName.length) index.byId[sel.idName] ~= at;
+            else if (sel.className.length) index.byClass[sel.className] ~= at;
+            else if (sel.typeName.length && sel.typeName != "*")
+            {
+                // `compoundMatches` compares the tag exactly against the
+                // element's lower-cased tag, so a mixed-case type selector goes
+                // to `universal` rather than risk a missed match.
+                if (typeSelectorIsLower(sel.typeName)) index.byTag[sel.typeName] ~= at;
+                else index.universal ~= at;
+            }
+            else index.universal ~= at;
+        }
+    return index;
+}
+
+/// True when a tag selector is already lower case (so it can key `byTag`).
+private bool typeSelectorIsLower(string name)
+{
+    foreach (ch; name) if (ch >= 'A' && ch <= 'Z') return false;
+    return true;
+}
+
+/// Candidate rule positions for `element`, ascending. A superset of every rule
+/// whose selectors can match, so the cascade result is identical to the scan.
+int[] candidatesFor(in RuleIndex index, Element element)
+{
+    int[] out_;
+    void add(const int[] list) { out_ ~= list; }
+    auto idAttr = "id" in element.attrs;
+    if (idAttr !is null)
+    {
+        if (auto p = (*idAttr) in index.byId) add(*p);
+    }
+    // Split exactly as `Element.hasClass` does, so the candidate set can never
+    // miss a class the matcher would accept.
+    auto classAttr = "class" in element.attrs;
+    if (classAttr !is null)
+        foreach (c; (*classAttr).split(" "))
+        {
+            if (!c.length) continue;
+            if (auto p = c in index.byClass) add(*p);
+        }
+    if (auto p = element.tag in index.byTag) add(*p);
+    add(index.universal);
+    // The buckets overlap, so duplicates are expected. Sorting once and then
+    // dropping repeats linearly is far cheaper than a scan per insertion: a
+    // common tag or class can contribute hundreds of candidate rules.
+    import std.algorithm.sorting : sort;
+    out_.sort;
+    size_t kept = 0;
+    foreach (i; out_)
+        if (kept == 0 || out_[kept - 1] != i) out_[kept++] = i;
+    out_.length = kept;
+    return out_;
+}
+
+/// Cascade over a pre-filtered ascending list of rule positions. `indices` must
+/// be a superset of the matching rules in document order; the winner logic
+/// depends on nothing else (it compares specificity, then position).
+string[string] cascadeFor(Element element, in Rule[] rules, scope const int[] indices)
+{
     // Winner for each property: index into rules, and its specificities.
     // Store (ruleIndex, specificity) per property. Because cascadeFor returns
     // a map, we compute the winner inline.
@@ -875,8 +1031,9 @@ string[string] cascadeFor(Element element, in Rule[] rules)
     Specificity[string] ruleSpec;
     bool[string] ruleImportant;
 
-    foreach (idx, ref rule; rules)
+    foreach (idx; indices)
     {
+        const rule = rules[idx];
         // Find the highest-specificity matching selector in this rule's list.
         Specificity bestSpec;
         bool matches = false;

@@ -42,14 +42,18 @@ void clearShapeCache() { _cache = null; }
 
 /// Shape `text` at `pixelSize`, wrapping at `maxWidth` px (0 = no wrap).
 /// Returns null on failure. Memoized across calls.
-TextLayout shapeTextCached(string text, int pixelSize, int maxWidth, bool wrap = true)
+TextLayout shapeTextCached(string text, int pixelSize, int maxWidth, bool wrap = true,
+    double letterSpacing = 0.0)
 {
     if (text.length == 0) return null;
     const int ps = pixelSize < 1 ? 1 : pixelSize;
     const int wrapW = maxWidth < 0 ? 0 : maxWidth;
     // A compact key: text is the variable part, the rest are fixed-width bits.
     const key = text ~ "\x1F" ~ ps.to!string ~ "\x1F" ~ wrapW.to!string ~
-        (wrap && wrapW > 0 ? "w" : "n");
+        (wrap && wrapW > 0 ? "w" : "n") ~
+        // Tracking changes advances, so it must be part of the cache key or a run
+        // would be reused with the wrong spacing.
+        (letterSpacing != 0.0 ? "\x1F" ~ letterSpacing.to!string : "");
 
     if (auto hit = key in _cache)
     {
@@ -63,12 +67,18 @@ TextLayout shapeTextCached(string text, int pixelSize, int maxWidth, bool wrap =
         auto fonts = FontSystem.sharedInstance();
         dchar[] dtext;
         dtext.reserve(text.length);
-        foreach (ch; text) dtext ~= ch;
+        // Iterate CODE POINTS, not bytes. `foreach (ch; text)` over a string
+        // yields each UTF-8 byte, so widening them one-per-byte turned `café`
+        // (C3 A9) into "Ã©" and `’` (E2 80 99) into "â" plus two missing
+        // glyphs - every non-ASCII character on every page was mangled.
+        import std.utf : byDchar;
+        foreach (ch; text.byDchar) dtext ~= ch;
         TextLayoutOptions options;
         options.role = FontRole.ui;
         options.pixelSize = ps;
         options.maxWidth = wrapW;
         options.wrap = wrap && wrapW > 0;
+        options.letterSpacing = letterSpacing;
         layout = fonts.textEngine.layout(dtext, options);
     }
     catch (Exception)

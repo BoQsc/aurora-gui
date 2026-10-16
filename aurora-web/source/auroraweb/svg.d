@@ -235,7 +235,12 @@ RgbaImage decodeSvg(const(ubyte)[] bytes, Rgba currentColor = Rgba(0, 0, 0, 255)
     base.f = -boxY * base.d;
 
     auto ctx = StyleCtx();
-    ctx.fill = Rgba(0, 0, 0, 255);
+    // A shape with no `fill` attribute uses the inherited CSS `fill`. Pages
+    // colour icon markup with `svg { fill: currentColor }` and give the shapes
+    // no attribute at all, so defaulting to opaque black made those icons vanish
+    // against a dark toolbar. `currentColor` defaults to black, so callers that
+    // pass no ink colour keep the previous behaviour exactly.
+    ctx.fill = currentColor;
     ctx.hasFill = true;
     ctx.stroke = Rgba(0, 0, 0, 0);
     ctx.strokeWidth = 1;
@@ -857,13 +862,24 @@ private void drawElement(Tag t, StyleCtx ctx, ubyte[] px, int w, int h)
             auto dv = "d" in t.attrs;
             if (dv is null) return;
             auto subpaths = flattenPath(*dv);
+            // A compound path (more than one closed subpath) must be filled with
+            // its subpaths tested TOGETHER, or an inner contour is filled over
+            // its parent instead of becoming a hole. Gradients keep the
+            // per-subpath path, which is the common single-subpath case anyway.
+            Pt[][] compound;
+            if (ctx.hasFill && ctx.fill.a > 0 && ctx.gradientId.length == 0)
+                foreach (sp; subpaths)
+                    if (sp.points.length >= 2 && sp.closed)
+                        compound ~= toDevice(sp.points, m);
+            if (compound.length > 1)
+                rasterFillPolys(px, w, h, compound, ctx.fill);
+            else
+                foreach (sp; subpaths)
+                    if (sp.points.length >= 2 && sp.closed && ctx.hasFill)
+                        fillPts(sp.points, m, ctx, px, w, h);
             foreach (sp; subpaths)
-            {
-                if (sp.points.length < 2) continue;
-                if (sp.closed && ctx.hasFill)
-                    fillPts(sp.points, m, ctx, px, w, h);
-                strokePts(sp.points, m, ctx, px, w, h);
-            }
+                if (sp.points.length >= 2)
+                    strokePts(sp.points, m, ctx, px, w, h);
             return;
         }
         default:
@@ -1078,6 +1094,71 @@ private void rasterFill(ubyte[] px, int w, int h, Pt[] pts, Rgba col)
             {
                 auto t = (sy - a.y) / (b.y - a.y);
                 xs ~= a.x + t * (b.x - a.x);
+            }
+        }
+        if (xs.length < 2) continue;
+        sortNums(xs);
+        for (size_t k = 0; k + 1 < xs.length; k += 2)
+        {
+            int xa = cast(int) (xs[k] + 0.5);
+            int xb = cast(int) (xs[k + 1] + 0.5);
+            if (xa < 0) xa = 0;
+            if (xb > w) xb = w;
+            foreach (x; xa .. xb) blend(px, w, h, x, y, col);
+        }
+    }
+}
+
+/// Map user-space points into device space through `m`.
+private Pt[] toDevice(Pt[] pts, Mat m)
+{
+    Pt[] dev;
+    foreach (p; pts) dev ~= Pt(m.applyX(p.x, p.y), m.applyY(p.x, p.y));
+    return dev;
+}
+
+/// Even-odd fill of a COMPOUND path: several subpaths tested together.
+///
+/// `rasterFill` fills one polygon at a time, so a second subpath nested inside
+/// the first was filled solid instead of punching a hole. Letterforms rely on
+/// this: django's header logo draws "d" as an outer contour plus its counter
+/// and sets `fill-rule="evenodd"`, and the naive per-subpath fill rendered the
+/// "d" as a white blob. Counting crossings across every subpath before the
+/// parity test is what makes an inner contour a hole.
+private void rasterFillPolys(ubyte[] px, int w, int h, Pt[][] polys, Rgba col)
+{
+    size_t total;
+    double minY = double.infinity, maxY = -double.infinity;
+    foreach (poly; polys)
+    {
+        total += poly.length;
+        foreach (p; poly)
+        {
+            minY = min(minY, p.y);
+            maxY = max(maxY, p.y);
+        }
+    }
+    if (total < 3) return;
+    int y0 = cast(int) (minY < 0 ? 0 : minY);
+    int y1 = cast(int) (maxY + 1);
+    if (y1 > h) y1 = h;
+    double[] xs;
+    foreach (y; y0 .. y1)
+    {
+        xs.length = 0;
+        auto sy = y + 0.5;
+        foreach (poly; polys)
+        {
+            if (poly.length < 3) continue;
+            foreach (i; 0 .. poly.length)
+            {
+                auto a = poly[i];
+                auto b = poly[(i + 1) % poly.length];
+                if ((a.y <= sy && b.y > sy) || (b.y <= sy && a.y > sy))
+                {
+                    auto t = (sy - a.y) / (b.y - a.y);
+                    xs ~= a.x + t * (b.x - a.x);
+                }
             }
         }
         if (xs.length < 2) continue;

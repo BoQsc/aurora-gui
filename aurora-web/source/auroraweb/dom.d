@@ -13,7 +13,7 @@ module auroraweb.dom;
 import core.exception : RangeError;
 import std.algorithm : canFind;
 import std.conv : to;
-import std.string : split, strip;
+import std.string : endsWith, split, strip, toLower;
 
 /// One line fragment of an inline box. Kept in this module (which has no
 /// dependency on `aurora.types`) so `Element` can carry fragments cheaply.
@@ -79,7 +79,21 @@ final class Element
     {
         auto classAttr = "class" in attrs;
         if (classAttr is null) return false;
-        return (*classAttr).split(" ").canFind(className);
+        if (className.length == 0) return (*classAttr).split(" ").canFind(className);
+        // Scan for the space-delimited token instead of splitting. The cascade
+        // calls this once per candidate rule per element, and `split(" ")`
+        // allocated an array on every one of those calls - that allocation
+        // dominated style resolution on large pages.
+        const hay = *classAttr;
+        size_t i = 0;
+        while (i < hay.length)
+        {
+            while (i < hay.length && hay[i] == ' ') ++i;
+            const start = i;
+            while (i < hay.length && hay[i] != ' ') ++i;
+            if (i > start && hay[start .. i] == className) return true;
+        }
+        return false;
     }
 
     bool hasId(string id) const
@@ -170,9 +184,19 @@ struct ComputedStyle
     string backgroundRepeat = "repeat"; /// CSS initial value: background images tile.
     string transform = "none"; /// CSS `transform` (translate() supported so far).
     string objectFit = "fill";   /// `object-fit` for <img>: fill/contain/cover/none/scale-down
+    /// `object-position` (CSS Images 3): where a fitted image sits inside its box.
+    /// The initial value centres it.
+    string objectPosition = "50% 50%";
+    /// `background-position` (CSS Backgrounds 3). Its initial value is the top
+    /// left corner, unlike `object-position`'s centre.
+    string backgroundPosition = "0% 0%";
     /// `mask-image` (the `linear-gradient(...)` form real pages use to fade a
     /// decorative layer out); "none" paints the layer unmasked.
     string maskImage = "none";
+    /// `filter` (CSS Filter Effects 1). The colour-only functions are honoured
+    /// (grayscale, sepia, brightness, contrast, saturate, invert, opacity);
+    /// `blur`/`drop-shadow` are not implemented.
+    string filter = "none";
     /// `content` for a generated pseudo-element box; empty means none was given.
     string content = "";
 
@@ -181,6 +205,19 @@ struct ComputedStyle
     string fontStyle = "normal";
     string fontFamily = "system-ui";
     string textAlign = "left";
+    /// `text-transform` (CSS Text 3): none / uppercase / lowercase / capitalize.
+    /// Applied where text is collapsed, before shaping, so measured widths match
+    /// what is painted (`uppercase` makes a run wider).
+    string textTransform = "none";
+    /// `letter-spacing` (CSS Text 3): `normal` (the initial value) or a length.
+    /// Tracking must reach the shaper, not just the paint offset, or measured
+    /// widths and painted glyphs disagree.
+    string letterSpacing = "normal";
+    /// `position: sticky` (CSS 2.2 / Position 3). Laid out in flow like
+    /// `relative` (so it is also a containing block), but pinned within its
+    /// containing block as the page scrolls — applied at paint time, since the
+    /// engine scrolls by translating the canvas.
+    bool isSticky = false;
     /// `vertical-align` for inline/inline-box sizing (`baseline` by default).
     string verticalAlign = "baseline";
 
@@ -205,6 +242,9 @@ struct ComputedStyle
     string flexGrow = "0";
     string justifyContent = "flex-start";
     string alignItems = "stretch";
+    /// `align-self` (CSS Flexbox 8.4): a per-item override of the container's
+    /// `align-items`. "auto" means "inherit from the container".
+    string alignSelf = "auto";
     string gap = "0px";
     string borderColor = "black";
     string borderStyle = "none";
@@ -223,6 +263,7 @@ struct ComputedStyle
     string paddingBottom = "";
     string paddingLeft = "";
     string boxSizing = "content-box";
+    string textIndent = "0px";
     string borderTopStyle = "";
     string borderRightStyle = "";
     string borderBottomStyle = "";
@@ -259,6 +300,24 @@ struct ComputedStyle
     bool isPositioned() const
     {
         return position == "relative" || position == "absolute" || position == "fixed";
+    }
+
+    /// `letter-spacing` resolved to px (0 for `normal`/unusable values). `em` and
+    /// `rem` are relative to this element's font size, which is what real pages
+    /// use for label tracking (`.eyebrow { letter-spacing: 0.22em }`).
+    double letterSpacingPx() const
+    {
+        const s = letterSpacing.strip().toLower();
+        if (s.length == 0 || s == "normal" || s == "auto") return 0.0;
+        const double fontPx = fontSizePx > 0 ? fontSizePx : 16.0;
+        double scale = 0.0;
+        string numberPart;
+        if (endsWith(s, "rem")) { numberPart = s[0 .. $ - 3]; scale = fontPx; }
+        else if (endsWith(s, "em")) { numberPart = s[0 .. $ - 2]; scale = fontPx; }
+        else if (endsWith(s, "px")) { numberPart = s[0 .. $ - 2]; scale = 1.0; }
+        else return 0.0;
+        try return to!double(numberPart.strip()) * scale;
+        catch (Exception) return 0.0;
     }
 
     /// The resolved percentage base for widths (set during layout).

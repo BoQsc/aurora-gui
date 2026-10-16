@@ -1,0 +1,81 @@
+{
+  "inputs": [
+    "aurora-web/source/auroraweb/css.d",
+    "aurora-web/source/auroraweb/html.d",
+    "aurora-web/source/auroraweb/layout.d",
+    "aurora-web/source/auroraweb/svg.d",
+    "aurora-web/source/auroraweb/shaping.d",
+    "aurora-web/source/auroraweb/package.d",
+    "aurora-web/source/auroraweb/dom.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Isource",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-I../aurora-web/source",
+          "tests/headless_smoke.d",
+          "-of=build/verify-smoke.exe",
+          "-od=build/verify",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ],
+        "workdir": "aurora-browser",
+        "timeout": 1800000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "verify-smoke.exe",
+        "args": [],
+        "workdir": "aurora-browser/build",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/pageshot.exe",
+        "args": [
+          "https://boqsc.eu/",
+          "1080",
+          "680",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/verify-boqsc.ppm",
+          "8"
+        ],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/pageshot.exe",
+        "args": [
+          "https://www.djangoproject.com/",
+          "1280",
+          "800",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/verify-django.ppm",
+          "8"
+        ],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/django9.ppm",
+      "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/verify-django.ppm",
+      "referenceSource": "djangoproject.com at 1280x800 captured after the compound-path SVG fix and inspected by eye: the wordmark reads 'django' with counters, the copy banner is dark-on-white, and .container measures 1280 (no horizontal overflow)."
+    }
+  ]
+}

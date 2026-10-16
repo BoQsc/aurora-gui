@@ -1,0 +1,9 @@
+{
+  "helperPid": 30400,
+  "helper": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\bin\\aurora-rebuild-helper-task-policy-1792146670.exe",
+  "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+  "log": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\task-policy-rebuild-helper.log",
+  "sourceCommit": "d882eb562bb1460cefa4b2f337585667f489e838",
+  "previousBinaryMtime": 1792020938.7254944,
+  "launchedAt": 1792146670.9566076
+}

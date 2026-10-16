@@ -203,7 +203,12 @@ Token[] tokenize(string input)
                         {
                             tokens ~= Token(TokenKind.text, input[i .. closeIndex], null);
                             tokens ~= Token(TokenKind.closeTag, firstWord, null);
-                            i = closeIndex + closeTag.length;
+                            // `closeTag` is "</style" with no ">", so resume past
+                            // the ">" itself: stopping at it left the ">" to be
+                            // re-read as a stray text node (a real page produced a
+                            // literal "#text '>'" inside <head>).
+                            const auto gt = indexOf(input, ">", closeIndex);
+                            i = gt >= 0 ? gt + 1 : n;
                         }
                         continue;
                     }
@@ -403,6 +408,83 @@ string decodeEntities(string input)
             case "rsquo": result.put(cast(dchar) 0x2019); break;
             case "ldquo": result.put(cast(dchar) 0x201C); break;
             case "rdquo": result.put(cast(dchar) 0x201D); break;
+            // The Latin-1 accented letters: pages in French, Spanish, German,
+            // Portuguese and the Nordic languages rely on these, and a missing
+            // entry used to leak the raw `&eacute;` into the rendered text.
+            case "agrave": result.put(cast(dchar) 0x00E0); break;
+            case "aacute": result.put(cast(dchar) 0x00E1); break;
+            case "acirc": result.put(cast(dchar) 0x00E2); break;
+            case "atilde": result.put(cast(dchar) 0x00E3); break;
+            case "auml": result.put(cast(dchar) 0x00E4); break;
+            case "aring": result.put(cast(dchar) 0x00E5); break;
+            case "aelig": result.put(cast(dchar) 0x00E6); break;
+            case "ccedil": result.put(cast(dchar) 0x00E7); break;
+            case "egrave": result.put(cast(dchar) 0x00E8); break;
+            case "eacute": result.put(cast(dchar) 0x00E9); break;
+            case "ecirc": result.put(cast(dchar) 0x00EA); break;
+            case "euml": result.put(cast(dchar) 0x00EB); break;
+            case "igrave": result.put(cast(dchar) 0x00EC); break;
+            case "iacute": result.put(cast(dchar) 0x00ED); break;
+            case "icirc": result.put(cast(dchar) 0x00EE); break;
+            case "iuml": result.put(cast(dchar) 0x00EF); break;
+            case "ntilde": result.put(cast(dchar) 0x00F1); break;
+            case "ograve": result.put(cast(dchar) 0x00F2); break;
+            case "oacute": result.put(cast(dchar) 0x00F3); break;
+            case "ocirc": result.put(cast(dchar) 0x00F4); break;
+            case "otilde": result.put(cast(dchar) 0x00F5); break;
+            case "ouml": result.put(cast(dchar) 0x00F6); break;
+            case "oslash": result.put(cast(dchar) 0x00F8); break;
+            case "ugrave": result.put(cast(dchar) 0x00F9); break;
+            case "uacute": result.put(cast(dchar) 0x00FA); break;
+            case "ucirc": result.put(cast(dchar) 0x00FB); break;
+            case "uuml": result.put(cast(dchar) 0x00FC); break;
+            case "yacute": result.put(cast(dchar) 0x00FD); break;
+            case "yuml": result.put(cast(dchar) 0x00FF); break;
+            case "szlig": result.put(cast(dchar) 0x00DF); break;
+            case "Agrave": result.put(cast(dchar) 0x00C0); break;
+            case "Aacute": result.put(cast(dchar) 0x00C1); break;
+            case "Auml": result.put(cast(dchar) 0x00C4); break;
+            case "Aring": result.put(cast(dchar) 0x00C5); break;
+            case "AElig": result.put(cast(dchar) 0x00C6); break;
+            case "Ccedil": result.put(cast(dchar) 0x00C7); break;
+            case "Eacute": result.put(cast(dchar) 0x00C9); break;
+            case "Iacute": result.put(cast(dchar) 0x00CD); break;
+            case "Ntilde": result.put(cast(dchar) 0x00D1); break;
+            case "Oacute": result.put(cast(dchar) 0x00D3); break;
+            case "Ouml": result.put(cast(dchar) 0x00D6); break;
+            case "Oslash": result.put(cast(dchar) 0x00D8); break;
+            case "Uacute": result.put(cast(dchar) 0x00DA); break;
+            case "Uuml": result.put(cast(dchar) 0x00DC); break;
+            // Common symbols and currency.
+            case "euro": result.put(cast(dchar) 0x20AC); break;
+            case "pound": result.put(cast(dchar) 0x00A3); break;
+            case "yen": result.put(cast(dchar) 0x00A5); break;
+            case "cent": result.put(cast(dchar) 0x00A2); break;
+            case "sect": result.put(cast(dchar) 0x00A7); break;
+            case "para": result.put(cast(dchar) 0x00B6); break;
+            case "middot": result.put(cast(dchar) 0x00B7); break;
+            case "deg": result.put(cast(dchar) 0x00B0); break;
+            case "plusmn": result.put(cast(dchar) 0x00B1); break;
+            case "times": result.put(cast(dchar) 0x00D7); break;
+            case "divide": result.put(cast(dchar) 0x00F7); break;
+            case "frac12": result.put(cast(dchar) 0x00BD); break;
+            case "frac14": result.put(cast(dchar) 0x00BC); break;
+            case "frac34": result.put(cast(dchar) 0x00BE); break;
+            case "sup2": result.put(cast(dchar) 0x00B2); break;
+            case "sup3": result.put(cast(dchar) 0x00B3); break;
+            case "micro": result.put(cast(dchar) 0x00B5); break;
+            case "iquest": result.put(cast(dchar) 0x00BF); break;
+            case "iexcl": result.put(cast(dchar) 0x00A1); break;
+            case "bull": result.put(cast(dchar) 0x2022); break;
+            case "hearts": result.put(cast(dchar) 0x2665); break;
+            case "diams": result.put(cast(dchar) 0x2666); break;
+            case "clubs": result.put(cast(dchar) 0x2663); break;
+            case "spades": result.put(cast(dchar) 0x2660); break;
+            case "permil": result.put(cast(dchar) 0x2030); break;
+            case "prime": result.put(cast(dchar) 0x2032); break;
+            case "Prime": result.put(cast(dchar) 0x2033); break;
+            case "minus": result.put(cast(dchar) 0x2212); break;
+            case "shy": result.put(cast(dchar) 0x00AD); break;
             default: result.put(input[i]); break;
         }
         i = semicolon + 1;
@@ -417,6 +499,12 @@ private Element buildTree(Token[] tokens)
     // The root element we attach everything to (html if present else body).
     Element docRoot = null;
     Element[] stack;
+    // True while only the synthetic root exists. A document that declares its own
+    // <html> must not be nested inside that synthetic body: doing so produced
+    // body > html > head > body, so the html box inherited the real body's
+    // padding and width (a real page's html box measured 352x433 at (32,225) -
+    // exactly its body's 25vh/2em padding and 416-64 content width).
+    bool syntheticRootOnly = true;
 
     Element ensureRoot()
     {
@@ -424,6 +512,9 @@ private Element buildTree(Token[] tokens)
         {
             docRoot = new Element("body");
             root = docRoot;
+            // Content arrived before any element, so this synthetic body really is
+            // the root; a later <html> must not displace it.
+            syntheticRootOnly = false;
         }
         return docRoot;
     }
@@ -440,8 +531,17 @@ private Element buildTree(Token[] tokens)
         {
             case TokenKind.text:
             {
+                // Ignorable leading whitespace (the newline after <!doctype>
+                // and before <html>) must not materialise a root: doing so
+                // created the synthetic body AND cleared syntheticRootOnly, so
+                // the document's own <html> was nested inside it.
+                if (docRoot is null && token.data.strip().length == 0) break;
                 auto parent = current();
-                auto textNode = new TextNode(parent, token.data);
+                // Entities must be decoded in TEXT too, not only in attribute
+                // values. `&amp;`, `&copy;`, `&eacute;` and numeric references
+                // were reaching the renderer verbatim, so real pages showed raw
+                // entity text wherever they used one.
+                auto textNode = new TextNode(parent, decodeEntities(token.data));
                 parent.children ~= textNode;
                 parent.textNodes ~= textNode;
                 break;
@@ -473,10 +573,25 @@ private Element buildTree(Token[] tokens)
                         break;
                     }
                 }
-                auto parent = current();
                 auto element = new Element(tag);
                 foreach (key, value; token.attrs)
                     element.attrs[key] = value;
+                // This check must come BEFORE current(): current() calls
+                // ensureRoot(), which creates the synthetic body and clears
+                // syntheticRootOnly. Calling it first is exactly why earlier
+                // attempts never fired - the document's own <html> then nested
+                // inside that synthetic body.
+                if (tag == "html" && syntheticRootOnly && stack.length == 0 &&
+                    (docRoot is null || docRoot.children.length == 0))
+                {
+                    // The document's own <html> becomes the root.
+                    syntheticRootOnly = false;
+                    docRoot = element;
+                    root = element;
+                    stack ~= element;
+                    break;
+                }
+                auto parent = current();
                 parent.children ~= element;
                 parent.elements ~= element;
                 element.parent = parent;

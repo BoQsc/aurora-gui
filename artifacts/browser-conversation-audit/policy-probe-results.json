@@ -1,0 +1,29 @@
+{
+  "compiler_command": [
+    "dmd",
+    "-i",
+    "-verrors=10",
+    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\source",
+    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-core\\source",
+    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+    "-of=C:\\Users\\WINDOW~1\\AppData\\Local\\Temp\\aurora-policy-audit-i0d3k8xh\\policy-probe.exe",
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\browser-conversation-audit\\policy_probe.d",
+    "user32.lib",
+    "gdi32.lib",
+    "shell32.lib",
+    "wininet.lib",
+    "winmm.lib"
+  ],
+  "build_exit": 0,
+  "build_seconds": 1.4058632999949623,
+  "build_stdout": "",
+  "build_stderr": "",
+  "source_sha256": {
+    "aurora-opencode-pro\\source\\auroraopencode\\taskcontinuation.d": "5d4b770c233f7b6afc095b925fc3e1864bbb878f31a2ea9ceb4bc821a2450a03",
+    "aurora-opencode-core\\source\\auroraopencode\\verification.d": "d035eb4f7fd7f0467227b519fe4a788081887578c6698697b20c74f0ade68c6b",
+    "artifacts\\browser-conversation-audit\\policy_probe.d": "e7722fb1e8c066b00337708e5c39225aed3011772754eff8728d28f30fcc910f"
+  },
+  "run_exit": 0,
+  "stdout": "REPRODUCED: 12 distinct unsuccessful searches count as progress; zero outcomes complete.\nCONTROL: identical searches do trigger the existing stall detector.\nREPRODUCED: compilation is recognized as verification; a standalone smoke-test executable is not.\n",
+  "stderr": ""
+}

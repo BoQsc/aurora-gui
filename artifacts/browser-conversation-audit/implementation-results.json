@@ -1,0 +1,110 @@
+{
+  "source": {
+    "source_commit": "d882eb562bb1460cefa4b2f337585667f489e838",
+    "source_branch": "codex/portable-crt-experiment",
+    "source_fingerprint": "eeb8f91a7eb74823af7beb7f865f3d65342f273478a47e137bee78d38ddd348d",
+    "source_dirty": false,
+    "binary_sha256": "9fa2352800237e4d4c7ce56afb07a04665aa1c77c665cc55fcff320bd4714c8f"
+  },
+  "rebuild": {
+    "status": "ok",
+    "phase": "relaunching",
+    "reason": "Task verification ownership, scoped restart, evidence recipes and stalled-work recovery",
+    "command": "dub build --build=release",
+    "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+    "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+    "startedAt": "2026-10-16 10:31:11.5013902 UTC",
+    "finishedAt": "2026-10-16 10:32:13.4095771 UTC",
+    "durationMs": 61909,
+    "exitCode": 0,
+    "errors": []
+  },
+  "publication": "Forge release unchanged; public download verified.",
+  "runningProcess": {
+    "pid": 36388,
+    "responding": true,
+    "mainWindowHandle": 1641842
+  },
+  "delivery": {
+    "result": {
+      "sourceSha256": "bca9a8d2561db0879313088b0b1e81d3a0de26ea60522723557fbdc45c1001a4",
+      "gitHead": "d882eb562bb1460cefa4b2f337585667f489e838",
+      "buildMode": "optimized-with-assertions",
+      "executableSha256": "fd740d21b804d5510fe0e199ca045675e68006aa6409ed58186833d55ef145b1",
+      "fixture": "delivery_latency_contracts",
+      "status": "passed",
+      "exitCode": 0,
+      "seconds": 5.60226810000313
+    },
+    "measurements": [
+      "MEASURE native_wake samples=40 p50_us=118 p95_us=742 ticks=124 elapsed_ms=1956",
+      "MEASURE delivery sample=1 composer_us=1913 submit_to_paint_us=139861 serialized_us=2138 uploaded_us=6885 headers_us=108219 first_token_us=108745 applied_us=133982 paint_us=139805",
+      "MEASURE delivery sample=2 composer_us=889 submit_to_paint_us=112910 serialized_us=4826 uploaded_us=7643 headers_us=108316 first_token_us=108499 applied_us=108524 paint_us=112874",
+      "MEASURE delivery sample=3 composer_us=2606 submit_to_paint_us=114579 serialized_us=4983 uploaded_us=6241 headers_us=107348 first_token_us=107563 applied_us=107772 paint_us=114533",
+      "MEASURE delivery sample=4 composer_us=1124 submit_to_paint_us=109059 serialized_us=3900 uploaded_us=4865 headers_us=105398 first_token_us=105514 applied_us=105597 paint_us=109029",
+      "MEASURE delivery sample=5 composer_us=998 submit_to_paint_us=113551 serialized_us=4253 uploaded_us=4845 headers_us=106689 first_token_us=106871 applied_us=107046 paint_us=113504",
+      "MEASURE delivery sample=6 composer_us=2860 submit_to_paint_us=116410 serialized_us=9914 uploaded_us=10749 headers_us=112119 first_token_us=112355 applied_us=112595 paint_us=116377",
+      "MEASURE token_to_paint samples=6 median_us=6633 max_us=31060"
+    ]
+  },
+  "verification": {
+    "task_policy_contracts": "passed",
+    "task_policy_ui_contracts": "passed",
+    "task_continuation_contracts": "passed",
+    "early_plan_contracts": "passed",
+    "history_preservation_contracts": "passed",
+    "execution_ui_contracts": "passed",
+    "preference_writer_contracts": "passed",
+    "compaction_validation": "passed",
+    "optional_diagnostic_routing": "passed: 6 main and 2 read-only reviewer requests, write rejected",
+    "network_inactivity": "passed: 200ms fixture timeout releases its connection",
+    "conversation_flow": "passed: 16 HTTP rounds",
+    "history_network": "passed",
+    "resume": [
+      {
+        "elapsedMs": 121,
+        "lateResultRejected": true,
+        "mode": "continue",
+        "passed": true,
+        "requests": 2,
+        "exitCode": 0
+      },
+      {
+        "elapsedMs": 121,
+        "lateResultRejected": true,
+        "mode": "regenerate",
+        "passed": true,
+        "requests": 2,
+        "exitCode": 0
+      },
+      {
+        "elapsedMs": 120,
+        "lateResultRejected": true,
+        "mode": "queued",
+        "passed": true,
+        "requests": 2,
+        "exitCode": 0
+      },
+      {
+        "elapsedMs": 119,
+        "lateResultRejected": true,
+        "mode": "send",
+        "passed": true,
+        "requests": 2,
+        "exitCode": 0
+      }
+    ]
+  },
+  "browserCorpus": {
+    "status": "failed, correctly exposed existing engine discrepancy",
+    "comparisonReport": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\browser-reference-validation\\comparison.json",
+    "firstMismatchPixels": 14200,
+    "existingEngineUnitModules": 38,
+    "referenceAndActualImagesAttached": true
+  },
+  "scope": "Aurora OpenCode Pro execution improvements. Existing aurora-web source edits were preserved and excluded from this commit.",
+  "limitations": [
+    "Real-model diagnostic accuracy and overall task speedup remain to be measured on real tasks.",
+    "The independent browser corpus does not pass; this update does not claim browser rendering correctness."
+  ]
+}

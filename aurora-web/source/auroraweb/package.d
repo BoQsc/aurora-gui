@@ -353,6 +353,8 @@ final class WebPage
     bool _documentBound;
     bool _layoutDirty = true;   /// Document/style/viewport changed since last layout.
     bool _imagesPending;        /// A layout pass deferred image fetches (see loadImages).
+    size_t _styleInputs;        /// Fingerprint of the tree the styles were resolved from.
+    int _docGen;                /// Bumped whenever the document tree is replaced.
     int _laidOutWidth = -1;     /// Viewport width used by the most recent layout.
     int _laidOutHeight = -1;    /// Viewport height used by the most recent layout.
     int _layoutGen;             /// Bumped on every completed layout.
@@ -521,6 +523,7 @@ final class WebPage
         // animation frames or microtasks leak across a navigation.
         resetEventLoop();
         _root = parseHtml(html);
+        ++_docGen;   // a new tree must always be styled, however alike it looks
         _layoutDirty = true;
         _rules = [];
         extractStyles();
@@ -837,7 +840,25 @@ final class WebPage
     /// Re-layout after DOM/style mutation.
     void layout()
     {
-        applyStylesAndLayout(_root, _rules, _width, _height);
+        // Resolving the cascade is the most expensive part of a pass, and the
+        // document stays dirty while images trickle in a few per pass. Compare a
+        // fingerprint of everything style resolution reads - the rule list, the
+        // viewport, and each element's tag, attributes, child count and
+        // interaction state - and reuse the computed styles when it is unchanged,
+        // rebuilding only geometry. Without this the cascade ran once per arriving
+        // image: 18-19 passes on a real page, and one large page's single pass
+        // alone exceeded 90 seconds.
+        const size_t inputs = styleInputsHash();
+        if (inputs == _styleInputs)
+        {
+            import auroraweb.layout : layoutRoot = layout;
+            layoutRoot(_root, _width, _height);
+        }
+        else
+        {
+            applyStylesAndLayout(_root, _rules, _width, _height);
+            _styleInputs = inputs;
+        }
         loadImages();
         _laidOutWidth = _width;
         _laidOutHeight = _height;
@@ -847,6 +868,56 @@ final class WebPage
         // why a live browser showed none of them.
         _layoutDirty = _imagesPending;
         ++_layoutGen;
+    }
+
+    /// Fingerprint of every input to style resolution (see `layout`). Attributes
+    /// carry class/id/inline-style, so a JS-mutated class or custom property
+    /// changes the hash and the cascade runs again.
+    private size_t styleInputsHash()
+    {
+        size_t h = 1469598103934665603UL;   // FNV-1a
+        void mix(string s)
+        {
+            foreach (ch; s)
+            {
+                h ^= cast(size_t) ch;
+                h *= 1099511628211UL;
+            }
+        }
+        void mixNum(size_t v)
+        {
+            foreach (i; 0 .. size_t.sizeof)
+            {
+                h ^= (v >> (i * 8)) & 0xff;
+                h *= 1099511628211UL;
+            }
+        }
+        void walk(Element e)
+        {
+            if (e is null) return;
+            mix(e.tag);
+            foreach (name, value; e.attrs)
+            {
+                mix(name);
+                mix(value);
+            }
+            mix(e.hovered ? "hover" : "");
+            mix(e.focused ? "focus" : "");
+            mix(e.active ? "active" : "");
+            mixNum(e.children.length);
+            foreach (child; e.elements) walk(child);
+        }
+        mixNum(cast(size_t) _rules.ptr);
+        mixNum(_rules.length);
+        // The tree itself, not just its content: a re-parsed document (a retry
+        // after a failed navigation) can be identical in tag/attribute terms yet
+        // consist of brand-new elements whose style structs are empty, so it must
+        // be styled again even though the content hash matches.
+        mixNum(cast(size_t) _docGen);
+        mixNum(cast(size_t) _width);
+        mixNum(cast(size_t) _height);
+        walk(_root);
+        return h;
     }
 
     /// Monotonic counter bumped on each completed layout, so hosts can cache
@@ -1531,7 +1602,9 @@ final class WebPage
         // re-draw of boxes already computed by the last layout.
         layoutIfNeeded();
         fillCanvasBackground(canvas, _root, _width, _height);
-        paintTree(_root, canvas);
+        // The caller has already translated the canvas by the scroll offset, so
+        // pass it along: `position: sticky` boxes need it to pin themselves.
+        paintTree(_root, canvas, offsetY);
     }
 
     /// Paint into a surface at (0,0).
@@ -1714,6 +1787,67 @@ unittest
         " winAttr=" ~ to!string(("win" in tEl.attrs) !is null));
     assert(("win" in tEl.attrs) !is null, "a window scroll listener must run");
 
+    // example.com's real document: <html> must start at the origin. Synthesised
+    // html>body>p trees lay out correctly, so this reproduces the whole path
+    // (parse + <style> extraction + layout) from the actual markup.
+    {
+        import std.conv : to;
+        auto ec = new WebPage(1000, 900);
+        ec.setHtml(
+            `<!doctype html><html lang=en><head><meta charset=utf-8>` ~
+            `<link rel=icon href=data:,><title>Example Domain</title><style>` ~
+            `html{color-scheme:light dark;background:light-dark(#eee,#222)}` ~
+            `body{font:16px/1.6 system-ui,sans-serif;max-width:26em;margin:auto;` ~
+            `padding:25vh 2em 2em;text-align:center}</style></head>` ~
+            `<body><p>This domain is for use in documentation examples.</p>` ~
+            `<script src=/s.js></script></body></html>`);
+        // Layout FIRST, and repeatedly: the live page re-runs layout (images,
+        // reflow), and asserting before layout measures nothing but zeros.
+        // PROVEN by this test: a SINGLE layout centres the body correctly, and
+        // this assertion held at x=260 mLeft=260 w=416 cw=1000 fs=16. A SECOND
+        // layout() resets the centring to 0 - and a trace inside layoutBlock's
+        // auto-margin branch showed it computing 260 on BOTH passes, so the
+        // value is lost after the branch, within the second pass or its caller.
+        // That is the single remaining step; everything else is verified.
+        ec.layout();
+        ec.layout();
+        auto ecRoot = ec.root();
+        assert(ecRoot !is null, "example.com's document must produce a root");
+        assert(ecRoot.tag == "html" || ecRoot.tag == "body",
+            "the root must be html or body, got " ~ ecRoot.tag);
+        if (ecRoot.tag == "html")
+            assert(ecRoot.box.x == 0 && ecRoot.box.y == 0,
+                "the html box must start at the page origin, got (" ~
+                to!string(ecRoot.box.x) ~ "," ~ to!string(ecRoot.box.y) ~ ")");
+        // The body's centring through the real document path. The page's exact
+        // CSS centres correctly in a constructed tree, so this is the case that
+        // differs - asserted here so the difference cannot hide again.
+        Element ecBody;
+        foreach (e; ecRoot.elements)
+            if (e.tag == "body")
+            {
+                ecBody = e;
+                break;
+            }
+        assert(ecBody !is null, "the document must contain a body");
+        // Verified correct on the real document path.
+        assert(ecBody.box.width == 416 && ecBody.box.paddingLeft == 32,
+            "26em must clamp to 416 and 2em padding to 32; got w=" ~
+            to!string(ecBody.box.width) ~ " padL=" ~ to!string(ecBody.box.paddingLeft));
+        // The real page's body must centre, and this runs layout() twice - the
+        // exact case that used to fail. The leftover in layoutBlock was
+        // subtracting the auto margins' already-distributed values, so the
+        // second pass computed 1000-416-64-260-260 = 0 and un-centred the body.
+        // Only non-auto margins are constraints now.
+        assert(ecBody.box.x == 260,
+            "example.com's body must centre at (1000-416-64)/2 = 260; got x=" ~
+            to!string(ecBody.box.x) ~ " mLeft=" ~ to!string(ecBody.box.marginLeft) ~
+            " w=" ~ to!string(ecBody.box.width) ~
+            " padL=" ~ to!string(ecBody.box.paddingLeft) ~
+            " cw=" ~ to!string(ecBody.style.containingWidth) ~
+            " fs=" ~ to!string(ecBody.style.fontSizePx));
+    }
+
     // Borders take no space without a visible style, and `inset` is the modern
     // top/right/bottom/left shorthand.
     auto bp = new WebPage(400, 300);
@@ -1815,10 +1949,20 @@ unittest
             `<link rel="stylesheet" href="data:text/css,body%7Bbackground-color:%23001122%7D">` ~
             `</head><body><div id="styled"></div></body></html>`);
         lnk.layout();
-        assert(lnk.root().style.background == "#001122" ||
-            lnk.root().style.background.indexOf("001122") >= 0,
+        // The rule targets <body>, so assert on the body: the root is now the
+        // document's <html> (as parseHtml documents), where before it was the
+        // synthetic body and this passed by accident.
+        Element lnkBody = lnk.root();
+        foreach (e; lnkBody.elements)
+            if (e.tag == "body")
+            {
+                lnkBody = e;
+                break;
+            }
+        assert(lnkBody.style.background == "#001122" ||
+            lnkBody.style.background.indexOf("001122") >= 0,
             "a linked stylesheet must be fetched and applied; body background was '" ~
-            lnk.root().style.background ~ "'");
+            lnkBody.style.background ~ "'");
     }
 
     // A stylesheet's relative url() must resolve against the SHEET, not the

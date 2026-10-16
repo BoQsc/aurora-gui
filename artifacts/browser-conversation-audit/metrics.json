@@ -1,0 +1,633 @@
+{
+  "generated_at_utc": "2026-10-16T07:18:20.246353+00:00",
+  "chat": "t-m639276073661326566-0",
+  "title": "web browser",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "snapshot": {
+    "sha256": "4da24da968cacae34512d77e4c4a97cbd4c0a3e24e8ed11ba970a8cfb9c700ea",
+    "bytes": 24560071,
+    "stored_messages": 10284,
+    "selected_path_messages": 10230,
+    "requested_leaf": "m639277317402459461-8894",
+    "audited_leaf": "m639277317402459461-8894",
+    "live_index_ahead_of_snapshot": false,
+    "first_message_utc": "2026-10-14T20:44:02.356227+00:00",
+    "last_message_utc": "2026-10-16T07:15:40.245946+00:00",
+    "span_hours": 34.52719158861111
+  },
+  "task": {
+    "objective": "Make the actual rendered page look correct and complete, and remove the large-page rendering slowness, judged by screenshots and measured timings.",
+    "status": "active",
+    "verification": "required",
+    "summary_characters": 12144
+  },
+  "path_metrics": {
+    "roles": {
+      "user": 1167,
+      "assistant": 3755,
+      "tool": 5308
+    },
+    "human_messages": 21,
+    "tool_calls": 5308,
+    "tool_rounds": 3504,
+    "batched_rounds": 1316,
+    "tool_names": {
+      "dshell": 49,
+      "read": 322,
+      "grep": 565,
+      "update_plan": 357,
+      "write": 74,
+      "apply_patch": 1015,
+      "run": 2438,
+      "process": 194,
+      "view_image": 136,
+      "retire_images": 50,
+      "edit": 65,
+      "task_blocker": 16,
+      "checksum": 16,
+      "webfetch": 8,
+      "tool_status": 1,
+      "download": 2
+    },
+    "failed_tools": 288,
+    "tool_elapsed_seconds_sum": 12022.164,
+    "prompt_tokens": {
+      "count": 3753,
+      "min": 8261,
+      "median": 246195,
+      "p95": 360912,
+      "max": 402122,
+      "sum": 930978616
+    },
+    "completion_tokens_sum": 3374642,
+    "tool_output_characters": 4337463,
+    "internal_characters": 916859,
+    "controls": {
+      "task_checkpoint": 542,
+      "progress_guidance": 215,
+      "other": 151,
+      "rebuild_notice": 7,
+      "task_continuation": 231
+    },
+    "continuation_stalled": {
+      "0": 211,
+      "1": 19,
+      "2": 1
+    },
+    "repeated_identical_calls": 1873,
+    "most_repeated_calls": [
+      {
+        "tool": "run",
+        "count": 317,
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\runtest.exe",
+        "args": [
+          "runtest.exe"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 272,
+        "program": "dmd",
+        "args": [
+          "-unittest",
+          "-main",
+          "-i",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\runtest.exe",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\runtest.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 203,
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Isource",
+          "-I..\\vendor\\aurora-d-0.4.5\\source",
+          "-I..\\aurora-web\\source",
+          "tests\\headless_smoke.d",
+          "-of=build\\headless-smoke.exe",
+          "-od=build",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 200,
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-browser\\build\\headless-smoke.exe",
+        "args": [
+          "build\\headless-smoke.exe"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 160,
+        "program": "dub",
+        "args": [
+          "build",
+          "--compiler=dmd",
+          "--force"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 92,
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-browser\\aurora-browser.exe",
+        "args": [
+          "--url",
+          "https://boqsc.eu/"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 86,
+        "program": "dmd",
+        "args": [
+          "-unittest",
+          "-main",
+          "-i",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\runtest.exe",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\runtest.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 75,
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\boxdump.exe",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\boxdump.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 65,
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Isource",
+          "-I..\\vendor\\aurora-d-0.4.5\\source",
+          "-I..\\aurora-web\\source",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\pageshot.d",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\pageshot.exe",
+          "-od=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\psbuild",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 62,
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Isource",
+          "-I..\\vendor\\aurora-d-0.4.5\\source",
+          "-I..\\aurora-web\\source",
+          "source\\app.d",
+          "-of=aurora-browser-new.exe",
+          "-od=build\\appnew",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 45,
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-browser\\aurora-browser-new.exe",
+        "args": [
+          "--url",
+          "https://boqsc.eu/"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 37,
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Isource",
+          "-I..\\vendor\\aurora-d-0.4.5\\source",
+          "-I..\\aurora-web\\source",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\boxdump.d",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\boxdump.exe",
+          "-od=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\bdbuild",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 34,
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\boqscprobe.exe",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\boqscprobe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 32,
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\boqscprobe.exe",
+        "args": [
+          "boqscprobe.exe"
+        ]
+      },
+      {
+        "tool": "run",
+        "count": 14,
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\webperf.exe",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest\\webperf.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib"
+        ]
+      }
+    ],
+    "successful_image_inspections_with_blob": 132,
+    "distinct_inspected_image_blobs": 88,
+    "direct_external_browser_runs": [],
+    "assistant_errors": {}
+  },
+  "rebuild_notices": [
+    {
+      "message_id": "m639276089056682622-2",
+      "content": "The application was rebuilt and relaunched with your latest source changes. The running binary was built 2026-10-14 21:08:23 UTC from source commit 4c8a8e191c9c6772646e6009415abc43e3436b40 including recorded local edits. Its executable hash matches the recorded build. Continue the durable objective and checklist from where you left off — Add the per-project project manager feature (config/persistence, prompt builder, context-menu actions).. Apply any queued guidance before claiming completion."
+    },
+    {
+      "message_id": "m639276090248246979-2",
+      "content": "The application was rebuilt and relaunched with your latest source changes. The running binary was built 2026-10-14 21:10:23 UTC from source commit 4c8a8e191c9c6772646e6009415abc43e3436b40 including recorded local edits. Its executable hash matches the recorded build. Continue the durable objective and checklist from where you left off — Add the per-project project manager toggles to the Settings dialog.. Apply any queued guidance before claiming completion."
+    },
+    {
+      "message_id": "m639276099866439803-2",
+      "content": "The application was rebuilt and relaunched with your latest source changes. The running binary was built 2026-10-14 21:26:23 UTC from source commit 4c8a8e191c9c6772646e6009415abc43e3436b40 including recorded local edits. Its executable hash matches the recorded build. Continue the durable objective and checklist from where you left off — Add experimental project manager stages 2-5: rail badge, triggers, autonomy, per-project settings, behind an experimental master switch.. Apply any queued guidance before claiming completion."
+    },
+    {
+      "message_id": "m639276101935693772-2",
+      "content": "The application was rebuilt and relaunched with your latest source changes. The running binary was built 2026-10-14 21:29:48 UTC from source commit 00b029e28aeff32d21073d9671685a143051dc3b. Its executable hash matches the recorded build. Continue the durable objective and checklist from where you left off — Rebuild from the now-committed, pushed source so release provenance matches and the update can publish.. Apply any queued guidance before claiming completion."
+    },
+    {
+      "message_id": "m639276111680936849-2",
+      "content": "The application was rebuilt and relaunched with your latest source changes. The running binary was built 2026-10-14 21:46:06 UTC from source commit 00b029e28aeff32d21073d9671685a143051dc3b including recorded local edits. Its executable hash matches the recorded build. Continue the durable objective and checklist from where you left off — Deploy project rail drag-to-rearrange: ProjectListView drag-reorder + OpenCodeRoot.moveProject persistence in appui.d.. Apply any queued guidance before claiming completion."
+    },
+    {
+      "message_id": "m639276113830204173-2",
+      "content": "The application was rebuilt and relaunched with your latest source changes. The running binary was built 2026-10-14 21:49:40 UTC from source commit 00b029e28aeff32d21073d9671685a143051dc3b including recorded local edits. Its executable hash matches the recorded build. Continue the durable objective and checklist from where you left off — Fix: persist the experimental project manager master switch and make enabling visible (rail dot refresh + open manager).. Apply any queued guidance before claiming completion."
+    },
+    {
+      "message_id": "m639276169889212493-2",
+      "content": "The application was rebuilt and relaunched with your latest source changes. The running binary was built 2026-10-14 23:23:05 UTC from source commit 79d9c0b357c4571071f06e8d4d42048968d3c751 including recorded local edits. Its executable hash matches the recorded build. Continue the durable objective and checklist from where you left off — Deploy the new optional checkpoint feature (checkpoint.d + appui.d toolbar button/menu/settings/auto-first-checkpoint + tools.d changeJournalPath).. Apply any queued guidance before claiming completion."
+    }
+  ],
+  "verification_scope": {
+    "chat_project": {
+      "id": "p639276100536101123-0",
+      "name": "sandbox 2",
+      "path": "C:\\Users\\windows10\\AppData\\Roaming\\Aurora OpenCode\\sandbox\\sandbox 2"
+    },
+    "successful_recognized_check_workdirs": {
+      "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-evtest": 512,
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-browser": 502,
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web": 5
+    },
+    "successful_recognized_checks_matching_project": 0,
+    "journal_thread_updated_verification_states": {
+      "": 34,
+      "not_required": 185,
+      "required": 2744
+    },
+    "journal_thread_updated_projects": {
+      "sandbox": 179,
+      "p639276100536101123-0": 2784
+    }
+  },
+  "all_stored_branch_assistant_errors": {
+    "WinHTTP error 12002.": 11,
+    "WinHTTP error 12007.": 22,
+    "WinHTTP error 12030.": 4,
+    "Upstream returned HTTP 400: You have insufficient credits to make this request. Please purchase more credits to continue using the service.\n\nYour CommandCode subscription can still be active while this API key has too little spendable credit for the request. Top up CommandCode or select another CommandCode API key in Settings, then retry.": 7
+  },
+  "logs": {
+    "scope_start_local": "2026-10-15T16:11:52.6665493",
+    "scope_end_local": "2026-10-16T10:16:16.6555643",
+    "stage_counts": {
+      "effect.started": 3345,
+      "tool.progress": 4040,
+      "tool.queued": 2800,
+      "effect.waiting_for_commit": 3345,
+      "tool.started": 2800,
+      "tool.finished": 2800,
+      "request.prepared": 1746,
+      "request.accepted": 1746,
+      "request.stream_started": 1740,
+      "request.tools_requested": 1598,
+      "request.done": 141,
+      "turn.completed": 10,
+      "turn.started": 16,
+      "compaction.started": 18,
+      "compaction.finished": 18,
+      "turn.stop_requested": 3,
+      "execution.cancelled": 4,
+      "turn.interrupted": 3,
+      "request.failed": 4,
+      "turn.failed": 4
+    },
+    "matched_request_latencies": 1746,
+    "prepared_message_bytes": {
+      "count": 1746,
+      "min": 536197,
+      "median": 781921.0,
+      "p95": 988436,
+      "max": 1012322,
+      "sum": 1364618906
+    },
+    "prepared_context_budget": {
+      "count": 1746,
+      "min": 375000,
+      "median": 375000.0,
+      "p95": 375000,
+      "max": 375000,
+      "sum": 654750000
+    },
+    "latency_fields": {
+      "acceptedUs": {
+        "count": 1746,
+        "min": 12842,
+        "median": 39449.5,
+        "p95": 62384,
+        "max": 1331642,
+        "sum": 72709288
+      },
+      "serializedUs": {
+        "count": 1746,
+        "min": 17888,
+        "median": 48532.0,
+        "p95": 76789,
+        "max": 1358225,
+        "sum": 90813415
+      },
+      "uploadedUs": {
+        "count": 1740,
+        "min": 63620,
+        "median": 114698.0,
+        "p95": 194763,
+        "max": 632666,
+        "sum": 215773951
+      },
+      "firstTokenUs": {
+        "count": 1740,
+        "min": 2074635,
+        "median": 7602023.0,
+        "p95": 21176977,
+        "max": 43557182,
+        "sum": 16393040343
+      },
+      "settledUs": {
+        "count": 1746,
+        "min": 52187,
+        "median": 13650803.5,
+        "p95": 32237380,
+        "max": 10810664856,
+        "sum": 37999758609
+      },
+      "bytes": {
+        "count": 1746,
+        "min": 579282,
+        "median": 886635.5,
+        "p95": 1106536,
+        "max": 1206946,
+        "sum": 1527176956
+      }
+    },
+    "wire_payload_fields": {
+      "wireBytes": {
+        "count": 1746,
+        "min": 579282,
+        "median": 886635.5,
+        "p95": 1106536,
+        "max": 1206946,
+        "sum": 1527176956
+      },
+      "textBytes": {
+        "count": 1746,
+        "min": 60133,
+        "median": 101210.5,
+        "p95": 161338,
+        "max": 196598,
+        "sum": 186832261
+      },
+      "reasoningBytes": {
+        "count": 1746,
+        "min": 172321,
+        "median": 301884.5,
+        "p95": 399463,
+        "max": 445263,
+        "sum": 528162642
+      },
+      "toolOutputBytes": {
+        "count": 1746,
+        "min": 98253,
+        "median": 195576.0,
+        "p95": 264861,
+        "max": 304941,
+        "sum": 337461357
+      },
+      "imageBase64Bytes": {
+        "count": 1746,
+        "min": 0,
+        "median": 21024.0,
+        "p95": 111672,
+        "max": 312888,
+        "sum": 59675932
+      },
+      "argumentBytes": {
+        "count": 1746,
+        "min": 57786,
+        "median": 125161.0,
+        "p95": 199523,
+        "max": 237936,
+        "sum": 226282817
+      }
+    },
+    "requests_without_first_token": [
+      {
+        "id": 1552,
+        "milestone": "settled",
+        "acceptedUs": 30675,
+        "serializedUs": 44352,
+        "connectedUs": -1,
+        "uploadedUs": -1,
+        "headersUs": -1,
+        "firstByteUs": -1,
+        "firstTokenUs": -1,
+        "appliedUs": -1,
+        "paintSubmittedUs": -1,
+        "settledUs": 4784043,
+        "bytes": 843790,
+        "transport": "winhttp",
+        "protocol": 0,
+        "logged_at": "2026-10-15T17:11:46.0254776"
+      },
+      {
+        "id": 2218,
+        "milestone": "settled",
+        "acceptedUs": 29555,
+        "serializedUs": 32731,
+        "connectedUs": -1,
+        "uploadedUs": -1,
+        "headersUs": -1,
+        "firstByteUs": -1,
+        "firstTokenUs": -1,
+        "appliedUs": -1,
+        "paintSubmittedUs": -1,
+        "settledUs": 1991900,
+        "bytes": 894147,
+        "transport": "winhttp",
+        "protocol": 0,
+        "logged_at": "2026-10-15T22:56:03.2611727"
+      },
+      {
+        "id": 2911,
+        "milestone": "settled",
+        "acceptedUs": 45255,
+        "serializedUs": 58185,
+        "connectedUs": -1,
+        "uploadedUs": -1,
+        "headersUs": -1,
+        "firstByteUs": -1,
+        "firstTokenUs": -1,
+        "appliedUs": -1,
+        "paintSubmittedUs": -1,
+        "settledUs": 10810664856,
+        "bytes": 758271,
+        "transport": "winhttp",
+        "protocol": 0,
+        "logged_at": "2026-10-16T05:36:33.2029127"
+      },
+      {
+        "id": 2912,
+        "milestone": "settled",
+        "acceptedUs": 1331642,
+        "serializedUs": 1358225,
+        "connectedUs": -1,
+        "uploadedUs": -1,
+        "headersUs": -1,
+        "firstByteUs": -1,
+        "firstTokenUs": -1,
+        "appliedUs": -1,
+        "paintSubmittedUs": -1,
+        "settledUs": 1385467,
+        "bytes": 759550,
+        "transport": "winhttp",
+        "protocol": 0,
+        "logged_at": "2026-10-16T07:56:55.8867258"
+      },
+      {
+        "id": 2913,
+        "milestone": "settled",
+        "acceptedUs": 47922,
+        "serializedUs": 51024,
+        "connectedUs": -1,
+        "uploadedUs": -1,
+        "headersUs": -1,
+        "firstByteUs": -1,
+        "firstTokenUs": -1,
+        "appliedUs": -1,
+        "paintSubmittedUs": -1,
+        "settledUs": 52187,
+        "bytes": 759550,
+        "transport": "winhttp",
+        "protocol": 0,
+        "logged_at": "2026-10-16T07:57:02.7144044"
+      },
+      {
+        "id": 3232,
+        "milestone": "settled",
+        "acceptedUs": 41097,
+        "serializedUs": 51120,
+        "connectedUs": -1,
+        "uploadedUs": -1,
+        "headersUs": -1,
+        "firstByteUs": -1,
+        "firstTokenUs": -1,
+        "appliedUs": -1,
+        "paintSubmittedUs": -1,
+        "settledUs": 18118952,
+        "bytes": 1067015,
+        "transport": "winhttp",
+        "protocol": 0,
+        "logged_at": "2026-10-16T10:15:58.4332707"
+      }
+    ],
+    "tool_elapsed_seconds_sum": 7303.695,
+    "tool_queued_ms": {
+      "count": 2800,
+      "min": 0,
+      "median": 0.0,
+      "p95": 0,
+      "max": 145,
+      "sum": 389
+    },
+    "compile_or_check_successes": 551,
+    "unknown_run_invalidations": 161
+  },
+  "limitations": [
+    "Live session: this is a timestamped snapshot, not a final conversation total.",
+    "Selected path follows saved parent IDs; other branches are excluded.",
+    "Provider prompt-token totals include repeated history and potentially cached tokens; not unique or billable tokens.",
+    "Repeated identical tools can be justified by intervening edits; no waste fraction is inferred.",
+    "Retained logs cover only part of the conversation; latency fields are cumulative milestones, not additive stages.",
+    "Elapsed sums may overlap; the three-hour outlier could include machine suspension or callback delay.",
+    "Zero direct external-browser runs does not rule out manual reference viewing or an opaque wrapper script."
+  ]
+}

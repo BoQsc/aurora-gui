@@ -20,7 +20,8 @@ module auroraweb.layout;
  * - Percentage lengths, min/max-width, min/max-height.
  */
 
-import auroraweb.css : Rule, cascadeFor, applyMediaRules, parseStylesheet,
+import auroraweb.css : Rule, RuleIndex, buildRuleIndex, candidatesFor, cascadeFor,
+    applyMediaRules, parseStylesheet,
     keyframeEndState, pseudoElementRules;
 import auroraweb.dom : ComputedStyle, Element, InlineFragment, TextNode;
 import auroraweb.shaping : shapeTextCached;
@@ -36,10 +37,11 @@ import std.string : endsWith, indexOf, lastIndexOf, split, strip, toLower;
 /// Measure a text run into wrapped lines using Aurora's real text engine.
 /// `maxWidth` is the wrap width (0 = no wrap). Returns the TextLayout (or null
 /// on failure). This is what makes layout match painting.
-private TextLayout shapeText(string text, int pixelSize, int maxWidth)
+private TextLayout shapeText(string text, int pixelSize, int maxWidth,
+    double letterSpacing = 0.0)
 {
     // Memoized: layout measures every run, and paint then shapes the same runs.
-    return shapeTextCached(text, pixelSize, maxWidth, maxWidth > 0);
+    return shapeTextCached(text, pixelSize, maxWidth, maxWidth > 0, letterSpacing);
 }
 
 /// Measure the wrapped height of a text run at the given width. Returns the
@@ -174,8 +176,13 @@ void applyStylesAndLayout(Element root, Rule[] rules, int viewportWidth, int vie
 private void resolveStyles(Element element, Rule[] rules, int viewportWidth, int viewportHeight)
 {
     string[string] noCustom;
-    resolveStylesInto(element, rules, viewportWidth, viewportHeight, noCustom,
-        16, 16, pseudoElementRules(rules, "before"), pseudoElementRules(rules, "after"));
+    // Index the rules once per pass. Without it the cascade scanned every rule
+    // for every element, which made style resolution ~500x the cost of layout
+    // on a real page (2274 rules).
+    auto cascadeIndex = buildRuleIndex(rules);
+    resolveStylesInto(element, rules, cascadeIndex, viewportWidth, viewportHeight,
+        noCustom, 16, 16, pseudoElementRules(rules, "before"),
+        pseudoElementRules(rules, "after"));
 }
 
 /// Resolve styles, inheriting CSS custom properties (`--name`) down the tree.
@@ -197,10 +204,14 @@ private int resolveFontSize(in ComputedStyle style, int parentPx)
             return cast(int)(cssDouble(v[0 .. $ - 3].strip()) * style.rootFontSizePx);
         if (v.length >= 2 && v[$ - 2 .. $] == "em")
             return cast(int)(cssDouble(v[0 .. $ - 2].strip()) * parentPx);
-        if (v.length >= 3 && v[$ - 3 .. $] == "vw")
-            return style.viewportWidth * cssInt(v[0 .. $ - 3].strip()) / 100;
-        if (v.length >= 3 && v[$ - 3 .. $] == "vh")
-            return style.viewportHeight * cssInt(v[0 .. $ - 3].strip()) / 100;
+        // `$ - 3` was an off-by-one: "11vw" ends in "1vw", never "vw", so every
+        // vw/vh font size resolved to -1. clamp() then rejected that component
+        // and fell back to its first valid one, so a real page's hero type sat
+        // at its floor (56px) instead of clamp(3.5rem, 11vw, 7rem) = 112px.
+        if (v.length >= 3 && v[$ - 2 .. $] == "vw")
+            return style.viewportWidth * cssInt(v[0 .. $ - 2].strip()) / 100;
+        if (v.length >= 3 && v[$ - 2 .. $] == "vh")
+            return style.viewportHeight * cssInt(v[0 .. $ - 2].strip()) / 100;
         if (v.length >= 2 && v[$ - 1] == '%')
             return parentPx * cssInt(v[0 .. $ - 1].strip()) / 100;
         return -1;
@@ -249,11 +260,12 @@ private int resolveFontSize(in ComputedStyle style, int parentPx)
     return v >= 0 ? v : parentPx;
 }
 
-private void resolveStylesInto(Element element, Rule[] rules, int viewportWidth,
-    int viewportHeight, string[string] inheritedCustom, int parentFontPx = 16,
-    int rootFontPx = 16, in Rule[] beforeRules = null, in Rule[] afterRules = null)
+private void resolveStylesInto(Element element, Rule[] rules, in RuleIndex cascadeIndex,
+    int viewportWidth, int viewportHeight, string[string] inheritedCustom,
+    int parentFontPx = 16, int rootFontPx = 16, in Rule[] beforeRules = null,
+    in Rule[] afterRules = null)
 {
-    auto cascade = cascadeFor(element, rules);
+    auto cascade = cascadeFor(element, rules, candidatesFor(cascadeIndex, element));
     // Custom properties: inherit the parent's (already-settled) map and only
     // copy + settle when THIS element actually declares one. The previous code
     // duplicated the whole map and re-ran the 3-pass `var()` settling for every
@@ -300,7 +312,7 @@ private void resolveStylesInto(Element element, Rule[] rules, int viewportWidth,
     element.pseudoAfter = buildPseudoElement(element, "after", afterRules,
         custom, parentFontPx, childRootFont);
     foreach (child; element.elements)
-        resolveStylesInto(child, rules, viewportWidth, viewportHeight, custom,
+        resolveStylesInto(child, rules, cascadeIndex, viewportWidth, viewportHeight, custom,
             element.style.fontSizePx, childRootFont, beforeRules, afterRules);
 }
 
@@ -382,6 +394,9 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
         cascade.get("-webkit-mask-image", ""));
     applyDeclaration(style, "content", cascade.get("content", ""));
     applyDeclaration(style, "inset", cascade.get("inset", ""));
+    applyDeclaration(style, "object-position", cascade.get("object-position", ""));
+    applyDeclaration(style, "background-position", cascade.get("background-position", ""));
+    applyDeclaration(style, "filter", cascade.get("filter", ""));
     applyDeclaration(style, "background-repeat", cascade.get("background-repeat", ""));
     applyDeclaration(style, "font-size", cascade.get("font-size", ""));
     applyDeclaration(style, "font-weight", cascade.get("font-weight", ""));
@@ -436,8 +451,12 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
     applyDeclaration(style, "flex-grow", cascade.get("flex-grow", ""));
     applyDeclaration(style, "justify-content", cascade.get("justify-content", ""));
     applyDeclaration(style, "align-items", cascade.get("align-items", ""));
+    applyDeclaration(style, "align-self", cascade.get("align-self", ""));
     applyDeclaration(style, "gap", cascade.get("gap", ""));
     applyDeclaration(style, "line-height", cascade.get("line-height", ""));
+    applyDeclaration(style, "text-transform", cascade.get("text-transform", ""));
+    applyDeclaration(style, "letter-spacing", cascade.get("letter-spacing", ""));
+    applyDeclaration(style, "text-indent", cascade.get("text-indent", ""));
     applyDeclaration(style, "box-sizing", cascade.get("box-sizing", ""));
     applyDeclaration(style, "grid-template-columns", cascade.get("grid-template-columns", ""));
     applyDeclaration(style, "grid-template-rows", cascade.get("grid-template-rows", ""));
@@ -460,11 +479,14 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
         auto combined = toLower(anim ~ " " ~ fill);
         if (indexOf(combined, "forwards") >= 0 || indexOf(combined, "both") >= 0)
         {
+            // Either property may carry the name, and a shorthand-expanded
+            // `animation-name` can hold the WHOLE value ("intro-hide 0.32s ease
+            // 0.5s forwards"), which matched no keyframe and applied nothing -
+            // a real page's intro overlay then stayed covering the page. Take
+            // any token from either property that names a known keyframe.
             string[] names;
-            if (animName.length && animName != "none")
-                names = animName.split(",");
-            else
-                foreach (tok; anim.split(" "))
+            foreach (cand; [animName, anim])
+                foreach (tok; cand.split(" "))
                 {
                     auto t = tok.strip();
                     if (t.length && keyframeEndState(t).length)
@@ -723,9 +745,11 @@ unittest
 {
     // minmax()/calc()/var() grid tracks resolve to real columns (the boqsc.eu
     // hero split: minmax(0, calc(var(--ratio) * 100%)) minmax(0, 1fr)).
+    // The real page declares the ratio on .hero ITSELF rather than :root, which
+    // is the arrangement that failed: the var() sits in the same block as the
+    // custom property it reads.
     auto rules = parseStylesheet(`
-        :root { --hero-split-ratio: 0.38; }
-        .hero { display: grid; width: 1000px;
+        .hero { --hero-split-ratio: 0.38; display: grid; width: 1000px;
                 grid-template-columns: minmax(0, calc(var(--hero-split-ratio) * 100%)) minmax(0, 1fr); }
     `, 1000, 800);
     auto hero = new Element("div");
@@ -1041,7 +1065,12 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
             // `sticky` is approximated as `relative`: it stays in flow but is
             // still a containing block for absolutely-positioned descendants.
             if (value == "sticky")
+            {
+                // Stays in flow (and so is a containing block), but is pinned
+                // within its containing block while the page scrolls.
                 style.position = "relative";
+                style.isSticky = true;
+            }
             else if (value == "static" || value == "relative" || value == "absolute" ||
                 value == "fixed")
                 style.position = value;
@@ -1062,6 +1091,9 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         // elements in the wrong place.
         case "transform": style.transform = value.strip(); break;
         case "object-fit": style.objectFit = value.strip().toLower(); break;
+        case "object-position": style.objectPosition = value.strip(); break;
+        case "background-position": style.backgroundPosition = value.strip(); break;
+        case "filter": style.filter = value.strip(); break;
         // `mask-image`: the fading linear-gradient mask pages use to soften a
         // decorative layer. Its alpha multiplies everything the element paints.
         case "mask-image", "-webkit-mask-image":
@@ -1089,6 +1121,12 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
             if (value == "stretch" || value == "center" || value == "flex-start" || value == "flex-end")
                 style.alignItems = value;
             break;
+        case "align-self":
+            if (value == "auto" || value == "stretch" || value == "center" ||
+                value == "flex-start" || value == "flex-end" ||
+                value == "start" || value == "end")
+                style.alignSelf = value;
+            break;
         case "gap": style.gap = value; break;
         case "aspect-ratio":
             style.aspectRatio = value == "auto" ? "" : value;
@@ -1099,6 +1137,13 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 style.flexDirection = value;
             break;
         case "line-height": style.lineHeight = value; break;
+        case "text-transform":
+            if (value == "none" || value == "uppercase" || value == "lowercase" ||
+                value == "capitalize")
+                style.textTransform = value;
+            break;
+        case "letter-spacing": style.letterSpacing = value.strip(); break;
+        case "text-indent": style.textIndent = value.strip(); break;
         case "box-sizing":
             if (value == "border-box" || value == "content-box") style.boxSizing = value;
             break;
@@ -1692,6 +1737,17 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     }
 
     int width = resolveWidth(element, containingWidth);
+    // `max-width` must clamp an AUTO width too, in any unit, and BEFORE the
+    // auto-margin leftover below is computed (CSS 10.4). resolveWidth's own
+    // clamp handled an explicit px width but not an auto width with an em
+    // max-width, so `max-width: 26em; margin: auto` computed a leftover of 0
+    // and never centred - a real page's body sat flush left instead of centred.
+    if (style.resolveLength(style.width, containingWidth) < 0 &&
+        style.maxWidth.length)
+    {
+        const int maxW = style.resolveLength(style.maxWidth, containingWidth);
+        if (maxW >= 0 && width > maxW) width = maxW;
+    }
     element.box.width = width;
 
     int height = resolveHeight(element);
@@ -1762,11 +1818,31 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
 
     // `margin: auto` on a block with a definite width absorbs the leftover
     // space — this is how `margin: 0 auto` centers content (CSS 10.3.3).
+    // A declared `max-width` also makes the width definite: CSS 10.4 step 3
+    // resolves the auto margins against the clamped width, which is why every
+    // browser centres `max-width: 26em; margin: auto`. Requiring `width` meant
+    // such a block was laid out flush left (a real page's body sat at x=0 in a
+    // 1000px viewport instead of (1000-416)/2 = 292).
     if ((element.box.marginLeftAuto || element.box.marginRightAuto) &&
-        style.width.length && style.resolveLength(style.width, containingWidth) >= 0)
+        (style.resolveLength(style.width, containingWidth) >= 0 ||
+         style.maxWidth.length > 0))
     {
+        // CSS 10.3.3's equation covers the whole outer box, not just the
+        // content width: mL + bL + pL + width + pR + bR + mR = containing
+        // width. Omitting the padding and borders made `margin: auto` centre a
+        // padded box too far right (a real page's body: (1000-416)/2 = 292
+        // instead of (1000-416-64)/2 = 260).
+        // Only a NON-auto margin is a constraint here. Subtracting an `auto`
+        // margin's current value double-counted it on a second layout pass:
+        // after pass 1 distributed 260, pass 2 computed
+        // 1000 - 416 - 64 - 260 - 260 = 0 and un-centred the body.
+        const int fixedLeft = element.box.marginLeftAuto ? 0 : element.box.marginLeft;
+        const int fixedRight = element.box.marginRightAuto ? 0 : element.box.marginRight;
         const leftover = max(0, containingWidth - width -
-            element.box.marginLeft - element.box.marginRight);
+            element.box.paddingLeft - element.box.paddingRight -
+            element.box.borderLeft - element.box.borderRight -
+            fixedLeft - fixedRight);
+
         if (element.box.marginLeftAuto && element.box.marginRightAuto)
         {
             element.box.marginLeft = leftover / 2;
@@ -2002,7 +2078,7 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             const string runText = collapsibleText(element, text);
             text.paintText = runText;
             auto layout = shapeText(runText, pixelSize,
-                noWrapText ? 1_000_000 : innerW);
+                noWrapText ? 1_000_000 : innerW, element.style.letterSpacingPx());
             if (layout !is null && layout.lines.length > 0)
             {
                 // The run may wrap internally to multiple lines. Advance the
@@ -2330,6 +2406,39 @@ private int clampMinMaxHeight(Element element, int height)
     return height;
 }
 
+/// Resolve `text-indent` (CSS Text 3) to a first-line pixel offset.
+///
+/// `resolveLength` cannot be used here: it reports an unparseable/`auto` value
+/// as -1, which is indistinguishable from a legal NEGATIVE length. A real page
+/// hides an image-replaced logo's text with `text-indent:-1000%`, and that
+/// collapsed to -1px - too small to see, so the text kept painting over the
+/// logo. Percentages and ems also have to be resolved against the right base.
+private int resolveTextIndent(ComputedStyle style, int containingWidth)
+{
+    import std.conv : to;
+    const raw = style.textIndent.strip();
+    if (raw.length == 0 || raw == "auto" || raw == "none") return 0;
+    size_t k = 0;
+    if (k < raw.length && (raw[k] == '-' || raw[k] == '+')) k++;
+    while (k < raw.length && raw[k] >= '0' && raw[k] <= '9') k++;
+    if (k < raw.length && raw[k] == '.')
+    {
+        k++;
+        while (k < raw.length && raw[k] >= '0' && raw[k] <= '9') k++;
+    }
+    if (k == 0) return 0;
+    double num;
+    try num = to!double(raw[0 .. k]);
+    catch (Exception) return 0;
+    const unit = raw[k .. $].strip().toLower();
+    if (unit == "%") return cast(int) (num / 100.0 * containingWidth);
+    if (unit == "em")
+        return cast(int) (num * (style.fontSizePx > 0 ? style.fontSizePx : 16));
+    if (unit == "rem")
+        return cast(int) (num * (style.rootFontSizePx > 0 ? style.rootFontSizePx : 16));
+    return cast(int) num;               // px, and unitless (0)
+}
+
 private int resolveWidth(Element element, int containingWidth)
 {
     auto style = element.style;
@@ -2376,6 +2485,34 @@ private int resolveWidth(Element element, int containingWidth)
     return clampMinMaxWidth(element, max(0, width));
 }
 
+/// Apply `text-transform` (CSS Text 3). ASCII-only folding: markup is untrusted
+/// and `std.uni` case mapping can overrun non-ASCII sequences.
+private string applyTextTransform(string transform, string text)
+{
+    import std.ascii : toLower, toUpper;
+    if (transform != "uppercase" && transform != "lowercase" &&
+        transform != "capitalize")
+        return text;
+    auto chars = text.dup;
+    bool atWordStart = true;
+    foreach (i, c; chars)
+    {
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
+        {
+            atWordStart = true;
+            continue;
+        }
+        if (transform == "uppercase")
+            chars[i] = cast(char) toUpper(c);
+        else if (transform == "lowercase")
+            chars[i] = cast(char) toLower(c);
+        else if (atWordStart)
+            chars[i] = cast(char) toUpper(c);
+        atWordStart = false;
+    }
+    return chars.idup;
+}
+
 /// The text as it must be shaped and painted. For every `white-space` other than
 /// `pre`/`pre-wrap`/`pre-line`, runs of whitespace collapse to a single space and
 /// leading/trailing whitespace is dropped (CSS Text 3). Markup indentation is not
@@ -2388,7 +2525,8 @@ private string collapsibleText(Element element, TextNode node)
         element.style.whiteSpace == "pre" ||
         element.style.whiteSpace == "pre-wrap" ||
         element.style.whiteSpace == "pre-line";
-    if (preserved) return expandTabs(node.data);
+    if (preserved)
+        return applyTextTransform(element.style.textTransform, expandTabs(node.data));
     string result;
     bool pendingSpace = false;
     bool started = false;
@@ -2411,7 +2549,7 @@ private string collapsibleText(Element element, TextNode node)
     // following inline content ("Date added: <time>…</time>") still gets its
     // separating space. At the end of a block it is not painted, so it is safe.
     if (pendingSpace) result ~= ' ';
-    return result;
+    return applyTextTransform(element.style.textTransform, result);
 }
 
 /// Parse `aspect-ratio: <w> / <h>` (or a bare number) into width/height. Returns
@@ -2605,6 +2743,42 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     // items, not as stacked blocks).
     layoutContents(element, childFlow, element);
 
+    // CSS 10.3.7: with `width: auto` and only ONE inset given, the used width is
+    // shrink-to-fit - never below the min-content width, never above the space
+    // left by the given inset, and taking the preferred content width when it
+    // fits. Only the both-insets case was handled above, so an absolutely
+    // positioned flex bar stretched to `max-width` instead: a real page's
+    // pill-shaped dock left an empty half running across the viewport. Measured
+    // after the children are laid out so flex gaps and wrapping are counted.
+    if (style.resolveLength(style.width, cbW) < 0 && !(leftGiven && rightGiven))
+    {
+        int contentRight = childFlow.x;
+        foreach (child; element.children)
+        {
+            auto childEl = cast(Element) child;
+            if (childEl is null || childEl.style.display == "none") continue;
+            contentRight = max(contentRight, childEl.box.x + childEl.box.width +
+                childEl.box.marginRight);
+        }
+        const int fitPadBorder = element.box.paddingLeft + element.box.paddingRight +
+            element.box.borderLeft + element.box.borderRight;
+        const int fitAvailable = cbW - (leftGiven ? leftV : 0) - (rightGiven ? rightV : 0);
+        const int fitWanted = min(max(0, contentRight - childFlow.x),
+            max(0, fitAvailable - fitPadBorder));
+        const int fitW = clampMinMaxWidth(element, fitWanted) + fitPadBorder;
+        if (fitW > 0 && fitW != absW)
+        {
+            absW = fitW;
+            element.box.width = absW;
+            if (rightGiven)
+                element.box.x = cbX + cbW - absW - rightV - element.box.marginRight;
+            childFlow.x = element.box.x + element.box.paddingLeft + element.box.borderLeft;
+            childFlow.width = max(0, absW - fitPadBorder);
+            childFlow.lineEnd = childFlow.x + childFlow.width;
+            layoutContents(element, childFlow, element);
+        }
+    }
+
     // CSS 10.6.4: an absolutely positioned box with `height: auto` shrink-to-fits
     // its content (unless both vertical insets are given, which was solved above).
     // It used to be forced to exactly 0, so every auto-height overlay, tooltip
@@ -2702,6 +2876,9 @@ private void layoutFixed(Element element, int containingWidth, int viewportWidth
         element.box.borderLeft - element.box.borderRight);
     childFlow.height = cbH;
     childFlow.lineEnd = childFlow.x + childFlow.width;
+    // CSS Text 3 `text-indent`: the first line's start shifts.
+    const indent = resolveTextIndent(element.style, childFlow.width);
+    if (indent != 0) childFlow.x += indent;
     layoutChildren(element, childFlow, element);
 }
 
@@ -2954,6 +3131,11 @@ private void layoutInlineBlock(Element element, ref FlowContext flow, Element po
 /// by its parent, so it must not be repositioned here.
 private void layoutContents(Element element, ref FlowContext flow, Element positionedAncestor)
 {
+    // A flex/grid item reaches its content through here, not the block child
+    // flow, so `text-indent` must be applied for it too - django's header logo
+    // is a flex item that hides its text behind the logo image this way.
+    const indent = resolveTextIndent(element.style, flow.width);
+    if (indent != 0) flow.x += indent;
     auto d = element.style.display;
     if (d == "flex" || d == "inline-flex")
         layoutFlex(element, flow, positionedAncestor, true);
@@ -3301,23 +3483,21 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         }
     }
 
-    // align-items on the row's cross axis (CSS Flexbox 8.3). Only `center` used
-    // to be honoured, so a toolbar declaring `align-items: flex-start` centred
-    // its buttons and one declaring `flex-end` packed them to the top. `stretch`
-    // needs no work here: items already resolve their own height.
-    if (style.alignItems == "flex-start" || style.alignItems == "start")
+    // align-items / align-self on the row's cross axis (CSS Flexbox 8.3 and
+    // 8.4). Only `center` used to be honoured, so a toolbar declaring
+    // `align-items: flex-start` centred its buttons and one declaring `flex-end`
+    // packed them to the top. `align-self` overrides the container per item;
+    // `stretch` needs no work here because items resolve their own height.
+    foreach (ce; items)
     {
-        foreach (ce; items)
+        // (`align` is a D keyword, hence the name.)
+        const string alignValue = (ce.style.alignSelf.length && ce.style.alignSelf != "auto")
+            ? ce.style.alignSelf : style.alignItems;
+        if (alignValue == "flex-start" || alignValue == "start")
             ce.box.y = innerY;
-    }
-    else if (style.alignItems == "flex-end" || style.alignItems == "end")
-    {
-        foreach (ce; items)
+        else if (alignValue == "flex-end" || alignValue == "end")
             ce.box.y = innerY + maxChildHeight - ce.box.height;
-    }
-    else if (style.alignItems == "center")
-    {
-        foreach (ce; items)
+        else if (alignValue == "center")
             ce.box.y = innerY + (maxChildHeight - ce.box.height) / 2;
     }
 
@@ -3581,6 +3761,38 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
     }
 
     // First pass: lay each item into its cell to learn its intrinsic height.
+    // A track is a ceiling, not a fixed width: an item declaring its own
+    // width/max-width keeps it (CSS 9.3). Every place that sizes an item must
+    // go through this - the re-lay pass below sets widths again, and forcing an
+    // item to the full track made a real page's 42rem hero panel 1080px wide,
+    // overflowing its column and clipping its heading.
+    int itemWidth(Element ce, int trackW)
+    {
+        import std.algorithm : max, min;
+        int w = trackW;
+        const dw = ce.style.resolveLength(ce.style.width, trackW);
+        if (dw >= 0) w = min(w, dw);
+        const mw = ce.style.resolveLength(ce.style.maxWidth, trackW);
+        if (mw >= 0) w = min(w, mw);
+        const nw = ce.style.resolveLength(ce.style.minWidth, trackW);
+        if (nw >= 0) w = max(w, nw);
+        return w;
+    }
+    // One definition of a grid item's content flow, used by BOTH passes below.
+    // Keeping them in step by hand drifted twice: the re-lay used the raw track
+    // width and the item's border-box origin, so children wrapped against the
+    // wrong width and ignored the item's own padding - a real page's hero
+    // heading then sat at the panel's border edge and a floating dock covered it.
+    FlowContext itemContentFlow(Element ce, int originX, int originY)
+    {
+        FlowContext f;
+        f.x = originX + ce.box.paddingLeft + ce.box.borderLeft;
+        f.y = originY + ce.box.paddingTop + ce.box.borderTop;
+        f.width = max(0, ce.box.width - ce.box.paddingLeft - ce.box.paddingRight -
+            ce.box.borderLeft - ce.box.borderRight);
+        f.lineEnd = f.x + f.width;
+        return f;
+    }
     int cursorX = innerX;
     int cursorY = innerY;
     int rowIndex = 0;
@@ -3605,17 +3817,19 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
         }
         ce.box.x = cursorX;
         ce.box.y = cursorY;
-        ce.box.width = tracks[colIndex];
+        ce.box.width = itemWidth(ce, tracks[colIndex]);
+        // A grid item is its own containing block: percentages and min(100%, …)
+        // inside it must resolve against its track, not 0. layoutGrid bypasses
+        // layoutBlock - where this is normally set - so a real page's hero panel
+        // measured the whole grid width instead of its column.
+        ce.style.containingWidth = ce.box.width;
+        ce.style.containingHeight = style.containingHeight;
         resolveBoxMetrics(ce, ce.box.width);
         // Item intrinsic height: explicit height, or content-based estimate.
         const hPx = ce.style.resolveLength(ce.style.height, style.containingHeight);
         int itemH = hPx >= 0 ? hPx : 18;
         // Lay the cell's children to measure content.
-        auto sub = FlowContext();
-        sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
-        sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
-        sub.width = max(0, ce.box.width - ce.box.paddingLeft - ce.box.paddingRight);
-        sub.lineEnd = sub.x + sub.width;
+        auto sub = itemContentFlow(ce, ce.box.x, ce.box.y);
         const int subTop = sub.y;
         layoutContents(ce, sub, ce);
         // Content height = the deeper of the inline-text bottom and how far
@@ -3686,13 +3900,9 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
             }
             ce.box.x = px;
             ce.box.y = py;
-            ce.box.width = tracks[pc];
-            auto itemFlow = FlowContext();
-            itemFlow.x = px;
-            itemFlow.y = py;
-            itemFlow.width = tracks[pc];
+            ce.box.width = itemWidth(ce, tracks[pc]);
+            auto itemFlow = itemContentFlow(ce, px, py);
             itemFlow.height = pr < cast(int) rowHeights.length ? rowHeights[pr] : 0;
-            itemFlow.lineEnd = px + tracks[pc];
             layoutContents(ce, itemFlow, ce);
             px += tracks[pc] + colGap;
             pc++;
@@ -4442,6 +4652,232 @@ unittest
     // --- an <img> with height:auto uses the image's intrinsic ratio ---
     // --- `color` inherits from an ancestor when the element sets none ---
     // --- aspect-ratio derives an auto height from the used width ---
+    // --- a root's own padding insets its content, it does not move its box ---
+    {
+        auto rulesPad = parseStylesheet(`
+            html { margin: 0; padding: 0; }
+            body { margin: 0; padding: 25px 10px 5px 10px; }
+            p { margin: 0; }
+        `, 300, 300);
+        auto docB = new Element("body");
+        auto para = new Element("p");
+        docB.children ~= para;
+        docB.elements ~= para;
+        para.parent = docB;
+        auto tB = new TextNode(para, "hello");
+        tB.parent = para;
+        para.children ~= tB;
+        applyStylesAndLayout(docB, rulesPad, 300, 300);
+        assert(docB.box.x == 0 && docB.box.y == 0,
+            "a body's own padding must not move its box, got (" ~
+            to!string(docB.box.x) ~ "," ~ to!string(docB.box.y) ~ ")");
+        assert(para.box.x == 10 && para.box.y == 25,
+            "a body's padding must inset its content, got p at (" ~
+            to!string(para.box.x) ~ "," ~ to!string(para.box.y) ~ ")");
+
+        // Same again but with an explicit <html> parent: the body's padding must
+        // not move the html box (a real page's html box was offset by exactly
+        // its body's 25vh/2em padding).
+        auto htmlEl = new Element("html");
+        htmlEl.children ~= docB;
+        htmlEl.elements ~= docB;
+        docB.parent = htmlEl;
+        applyStylesAndLayout(htmlEl, rulesPad, 300, 300);
+        assert(htmlEl.box.x == 0 && htmlEl.box.y == 0,
+            "with an html parent, html must stay at the origin, got (" ~
+            to!string(htmlEl.box.x) ~ "," ~ to!string(htmlEl.box.y) ~ ")");
+    }
+
+    // --- a max-width block with margin:auto centres (CSS 10.4 step 3) ---
+    {
+        import std.conv : to;
+        auto rulesC = parseStylesheet(`
+            html { margin: 0; padding: 0; }
+            body { margin: auto; max-width: 400px; padding: 0; }
+        `, 1000, 800);
+        auto htmlC = new Element("html");
+        auto bodyC = new Element("body");
+        bodyC.parent = htmlC;
+        htmlC.children ~= bodyC;
+        htmlC.elements ~= bodyC;
+        applyStylesAndLayout(htmlC, rulesC, 1000, 800);
+        assert(bodyC.box.width == 400,
+            "max-width must clamp the body to 400, got " ~ to!string(bodyC.box.width));
+        // Nothing tested `max-width` with `margin: auto`, which is why the
+        // centring could be silently wiped: resolveBoxMetrics re-ran after
+        // layout and resolved the `auto` margin back to 0.
+        assert(bodyC.box.x == 300,
+            "max-width + margin:auto must centre: (1000-400)/2 = 300; got x=" ~
+            to!string(bodyC.box.x) ~
+            " autoL=" ~ to!string(bodyC.box.marginLeftAuto) ~
+            " autoR=" ~ to!string(bodyC.box.marginRightAuto) ~
+            " mLeft=" ~ to!string(bodyC.box.marginLeft) ~
+            " cw=" ~ to!string(bodyC.style.containingWidth) ~
+            " maxW='" ~ bodyC.style.maxWidth ~ "'" ~
+            " w='" ~ bodyC.style.width ~ "'");
+    }
+
+    // --- max-width + margin:auto + padding still centres ---
+    // The isolated test above passes because a block with no padding has auto
+    // width equal to the containing width, so the clamp alone yields the right
+    // answer. With padding the auto width is (containing - padding), which is
+    // what a real page's body has.
+    {
+        import std.conv : to;
+        auto rulesP = parseStylesheet(`
+            html { margin: 0; padding: 0; }
+            body { margin: auto; max-width: 25em; padding: 10px 20px; }
+        `, 1000, 800);
+        auto htmlP = new Element("html");
+        auto bodyP = new Element("body");
+        bodyP.parent = htmlP;
+        htmlP.children ~= bodyP;
+        htmlP.elements ~= bodyP;
+        applyStylesAndLayout(htmlP, rulesP, 1000, 800);
+        // `25em` is 400px at the default 16px font size, so this also covers the
+        // em path that px happened to mask.
+        // CSS 10.3.3: mL + pl + width + pr + mR = containing width,
+        // so mL + 20 + 400 + 20 + mR = 1000 -> 280 each. box.x is the
+        // border-box origin, i.e. marginLeft.
+        assert(bodyP.box.x == 280,
+            "padding must be part of the centring maths: (1000-400-40)/2 = 280; got x=" ~
+            to!string(bodyP.box.x) ~ " mLeft=" ~ to!string(bodyP.box.marginLeft) ~
+            " mRight=" ~ to!string(bodyP.box.marginRight) ~
+            " w=" ~ to!string(bodyP.box.width) ~
+            " padL=" ~ to!string(bodyP.box.paddingLeft) ~
+            " cw=" ~ to!string(bodyP.style.containingWidth));
+    }
+
+    // --- example.com's own body declarations must centre ---
+    // Its real CSS, copied verbatim, so a failure can be bisected: font
+    // shorthand, 26em max-width, auto margins, 25vh/2em padding.
+    {
+        import std.conv : to;
+        auto rulesE = parseStylesheet(`
+            html { color-scheme: light dark; }
+            body { font: 16px/1.6 system-ui,sans-serif; max-width: 26em;
+                   margin: auto; padding: 25vh 2em 2em; text-align: center; }
+        `, 1000, 900);
+        auto htmlE = new Element("html");
+        auto bodyE = new Element("body");
+        bodyE.parent = htmlE;
+        htmlE.children ~= bodyE;
+        htmlE.elements ~= bodyE;
+        applyStylesAndLayout(htmlE, rulesE, 1000, 900);
+        assert(bodyE.box.width == 416,
+            "26em must clamp to 416px, got " ~ to!string(bodyE.box.width));
+        assert(bodyE.box.x == 260,
+            "example.com's body must centre at (1000-416-64)/2 = 260; got x=" ~
+            to!string(bodyE.box.x) ~ " mLeft=" ~ to!string(bodyE.box.marginLeft) ~
+            " padL=" ~ to!string(bodyE.box.paddingLeft) ~
+            " cw=" ~ to!string(bodyE.style.containingWidth) ~
+            " fs=" ~ to!string(bodyE.style.fontSizePx) ~
+            " fam=" ~ bodyE.style.fontFamily);
+    }
+
+    // --- letter-spacing widens the shaped run ---
+    {
+        auto rulesL = parseStylesheet(`
+            body { margin: 0; }
+            .trackL { letter-spacing: 5px; }
+        `, 400, 200);
+        auto docL = new Element("body");
+        auto trackEl = new Element("div");
+        trackEl.attrs["class"] = "trackL";
+        auto plainEl = new Element("div");
+        docL.children ~= trackEl;
+        docL.elements ~= trackEl;
+        trackEl.parent = docL;
+        docL.children ~= plainEl;
+        docL.elements ~= plainEl;
+        plainEl.parent = docL;
+        auto tracked = new TextNode(trackEl, "tracking");
+        tracked.parent = trackEl;
+        trackEl.children ~= tracked;
+        auto plain = new TextNode(plainEl, "tracking");
+        plain.parent = plainEl;
+        plainEl.children ~= plain;
+        applyStylesAndLayout(docL, rulesL, 400, 200);
+
+        assert(trackEl.style.letterSpacingPx() == 5.0,
+            "letter-spacing:5px must resolve to 5, got " ~
+            to!string(trackEl.style.letterSpacingPx()));
+        assert(tracked.layoutWidth > plain.layoutWidth,
+            "tracked text must shape wider than untracked; got " ~
+            to!string(tracked.layoutWidth) ~ " vs " ~ to!string(plain.layoutWidth));
+    }
+
+    // --- text-transform applies before shaping ---
+    {
+        auto rulesT = parseStylesheet(`
+            body { margin: 0; }
+            .upT { text-transform: uppercase; }
+            .capT { text-transform: capitalize; }
+        `, 400, 200);
+        auto docT = new Element("body");
+        auto upEl = new Element("div");
+        upEl.attrs["class"] = "upT";
+        auto capEl = new Element("div");
+        capEl.attrs["class"] = "capT";
+        foreach (x; [upEl, capEl])
+        {
+            docT.children ~= x;
+            docT.elements ~= x;
+            x.parent = docT;
+        }
+        auto upText = new TextNode(upEl, "quiet harbour");
+        upText.parent = upEl;
+        upEl.children ~= upText;
+        auto capText = new TextNode(capEl, "quiet harbour");
+        capText.parent = capEl;
+        capEl.children ~= capText;
+        applyStylesAndLayout(docT, rulesT, 400, 200);
+
+        assert(upText.paintText == "QUIET HARBOUR",
+            "text-transform:uppercase must be applied to the shaped and painted " ~
+            "text, got '" ~ upText.paintText ~ "'");
+        assert(capText.paintText == "Quiet Harbour",
+            "text-transform:capitalize must upper-case each word's first letter, got '" ~
+            capText.paintText ~ "'");
+    }
+
+    // --- align-self overrides align-items for one item ---
+    {
+        auto rulesS = parseStylesheet(`
+            body { margin: 0; }
+            .rowS { display: flex; align-items: flex-start; }
+            .tallS { width: 20px; height: 40px; }
+            .selfEnd { width: 20px; height: 10px; align-self: flex-end; }
+            .plainS { width: 20px; height: 10px; }
+        `, 200, 200);
+        auto docS = new Element("body");
+        auto rowS = new Element("div");
+        rowS.attrs["class"] = "rowS";
+        docS.children ~= rowS;
+        docS.elements ~= rowS;
+        rowS.parent = docS;
+        auto tallS = new Element("div");
+        tallS.attrs["class"] = "tallS";
+        auto selfEnd = new Element("div");
+        selfEnd.attrs["class"] = "selfEnd";
+        auto plainS = new Element("div");
+        plainS.attrs["class"] = "plainS";
+        foreach (x; [tallS, selfEnd, plainS])
+        {
+            rowS.children ~= x;
+            rowS.elements ~= x;
+            x.parent = rowS;
+        }
+        applyStylesAndLayout(docS, rulesS, 200, 200);
+        assert(plainS.box.y == tallS.box.y,
+            "without align-self an item follows align-items:flex-start, got y=" ~
+            to!string(plainS.box.y) ~ " want " ~ to!string(tallS.box.y));
+        assert(selfEnd.box.y == tallS.box.y + tallS.box.height - selfEnd.box.height,
+            "align-self:flex-end must override the container, got y=" ~
+            to!string(selfEnd.box.y) ~ " want " ~
+            to!string(tallS.box.y + tallS.box.height - selfEnd.box.height));
+    }
+
     // --- align-items shifts flex items on the cross axis ---
     {
         auto rulesA = parseStylesheet(`
@@ -4714,6 +5150,29 @@ unittest
             "min() takes the smallest argument");
         assert(cs.resolveLength("max(10px, 20px, 30px)", 0) == 30,
             "max() takes the largest argument");
+    }
+
+    {
+        // font-size must resolve clamp()/vw/vh exactly as resolveLength does.
+        // A `$ - 3` off-by-one in resolveFontSize's vw/vh suffix test ("11vw"
+        // ends in "1vw", never "vw") made every such font size resolve to -1, so
+        // clamp() rejected that component and fell back to its first valid one:
+        // a real page's hero type sat at its floor, 56px = 3.5rem, instead of
+        // clamp(3.5rem, 11vw, 7rem) = 112px at a 1080px viewport.
+        auto fs = ComputedStyle();
+        fs.viewportWidth = 1080;
+        fs.viewportHeight = 680;
+        fs.rootFontSizePx = 16;
+        fs.fontSizePx = 16;
+        fs.fontSize = "clamp(3.5rem, 11vw, 7rem)";
+        const fsPx = resolveFontSize(fs, 16);
+        assert(fsPx == 112,
+            "clamp(3.5rem, 11vw, 7rem) at 1080 wide must be 112, got " ~
+            to!string(fsPx));
+        fs.fontSize = "11vw";
+        assert(resolveFontSize(fs, 16) == 118,
+            "a bare 11vw font-size at 1080 must be 118, got " ~
+            to!string(resolveFontSize(fs, 16)));
     }
 
     {
