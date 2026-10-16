@@ -2483,7 +2483,7 @@ int main(string[] args)
         auto targetMenu = cast(ContextMenu) currentTransientPopup(root);
         assert(targetMenu !is null,
             "Right-clicking the model should open context targets");
-        assert(targetMenu.items().length == 11,
+        assert(targetMenu.items().length == 13,
             "Context menu should show the target, the provider limit, a " ~
             "compaction switch and five targets");
         assert(targetMenu.items()[0].label ==
@@ -2496,13 +2496,13 @@ int main(string[] args)
             "Context menu must display the read-only provider limit");
         assert(!targetMenu.items()[2].checked,
             "Automatic compaction should be off by default");
-        assert(targetMenu.items()[6].checked,
+        assert(targetMenu.items()[8].checked,
             "Auto target should be selected by default");
-        assert(targetMenu.items()[10].label == toUTF32("500,000 tokens") &&
-            targetMenu.items()[10].enabled,
+        assert(targetMenu.items()[12].label == toUTF32("500,000 tokens") &&
+            targetMenu.items()[12].enabled,
             "500K target should be available below a 1M provider limit");
         targetMenu.items()[2].action();
-        targetMenu.items()[10].action();
+        targetMenu.items()[12].action();
         dismissContextMenus(root);
         root.tickTree(0.02);
         assert(root.requestContextBudgetForTesting(
@@ -2582,7 +2582,7 @@ int main(string[] args)
         driver.click(globalCenter(usageBadge));
         root.tickTree(0.02);
         targetMenu = cast(ContextMenu) currentTransientPopup(root);
-        assert(targetMenu !is null && !targetMenu.items()[10].enabled,
+        assert(targetMenu !is null && !targetMenu.items()[12].enabled,
             "Clicking the context badge should open targets and disable " ~
             "those above the provider limit");
         dismissContextMenus(root);
@@ -3103,9 +3103,13 @@ int main(string[] args)
     // Regression: the stock CheckBox reserves 34 + 12*len px, so "Thinking"
     // claimed 130 px and left a ~70 px dead gap before Tools (which looked
     // detached). Both toggles must now hug their labels and sit as a tight pair.
+    // The bound follows the label the control actually shows: a DeepSeek
+    // conversation that never recorded a Thinking choice reads "Thinking: High"
+    // rather than "Thinking: Off", and the control must hug that text too.
     auto thinkingToggle = requireWidget!Widget(root, "oc-thinking");
     auto toolsToggle = requireWidget!Widget(root, "oc-tools");
-    assert(thinkingToggle.bounds().width < 34 + "Thinking".length * 12,
+    const thinkingLabel = root.thinkingModeLabelForTesting();
+    assert(thinkingToggle.bounds().width < 34 + thinkingLabel.length * 12,
         "Thinking toggle should hug its label instead of reserving 130 px");
     assert(toolsToggle.bounds().width < 34 + "Tools".length * 12,
         "Tools toggle should hug its label instead of reserving 94 px");
@@ -3139,25 +3143,31 @@ int main(string[] args)
     // The common toolbar, rail, sidebar, and composer buttons explain
     // themselves on hover too, through the shared button-tooltip registry.
     {
-        auto tipChanges = requireWidget!Widget(root, "oc-changes");
-        driver.moveTo(globalCenter(tipChanges));
+        // The Changes view is a subitem of the Checkpoint menu rather than its
+        // own toolbar button (see the changes-view scenario above), so this
+        // representative common button is the New project button: its tooltip is
+        // one terse line, which is what the compact panel size below expects.
+        auto tipNewProject = requireWidget!Widget(root, "oc-new-project");
+        driver.moveTo(globalCenter(tipNewProject));
         root.tickTree(0.02);
-        assert(root.buttonTooltipTextForTesting("oc-changes").length == 0,
+        assert(root.buttonTooltipTextForTesting("oc-new-project").length == 0,
             "Button tooltip must wait for the hover-intent delay");
         foreach (_; 0 .. 20) root.tickTree(0.05);
-        assert(paintProjection(root, driver), "Changes button tooltip did not paint");
-        const changesTip = root.buttonTooltipTextForTesting("oc-changes");
-        assert(changesTip.indexOf("file changes") >= 0,
-            "Changes button tooltip lost its text: " ~ changesTip);
+        assert(paintProjection(root, driver), "New project button tooltip did not paint");
+        const newProjectTip = root.buttonTooltipTextForTesting("oc-new-project");
+        assert(newProjectTip.indexOf("project") >= 0,
+            "New project button tooltip lost its text: " ~ newProjectTip);
         // These panels are deliberately compact: smaller than the regular
         // hover panels (usage breakdown, file paths, dialog options).
-        const changesTipBounds = root.buttonTooltipBoundsForTesting(
-            "oc-changes");
-        assert(changesTipBounds.width <= 200 && changesTipBounds.height <= 34,
-            "Common-button tooltips should render in the compact panel size");
+        const newProjectTipBounds = root.buttonTooltipBoundsForTesting(
+            "oc-new-project");
+        assert(newProjectTipBounds.width <= 200 && newProjectTipBounds.height <= 34,
+            "Common-button tooltips should render in the compact panel size: " ~
+            to!string(newProjectTipBounds.width) ~ "x" ~
+            to!string(newProjectTipBounds.height) ~ " for '" ~ newProjectTip ~ "'");
         driver.moveTo(Point(4, 700));
         root.tickTree(0.02);
-        assert(root.buttonTooltipTextForTesting("oc-changes").length == 0,
+        assert(root.buttonTooltipTextForTesting("oc-new-project").length == 0,
             "Button tooltip stayed open after the pointer left");
 
         // The composer's Send button opens its tooltip above itself, since the
@@ -3191,9 +3201,12 @@ int main(string[] args)
     driver.click(globalCenter(thinkingToggle), MouseButton.right);
     root.tickTree(0.02);
     auto reasoningMenu = cast(ContextMenu) currentTransientPopup(root);
+    // DeepSeek 4.1 Flash reasons by default, so a route that never recorded a
+    // Thinking choice shows High rather than Off. The menu still offers Off, and
+    // choosing it records an explicit Off for this endpoint and model.
     assert(reasoningMenu !is null && reasoningMenu.items().length == 7 &&
-        reasoningMenu.items()[1].checked,
-        "Thinking menu must offer Off, Low, Medium and High (default Off)");
+        reasoningMenu.items()[4].checked,
+        "Thinking menu must offer Off, Low, Medium and High (DeepSeek defaults to High)");
     // Row 2 is Low: selecting it enables thinking at low effort.
     reasoningMenu.items()[2].action();
     dismissContextMenus(root);
@@ -5361,12 +5374,14 @@ int main(string[] args)
         "a freshly recorded plan was treated as stale");
     root.addConversationForTesting(["assistant"], [""]);
     const stalePlanToolBase = root.toolMessageCountForTesting();
-    foreach (i; 0 .. 8)
+    // The runtime nudges once tool results since the last update_plan reach
+    // planRefreshNudgeCalls (16 in appui.d), so the fixture must run that many.
+    foreach (i; 0 .. 16)
         root.injectToolResultForTesting("read", "file " ~ to!string(i), false,
             `{"filePath":"src/file` ~ to!string(i) ~ `.d"}`);
-    assert(root.toolMessageCountForTesting() == stalePlanToolBase + 8,
-        "the stale-plan fixture did not run eight tool results");
-    assert(root.toolResultsSincePlanUpdateForTesting() == 8,
+    assert(root.toolMessageCountForTesting() == stalePlanToolBase + 16,
+        "the stale-plan fixture did not run sixteen tool results");
+    assert(root.toolResultsSincePlanUpdateForTesting() == 16,
         "tool results since the last update_plan were miscounted: " ~
         to!string(root.toolResultsSincePlanUpdateForTesting()));
     assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0 &&
@@ -6637,6 +6652,31 @@ int main(string[] args)
             "a vendor-normalized model was not matched: " ~
             root.activeSessionModelForTesting());
         writeln("Conversation model reconciled against the catalog on switch");
+    }
+
+    // A non-GUI (cmd/console) session defaults to the lowest-latency DeepSeek
+    // 4.1 route with reasoning off, while the saved settings keep the user's own
+    // choice so a shell launch never changes the desktop app's model.
+    {
+        const savedModel = root.settingsModelForTesting();
+        root.setConsoleDefaultModel("deepseek/deepseek-v4.1-flash-fast", false);
+        root.newChatForTesting();
+        assert(root.activeSessionModelForTesting() ==
+            "deepseek/deepseek-v4.1-flash-fast",
+            "console session did not use the fast route: " ~
+            root.activeSessionModelForTesting());
+        assert(!root.activeSessionThinkingForTesting(),
+            "console session did not disable thinking");
+        assert(root.settingsModelForTesting() == savedModel,
+            "console default leaked into the saved settings: " ~
+            root.settingsModelForTesting());
+        // A normal session after the console default is cleared keeps settings.
+        root.setConsoleDefaultModel("", false);
+        root.newChatForTesting();
+        assert(root.activeSessionModelForTesting() == savedModel,
+            "an empty console default must fall back to the saved model: " ~
+            root.activeSessionModelForTesting());
+        writeln("Console sessions default to fast 4.1 without touching Settings");
     }
 
     root.shutdownClient();

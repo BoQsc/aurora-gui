@@ -1,0 +1,11 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:#ffffff}
+/* Two lines; each item stretches to ITS OWN line's cross size, not the
+   container's (CSS Flexbox 8.3: the stretch target is the line cross size). */
+.wrap{display:flex;flex-wrap:wrap;width:100px;background:#eeeeee}
+.x{width:60px;height:20px;background:#2266cc}
+.y{width:30px;background:#cc2244}
+.z{width:100px;height:10px;background:#22aa44}
+</style>
+<div class="wrap"><div class="x"></div><div class="y"></div><div class="z"></div></div>

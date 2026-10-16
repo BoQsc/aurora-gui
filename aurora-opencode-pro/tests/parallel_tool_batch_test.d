@@ -14,6 +14,8 @@ import std.file : thisExePath;
 import core.thread : Thread;
 import core.time : msecs, MonoTime;
 import auroraopencode.tools : executeTool, ToolCancellation, ChangeContext, runFilesystemHelperMode;
+import auroraopencode.readprogress : ReadProgress, decodeReadProgress;
+import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress;
 import std.array : replicate;
 import std.file : mkdirRecurse, tempDir, write;
 import std.path : buildPath;
@@ -34,16 +36,6 @@ int main(string[] args)
         Thread.sleep(msecs(60_000));
         return 0;
     }
-    if (args.length == 3 && args[1] == "--aurora-filesystem-tool")
-    {
-        auto request = parseJSON(readText(args[2]));
-        auto fields = parseJSON(request["arguments"].str);
-        if ("_fixtureProgress" in fields.object)
-        {
-            write(request["progressPath"].str, "Fixture scan progress");
-            Thread.sleep(msecs(1800));
-        }
-    }
     const helper = runFilesystemHelperMode(args);
     if (helper >= 0) return helper;
     const workspace = buildPath(tempDir(), "aurora-parallel-" ~
@@ -62,7 +54,13 @@ int main(string[] args)
     assert(!longLine.failed, longLine.output);
     assert(longLine.output.indexOf("line truncated") >= 0);
     assert(longLine.output.indexOf("2: last") >= 0);
-    assert(progress.length > 0 && progress[0].indexOf("Filesystem host PID") >= 0);
+    // A read reports its own measured activity (an encoded ReadProgress), never
+    // the generic filesystem-host status line that non-read tools use.
+    assert(progress.length > 0 && progress[0].indexOf("Filesystem host PID") < 0,
+        "a read must not report the generic filesystem-host status line");
+    ReadProgress firstRead;
+    assert(decodeReadProgress(progress[0], firstRead) &&
+        firstRead.path.indexOf("long.txt") >= 0, progress[0]);
     auto offsetRead = executeTool(OpenCodeToolCall("offset", "read",
         `{"filePath":"long.txt","offset":2,"limit":1}`), workspace);
     assert(!offsetRead.failed && offsetRead.output.indexOf("2: last") >= 0);
@@ -71,13 +69,40 @@ int main(string[] args)
         OpenCodeToolCall("glob-progress", "glob", `{"pattern":"*.txt"}`),
         OpenCodeToolCall("list-progress", "dshell", `{"command":"list"}`)])
     {
-        string snapshots;
-        auto result = executeTool(spec, workspace, null, ChangeContext.init,
-            (string text) { snapshots ~= text ~ "\n"; });
+        // A scan this small can finish before its host publishes a snapshot, so
+        // the measured summary is asserted from the tool's own output - the text
+        // the UI shows. Decoding of live snapshots is covered by the blocked scan
+        // below, which cannot finish quickly.
+        auto result = executeTool(spec, workspace);
         assert(!result.failed, result.output);
-        assert(snapshots.indexOf("no new progress for") >= 0, snapshots);
-        assert(snapshots.indexOf("Latest matches:") >= 0, snapshots);
+        // A search reports its measured scan summary; a directory listing reports
+        // the scanned entries it walked.
+        assert(result.output.indexOf(spec.name == "dshell" ? "Scan complete." : "Checked ") >= 0,
+            result.output);
+        assert(result.output.indexOf("fixture.txt") >= 0, result.output);
     }
+    // A blocked host publishes measured search snapshots: the observer decodes
+    // them, sees the published totals, sees the silence, and cancels.
+    SearchProgress blockedScan;
+    bool blockedQuiet;
+    auto blockedToken = new ToolCancellation();
+    auto blocked = executeTool(OpenCodeToolCall("grep-blocked", "grep",
+        `{"pattern":"needle","path":"fixture.txt","_fixtureBlocked":true,"_fixtureProgress":true,"timeout":5000}`),
+        workspace, blockedToken, ChangeContext.init, (string payload) {
+            SearchProgress update;
+            if (decodeSearchProgress(payload, update)) blockedScan = update;
+            if (blockedScan.lastActivityMs >= 1000 && blockedScan.files == 77)
+            {
+                blockedQuiet = true;
+                blockedToken.cancel();
+            }
+        });
+    assert(blockedQuiet && blocked.failed && blockedScan.partial &&
+        blockedScan.terminal, blocked.output);
+    assert(blockedScan.totalsKnown && blockedScan.files == 77 &&
+        blockedScan.latest.length > 0 &&
+        blockedScan.latest[$ - 1].indexOf("large-log.txt") >= 0, blocked.output);
+    assert(blocked.output.indexOf("incomplete") >= 0, blocked.output);
     JSONValue processArgs;
     processArgs["program"] = thisExePath();
     processArgs["args"] = JSONValue([JSONValue("--quiet-fixture")]);
@@ -118,13 +143,28 @@ int main(string[] args)
     auto stopped = executeTool(OpenCodeToolCall("stop", "run", processArgs.toString()),
         workspace, stopToken, ChangeContext.init, (string text) { stopToken.cancel(); });
     assert(stopped.failed && stopped.output.indexOf("stopped by user") >= 0, stopped.output);
-    string hostedProgress;
+    // A host that blocks (here: it publishes one snapshot, then stops) leaves the
+    // read measured but quiet: the observer decodes the published byte count,
+    // sees the silence, and cancels. The snapshot comes from the fixture host
+    // named by AURORA_FILESYSTEM_HOST, which the test runner always provides.
+    ReadProgress hostedRead;
+    bool quietSeen;
+    auto hostedToken = new ToolCancellation();
     auto hosted = executeTool(OpenCodeToolCall("host-progress", "read",
-        `{"filePath":"fixture.txt","_fixtureProgress":true}`), workspace,
-        null, ChangeContext.init, (string text) { hostedProgress ~= text ~ "\n"; });
-    assert(!hosted.failed, hosted.output);
-    assert(hostedProgress.indexOf("Fixture scan progress") >= 0, hostedProgress);
-    assert(hostedProgress.indexOf("no new progress for 1s") >= 0, hostedProgress);
+        `{"filePath":"fixture.txt","_fixtureBlocked":true,"_fixtureProgress":true,"timeout":5000}`),
+        workspace, hostedToken, ChangeContext.init, (string payload) {
+            ReadProgress update;
+            if (decodeReadProgress(payload, update)) hostedRead = update;
+            if (hostedRead.lastActivityMs >= 1000 && hostedRead.bytesRead == 2500)
+            {
+                quietSeen = true;
+                hostedToken.cancel();
+            }
+        });
+    assert(quietSeen && hosted.failed && hostedRead.terminal, hosted.output);
+    assert(hostedRead.bytesRead == 2500 && hostedRead.fraction() == 0.25 &&
+        hostedRead.path.indexOf("fixture.txt") >= 0, hosted.output);
+    assert(hosted.output.indexOf("incomplete") >= 0, hosted.output);
     bool searchRunnerUsed;
     auto search = experimentalWebSearchExecute(`{"query":"fixture"}`, workspace,
         (string[] argv, string workdir, int timeout) {

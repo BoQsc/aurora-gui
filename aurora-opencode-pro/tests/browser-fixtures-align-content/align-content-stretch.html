@@ -1,0 +1,11 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:#ffffff}
+/* Two auto-height lines in a 100px-tall wrap container: the default
+   align-content (normal = stretch) grows each line by 100/2 = 50px, and
+   align-items: stretch grows each item to fill its line. */
+.wrap{display:flex;flex-wrap:wrap;height:100px;width:100px}
+.a{width:60px;background:#2266cc}
+.b{width:60px;background:#cc2244}
+</style>
+<div class="wrap"><div class="a"></div><div class="b"></div></div>

@@ -334,9 +334,68 @@ import auroraweb.html : parseHtml;
 import auroraweb.js : JsRuntime, JsValue, JsKind, JsScope, Node, parseScript;
 import auroraweb.layout : applyStylesAndLayout;
 import auroraweb.net : HttpResponse, httpFetch, resolveUrl;
+import auroraweb.encoding : decodeText, decodeStyleSheet;
+import auroraweb.encoding : sniffEncoding;
 import auroraweb.interact : elementAt, hrefOf;
 import auroraweb.paint : paintTree, fillCanvasBackground, canvasBackgroundColor,
     bodyPaintsBackground;
+
+/// One cached subresource: the bytes plus the freshness rules its response
+/// declared. Storing the rules matters because reusing everything forever served
+/// a stale stylesheet whenever the server said `no-store`, `no-cache` or gave a
+/// `max-age` that had expired (RFC 9111).
+private struct CachedResource
+{
+    ubyte[] bytes;
+    bool noStore;             /// `Cache-Control: no-store` - never reusable.
+    bool noCache;             /// `Cache-Control: no-cache` - only after revalidation.
+    bool mustRevalidate;      /// `Cache-Control: must-revalidate`.
+    int maxAgeSeconds = -1;   /// `Cache-Control: max-age=N`, -1 when absent.
+    long storedMsec;          /// Monotonic milliseconds when it was stored.
+}
+
+/// Milliseconds from a monotonic clock (immune to wall-clock changes).
+private long monotonicMsec()
+{
+    import core.time : MonoTime;
+    return MonoTime.currTime.ticks / 10_000L; // ticks are 100ns units
+}
+
+/// Read the directives that affect reuse from a Cache-Control value.
+private void parseCacheControl(string value, ref CachedResource entry)
+{
+    import std.array : split;
+    foreach (token; value.split(','))
+    {
+        auto t = token.strip().toLower();
+        if (t == "no-store") entry.noStore = true;
+        else if (t == "no-cache" || t == "private") entry.noCache = true;
+        else if (t == "must-revalidate") entry.mustRevalidate = true;
+        else if (t.startsWith("max-age="))
+        {
+            auto number = t["max-age=".length .. $].strip();
+            int seconds;
+            bool ok = number.length > 0;
+            foreach (c; number)
+            {
+                if (c < '0' || c > '9') { ok = false; break; }
+                seconds = seconds * 10 + (c - '0');
+            }
+            if (ok) entry.maxAgeSeconds = seconds;
+        }
+    }
+}
+
+/// `true` when a stored copy may be reused without contacting the server.
+private bool mayReuse(in CachedResource entry)
+{
+    if (entry.noStore || entry.noCache || entry.mustRevalidate) return false;
+    if (entry.maxAgeSeconds >= 0)
+        return monotonicMsec() - entry.storedMsec < entry.maxAgeSeconds * 1000L;
+    // Nothing said: reuse it, as a cache does in the absence of freshness
+    // information. This is what keeps a second load of a large page cheap.
+    return true;
+}
 
 /// Subresources (stylesheets, images, scripts) keyed by URL, shared by every
 /// page in the process. Without it each load repeated every request: a heavy
@@ -344,7 +403,12 @@ import auroraweb.paint : paintTree, fillCanvasBackground, canvasBackgroundColor,
 /// while each later pass over the same tree cost 6-9ms, so the network round
 /// trips - not the layout - were the whole cost. Reload, back/forward and a
 /// second tab to the same site now reuse what is already in memory.
-private ubyte[][string] _resourceCache;
+private CachedResource[string] _resourceCache;
+
+/// Content-Type of each fetched subresource. The resource loader hands back
+/// bytes only, so without this a stylesheet's own charset is unavailable and a
+/// windows-1252 sheet's selectors cannot match the document's class names.
+private string[string] _resourceContentTypes;
 private size_t _resourceCacheBytes;
 /// Bound the cache so a long browsing session cannot grow without limit.
 private enum size_t MaxResourceCacheBytes = 64 * 1024 * 1024;
@@ -364,16 +428,29 @@ size_t resourceCacheSize() { return _resourceCache.length; }
 /// Bytes currently held by the cache (for tests and telemetry).
 size_t resourceCacheBytes() { return _resourceCacheBytes; }
 
-/// Store freshly downloaded subresource bytes under `url`. Bounded, and only
-/// the first value for a URL is kept (a second lookup must hit the cache).
-private ubyte[] cacheResource(string url, ubyte[] bytes)
+/// Store freshly downloaded subresource bytes under `url`, remembering the
+/// response's cache directives. Bounded, and only the first value for a URL is
+/// kept (a second lookup must hit the cache).
+private ubyte[] cacheResource(string url, ubyte[] bytes,
+    string[string] headers = null)
 {
     if (bytes is null || bytes.length == 0 || url.length == 0) return bytes;
+    CachedResource entry;
+    // The cache outlives the fetch that produced these bytes, and `bytes` may be
+    // a slice of a temporary response buffer, so the cache must own its copy.
+    // Keeping the caller's slice left a dangling reference that faulted on the
+    // next lookup.
+    entry.bytes = bytes.dup;
+    entry.storedMsec = monotonicMsec();
+    if (headers !is null)
+        if (auto cc = "cache-control" in headers)
+            parseCacheControl(*cc, entry);
+    if (entry.noStore) return bytes; // stored nowhere, by the server's request
     if (_resourceCache.length < MaxResourceCacheEntries &&
         _resourceCacheBytes + bytes.length <= MaxResourceCacheBytes &&
         url !in _resourceCache)
     {
-        _resourceCache[url] = bytes;
+        _resourceCache[url] = entry;
         _resourceCacheBytes += bytes.length;
     }
     return bytes;
@@ -406,6 +483,11 @@ final class WebPage
     /// Resource loader callback: given a URL, return the raw bytes or null.
     /// Used for both <img> decoding and `fetchText`/`fetchBytes`/`fetch`.
     ubyte[] delegate(string url) @safe _resourceLoader;
+    /// Optional richer loader that also reports the response's headers. Without
+    /// it the memoizing loader path dropped `Cache-Control`, so a `no-store` or
+    /// `no-cache` stylesheet was cached and reused like a plain one (RFC 9111).
+    ubyte[] delegate(string url, out string[string] headers) @safe
+        _resourceLoaderWithHeaders;
     /// The URL of the document most recently loaded through `navigate()`.
     string _currentUrl;
 
@@ -419,11 +501,26 @@ final class WebPage
         _resourceLoader = loader;
     }
 
+    /// Set a loader that also returns the response's headers, so cache
+    /// directives from the network survive into the resource cache.
+    void setResourceLoaderWithHeaders(
+        ubyte[] delegate(string url, out string[string] headers) @safe loader)
+    {
+        _resourceLoaderWithHeaders = loader;
+    }
+
     /// Backwards-compatible alias for `setResourceLoader` (kept for existing
     /// callers that used the image-oriented name).
     void setImageLoader(ubyte[] delegate(string url) @safe loader)
     {
         _resourceLoader = loader;
+    }
+
+    /// Backwards-compatible alias for `setResourceLoaderWithHeaders`.
+    void setImageLoaderWithHeaders(
+        ubyte[] delegate(string url, out string[string] headers) @safe loader)
+    {
+        _resourceLoaderWithHeaders = loader;
     }
 
     /// Fetch a subresource through the loader, memoized by URL. Stylesheets,
@@ -432,16 +529,103 @@ final class WebPage
     /// follows them) instead of repeating the request.
     ubyte[] loadResource(string url)
     {
-        if (url.length == 0 || _resourceLoader is null) return null;
-        if (auto hit = url in _resourceCache) return *hit;
+        if (url.length == 0) return null;
+        if (_resourceLoader is null && _resourceLoaderWithHeaders is null)
+            return null;
+        if (auto hit = url in _resourceCache)
+            if (mayReuse(*hit)) return (*hit).bytes;
         ubyte[] bytes;
+        string[string] headers;
         try
-            bytes = _resourceLoader(url);
+        {
+            if (_resourceLoaderWithHeaders !is null)
+                bytes = _resourceLoaderWithHeaders(url, headers);
+            else
+                bytes = _resourceLoader(url);
+        }
         catch (Throwable)
             bytes = null;
         // A failure is never cached: a transient network error must stay
         // retryable on the next load.
-        return cacheResource(url, bytes);
+        return cacheResource(url, bytes, headers);
+    }
+
+    /// `true` when `url` may be served from the cache without a request.
+    bool resourceIsReusable(string url)
+    {
+        if (auto hit = url in _resourceCache) return mayReuse(*hit);
+        return false;
+    }
+
+    /// Forget one cached subresource, so the next lookup refetches it.
+    void invalidateResource(string url)
+    {
+        if (auto hit = url in _resourceCache)
+        {
+            _resourceCacheBytes -= (*hit).bytes.length;
+            _resourceCache.remove(url);
+        }
+    }
+
+    version (unittest)
+    unittest
+    {
+        // Cache-Control decides reuse: no-store/no-cache never reuse, max-age is
+        // honoured, and a response that says nothing keeps the cheap path.
+        clearResourceCache();
+        auto page = new WebPage(100, 100);
+        auto seeded = cacheResource("plain", cast(ubyte[]) "abc", null);
+        assert(seeded.length == 3, "cacheResource returns the bytes");
+        assert(page.resourceIsReusable("plain"), "no directives keep the cache useful");
+
+        cacheResource("nostore", cast(ubyte[]) "abc",
+            ["cache-control": "no-store"]);
+        assert(!page.resourceIsReusable("nostore"),
+            "no-store must never be reused");
+
+        cacheResource("nocache", cast(ubyte[]) "abc",
+            ["cache-control": "no-cache"]);
+        assert(!page.resourceIsReusable("nocache"),
+            "no-cache must not be reused without revalidation");
+
+        cacheResource("aged", cast(ubyte[]) "abc",
+            ["cache-control": "public, max-age=0"]);
+        assert(!page.resourceIsReusable("aged"),
+            "an expired max-age must not be reused");
+
+        cacheResource("fresh", cast(ubyte[]) "abc",
+            ["cache-control": "public, max-age=600"]);
+        assert(page.resourceIsReusable("fresh"),
+            "an unexpired max-age is reusable");
+
+        page.invalidateResource("fresh");
+        assert(!page.resourceIsReusable("fresh"), "invalidate forgets the entry");
+        clearResourceCache();
+    }
+
+    version (unittest)
+    unittest
+    {
+        // A loader that also reports headers must feed those headers into the
+        // memo, so `no-cache` from the network is not silently cached and
+        // reused. Without the header-carrying loader every response looked
+        // directive-free and stayed reusable.
+        clearResourceCache();
+        auto page = new WebPage(100, 100);
+        int calls;
+        page.setResourceLoaderWithHeaders((string url, out string[string] hdrs) @safe {
+            ++calls;
+            hdrs = ["cache-control": "no-cache"];
+            auto bytes = "abc".dup;
+            return cast(ubyte[]) bytes;
+        });
+        page.loadResource("x");
+        assert(calls == 1, "the loader is used the first time");
+        assert(!page.resourceIsReusable("x"),
+            "no-cache from the loader must not be reusable");
+        page.loadResource("x");
+        assert(calls == 2, "no-cache must force a second request");
+        clearResourceCache();
     }
 
     version (unittest)
@@ -473,14 +657,23 @@ final class WebPage
         clearResourceCache();
     }
 
-    /// Fetch a URL and decode the response body as UTF-8 text. Returns an
-    /// empty string on failure.
+    /// Fetch a URL and decode the response body as text. Returns an empty
+    /// string on failure. Decoding follows the WHATWG Encoding rules (BOM,
+    /// Content-Type charset, then the UTF-8/windows-1252 fallback) instead of
+    /// assuming UTF-8: a windows-1252 stylesheet's class names and colours were
+    /// mangled before, so its rules matched nothing.
     string fetchText(string url)
     {
         auto bytes = fetchBytes(url);
         if (bytes.length == 0) return "";
-        import std.utf : toUTF8;
-        return toUTF8(cast(const(char)[]) bytes);
+        return decodeStyleSheet(bytes, contentTypeOf(url), _documentEncoding);
+    }
+
+    /// The recorded Content-Type of a fetched subresource ("" when unknown).
+    private string contentTypeOf(string url)
+    {
+        if (auto hit = url in _resourceContentTypes) return *hit;
+        return "";
     }
 
     /// Fetch a URL and return the raw response bytes (empty on failure).
@@ -489,7 +682,8 @@ final class WebPage
         // Stylesheets, images and scripts all arrive here, so consult the
         // shared cache before touching the network.
         if (url.length)
-            if (auto hit = url in _resourceCache) return *hit;
+            if (auto hit = url in _resourceCache)
+                if (mayReuse(*hit)) return (*hit).bytes;
         if (_resourceLoader !is null)
         {
             try
@@ -504,7 +698,9 @@ final class WebPage
         }
         auto res = httpFetch(url);
         if (res.error.length) return (cast(ubyte[]) null);
-        return cacheResource(url, res.body);
+        if (auto ct = "content-type" in res.headers)
+            _resourceContentTypes[url] = *ct;
+        return cacheResource(url, res.body, res.headers);
     }
 
     /// Fetch a URL, and if the response looks like HTML (Content-Type
@@ -538,11 +734,33 @@ final class WebPage
 
         if (looksLikeHtml)
         {
-            setHtml(toUTF8Decode(res.body));
+            // The document's own charset declaration decides how its bytes
+            // become text (WHATWG Encoding): a page served as windows-1252
+            // without this decoded to mojibake, and its selectors stopped
+            // matching the class names it declared.
+            _documentEncoding = sniffEncoding(res.body, ct is null ? "" : *ct);
+            setHtml(decodeText(res.body, ct is null ? "" : *ct));
+            executeScripts();
+            layout();
+        }
+        else
+        {
+            // A non-HTML response (a plain-text body, or a 404 with a non-HTML
+            // content type) still has to leave a renderable document behind.
+            // Returning with `_root` null made the next layout() fault, and a
+            // viewer that navigates to such a URL showed nothing at all. Render
+            // the bytes as text so the response is visible and layout is safe.
+            _documentEncoding = sniffEncoding(res.body, ct is null ? "" : *ct);
+            const text = decodeText(res.body, ct is null ? "" : *ct);
+            setHtml("<html><body><pre>" ~ escapeHtml(text) ~ "</pre></body></html>");
             executeScripts();
             layout();
         }
     }
+
+    /// Encoding of the current document, so an unlabelled stylesheet can
+    /// inherit it (CSS 4.4) instead of being guessed at.
+    private string _documentEncoding = "";
 
     /// The URL of the most recently navigated document ("" if none).
     string currentUrl() { return _currentUrl; }
@@ -654,12 +872,27 @@ final class WebPage
                     try
                     {
                         if (href.length >= 5 && href[0 .. 5].toLower() == "data:")
-                            css = toUTF8Decode(decodeDataUrl(href));
+                        {
+                            // RFC 2397: everything before the comma is the media
+                            // type, whose charset parameter decides how the decoded
+                            // bytes become text. Ignoring it decoded a cp1252
+                            // `data:` stylesheet as UTF-8, so its selectors lost the
+                            // non-ASCII characters they were written with.
+                            auto comma = href.indexOf(',');
+                            auto mediaType = comma < 0 ? "" : href[0 .. comma];
+                            css = decodeStyleSheet(decodeDataUrl(href), mediaType,
+                                _documentEncoding);
+                        }
                         else
                         {
                             auto target = _currentUrl.length
                                 ? resolveUrl(_currentUrl, href) : href;
-                            css = toUTF8Decode(fetchBytes(target));
+                            // Decode the sheet by ITS OWN charset when it has one,
+                            // else by the document's (CSS 4.4). Decoding it as
+                            // UTF-8 unconditionally silently broke every rule whose
+                            // selector had a non-ASCII class name.
+                            css = decodeStyleSheet(fetchBytes(target),
+                                contentTypeOf(target), _documentEncoding);
                         }
                     }
                     catch (Exception) css = "";

@@ -1,0 +1,41 @@
+{
+  "description": "Console (non-GUI) default model: verify a cmd session uses deepseek/deepseek-v4.1-flash-fast with thinking off while saved Settings keep the user's model.",
+  "inputs": [
+    "aurora-opencode-pro/source/app.d",
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/tests/console_default_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Iaurora-opencode-pro/source",
+          "-Iaurora-opencode-pro/shared",
+          "-Iaurora-opencode-core/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-Jaurora-opencode-pro/assets",
+          "-of=aurora-opencode-pro/build/deepseek41-sweep/console_default_contracts.exe",
+          "aurora-opencode-pro/tests/console_default_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib"
+        ],
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "aurora-opencode-pro/build/deepseek41-sweep/console_default_contracts.exe",
+        "args": [],
+        "timeout": 300000
+      }
+    }
+  ]
+}

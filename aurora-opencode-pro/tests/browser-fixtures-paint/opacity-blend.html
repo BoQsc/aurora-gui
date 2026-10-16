@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>Opacity compositing reference</title>
+<style>
+html,body{margin:0;background:#808080}
+/* Black at 50% over the #808080 page gives exactly rgb(64,64,64); the overlap
+   of two such boxes halves it again to rgb(32,32,32). The values are chosen so
+   no rounding is involved, which keeps this a compositing test rather than a
+   rounding test. */
+.box{position:absolute;width:60px;height:40px;background:#000;opacity:0.5}
+.a{left:0;top:0}
+.b{left:20px;top:10px}
+</style><div class="box a"></div><div class="box b"></div>

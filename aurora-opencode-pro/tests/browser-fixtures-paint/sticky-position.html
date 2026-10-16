@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Sticky positioning reference</title>
+<style>
+html,body{margin:0;background:white}
+/* At scroll 0 a sticky box asking for `top: 10px` is pushed down to satisfy
+   that constraint in its containing block, which is the relative-offset part
+   of sticky positioning. (The pinning that only moving the scrollport shows
+   cannot be observed in a static capture.) The box's flow space is unchanged,
+   so the following sibling still starts at y=20. */
+.box{width:200px;background:#eef}
+.sticky{position:sticky;top:10px;width:60px;height:20px;background:#2266cc}
+.after{width:60px;height:20px;background:#2a8a3a}
+</style><div class="box"><div class="sticky"></div><div class="after"></div></div>

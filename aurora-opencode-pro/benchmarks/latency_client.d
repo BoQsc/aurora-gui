@@ -29,8 +29,12 @@ int main(string[] args)
     client.setOpenCodeSession(args[2]);
     string effort;
     if (auto value = "reasoning_effort" in scenario.object) effort = value.str;
+    // The scenario names the model so one binary can drive any route; the
+    // default keeps the historical DeepSeek V4.1 Flash behavior.
+    string model = "deepseek-v4.1-flash";
+    if (auto value = "model" in scenario.object) model = value.str;
     const start = MonoTime.currTime;
-    client.startChatMessages([user], null, "deepseek-v4.1-flash",
+    client.startChatMessages([user], null, model,
         effort.length > 0 && effort != "none", 0, effort);
     JSONValue result;
     result["first_token_ms"] = -1;

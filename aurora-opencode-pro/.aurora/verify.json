@@ -1,0 +1,79 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/tests/floating_pet_smoke.d",
+    "aurora-opencode-pro/tests/floating_pet_env_smoke.d",
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-version=AuroraHeadless",
+          "-Iaurora-opencode-pro/source",
+          "-Iaurora-opencode-pro/shared",
+          "-Iaurora-opencode-core/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-Jaurora-opencode-pro/assets",
+          "-of=aurora-opencode-pro/build/pet-smoke/floating_pet_smoke.exe",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lwininet.lib",
+          "-Lole32.lib",
+          "aurora-opencode-pro/tests/floating_pet_smoke.d"
+        ],
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\pet-smoke\\floating_pet_smoke.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Iaurora-opencode-pro/source",
+          "-Iaurora-opencode-pro/shared",
+          "-Iaurora-opencode-core/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-Jaurora-opencode-pro/assets",
+          "-of=aurora-opencode-pro/build/pet-smoke/floating_pet_env_smoke.exe",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lwininet.lib",
+          "-Lole32.lib",
+          "-run",
+          "aurora-opencode-pro/tests/floating_pet_env_smoke.d"
+        ],
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "aurora-opencode-pro/tests/reference/pet-overlay.png",
+      "actual": "aurora-opencode-pro/build/pet-smoke/floating-pet-overlay.ppm",
+      "referenceSource": "Independently reviewed render of the dormant-build floating pet overlay: 420x132, dark panel with border, one complete suggestion line plus a persistent approval footer 'Nothing happens without your approval.'; verified by eye from the smoke-test capture."
+    },
+    {
+      "kind": "render",
+      "reference": "aurora-opencode-pro/tests/reference/pet-retry.png",
+      "actual": "aurora-opencode-pro/build/pet-smoke/floating-pet-retry.ppm",
+      "referenceSource": "Independently reviewed render of the retry offer - the headline behaviour: 420x132, top row reads '2 failed. Want me to take another look and retry?' with the persistent approval footer 'Nothing happens without your approval.' as its own fully legible row below. Confirmed by eye that neither line is truncated."
+    }
+  ]
+}

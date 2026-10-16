@@ -240,6 +240,11 @@ struct ComputedStyle
     string right = "auto";
     string bottom = "auto";
     string flexGrow = "0";
+    /// `flex-shrink` (CSS Flexbox 7.1.1). Empty means the initial value, 1.
+    string flexShrink = "";
+    /// `flex-basis` (CSS Flexbox 7.1.1). "auto" (the initial value) means use the
+    /// item's `width`; a length/percentage is the item's initial main size.
+    string flexBasis = "auto";
     string justifyContent = "flex-start";
     string alignItems = "stretch";
     /// `align-self` (CSS Flexbox 8.4): a per-item override of the container's
@@ -295,6 +300,11 @@ struct ComputedStyle
 
     /// Painting order for positioned elements; higher z-index paints on top.
     int zIndex = 0;
+    /// `flex-wrap`: whether a flex container's items wrap onto several lines.
+    string flexWrap = "nowrap";
+    /// `align-content`: how a wrapping flex container distributes its lines on
+    /// the cross axis (CSS Flexbox 8.5).
+    string alignContent = "normal";
 
     /// Whether the element participates in stacking (`position` != static).
     bool isPositioned() const
@@ -339,6 +349,11 @@ struct ComputedStyle
         const s = prop.strip();
         if (s.length >= 3 && s[$ - 2 .. $] == "px")
             return cssInt(s[0 .. $ - 2].strip());
+        // A unitless zero IS a length in CSS. Returning -1 here made
+        // `box-shadow: 10px 10px 0 0 #000` resolve its spread to -1, so the
+        // shadow was drawn inset by one pixel on every side instead of flush
+        // with the box (measured against Edge: 11,11,58,38 versus 10,10,60,40).
+        if (s == "0") return 0;
         return -1;
     }
 

@@ -774,8 +774,13 @@ private void parseCompound(string part, out Selector compound)
 
 private bool isIdentChar(char c)
 {
+    // CSS Syntax 4.3.9: an identifier may contain any code point >= U+0080, so
+    // the bytes of a non-ASCII class name are part of it. An ASCII-only rule made
+    // `.café` in a windows-1252 stylesheet parse as `.caf`, and the rule then
+    // matched nothing - the element kept its unstyled colour while Edge applied
+    // the rule (verified with the loading harness, routes css-charset-*).
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-        (c >= '0' && c <= '9') || c == '-' || c == '_';
+        (c >= '0' && c <= '9') || c == '-' || c == '_' || c >= 0x80;
 }
 
 /// Parse a declaration block text into declarations.
@@ -836,12 +841,41 @@ private Declaration[] parseDeclarations(string text){
                 if (!expandFontShorthand(result, rawValue, important))
                     result ~= Declaration(property, rawValue, important);
             }
-            else
+            else if (validDeclarationValue(property, rawValue))
                 result ~= Declaration(property, rawValue, important);
+            // else: the value is outside the property's grammar, so the whole
+            // declaration is discarded (CSS 2.1 4.1.8) and cannot override an
+            // earlier valid declaration. The common `flex-wrap: no-wrap` typo
+            // must lose to a base `flex-wrap: wrap` the way a browser does.
         }
         i = semi < 0 ? n : semi + 1;
     }
     return result;
+}
+
+/// Whether `value` is valid for the enumerated-keyword properties whose value
+/// grammar this engine knows. A value outside that grammar is invalid CSS (CSS
+/// 2.1 4.1.8) and is discarded rather than applied, so it cannot beat an earlier
+/// valid declaration in the cascade. Properties with open-ended grammars
+/// (lengths, colours, shorthands, ...) always pass.
+private bool validDeclarationValue(string property, string value)
+{
+    if (property == "flex-wrap")
+    {
+        const string v = asciiLower(value);
+        return v == "nowrap" || v == "wrap" || v == "wrap-reverse";
+    }
+    return true;
+}
+
+/// ASCII-only lower-casing, safe on arbitrary page bytes. Unlike the std.uni
+/// `toLower` used elsewhere in this module it never throws on invalid UTF-8.
+private string asciiLower(string s)
+{
+    char[] out_ = new char[s.length];
+    foreach (i, c; s)
+        out_[i] = cast(char)((c >= 'A' && c <= 'Z') ? c + ('a' - 'A') : c);
+    return out_.idup;
 }
 
 /**
@@ -1537,4 +1571,32 @@ unittest
     assert(cascade.get("padding", "") == "10px",
         "the `:not(.search)` rule must reach an ordinary child: got '" ~
         cascade.get("padding", "") ~ "'");
+}
+
+unittest
+{
+    // --- An invalid declaration value is dropped, not applied ---
+    // `flex-wrap: no-wrap` is not in the property's grammar, so a browser
+    // discards that declaration and an earlier `flex-wrap: wrap` still wins.
+    // The engine used to keep `no-wrap` verbatim and test it with `== "wrap"`,
+    // so django's `.container--flex--wrap--mobile` never wrapped its header at
+    // desktop and the search field was squeezed into the menu row instead of
+    // dropping to a second line the way Edge renders it.
+    auto rules = parseStylesheet(
+        `.c{flex-wrap:wrap}` ~
+        `@media screen and (min-width:768px){.c{flex-wrap:no-wrap}}`, 1280, 800);
+    auto active = applyMediaRules(rules, 1280, 800);
+    auto c = new Element("div");
+    c.attrs["class"] = "c";
+    auto index = buildRuleIndex(active);
+    assert(cascadeFor(c, active, candidatesFor(index, c)).get("flex-wrap", "") == "wrap",
+        "`flex-wrap:no-wrap` is invalid and must leave the base `wrap` in place");
+
+    // A valid value still wins over an earlier one.
+    auto ok = parseStylesheet(`.c{flex-wrap:wrap}.c{flex-wrap:nowrap}`, 800, 600);
+    auto oc = new Element("div");
+    oc.attrs["class"] = "c";
+    auto oi = buildRuleIndex(ok);
+    assert(cascadeFor(oc, ok, candidatesFor(oi, oc)).get("flex-wrap", "") == "nowrap",
+        "a later valid flex-wrap value must still win");
 }

@@ -24,9 +24,9 @@ import auroraweb.css : Rule, RuleIndex, buildRuleIndex, candidatesFor, cascadeFo
     applyMediaRules, parseStylesheet,
     keyframeEndState, pseudoElementRules;
 import auroraweb.dom : ComputedStyle, Element, InlineFragment, TextNode;
-import auroraweb.shaping : shapeTextCached;
+import auroraweb.shaping : cssFace, normalLineHeight, shapeTextCached;
 import aurora.image : RgbaImage;
-import aurora.font : FontRole;
+import aurora.font : FontFace, FontRole;
 import aurora.text.atlas : FontSystem;
 import aurora.text.layout : TextLayout, TextLayoutOptions;
 
@@ -34,14 +34,23 @@ import std.algorithm : max, min;
 import std.conv : to;
 import std.string : endsWith, indexOf, lastIndexOf, split, strip, toLower;
 
+/// The face this style's `font-family`/`font-weight`/`font-style` select, or null
+/// for the engine default. Paint resolves it identically, so measurement and
+/// painting always shape with the same face.
+private const(FontFace) faceOf(const ComputedStyle* style)
+{
+    return style is null ? null
+        : cssFace(style.fontFamily, style.fontWeight, style.fontStyle);
+}
+
 /// Measure a text run into wrapped lines using Aurora's real text engine.
 /// `maxWidth` is the wrap width (0 = no wrap). Returns the TextLayout (or null
 /// on failure). This is what makes layout match painting.
 private TextLayout shapeText(string text, int pixelSize, int maxWidth,
-    double letterSpacing = 0.0)
+    double letterSpacing = 0.0, const(FontFace) face = null)
 {
     // Memoized: layout measures every run, and paint then shapes the same runs.
-    return shapeTextCached(text, pixelSize, maxWidth, maxWidth > 0, letterSpacing);
+    return shapeTextCached(text, pixelSize, maxWidth, maxWidth > 0, letterSpacing, face);
 }
 
 /// Measure the wrapped height of a text run at the given width. Returns the
@@ -129,7 +138,7 @@ private int intrinsicWidth(Element e, int percentBase)
                 // "Overview" for the ~70px "OVERVIEW" it actually painted, and
                 // the flex item then wrapped its own label mid-word.
                 auto lay = shapeText(transformed(e.style.textTransform, t.data),
-                    pixelSize, 1_000_000);
+                    pixelSize, 1_000_000, 0.0, faceOf(&e.style));
                 inlineW += lay !is null ? cast(int) lay.width : cast(int)(t.data.length * 8);
                 itemCount++;
             }
@@ -166,7 +175,7 @@ private int intrinsicWidth(Element e, int percentBase)
         auto txt = transformed(e.style.textTransform, e.textContent().strip());
         if (txt.length)
         {
-            auto lay = shapeText(txt, pixelSize, 1_000_000);
+            auto lay = shapeText(txt, pixelSize, 1_000_000, 0.0, faceOf(&e.style));
             content = lay !is null ? cast(int) lay.width : cast(int)(txt.length * 8);
         }
     }
@@ -176,12 +185,12 @@ private int intrinsicWidth(Element e, int percentBase)
 /// Min-content width: the widest single word for text, or the widest block
 /// child. Used as the automatic minimum size of a flex item (CSS
 /// `min-width: auto`) so a shrunk item never forces its own text to wrap.
-private int minContentWidth(Element e, int percentBase)
+private int minContentWidth(Element e, int percentBase, bool ignoreSpecifiedWidth = false)
 {
     resolveBoxMetrics(e, percentBase);
     const own = e.box.paddingLeft + e.box.paddingRight + e.box.borderLeft + e.box.borderRight;
     const explicit = e.style.resolveLength(e.style.width, percentBase);
-    if (explicit >= 0) return explicit + own;
+    if (explicit >= 0 && !ignoreSpecifiedWidth) return explicit + own;
     const pixelSize = e.style.fontSizePx > 0 ? e.style.fontSizePx : 16;
 
     int widestWord = 0;
@@ -202,7 +211,7 @@ private int minContentWidth(Element e, int percentBase)
             // measure what is painted, or a shrunk flex item wraps its label.
             foreach (word; transformed(e.style.textTransform, t.data).split())
             {
-                auto lay = shapeText(word, pixelSize, 1_000_000);
+                auto lay = shapeText(word, pixelSize, 1_000_000, 0.0, faceOf(&e.style));
                 if (lay !is null) widestWord = max(widestWord, cast(int) lay.width);
             }
             if (!isCollapsibleWhitespaceOnly(t.data)) itemCount++;
@@ -232,7 +241,7 @@ private int minContentWidth(Element e, int percentBase)
     {
         foreach (word; transformed(e.style.textTransform, e.textContent()).split())
         {
-            auto lay = shapeText(word, pixelSize, 1_000_000);
+            auto lay = shapeText(word, pixelSize, 1_000_000, 0.0, faceOf(&e.style));
             if (lay !is null) content = max(content, cast(int) lay.width);
         }
     }
@@ -609,6 +618,10 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
     applyDeclaration(style, "transform", cascade.get("transform", ""));
     applyDeclaration(style, "flex", cascade.get("flex", ""));
     applyDeclaration(style, "flex-grow", cascade.get("flex-grow", ""));
+    applyDeclaration(style, "flex-shrink", cascade.get("flex-shrink", ""));
+    applyDeclaration(style, "flex-basis", cascade.get("flex-basis", ""));
+    applyDeclaration(style, "flex-wrap", cascade.get("flex-wrap", ""));
+    applyDeclaration(style, "align-content", cascade.get("align-content", ""));
     applyDeclaration(style, "justify-content", cascade.get("justify-content", ""));
     applyDeclaration(style, "align-items", cascade.get("align-items", ""));
     applyDeclaration(style, "align-self", cascade.get("align-self", ""));
@@ -721,26 +734,52 @@ void transformTranslate(in string transform, int selfW, int selfH,
     out int dx, out int dy)
 {
     import std.conv : to;
+    // `strip` here is std.string.strip, which trims by Unicode whitespace and
+    // THROWS on invalid UTF-8: transform() is often the first place a raw
+    // `style="transform: translate(-50%, -50%)"` attribute reaches, and that text
+    // may be a byte slice that is not valid UTF-8 (or may hold a NUL). Use a
+    // byte-wise trim that cannot throw. Found by loading a page whose inline
+    // transform crashed the whole render.
+    static string trimSpace(string s)
+    {
+        size_t a = 0;
+        size_t b = s.length;
+        while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\n' || s[a] == '\r' ||
+                         s[a] == '\f' || s[a] == '\v')) ++a;
+        while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\n' ||
+                         s[b - 1] == '\r' || s[b - 1] == '\f' || s[b - 1] == '\v')) --b;
+        return s[a .. b];
+    }
     dx = 0;
     dy = 0;
     if (transform.length == 0) return;
-    const lower = transform.toLower();
+    // toLower here is std.uni.toLower, which throws UTFException on a byte slice
+    // that is not valid UTF-8. `transform` is often the raw value of an inline
+    // `style` attribute, so it can be a slice of a page's bytes: compare the
+    // letters ASCII-case-insensitively instead of lowercasing the whole string.
+    const lower = asciiLowered(transform);
     if (lower == "none") return;
-
-    static int one(string arg, int base_)
+    static int one(string arg, int base_) @safe
     {
-        auto a = arg.strip();
+        auto a = trimSpace(arg);
         if (a.length == 0) return 0;
         if (a[$ - 1] == '%')
         {
             double p = 0;
-            try p = to!double(a[0 .. $ - 1].strip());
+            try p = to!double(trimSpace(a[0 .. $ - 1]));
             catch (Exception) return 0;
             return cast(int) (p * base_ / 100.0);
         }
-        if (a.length > 2 && a[$ - 2 .. $].toLower() == "px") a = a[0 .. $ - 2];
+        if (a.length > 2 && asciiLowered(a[$ - 2 .. $]) == "px") a = a[0 .. $ - 2];
+        // Splitting the argument list on the comma leaves whitespace on each side
+        // (`translate(10px, 20px)`), which to!double rejects. Anything without a
+        // digit is not a length we can resolve, so resolve it to 0.
+        a = trimSpace(a);
+        if (a.length == 0 || !((a[0] >= '0' && a[0] <= '9') ||
+            a[0] == '-' || a[0] == '+' || a[0] == '.'))
+            return 0;
         double v = 0;
-        try v = to!double(a.strip());
+        try v = to!double(trimSpace(a));
         catch (Exception) return 0;
         return cast(int) v;
     }
@@ -748,33 +787,60 @@ void transformTranslate(in string transform, int selfW, int selfH,
     size_t i = 0;
     while (i < lower.length)
     {
-        const open = indexOf(lower[i .. $], '(');
+        const open = indexOf(lower[i .. $], "(");
         if (open < 0) break;
         const absOpen = i + open;
-        const close = indexOf(lower[absOpen .. $], ')');
+        const close = indexOf(lower[absOpen .. $], ")");
         if (close < 0) break;
         const absClose = absOpen + close;
-        auto name = lower[i .. absOpen].strip();
+        auto name = trimSpace(lower[i .. absOpen]);
         auto args = transform[absOpen + 1 .. absClose];
         if (name == "translate" || name == "translatex" || name == "translatey")
         {
-            auto parts = args.split(',');
+            // `split(',')` resolves to std.string.split (this module imports that
+            // selectively), NOT std.array.split. std.string.split takes a variadic
+            // delimiter and splits on WHITESPACE when given one, so
+            // `translate(-50%, -50%)` came through as one token and the transformer
+            // then tried to parse "-50%, -50%" as a number and threw. Split on the
+            // character explicitly and trim each side instead.
+            string[] parts;
+            size_t start = 0;
+            while (start <= args.length)
+            {
+                auto commaAt = indexOf(args[start .. $], ",");
+                if (commaAt < 0) { parts ~= args[start .. $]; break; }
+                parts ~= args[start .. start + commaAt];
+                start += commaAt + 1;
+            }
             if (name != "translatey" && parts.length >= 1)
                 dx += one(parts[0], selfW);
             if (name == "translatey" && parts.length >= 1)
                 dy += one(parts[0], selfH);
-            else if (name == "translate" && parts.length >= 2)
-                dy += one(parts[1], selfH);
+            else if (name == "translate")
+                dy += one(parts.length >= 2 ? parts[1] : "", selfH);
         }
         i = absClose + 1;
     }
+}
+
+/// ASCII-only lowercasing that cannot throw. CSS text reaching these helpers is
+/// frequently a raw byte slice of the document (or an inline `style` attribute)
+/// that is not valid UTF-8, and `std.uni.toLower` throws UTFException on it -
+/// which aborted the whole layout for a page whose transform or gradient held
+/// one bad byte.
+private string asciiLowered(string s) @trusted
+{
+    auto buf = new char[s.length];
+    foreach (k, c; s)
+        buf[k] = (c >= 'A' && c <= 'Z') ? cast(char) (c + 32) : c;
+    return cast(string) buf[0 .. s.length];
 }
 
 /// Extract a `linear-gradient(...)` / `radial-gradient(...)` token, balancing
 /// nested parentheses so colours like `rgba(1, 2, 3, 0.5)` survive intact.
 private string extractGradientToken(string value)
 {
-    const lower = value.toLower();
+    const lower = asciiLowered(value);
     ptrdiff_t start = -1;
     foreach (kw; ["linear-gradient(", "radial-gradient("])
     {
@@ -1275,13 +1341,50 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "content": style.content = value.strip(); break;
 
         case "flex":
-            // flex: <grow> <shrink> <basis> — use grow.
+            // flex: <grow> [<shrink>] [<basis>] (CSS Flexbox 7.1.1). A single
+            // number sets grow and leaves basis at 0, so equal-sized items stay
+            // equal regardless of their content; `flex: auto` is `1 1 auto`,
+            // `flex: none` is `0 0 auto`.
             {
                 auto parts = value.split();
-                if (parts.length) style.flexGrow = parts[0] == "none" ? "0" : parts[0];
+                const string kw = parts.length ? asciiLowered(parts[0]) : "";
+                if (kw == "none")
+                {
+                    style.flexGrow = "0";
+                    style.flexShrink = "0";
+                    style.flexBasis = "auto";
+                }
+                else if (kw == "auto")
+                {
+                    style.flexGrow = "1";
+                    style.flexShrink = "1";
+                    style.flexBasis = "auto";
+                }
+                else if (kw == "initial")
+                {
+                    style.flexGrow = "0";
+                    style.flexShrink = "1";
+                    style.flexBasis = "auto";
+                }
+                else if (parts.length)
+                {
+                    style.flexGrow = parts[0];
+                    style.flexShrink = parts.length > 1 ? parts[1] : "1";
+                    style.flexBasis = parts.length > 2 ? parts[2] : "0px";
+                }
             }
             break;
         case "flex-grow": style.flexGrow = value; break;
+        case "flex-shrink": style.flexShrink = value; break;
+        case "flex-basis": style.flexBasis = value; break;
+        case "flex-wrap": style.flexWrap = value.strip().toLower(); break;
+        case "align-content":
+            if (value == "flex-start" || value == "start" || value == "center" ||
+                value == "space-between" || value == "space-around" ||
+                value == "space-evenly" || value == "flex-end" || value == "end" ||
+                value == "stretch")
+                style.alignContent = value;
+            break;
         case "justify-content":
             if (value == "flex-start" || value == "center" || value == "space-between" ||
                 value == "space-around" || value == "space-evenly" || value == "flex-end")
@@ -1672,6 +1775,24 @@ private int contentBoxHeight(Element element, int contentHeight)
     return clampMinMaxHeight(element, max(0, contentHeight)) + padBorder;
 }
 
+/// Clamp an auto CONTENT height and return the CONTENT height to store in
+/// `box.height` (which is the content box everywhere in this engine; paint
+/// rebuilds the border box by adding padding). `min-height`/`max-height` apply
+/// to the content box for content-box sizing and to the border box for
+/// border-box sizing (CSS 10.4), so a border-box element subtracts the padding
+/// and border again after clamping - the exact mirror of `resolveHeight`.
+/// Adding the border box here instead painted a padded flex/grid/table
+/// container one padding-and-border taller than Edge: a `padding:10px;
+/// border:5px` row laid out 100px tall where Edge lays out 70.
+private int clampedContentHeight(Element element, int contentHeight)
+{
+    const padBorder = element.box.paddingTop + element.box.paddingBottom +
+        element.box.borderTop + element.box.borderBottom;
+    if (element.style.boxSizing == "border-box")
+        return max(0, clampMinMaxHeight(element, max(0, contentHeight) + padBorder) - padBorder);
+    return clampMinMaxHeight(element, max(0, contentHeight));
+}
+
 unittest
 {
     // Box model: units, keyword values, auto margins and content-box min/max.
@@ -1784,7 +1905,7 @@ private int collapseVerticalMargins(int a, int b)
 
 /// Resolve `line-height` into a px line box height. An explicit px value wins;
 /// a percentage resolves against THIS element's font size (not the containing
-/// block); otherwise the fallback is font-size + 8px breathing room.
+/// block); otherwise the fallback is the font's own normal line height.
 private int resolveLineHeight(Element element, int pixelSize)
 {
     const explicitLineH = element.style.pxLength(element.style.lineHeight);
@@ -1815,7 +1936,7 @@ private int resolveLineHeight(Element element, int pixelSize)
             catch (Exception) {}
         }
     }
-    return pixelSize + 8;
+    return normalLineHeight(pixelSize, faceOf(&element.style));
 }
 
 /// Layout a block-level element and its children in normal flow.
@@ -2411,8 +2532,9 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             const int innerW = max(0, rightEdge - cursorX);
             const string runText = collapsibleText(element, text);
             text.paintText = runText;
-            auto layout = shapeText(runText, pixelSize,
-                noWrapText ? 1_000_000 : innerW, element.style.letterSpacingPx());
+                auto layout = shapeText(runText, pixelSize,
+                    noWrapText ? 1_000_000 : innerW, element.style.letterSpacingPx(),
+                    faceOf(&element.style));
             if (layout !is null && layout.lines.length > 0)
             {
                 // The run may wrap internally to multiple lines. Advance the
@@ -2527,7 +2649,8 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             else
             {
                 auto lay = shapeText(ce.textContent(), pixelSize,
-                    noWrapText ? 1_000_000 : max(0, rightEdge - cursorX));
+                    noWrapText ? 1_000_000 : max(0, rightEdge - cursorX), 0.0,
+                    faceOf(&ce.style));
                 if (lay !is null && lay.lines.length > 0)
                 {
                     cw = cast(int) lay.width;
@@ -2872,7 +2995,7 @@ private int resolveWidth(Element element, int containingWidth)
             const content = element.textContent();
             if (content.strip().length)
             {
-                auto lay = shapeText(content, pixelSize, 0);
+                auto lay = shapeText(content, pixelSize, 0, 0.0, faceOf(&element.style));
                 width = lay !is null ? cast(int) lay.width
                     : cast(int)(content.length * 8);
             }
@@ -3518,8 +3641,11 @@ private void layoutInlineChildren(Element element, ref FlowContext flow, Element
     int currentLineX = flow.x;
     int currentLineY = flow.y;
     int lineIndex = flow.lineCount;
-    const lineHeight = element.style.resolveLength(element.style.lineHeight, 0) > 0 ?
-        element.style.resolveLength(element.style.lineHeight, 0) : 18;
+    // The same metric the block and text paths advance by, so a line box and the
+    // cursor moving past it agree. This read a fixed 18px and ignored percent and
+    // bare-number line heights entirely.
+    const lineHeight = resolveLineHeight(element, element.style.fontSizePx > 0 ?
+        element.style.fontSizePx : 16);
 
     void emitLine()
     {
@@ -3695,11 +3821,12 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     }
     int width = element.box.width;
 
-    // Content box.
+    // `width` (from `resolveWidth`) is the CONTENT box - the contract `paint` relies
+    // on when it rebuilds the border box - so the item region below is `width` itself:
+    // re-subtracting the padding/border would shrink every padded container's region.
     const innerX = element.box.x + element.box.paddingLeft + element.box.borderLeft;
     const innerY = element.box.y + element.box.paddingTop + element.box.borderTop;
-    const innerW = max(0, width - element.box.paddingLeft - element.box.paddingRight -
-        element.box.borderLeft - element.box.borderRight);
+    const innerW = max(0, width);
 
 
 
@@ -3729,47 +3856,159 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         auto growStr = ce.style.flexGrow;
         int grow = growStr.length ? cssInt(growStr) : 0;
         totalFlex += grow;
-        auto basis = ce.style.resolveLength(ce.style.width, innerW);
-        // Auto width: a growing item starts at 0 and takes a share of the
-        // remaining space; a non-growing item sizes to its content.
+        // `flex-basis` sets the item's initial main size; `auto` (the initial
+        // value) falls back to `width`. An auto width falls back to content, or
+        // to 0 for a growing item (which then takes a share of the free space).
+        const int basisLen = ce.style.resolveLength(ce.style.flexBasis, innerW);
+        auto basis = basisLen >= 0 ? basisLen : ce.style.resolveLength(ce.style.width, innerW);
         if (basis < 0)
             basis = grow == 0 ? intrinsicWidth(ce, innerW) : 0;
         itemWidths ~= basis >= 0 ? basis : 0;
     }
 
     // flex-direction: column — the main axis is vertical. Items stack top to
-    // bottom and, by default (align-items: stretch), fill the content width.
+    // bottom (bottom to top for `column-reverse`), `justify-content` distributes
+    // the main-axis free space, and `align-items`/`align-self` place each item on
+    // the horizontal cross axis, where the default `stretch` fills the content
+    // width (CSS Flexbox 9.3-9.5). Only the naive top-left stacking used to be
+    // implemented, so a centred, end-aligned or space-distributed column rendered
+    // against the corner and `column-reverse` was ignored entirely.
     if (style.flexDirection == "column" || style.flexDirection == "column-reverse")
     {
-        int cy = innerY;
+        const bool reverse = style.flexDirection == "column-reverse";
+        // Measure each item first: its own content height on the main axis and
+        // its content width on the cross axis.
+        int[] itemHts;
+        int[] itemWds;
         int totalH = 0;
         foreach (ce; items)
         {
             resolveBoxMetrics(ce, innerW);
             const int wExp = ce.style.resolveLength(ce.style.width, innerW);
             const int w = wExp >= 0 ? wExp : innerW;
-            ce.box.x = innerX;
-            ce.box.y = cy;
             ce.box.width = w;
-            const int hExp = ce.style.resolveLength(ce.style.height, style.containingHeight);
             auto sub = FlowContext();
-            sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
-            sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+            sub.x = innerX + ce.box.marginLeft + ce.box.paddingLeft + ce.box.borderLeft;
+            sub.y = innerY + ce.box.marginTop + ce.box.paddingTop + ce.box.borderTop;
             sub.width = max(0, w - ce.box.paddingLeft - ce.box.paddingRight -
                 ce.box.borderLeft - ce.box.borderRight);
             sub.lineEnd = sub.x + sub.width;
             const int subTop = sub.y;
             layoutContents(ce, sub, ce);
             const int contentH = max(sub.contentBottom, sub.y - subTop);
-            ce.box.height = hExp >= 0 ? hExp
-                : contentBoxHeight(ce, contentH);
-            cy += ce.box.height + gapPx;
-            totalH += ce.box.height + gapPx;
+            const int hExp = ce.style.resolveLength(ce.style.height, style.containingHeight);
+            const int h = hExp >= 0 ? hExp : contentBoxHeight(ce, contentH);
+            ce.box.height = h;
+            itemHts ~= h;
+            itemWds ~= w;
+            totalH += h + ce.box.marginTop + ce.box.marginBottom + gapPx;
         }
         if (items.length) totalH -= gapPx;
         const int hExp2 = element.style.resolveLength(element.style.height, style.containingHeight);
-        element.box.height = hExp2 >= 0 ? hExp2
-            : contentBoxHeight(element, totalH);
+        const int innerH = hExp2 >= 0 ? max(0, hExp2) : contentBoxHeight(element, totalH);
+
+        // justify-content (main axis, CSS Flexbox 9.5). An item's own main-axis
+        // `auto` margin absorbs the free space first and disables justify-content
+        // (CSS Flexbox 8.1): `margin-top:auto` pins an item to the bottom of a
+        // column, the standard way to keep a footer at the card's foot.
+        const int n = cast(int) items.length;
+        const int free = innerH > totalH ? innerH - totalH : 0;
+        int autoMain = 0;
+        foreach (ce; items)
+            autoMain += (ce.box.marginTopAuto ? 1 : 0) + (ce.box.marginBottomAuto ? 1 : 0);
+        int lead = 0;
+        int gapExtra = 0;
+        if (autoMain == 0)
+        {
+            if (style.justifyContent == "center")
+                lead = free / 2;
+            else if (style.justifyContent == "flex-end" || style.justifyContent == "end")
+                lead = free;
+            else if (style.justifyContent == "space-between")
+                gapExtra = n > 1 ? free / (n - 1) : 0;
+            else if (style.justifyContent == "space-around")
+            {
+                gapExtra = n > 0 ? free / n : 0;
+                lead = gapExtra / 2;
+            }
+            else if (style.justifyContent == "space-evenly")
+            {
+                gapExtra = n > 0 ? free / (n + 1) : 0;
+                lead = gapExtra;
+            }
+        }
+        const int autoShare = autoMain > 0 ? free / autoMain : 0;
+        int[] effTop;
+        int[] effBot;
+        effTop.length = items.length;
+        effBot.length = items.length;
+        foreach (i, ce; items)
+        {
+            effTop[i] = ce.box.marginTopAuto ? autoShare : ce.box.marginTop;
+            effBot[i] = ce.box.marginBottomAuto ? autoShare : ce.box.marginBottom;
+        }
+
+        // Place on the main axis; `column-reverse` packs from the bottom edge.
+        if (reverse)
+        {
+            int cursorBottom = innerY + innerH - lead;
+            foreach (i, ce; items)
+            {
+                ce.box.y = cursorBottom - effBot[i] - itemHts[i];
+                cursorBottom -= itemHts[i] + effTop[i] + effBot[i] + gapPx + gapExtra;
+            }
+        }
+        else
+        {
+            int cursorTop = innerY + lead;
+            foreach (i, ce; items)
+            {
+                ce.box.y = cursorTop + effTop[i];
+                cursorTop += itemHts[i] + effTop[i] + effBot[i] + gapPx + gapExtra;
+            }
+        }
+
+        // align-items / align-self on the cross axis (horizontal for a column).
+        // A cross-axis `auto` margin absorbs that free space and overrides
+        // align-self (CSS Flexbox 8.1).
+        foreach (i, ce; items)
+        {
+            const string alignValue = (ce.style.alignSelf.length && ce.style.alignSelf != "auto")
+                ? ce.style.alignSelf : style.alignItems;
+            const int outerW = itemWds[i] + ce.box.paddingLeft + ce.box.paddingRight +
+                ce.box.borderLeft + ce.box.borderRight + ce.box.marginLeft + ce.box.marginRight;
+            if (ce.box.marginLeftAuto || ce.box.marginRightAuto)
+            {
+                if (ce.box.marginLeftAuto && ce.box.marginRightAuto)
+                    ce.box.x = innerX + (innerW - outerW) / 2;
+                else if (ce.box.marginLeftAuto)
+                    ce.box.x = innerX + (innerW - outerW);
+                else
+                    ce.box.x = innerX;
+            }
+            else if (alignValue == "center")
+                ce.box.x = innerX + ce.box.marginLeft + (innerW - outerW) / 2;
+            else if (alignValue == "flex-end" || alignValue == "end")
+                ce.box.x = innerX + ce.box.marginLeft + (innerW - outerW);
+            else
+                ce.box.x = innerX + ce.box.marginLeft;
+        }
+
+        // Re-lay out each item inside its final box so its children and text
+        // move with it and a percentage height resolves against the placed box.
+        foreach (i, ce; items)
+        {
+            auto sub = FlowContext();
+            sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+            sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+            sub.width = max(0, ce.box.width - ce.box.paddingLeft - ce.box.paddingRight -
+                ce.box.borderLeft - ce.box.borderRight);
+            sub.lineEnd = sub.x + sub.width;
+            sub.height = itemHts[i];
+            layoutContents(ce, sub, ce);
+        }
+
+        element.box.height = hExp2 >= 0 ? hExp2 : contentBoxHeight(element, totalH);
         layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
         foreach (child; element.children)
         {
@@ -3804,7 +4043,16 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
             ce.box.borderLeft + ce.box.borderRight +
             ce.box.marginLeft + ce.box.marginRight;
     const int remaining = innerW - outerTotal - gapTotal;
-    if (totalFlex > 0)
+    // The widths before `flex-grow` is applied: a wrapping container distributes
+    // free space per line, so each line needs the un-grown base widths.
+    int[] baseWidths = itemWidths.dup;
+    // The main size is definite only when the container has a specified width or
+    // is not an inline-level shrink-to-fit box (CSS Flexbox 9.2). An auto-width
+    // inline-flex has no free space to distribute: its items keep their base
+    // sizes and the container then sizes to their sum.
+    const bool mainDefinite = !(inline &&
+        element.style.resolveLength(element.style.width, flow.width) < 0);
+    if (mainDefinite && remaining > 0 && totalFlex > 0)
     {
         // Distribute remaining proportionally to flex-grow.
         foreach (i, ce; items)
@@ -3816,6 +4064,39 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
             {
                 const int share = (remaining * grow) / totalFlex;
                 itemWidths[i] = itemWidths[i] + share;
+            }
+        }
+    }
+    else if (mainDefinite && remaining < 0)
+    {
+        // Flexbox 9.7: the items overflow, so `flex-shrink` (initial 1) takes
+        // space back, weighted by shrink × base size, down to the automatic
+        // minimum size. Without this an overflowing row spilled out of its
+        // container where Edge compresses the shrinking items.
+        import auroraweb.dom : cssInt;
+        int totalShrink = 0;
+        foreach (i, ce; items)
+        {
+            const int s = ce.style.flexShrink.length ? cssInt(ce.style.flexShrink) : 1;
+            totalShrink += s * baseWidths[i];
+        }
+        if (totalShrink > 0)
+        {
+            const int over = -remaining;
+            foreach (i, ce; items)
+            {
+                const int s = ce.style.flexShrink.length ? cssInt(ce.style.flexShrink) : 1;
+                const int cut = (over * s * baseWidths[i]) / totalShrink;
+                // The automatic minimum size: the content-based minimum, i.e. the
+                // smaller of the specified size and the min-content width. The
+                // item's OWN `width` is not the content suggestion, so it is
+                // ignored here — otherwise a `width:200px;flex-shrink:1` item
+                // would floor back at 200 and never shrink.
+                ce.style.containingWidth = innerW;
+                const int minC = minContentWidth(ce, innerW, true);
+                const int floorW = ce.style.resolveLength(ce.style.width, innerW) >= 0
+                    ? min(baseWidths[i], minC) : minC;
+                itemWidths[i] = max(floorW, max(0, baseWidths[i] - cut));
             }
         }
     }
@@ -3837,6 +4118,314 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         if (ce.style.resolveLength(ce.style.width, innerW) >= 0) continue;
         ce.style.containingWidth = innerW;
         itemWidths[i] = max(itemWidths[i], minContentWidth(ce, innerW));
+    }
+
+    // flex-wrap: wrap — items that do not fit continue on a following line
+    // (CSS Flexbox 9.3). Only containers that ask for wrapping take this path;
+    // `nowrap` (the default) keeps the single-line code below byte-identical, so
+    // no existing page can change behaviour here.
+    if (style.flexWrap == "wrap" && items.length > 0)
+    {
+        // A line is formed from each item's base size. An auto-width item's base
+        // size is floored at its content (the automatic minimum size, CSS
+        // Flexbox 4.5), exactly as the single-line path floors it just above.
+        // Without it a wrapping container measured django's auto-width header
+        // menu a few pixels narrow and folded its last label ("DONATE") under
+        // the heart, where Edge keeps the whole menu on one line.
+        foreach (i, ce; items)
+        {
+            if (ce.style.resolveLength(ce.style.width, innerW) >= 0) continue;
+            ce.style.containingWidth = innerW;
+            baseWidths[i] = max(baseWidths[i], minContentWidth(ce, innerW));
+        }
+
+        // Partition into lines by outer width, using the base (pre-grow) widths.
+        int[][] lines;
+        {
+            int[] current;
+            int usedW = 0;
+            foreach (i, ce; items)
+            {
+                const int outer = baseWidths[i] + ce.box.paddingLeft + ce.box.paddingRight +
+                    ce.box.borderLeft + ce.box.borderRight +
+                    ce.box.marginLeft + ce.box.marginRight;
+                const int withThis = usedW + outer + (current.length ? gapPx : 0);
+                if (current.length && withThis > innerW)
+                {
+                    lines ~= current;
+                    current = [];
+                    current ~= cast(int) i;
+                    usedW = outer;
+                }
+                else
+                {
+                    current ~= cast(int) i;
+                    usedW = withThis;
+                }
+            }
+            if (current.length) lines ~= current;
+        }
+
+        import auroraweb.dom : cssInt;
+        int lineTop = innerY;
+        int[] lineHeights;
+        foreach (line; lines)
+        {
+            // This line's item widths, then its share of the free space.
+            int[] widths = new int[line.length];
+            int used = 0;
+            int lineFlex = 0;
+            foreach (k, i; line)
+            {
+                auto ce = items[i];
+                widths[k] = baseWidths[i];
+                used += widths[k] + ce.box.paddingLeft + ce.box.paddingRight +
+                    ce.box.borderLeft + ce.box.borderRight +
+                    ce.box.marginLeft + ce.box.marginRight;
+                auto gs = ce.style.flexGrow;
+                lineFlex += gs.length ? cssInt(gs) : 0;
+            }
+            if (line.length > 1) used += gapPx * (line.length - 1);
+            const int lineFreeRaw = innerW > used ? innerW - used : 0;
+            if (lineFlex > 0)
+            {
+                foreach (k, i; line)
+                {
+                    auto gs = items[i].style.flexGrow;
+                    const int g = gs.length ? cssInt(gs) : 0;
+                    if (g > 0) widths[k] += (lineFreeRaw * g) / lineFlex;
+                }
+            }
+            int usedAfter = 0;
+            foreach (k, i; line)
+            {
+                auto ce = items[i];
+                usedAfter += widths[k] + ce.box.paddingLeft + ce.box.paddingRight +
+                    ce.box.borderLeft + ce.box.borderRight +
+                    ce.box.marginLeft + ce.box.marginRight;
+            }
+            if (line.length > 1) usedAfter += gapPx * (line.length - 1);
+            const int lineFree = innerW > usedAfter ? innerW - usedAfter : 0;
+            const int lineN = cast(int) line.length;
+            int lineGapExtra = 0;
+            int lineLead = 0;
+            if (style.justifyContent == "center")
+                lineLead = lineFree / 2;
+            else if (style.justifyContent == "flex-end")
+                lineLead = lineFree;
+            else if (style.justifyContent == "space-between")
+                lineGapExtra = lineN > 1 ? lineFree / (lineN - 1) : 0;
+            else if (style.justifyContent == "space-around")
+            {
+                lineGapExtra = lineFree / lineN;
+                lineLead = lineGapExtra / 2;
+            }
+            else if (style.justifyContent == "space-evenly")
+            {
+                lineGapExtra = lineFree / (lineN + 1);
+                lineLead = lineGapExtra;
+            }
+            // Main-axis `auto` margins absorb a line's free space before
+            // `justify-content` applies (CSS Flexbox 8.1), so they win outright
+            // and the line's free space becomes zero. The single-line path does
+            // this as well; without it a wrapping container left an auto-margined
+            // item flush against its neighbour, so django's header menu
+            // (`margin-left:auto; order:2`) never reached the container's right
+            // edge the way Edge renders it.
+            int[] extraL = new int[line.length];
+            int[] extraR = new int[line.length];
+            int autoCount = 0;
+            foreach (k, i; line)
+            {
+                auto ce = items[i];
+                const ml = ce.style.marginLeft.strip().toLower();
+                const mr = ce.style.marginRight.strip().toLower();
+                const shorthand = ce.style.margin.strip().toLower();
+                if (ml == "auto" || (ml.length == 0 && shorthand.indexOf("auto") >= 0))
+                { extraL[k] = 1; autoCount++; }
+                if (mr == "auto" || (mr.length == 0 && shorthand.indexOf("auto") >= 0))
+                { extraR[k] = 1; autoCount++; }
+            }
+            if (autoCount > 0)
+            {
+                const int share = lineFree / autoCount;
+                foreach (k, i; line)
+                {
+                    if (extraL[k] != 0) extraL[k] = share;
+                    if (extraR[k] != 0) extraR[k] = share;
+                }
+                lineLead = 0;
+                lineGapExtra = 0;
+            }
+            int lineCursor = innerX + lineLead;
+            int lineH = 0;
+            foreach (k, i; line)
+            {
+                auto ce = items[i];
+                resolveBoxMetrics(ce, innerW);
+                ce.box.x = lineCursor + ce.box.marginLeft + extraL[k];
+                ce.box.y = lineTop + ce.box.marginTop;
+                ce.box.width = widths[k];
+                const int itemH = resolveHeight(ce);
+                ce.box.height = itemH >= 0 ? itemH : 0;
+                auto sub = FlowContext();
+                sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+                sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+                sub.width = max(0, ce.box.width - ce.box.paddingLeft - ce.box.paddingRight -
+                    ce.box.borderLeft - ce.box.borderRight);
+                sub.lineEnd = sub.x + sub.width;
+                const int subTop = sub.y;
+                layoutContents(ce, sub, ce);
+                const int contentH = max(sub.contentBottom, sub.y - subTop);
+                if (itemH < 0 && contentH > 0)
+                    ce.box.height = max(0,
+                        contentH + ce.box.paddingTop + ce.box.paddingBottom);
+                lineH = max(lineH, ce.box.height);
+                lineCursor += widths[k] + ce.box.paddingLeft + ce.box.paddingRight +
+                    ce.box.borderLeft + ce.box.borderRight +
+                    ce.box.marginLeft + ce.box.marginRight + gapPx + lineGapExtra +
+                    extraL[k] + extraR[k];
+            }
+            // align-items / align-self inside this line's cross size.
+            foreach (k, i; line)
+            {
+                auto ce = items[i];
+                const string alignValue =
+                    (ce.style.alignSelf.length && ce.style.alignSelf != "auto")
+                    ? ce.style.alignSelf : style.alignItems;
+                // `stretch` (the initial value) grows an auto-cross-size item to
+                // this line's cross size; its contents are re-laid out inside
+                // the taller box (CSS Flexbox 8.3), matching Edge where the
+                // engine used to leave the item at its content height.
+                if (alignValue == "stretch" && resolveHeight(ce) < 0)
+                {
+                    const int target = lineH - ce.box.marginTop - ce.box.marginBottom -
+                        ce.box.paddingTop - ce.box.paddingBottom -
+                        ce.box.borderTop - ce.box.borderBottom;
+                    if (target > ce.box.height)
+                    {
+                        ce.box.height = target;
+                        auto sub = FlowContext();
+                        sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+                        sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+                        sub.width = max(0, ce.box.width - ce.box.paddingLeft -
+                            ce.box.paddingRight - ce.box.borderLeft - ce.box.borderRight);
+                        sub.lineEnd = sub.x + sub.width;
+                        sub.height = ce.box.height;
+                        layoutContents(ce, sub, ce);
+                    }
+                }
+                else if (alignValue == "flex-end" || alignValue == "end")
+                    ce.box.y = lineTop + lineH - ce.box.height;
+                else if (alignValue == "center")
+                    ce.box.y = lineTop + (lineH - ce.box.height) / 2;
+            }
+            lineHeights ~= lineH;
+            lineTop += lineH;
+        }
+        // align-content distributes the cross space left over when the container
+        // is taller than its lines (CSS Flexbox 8.5). The lines were placed at
+        // their natural positions, so each one is shifted by its share and its
+        // items re-laid in place; a shifted item's children and text runs move
+        // with it because the item is laid out again inside its moved box.
+        const int naturalCross = lineTop - innerY;
+        const int definiteCross = element.style.resolveLength(element.style.height,
+            style.containingHeight);
+        if (definiteCross > naturalCross && lines.length > 0)
+        {
+            const int extraCross = definiteCross - naturalCross;
+            const int lineCount = cast(int) lines.length;
+            // `align-content: stretch` (and its `normal` initial value) grows
+            // every line by an equal share of the left-over cross space, after
+            // which `align-items: stretch` fills the taller line (CSS Flexbox
+            // 8.5). Leaving the lines packed at the top is what the engine used
+            // to do and what Edge does not.
+            const bool stretchContent = style.alignContent == "stretch" ||
+                style.alignContent == "normal";
+            int crossGap = 0;
+            int crossLead = 0;
+            if (style.alignContent == "center")
+                crossLead = extraCross / 2;
+            else if (style.alignContent == "flex-end" || style.alignContent == "end")
+                crossLead = extraCross;
+            else if (style.alignContent == "space-between")
+                crossGap = lineCount > 1 ? extraCross / (lineCount - 1) : 0;
+            else if (style.alignContent == "space-around")
+            {
+                crossGap = extraCross / lineCount;
+                crossLead = crossGap / 2;
+            }
+            else if (style.alignContent == "space-evenly")
+            {
+                crossGap = extraCross / (lineCount + 1);
+                crossLead = crossGap;
+            }
+            if (stretchContent)
+            {
+                // The last line absorbs the integer remainder so the lines fill
+                // the container exactly (its bottom edge is fixed).
+                const int base = extraCross / lineCount;
+                int shift = 0;
+                foreach (li, line; lines)
+                {
+                    const int share = (li == lineCount - 1)
+                        ? extraCross - base * (lineCount - 1) : base;
+                    const int lineCross = lineHeights[li] + share;
+                    const int delta = shift;
+                    shift += share;
+                    foreach (k, i; line)
+                    {
+                        auto ce = items[i];
+                        ce.box.y += delta;
+                        if (resolveHeight(ce) < 0)
+                        {
+                            const int target = lineCross - ce.box.marginTop -
+                                ce.box.marginBottom - ce.box.paddingTop -
+                                ce.box.paddingBottom - ce.box.borderTop -
+                                ce.box.borderBottom;
+                            if (target > ce.box.height) ce.box.height = target;
+                        }
+                        auto sub = FlowContext();
+                        sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+                        sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+                        sub.width = max(0, ce.box.width - ce.box.paddingLeft -
+                            ce.box.paddingRight - ce.box.borderLeft - ce.box.borderRight);
+                        sub.lineEnd = sub.x + sub.width;
+                        sub.height = ce.box.height;
+                        layoutContents(ce, sub, ce);
+                    }
+                }
+            }
+            else if (crossLead != 0 || crossGap != 0)
+            {
+                foreach (li, line; lines)
+                {
+                    const int delta = crossLead + cast(int) li * crossGap;
+                    if (delta == 0) continue;
+                    foreach (k, i; line)
+                    {
+                        auto ce = items[i];
+                        ce.box.y += delta;
+                        auto sub = FlowContext();
+                        sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+                        sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+                        sub.width = max(0, ce.box.width - ce.box.paddingLeft -
+                            ce.box.paddingRight - ce.box.borderLeft - ce.box.borderRight);
+                        sub.lineEnd = sub.x + sub.width;
+                        layoutContents(ce, sub, ce);
+                    }
+                }
+            }
+        }
+        element.box.height = element.style.resolveLength(element.style.height,
+            style.containingHeight) >= 0
+            ? element.style.resolveLength(element.style.height, style.containingHeight)
+            : contentBoxHeight(element, lineTop - innerY);
+        layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
+        flow.prevBottomMargin = element.box.marginBottom;
+        flow.hasPrevBlock = true;
+        flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
+        return;
     }
 
     // justify-content.
@@ -3937,6 +4526,51 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         }
     }
 
+    // The cross size of a single-line row is the container's content height when
+    // it is definite, falling back to the tallest item only otherwise (CSS
+    // Flexbox 9.4). Measuring against the tallest ITEM alone packed every item
+    // to the top of a taller container: a 60px row put its 20px items at y=0
+    // instead of centring them at y=20.
+    int crossSize = maxChildHeight;
+    {
+        const int declaredH = element.style.resolveLength(element.style.height,
+            style.containingHeight);
+        if (declaredH >= 0) crossSize = max(crossSize, declaredH);
+    }
+    // `stretch` is the flexbox initial value (`align-items` defaults to it): an
+    // item whose own cross size is auto grows to fill the line's cross size (CSS
+    // Flexbox 8.3). The engine used to leave such items at their content height,
+    // so a background-only flex item painted nothing where Edge fills the row.
+    // The item's contents are re-laid out inside the taller box so a percentage
+    // height or a nested row follows. Applied before the auto-margin pass so the
+    // horizontal shift it applies to a stretched item still stands.
+    foreach (ce; items)
+    {
+        const string alignValue = (ce.style.alignSelf.length && ce.style.alignSelf != "auto")
+            ? ce.style.alignSelf : style.alignItems;
+        if (alignValue != "stretch") continue;
+        // A cross-axis `auto` margin absorbs the free space itself and disables
+        // stretching (CSS Flexbox 8.1); leave such an item to the auto-margin
+        // placement below.
+        if (ce.box.marginTopAuto || ce.box.marginBottomAuto) continue;
+        if (resolveHeight(ce) >= 0) continue; // a definite cross size: not stretched
+        const int target = crossSize - ce.box.marginTop - ce.box.marginBottom -
+            ce.box.paddingTop - ce.box.paddingBottom -
+            ce.box.borderTop - ce.box.borderBottom;
+        if (target <= ce.box.height) continue;
+        ce.box.height = target;
+        auto sub = FlowContext();
+        sub.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+        sub.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+        sub.width = max(0, ce.box.width - ce.box.paddingLeft - ce.box.paddingRight -
+            ce.box.borderLeft - ce.box.borderRight);
+        sub.lineEnd = sub.x + sub.width;
+        // The containing block height for a percentage-height child is the
+        // stretched content box, so `height:100%` fills it (CSS 10.5).
+        sub.height = ce.box.height;
+        layoutContents(ce, sub, ce);
+    }
+
     // margin-left:auto / margin-right:auto / margin:auto on an item absorbs
     // ALL leftover space like justify-content would: a left-auto margin pushes
     // the item (and everything after it) to the far side; a right-auto margin
@@ -3992,20 +4626,25 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     // 8.4). Only `center` used to be honoured, so a toolbar declaring
     // `align-items: flex-start` centred its buttons and one declaring `flex-end`
     // packed them to the top. `align-self` overrides the container per item;
-    // `stretch` needs no work here because items resolve their own height.
-    // The cross size of a single-line row is the container's content height when
-    // it is definite, falling back to the tallest item only otherwise (CSS
-    // Flexbox 9.4). Measuring against the tallest ITEM alone packed every item
-    // to the top of a taller container: a 60px row put its 20px items at y=0
-    // instead of centring them at y=20.
-    int crossSize = maxChildHeight;
-    {
-        const int declaredH = element.style.resolveLength(element.style.height,
-            style.containingHeight);
-        if (declaredH >= 0) crossSize = max(crossSize, declaredH);
-    }
+    // `stretch` was already applied to auto-height items above, using the
+    // `crossSize` computed there.
     foreach (ce; items)
     {
+        // A cross-axis (`margin-top`/`margin-bottom`) `auto` margin absorbs the
+        // line's free cross space and overrides `align-self` (CSS Flexbox 8.1):
+        // both auto centre the item, a lone top-auto pins it to the bottom.
+        if (ce.box.marginTopAuto || ce.box.marginBottomAuto)
+        {
+            const int outerH = ce.box.height + ce.box.paddingTop + ce.box.paddingBottom +
+                ce.box.borderTop + ce.box.borderBottom + ce.box.marginTop + ce.box.marginBottom;
+            if (ce.box.marginTopAuto && ce.box.marginBottomAuto)
+                ce.box.y = innerY + (crossSize - outerH) / 2;
+            else if (ce.box.marginTopAuto)
+                ce.box.y = innerY + crossSize - outerH;
+            else
+                ce.box.y = innerY;
+            continue;
+        }
         // (`align` is a D keyword, hence the name.)
         const string alignValue = (ce.style.alignSelf.length && ce.style.alignSelf != "auto")
             ? ce.style.alignSelf : style.alignItems;
@@ -4032,7 +4671,7 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
             auto tn = cast(TextNode) child;
             if (tn is null) continue;
             const px = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
-            auto lay = shapeText(tn.data, px, 0);
+            auto lay = shapeText(tn.data, px, 0, 0.0, faceOf(&element.style));
             if (lay !is null) textW = max(textW, cast(int) lay.width);
         }
         // Sum the items' OUTER sizes (content + padding + border + margins): an
@@ -4067,7 +4706,7 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         }
     }
     const hPx = resolveHeight(element);
-    element.box.height = hPx >= 0 ? hPx : contentBoxHeight(element, contentHeight);
+    element.box.height = hPx >= 0 ? hPx : clampedContentHeight(element, contentHeight);
 
     layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
 
@@ -4099,13 +4738,16 @@ private int sumWidths(int[] widths)
 }
 
 /// Parse a grid-template-columns value into resolved column widths.
-private int[] resolveGridTracks(string value, int innerW)
+private int[] resolveGridTracks(string value, int innerW, int gap = 0)
 {
     import auroraweb.dom : cssInt;
     int[] result;
     int fixedTotal = 0;
     int frCount = 0;
     auto parts = splitGridTracks(value);
+    int trackCount = 0;
+    foreach (rawPart; parts)
+        if (normalizeTrack(rawPart).length) trackCount++;
     // First pass: fixed lengths + count fr.
     foreach (rawPart; parts)
     {
@@ -4125,8 +4767,12 @@ private int[] resolveGridTracks(string value, int innerW)
         result ~= px;
         fixedTotal += px;
     }
-    // Second pass: fill fr slots with remaining / frCount.
-    const remaining = innerW - fixedTotal;
+    // Second pass: fill fr slots with remaining / frCount. `1fr` distributes the
+    // space left after the fixed tracks AND the gaps between the tracks (CSS
+    // Grid 11.7): ignoring the gap made every `1fr` track one gap too wide, so a
+    // 2-column 10px-gap grid 210px wide got 105px tracks where Edge uses 100 and
+    // the last track overflowed the content box.
+    const remaining = innerW - fixedTotal - gap * cast(int) max(0, trackCount - 1);
     int[] finalTracks;
     foreach (rawPart; parts)
     {
@@ -4272,27 +4918,28 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
         element.box.y = collapsedTopY(flow, element);
         element.box.width = resolveWidth(element, flow.width);
     }
+    // As in `layoutFlex`: `width` is the content box, so tracks span `width` itself.
     const width = element.box.width;
 
     const innerX = element.box.x + element.box.paddingLeft + element.box.borderLeft;
     const innerY = element.box.y + element.box.paddingTop + element.box.borderTop;
-    const innerW = max(0, width - element.box.paddingLeft - element.box.paddingRight -
-        element.box.borderLeft - element.box.borderRight);
+    const innerW = max(0, width);
 
     auto style = element.style;
-    auto tracks = resolveGridTracks(style.gridTemplateColumns, innerW);
-    if (tracks.length == 0) tracks = [innerW];
-    // Explicit row tracks (px/%); auto rows are sized from content.
-    auto rowTracks = style.gridTemplateRows.length ?
-        resolveGridTracks(style.gridTemplateRows, style.containingHeight) : null;
     // `gap` is the shorthand that sets BOTH `row-gap` and `column-gap` (CSS Box
     // Alignment 1). Reading only the longhands dropped it: the flex-grid
     // fixture's `gap:9px` was ignored, so its 60px and 90px columns sat at x=10
-    // and x=70 back to back where Edge places them at x=10 and x=79.
+    // and x=70 back to back where Edge places them at x=10 and x=79. Resolved
+    // before the tracks, because the column gap is part of the fr distribution.
     const string colGapSrc = style.columnGap.length ? style.columnGap : style.gap;
     const string rowGapSrc = style.rowGap.length ? style.rowGap : style.gap;
     const colGap = colGapSrc.length ? max(0, style.resolveLength(colGapSrc, innerW)) : 0;
     const rowGap = rowGapSrc.length ? max(0, style.resolveLength(rowGapSrc, innerW)) : 0;
+    auto tracks = resolveGridTracks(style.gridTemplateColumns, innerW, colGap);
+    if (tracks.length == 0) tracks = [innerW];
+    // Explicit row tracks (px/%); auto rows are sized from content.
+    auto rowTracks = style.gridTemplateRows.length ?
+        resolveGridTracks(style.gridTemplateRows, style.containingHeight, rowGap) : null;
 
     Element[] items;
     foreach (child; element.children)
@@ -4418,13 +5065,16 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
         cursorX += ce.box.width + colGap;
         colIndex++;
     }
-    // Container height from the last row.
+    // Container height from the last row. `cursorY` shares `innerY`'s origin and
+    // `box.height` is the CONTENT box (paint adds padding and border back), so
+    // the content height is the last row's bottom minus that origin. Adding
+    // paddingBottom/borderBottom made a padded grid container one content origin
+    // plus padding plus border too tall (100px where Edge uses 70).
     int totalH = cursorY;
     if (rowHeights.length > 0)
         totalH = cursorY + rowHeights[$ - 1];
-    totalH += element.box.paddingBottom + element.box.borderBottom;
     const hPx2 = element.style.resolveLength(element.style.height, style.containingHeight);
-    element.box.height = hPx2 >= 0 ? hPx2 : max(0, totalH);
+    element.box.height = hPx2 >= 0 ? hPx2 : max(0, totalH - innerY);
 
     // Second pass: the items were laid during the measuring pass, while row
     // heights were still estimates, so absolutely positioned descendants were
@@ -4479,19 +5129,27 @@ private void layoutGrid(Element element, ref FlowContext flow, Element positione
     flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
 }
 
+/// A cell, whether it came from `<td>`/`<th>` or from `display: table-cell`.
+/// Real markup often builds the table model from generic elements (and CSS 17.2
+/// allows any element to be a row or a cell), which matched nothing before.
+private bool isTableCell(Element e)
+{
+    return e.tag == "td" || e.tag == "th" || e.style.display == "table-cell";
+}
+
 /// Basic table layout: table -> rows -> cells.
 private void layoutTable(Element element, ref FlowContext flow, Element positionedAncestor)
 {
     resolveBoxMetrics(element, flow.width);
     element.box.x = flow.x + element.box.marginLeft;
     element.box.y = collapsedTopY(flow, element);
+    // As in `layoutFlex`: `width` is the content box, so cells span `width` itself.
     const width = resolveWidth(element, flow.width);
     element.box.width = width;
 
     const innerX = element.box.x + element.box.paddingLeft + element.box.borderLeft;
     const innerY = element.box.y + element.box.paddingTop + element.box.borderTop;
-    const innerW = max(0, width - element.box.paddingLeft - element.box.paddingRight -
-        element.box.borderLeft - element.box.borderRight);
+    const innerW = max(0, width);
 
     // Collect rows and cell counts to compute equal column widths.
     int maxCols = 0;
@@ -4501,13 +5159,19 @@ private void layoutTable(Element element, ref FlowContext flow, Element position
     {
         auto ce = cast(Element) child;
         if (ce is null) continue;
-        if (ce.tag == "tr") { rows ~= ce; rowCount++; }
+        // Recognise rows by computed display as well as by tag: a `display:table`
+        // built from divs produced an all-zero table because only `<tr>` matched.
+        if (ce.tag == "tr" || ce.style.display == "table-row")
+        {
+            rows ~= ce;
+            rowCount++;
+        }
     }
     foreach (row; rows)
     {
         int cols = 0;
         foreach (c; row.elements)
-            if (c.tag == "td" || c.tag == "th") cols++;
+            if (isTableCell(c)) cols++;
         maxCols = max(maxCols, cols);
     }
     if (maxCols == 0) maxCols = 1;
@@ -4523,7 +5187,7 @@ private void layoutTable(Element element, ref FlowContext flow, Element position
         int rowH = 0;
         foreach (c; row.elements)
         {
-            if (c.tag != "td" && c.tag != "th") continue;
+            if (!isTableCell(c)) continue;
             c.box.x = x;
             c.box.y = y;
             c.box.width = colW;
@@ -4541,9 +5205,16 @@ private void layoutTable(Element element, ref FlowContext flow, Element position
             x += colW;
         }
         row.box.height = rowH;
+        // Every cell stretches to the row's height (CSS 17.5.3): a single taller
+        // cell must not leave its neighbours short of the row they share.
+        foreach (c; row.elements)
+            if (isTableCell(c)) c.box.height = rowH;
         y += rowH;
     }
-    element.box.height = max(0, y - innerY) + element.box.paddingBottom + element.box.borderBottom;
+    // `y` advanced from `innerY`, so `y - innerY` already is the content height
+    // that `box.height` stores; adding paddingBottom/borderBottom made a padded
+    // table one padding plus border too tall (85px where Edge uses 70).
+    element.box.height = max(0, y - innerY);
     // A grid/table container is a block-level box: mark the previous box so the
     // next sibling's top margin collapses with this box's bottom margin (CSS
     // 8.3.1) instead of being added in full.

@@ -19,12 +19,12 @@ module auroraweb.paint;
 
 import aurora.canvas : Canvas;
 import aurora.color : Color;
-import aurora.font : FontRole;
+import aurora.font : FontFace, FontRole;
 import aurora.image : RgbaImage;
 import aurora.text.layout : TextLayout, TextLayoutOptions;
 import aurora.types : Point, Rect, maxInt, minInt;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
-import auroraweb.shaping : shapeTextCached;
+import auroraweb.shaping : cssFace, shapeTextCached;
 
 import std.conv : to;
 import std.string : indexOf, lastIndexOf, split, startsWith, strip, toLower;
@@ -386,6 +386,16 @@ private bool startsStackingContext(const Element e)
     return e.style.isPositioned() && e.style.zIndex != 0;
 }
 
+/// A transformed element creates a stacking context and paints with the
+/// positioned group (CSS Transforms 1; CSS 2.1 App. E, step 8) even though it
+/// stays in flow. Painting it in document order hid a translated box under a
+/// later plain block, where Edge draws the translated box on top.
+private bool paintsAsPositioned(const Element e)
+{
+    return e.style.isPositioned() ||
+        (e.style.transform.length && e.style.transform != "none");
+}
+
 private void paintElement(Element element, Canvas canvas)
 {
     // `position: sticky`: pin the box within its containing block while the page
@@ -745,7 +755,7 @@ private void paintElement(Element element, Canvas canvas)
                 const altSize = element.style.fontSizePx > 0 ?
                     element.style.fontSizePx : 14;
                 auto altLayout = shapeTextCached(*alt, altSize,
-                    maxInt(1, contentW - 8), true);
+                    maxInt(1, contentW - 8), true, 0.0, faceOf(&element.style));
                 if (altLayout !is null)
                     contentCanvas.drawLayout(Point(innerX + 4, innerY + 4),
                         altLayout, Color.rgb(70, 70, 78));
@@ -775,7 +785,7 @@ private void paintElement(Element element, Canvas canvas)
         if (shown.length)
         {
             auto layout = shapeTextCached(shown, textSize,
-                maxInt(1, contentW - 6), false);
+                maxInt(1, contentW - 6), false, 0.0, faceOf(&element.style));
             if (layout !is null)
                 contentCanvas.drawLayout(Point(innerX + 3, innerY + 3), layout,
                     placeholderShown ? Color.rgb(150, 150, 156) : textColor);
@@ -789,7 +799,7 @@ private void paintElement(Element element, Canvas canvas)
             if (at > 0)
             {
                 auto head = shapeTextCached(shown[0 .. at], textSize,
-                    maxInt(1, contentW - 6), false);
+                    maxInt(1, contentW - 6), false, 0.0, faceOf(&element.style));
                 if (head !is null) caretX += cast(int) head.width;
             }
             const caretTop = innerY + 3;
@@ -824,7 +834,7 @@ private void paintElement(Element element, Canvas canvas)
         // allocating the two temporary arrays on every element every frame.
         bool anyPositioned = false;
         foreach (child; element.elements)
-            if (child.style.isPositioned()) { anyPositioned = true; break; }
+            if (paintsAsPositioned(child)) { anyPositioned = true; break; }
         if (!anyPositioned)
         {
             foreach (child; element.elements)
@@ -835,7 +845,7 @@ private void paintElement(Element element, Canvas canvas)
             Element[] normal;
             foreach (child; element.elements)
             {
-                if (child.style.isPositioned())
+                if (paintsAsPositioned(child))
                     _positionedLayers[$ - 1] ~= child;
                 else
                     normal ~= child;
@@ -864,7 +874,7 @@ private void paintElement(Element element, Canvas canvas)
     {
         foreach (child; element.elements)
         {
-            if (child.style.isPositioned() && _positionedLayers.length)
+            if (paintsAsPositioned(child) && _positionedLayers.length)
                 _positionedLayers[$ - 1] ~= child;
             else
                 paintElement(child, contentCanvas);
@@ -1113,6 +1123,15 @@ private double positionFraction(string value, bool horizontal, double dflt = 0.5
     return dflt;
 }
 
+/// The face this style's `font-family`/`font-weight`/`font-style` select, or null
+/// for the engine default. Layout uses the identical call, so measured and
+/// painted runs always shape with the same face.
+private const(FontFace) faceOf(const ComputedStyle* style)
+{
+    return style is null ? null
+        : cssFace(style.fontFamily, style.fontWeight, style.fontStyle);
+}
+
 /// Draw a text run using Aurora's TextLayout, wrapped at the given width.
 /// Uses the SAME shaping call as layout (`textEngine.layout` with an explicit
 /// pixelSize) so paint and layout agree; `canvas.layoutText` takes a
@@ -1135,7 +1154,7 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
     const int wrapW = (maxWidth > 0 && !noWrap) ? maxWidth + 1 : 0;
     // Memoized: the layout pass already shaped this exact run.
     auto layout = shapeTextCached(text, pixelSize, wrapW, wrapW > 0,
-        style.letterSpacingPx());
+        style.letterSpacingPx(), faceOf(&style));
     auto color = parseColorOrDefault(style.color, Color.rgb(0, 0, 0));
     // `background-clip: text` gradient text: the glyphs take the background
     // color (the gradient's fallback) rather than the (transparent) text color.

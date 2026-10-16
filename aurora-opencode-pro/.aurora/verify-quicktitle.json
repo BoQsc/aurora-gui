@@ -1,0 +1,45 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/tests",
+    "aurora-opencode-pro/assets",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Iaurora-opencode-pro/source",
+          "-Iaurora-opencode-pro/shared",
+          "-Iaurora-opencode-core/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-Jaurora-opencode-pro/assets",
+          "-of=aurora-opencode-pro/build/quicktitle/quick_title_restore_contracts.exe",
+          "aurora-opencode-pro/tests/quick_title_restore_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib"
+        ],
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "aurora-opencode-pro/tests/run_quick_title_verification.py"
+        ],
+        "timeout": 1500000
+      }
+    }
+  ]
+}

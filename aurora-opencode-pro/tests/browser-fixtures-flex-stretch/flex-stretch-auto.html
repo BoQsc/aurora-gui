@@ -1,0 +1,10 @@
+<!doctype html>
+<style>
+html,body{margin:0;background:#ffffff}
+/* No height on the row: the cross size is the tallest item, and every
+   auto-cross-size item stretches to it (CSS Flexbox 9.4, 8.3). */
+.row{display:flex;width:200px;background:#eeeeee}
+.tall{width:40px;height:30px;background:#2266cc}
+.str{width:40px;background:#cc2244}
+</style>
+<div class="row"><div class="tall"></div><div class="str"></div></div>
