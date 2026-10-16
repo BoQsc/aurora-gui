@@ -363,8 +363,7 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     if (replacement)
     {
         const request = latestTaskRequest(session).toLower();
-        if (!explicitlyNewTask(request) && !request.canFind("replace the plan") &&
-            !request.canFind("replace plan") && !request.canFind("discard") && !request.canFind("replan"))
+        if (!explicitlyNewTask(request) && !explicitPlanReplacementRequested(request))
             return "Error: replacing unfinished outcomes requires an explicit user scope change. Preserve their IDs and statuses.";
     }
     foreach (old; previous)

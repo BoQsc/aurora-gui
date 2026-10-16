@@ -100,6 +100,19 @@ bool explicitlyNewTask(string text)
     const value = text.toLower();
     return value.startsWith("new task") || value.startsWith("instead,") ||
         value.startsWith("instead ") || value.startsWith("forget that") ||
-        value.startsWith("switch to ") || (value.startsWith("now ") &&
-        !requestWords(text).canFind("it") && !requestWords(text).canFind("them"));
+        value.startsWith("switch to ");
+}
+
+bool explicitPlanReplacementRequested(string text)
+{
+    const words = requestWords(text);
+    const raw = text.toLower().split();
+    foreach (i, word; words)
+        if (requestedVerb(words, raw, i))
+        {
+            if (word == "replan") return true;
+            if (["replace", "discard", "drop", "rewrite"].canFind(word) &&
+                (words.canFind("plan") || words.canFind("checklist") || words.canFind("steps") || words.canFind("outcomes"))) return true;
+        }
+    return false;
 }

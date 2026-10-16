@@ -59,9 +59,12 @@ int main()
     s.taskStatus = "blocked";
     request(s, "Why did it stop?");
     assert(s.taskStatus == "blocked" && s.taskSteps.length == 1);
-    request(s, "Now fix the backend parser.");
+    request(s, "New task: fix the backend parser.");
     assert(s.contract.id != visual && s.taskArchive.length == 1);
     assert(requiredEvidence(s).length == 0 && s.taskSteps.length == 0);
+    const parserTask = s.contract.id;
+    request(s, "Now fix the remaining parser case.");
+    assert(s.contract.id == parserTask, "A phase transition discarded unfinished work");
     request(s, "How does rendering work?");
     assert(requiredEvidence(s).length == 0, "A question contaminated the active task's verification requirements");
     request(s, "Continue the parser task.");
@@ -84,6 +87,12 @@ int main()
     s.taskSteps = normalizedPlan(s, initial, null);
     s.contract.constraints = ["Preserve public API"];
     s.contract.decisions = ["Rejected a permissive fallback"];
+    append(s, "user", "Do not discard the plan.");
+    const replacement = `{"replace_entire_plan":true,"plan":[{"id":"fix","step":"Fix parser","status":"in_progress"}]}`;
+    assert(planUpdateError(s, replacement, s.taskSteps).length, "Negation authorized discarding unfinished outcomes");
+    append(s, "user", "Replace the plan.");
+    assert(!planUpdateError(s, replacement, s.taskSteps).length);
+    request(s, "Continue implementing and verifying the parser.");
     const dropped = `{"plan":[{"id":"fix","step":"Fix parser","status":"in_progress"}]}`;
     assert(planUpdateError(s, dropped, s.taskSteps).length, "A short plan lost unfinished work");
     const fabricated = `{"plan":[{"id":"fix","step":"Fix parser","status":"completed"},{"id":"verify","step":"Verify parser","status":"pending"}]}`;
@@ -127,7 +136,7 @@ int main()
     branch.messages[$ - 1].taskStateJson = activeTaskStateJson(branch);
     const originalLeaf = branch.activeLeafId;
     const originalTask = branch.contract.id;
-    request(branch, "Now fix another component.");
+    request(branch, "New task: fix another component.");
     const retainedMessages = branch.messages.length;
     branch.activeLeafId = originalLeaf;
     restoreBranchTask(branch);
