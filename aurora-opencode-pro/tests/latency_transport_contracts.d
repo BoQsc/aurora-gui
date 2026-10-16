@@ -178,6 +178,29 @@ int main()
     assert(budget.active() == 0 && transportPoolStats().activeLeases == 0,
         "Cancellation before headers leaked a callback context or connection lease");
 
+    environment["AURORA_NETWORK_INACTIVITY_MS"] = "200";
+    auto watchdog = new OpenCodeClient(base, "fixture-key", ProviderRetryPolicy(5.seconds));
+    const watchdogStarted = MonoTime.currTime;
+    assert(watchdog.startChatMessages(null, null, "watchdog", false, 2010) == ChatStartResult.accepted);
+    bool watchdogFailed;
+    while (!watchdogFailed && MonoTime.currTime - watchdogStarted < 2.seconds)
+    {
+        watchdog.drain(batch);
+        foreach (event; batch)
+            if (event.kind == OpenCodeEventKind.error)
+            {
+                assert(event.text.indexOf("12002") >= 0, event.text);
+                watchdogFailed = true;
+            }
+        Thread.sleep(1.msecs);
+    }
+    watchdog.closeSession();
+    environment.remove("AURORA_NETWORK_INACTIVITY_MS");
+    assert(watchdogFailed && MonoTime.currTime - watchdogStarted < 1500.msecs,
+        "Network inactivity watchdog failed to bound a request with missing headers");
+    assert(transportPoolStats().activeLeases == 0);
+    writeln("PASS application inactivity watchdog times out missing headers and releases the connection");
+
     // Compatibility path must decode the same bytes and report its transport.
     environment["AURORA_HTTP_TRANSPORT"] = "wininet";
     const fallback = complete(base, "fallback", 1006);

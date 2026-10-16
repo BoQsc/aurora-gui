@@ -1,4 +1,5 @@
 module auroraopencode.tools;
+import auroraopencode.verificationrecipe : verificationToolDefinition;
 import auroraopencode.core : imageAttachmentToJson, imageAttachmentFromJson;
 import auroraopencode.imagecontext : retireImagesArgumentsError;
 import auroraopencode.imagenormalization : ImageCrop;
@@ -781,6 +782,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         ),
         processToolDefinition(),
         toolStatusDefinition(),
+        verificationToolDefinition(),
         webFetchToolDefinition(),
         downloadToolDefinition(),
         checksumToolDefinition(),
@@ -848,6 +850,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         ),
         processToolDefinition(),
         toolStatusDefinition(),
+        verificationToolDefinition(),
         webFetchToolDefinition(),
         downloadToolDefinition(),
         checksumToolDefinition(),
@@ -2178,7 +2181,8 @@ private ToolExecution runBash(string args, string workspace,
 /// bash/cmd/powershell tool: the model names the program and its arguments,
 /// and the app spawns it directly, so no shell syntax or quoting is involved.
 private ToolExecution runProgramTool(string args, string workspace,
-    ToolCancellation cancellation = null, ToolOutputObserver observer = null)
+    ToolCancellation cancellation = null, ToolOutputObserver observer = null,
+    bool verificationForeground = false)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -2321,11 +2325,12 @@ private ToolExecution runProgramTool(string args, string workspace,
             cancellation is null ? null : &cancellation.cancelled);
     }
     int exitCode = int.min;
-    auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, "run",
+    auto result = runProcess(fullArgv, resolvedWorkdir, timeoutMs, verificationForeground ? "verify" : "run",
         cancellation, observer, &exitCode);
     auto execution = ToolExecution("run", truncateOutput(result[0]), result[1]);
     execution.verification.check = check;
-    execution.verification.workspace = resolvedWorkdir;
+    import auroraopencode.taskpolicy : checkWorkspace;
+    execution.verification.workspace = checkWorkspace(program, argv, resolvedWorkdir, workspace);
     execution.verification.exitCode = exitCode;
     execution.verification.passed = !result[1] && exitCode == 0 && execution.verification.check.length > 0;
     execution.workspaceUnchanged = effect == WorkspaceCommandEffect.readOnly;
@@ -2646,6 +2651,7 @@ public struct ChangeContext
     ComputerUseContext computer;
     string conversationId;
     string turnId;
+    bool diagnosticReadOnly;
 }
 
 /// One filesystem path in Aurora's append-only mutation journal. File contents
@@ -6263,6 +6269,20 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
 {
     switch (call.name)
     {
+        case "verify":
+            import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
+            auto recipe = runVerificationRecipe(call.arguments, workspace,
+                (JSONValue command) {
+                    const step = runProgramTool(command.toString(), workspace, cancellation, observer, true);
+                    return VerificationRun(step.output, step.failed,
+                        step.verification.exitCode == int.min,
+                        step.verification.workspace.length ? step.verification.check : "");
+                }, cancellation is null ? null : &cancellation.cancelled, observer);
+            auto verified = ToolExecution("verify", recipe.output, !recipe.passed);
+            verified.images = recipe.images;
+            verified.verification = VerificationEvidence(recipe.check.length ? recipe.check : "verify:",
+                workspace, 0, recipe.passed, recipe.passed ? 0 : 1);
+            return verified;
         case "bash":
             return runBash(call.arguments, workspace, cancellation, observer);
         case "run":

@@ -75,6 +75,7 @@ import auroraopencode.planmode : experimentalStrictPlanEnabled,
     setStrictPlanSetting, trackedPlanPromptBlock;
 import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
+import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.requestbuilder : projectRequestMessages;
@@ -10558,7 +10559,7 @@ private string _suggestExcludeId;
     // unfinished steps and the model runs this many tool results without an
     // update_plan call, the checklist has drifted from the actual work; nudge
     // the model to refresh it before continuing.
-    private static immutable int planRefreshNudgeCalls = 4;
+    private static immutable int planRefreshNudgeCalls = 16;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -11001,6 +11002,7 @@ private string _suggestExcludeId;
 
         private int _resumeCountdown;
         private string _resumePrompt;
+        private string _resumeOwnerId;
 
         /// The turn the on-disk resume request points at had already finished
         /// before the process ended, so the note describes history rather than
@@ -11217,6 +11219,7 @@ private string _suggestExcludeId;
         }
         _resumePrompt = resumePromptFor(cause, reason, rebuildReport,
             buildStamp);
+        _resumeOwnerId = noteSession;
         // Everything that must be picked back up: the noted conversation first
         // (when its turn was still running), then every other conversation the
         // restart left mid-turn. A rebuild that interrupted several working
@@ -11635,6 +11638,7 @@ private string _suggestExcludeId;
     public void clearPendingResumeForTesting()
     {
         _resumePrompt = "";
+        _resumeOwnerId = "";
         _resumeCountdown = 0;
         _resumeNoteAlreadyHandled = false;
         _resumeTarget = -1;
@@ -13295,8 +13299,9 @@ private string _suggestExcludeId;
             return activeWorkspace();
         const id = _sessions[cast(size_t) sessionIndex].projectId;
         foreach (project; _projectState.projects)
-            if (project.id == id && project.path.length > 0) return project.path;
-        return activeWorkspace();
+            if (project.id == id && project.path.length > 0)
+                return taskWorkspace(_sessions[cast(size_t) sessionIndex], project.path);
+        return taskWorkspace(_sessions[cast(size_t) sessionIndex], activeWorkspace());
     }
 
     /// A session with no project id predates projects and lives in the sandbox.
@@ -14294,6 +14299,13 @@ private string _suggestExcludeId;
             ? session.turnStatus : "idle") ~ "\n");
         prompt.put("Verification: " ~ (session.verificationStatus.length > 0
             ? session.verificationStatus : "not_required") ~ "\n");
+        const evidence = requiredEvidence(session);
+        if (evidence.length)
+        {
+            prompt.put("Required evidence (current source inputs):");
+            foreach (kind; evidence) prompt.put(" " ~ kind);
+            prompt.put(". Use a saved verify recipe; a compiler check alone does not satisfy these outcomes.\n");
+        }
         if (session.taskSteps.length > 0)
         {
             prompt.put("Checklist:\n");
@@ -17665,14 +17677,24 @@ private void pollButtonSuggestionRequest()
                 return;
             }
         }
+        // A reviewer that has reported its diagnosis hands control back to the
+        // main model. Its report is not completion of the user's objective.
+        if (_execution.diagnosticActive)
+        {
+            _execution.diagnosticActive = false;
+            _execution.diagnosticRequestsRemaining = 0;
+        }
         const continuation = taskContinuation(*session, _settings.toolsEnabled);
-        if (continuation.action == TaskContinuationAction.continueWork)
+        if (continuation.action == TaskContinuationAction.continueWork ||
+            continuation.action == TaskContinuationAction.replan)
         {
             ChatMessage guidance;
             guidance.role = "user";
             guidance.internal = true;
             guidance.time = currentTimestamp();
             guidance.content = continuation.guidance();
+            if (continuation.action == TaskContinuationAction.replan && _settings.diagnosticModel.length)
+                _execution.diagnosticRequestsRemaining = 4;
             appendMessage(*session, guidance);
             session.turnStatus = "running";
             session.taskStatus = "active";
@@ -17680,15 +17702,15 @@ private void pollButtonSuggestionRequest()
             markDirty();
             setTurnActiveMarker(true, session.id);
             setTurnInFlight(true);
-            updateStatus("Continuing unfinished work…");
+            updateStatus(continuation.action == TaskContinuationAction.replan
+                ? "Changing diagnosis for the unfinished outcome…" : "Continuing unfinished work…");
             startChatRequest(sessionIndex, false);
             return;
         }
         if (continuation.action == TaskContinuationAction.needsAttention)
         {
-            failAssistantMessage("Task unfinished: the agent ended three consecutive " ~
-                "continuation attempts without new work, evidence, completed steps, " ~
-                "or passing verification. The remaining plan and conversation are " ~
+            failAssistantMessage("Task unfinished: after changing its diagnostic approach, the agent ended three consecutive " ~
+                "continuation attempts without completed outcomes or accepted verification. The remaining plan and conversation are " ~
                 "preserved. Send Continue to retry, or provide the missing information " ~
                 "if the agent identified a blocker.");
             updateStatus("Task unfinished · needs attention.");
@@ -18694,6 +18716,7 @@ private void pollButtonSuggestionRequest()
         ChangeContext changeContext;
         changeContext.conversationId = _sessions[sessionIndex].id;
         changeContext.turnId = to!string(requestId);
+        changeContext.diagnosticReadOnly = _execution.diagnosticActive;
         changeContext.computer = ComputerUseContext(true,
             sessionRoutingKey(*session), _client.baseUrl(), _client.apiKey(),
             session.model, explanationOnlyRequest(latestActualUserRequest(*session)),
@@ -18887,8 +18910,9 @@ private void pollButtonSuggestionRequest()
         }
         else if (!toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
             event.verificationCheck.length > 0 &&
-            event.verificationWorkspace == workspaceForSession(sessionIndex) &&
+            sameCheckout(event.verificationWorkspace, workspaceForSession(sessionIndex)) &&
             event.verificationRevision == toolWorkspaceRevision(event.verificationWorkspace) &&
+            satisfiesEvidence(event.verificationCheck, requiredEvidence(*session)) &&
             session.verificationStatus == "required")
         {
             invalidateChangedWorkspaceEvidence();
@@ -21347,7 +21371,12 @@ private void pollButtonSuggestionRequest()
         // Continue, Regenerate and queued prompts also open user turns. Stop's
         // latch belongs to the old turn; leaving it set discards the new turn's
         // native tool progress/results even though those tools execute.
-        if (userTurn) _turnCancelled = false;
+        if (userTurn)
+        {
+            _turnCancelled = false;
+            _execution.diagnosticRequestsRemaining = 0;
+            _execution.diagnosticActive = false;
+        }
         auto session = &_sessions[sessionIndex];
         if (_pendingDeveloperNote.length > 0 &&
             isSelfProjectWorkspace(workspaceForSession(sessionIndex)))
@@ -21400,6 +21429,15 @@ private void pollButtonSuggestionRequest()
                 orchestratorSpeaker);
             if (modelOverride.length > 0)
                 orchestratorModel = resolveAvailableModel(modelOverride);
+        }
+        const diagnosticReview = _execution.diagnosticRequestsRemaining > 0 &&
+            _settings.diagnosticModel.length > 0;
+        _execution.diagnosticActive = diagnosticReview;
+        if (diagnosticReview)
+        {
+            orchestratorModel = _settings.diagnosticModel;
+            --_execution.diagnosticRequestsRemaining;
+            updateStatus("Reviewing the stalled diagnosis with " ~ orchestratorModel ~ "…");
         }
         ChatRequestMessage[] messages;
         if (_settings.toolsEnabled)
@@ -21463,10 +21501,26 @@ private void pollButtonSuggestionRequest()
             }
         }
         OpenCodeToolDef[] tools;
+        if (diagnosticReview)
+        {
+            ChatRequestMessage review;
+            review.role = "system";
+            review.content = "Perform an independent read-only diagnosis. Identify the exact failing outcome, " ~
+                "contradictory evidence, rejected hypotheses and a reduced reproducer or concrete next fix. " ~
+                "Do not edit files or mark the task complete. Report your findings for the main model to apply. " ~
+                "Use at most four focused tool rounds. Source and screenshots are evidence; prior claims are not proof.";
+            messages ~= review;
+        }
         if (_settings.toolsEnabled && !_finalAnswerRequested)
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
+        if (diagnosticReview)
+        {
+            OpenCodeToolDef[] inspection;
+            foreach (tool; tools) if (diagnosticToolAllowed(tool.name)) inspection ~= tool;
+            tools = inspection;
+        }
         if (!_settings.experimentalNestedPlans)
         {
             OpenCodeToolDef[] filtered;
@@ -21481,7 +21535,7 @@ private void pollButtonSuggestionRequest()
                 orchestratorRouter);
         const fixedRequestBytes = requestMessageBytes(messages) +
             requestToolDefinitionBytes(tools);
-        const compactionEnabled = contextCompactionForModel(_settings,
+        const compactionEnabled = diagnosticReview || contextCompactionForModel(_settings,
             _settings.baseUrl, session.model);
         const oldCompactionAnchor = checkpointOnActivePath(*session)
             ? session.compactedThroughMessageId : "";
@@ -21517,7 +21571,8 @@ private void pollButtonSuggestionRequest()
         }
         else if (compactionEnabled)
         {
-            const contextLimit = requestContextBudget(orchestratorModel);
+            const normalContextLimit = requestContextBudget(orchestratorModel);
+            const contextLimit = diagnosticReview && normalContextLimit > 64_000 ? 64_000 : normalContextLimit;
             compactedRequestMessages = prepareCompactedRequest(*session,
                 contextLimit, fixedRequestBytes, checkpointCreated,
                 fallbackCompacted);
@@ -22323,6 +22378,18 @@ private void pollButtonSuggestionRequest()
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Provider limit: " ~
             formatThousands(providerLimit) ~ " tokens", delegate() {}, "", false);
+        items ~= ContextMenuItem.check("Use 128k working context for long tool tasks",
+            _settings.adaptiveWorkingContext, delegate()
+            {
+                _settings.adaptiveWorkingContext = !_settings.adaptiveWorkingContext;
+                saveSettingsNow(); refreshUsageBadge();
+            });
+        items ~= ContextMenuItem.check("Use this model for stalled-task diagnosis",
+            _settings.diagnosticModel == model, delegate()
+            {
+                _settings.diagnosticModel = _settings.diagnosticModel == model ? "" : model;
+                saveSettingsNow();
+            });
         items ~= ContextMenuItem.command("Compaction target (when enabled)",
             delegate() {}, "", false);
         foreach (target; [0, 64_000, 128_000, 200_000, 500_000])
@@ -28421,7 +28488,8 @@ private void pollButtonSuggestionRequest()
         if (_compactionBudgetsBaseUrl == _settings.baseUrl)
             if (auto learned = model in _learnedCompactionBudgets)
                 if (*learned < budget) budget = *learned;
-        return budget;
+        return workingContextBudget(budget, _settings.toolsEnabled && _settings.adaptiveWorkingContext &&
+            contextCompactionForModel(_settings, _settings.baseUrl, model), _toolRounds);
     }
 
     /// Merge a session parsed from a snapshot into the live list. When the same
@@ -29215,7 +29283,7 @@ private void pollButtonSuggestionRequest()
                 ChatMessage recovery;
                 recovery.role = "user";
                 recovery.internal = true;
-                recovery.content = prompt;
+                recovery.content = scopedResumePrompt(prompt, _sessions[index].id == _resumeOwnerId);
                 recovery.time = currentTimestamp();
                 appendMessage(_sessions[index], recovery);
                 startChatRequest(index);

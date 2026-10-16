@@ -164,15 +164,17 @@ int main()
 
     const usersBefore = root.userMessageCountForTesting();
     context(4);
+    assert(root.userMessageCountForTesting() == usersBefore, "A short healthy phase still forced plan maintenance");
+    context(12);
     assert(root.userMessageCountForTesting() == usersBefore + 1);
     context(4);
     assert(root.userMessageCountForTesting() == usersBefore + 1, "Stale-plan reminder spammed");
     record(advanced);
     const usersAfterRefresh = root.userMessageCountForTesting();
-    context(4);
+    context(16);
     assert(root.userMessageCountForTesting() == usersAfterRefresh + 1,
         "Updating the plan did not rearm its progress reminder");
-    writeln("PASS refresh guidance appears after four results, once per cycle, and rearms after an update");
+    writeln("PASS short phases avoid maintenance; bounded refresh guidance appears after sixteen results");
 
     fresh();
     root.injectToolResultForTesting("update_plan", "invalid plan", true, "{}");

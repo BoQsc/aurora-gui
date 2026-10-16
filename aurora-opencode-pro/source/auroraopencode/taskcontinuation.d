@@ -10,7 +10,7 @@ import std.string : startsWith, indexOf, strip;
 enum taskContinuationMarker = "Continuation: unfinished authorized work\n";
 enum taskStallLimit = 3;
 
-enum TaskContinuationAction { settle, continueWork, needsAttention }
+enum TaskContinuationAction { settle, continueWork, replan, needsAttention }
 
 struct TaskContinuation
 {
@@ -19,6 +19,7 @@ struct TaskContinuation
     int completed;
     bool verified;
     int stalled;
+    int replans;
 
     string guidance() const
     {
@@ -26,7 +27,18 @@ struct TaskContinuation
         state["tools"] = tools;
         state["completed"] = completed;
         state["verified"] = verified;
-        state["stalled"] = stalled;
+        state["stalled"] = action == TaskContinuationAction.replan ? 0 : stalled;
+        state["replans"] = replans + (action == TaskContinuationAction.replan ? 1 : 0);
+        if (action == TaskContinuationAction.replan)
+            return taskContinuationMarker ~ state.toString() ~ "\n" ~
+                "The last attempts produced no completed outcome or accepted verification. " ~
+                "Change the diagnostic approach now. Record the exact remaining defect, " ~
+                "expected behavior, strongest contradictory evidence and rejected hypotheses. " ~
+                "Reduce it to a failing case or inspect a different subsystem before editing. " ~
+                "Use an independent reference for rendering. New query strings, repeated " ~
+                "builds and plan rewrites are not proof of improvement. Continue the user's " ~
+                "authorized work without asking permission; use task_blocker only for an " ~
+                "actual missing input or external dependency.";
         return taskContinuationMarker ~ state.toString() ~ "\n" ~
             "The user's authorized task still has unfinished work or verification. " ~
             "Continue the remaining outcomes with the available tools now. " ~
@@ -49,8 +61,9 @@ bool unfinishedTask(const ref ChatSession session)
 }
 
 /// Derive the retry budget from the selected, durable branch. Prose, failed
-/// calls and plan rewrites cannot reset it. New evidence/work, completed steps
-/// and passing verification can, so productive work has no fixed turn cap.
+/// calls, novel searches and plan rewrites cannot reset it. Completed outcomes
+/// and accepted verification can. A stalled run changes diagnosis before it
+/// needs attention; productive work has no fixed turn cap.
 TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabled)
 {
     TaskContinuation result;
@@ -111,13 +124,16 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     result.verified = session.verificationStatus == "passed";
     if (previous.type == JSONType.object)
     {
-        const progressed = result.tools > previous["tools"].integer ||
-            result.completed > previous["completed"].integer ||
+        const progressed = result.completed > previous["completed"].integer ||
             (result.verified && !previous["verified"].boolean);
         result.stalled = progressed ? 0 : cast(int) previous["stalled"].integer + 1;
+        if (!progressed)
+            if (auto value = "replans" in previous.object)
+                if (value.type == JSONType.integer) result.replans = cast(int) value.integer;
     }
     result.action = result.stalled >= taskStallLimit
-        ? TaskContinuationAction.needsAttention : TaskContinuationAction.continueWork;
+        ? (result.replans == 0 ? TaskContinuationAction.replan : TaskContinuationAction.needsAttention)
+        : TaskContinuationAction.continueWork;
     return result;
 }
 

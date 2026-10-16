@@ -48,7 +48,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        if model == "hold-headers":
+        if model in ("hold-headers", "watchdog"):
             time.sleep(2.5)
             return
         if model == "delayed-headers":

@@ -211,6 +211,13 @@ private final class ToolJob : WorkItem
             result = ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
             return;
         }
+        import auroraopencode.taskpolicy : diagnosticToolAllowed;
+        if (batch.context.diagnosticReadOnly && !diagnosticToolAllowed(call.name))
+        {
+            result = ToolExecution(call.name, "Diagnostic review is read-only. Report the diagnosis so the task's main model can apply it.", true);
+            changed = false;
+            return;
+        }
         // A failed exclusive effect may have changed files before reporting
         // failure. Keep earlier evidence invalidated in that case.
         changed = mutationCandidate();
@@ -219,8 +226,8 @@ private final class ToolJob : WorkItem
         try
         {
             result = executeTool(call, workspace, batch.cancellation, batch.context, &progress);
-            changed = mutationCandidate() && result.verification.check.length == 0 &&
-                !result.workspaceUnchanged;
+            changed = (call.name == "verify" && result.failed) ||
+                (mutationCandidate() && result.verification.check.length == 0 && !result.workspaceUnchanged);
             const separateSourceUnobserved = result.workspaceObservationOnly &&
                 batch.developerSource.length && checkoutIdentity(batch.developerSource) != checkoutIdentity(workspace);
             if ((changed || separateSourceUnobserved) && batch.developerSource.length &&

@@ -41,6 +41,7 @@ int main()
         append(session, "user", decision.guidance(), true);
         append(session, "tool", "new source " ~ to!string(i), false, "edit",
             "edit-" ~ to!string(i));
+        session.taskSteps ~= TaskStep("Verified outcome " ~ to!string(i), "completed");
         append(session, "assistant", "Partial result. May I continue?");
     }
     assert(taskContinuation(session, true).stalled == 0);
@@ -58,6 +59,14 @@ int main()
         append(session, "tool", "Plan reworded", false, "update_plan", to!string(i));
         append(session, "user", "Durable task-state checkpoint. Task active", true);
         append(session, "assistant", "Still pending " ~ to!string(i));
+    }
+    assert(taskContinuation(session, true).action == TaskContinuationAction.replan);
+    append(session, "user", taskContinuation(session, true).guidance(), true);
+    foreach (i; 0 .. taskStallLimit)
+    {
+        decision = taskContinuation(session, true);
+        append(session, "user", decision.guidance(), true);
+        append(session, "tool", "same contents", false, "read", "varied query " ~ to!string(i));
     }
     assert(taskContinuation(session, true).action == TaskContinuationAction.needsAttention);
     // The durable message marker carries the bound through a reload/compaction.

@@ -225,6 +225,15 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "for a new edit, failure, or named unresolved concern. Change approach after " ~
         "repeated identical failures. Verify GUI interaction or rendered output, " ~
         "not compilation alone. Inspect local HTML in a browser.\n" ~
+        "For rendering tasks, record an independent reference at matching viewport, " ~
+        "DPI, fonts and page state. Comparing with an earlier broken render only " ~
+        "proves preservation. Keep unresolved visual defects and contradictory " ~
+        "evidence in the work state; passing compiler/unit checks cannot erase them. " ~
+        "Save known build/test/render sequences as a project verification recipe " ~
+        "and use verify to execute them together with source hashes and typed results. " ~
+        "After repeated attempts without an improved outcome, reduce the failing " ~
+        "case and change the hypothesis or subsystem. Use a focused independent " ~
+        "diagnostic review when a configured reviewer is available.\n" ~
         "5. Finish authorized work and verification before reporting the outcome and " ~
         "checks. Keep the plan accurate. Do not ask to continue work already requested. " ~
         "Use task_blocker only for missing input or an external dependency.\n";

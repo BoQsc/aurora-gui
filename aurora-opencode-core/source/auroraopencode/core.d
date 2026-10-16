@@ -1324,6 +1324,8 @@ public struct Settings
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
     bool autoRetireImages = true; // use completed visual answers as later text context
+    bool adaptiveWorkingContext = true;
+    string diagnosticModel; // opt-in, same-provider read-only review of stalled tasks
     bool hideHunkHeaders = true;
     // Split a tool round into runs of the same kind of action, so each run
     // gets its own header ("Explored a file", then "Edited a file") instead of
@@ -1640,6 +1642,11 @@ public Settings loadSettings()
                 if (auto found = "autoRetireImages" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.autoRetireImages = found.type == JSONType.true_;
+                if (auto found = "adaptiveWorkingContext" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.adaptiveWorkingContext = found.type == JSONType.true_;
+                if (auto found = "diagnosticModel" in value.object)
+                    if (found.type == JSONType.string) settings.diagnosticModel = found.str;
                 if (auto found = "hideHunkHeaders" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.hideHunkHeaders = found.type == JSONType.true_;
@@ -1972,6 +1979,8 @@ public void saveSettings(const ref Settings settings)
     root["showWorkedFor"] = settings.showWorkedFor;
     root["quickTitle"] = settings.quickTitle;
     root["autoRetireImages"] = settings.autoRetireImages;
+    root["adaptiveWorkingContext"] = settings.adaptiveWorkingContext;
+    root["diagnosticModel"] = settings.diagnosticModel;
     root["hideHunkHeaders"] = settings.hideHunkHeaders;
     root["groupSameAction"] = settings.groupSameAction;
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;

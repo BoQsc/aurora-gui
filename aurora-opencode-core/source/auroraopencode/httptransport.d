@@ -4,10 +4,11 @@ import core.sys.windows.windows : DWORD, DWORD_PTR, GetLastError;
 import core.sys.windows.winhttp;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
-import core.time : MonoTime;
+import core.time : MonoTime, msecs;
 import core.thread : Thread, thread_attachThis, thread_detachThis;
 import core.memory : GC;
 import std.conv : to;
+import std.process : environment;
 import std.utf : toUTF16z;
 import auroraopencode.workerbudget : providerWorkerBudget;
 
@@ -253,7 +254,28 @@ class AsyncHttpRequest
     private void awaitCompletion(DWORD status)
     {
         // Caller owns mutex. No application lock is held by a callback.
-        while (!cancelled && !error && completed != status) changed.wait();
+        long timeoutMs = 120_000;
+        try
+        {
+            const configured = environment.get("AURORA_NETWORK_INACTIVITY_MS", "");
+            if (configured.length)
+            {
+                const value = to!long(configured);
+                if (value >= 100 && value <= 600_000) timeoutMs = value;
+            }
+        }
+        catch (Exception) {}
+        const deadline = MonoTime.currTime + timeoutMs.msecs;
+        while (!cancelled && !error && completed != status)
+        {
+            const remaining = deadline - MonoTime.currTime;
+            if (remaining <= 0.msecs)
+            {
+                error = ERROR_WINHTTP_TIMEOUT;
+                break;
+            }
+            changed.wait(remaining);
+        }
         ensureOpen();
     }
 
