@@ -513,15 +513,13 @@ private OpenCodeToolDef applyPatchToolDefinition()
 
 private OpenCodeToolDef taskBlockerToolDefinition()
 {
-    return OpenCodeToolDef("task_blocker",
-        "Report a specific blocker that requires missing user input or an external " ~
-        "dependency before the authorized task can continue. Supply kind=input " ~
-        "and the required question, or kind=external and the unavailable dependency. " ~
-        "This pauses automatic continuation and keeps unfinished work recorded. " ~
-        "Do not use it to request permission to continue work already authorized, " ~
-        "to offer a review of a partial result, or merely because work remains. " ~
-        "Continue independent work first; then explain the blocker to the user.",
-        `{"type":"object","properties":{"kind":{"type":"string","enum":["input","external"]},"reason":{"type":"string","description":"The specific missing information or unavailable dependency preventing further work"},"question":{"type":"string","description":"The required question for kind=input"}},"required":["kind","reason"]}`);
+    return OpenCodeToolDef("request_input",
+        "Ask one focused question for an essential user-owned fact that cannot be obtained " ~
+        "from available sources. First inspect local configuration and alternatives and complete " ~
+        "all independent outcomes. Routine errors, unavailable tools, testing choices and stalled " ~
+        "approaches require internal recovery, not user intervention. Never ask permission to continue " ~
+        "authorized work. Preserve unfinished outcomes while awaiting the answer.",
+        `{"type":"object","properties":{"reason":{"type":"string"},"required_fact":{"type":"string","description":"The essential fact only the user can supply, such as an absent deployment destination"},"question":{"type":"string"},"checked":{"type":"array","items":{"type":"string"},"description":"Concrete sources and alternatives already inspected"},"independent_work_complete":{"type":"boolean","description":"True after completing all work that does not depend on the missing fact"}},"required":["reason","required_fact","question","checked","independent_work_complete"]}`);
 }
 
 /// Record the visible plan, with at most one step in progress.
@@ -860,8 +858,9 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
             "then inspect status and output with the process tool. Foreground commands " ~
             "return a processId after 30 seconds if still running; inspect that same " ~
             "process instead of starting it again. Emit flushed progress output " ~
-            "(for example python -u), use finite test deadlines, and investigate " ~
-            "quiet processes. A processId is not evidence that a check passed.",
+            "(for Python verification use python -u -B -m unittest, or pytest). " ~
+            "Use finite test deadlines, retain relevant regression tests, and inspect quiet processes. " ~
+            "A processId is not evidence that a check passed.",
             `{"type":"object","properties":{"program":{"type":"string","description":"The executable to run (e.g. dmd, git, python)"},"args":{"type":"array","items":{"type":"string"},"description":"Arguments passed verbatim to the program"},"workdir":{"type":"string","description":"Working directory, relative to the workspace or absolute"},"timeout":{"type":"integer","description":"Timeout in milliseconds (default 3600000)"},"background":{"type":"boolean","description":"Return immediately with a processId and supervise the program in the background"}},"required":["program"]}`
         ),
         processToolDefinition(),
@@ -5725,7 +5724,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         auto leasePaths = targets.dup;
         const control = call.name == "process" || call.name == "tool_status" ||
             call.name == "update_plan" || call.name == "update_subplan" || call.name == "open" ||
-            call.name == "retire_images" || call.name == "task_blocker";
+            call.name == "retire_images" || call.name == "task_blocker" || call.name == "request_input";
         JSONValue input;
         try input = parseJSON(call.arguments); catch (Exception) {}
         auto operationDir = workspace;
@@ -6350,6 +6349,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
         case "update_plan":
             return runUpdatePlan(call.arguments, workspace);
         case "task_blocker":
+        case "request_input":
         {
             import auroraopencode.taskcontinuation : taskBlockerError;
             const error = taskBlockerError(call.arguments);
@@ -6357,7 +6357,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             const args = parseJSON(call.arguments);
             const reason = jsonString(args, "reason");
             const question = jsonString(args, "question");
-            return ToolExecution(call.name, "Task needs attention: " ~ reason ~
+            return ToolExecution(call.name, "Required information: " ~ reason ~
                 (question.length ? "\nRequired input: " ~ question : ""), false);
         }
         case "update_subplan":

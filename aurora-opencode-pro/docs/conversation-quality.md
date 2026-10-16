@@ -18,12 +18,24 @@ it cannot establish that a model chose complete behavioral assertions.
 
 An empty action task cannot settle merely because the model said it was done.
 Stagnation resets on newly supported evidence or accepted verification, not the
-number of checked rows. While tools continue, sixteen results without new
-findings/effects request a different diagnosis; thirty-two require attention.
-Distinct productive findings reset this window, so this is not a total work cap.
+number of checked rows. Stalled replies trigger recurring diagnosis changes;
+tools without new findings/effects get a recovery checkpoint every sixteen calls.
+Neither limit ends authorized work or asks the user to restart. Exact repeated
+calls remain suppressed; unusable output recovers with a different action.
+Verification guidance names accepted checker formats and saved recipes so a
+testing choice does not become a request for user intervention.
 Analysis checkpoints request supported findings and never steer toward edits.
 Native implementation tools reject analysis-only requests. Delegated work uses
 the same completion gate and reports application-recorded evidence to its parent.
+
+`request_input` replaces the advertised blocker tool. It accepts one essential
+user-owned fact only after the agent records inspected sources/alternatives and
+finishes independent work. Permission-to-continue questions and external-error
+reports are rejected with recovery guidance. Genuine absent information remains
+`waiting_input`; it is never certified as completed. A supplied fact resumes the
+same objective. The legacy `task_blocker` name follows these same rules.
+Provider/account outages and unavailable essential facts cannot be solved by
+removing a completion gate; failures and incomplete work remain honestly recorded.
 
 Task metadata survives normal storage, journal replay, copies, compaction and
 branch selection. Earlier contracts and transcripts are retained. The active
@@ -58,6 +70,9 @@ artifacts and records resolution, model requests, tool calls, available token
 usage, answer length and end-to-end latency. Question-line counts are a heuristic
 for unnecessary questions, not a semantic judgment. Live latency includes the
 provider and network and must not be presented as local client overhead.
+It also requires accepted verification, completed task state and at most 100
+words per reply. `--headless-loop-json` frames settled replies independently of
+model-authored markers; live runs do not depend on the model repeating a sentinel.
 
 ```text
 python benchmarks/conversation_quality.py --live

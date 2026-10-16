@@ -1,0 +1,116 @@
+{
+    "inputsSha256": "808CE3C1F04A35D6589C658D05EDEC07549DF84E7828F58036EC82C5239C16BA",
+    "passed": true,
+    "recipe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\verify.json",
+    "recipeSha256": "17CF720894545272EAF1EA3771CD956F10398EEC5BC1EA5707E5F297A0E4B5BF",
+    "steps": [
+        {
+            "command": {
+                "args": [
+                    "-i",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+                    "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\browser-probe.exe",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-probe.d",
+                    "user32.lib",
+                    "gdi32.lib",
+                    "shell32.lib",
+                    "ws2_32.lib",
+                    "advapi32.lib",
+                    "ole32.lib"
+                ],
+                "background": false,
+                "program": "dmd",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font"
+            },
+            "kind": "compile",
+            "output": "(no output)",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [
+                    "-i",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+                    "-unittest",
+                    "-main",
+                    "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\engine-checks.exe",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-engine-check.d",
+                    "user32.lib",
+                    "gdi32.lib",
+                    "shell32.lib",
+                    "ws2_32.lib",
+                    "advapi32.lib",
+                    "ole32.lib"
+                ],
+                "background": false,
+                "program": "dmd",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font"
+            },
+            "kind": "compile",
+            "output": "(no output)",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\engine-checks.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font"
+            },
+            "kind": "tests",
+            "output": "ok\r\n39 modules passed unittests\r\n",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-web-font\\webfont.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\webfont.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\webfont.actual.ppm",
+            "actualSha256": "AB5E409BD812BDA790D6806FB73EA6606929A103B71BE1976336FE62293BE64B",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\webfont.png",
+            "referenceSha256": "E55645662F5F97BAA82C46552FDAB67E8A1DF71348FE8A5D93C16A37080403A1",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 95a278314a5d41b75c337793c8f4b298ae135ee4a7c79b58455e891d62bae01c; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "--interaction",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-web-font\\interaction.html"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font"
+            },
+            "kind": "interaction",
+            "output": "PASS independent click-handler and link-destination assertions\r\n",
+            "passed": true
+        }
+    ]
+}

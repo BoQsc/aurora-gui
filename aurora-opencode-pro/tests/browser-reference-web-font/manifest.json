@@ -1,0 +1,20 @@
+{
+  "createdAtUtc": "2026-10-16T22:37:43.791433+00:00",
+  "browser": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "browserSha256": "4bb4545b4ab80a3cf463a588ce570ca42de38fe6db16e3baeb0798ac75b4648b",
+  "viewport": {
+    "width": 320,
+    "height": 240,
+    "deviceScaleFactor": 1
+  },
+  "cases": [
+    {
+      "name": "webfont",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-web-font\\webfont.html",
+      "htmlSha256": "95a278314a5d41b75c337793c8f4b298ae135ee4a7c79b58455e891d62bae01c",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\webfont.png",
+      "referenceSha256": "e55645662f5f97baa82c46552fdab67e8a1df71348fe8a5d93c16a37080403a1",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 95a278314a5d41b75c337793c8f4b298ae135ee4a7c79b58455e891d62bae01c; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    }
+  ]
+}

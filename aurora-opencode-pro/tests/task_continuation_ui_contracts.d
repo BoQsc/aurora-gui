@@ -85,18 +85,39 @@ int main()
     root.newChatForTesting();
     send("Implement the fixture stalled task.");
     settled();
-    assert(root.taskStatusForTesting() == "blocked" && root.turnStatusForTesting() == "failed");
-    assert(root.lastAssistantErrorForTesting().indexOf("three consecutive") >= 0);
-    assert(root.taskStepStatusForTesting(0) == "in_progress");
+    assert(root.taskStatusForTesting() == "completed" && root.turnStatusForTesting() == "completed");
+    assert(root.lastAssistantErrorForTesting().length == 0);
+    assert(root.taskStepStatusForTesting(0) == "completed");
+    assert(readText(buildPath(workspace, "recovered.md")) == "Recovered outcome");
     root.persistForTesting(); root.reloadSessionsForTesting();
-    assert(root.taskStatusForTesting() == "blocked");
-    assert(root.lastAssistantErrorForTesting().indexOf("Task unfinished") >= 0);
-    writeln("PASS three stalled attempts end visibly, preserving unfinished work and error through reload");
+    assert(root.taskStatusForTesting() == "completed");
+    writeln("PASS recurring diagnosis recovers past the old stall limit and persists completion");
+
+    root.newChatForTesting();
+    send("Implement the fixture tool recovery task.");
+    settled();
+    assert(root.taskStatusForTesting() == "completed" && root.lastAssistantErrorForTesting().length == 0);
+    assert(root.taskStepStatusForTesting(0) == "completed");
+    assert(readText(buildPath(workspace, "tool-recovered.md")) == "Alternative succeeded");
+    writeln("PASS forty failed tool calls recover through two checkpoints without a user restart");
+
+    foreach (scenario; ["malformed output", "external obstacle"])
+    {
+        root.newChatForTesting();
+        send("Implement the fixture " ~ scenario ~ " task.");
+        settled();
+        assert(root.taskStatusForTesting() == "completed" && root.lastAssistantErrorForTesting().length == 0);
+        assert(root.taskStepStatusForTesting(0) == "completed");
+    }
+    assert(!exists(buildPath(workspace, "must-not-execute.md")), "Printed tool syntax was executed");
+    assert(readText(buildPath(workspace, "output-recovered.md")) == "Recovered with valid tools");
+    assert(readText(buildPath(workspace, "obstacle-recovered.md")) == "Recovered with valid tools");
+    writeln("PASS repeated malformed output and a reported external obstacle recover internally");
 
     root.newChatForTesting();
     send("Implement the fixture task requiring a missing deployment address.");
     settled();
-    assert(root.taskStatusForTesting() == "blocked");
+    assert(root.taskStatusForTesting() == "waiting_input");
     assert(root.lastAssistantContentForTesting() == "Which deployment server should I use?");
     assert(root.lastAssistantErrorForTesting().length == 0);
     writeln("PASS required input is reported explicitly and waits for the user");

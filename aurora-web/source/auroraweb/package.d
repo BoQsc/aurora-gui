@@ -18,10 +18,12 @@ module auroraweb;
 
 import aurora.canvas : Canvas;
 import aurora.surface : Surface;
-import auroraweb.css : parseStylesheet, Rule;
+import aurora.font : FontFace;
+import auroraweb.css : parseFontFaces, parseStylesheet, Rule;
 import auroraweb.dom : Element, TextNode;
 import auroraweb.dombind : bindDocument, dispatchHostEvent, dispatchHostEventNoBubble,
     dispatchDocumentEvent, setDocumentScroll;
+import auroraweb.shaping : registerWebFace;
 
 /// Hex digit value, or -1 for a non-hex character.
 private static int hexDigit(char c)
@@ -857,6 +859,7 @@ final class WebPage
                     // An inline block resolves its url() against the document.
                     absolutizeUrls(added, _currentUrl);
                     _rules ~= added;
+                    loadWebFonts(css, _currentUrl);
                 }
             }
             else if (e.tag == "link" && isStylesheetLink(e))
@@ -905,6 +908,9 @@ final class WebPage
                         auto base = _currentUrl.length ? resolveUrl(_currentUrl, href) : href;
                         absolutizeUrls(added, base);
                         _rules ~= added;
+                        // A linked sheet's `@font-face` src resolves against the
+                        // sheet, exactly like its url() references.
+                        loadWebFonts(css, base);
                     }
                 }
             }
@@ -1078,6 +1084,68 @@ final class WebPage
         _layoutDirty = true; // scripts may have mutated the DOM
     }
 
+    /// Downloaded `@font-face` faces, keyed by absolute font URL. A page often
+    /// names the same file from several sheets, and one process renders many
+    /// pages (the corpus sweeps), so each font is downloaded and parsed once.
+    private FontFace[string] _webFontFaces;
+    private uint _webFontFileSeq;
+
+    /// Write downloaded font bytes to a per-process temporary file and return
+    /// its path. The shaper loads faces from a path, so staging a download is
+    /// what lets a page's own font reach it without the engine keeping a copy.
+    private string stageFontFile(ubyte[] bytes)
+    {
+        import std.conv : to;
+        import std.file : mkdirRecurse, tempDir, write;
+        import std.path : buildPath;
+        const dir = buildPath(tempDir(), "aurora-webfonts");
+        mkdirRecurse(dir);
+        const path = buildPath(dir, (++_webFontFileSeq).to!string ~ ".ttf");
+        write(path, bytes);
+        return path;
+    }
+
+    /**
+     * Download, stage and register the faces a stylesheet defines with
+     * `@font-face`.
+     *
+     * Every failure is per source and silent: a browser that cannot fetch or
+     * parse a face falls back to the next `font-family`, which is exactly what
+     * shape resolution already does when no web face is registered. A sheet that
+     * defines no face returns after one scan.
+     */
+    private void loadWebFonts(string css, string baseUrl)
+    {
+        auto faces = parseFontFaces(css);
+        if (!faces.length) return;
+        foreach (face; faces)
+        {
+            auto url = face.url;
+            if (!url.length) continue;
+            auto lower = url.toLower();
+            const isData = lower.length >= 5 && lower[0 .. 5] == "data:";
+            if (!isData && indexOf(url, "://") < 0)
+                url = normalizeUrlPath(resolveUrl(baseUrl, url));
+            if (auto cached = url in _webFontFaces)
+            {
+                if (*cached !is null)
+                    registerWebFace(face.family, face.weight, face.style, *cached);
+                continue;
+            }
+            FontFace loaded;
+            try
+            {
+                auto bytes = isData ? decodeDataUrl(url) : fetchBytes(url);
+                if (bytes.length) loaded = FontFace.tryLoad(stageFontFile(bytes), 0);
+            }
+            catch (Exception) loaded = null;
+            // A face that fails must not be re-fetched by every sheet naming it.
+            _webFontFaces[url] = loaded;
+            if (loaded !is null)
+                registerWebFace(face.family, face.weight, face.style, loaded);
+        }
+    }
+
     /// Parse CSS and append to the stylesheet. `baseUrl` is the address the CSS
     /// came from (a linked sheet's own URL, or the document for a <style>), used
     /// to resolve the sheet's relative url() references.
@@ -1088,6 +1156,7 @@ final class WebPage
             auto added = parseStylesheet(css);
             absolutizeUrls(added, baseUrl.length ? baseUrl : _currentUrl);
             _rules ~= added;
+            loadWebFonts(css, baseUrl.length ? baseUrl : _currentUrl);
             _layoutDirty = true;
         }
     }

@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>@font-face webfont fixture</title>
+<style>
+  /* A family no machine installs: the only way this face can exist is the rule
+     below, so the engine's fallback face cannot satisfy the reference. */
+  @font-face {
+    font-family: 'Aurora Fixture Web Face';
+    font-style: normal;
+    font-weight: 400;
+    src: url(https://cdn.jsdelivr.net/gh/googlefonts/roboto@2.138/src/hinted/Roboto-Regular.ttf) format('truetype');
+  }
+  /* The first source is a woff2 the engine cannot decode. A browser that cannot
+     parse a source must go on to the next one in the same src, so both engines
+     have to end up on the same TrueType file. */
+  @font-face {
+    font-family: 'Aurora Fixture Web Face Two';
+    font-style: normal;
+    font-weight: 400;
+    src: url(https://cdn.jsdelivr.net/gh/googlefonts/roboto@2.138/src/hinted/NoSuchFile.woff2) format('woff2'),
+         url(https://cdn.jsdelivr.net/gh/googlefonts/roboto@2.138/src/hinted/Roboto-Regular.ttf) format('truetype');
+  }
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  /* The comparison is the border box -- the shaped advance width -- and never
+     glyph rasterisation, which no two engines render the same way. `color:
+     transparent` keeps the text out of the pixels while it still drives the
+     width, and 'm' is the letter whose advance differs most between Roboto and
+     the faces an engine falls back to. */
+  .measured {
+    display: inline-block;
+    margin: 12px;
+    padding: 0;
+    border: 2px solid #103050;
+    background: #e8eef4;
+    color: transparent;
+    font-size: 14px;
+    font-weight: 400;
+    font-style: normal;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .one { font-family: 'Aurora Fixture Web Face'; }
+  .two { font-family: 'Aurora Fixture Web Face Two'; }
+</style>
+</head>
+<body>
+<div class="measured one">mmm mmm mmm mmm mmm</div>
+<div class="measured two">mmm mmm mmm mmm mmm</div>
+</body>
+</html>

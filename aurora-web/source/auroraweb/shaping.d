@@ -28,6 +28,32 @@ import std.string : split, strip, toLower;
  */
 private FontFace[string] _faces;
 
+/**
+ * Faces a page supplied itself through `@font-face`, keyed like `_faces`. A
+ * family a page defines wins over the installed family of the same name and over
+ * the engine's substitute, which is the CSS order: `@font-face` creates the
+ * family the document then names in `font-family`.
+ */
+private FontFace[string] _webFaces;
+
+/// Register a face downloaded for a page's `@font-face` rule. `weight` and
+/// `style` are the CSS descriptors, so the caller does not need this module's
+/// descriptor-to-face mapping.
+void registerWebFace(string family, string weight, string style, FontFace face)
+{
+    if (face is null) return;
+    const name = family.strip().strip("\"'").strip();
+    if (name.length == 0) return;
+    const italic = style.toLower() == "italic" || style.toLower() == "oblique";
+    _webFaces[name.toLower() ~ "\x1F" ~ weightClass(weight).to!string ~ (italic ? "i" : "u")] = face;
+    // Face resolution and shaping are both memoized per CSS combination, so
+    // every entry that could have resolved to a substitute must be dropped: a
+    // page that shows a webfont must not keep the fallback it shaped with a
+    // moment earlier, nor the widths that were measured from that fallback.
+    _faces = null;
+    _cache = null;
+}
+
 /// The face the engine shapes with when no CSS font selects one.
 private FontFace defaultFace()
 {
@@ -41,6 +67,8 @@ private FontFace familyFace(string family, ushort weight, bool italic)
 {
     const name = family.strip().strip("\"'").strip();
     if (name.length == 0) return null;
+    if (auto web = (name.toLower() ~ "\x1F" ~ weight.to!string ~ (italic ? "i" : "u")) in _webFaces)
+        return *web;
     switch (name.toLower())
     {
         case "monospace":
@@ -163,6 +191,7 @@ int normalLineHeight(int pixelSize, const(FontFace) face = null)
     const fallback = ps + ps / 8;
     return fallback < 1 ? 1 : fallback;
 }
+
 
 /// Shape `text` at `pixelSize`, wrapping at `maxWidth` px (0 = no wrap).
 /// Returns null on failure. Memoized across calls.

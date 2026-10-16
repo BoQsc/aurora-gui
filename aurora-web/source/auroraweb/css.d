@@ -99,6 +99,107 @@ void setScreenMedia(bool isScreen)
     g_screenMedia = isScreen;
 }
 
+/// One parsed `@font-face` rule: the family it defines and the first source the
+/// engine can actually decode.
+struct WebFontFace
+{
+    string family;      /// `font-family` descriptor, unquoted.
+    string weight;      /// `font-weight` descriptor ("400", "bold", "700 900" -> "700").
+    string style;       /// `font-style` descriptor ("normal"/"italic"/"oblique").
+    string url;         /// First `src` url() whose format we can decode.
+}
+
+/**
+ * Choose the first source in one `@font-face` `src` descriptor that the engine
+ * can decode.
+ *
+ * The engine shapes with uncompressed sfnt faces. `woff`/`woff2` sources are
+ * skipped, exactly as an engine without the decompressor must: a browser that
+ * cannot parse a source moves on to the next candidate in the same `src`, and
+ * only if none is usable does it fall back to the next `font-family`. Real pages
+ * list several formats in one `src` (Google Fonts lists woff2 alone unless the
+ * request asks for TrueType), so picking the first *decodable* candidate rather
+ * than the first candidate is what makes a webfont stylesheet usable.
+ */
+private string pickFontSrc(string value)
+{
+    foreach (candRaw; value.split(","))
+    {
+        auto cand = candRaw.strip();
+        auto open = indexOf(cand, "url(");
+        if (open < 0) continue;
+        auto close = indexOf(cand, ")", open);
+        if (close < 0) continue;
+        auto url = cand[open + 4 .. close].strip().strip("\"'").strip();
+        if (url.length == 0) continue;
+        const lower = cand.toLower();
+        if (indexOf(lower, "woff") >= 0) continue;      // woff/woff2: compressed
+        // A declared format decides; without one, judge the extension.
+        if (indexOf(lower, "format(") >= 0 &&
+            indexOf(lower, "truetype") < 0 && indexOf(lower, "opentype") < 0)
+            continue;
+        return url;
+    }
+    return null;
+}
+
+/**
+ * Parse the `@font-face` rules of a stylesheet.
+ *
+ * Kept separate from `parseStylesheet` so the rule list and its cascade are
+ * untouched: a font face is not a style rule and must not take part in selector
+ * matching.
+ */
+WebFontFace[] parseFontFaces(string css)
+{
+    WebFontFace[] faces;
+    size_t i = 0;
+    const n = css.length;
+    while (i < n)
+    {
+        auto at = indexOf(css, "@font-face", i);
+        if (at < 0) break;
+        auto open = indexOf(css, "{", at);
+        if (open < 0) break;
+        int depth = 0;
+        auto k = open;
+        while (k < n)
+        {
+            if (css[k] == '{') depth++;
+            else if (css[k] == '}')
+            {
+                depth--;
+                if (depth == 0) break;
+            }
+            k++;
+        }
+        const body = css[open + 1 .. (k < n ? k : n)];
+        i = k < n ? k + 1 : n;
+        WebFontFace face;
+        foreach (declRaw; body.split(";"))
+        {
+            auto decl = declRaw.strip();
+            auto colon = indexOf(decl, ":");
+            if (colon < 0) continue;
+            const prop = decl[0 .. colon].strip().toLower();
+            const value = decl[colon + 1 .. $].strip();
+            if (prop == "font-family") face.family = value.strip("\"'").strip();
+            else if (prop == "font-weight")
+            {
+                // `font-weight: 100 900` (a variable-font range) is beyond the
+                // engine's static face model; the first value is the one a
+                // non-variable fallback uses.
+                auto sp = indexOf(value, " ");
+                face.weight = (sp < 0 ? value : value[0 .. sp]).strip();
+            }
+            else if (prop == "font-style") face.style = value.toLower();
+            else if (prop == "src") face.url = pickFontSrc(value);
+        }
+        if (face.family.length && face.url.length) faces ~= face;
+    }
+    return faces;
+}
+
 /// One CSS rule.
 struct Rule
 {

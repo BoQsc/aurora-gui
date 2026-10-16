@@ -1,0 +1,20 @@
+{
+  "createdAtUtc": "2026-10-16T22:38:26.635879+00:00",
+  "browser": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "browserSha256": "4bb4545b4ab80a3cf463a588ce570ca42de38fe6db16e3baeb0798ac75b4648b",
+  "viewport": {
+    "width": 320,
+    "height": 240,
+    "deviceScaleFactor": 1
+  },
+  "cases": [
+    {
+      "name": "line-height-normal",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-line-height-normal\\line-height-normal.html",
+      "htmlSha256": "6e17d2010d2bc330bfacf130b9264c1f8b92698792830cb3e5ddb5f2f37fc555",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\line-height-normal.png",
+      "referenceSha256": "448c3a8a33b7413ccf3085bfd61ad8d64bad5ccf74e6e6ff297c8adfbaf51414",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 6e17d2010d2bc330bfacf130b9264c1f8b92698792830cb3e5ddb5f2f37fc555; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    }
+  ]
+}

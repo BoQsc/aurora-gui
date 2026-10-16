@@ -1523,8 +1523,24 @@ private NullableColor parseColorUncached(string value)
 
 private Color parseColorOrDefault(string value, Color fallback)
 {
+    // `transparent` is a colour -- rgba(0, 0, 0, 0) -- not a missing value. It
+    // used to be parsed as "absent" and take the opaque fallback, so
+    // `color: transparent` painted solid text where the page had hidden it, and
+    // so did every descendant that inherited the colour.
+    const v = value.strip().toLower();
+    if (v == "transparent") return withOpacity(Color.rgb(0, 0, 0), 0.0);
     auto c = parseColor(value);
     return c.present ? c.color : fallback;
+}
+
+unittest
+{
+    assert(parseColorOrDefault("transparent", Color.rgb(0, 0, 0)).a == 0,
+        "color: transparent must stay transparent, not fall back to an opaque colour");
+    assert(parseColorOrDefault("  TRANSPARENT  ", Color.rgb(0, 0, 0)).a == 0,
+        "color: transparent is case- and whitespace-insensitive");
+    assert(parseColorOrDefault("", Color.rgb(1, 2, 3)).r == 1,
+        "a missing colour still takes the fallback");
 }
 
 private int hexDigit(char c)

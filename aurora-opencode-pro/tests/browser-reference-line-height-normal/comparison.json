@@ -1,0 +1,116 @@
+{
+    "inputsSha256": "4F425382A1501C07E157C5E8D34D18693588EBAC41F75CB8F68197C882681595",
+    "passed": true,
+    "recipe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\verify.json",
+    "recipeSha256": "ACC54D2A15DC165FD1391A92F1FCE8406E835FA6539D03C0288AD67A62AA3C72",
+    "steps": [
+        {
+            "command": {
+                "args": [
+                    "-i",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+                    "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\browser-probe.exe",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-probe.d",
+                    "user32.lib",
+                    "gdi32.lib",
+                    "shell32.lib",
+                    "ws2_32.lib",
+                    "advapi32.lib",
+                    "ole32.lib"
+                ],
+                "background": false,
+                "program": "dmd",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal"
+            },
+            "kind": "compile",
+            "output": "(no output)",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [
+                    "-i",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+                    "-unittest",
+                    "-main",
+                    "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\engine-checks.exe",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-engine-check.d",
+                    "user32.lib",
+                    "gdi32.lib",
+                    "shell32.lib",
+                    "ws2_32.lib",
+                    "advapi32.lib",
+                    "ole32.lib"
+                ],
+                "background": false,
+                "program": "dmd",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal"
+            },
+            "kind": "compile",
+            "output": "(no output)",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\engine-checks.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal"
+            },
+            "kind": "tests",
+            "output": "ok\r\n39 modules passed unittests\r\n",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-line-height-normal\\line-height-normal.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\line-height-normal.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\line-height-normal.actual.ppm",
+            "actualSha256": "767A27B8C0AF8430960BC5BD214C6A3B5ECF642B39DA835065C7FEEA430B0AE9",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\line-height-normal.png",
+            "referenceSha256": "448C3A8A33B7413CCF3085BFD61AD8D64BAD5CCF74E6E6FF297C8ADFBAF51414",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 6e17d2010d2bc330bfacf130b9264c1f8b92698792830cb3e5ddb5f2f37fc555; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "--interaction",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-line-height-normal\\interaction.html"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal"
+            },
+            "kind": "interaction",
+            "output": "PASS independent click-handler and link-destination assertions\r\n",
+            "passed": true
+        }
+    ]
+}

@@ -1939,6 +1939,58 @@ private int resolveLineHeight(Element element, int pixelSize)
     return normalLineHeight(pixelSize, faceOf(&element.style));
 }
 
+/// Where an inline-block's BORDER box top goes inside its line box: `baseline`
+/// (the default) stands the box on the text baseline, the other keywords
+/// position it against the line box (CSS 10.8.1). `padTop`/`padBottom` are the
+/// box's padding+border insets, because `box.y` is the border box origin while
+/// the keywords describe where the whole (border) box or its content sits.
+private int inlineBlockTop(string verticalAlign, int cursorY, int lineH, int boxHeight,
+    int baseline, int padTop, int padBottom)
+{
+    switch (verticalAlign)
+    {
+        case "top", "text-top":
+            return cursorY;
+        case "bottom", "text-bottom":
+            return cursorY + lineH - boxHeight - padTop - padBottom;
+        case "middle":
+            return cursorY + (lineH - boxHeight - padTop - padBottom) / 2;
+        default: // baseline (and any unit length, approximated)
+            return baseline - boxHeight - padTop;
+    }
+}
+
+/// True when a run is only whitespace (which `white-space: normal` collapses).
+private bool whitespaceOnly(string text)
+{
+    foreach (ch; text)
+        if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' && ch != '\f')
+            return false;
+    return text.length > 0;
+}
+
+/// True when `white-space` keeps runs of whitespace instead of collapsing them.
+private bool preservesWhitespace(string whiteSpace)
+{
+    return whiteSpace == "pre" || whiteSpace == "pre-wrap" ||
+        whiteSpace == "pre-line";
+}
+
+/// The advance of one U+0020 in `face` at `pixelSize`. A whitespace-only run
+/// shapes to zero glyphs, so the width comes from the difference between a run
+/// with and without a space; `shapeTextCached` memoizes both.
+private int spaceAdvance(FaceT)(int pixelSize, FaceT face)
+{
+    const a = shapeTextCached("m m", pixelSize, 0, false, 0.0, face);
+    const b = shapeTextCached("mm", pixelSize, 0, false, 0.0, face);
+    if (a !is null && b !is null)
+    {
+        const diff = cast(int) a.width - cast(int) b.width;
+        if (diff > 0) return diff;
+    }
+    return pixelSize / 4 > 1 ? pixelSize / 4 : 1;
+}
+
 /// Layout a block-level element and its children in normal flow.
 /// True when a block's own top margin collapses with its first in-flow child's:
 /// nothing separates them (no top border or padding), the block is static and
@@ -2523,7 +2575,12 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 // Whitespace-only node: collapse to a single space between
                 // inline runs, but ignore if it's the only content on a line
                 // (i.e. a newline between block elements).
-                if (cursorX > flow.x) cursorX += pixelSize / 2;
+                // The collapsed space advances by the face's own U+0020, not a
+                // hard-coded half-em: 8px at 16px placed the inline-block after
+                // it 4px right of where a browser puts it (the face's space is
+                // 4.4px at 16px).
+                if (cursorX > flow.x)
+                    cursorX += spaceAdvance(pixelSize, faceOf(&element.style));
                 text.layoutX = 0; text.layoutY = 0; text.layoutWidth = 0; text.lineIndex = 0;
                 continue;
             }
@@ -2599,7 +2656,13 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 continue;
             }
             // Fallback: no shaped layout.
-            const int textWidth = cast(int)(runText.length * 8);
+            // A run that is only whitespace - the single collapsed space between
+            // two inline-blocks - has no glyphs to measure, but it still
+            // advances. 8px per character doubled that gap (the face's space is
+            // 4.4px at 16px), so the second chip sat 3px right of a browser's.
+            const int textWidth = whitespaceOnly(runText)
+                ? spaceAdvance(pixelSize, faceOf(&element.style))
+                : cast(int)(runText.length * 8);
             wrapTo(leftEdge, rightEdge);
             text.layoutX = cursorX;
             // Same half-leading rule for the fallback (unshaped) case.
@@ -2648,16 +2711,30 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 cw = resolveWidth(ce, flow.width);
             else
             {
-                auto lay = shapeText(ce.textContent(), pixelSize,
-                    noWrapText ? 1_000_000 : max(0, rightEdge - cursorX), 0.0,
-                    faceOf(&ce.style));
-                if (lay !is null && lay.lines.length > 0)
-                {
-                    cw = cast(int) lay.width;
-                    ceLines = cast(int) lay.lines.length;
-                }
+                // A whitespace-only run collapses to ONE space (CSS Text 3) and
+                // has no glyphs to shape. The newline between two inline-blocks
+                // must advance a space (4.4px at 16px), not the ~8px a shaped
+                // newline produced - that put the second chip 3px right of where
+                // a browser places it.
+                if (whitespaceOnly(ce.textContent()) && !preservesWhitespace(ce.style.whiteSpace))
+                    cw = spaceAdvance(pixelSize, faceOf(&ce.style));
                 else
-                    cw = cast(int)(ce.textContent().length * 8);
+                {
+                    auto lay = shapeText(ce.textContent(), pixelSize,
+                        noWrapText ? 1_000_000 : max(0, rightEdge - cursorX), 0.0,
+                        faceOf(&ce.style));
+                    if (lay !is null && lay.lines.length > 0)
+                    {
+                        // The used width is the fractional advance sum rounded to
+                        // a device pixel (Edge paints 198 for 197.921), not
+                        // truncated - a truncation made every shrink-to-fit
+                        // inline box a pixel narrow.
+                        cw = cast(int) (lay.width + 0.5);
+                        ceLines = cast(int) lay.lines.length;
+                    }
+                    else
+                        cw = cast(int)(ce.textContent().length * 8);
+                }
             }
             wrapTo(leftEdge, rightEdge);
             // The inline path must resolve its box metrics too, or an
@@ -2684,6 +2761,14 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 ce.style.containingHeight = flow.height;
                 const ih = resolveHeight(ce);
                 if (ih >= 0) ce.box.height = ih;
+                else
+                    // `height: auto` inline-blocks are sized by their OWN content
+                    // (CSS 10.6.2). `ceLines * lineH` above used the containing
+                    // block's line height, so a 14px/`line-height:1` box inside a
+                    // 16px body measured 21px where every browser uses 14 - and
+                    // the baseline below then pushed it 7px above the text.
+                    ce.box.height = resolveLineHeight(ce,
+                        ce.style.fontSizePx > 0 ? ce.style.fontSizePx : pixelSize);
             }
             // Inline vertical alignment. The line box spans
             // `cursorY .. cursorY + lineH`; `baseline` (the default) puts the
@@ -2693,21 +2778,16 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             if (ce.style.display == "inline-block")
             {
                 const int baseline = cursorY + pixelSize;
-                switch (ce.style.verticalAlign)
-                {
-                    case "top", "text-top":
-                        ce.box.y = cursorY;
-                        break;
-                    case "bottom", "text-bottom":
-                        ce.box.y = cursorY + lineH - ce.box.height;
-                        break;
-                    case "middle":
-                        ce.box.y = cursorY + (lineH - ce.box.height) / 2;
-                        break;
-                    default: // baseline (and any unit length, approximated)
-                        ce.box.y = baseline - ce.box.height;
-                        break;
-                }
+                // `box.y` is the BORDER box origin: paint insets the content by
+                // padding+border, exactly as it does for blocks. The `baseline`
+                // keyword puts the box's CONTENT bottom on the baseline, so the
+                // top inset comes off too - without it a bordered inline-block
+                // painted padding+border lower than the line (the webfont
+                // fixture was 2px low).
+                ce.box.y = inlineBlockTop(ce.style.verticalAlign, cursorY, lineH,
+                    ce.box.height, baseline,
+                    ce.box.paddingTop + ce.box.borderTop,
+                    ce.box.paddingBottom + ce.box.borderBottom);
             }
             noteLine(lineIndex, cursorX, cursorX + cw);
             placedElements ~= ce;
@@ -2729,7 +2809,9 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             // Text inside an inline-block starts after its own left padding and
             // border, not on the box's outer edge.
             sub.x = ce.box.x + (inlineBox ? ce.box.borderLeft + ce.box.paddingLeft : 0);
-            sub.y = ce.box.y;            // ... and its top line
+            // ... and its top line, below the box's own top inset for the same
+            // reason: an inline-block's content starts inside its border.
+            sub.y = ce.box.y + (inlineBox ? ce.box.borderTop + ce.box.paddingTop : 0);
             sub.width = max(0, flow.width -
                 (inlineBox ? ce.box.borderLeft + ce.box.borderRight +
                     ce.box.paddingLeft + ce.box.paddingRight : 0));
@@ -2743,12 +2825,33 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             sub.lineEnd = inlineBox ? sub.x + max(0, cw) : rightEdge;
             sub.lineCount = lineIndex;
             layoutDirectText(ce, sub);
+            // The box was sized from its own line height before the content was
+            // laid out; wrapped text can need more. Grow the box to the content
+            // it actually has and re-place it - the baseline depends on the
+            // height - then lay the content out once more at the final offset.
+            // Text height does not depend on `y`, so this settles in one step.
+            if (ce.style.display == "inline-block" && resolveHeight(ce) < 0 &&
+                sub.contentBottom > ce.box.height)
+            {
+                ce.box.height = sub.contentBottom;
+                ce.box.y = inlineBlockTop(ce.style.verticalAlign, cursorY, lineH,
+                    ce.box.height, cursorY + pixelSize,
+                    ce.box.paddingTop + ce.box.borderTop,
+                    ce.box.paddingBottom + ce.box.borderBottom);
+                sub.y = ce.box.y + ce.box.borderTop + ce.box.paddingTop;
+                layoutDirectText(ce, sub);
+            }
             // Merge back the sub-flow's text bottom. An inline-level box can be
             // TALLER than the strut, and the line box must grow to contain it
             // (CSS 10.8.1): a 40px inline-block inside a 20px line left the line
             // box at 20px, so the row's background stopped halfway down the box
             // and everything after it sat 20px too high.
-            maxBottom = max(maxBottom, max(cursorY + lineH, ce.box.y + ce.box.height));
+            // The line box must contain the box's BORDER box, not just its
+            // content: an inline-block with padding or a border is taller than
+            // `height`, and the row after it has to clear that (CSS 10.8.1).
+            maxBottom = max(maxBottom, max(cursorY + lineH,
+                ce.box.y + ce.box.height +
+                    (inlineBox ? ce.box.paddingBottom + ce.box.borderBottom : 0)));
             lineIndex = max(lineIndex, sub.lineCount);
             continue;
         }
@@ -2996,7 +3099,12 @@ private int resolveWidth(Element element, int containingWidth)
             if (content.strip().length)
             {
                 auto lay = shapeText(content, pixelSize, 0, 0.0, faceOf(&element.style));
-                width = lay !is null ? cast(int) lay.width
+                // The shaped advance sum is fractional (197.921 for 20 Roboto
+                // `m`s at 14px); the used width is that rounded to a device
+                // pixel, the way Edge paints it (198). Truncating made every
+                // shrink-to-fit inline-block a pixel narrow and shifted the
+                // inline-blocks after it.
+                width = lay !is null ? cast(int) (lay.width + 0.5)
                     : cast(int)(content.length * 8);
             }
             else

@@ -256,6 +256,7 @@ private int printUsage()
     writeln("                                           reads stdin (interactive in a");
     writeln("                                           console, one batch on a pipe)");
     writeln("  aurora-opencode-pro --headless-loop      one prompt per stdin line");
+    writeln("  aurora-opencode-pro --headless-loop-json settled replies as JSON lines");
     writeln("  aurora-opencode-pro --screenshot <path>");
     writeln(`  aurora-opencode-pro --screenshot-chat <path> "prompt"`);
     return 0;
@@ -329,7 +330,7 @@ private void beginConsoleConversation(ref OffscreenUi ui)
 /// avoids paying the conversation-restore startup cost for every prompt;
 /// `exit` or `quit` ends the loop. A prompt given on the command line
 /// (`firstPrompt`) is answered first, then the session stays open.
-private int runHeadlessLoop(string firstPrompt = "")
+private int runHeadlessLoop(string firstPrompt = "", bool jsonLines = false)
 {
     auto ui = openOffscreen("Aurora OpenCode", RendererPreference.software);
     scope (exit)
@@ -343,13 +344,13 @@ private int runHeadlessLoop(string firstPrompt = "")
     // Replies reach the console; the turn's live progress is drawn in place on
     // stderr while it streams, so a slow reply shows it is still working.
     if (firstPrompt.length > 0)
-        emitConsoleReply(ui, firstPrompt);
+        emitConsoleReply(ui, firstPrompt, jsonLines);
     foreach (line; stdin.byLine())
     {
         const prompt = strip(line).idup;
         if (prompt == "exit" || prompt == "quit") break;
         if (prompt.length == 0) continue;
-        emitConsoleReply(ui, prompt);
+        emitConsoleReply(ui, prompt, jsonLines);
     }
     return 0;
 }
@@ -357,10 +358,21 @@ private int runHeadlessLoop(string firstPrompt = "")
 /// Run one console prompt with live progress and print the reply, or a short
 /// diagnostic when the turn produced none (so a failed turn is not mistaken for
 /// a hang).
-private void emitConsoleReply(ref OffscreenUi ui, string prompt)
+private void emitConsoleReply(ref OffscreenUi ui, string prompt, bool jsonLines = false)
 {
     const reply = submitPrompt(ui, prompt, false, true);
-    writeln(reply);
+    if (jsonLines)
+    {
+        import std.json : JSONValue;
+        JSONValue result;
+        result["reply"] = reply;
+        result["taskStatus"] = ui.root.taskStatusForTesting();
+        result["turnStatus"] = ui.root.turnStatusForTesting();
+        result["verificationStatus"] = ui.root.verificationStatusForTesting();
+        result["error"] = ui.root.lastAssistantErrorForTesting();
+        writeln(result.toString());
+    }
+    else writeln(reply);
     stdout.flush();
     if (reply.length == 0)
     {
@@ -445,10 +457,10 @@ private int runApp(string[] args)
         return printUsage();
     }
     // One interactive session, one prompt per line, until `exit`/`quit`.
-    if (arg1 == "--interactive" || arg1 == "-i" || arg1 == "--headless-loop")
+    if (arg1 == "--interactive" || arg1 == "-i" || arg1 == "--headless-loop" || arg1 == "--headless-loop-json")
     {
         ensureInteractiveConsole();
-        return runHeadlessLoop();
+        return runHeadlessLoop("", arg1 == "--headless-loop-json");
     }
     if (arg1 == "--screenshot" && args.length >= 3)
     {

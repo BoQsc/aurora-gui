@@ -1,0 +1,96 @@
+{
+  "inputs": [
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-line-height-normal",
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-probe.d",
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-engine-check.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+          "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\browser-probe.exe",
+          "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-probe.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "ws2_32.lib",
+          "advapi32.lib",
+          "ole32.lib"
+        ],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+          "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+          "-unittest",
+          "-main",
+          "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\engine-checks.exe",
+          "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-engine-check.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "ws2_32.lib",
+          "advapi32.lib",
+          "ole32.lib"
+        ],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\engine-checks.exe",
+        "args": [],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\browser-probe.exe",
+        "args": [
+          "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-line-height-normal\\line-height-normal.html",
+          "320",
+          "240",
+          "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\line-height-normal.actual.ppm"
+        ],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\line-height-normal.png",
+      "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\line-height-normal.actual.ppm",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 6e17d2010d2bc330bfacf130b9264c1f8b92698792830cb3e5ddb5f2f37fc555; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal\\browser-probe.exe",
+        "args": [
+          "--interaction",
+          "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-line-height-normal\\interaction.html"
+        ],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-line-height-normal",
+        "timeout": 120000
+      }
+    }
+  ]
+}

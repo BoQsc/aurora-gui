@@ -1146,7 +1146,7 @@ int main(string[] args)
         "Skip plans for direct answers, quick exploration") >= 0 &&
         toolSteeringPrompt(false).indexOf(
             "Finish authorized work and verification") >= 0 &&
-        toolSteeringPrompt(false).indexOf("task_blocker") >= 0,
+        toolSteeringPrompt(false).indexOf("request_input") >= 0,
         "Steering prompt must scope plans and define a stopping condition");
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
         toolSteeringPrompt(false).indexOf("# Communication"),
@@ -1550,11 +1550,11 @@ int main(string[] args)
         {
             bool advertised;
             foreach (definition; definitions)
-                if (definition.name == "task_blocker") advertised = true;
+                if (definition.name == "request_input") advertised = true;
             assert(advertised, "Both toolsets must expose required-input reporting");
         }
-        auto blocker = executeTool(makeCall("task_blocker",
-            `{"kind":"input","reason":"Deployment server missing","question":"Which server?"}`), dir);
+        auto blocker = executeTool(makeCall("request_input",
+            `{"reason":"Deployment server missing","required_fact":"Deployment destination","question":"Which server?","checked":["No destination in project configuration"],"independent_work_complete":true}`), dir);
         assert(!blocker.failed && blocker.output.indexOf("Which server?") >= 0);
         assert(executeTool(makeCall("task_blocker",
             `{"kind":"input","reason":"Deployment server missing"}`), dir).failed);

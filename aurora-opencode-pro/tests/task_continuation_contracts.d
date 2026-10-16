@@ -69,10 +69,18 @@ int main()
         append(session, "user", decision.guidance(), true);
         append(session, "tool", "same contents", false, "read", "varied query " ~ to!string(i));
     }
-    assert(taskContinuation(session, true).action == TaskContinuationAction.needsAttention);
-    // The durable message marker carries the bound through a reload/compaction.
+    int diagnoses;
+    foreach (_; 0 .. 25)
+    {
+        decision = taskContinuation(session, true);
+        assert(decision.action != TaskContinuationAction.settle);
+        if (decision.action == TaskContinuationAction.replan) ++diagnoses;
+        append(session, "user", decision.guidance(), true);
+    }
+    assert(diagnoses >= 6, "Repeated stalls did not change diagnosis again");
+    // Recovery persists through reload without exhausting the task.
     auto restored = session;
-    assert(taskContinuation(restored, true).action == TaskContinuationAction.needsAttention);
+    assert(taskContinuation(restored, true).action != TaskContinuationAction.settle);
     const exhaustedLeaf = session.activeLeafId;
     session.activeLeafId = "m0";
     assert(taskContinuation(session, true).stalled == 0, "Other branch leaked its budget");
@@ -83,7 +91,7 @@ int main()
     session.queuedFollowUps = ["Next request"];
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
     session.queuedFollowUps = null;
-    session.taskStatus = "blocked";
+    session.taskStatus = "waiting_input";
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
     writeln("PASS repeated prose/tools/failed calls/planning do not mask a stall; branch and human boundaries reset it");
 
@@ -108,11 +116,12 @@ int main()
             "What happened? Please finish the task.", "Why did it stop? Fix it.",
             "Why is it stopping? Let's resolve it."])
         assert(!answerOnlyRequest(request), request);
-    assert(taskBlockerError(`{"kind":"input","reason":"Deployment address missing","question":"Which server?"}`) == "");
-    assert(taskBlockerError(`{"kind":"external","reason":"Server offline"}`) == "");
+    assert(taskBlockerError(`{"reason":"Deployment address missing","required_fact":"Deployment destination","question":"Which server?","checked":["Local deployment configuration has no destination"],"independent_work_complete":true}`) == "");
+    assert(taskBlockerError(`{"kind":"external","reason":"Server offline"}`).length);
+    assert(taskBlockerError(`{"reason":"Verification pending","required_fact":"Permission","question":"Should I run tests?","checked":["Tests exist"],"independent_work_complete":true}`).length);
     assert(taskBlockerError(`{"kind":"input","reason":"Deployment address missing"}`).length);
     assert(taskBlockerError(`{"kind":"external","reason":""}`).length);
     assert(taskBlockerError("broken").length);
-    writeln("PASS completion/verification/questions/tools-disabled/queued-follow-up/blocker boundaries");
+    writeln("PASS recurring recovery, focused required input, verification/questions and Stop boundaries");
     return 0;
 }

@@ -82,10 +82,10 @@ int main(string[] arguments)
     }
     // The replanning note resets the diagnostic window, not the objective.
     decision = taskContinuation(session, true);
-    if (decision.action != TaskContinuationAction.needsAttention)
+    if (decision.action != TaskContinuationAction.replan)
     {
         append(session, "user", decision.guidance(), true);
-        assert(taskContinuation(session, true).action == TaskContinuationAction.needsAttention);
+        assert(taskContinuation(session, true).action == TaskContinuationAction.replan);
     }
     session.taskSteps[0].status = "completed";
     append(session, "tool", "Source changed", false, "edit", "changed");

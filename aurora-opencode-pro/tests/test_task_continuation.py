@@ -1,4 +1,4 @@
-"""Real HTTP/SSE regressions for premature completion and bounded stalls."""
+"""Real HTTP/SSE regressions for premature completion and internal recovery."""
 import collections
 import http.server
 import json
@@ -15,6 +15,9 @@ failures = []
 prompts = {
     "Finish all six fixture steps.": "work",
     "Implement the fixture stalled task.": "stall",
+    "Implement the fixture tool recovery task.": "toolstall",
+    "Implement the fixture malformed output task.": "output",
+    "Implement the fixture external obstacle task.": "obstacle",
     "Implement the fixture task requiring a missing deployment address.": "input",
     "What does the fixture pending plan mean?": "question",
     "Finish the fixture cancellation task.": "cancel",
@@ -52,7 +55,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
                         if m["role"] == "user" and isinstance(m.get("content"), str)
                         and m["content"] in prompts)
         rounds[scenario] += 1
-        if rounds[scenario] > 22:
+        if rounds[scenario] > 55:
             failures.append("Unbounded continuation: " + scenario)
             self.send_error(500)
             return
@@ -89,18 +92,53 @@ class Provider(http.server.BaseHTTPRequestHandler):
                          call("commit-plan", "update_plan", {"plan": [{"step": "Commit and check existing work", "status": "completed"}]})]
             else:
                 content = "Existing work committed; working tree checked."
-        elif scenario in ("stall", "input", "cancel"):
+        elif scenario in ("stall", "toolstall", "output", "obstacle", "input", "cancel"):
             if "pending-plan" not in results:
                 tools = [call("pending-plan", "update_plan", {
                     "objective": "Implement fixture outcome",
                     "plan": [{"step": "Unfinished outcome", "status": "in_progress"}]})]
             elif scenario == "stall":
-                content = f"Remaining work is unchanged; attempt {continuations}."
+                if continuations < 10:
+                    content = f"Remaining work is unchanged; attempt {continuations}."
+                elif "recovered-write" not in results:
+                    tools = [call("recovered-write", "write", {"filePath": "recovered.md", "content": "Recovered outcome"})]
+                elif "recovered-plan" not in results:
+                    tools = [call("recovered-plan", "update_plan", {"plan": [{"step": "Unfinished outcome", "status": "completed"}]})]
+                else:
+                    content = "Recovered and completed."
+            elif scenario == "toolstall":
+                attempts = sum(identity.startswith("missing-file-") for identity in results)
+                if attempts < 40:
+                    tools = [call(f"missing-file-{attempts}", "read", {"filePath": f"absent-{attempts}.md"})]
+                elif "tool-recovered-write" not in results:
+                    checkpoints = sum(m.get("content", "").count("Execution diagnosis checkpoint:") for m in messages
+                                      if isinstance(m.get("content"), str))
+                    if checkpoints < 2:
+                        failures.append("Missing recurring internal diagnosis checkpoints")
+                    tools = [call("tool-recovered-write", "write", {"filePath": "tool-recovered.md", "content": "Alternative succeeded"})]
+                elif "tool-recovered-plan" not in results:
+                    tools = [call("tool-recovered-plan", "update_plan", {"plan": [{"step": "Unfinished outcome", "status": "completed"}]})]
+                else:
+                    content = "Alternative succeeded; task completed."
+            elif scenario in ("output", "obstacle"):
+                if scenario == "output" and rounds[scenario] <= 4:
+                    content = '<invoke name="write">\n<parameter name="filePath">must-not-execute.md</parameter>\n<parameter name="content">invalid</parameter>\n</invoke>'
+                elif scenario == "obstacle" and "external-obstacle" not in results:
+                    tools = [call("external-obstacle", "task_blocker", {"kind": "external", "reason": "Preferred tool unavailable"})]
+                elif "alternative-write" not in results:
+                    if scenario == "obstacle" and "Recover internally" not in results["external-obstacle"]:
+                        failures.append("External obstacle was not redirected into recovery")
+                    tools = [call("alternative-write", "write", {"filePath": scenario + "-recovered.md", "content": "Recovered with valid tools"})]
+                elif "alternative-plan" not in results:
+                    tools = [call("alternative-plan", "update_plan", {"plan": [{"step": "Unfinished outcome", "status": "completed"}]})]
+                else:
+                    content = "Recovered with valid tools; completed."
             elif scenario == "input":
                 if "missing-input" not in results:
-                    tools = [call("missing-input", "task_blocker", {
-                        "kind": "input", "reason": "The deployment server address has not been provided.",
-                        "question": "Which deployment server should I use?"})]
+                    tools = [call("missing-input", "request_input", {
+                        "reason": "The deployment server address has not been provided.",
+                        "required_fact": "Deployment destination", "checked": ["No destination in local deployment configuration"],
+                        "independent_work_complete": True, "question": "Which deployment server should I use?"})]
                 else:
                     content = "Which deployment server should I use?"
             else:
@@ -135,10 +173,8 @@ try:
                     "latency_cleanup_contracts", "task_continuation_contracts", "task_continuation_ui_contracts"],
                    cwd=package.parent, env=env, check=True, timeout=300)
     assert not failures, failures
-    # One initial partial reply, three stalls, a changed diagnosis and three
-    # further stalls: productive work is unlimited; unchanged work is bounded.
-    assert rounds == {"work": 13, "commit": 2, "stall": 8, "input": 3, "question": 1, "cancel": 2}, rounds
-    print("PASS bounded real request counts", dict(rounds))
+    assert rounds == {"work": 13, "commit": 2, "stall": 14, "toolstall": 44, "output": 7, "obstacle": 5, "input": 3, "question": 1, "cancel": 2}, rounds
+    print("PASS recovered beyond previous reply/tool limits; required input and Stop remain controlled", dict(rounds))
 finally:
     server.shutdown()
     server.server_close()

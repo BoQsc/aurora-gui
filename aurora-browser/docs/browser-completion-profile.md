@@ -51,7 +51,9 @@ the engine unittests and the interaction assertions.
 
 Supporting claims, all passing with the same artifacts:
 
-- The engine unittest suite: `56 modules passed` (`dub test --compiler=dmd` in `aurora-web`).
+- The engine unittest suite: `39 modules passed` (the corpus harness's
+  `engine-checks`; the library-wide `dub test --compiler=dmd` in `aurora-web`
+  reports 56).
 - The application smoke suite (`aurora-browser/tests/verify-render.json`):
   navigation, history, tabs, async/timer JS, bookmarks, hit testing, hover,
   click, focus, keyboard, wheel, right/double click, scrolling and the
@@ -87,7 +89,7 @@ pixels**:
 Decoding itself is unit tested in `auroraweb/encoding.d` (windows-1252 table
 including the 0x80-0x9F range, UTF-16 both byte orders, BOM handling, the
 `latin1`/`iso-8859-1` aliases, invalid-UTF-8 detection covering overlong forms
-and stray continuation bytes). The engine's suite is now `39 modules passed`.
+and stray continuation bytes). The engine's suite is now `56 modules passed`.
 The two `css-charset-*` routes were added first and FAILED (1200 pixels each:
 Edge red, this engine blue), which is what pinned the three real defects behind
 them - the linked-stylesheet loader bypassing decoding altogether with
@@ -121,7 +123,7 @@ recorded in `rendering-status.md`.
   text metrics. Text is rendered, but not claimed to break lines identically.
   `line-height: normal` and the selection of an installed `font-family` are the
   exception and are claimed (-15); on a real page the remaining difference is the
-  substitute face's own metrics, measured at 4px of header band height on
+  substitute face's own metrics, measured at 5px of header band height on
   `djangoproject.com`.
 - **Live pages have no oracle.** `boqsc.eu` and `djangoproject.com` are covered
   by DOM probes and Aurora-to-Aurora baselines only, which detect change and
@@ -189,8 +191,15 @@ verify aurora-browser/tests/verify-render.json
 A recipe holds at most 16 steps and each fixture costs two, so a corpus covers
 at most six fixtures; new fixtures go into a new corpus directory. The baselines
 in `verify-render.json` are Aurora-to-Aurora regression baselines, not oracles.
-Their captures go through the app's own paint surface, so they only compare at
-device scale 1: at a 125% display scale the same 1280x800 request writes a
-1600x1000 frame and the dimension check refuses to compare it with a 1:1
-reference. The Edge corpora are unaffected - the probe renders offscreen at
-scale 1.
+  Their captures are built with `-version=AuroraHeadless`, so the frame they
+  write is exactly the requested logical size whatever the display's scale: a
+  1280x800 request writes 1280x800. Driving a real window instead writes that
+  window's framebuffer, logical size x display scale (1600x1000 at 125%), which
+  no 1:1 reference can be compared against - the app is correct there too, and
+  Edge at the same 125% device scale puts the same page at the same coordinates.
+  The Edge corpora are unaffected - the probe renders offscreen at scale 1.
+  Last confirmed on 2026-10-17: `aurora-browser-new.exe` was rebuilt clean from
+  this tree and run as `--url https://www.djangoproject.com/ --screenshot …`,
+  and the shell's own frame reproduced the engine's header at the same 1080x680
+  viewport (band 96 physical = 76.8 logical against the engine's 77; nav ink page
+  21.6..46.4 against 22..47; x 66..195 against 53..156 scaled).

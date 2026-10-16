@@ -70,12 +70,11 @@ int main(string[] args)
     root.setInputForTesting("fixture: stuck-xml");
     root.sendForTesting();
     untilIdle(root);
-    assert(root.taskStatusForTesting() == "blocked" &&
-        root.lastAssistantErrorForTesting().startsWith(outputFailurePrefix));
+    assert(root.taskStatusForTesting() == "completed" && root.lastAssistantErrorForTesting().length == 0);
     assert(root.toolMessageCountForTesting() == 0);
     foreach (_; 0 .. 30) { root.tickTree(0.02); Thread.sleep(10.msecs); }
-    assert(!root.turnBusyForTesting(), "A stalled response restarted after its recovery budget");
-    writeln("PASS repeated malformed output settles with a visible failure and zero tools");
+    assert(!root.turnBusyForTesting(), "A completed recovery restarted");
+    writeln("PASS repeated malformed output recovers to a valid answer with zero fabricated tools");
 
     root.newChatForTesting();
     root.setInputForTesting("fixture: recover-prose");
@@ -105,8 +104,8 @@ int main(string[] args)
         "An exhausted call did not receive its bounded recovery");
     root.beginStreamForTesting();
     root.injectToolCallsForTesting([OpenCodeToolCall("repeat-2", "run", build)]);
-    assert(root.taskStatusForTesting() == "blocked",
-        "Skipped repeated calls opened an unlimited provider loop");
+    assert(root.taskStatusForTesting() == "active",
+        "Skipped repeated calls ended the authorized task");
     root.injectToolResultForTesting("edit", "Edited implementation", false,
         `{"filePath":"source/app.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
     assert(root.exactToolRunCountForTesting("run", build) == 0,

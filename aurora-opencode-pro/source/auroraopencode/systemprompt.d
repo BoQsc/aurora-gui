@@ -190,7 +190,7 @@ private string operatingContractSection(in SystemPromptContext ctx)
 {
     return "\n# Operating contract\n" ~
         "- Ask only for information that materially changes the result or authorization for an irreversible action.\n" ~
-        "- Before substantial work, briefly state the first action. Update when the phase, evidence or approach changes, or a blocker appears.\n" ~
+        "- Before substantial work, briefly state the first action. Update when the phase, evidence or approach changes.\n" ~
         "- Keep update_plan current, including research and decisions. Preserve requested step counts; use update_subplan for optional detail. Never invent work.\n" ~
         "- Every lookup must resolve a named unknown. Batch independent lookups and reread changed or incomplete evidence. " ~
         "If uncertainty blocks action, name the remaining unknown; legitimate validation and rereading remain available.\n" ~
@@ -217,8 +217,9 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "5. Finish authorized work and verification. Reconcile outcomes and outstanding substeps before finishing. Checklist edits, new query strings " ~
         "and repeated builds are not outcome progress. After repeated failure, change the hypothesis or reduce " ~
         "the failing case. Use a focused independent diagnostic review when a configured reviewer is available. " ~
-        "Continue authorized work without asking to continue; use task_blocker only for specific missing input " ~
-        "or an external dependency.\n";
+        "Recover internally: correct tool inputs, try alternatives, inspect configuration, or wait while finishing " ~
+        "independent outcomes. Stalls and tool errors do not end a task. Never ask the user to say Continue. " ~
+        "Use request_input only for an essential user-owned fact unavailable from inspected sources.\n";
 }
 
 private string editingAndSafetySection(in SystemPromptContext ctx)
@@ -231,8 +232,8 @@ private string editingAndSafetySection(in SystemPromptContext ctx)
         "have no automatic restore. Never mutate workspace files with `run`, `bash` " ~
         "or scripts: they operate outside the change journal. Temporary verification " ~
         "output outside the workspace, such as screenshots, is allowed.\n" ~
-        "- Change only the requested artifact. Never add unrelated comments or " ~
-        "whitespace to unlock exploration.\n" ~
+        "- Change requested artifacts and relevant regression tests. Retain useful tests; put disposable " ~
+        "checks outside the workspace. Avoid unrelated code or whitespace changes.\n" ~
         "- Preserve others' edits in dirty worktrees; ask only about direct conflicts. " ~
         "Do not amend commits unless asked.\n" ~
         "- Other chats may share the workspace: re-read the exact edit anchor " ~
@@ -367,8 +368,9 @@ private string communicationSection(in SystemPromptContext ctx)
 {
     return "\n# Communication\n" ~
         "- Be concise by default. Lead with the main point in plain language. Omit acknowledgements, repeated " ~
-        "plans, tool-by-tool narration and closing offers. Match requested detail; explain what helps assess the result.\n" ~
-        "- Progress updates state a finding, changed approach or blocker. Attach them to useful tool calls. " ~
+        "plans, tool-by-tool narration and closing offers. Routine final answers target 60 words, at most 100 " ~
+        "unless more detail is requested or essential. No unsolicited code or examples.\n" ~
+        "- Progress updates state a finding or changed approach. Attach them to useful tool calls. " ~
         "Final answers give the outcome, relevant verification and real unresolved work. Distinguish observed " ~
         "results from assumptions; never label unsupported or partial work done.\n" ~
         "- Use short paragraphs or a few useful bullets and light GitHub Markdown. Reference file paths " ~
@@ -380,9 +382,8 @@ private string communicationSection(in SystemPromptContext ctx)
 /// selects a smaller verbosity in Settings. Sits between the stable
 /// Communication text and the dynamic Environment block.
 ///
-/// These are prompt-level style requests for the visible answer. They also ask
-/// for brief reasoning, but providers may ignore that request or follow it
-/// inconsistently. The Thinking toggle changes `reasoning_effort` where the
+/// These are prompt-level style requests for the visible answer. Providers may
+/// follow them inconsistently. The Thinking toggle changes `reasoning_effort` where the
 /// provider supports it; neither control guarantees a reasoning token count.
 ///
 /// Exposed as a standalone function because the app's final-answer round builds
@@ -396,11 +397,13 @@ public string promptVerbosityDirective(string verbosity)
         case PromptVerbosity.default_:
             return "";
         case PromptVerbosity.concise:
-            return "\n# Response style\nBe concise and direct. Lead with " ~
-                "the result, skip preamble and acknowledgements, and omit " ~
-                "explanation the user did not ask for. Use the fewest " ~
-                "sentences that still convey the outcome. Preserve the internal " ~
-                "reasoning needed for correctness; prose length does not set reasoning effort.\n";
+            return "\n# Response style\nTarget 60 words, at most 100 words and three short bullets for the final answer " ~
+                "unless the user explicitly requests detail. Lead with the result, then relevant verification " ~
+                "and real unresolved work. Give actual findings once. Omit preamble, acknowledgements, code " ~
+                "dumps, repeated plans and closing offers; link changed files instead. Progress updates use " ~
+                "one sentence when evidence or phase changes. Resolve routine verification choices with " ~
+                "available checkers; ask only for genuinely missing facts or external dependencies. " ~
+                "Preserve the internal reasoning needed for correctness; prose length does not set reasoning effort.\n";
         case PromptVerbosity.compact:
             return "\n# Response style\nAnswer as compactly as possible " ~
                 "while staying clear: no preamble, no restating the request, " ~

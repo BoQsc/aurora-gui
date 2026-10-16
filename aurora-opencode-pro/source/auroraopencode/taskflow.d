@@ -38,6 +38,11 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
     const name = requestIntentName(intent);
     if (intent == RequestIntent.conversation)
     {
+        if (session.taskStatus == "waiting_input")
+        {
+            session.taskStatus = "active";
+            session.contract.blocker = "";
+        }
         session.contract.currentIntent = session.contract.intent.length ? session.contract.intent : name;
         return;
     }
@@ -143,7 +148,7 @@ int stalledExecutionTools(const ref ChatSession session)
     {
         const message = session.messages[index];
         if (message.role != "tool" || ["update_plan", "update_subplan", "process", "tool_status",
-                "task_blocker", "retire_images"].canFind(message.toolName)) continue;
+                "task_blocker", "request_input", "retire_images"].canFind(message.toolName)) continue;
         const text = message.content.strip().toLower();
         const noFinding = !text.length || text.startsWith("no matches") || text.startsWith("no results") ||
             text.startsWith("no files") || text.startsWith("0 matches");
@@ -154,6 +159,21 @@ int stalledExecutionTools(const ref ChatSession session)
         else ++stalled;
     }
     return stalled;
+}
+
+/// Recovery recurs every evidence window, without a terminal tool-count limit.
+bool executionRecoveryDue(const ref ChatSession session)
+{
+    if (stalledExecutionTools(session) < 16) return false;
+    int tools;
+    foreach_reverse (index; taskMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if ((message.role == "user" && !message.internal) ||
+            (message.internal && message.content.startsWith(executionDiagnosisMarker))) break;
+        if (message.role == "tool") ++tools;
+    }
+    return tools >= 16;
 }
 
 void restoreBranchTask(ref ChatSession session)

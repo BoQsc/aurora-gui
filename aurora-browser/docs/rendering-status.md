@@ -168,6 +168,18 @@ and border (absolute/fixed containers and the flex column and wrap-line paths).
 The flex column path sums item *content* heights where it should sum their outer
 heights.
 
+## Last full re-run
+
+2026-10-17: the whole frozen set passed. Corpora `-4` … `-15` each reported
+`passed: true` with 0 mismatched pixels on every render step and unchanged
+recipes (`failing: []`, `changedRecipes: []`). The app recipe
+`aurora-browser/tests/verify-render.json` reported a clean compile, smoke
+`ALL PASSED`, and render `mismatchedPixels 0` against its re-frozen baseline
+(`inputsSha256 A87741D9…`, `recipeSha256 BB739184…`, frame sha `AA417E05…`).
+The same recipe also compiles `aurora-browser-new.exe` and runs it on
+`djangoproject.com`; the corpus `-15` recipe passes with its interaction step and
+`39 modules passed unittests` from the corpus harness's engine-checks.
+
 ## What those tools cannot see
 
 - **Live pages.** `boqsc.eu` and `djangoproject.com` are checked by rendering
@@ -188,9 +200,12 @@ heights.
   question is geometry. `line-height: normal` and the selection of an installed
   family are the exception: both are pinned by corpus -15. Where text is
   unavoidable (real pages), a remaining mismatch is the substitute face's own
-  metrics - at 1280x800 the `djangoproject.com` header band ends 4px higher than
+  metrics - at 1280x800 the `djangoproject.com` header band ends 5px higher than
   Edge's, a difference inside one line box, while the nav row and the search
-  field sit at identical page coordinates.
+  field sit at identical page coordinates. At the app's own 1080x680 capture
+  viewport the header instead resolves to a single row: the nav ink is the same
+  104px wide and within 2px of Edge's x, but the band is 5px shorter and the ink
+  sits about 11px higher than Edge's - measured, not pinned.
 - **Coverage breadth.** Fifty frozen cases (forty-five distinct fixtures) still cannot represent the whole CSS
   surface. `position: sticky` **is** implemented (layout maps it to `relative`
   plus `isSticky` and `paint.d` pins it while scrolling, with a unittest), but
@@ -237,3 +252,51 @@ subresources are served from the bounded cache instead of being re-fetched.
   `third-party-inventory.json` with the resolution it needs.
 - Both `dub.json` files still declare `"license": "BSL-1.0"` with author
   `"OpenAI"`; that metadata change was explicitly set aside for now.
+
+## Known-site measured status (independent Edge reference)
+
+Measured at a 1280x800 logical viewport, device scale 1, against independent
+Edge captures (`msedge --headless=new --force-device-scale-factor=1
+--window-size=1280,800`, plus `--virtual-time-budget=10000` for `boqsc.eu` so
+that the heavy page finishes loading; without the budget Edge screenshots that
+page before it paints). The comparison reduces every page row to a coarse
+content/background profile over 64 columns, so it does not measure glyph
+rasterisation: **two independent Edge captures of the same page score 0.0%
+divergence**, which is the control for every number below. Cells differing, as
+a share of the 638-row page area:
+
+| Site | Cells differing vs Edge | Notes |
+| --- | --- | --- |
+| `boqsc.eu` (the required integration target) | 30.1% | Toolbar occupies page rows 0..47 in the engine and 0..39 in Edge (measured in both framebuffer and box dump); image content differs between captures because the page's hero is a carousel. |
+| `djangoproject.com` | 12.6% | Engine renders the light theme, Edge the dark one (`prefers-color-scheme`); within the header the known substitute-face band difference remains. |
+| `docs.djangoproject.com` | frames captured | Renders the docs layout (sidebar and TOC present, 366k pixels different from the homepage frame); pair comparison not yet run. |
+
+These percentages bound the remaining difference rather than proving layout
+faults: a page whose layout matches exactly still differs in a minority of
+cells wherever text rasterises differently, and `djangoproject.com`'s 12.6%
+includes the whole-page theme difference. Each defect below was therefore
+confirmed by a second, layout-level measurement.
+
+Confirmed defect:
+
+- `boqsc.eu` toolbar height. The engine lays out `.site-toolbar` at 47px
+  (`.site-toolbar__inner` 46px plus its 1px bottom border) where Edge's toolbar
+  background ends at row 39. The site declares `.site-toolbar__inner` as
+  `min-height: 34px` with `padding: 0.25rem` and `align-items: center`, so the
+  engine's 46px is content-driven, not the declared minimum:
+  `.site-toolbar__actions` itself computes 46px tall, and one of its menus wraps
+  to a second row at y=27 inside a `display: flex` box. Everything below the
+  toolbar therefore sits 7px lower than in Edge.
+
+Ruled out, with the evidence that ruled it out:
+
+- An image-format gap on `boqsc.eu`. The greyscale hero image was first read as
+  a `<picture>` fallback from an unsupported WebP/AVIF candidate, but the served
+  page contains no `image/avif`, `image/webp`, `srcset`, `<picture>` or
+  `<source>` at all, and the hero is a carousel, so two captures legitimately
+  show different slides.
+- A wrong page origin. The 7px toolbar difference is not a capture offset: it
+  appears both in the framebuffer row signature and in the engine's own boxes,
+  and the frames agree on the toolbar's x extent (the full 1280px) and on its
+  background within one unit (engine `rgb(11,11,13)`, Edge `rgb(10,10,12)`),
+  while the rows either side of the boundary disagree by 7.

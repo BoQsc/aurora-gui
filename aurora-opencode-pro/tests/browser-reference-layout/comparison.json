@@ -1,0 +1,271 @@
+{
+    "inputsSha256": "F37D8D317EB00AAC4D7755609E9FAB5397DB86AD5DBEEFBBD58416D0D10D7F0C",
+    "passed": true,
+    "recipe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\verify.json",
+    "recipeSha256": "EFE26EEC96156D4A50509BF1E40A3F575F76948FEA2FBC3EF6132CCBC474969A",
+    "steps": [
+        {
+            "command": {
+                "args": [
+                    "-i",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+                    "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-probe.d",
+                    "user32.lib",
+                    "gdi32.lib",
+                    "shell32.lib",
+                    "ws2_32.lib",
+                    "advapi32.lib",
+                    "ole32.lib"
+                ],
+                "background": false,
+                "program": "dmd",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "compile",
+            "output": "(no output)",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [
+                    "-i",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-web\\source",
+                    "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+                    "-unittest",
+                    "-main",
+                    "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\engine-checks.exe",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tools\\browser-engine-check.d",
+                    "user32.lib",
+                    "gdi32.lib",
+                    "shell32.lib",
+                    "ws2_32.lib",
+                    "advapi32.lib",
+                    "ole32.lib"
+                ],
+                "background": false,
+                "program": "dmd",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "compile",
+            "output": "(no output)",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\engine-checks.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "tests",
+            "output": "ok\r\n39 modules passed unittests\r\n",
+            "passed": true
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\flex-wrap.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\flex-wrap.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\flex-wrap.actual.ppm",
+            "actualSha256": "6F0188FAB2C7A89C0DB81A3A8DE3B0F3F1C8414D7ED069B3BA8DE961E7481ADA",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\flex-wrap.png",
+            "referenceSha256": "F72FC82A7CCDE4749DBAE95D34D2D24D77D3B90030E0494CC38E2B47ABA63DD9",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML d3639ffcaf404f340b85e4c74f28c2310a05238c1e2b829f67c9053c89be9eb2; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\overflow-clip.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\overflow-clip.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\overflow-clip.actual.ppm",
+            "actualSha256": "9B66DD52087EC272CB6DBEB3CEAB215F81F75900156CC82BC64F5C5D7833F128",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\overflow-clip.png",
+            "referenceSha256": "CF72B295418B2B8ABC59FC41248E62D6911DB91072B18CE6CCB445CC03FEE891",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 1178bbb4158f871da385a50d96056f75aa0dfc9d4cd925506cb25b151b7b68ad; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\relative-offset.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\relative-offset.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\relative-offset.actual.ppm",
+            "actualSha256": "393EAC7CCAE86A5EFDA7B303580C6546F1CFA6A79043538F5394BC73DD46D951",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\relative-offset.png",
+            "referenceSha256": "148D9E17ED160E7209A54C1CE9ADEB1E9784BC76017BC1C308608646E5FB091B",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 58aae7f3e57c53e0be749d32288dcba264a3e2c0016f5a2f58875716b4808783; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\stacking-order.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\stacking-order.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\stacking-order.actual.ppm",
+            "actualSha256": "E4A1C2CDD0138BD6BF7F3E5234CF87BB8B8B7068E646D02A1506BC32FE5C3966",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\stacking-order.png",
+            "referenceSha256": "2E0099861B3B1B8604CEB7192260A1DC8C76508CB62CA7872374FD88A483EFFC",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 15c76933042b379dc45c69337026372fc3ebd5ec9b59be524bb0ef7b68b0465a; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\table-layout.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\table-layout.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\table-layout.actual.ppm",
+            "actualSha256": "97C9D4E3CDF20692AF352F6962149F9ECC02B790B883F97595CC45C71BEE9422",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\table-layout.png",
+            "referenceSha256": "57EAE83EF547A7EB5FA6C58B781DE5467F64834E917EF718DD43F4A8FC9EEDC5",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML ce1c8f0d534ddd34fd76eedbe463a1c03cd2a49abc481da21934f0759a9a4add; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\transform-translate.html",
+                    "320",
+                    "240",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\transform-translate.actual.ppm"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "prepare",
+            "output": "Captured page content at 320x240\r\n",
+            "passed": true
+        },
+        {
+            "actual": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\transform-translate.actual.ppm",
+            "actualSha256": "A290D9A5EB2E5F8D4A4DD477D18A5B6640D50BBE4C44D520678D6612E94E0C00",
+            "channelTolerance": 0,
+            "height": 240,
+            "kind": "render",
+            "maxDifferentPixels": 0,
+            "mismatchedPixels": 0,
+            "passed": true,
+            "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\transform-translate.png",
+            "referenceSha256": "793C2DE2DF950DE8D28C9E9208F020EB5200A8A11A36A3F09293D011687407A3",
+            "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML fa12a49cde0cf48465303d984bd93a157e38fab250710d707b234ed00b4b1fa2; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}",
+            "width": 320
+        },
+        {
+            "command": {
+                "args": [
+                    "--interaction",
+                    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\interaction.html"
+                ],
+                "background": false,
+                "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\browser-probe.exe",
+                "timeout": 120000,
+                "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout"
+            },
+            "kind": "interaction",
+            "output": "PASS independent click-handler and link-destination assertions\r\n",
+            "passed": true
+        }
+    ]
+}

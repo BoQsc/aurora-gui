@@ -76,7 +76,7 @@ import auroraopencode.planmode : experimentalStrictPlanEnabled,
     setStrictPlanSetting, trackedPlanPromptBlock;
 import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError,
-    explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker,
+    explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
     restoreBranchTask, taskHasActionEvidence;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
@@ -11255,7 +11255,8 @@ private string _suggestExcludeId;
         const childId = _sessions[childIndex].id;
         const childName = _sessions[childIndex].title;
         const summary = lastAssistantText(_sessions[childIndex]);
-        if (_sessions[childIndex].taskStatus != "blocked") _sessions[childIndex].taskStatus = "completed";
+        if (_sessions[childIndex].taskStatus != "blocked" && _sessions[childIndex].taskStatus != "waiting_input")
+            _sessions[childIndex].taskStatus = "completed";
         int hubIndex = -1;
         foreach (i, ref session; _sessions)
             if (session.id == hubId) { hubIndex = cast(int) i; break; }
@@ -18370,19 +18371,9 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
-        if (continuation.action == TaskContinuationAction.needsAttention)
-        {
-            failAssistantMessage("Task unfinished: after changing its diagnostic approach, the agent ended three consecutive " ~
-                "continuation attempts without completed outcomes or accepted verification. The remaining plan and conversation are " ~
-                "preserved. Send Continue to retry, or provide the missing information " ~
-                "if the agent identified a blocker.");
-            updateStatus("Task unfinished · needs attention.");
-            if (session.parentSessionId.length) collectSubagentResult(sessionIndex);
-            return;
-        }
         session.turnStatus = "completed";
-        if (session.taskStatus == "blocked")
-            updateStatus("Task unfinished · waiting on the reported blocker.");
+        if (session.taskStatus == "waiting_input")
+            updateStatus("Independent work complete · awaiting required information.");
         else if (hasIncompleteTaskSteps(*session))
         {
             session.taskStatus = "active";
@@ -18874,8 +18865,8 @@ private void pollButtonSuggestionRequest()
         return false;
     }
 
-    /// One recovery per real user instruction, recorded in the active branch so
-    /// restarting the app cannot reset the budget. Never execute printed calls.
+    /// Recover unusable output without requiring the user to restart the task.
+    /// Exact repeated calls remain suppressed. Never execute printed calls.
     private void handleOutputFailure(const ref OpenCodeEvent event)
     {
         const sessionIndex = turnOwnerSessionIndex();
@@ -18894,11 +18885,11 @@ private void pollButtonSuggestionRequest()
                 event.completionTokens, event.requestId);
         }
         const recover = _settings.toolsEnabled && !_stopPending &&
-            !computerUseAbortActive() && outputRecoveryCount(*session) == 0 &&
+            !computerUseAbortActive() &&
             !explanationOnlyRequest(latestActualUserRequest(*session));
         logInfo("agent-output request=" ~ to!string(event.requestId) ~
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
-            " recovery=" ~ (recover ? "once" : "stopped"));
+            " recovery=" ~ (recover ? "continuing" : "stopped"));
         failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue));
         dropAutoResendSchedule();
         _autoContinuePendingSession = -1;
@@ -18921,7 +18912,10 @@ private void pollButtonSuggestionRequest()
             "user instruction from the successful tool results. If an action is needed, " ~
             "use the provided function-call channel and tool schemas; do not print XML " ~
             "invocations or repeat earlier prose. Otherwise give a concise result or " ~
-            "specific blocker. This is the only automatic output-recovery attempt.";
+            "supported result. For a skipped repeated call, choose a different tool or hypothesis. " ~
+            "Recover internally and complete the authorized outcomes; do not ask the user to retry.";
+        if (outputRecoveryCount(*session) > 0 && _settings.diagnosticModel.length)
+            _execution.diagnosticRequestsRemaining = 4;
         appendMessage(*session, guidance);
         session.turnStatus = "running";
         session.taskStatus = "active";
@@ -19530,7 +19524,7 @@ private void pollButtonSuggestionRequest()
             ? nestedPlanError(*session, toolArgs) : "";
         const imageError = !event.toolFailed && event.toolName == "retire_images"
             ? retireImagesSessionError(*session, toolArgs) : "";
-        const blockerError = !event.toolFailed && event.toolName == "task_blocker"
+        const blockerError = !event.toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input")
             ? taskBlockerError(toolArgs) : "";
         const toolFailed = event.toolFailed || planError.length > 0 ||
             subplanError.length > 0 || imageError.length > 0 || blockerError.length > 0;
@@ -19595,9 +19589,9 @@ private void pollButtonSuggestionRequest()
             publishThreadUpdated(*session);
         }
 
-        if (!toolFailed && event.toolName == "task_blocker")
+        if (!toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input"))
         {
-            session.taskStatus = "blocked";
+            session.taskStatus = "waiting_input";
             try session.contract.blocker = parseJSON(toolArgs)["reason"].str;
             catch (Exception) {}
             publishThreadUpdated(*session);
@@ -19701,33 +19695,17 @@ private void pollButtonSuggestionRequest()
             if (!_toolContinuationPaused && !hasPendingSubagents(session.id))
             {
                 appendQueuedGuidance(*session);
-                const stalled = stalledExecutionTools(*session);
-                if (stalled >= 32)
+                if (executionRecoveryDue(*session))
                 {
-                    failAssistantMessage("Task unfinished: tools continued without new evidence after the diagnostic checkpoint. " ~
-                        "The task, evidence and transcript are preserved. A new hypothesis or missing input is needed.");
-                    updateStatus("Task unfinished · needs a new diagnosis.");
-                    return;
-                }
-                if (stalled >= 16)
-                {
-                    bool recorded;
-                    foreach_reverse (index; activeMessagePath(*session))
-                    {
-                        const message = session.messages[index];
-                        if (message.role == "user" && !message.internal) break;
-                        if (message.internal && message.content.startsWith(executionDiagnosisMarker)) { recorded = true; break; }
-                    }
-                    if (!recorded)
-                    {
-                        ChatMessage checkpoint;
-                        checkpoint.role = "user"; checkpoint.internal = true;
-                        checkpoint.content = executionDiagnosisMarker ~
-                            "Repeated tool results add no new evidence. State the remaining unknown and rejected hypothesis; " ~
-                            "change the diagnostic approach or reduce the case. Plan rewrites and varied queries are not progress.";
-                        appendMessage(*session, checkpoint);
-                        if (_settings.diagnosticModel.length) _execution.diagnosticRequestsRemaining = 4;
-                    }
+                    ChatMessage checkpoint;
+                    checkpoint.role = "user"; checkpoint.internal = true;
+                    checkpoint.content = executionDiagnosisMarker ~
+                        "Repeated tool results add no new evidence. Reject the unsuccessful hypothesis and try a different " ~
+                        "source, tool or reduced failing case. Complete independent outcomes while recovering. " ~
+                        "Plan rewrites and varied queries are not progress. Continue until the outcomes are verified; " ~
+                        "do not ask the user to restart the task.";
+                    appendMessage(*session, checkpoint);
+                    if (_settings.diagnosticModel.length) _execution.diagnosticRequestsRemaining = 4;
                 }
                 if (readOnlyExplorationCount(*session) >=
                     explorationCheckpointCalls &&
@@ -22716,7 +22694,7 @@ private void pollButtonSuggestionRequest()
         }
         auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0) return;
-        if (session.taskStatus == "blocked")
+        if (session.taskStatus == "waiting_input")
         {
             _autoContinuePendingSession = -1;
             logAutoContinue("skip: task needs attention");
@@ -22875,7 +22853,7 @@ private void pollButtonSuggestionRequest()
                 "results. Keep completed work, do not repeat successful " ~
                 "inspection or edits, take the next concrete pending action, " ~
                 "then run only the focused verification still needed. If a " ~
-                "real blocker remains, report it precisely.";
+                "essential user-owned fact is unavailable, finish independent work before asking for it.";
             session.taskStatus = "active";
         }
         else

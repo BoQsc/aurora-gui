@@ -1,0 +1,60 @@
+{
+  "createdAtUtc": "2026-10-16T22:38:06.558269+00:00",
+  "browser": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "browserSha256": "4bb4545b4ab80a3cf463a588ce570ca42de38fe6db16e3baeb0798ac75b4648b",
+  "viewport": {
+    "width": 320,
+    "height": 240,
+    "deviceScaleFactor": 1
+  },
+  "cases": [
+    {
+      "name": "flex-wrap",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\flex-wrap.html",
+      "htmlSha256": "d3639ffcaf404f340b85e4c74f28c2310a05238c1e2b829f67c9053c89be9eb2",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\flex-wrap.png",
+      "referenceSha256": "f72fc82a7ccde4749dbae95d34d2d24d77d3b90030e0494cc38e2b47aba63dd9",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML d3639ffcaf404f340b85e4c74f28c2310a05238c1e2b829f67c9053c89be9eb2; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    },
+    {
+      "name": "overflow-clip",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\overflow-clip.html",
+      "htmlSha256": "1178bbb4158f871da385a50d96056f75aa0dfc9d4cd925506cb25b151b7b68ad",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\overflow-clip.png",
+      "referenceSha256": "cf72b295418b2b8abc59fc41248e62d6911db91072b18ce6ccb445cc03fee891",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 1178bbb4158f871da385a50d96056f75aa0dfc9d4cd925506cb25b151b7b68ad; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    },
+    {
+      "name": "relative-offset",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\relative-offset.html",
+      "htmlSha256": "58aae7f3e57c53e0be749d32288dcba264a3e2c0016f5a2f58875716b4808783",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\relative-offset.png",
+      "referenceSha256": "148d9e17ed160e7209a54c1ce9adeb1e9784bc76017bc1c308608646e5fb091b",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 58aae7f3e57c53e0be749d32288dcba264a3e2c0016f5a2f58875716b4808783; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    },
+    {
+      "name": "stacking-order",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\stacking-order.html",
+      "htmlSha256": "15c76933042b379dc45c69337026372fc3ebd5ec9b59be524bb0ef7b68b0465a",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\stacking-order.png",
+      "referenceSha256": "2e0099861b3b1b8604ceb7192260a1dc8c76508cb62ca7872374fd88a483effc",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 15c76933042b379dc45c69337026372fc3ebd5ec9b59be524bb0ef7b68b0465a; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    },
+    {
+      "name": "table-layout",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\table-layout.html",
+      "htmlSha256": "ce1c8f0d534ddd34fd76eedbe463a1c03cd2a49abc481da21934f0759a9a4add",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\table-layout.png",
+      "referenceSha256": "57eae83ef547a7eb5fa6c58b781de5467f64834e917ef718dd43f4a8fc9eedc5",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML ce1c8f0d534ddd34fd76eedbe463a1c03cd2a49abc481da21934f0759a9a4add; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    },
+    {
+      "name": "transform-translate",
+      "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-layout\\transform-translate.html",
+      "htmlSha256": "fa12a49cde0cf48465303d984bd93a157e38fab250710d707b234ed00b4b1fa2",
+      "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-layout\\transform-translate.png",
+      "referenceSha256": "793c2de2df950de8d28c9e9208f020eb5200a8a11a36a3f09293d011687407a3",
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML fa12a49cde0cf48465303d984bd93a157e38fab250710d707b234ed00b4b1fa2; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+    }
+  ]
+}

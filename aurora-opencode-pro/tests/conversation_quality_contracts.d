@@ -69,6 +69,10 @@ int main()
     assert(requiredEvidence(s).length == 0, "A question contaminated the active task's verification requirements");
     request(s, "Continue the parser task.");
     assert(unfinishedTask(s), "An untracked action request silently completed");
+    s.taskStatus = "waiting_input";
+    request(s, "The deployment destination is fixture.example.");
+    assert(s.taskStatus == "active" && s.contract.id == parserTask,
+        "Supplied information failed to resume the existing task");
     append(s, "assistant", "Done.");
     assert(taskContinuation(s, true).action == TaskContinuationAction.continueWork);
     append(s, "tool", "Build passed", "run");
