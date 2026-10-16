@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Table layout reference</title>
+<style>
+html,body{margin:0;background:white}
+/* Table display model (CSS 17): rows are laid out as boxes, and a taller cell
+   stretches every cell in its row to the row height. Three 80px columns fill
+   the declared 240px table exactly, so no free-space distribution is involved. */
+.t{display:table;width:240px;background:#eef}
+.r{display:table-row}
+.tall{display:table-cell;width:80px;height:40px;background:#cc2244}
+.twin{display:table-cell;width:80px;height:20px;background:#2266cc}
+.w80{display:table-cell;width:80px;height:20px;background:#2a8a3a}
+</style><div class="t"><div class="r"><div class="tall"></div><div class="twin"></div><div class="w80"></div></div><div class="r"><div class="w80"></div><div class="w80"></div><div class="w80"></div></div></div><div style="height:10px;background:#8060c0"></div>

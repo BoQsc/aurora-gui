@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>Flex alignment reference</title>
+<style>
+html,body{margin:0;background:white}
+.a{background:#2266cc}
+.b{background:#2a8a3a}
+.c{background:#cc2244}
+/* Three 60px items in 300px leave 120px free: space-between puts 60px
+   between them and none at the edges. Sizes are chosen so no rounding is
+   involved and the comparison stays geometry. */
+.between{display:flex;justify-content:space-between;width:300px;height:20px;background:#eef}
+.between > div{width:60px;height:20px}
+/* align-items centres the 20px item in a 60px row: y = 20 within the row. */
+.centre{display:flex;align-items:center;width:300px;height:60px;background:#eef}
+.centre > div{width:60px;height:20px}
+/* justify-content: flex-end packs the single item against the right edge. */
+.ends{display:flex;justify-content:flex-end;width:300px;height:20px;background:#eef}
+.ends > div{width:60px;height:20px;background:#8060c0}
+</style><div class="between"><div class="a"></div><div class="b"></div><div class="c"></div></div><div class="centre"><div class="a"></div></div><div class="ends"><div></div></div>

@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><title>Overflow clipping reference</title>
+<style>
+html,body{margin:0;background:white}
+/* A 60x20 box clips a 120x60 child, so only the child's top-left 60x20 shows
+   (CSS Overflow 3). The clipped box is a block formatting context root, so its
+   height stays 20 and the following sibling starts there. */
+.clip{overflow:hidden;width:60px;height:20px;background:#eef}
+.inner{width:120px;height:60px;background:#2266cc}
+.after{width:60px;height:20px;background:#2a8a3a}
+</style><div class="clip"><div class="inner"></div></div><div class="after"></div>

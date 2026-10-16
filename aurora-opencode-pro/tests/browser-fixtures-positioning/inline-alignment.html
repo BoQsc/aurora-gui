@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Inline alignment reference</title>
+<style>
+html,body{margin:0;background:white;font:16px/20px sans-serif}
+/* One probe per block, so each line box top is known exactly. `top` and
+   `bottom` align against the line box edges; `middle` would depend on the
+   parent's x-height, which is a font metric, so it is deliberately absent. */
+.row{margin:0;background:#f4f4f8}
+.t{display:inline-block;width:40px;height:10px;vertical-align:top;background:#2266cc}
+.b{display:inline-block;width:40px;height:10px;vertical-align:bottom;background:#cc2244}
+/* Taller than the strut, so the line box grows to fit it (CSS 10.8.1). */
+.tall{display:inline-block;width:40px;height:40px;vertical-align:top;background:#8060c0}
+</style><p class="row"><span class="t"></span></p><p class="row"><span class="b"></span></p><p class="row"><span class="tall"></span></p>

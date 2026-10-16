@@ -133,6 +133,11 @@ struct Selector
     bool isFirstChild;      /// `:first-child`.
     bool isLastChild;       /// `:last-child`.
     bool isChecked;         /// `:checked` — a checked input.
+    /// `:not(...)` arguments: the element must match NONE of them. Real pages
+    /// lean on this heavily — django's `header nav li>:not(.search){padding:10px}`
+    /// carries the whole menu spacing. Treating `:not` as an unevaluatable
+    /// pseudo-class poisoned the compound, so such rules never applied at all.
+    Selector[] negations;
 }
 
 /**
@@ -270,13 +275,6 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
             return typeOnly;
         }
         return MediaQuery(-2, -2, -2, -2, false, false, "");
-    }
-
-    void skipImport()
-    {
-        // @import url(...); — skip to semicolon.
-        auto semi = indexOf(css, ";", i);
-        i = semi < 0 ? n : semi + 1;
     }
 
     // Parse the rules inside a block, optionally tagging each with a media query.
@@ -430,7 +428,32 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
                 }
             }
 
-            skipImport();
+            // Any other at-rule: @import/@charset (they end with `;`), or one
+            // with a block (@font-face, @page, @supports, @starting-style, ...).
+            // Skip the at-rule's OWN extent. Scanning to the next `;` anywhere
+            // is wrong for minified CSS, where an at-rule can contain no `;` at
+            // all: `@starting-style{header nav.active{max-height:0}}` sits
+            // directly before `@media screen and (min-width: 1280px){header
+            // nav{display:block;...}}`, so the cursor resumed INSIDE that media
+            // block and consumed `header nav{...}` as garbage selector text.
+            // The rule that un-hides a real site's main navigation was dropped,
+            // leaving the header with only its logo.
+            auto atBrace = indexOf(css, "{", i);
+            auto atSemi = indexOf(css, ";", i);
+            if (atBrace >= 0 && (atSemi < 0 || atBrace < atSemi))
+            {
+                int atDepth = 0;
+                auto at = atBrace;
+                while (at < n)
+                {
+                    if (css[at] == '{') atDepth++;
+                    else if (css[at] == '}') { atDepth--; if (atDepth == 0) { at++; break; } }
+                    at++;
+                }
+                i = at > atBrace ? at : n;
+            }
+            else
+                i = atSemi < 0 ? n : atSemi + 1;
             continue;
         }
         // Find the next top-level "{".
@@ -483,7 +506,8 @@ private Selector[] parseSelectorList(string text)
             (!sel.isRoot && !sel.isUniversal && sel.typeName.length == 0 && sel.className.length == 0 &&
             sel.idName.length == 0 && sel.attrName.length == 0 &&
             !sel.isHover && !sel.isFocus && !sel.isActive &&
-            !sel.isFirstChild && !sel.isLastChild && !sel.isChecked)
+            !sel.isFirstChild && !sel.isLastChild && !sel.isChecked &&
+            sel.negations.length == 0)
             )
             continue;
         result ~= sel;
@@ -555,6 +579,7 @@ private Selector parseSelector(string text)
     result.isFirstChild = leaf.isFirstChild;
     result.isLastChild = leaf.isLastChild;
     result.isChecked = leaf.isChecked;
+    result.negations = leaf.negations;
     if (compounds.length > 1)
     {
         foreach_reverse (k; 0 .. compounds.length - 1)
@@ -667,6 +692,44 @@ private void parseCompound(string part, out Selector compound)
             while (i < n && (isIdentChar(part[i]) || part[i] == '-')) i++;
             auto pname = part[start .. min(i, part.length)].toLower();
             if (pname == "root") compound.isRoot = true;
+            else if (pname == "not")
+            {
+                // `:not(<simple selector>)` (Selectors 3): a negated argument
+                // makes the compound match when the argument does NOT.
+                bool ok = false;
+                if (i < n && part[i] == '(')
+                {
+                    auto close = i + 1;
+                    int depth = 1;
+                    while (close < n)
+                    {
+                        if (part[close] == '(') depth++;
+                        else if (part[close] == ')')
+                        {
+                            depth--;
+                            if (depth == 0) break;
+                        }
+                        close++;
+                    }
+                    if (close < n)
+                    {
+                        auto inner = part[i + 1 .. close].strip();
+                        i = close + 1;
+                        auto neg = parseSelector(inner);
+                        // Selectors 3 allows only simple arguments (one
+                        // compound, no combinator) and no argument list. An
+                        // argument we cannot represent must not make the
+                        // compound match everything: leave it unmatchable.
+                        if (inner.length && indexOf(inner, ',') < 0 &&
+                            neg.descendants.length == 0 && neg.negations.length == 0)
+                        {
+                            compound.negations ~= neg;
+                            ok = true;
+                        }
+                    }
+                }
+                if (!ok) compound.isPseudoElement = true;
+            }
             else if (pname == "before" || pname == "after")
             {
                 compound.isPseudoElement = true;
@@ -759,10 +822,127 @@ private Declaration[] parseDeclarations(string text){
             if (tail == "important") { important = true; rawValue = rawValue[0 .. bang].strip(); }
         }
         if (rawValue.length)
-            result ~= Declaration(property, rawValue, important);
+        {
+            // `font` is a shorthand (CSS 2.1 15.7). Expand it here, at the
+            // position the declaration occupies, so its longhands take part in
+            // the cascade in document order like any other declaration. The
+            // engine previously carried `font` through as an ordinary property
+            // that nothing consumed, so a page lost its font-size, family,
+            // weight and line-height at once: `font:16px/20px X` fell through to
+            // the "font-size + 8px" leading, a 24px line box for 16px text
+            // instead of 20px, and every following line drifted down the page.
+            if (property == "font")
+            {
+                if (!expandFontShorthand(result, rawValue, important))
+                    result ~= Declaration(property, rawValue, important);
+            }
+            else
+                result ~= Declaration(property, rawValue, important);
+        }
         i = semi < 0 ? n : semi + 1;
     }
     return result;
+}
+
+/**
+ * Expand a `font` shorthand value into the longhands this renderer applies:
+ * `[ <font-style> || <font-variant> || <font-weight> || <font-stretch> ]?
+ * <font-size> [ / <line-height> ]? <font-family>`.
+ *
+ * Returns false when the value is not a shorthand this understands (`inherit`,
+ * a system font keyword, or a malformed value), so the caller can keep the
+ * original declaration and lose nothing.
+ */
+private bool expandFontShorthand(ref Declaration[] result, string value,
+    bool important)
+{
+    import std.array : join;
+
+    switch (value.strip().toLower())
+    {
+        // CSS-wide keywords and the system font keywords are not a font
+        // shorthand: leave them for the ordinary property path.
+        case "inherit", "initial", "unset", "revert", "revert-layer",
+            "caption", "icon", "menu", "message-box", "small-caption",
+            "status-bar":
+            return false;
+        default:
+            break;
+    }
+
+    auto tokens = value.split();
+    if (tokens.length < 2) return false;   // a size and a family are required
+
+    string fontStyle = "normal";
+    string fontVariant = "normal";
+    string fontWeight = "normal";
+    string fontStretch = "normal";
+
+    // Leading keywords, in any order, up to the font size. Every slot they can
+    // fill starts out `normal`, and the shorthand resets the ones it omits, so
+    // leaving an omitted slot at `normal` is the specified result.
+    size_t i = 0;
+    while (i + 1 < tokens.length)
+    {
+        const t = tokens[i].toLower();
+        if (t == "italic" || t == "oblique") fontStyle = t;
+        else if (t == "small-caps") fontVariant = t;
+        else if (t == "bold" || t == "bolder" || t == "lighter") fontWeight = t;
+        else if (t == "condensed" || t == "expanded" || t == "semi-condensed" ||
+            t == "semi-expanded" || t == "extra-condensed" ||
+            t == "extra-expanded" || t == "ultra-condensed" ||
+            t == "ultra-expanded") fontStretch = t;
+        else if (t == "normal") { /* any one of the four slots above */ }
+        else if (t.length == 3 && t[1] == '0' && t[2] == '0' &&
+            t[0] >= '1' && t[0] <= '9') fontWeight = t;   // 100 .. 900
+        else break;   // the font size starts here
+        i++;
+    }
+    if (i >= tokens.length) return false;
+
+    auto sizeToken = tokens[i];
+    string lineHeight;
+    const slash = indexOf(sizeToken, '/');
+    if (slash >= 0)
+    {
+        // `16px/20px` in a single token.
+        lineHeight = sizeToken[slash + 1 .. $].strip();
+        sizeToken = sizeToken[0 .. slash].strip();
+    }
+    else if (i + 2 < tokens.length && tokens[i + 1] == "/")
+    {
+        // Spaced form: `16px / 20px Arial`.
+        lineHeight = tokens[i + 2];
+        i += 2;
+    }
+
+    bool sizeOk = sizeToken.length > 0 &&
+        (sizeToken[0] == '.' || (sizeToken[0] >= '0' && sizeToken[0] <= '9'));
+    if (!sizeOk)
+        switch (sizeToken.toLower())
+        {
+            case "xx-small", "x-small", "small", "medium", "large",
+                "x-large", "xx-large", "smaller", "larger":
+                sizeOk = true;
+                break;
+            default:
+                break;
+        }
+    if (!sizeOk) return false;
+
+    if (i + 1 >= tokens.length) return false;
+    const family = join(tokens[i + 1 .. $], " ");
+    if (family.length == 0) return false;
+
+    result ~= Declaration("font-style", fontStyle, important);
+    result ~= Declaration("font-variant", fontVariant, important);
+    result ~= Declaration("font-weight", fontWeight, important);
+    result ~= Declaration("font-stretch", fontStretch, important);
+    result ~= Declaration("font-size", sizeToken, important);
+    if (lineHeight.length)
+        result ~= Declaration("line-height", lineHeight, important);
+    result ~= Declaration("font-family", family, important);
+    return true;
 }
 
 /// Test whether one selector matches an element.
@@ -860,6 +1040,9 @@ private bool compoundMatches(in Selector compound, Element element)
     // `::before`/`::after` are generated content, not real elements.
     if (compound.isPseudoElement) return false;
     if (compound.isRoot && element.parent !is null) return false;
+    // `:not(...)`: matching any argument disqualifies the element.
+    foreach (neg; compound.negations)
+        if (compoundMatches(neg, element)) return false;
     if (compound.idName.length && !element.hasId(compound.idName)) return false;
     if (compound.className.length && !element.hasClass(compound.className)) return false;
     foreach (extra; compound.extraClasses)
@@ -1028,8 +1211,10 @@ string[string] cascadeFor(Element element, in Rule[] rules, scope const int[] in
     // a map, we compute the winner inline.
     string[string] result;
     ptrdiff_t[string] ruleIndex;  // rule that currently wins per property
+    ptrdiff_t[string] declOrder;  // and the winning declaration's sequence
     Specificity[string] ruleSpec;
     bool[string] ruleImportant;
+    ptrdiff_t seq;                // document order across all declarations
 
     foreach (idx; indices)
     {
@@ -1049,11 +1234,13 @@ string[string] cascadeFor(Element element, in Rule[] rules, scope const int[] in
         if (!matches) continue;
         foreach (decl; rule.declarations)
         {
+            const thisSeq = seq++;
             auto prop = decl.property;
             auto current = ruleIndex.get(prop, -1);
             if (current == -1)
             {
                 ruleIndex[prop] = idx;
+                declOrder[prop] = thisSeq;
                 ruleSpec[prop] = bestSpec;
                 result[prop] = decl.value;
                 ruleImportant[prop] = decl.important;
@@ -1068,12 +1255,21 @@ string[string] cascadeFor(Element element, in Rule[] rules, scope const int[] in
                 auto spec = bestSpec;
                 auto currentSpec = ruleSpec.get(prop, Specificity.init);
                 if (spec.opGreater(currentSpec)) newWins = true;
-                else if (!currentSpec.opGreater(spec)) newWins = idx > current; // later wins ties
+                else if (!currentSpec.opGreater(spec))
+                    // Ties go to the later declaration (CSS 2.1 6.4.1): a later
+                    // rule wins, and within one rule a later declaration wins.
+                    // Comparing only the rule index meant the FIRST declaration
+                    // of a property won inside a single rule, so the very common
+                    // shorthand-then-longhand override
+                    // (`font: 16px/20px Arial; line-height: 30px`) was ignored.
+                    newWins = idx > current ||
+                        (idx == current && thisSeq > declOrder.get(prop, -1));
                 else newWins = false;
             }
             if (newWins)
             {
                 ruleIndex[prop] = idx;
+                declOrder[prop] = thisSeq;
                 ruleSpec[prop] = bestSpec;
                 result[prop] = decl.value;
                 ruleImportant[prop] = decl.important;
@@ -1081,6 +1277,52 @@ string[string] cascadeFor(Element element, in Rule[] rules, scope const int[] in
         }
     }
     return result;
+}
+
+unittest
+{
+    // --- `font` shorthand expansion (CSS 2.1 15.7) ---
+    // Before this the shorthand reached the cascade as an inert `font`
+    // property, so a page lost its font size, family, weight and line-height
+    // together: `font:16px/20px X` then took the engine's "font-size + 8px"
+    // leading and every following line sat lower than the reference.
+    auto rules = parseStylesheet(
+        `p { font: italic bold 16px/20px Arial, sans-serif; }
+         h1 { font: 700 2rem Georgia, serif; }
+         code { font: 12px/1.5 monospace; }
+         pre { font: inherit; }
+         div { font: 16px/20px Arial; line-height: 30px; }`);
+    auto p = new Element("p");
+    auto cascade = cascadeFor(p, rules);
+    assert(cascade.get("font-size", "") == "16px",
+        "font-size from the shorthand, got '" ~ cascade.get("font-size", "") ~ "'");
+    assert(cascade.get("line-height", "") == "20px",
+        "line-height from the shorthand, got '" ~ cascade.get("line-height", "") ~ "'");
+    assert(cascade.get("font-weight", "") == "bold",
+        "font-weight from the shorthand, got '" ~ cascade.get("font-weight", "") ~ "'");
+    assert(cascade.get("font-style", "") == "italic",
+        "font-style from the shorthand, got '" ~ cascade.get("font-style", "") ~ "'");
+    assert(cascade.get("font-family", "") == "Arial, sans-serif",
+        "font-family keeps the whole family list, got '" ~
+        cascade.get("font-family", "") ~ "'");
+    // A multi-word family, a keyword size is not required, and a numeric
+    // weight in the leading keyword group.
+    auto h1c = cascadeFor(new Element("h1"), rules);
+    assert(h1c.get("font-size", "") == "2rem" && h1c.get("font-weight", "") == "700" &&
+        h1c.get("font-family", "") == "Georgia, serif",
+        "`font: 700 2rem Georgia, serif` must expand fully");
+    auto codec = cascadeFor(new Element("code"), rules);
+    assert(codec.get("line-height", "") == "1.5",
+        "a bare-number line-height survives, got '" ~ codec.get("line-height", "") ~ "'");
+    // A longhand written after the shorthand in the SAME rule wins.
+    auto divc = cascadeFor(new Element("div"), rules);
+    assert(divc.get("line-height", "") == "30px",
+        "a later longhand in the same rule must win, got '" ~
+        divc.get("line-height", "") ~ "'");
+    // `inherit` is a CSS-wide keyword, not a family.
+    auto prec = cascadeFor(new Element("pre"), rules);
+    assert(prec.get("font-family", "") == "",
+        "`font: inherit` must not be read as a family list");
 }
 
 unittest
@@ -1146,6 +1388,50 @@ unittest
     assert(applyMediaRules(rules, 1280, 800).length == 1, "max-width:1180 must not apply at 1280");
 }
 
+version (unittest)
+unittest
+{
+    import auroraweb.dom : Element;
+
+    // An unknown at-rule must not desynchronise the parse. `@starting-style`
+    // contains no `;`, so the old skip-to-semicolon resumed INSIDE the next
+    // rule and consumed it as garbage selector text. django's stylesheet has
+    // exactly this shape:
+    //   @starting-style{header nav.active{max-height:0}}
+    //   @media screen and (min-width: 1280px){header nav{display:block;...}}
+    // and the swallowed rule was the one that un-hides the header's main nav,
+    // so that whole menu vanished from the render.
+    auto rules = parseStylesheet(
+        `header nav{display:none;max-height:0}` ~
+        `@starting-style{header nav.active{max-height:0}}` ~
+        `@media screen and (min-width: 1280px){` ~
+        `header nav{display:block;max-height:none}` ~
+        `header nav ul{display:flex}}`, 1280, 800);
+    auto active = applyMediaRules(rules, 1280, 800);
+
+    auto header = new Element("header");
+    auto nav = new Element("nav");
+    nav.parent = header;
+    header.children ~= nav;
+    header.elements ~= nav;
+    auto index = buildRuleIndex(active);
+
+    auto cascade = cascadeFor(nav, active, candidatesFor(index, nav));
+    assert(cascade.get("display", "") == "block",
+        "the @media rule after @starting-style must win: display was '" ~
+        cascade.get("display", "") ~ "'");
+
+    // The rule that followed the swallowed one must keep its own selector.
+    auto ul = new Element("ul");
+    ul.parent = nav;
+    nav.children ~= ul;
+    nav.elements ~= ul;
+    auto ulCascade = cascadeFor(ul, active, candidatesFor(index, ul));
+    assert(ulCascade.get("display", "") == "flex",
+        "header nav ul{display:flex} must survive the parse: got '" ~
+        ulCascade.get("display", "") ~ "'");
+}
+
 unittest
 {
     // --- Child combinator `>` and adjacent sibling `+` ---
@@ -1207,4 +1493,48 @@ unittest
     // Combined with a class.
     Selector combined = parseSelector("p.note[class]");
     assert(selectorMatches(combined, p), "p.note[class] must match p with class note");
+}
+
+unittest
+{
+    // --- `:not(<simple selector>)` ---
+    // django's `header nav li>:not(.search){padding:10px}` carries the whole
+    // menu spacing. Treating `:not` as an unevaluatable pseudo-class poisoned
+    // the compound, so that rule never applied and the menu items ran together
+    // with no spacing at all.
+    Element mk(string tag, Element parent)
+    {
+        auto e = new Element(tag);
+        e.parent = parent;
+        if (parent !is null) { parent.children ~= e; parent.elements ~= e; }
+        return e;
+    }
+
+    auto header = mk("header", null);
+    auto nav = mk("nav", header);
+    auto ul = mk("ul", nav);
+    auto li = mk("li", ul);
+    auto plain = mk("a", li);
+    plain.attrs["class"] = "menu-link";
+    auto search = mk("a", li);
+    search.attrs["class"] = "search";
+
+    Selector noSearch = parseSelector("li>:not(.search)");
+    assert(selectorMatches(noSearch, plain), "li>:not(.search) must match an ordinary child");
+    assert(!selectorMatches(noSearch, search), "li>:not(.search) must NOT match the search child");
+
+    // A negation next to a type name in the same compound.
+    Selector aNoSearch = parseSelector("a:not(.search)");
+    assert(selectorMatches(aNoSearch, plain), "a:not(.search) must match a plain anchor");
+    assert(!selectorMatches(aNoSearch, search), "a:not(.search) must NOT match .search");
+
+    // The selector-list filter must not discard a compound whose only part is
+    // the negation, which is exactly the shape of django's rule.
+    auto rules = parseStylesheet(`header nav li>:not(.search){padding:10px}`, 1280, 800);
+    assert(rules.length == 1, "a `:not()` rule must survive parsing");
+    auto index = buildRuleIndex(rules);
+    auto cascade = cascadeFor(plain, rules, candidatesFor(index, plain));
+    assert(cascade.get("padding", "") == "10px",
+        "the `:not(.search)` rule must reach an ordinary child: got '" ~
+        cascade.get("padding", "") ~ "'");
 }

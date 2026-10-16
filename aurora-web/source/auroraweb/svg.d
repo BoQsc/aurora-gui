@@ -671,6 +671,14 @@ private void renderChildren(Tag[] tags, size_t start, ubyte[] px, int w, int h,
     ctx.transform = parentTransform;
     int depth = 1;
     int skipTo = -1;
+    // Transform in force at each nesting level: `levelT[d]` is the transform a
+    // container at depth d hands to the elements inside it (depth d+1), and
+    // `levelT[0]` is the caller's transform. The tag list is scanned flat, so
+    // without this chain a <g> transform reached only the <g> itself and every
+    // nested group transform was dropped - Sketch/Figma exports wrap their
+    // artwork in a translating <g>, which then painted shifted and clipped.
+    Mat[] levelT;
+    levelT ~= parentTransform;
 
     for (size_t i = start; i < tags.length; i++)
     {
@@ -696,8 +704,10 @@ private void renderChildren(Tag[] tags, size_t start, ubyte[] px, int w, int h,
         local.depth = depth;
         applyPresentation(t, local);
         auto it = "transform" in t.attrs;
-        if (it !is null)
-            local.transform = mul(parseTransform(*it), ctx.transform);
+        const inherited = depth - 1 < cast(int) levelT.length
+            ? levelT[depth - 1] : parentTransform;
+        local.transform = it !is null
+            ? mul(parseTransform(*it), inherited) : inherited;
 
         bool hidden = false;
         auto disp = "display" in t.attrs;
@@ -716,7 +726,13 @@ private void renderChildren(Tag[] tags, size_t start, ubyte[] px, int w, int h,
             if (!t.selfClosing)
             {
                 if (t.name == "defs" || t.name == "symbol") skipTo = depth;
-                else depth++;
+                else
+                {
+                    // The group's own transform is what its children inherit.
+                    if (levelT.length <= depth) levelT.length = depth + 1;
+                    levelT[depth] = local.transform;
+                    depth++;
+                }
             }
             continue;
         }

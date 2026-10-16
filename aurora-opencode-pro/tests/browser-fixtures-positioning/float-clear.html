@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Float and clear reference</title>
+<style>
+html,body{margin:0;background:white}
+.box{width:240px;background:#eef}
+/* A right float starts at the container's right content edge. */
+.rt{float:right;width:60px;height:40px;background:#2266cc}
+/* Only 180px remains beside the right float, so this 200px left float cannot
+   fit and must drop below it (CSS 9.5.1) rather than overlap. */
+.lt{float:left;width:200px;height:20px;background:#2a8a3a}
+/* clear moves below every active float (CSS 9.5.2). */
+.cleared{clear:both;height:20px;background:#cc2244}
+</style><div class="box"><div class="rt"></div><div class="lt"></div><div class="cleared"></div></div><div style="height:10px;background:#8060c0"></div>

@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8"><title>Stacking order reference</title>
+<style>
+html,body{margin:0;background:white}
+/* Four overlapping positioned boxes whose overlap shows the paint order:
+   z-index beats document order, and a positioned box with no z-index paints
+   below every sibling that has one (CSS 2.1 appendix E). */
+.layer{position:absolute;width:60px;height:60px}
+.one{left:0;top:0;background:#2266cc}
+.two{left:20px;top:20px;background:#2a8a3a;z-index:2}
+.three{left:40px;top:40px;background:#cc2244;z-index:3}
+.four{left:10px;top:10px;background:#8060c0;z-index:1}
+</style><div class="layer one"></div><div class="layer two"></div><div class="layer three"></div><div class="layer four"></div>

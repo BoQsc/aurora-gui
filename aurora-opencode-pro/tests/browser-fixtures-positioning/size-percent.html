@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>Percentage and auto sizing reference</title>
+<style>
+html,body{margin:0;background:white}
+.wrap{width:200px;background:#eef}
+/* 50% of the 200px container, measured from its content edge. */
+.half{width:50%;height:20px;background:#2266cc}
+/* `margin: 0 auto` centres a 100px box inside 200px: x = 50. */
+.centred{width:100px;height:20px;margin:0 auto;background:#2a8a3a}
+/* The percentage resolves first, then the clamp applies. */
+.clamped{width:50%;max-width:60px;height:20px;background:#cc2244}
+/* A percentage height needs a declared containing height to resolve against. */
+.tallwrap{width:200px;height:100px;background:#eef}
+.halfheight{width:20px;height:50%;background:#8060c0}
+</style><div class="wrap"><div class="half"></div><div class="centred"></div><div class="clamped"></div></div><div class="tallwrap"><div class="halfheight"></div></div>

@@ -96,6 +96,7 @@ private int _paintScrollY;
 void paintTree(Element root, Canvas canvas, int scrollY = 0)
 {
     _paintScrollY = scrollY;
+    _positionedLayers = null;
     paintElement(root, canvas);
 }
 
@@ -368,6 +369,23 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
 }
 
 /// Paint one element (and its children). Boxes carry absolute coordinates.
+/// Positioned descendants collected while painting a stacking context's in-flow
+/// content. A positioned box with `z-index:auto` belongs to the nearest ancestor
+/// stacking context and paints after ALL of that context's in-flow content
+/// (CSS 2.1 App. E), not merely after its own siblings. Without this, django's
+/// `position:fixed` docs widget - a descendant of the floated `main` column -
+/// was covered by the footer that follows `main` in document order.
+private Element[][] _positionedLayers;
+
+/// Whether this element starts a stacking context, so a positioned descendant's
+/// hoist stops here (CSS 2.1 App. E).
+private bool startsStackingContext(const Element e)
+{
+    if (e.style.opacity < 1.0) return true;
+    if (e.style.transform != "none" && e.style.transform.length) return true;
+    return e.style.isPositioned() && e.style.zIndex != 0;
+}
+
 private void paintElement(Element element, Canvas canvas)
 {
     // `position: sticky`: pin the box within its containing block while the page
@@ -555,6 +573,11 @@ private void paintElement(Element element, Canvas canvas)
         Color sideBorderColor(string perSideColor, string widthSrc, int sideIndex)
         {
             foreach (candidate; [perSideColor, borderColorToken(widthSrc),
+                // The `border` shorthand's colour: `borderColorToken` was only
+                // ever fed the WIDTH longhands, so `border:7px solid #123456`
+                // painted its border with the `black` default. The box-model
+                // fixture caught it against the Edge reference.
+                borderColorToken(bst.border),
                 sideToken(bst.borderColor, sideIndex)])
                 if (candidate.length)
                     return withOpacity(parseColorOrDefault(candidate, defaultBorderColor),
@@ -794,6 +817,9 @@ private void paintElement(Element element, Canvas canvas)
         element.style.display != "inline-block" &&
         element.style.display != "inline-flex")
     {
+        // Collect positioned descendants into the nearest stacking context.
+        const size_t layerStart = _positionedLayers.length;
+        _positionedLayers ~= Element[].init;
         // Common case: no positioned children — paint in document order without
         // allocating the two temporary arrays on every element every frame.
         bool anyPositioned = false;
@@ -807,26 +833,42 @@ private void paintElement(Element element, Canvas canvas)
         else
         {
             Element[] normal;
-            Element[] positioned;
             foreach (child; element.elements)
             {
                 if (child.style.isPositioned())
-                    positioned ~= child;
+                    _positionedLayers[$ - 1] ~= child;
                 else
                     normal ~= child;
             }
-            if (positioned.length > 1)
-                positioned.sort!(q{ a.style.zIndex < b.style.zIndex })();
             foreach (child; normal)
                 paintElement(child, contentCanvas);
-            foreach (child; positioned)
-                paintElement(child, contentCanvas);
+        }
+
+        auto collected = _positionedLayers[$ - 1];
+        _positionedLayers.length = layerStart;
+        if (collected.length)
+        {
+            if (startsStackingContext(element) || layerStart == 0)
+            {
+                // This context owns the layer: paint it last, by z-index.
+                if (collected.length > 1)
+                    collected.sort!(q{ a.style.zIndex < b.style.zIndex })();
+                foreach (c; collected)
+                    paintElement(c, contentCanvas);
+            }
+            else
+                _positionedLayers[$ - 1] ~= collected;
         }
     }
     else
     {
         foreach (child; element.elements)
-            paintElement(child, contentCanvas);
+        {
+            if (child.style.isPositioned() && _positionedLayers.length)
+                _positionedLayers[$ - 1] ~= child;
+            else
+                paintElement(child, contentCanvas);
+        }
     }
     if (element.pseudoAfter !is null)
         paintElement(element.pseudoAfter, contentCanvas);

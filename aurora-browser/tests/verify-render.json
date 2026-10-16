@@ -1,12 +1,10 @@
 {
   "inputs": [
-    "aurora-web/source/auroraweb/css.d",
-    "aurora-web/source/auroraweb/html.d",
-    "aurora-web/source/auroraweb/layout.d",
-    "aurora-web/source/auroraweb/svg.d",
-    "aurora-web/source/auroraweb/shaping.d",
-    "aurora-web/source/auroraweb/package.d",
-    "aurora-web/source/auroraweb/dom.d"
+    "aurora-web/source",
+    "aurora-browser/source",
+    "vendor/aurora-d-0.4.5/source",
+    "aurora-browser/tests/headless_smoke.d",
+    "aurora-browser/tests/pageshot-probe.d"
   ],
   "steps": [
     {
@@ -14,6 +12,7 @@
       "command": {
         "program": "dmd",
         "args": [
+          "-m64",
           "-i",
           "-Isource",
           "-I../vendor/aurora-d-0.4.5/source",
@@ -29,7 +28,7 @@
           "-Lole32.lib"
         ],
         "workdir": "aurora-browser",
-        "timeout": 1800000
+        "timeout": 300000
       }
     },
     {
@@ -38,11 +37,35 @@
         "program": "verify-smoke.exe",
         "args": [],
         "workdir": "aurora-browser/build",
-        "timeout": 600000
+        "timeout": 300000
       }
     },
     {
-      "kind": "interaction",
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-i",
+          "-Iaurora-web/source",
+          "-Iaurora-browser/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/pageshot.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/psbuild",
+          "aurora-browser/tests/pageshot-probe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
       "command": {
         "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/pageshot.exe",
         "args": [
@@ -53,7 +76,7 @@
           "8"
         ],
         "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
-        "timeout": 600000
+        "timeout": 300000
       }
     },
     {
@@ -68,14 +91,14 @@
           "8"
         ],
         "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
-        "timeout": 600000
+        "timeout": 300000
       }
     },
     {
       "kind": "render",
-      "reference": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/django9.ppm",
+      "reference": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/django28ref.ppm",
       "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/verify-django.ppm",
-      "referenceSource": "djangoproject.com at 1280x800 captured after the compound-path SVG fix and inspected by eye: the wordmark reads 'django' with counters, the copy banner is dark-on-white, and .container measures 1280 (no horizontal overflow)."
+      "referenceSource": "AURORA-TO-AURORA REGRESSION BASELINE - NOT AN INDEPENDENT ORACLE. Re-frozen again after the engine learned the CSS `font` shorthand, a formatting context root's auto height containing its floats (CSS 2.1 10.6.7), and U+00A0 no longer being treated as collapsible whitespace. That changed exactly 90 of 1,024,000 pixels: a 6x15 sliver of the scrollbar thumb at x=1272-1277, y=256-270, max channel delta 95, with every content pixel identical (measured with diff_ppm.py against the previous reference). The independent Edge corpus (browser-reference-validation-4, six frozen fixtures) passes every case, including the two float cases this change was made for. djangoproject.com at 1280x800, 1x device pixel ratio, captured from this engine; it can only detect a change, never prove correctness. The independent correctness oracle is the frozen Edge corpus in aurora-opencode-pro/build/browser-reference-validation/verify.json (box-model, flex-grid, svg-position, each with a manifest-pinned Edge reference), run as a second saved recipe. This baseline was re-frozen again when float placement learned CSS 9.5.1 (a float shifts beside, or drops below, the floats already active in its block formatting context), a float's auto height began including its floating descendants (CSS 10.6.7), and flex/grid/table containers began honouring margin collapsing through collapsedTopY and flow.hasPrevBlock. That last set changed exactly 6 of 1,024,000 pixels: a 6px sliver of the scrollbar thumb at x=1272-1277, y=271, because a float now measures 6px taller and the document with it. Both frames were inspected at full size and are visually identical; the independent Edge corpus (the oracle) passes every case. Earlier re-freeze: sha 9FC197B4... to E2AED91E... (3824 pixels, 0.4%) when resolveHeight stopped returning the border-box height for content-box sizing - the rule Edge validated in the box-model fixture (height:70px + padding:11 + border:7 must paint 156x106, not 156x142). The two frames were compared side by side and are visually identical: the difference is sub-visual edge shifts on the fundraiser card's broken-image placeholder. Expected content: header 72px tall, wordmark reading 'django', the menu OVERVIEW DOWNLOAD DOCUMENTATION NEWS CODE ISSUES COMMUNITY FOUNDATION <heart> DONATE SPONSOR on one line of bold uppercase 13px labels ending at x=1017 clear of the search field at x=1023; the hero tagline centred on two lines with the green 'Get started with Django' CTA centred beneath it (545,285 189x47); 'Meet Django' with its paragraph; the 'Download latest release: 6.1.2' card with 'Django documentation' 10px below it; 'Support Django!' with its fundraiser card. KNOWN OPEN: boqsc.eu's icon group has a pale rounded element behind it - that is the active page's own .site-toolbar__link background, i.e. intentional."
     }
   ]
 }

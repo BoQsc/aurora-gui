@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Float line box reference</title>
+<style>
+html,body{margin:0;background:white;font:16px/20px sans-serif}
+.bfc{overflow:hidden;width:250px;background:#eef}
+/* The float is declared in a non-BFC child, so it belongs to .bfc's context and
+   the following blocks' line boxes must start beside it (CSS 9.5) rather than
+   under it. `vertical-align: top` puts each atomic inline-level box flush with
+   its line box top edge, so its position is geometry, not font metrics: text
+   would only compare glyph advances, which is a different question. */
+.plain{display:block}
+.f1{float:left;width:80px;height:60px;background:#cc2244}
+p{margin:0}
+.i1{display:inline-block;width:160px;height:12px;vertical-align:top;background:#2266cc}
+.i2{display:inline-block;width:90px;height:12px;vertical-align:top;background:#2a8a3a}
+</style><div class="bfc"><div class="plain"><div class="f1"></div></div><p><span class="i1"></span></p><p><span class="i2"></span></p></div><div style="height:20px;background:#111"></div>

@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Absolute positioning reference</title>
+<style>
+html,body{margin:0;background:white}
+/* Absolute children resolve their insets against this positioned ancestor's
+   padding box (CSS 10.1), and none of them may affect the flow. */
+.cb{position:relative;width:240px;height:120px;background:#eef}
+/* Both horizontal insets given: the width follows them (CSS 10.3.7). */
+.both{position:absolute;left:20px;right:40px;top:10px;height:20px;background:#2266cc}
+/* One inset given: the declared width wins. */
+.one{position:absolute;left:20px;top:40px;width:80px;height:20px;background:#2a8a3a}
+/* Percentage insets resolve against the containing block, not the viewport. */
+.pct{position:absolute;left:50%;top:50%;width:60px;height:20px;background:#cc2244}
+/* A following static sibling must sit as if the absolute boxes were absent. */
+.after{width:240px;height:20px;background:#8060c0}
+</style><div class="cb"><div class="both"></div><div class="one"></div><div class="pct"></div></div><div class="after"></div>

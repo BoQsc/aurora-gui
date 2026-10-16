@@ -338,6 +338,47 @@ import auroraweb.interact : elementAt, hrefOf;
 import auroraweb.paint : paintTree, fillCanvasBackground, canvasBackgroundColor,
     bodyPaintsBackground;
 
+/// Subresources (stylesheets, images, scripts) keyed by URL, shared by every
+/// page in the process. Without it each load repeated every request: a heavy
+/// page spent ~4.5s in its FIRST layout fetching and decoding subresources
+/// while each later pass over the same tree cost 6-9ms, so the network round
+/// trips - not the layout - were the whole cost. Reload, back/forward and a
+/// second tab to the same site now reuse what is already in memory.
+private ubyte[][string] _resourceCache;
+private size_t _resourceCacheBytes;
+/// Bound the cache so a long browsing session cannot grow without limit.
+private enum size_t MaxResourceCacheBytes = 64 * 1024 * 1024;
+private enum size_t MaxResourceCacheEntries = 512;
+
+/// Drop every cached subresource. A failure (`null`) is never stored, so a
+/// transient error stays retryable and does not need clearing.
+void clearResourceCache()
+{
+    _resourceCache = null;
+    _resourceCacheBytes = 0;
+}
+
+/// Number of cached subresources (for tests and telemetry).
+size_t resourceCacheSize() { return _resourceCache.length; }
+
+/// Bytes currently held by the cache (for tests and telemetry).
+size_t resourceCacheBytes() { return _resourceCacheBytes; }
+
+/// Store freshly downloaded subresource bytes under `url`. Bounded, and only
+/// the first value for a URL is kept (a second lookup must hit the cache).
+private ubyte[] cacheResource(string url, ubyte[] bytes)
+{
+    if (bytes is null || bytes.length == 0 || url.length == 0) return bytes;
+    if (_resourceCache.length < MaxResourceCacheEntries &&
+        _resourceCacheBytes + bytes.length <= MaxResourceCacheBytes &&
+        url !in _resourceCache)
+    {
+        _resourceCache[url] = bytes;
+        _resourceCacheBytes += bytes.length;
+    }
+    return bytes;
+}
+
 import std.string : indexOf, lastIndexOf, strip, startsWith, toLower;
 
 /**
@@ -385,6 +426,53 @@ final class WebPage
         _resourceLoader = loader;
     }
 
+    /// Fetch a subresource through the loader, memoized by URL. Stylesheets,
+    /// images and scripts all come through here, so a reload, a back/forward
+    /// or a second tab to the same site reuses the bytes (and the decode that
+    /// follows them) instead of repeating the request.
+    ubyte[] loadResource(string url)
+    {
+        if (url.length == 0 || _resourceLoader is null) return null;
+        if (auto hit = url in _resourceCache) return *hit;
+        ubyte[] bytes;
+        try
+            bytes = _resourceLoader(url);
+        catch (Throwable)
+            bytes = null;
+        // A failure is never cached: a transient network error must stay
+        // retryable on the next load.
+        return cacheResource(url, bytes);
+    }
+
+    version (unittest)
+    unittest
+    {
+        // A URL is fetched once and reused; a failure is not cached.
+        clearResourceCache();
+        auto page = new WebPage(100, 100);
+        int calls;
+        page.setResourceLoader((string url) @safe
+        {
+            ++calls;
+            ubyte[] bytes;
+            foreach (c; url) bytes ~= cast(ubyte) c;
+            return url == "fail" ? null : bytes;
+        });
+        assert(page.loadResource("a") !is null, "first fetch succeeds");
+        assert(page.loadResource("a") !is null, "second fetch succeeds");
+        assert(calls == 1, "a repeated URL must come from the cache");
+        assert(page.loadResource("fail") is null, "failure propagates");
+        assert(page.loadResource("fail") is null, "failure propagates again");
+        assert(calls == 3, "a failure must stay retryable, not cached");
+        assert(page.loadResource("b") !is null, "a new URL is fetched");
+        assert(calls == 4, "a new URL is fetched exactly once");
+        clearResourceCache();
+        assert(resourceCacheSize() == 0, "clear empties the cache");
+        assert(page.loadResource("a") !is null, "cleared cache refetches");
+        assert(calls == 5, "cleared cache refetches");
+        clearResourceCache();
+    }
+
     /// Fetch a URL and decode the response body as UTF-8 text. Returns an
     /// empty string on failure.
     string fetchText(string url)
@@ -398,11 +486,15 @@ final class WebPage
     /// Fetch a URL and return the raw response bytes (empty on failure).
     ubyte[] fetchBytes(string url)
     {
+        // Stylesheets, images and scripts all arrive here, so consult the
+        // shared cache before touching the network.
+        if (url.length)
+            if (auto hit = url in _resourceCache) return *hit;
         if (_resourceLoader !is null)
         {
             try
             {
-                auto bytes = _resourceLoader(url);
+                auto bytes = loadResource(url);
                 return bytes !is null ? bytes : (cast(ubyte[]) null);
             }
             catch (Exception exc)
@@ -412,7 +504,7 @@ final class WebPage
         }
         auto res = httpFetch(url);
         if (res.error.length) return (cast(ubyte[]) null);
-        return res.body;
+        return cacheResource(url, res.body);
     }
 
     /// Fetch a URL, and if the response looks like HTML (Content-Type
@@ -461,7 +553,7 @@ final class WebPage
         res.finalUrl = url;
         try
         {
-            auto bytes = _resourceLoader(url);
+            auto bytes = loadResource(url);
             res.body = bytes !is null ? bytes : (cast(ubyte[]) null);
             res.status = res.body.length ? 200 : 0;
         }

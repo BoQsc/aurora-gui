@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><title>Inline-block row height reference</title>
+<style>
+html,body{margin:0;background:white;font:16px/19px sans-serif}
+/* The row docs.djangoproject.com's footer uses: a 24px label line, then a line
+   whose inline-block logos are TALLER than the 19px line-height. The line box
+   must grow to contain them (CSS 10.8.1), and the float's auto height must then
+   include that grown line (CSS 10.6.7): 24 + 33 = 57. `vertical-align: top`
+   keeps the comparison free of font metrics. */
+.box{overflow:hidden;width:240px;background:#eef}
+.floater{float:left;width:240px;background:#c9c9e0}
+.row{display:block;background:#dde}
+.label{display:block;height:24px;background:#2266cc}
+.logo{display:inline-block;width:60px;height:33px;vertical-align:top;background:#2a8a3a}
+.amp{display:inline-block;width:12px;height:24px;vertical-align:top;background:#cc2244}
+</style><div class="box"><div class="floater"><div class="row"><span class="label"></span></div><div><span class="logo"></span><span class="amp"></span></div></div></div><div style="height:10px;background:#8060c0"></div>

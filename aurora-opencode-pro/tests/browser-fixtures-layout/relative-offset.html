@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>Relative offset reference</title>
+<style>
+html,body{margin:0;background:white}
+.a{width:60px;height:20px;background:#2266cc}
+/* position: relative shifts the painted box by its insets while the space it
+   occupied stays where the static box would have been (CSS 9.4.3). */
+.rel{position:relative;left:30px;top:5px;width:60px;height:20px;background:#2a8a3a}
+.b{width:60px;height:20px;background:#cc2244}
+</style><div class="a"></div><div class="rel"></div><div class="b"></div>

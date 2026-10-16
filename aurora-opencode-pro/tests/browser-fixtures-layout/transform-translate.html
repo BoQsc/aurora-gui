@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><title>Transform translate reference</title>
+<style>
+html,body{margin:0;background:white}
+.a{width:60px;height:20px;background:#2266cc}
+/* A translation moves the painted box and its children but leaves the flow
+   space where the untransformed box was, so the following sibling does not
+   move (CSS Transforms 1, "transform does not affect layout"). */
+.moved{transform:translate(20px,10px)}
+.b{width:60px;height:20px;background:#2a8a3a}
+</style><div class="a"></div><div class="a moved"></div><div class="b"></div>

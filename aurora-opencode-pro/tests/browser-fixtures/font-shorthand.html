@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>font shorthand reference</title>
+<style>
+html,body{margin:0;background:white}
+/* Each probe line carries its own background, so the pixels show the line box
+   height the font shorthand produces. A non-breaking space is an ink-free
+   glyph: it creates the line box without adding any glyph shape, which keeps
+   this an oracle for the shorthand (size, line-height, family, weight, style)
+   rather than for font metrics. Dropping the shorthand changes every height. */
+.bar{margin:0}
+.a{font:16px/20px sans-serif;background:#2266cc}
+.b{font:bold 20px/24px sans-serif;background:#2a8a3a}
+.c{font:italic small-caps 12px/16px "Times New Roman", serif;background:#cc2244}
+.d{font-size:16px;line-height:20px;font-family:sans-serif;background:#8060c0}
+</style><div class="bar a">&nbsp;</div><div class="bar b">&nbsp;</div><div class="bar c">&nbsp;</div><div class="bar d">&nbsp;</div>

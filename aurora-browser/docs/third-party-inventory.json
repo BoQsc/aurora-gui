@@ -1,0 +1,196 @@
+{
+  "inventoryVersion": "1",
+  "createdUtc": "2026-10-16",
+  "packageUnderReview": "aurora-browser (browser shell) + aurora-web (rendering engine) at 0.66.3",
+  "schema": {
+    "component": "component name",
+    "versionOrCommit": "pinned identifier",
+    "paths": ["paths covered by this entry"],
+    "origin": "original work, upstream source, generator, or installed system facility",
+    "rightsEvidence": "grant, license file, provenance record, or unresolved",
+    "licenseExpression": "verified SPDX expression or NOASSERTION",
+    "role": "runtime-source | bundled-binary | generated-data | asset | build-only | test-only | system",
+    "redistributed": "false",
+    "strictTargetSatisfied": "false",
+    "resolution": "specific remaining action"
+  },
+  "policy": {
+    "projectSourceClaim": "First-party browser material is offered under the SPDX expression CC0-1.0 OR 0BSD, the recipient choosing. The two official texts are kept separately; no combined text is invented.",
+    "strictDistributionClaim": "NOT SATISFIED. Not every redistributable component in this package is under CC0/0BSD. Aurora-D is Boost Software License 1.0 and carries Unicode data under the Unicode License V3; the D runtime/standard library linked into the executable is Boost 1.0; content decoding and PNG inflate reach zlib through std.zlib and etc.c.zlib, whose implementation is Zlib-licensed. Those are ordinary permissive licenses and are recorded here rather than relabeled.",
+    "notes": [
+      "A wrapper module or a changed SPDX line does not resolve a conflict.",
+      "Third-party material in this repository has not been relicensed by this inventory.",
+      "Package metadata currently declares BSL-1.0 for both packages, which is not the requested grant; see the first-party entries."
+    ]
+  },
+  "components": [
+    {
+      "component": "aurora-web rendering engine",
+      "versionOrCommit": "0.66.3 (aurora-web/dub.json)",
+      "paths": ["aurora-web/source/**", "aurora-web/dub.json"],
+      "origin": "original work written for this project",
+      "rightsEvidence": "owner's request for the browser task (CC0-1.0 OR 0BSD for first-party material); no per-file contributor provenance audit recorded yet",
+      "licenseExpression": "CC0-1.0 OR 0BSD",
+      "role": "runtime-source",
+      "redistributed": true,
+      "strictTargetSatisfied": true,
+      "resolution": "aurora-web/dub.json still declares \"license\": \"BSL-1.0\" and authors \"OpenAI\"; update the metadata to the requested expression, add SPDX headers to the engine files, and record the human rights holder (brief 5.1: generated metadata is not a provenance audit)."
+    },
+    {
+      "component": "aurora-browser application shell",
+      "versionOrCommit": "0.66.3 (aurora-browser/dub.json)",
+      "paths": ["aurora-browser/source/**", "aurora-browser/dub.json"],
+      "origin": "original work written for this project",
+      "rightsEvidence": "owner's request for the browser task (CC0-1.0 OR 0BSD for first-party material)",
+      "licenseExpression": "CC0-1.0 OR 0BSD",
+      "role": "runtime-source",
+      "redistributed": true,
+      "strictTargetSatisfied": true,
+      "resolution": "same metadata update as the engine entry (dub.json declares BSL-1.0 today)."
+    },
+    {
+      "component": "Aurora-D GUI, text and raster toolkit (vendored)",
+      "versionOrCommit": "0.4.5 (vendor/aurora-d-0.4.5/PACKAGE-METADATA.json, MANIFEST.sha256)",
+      "paths": ["vendor/aurora-d-0.4.5/source/**", "vendor/aurora-d-0.4.5/LICENSE"],
+      "origin": "upstream source, vendored; this repository patches it, with every patch recorded in vendor/aurora-d-0.4.5/AURORA-PATCHES.md and MANIFEST.sha256",
+      "rightsEvidence": "vendor/aurora-d-0.4.5/LICENSE contains the Boost Software License 1.0 text",
+      "licenseExpression": "BSL-1.0",
+      "role": "runtime-source",
+      "redistributed": true,
+      "strictTargetSatisfied": false,
+      "resolution": "Boost 1.0 is permissive but outside CC0/0BSD. Obtain an applicable grant from its rights holder, independently replace it, or record an explicit owner decision to accept it; keep the conflict in this ledger until then."
+    },
+    {
+      "component": "Unicode data inside Aurora-D",
+      "versionOrCommit": "0.4.5 (as vendored)",
+      "paths": ["vendor/aurora-d-0.4.5/LICENSE-UNICODE.txt", "vendor/aurora-d-0.4.5/source/** (generated tables)"],
+      "origin": "generated from Unicode character data by the upstream library",
+      "rightsEvidence": "vendor/aurora-d-0.4.5/LICENSE-UNICODE.txt (Unicode License V3, 1991-2026 Unicode, Inc.)",
+      "licenseExpression": "Unicode-3.0",
+      "role": "generated-data",
+      "redistributed": true,
+      "strictTargetSatisfied": false,
+      "resolution": "Keep the Unicode notice with any distribution containing the tables; regenerating the tables does not remove the terms applicable to their inputs. Outside the strict CC0/0BSD target unless the owner accepts it."
+    },
+    {
+      "component": "D runtime and standard library (druntime, Phobos) linked into the executable",
+      "versionOrCommit": "DMD 2.113.0 (C:\\D\\dmd2)",
+      "paths": ["not in this repository; linked from the compiler installation"],
+      "origin": "upstream compiler distribution",
+      "rightsEvidence": "the DMD distribution carries the Boost Software License 1.0 for druntime and Phobos",
+      "licenseExpression": "BSL-1.0",
+      "role": "runtime-source",
+      "redistributed": true,
+      "strictTargetSatisfied": false,
+      "resolution": "Classify the exact support libraries by inspecting a release binary's imports and static content; Boost is permissive but outside CC0/0BSD."
+    },
+    {
+      "component": "zlib compression reached through std.zlib and etc.c.zlib",
+      "versionOrCommit": "as shipped with DMD 2.113.0",
+      "paths": ["aurora-web/source/auroraweb/net.d", "vendor/aurora-d-0.4.5/source/aurora/image.d"],
+      "origin": "upstream zlib by Jean-loup Gailly and Mark Adler, reached through the D compiler distribution",
+      "rightsEvidence": "the DMD distribution ships the zlib sources and notices; zlib license text",
+      "licenseExpression": "Zlib",
+      "role": "runtime-source",
+      "redistributed": true,
+      "strictTargetSatisfied": false,
+      "resolution": "Replace the compression and inflate paths with original code, or record the owner's explicit acceptance; a D binding module does not make the implementation original."
+    },
+    {
+      "component": "Windows platform libraries",
+      "versionOrCommit": "operating-system version",
+      "paths": ["linked by name only: user32, gdi32, shell32, ws2_32, advapi32, ole32 (aurora-browser/dub.json, aurora-web/dub.json, build commands)"],
+      "origin": "installed system facility",
+      "rightsEvidence": "operating-system API; no associated runtime binary is copied into this repository",
+      "licenseExpression": "NOASSERTION",
+      "role": "system",
+      "redistributed": false,
+      "strictTargetSatisfied": true,
+      "resolution": "Classification only. Copying an associated runtime binary into a package would raise a separate distribution question."
+    },
+    {
+      "component": "Installed system fonts (Segoe UI and per-platform fallbacks)",
+      "versionOrCommit": "operating-system version",
+      "paths": ["loaded at runtime by vendor/aurora-d-0.4.5/source/aurora/font.d from the OS font directory (for example C:\\Windows\\Fonts\\segoeui.ttf)"],
+      "origin": "installed system facility",
+      "rightsEvidence": "font files remain on the host; they are read, never copied into this repository or a release package",
+      "licenseExpression": "NOASSERTION",
+      "role": "system",
+      "redistributed": false,
+      "strictTargetSatisfied": true,
+      "resolution": "Keep system fonts out of release artifacts; rendering them into screenshots is normal use, redistributing the files is not."
+    },
+    {
+      "component": "Installed Microsoft Edge browser used as the test oracle",
+      "versionOrCommit": "the installed build (path recorded in each corpus manifest.json)",
+      "paths": ["aurora-opencode-pro/build/browser-reference-validation*/ manifest.json and the reference PNGs it pins"],
+      "origin": "installed system facility, used only to capture references for this project's own fixtures",
+      "rightsEvidence": "third-party browser used as an external oracle; it is not part of the Aurora engine and is not redistributed",
+      "licenseExpression": "NOASSERTION",
+      "role": "test-only",
+      "redistributed": false,
+      "strictTargetSatisfied": true,
+      "resolution": "Never bundle Edge and never advertise it as the Aurora rendering engine (brief 5.3)."
+    },
+    {
+      "component": "Frozen browser test corpus and captured baselines",
+      "versionOrCommit": "browser-reference-validation through -4, plus aurora-browser/tests/verify-render.json",
+      "paths": ["aurora-opencode-pro/tests/browser-fixtures/**", "aurora-opencode-pro/build/browser-reference-validation*/**", "aurora-browser/tests/verify-render.json"],
+      "origin": "fixture HTML written for this project; reference PNGs generated by the installed Edge browser from those fixtures; live-site baselines (djangoproject.com, boqsc.eu) captured by this engine",
+      "rightsEvidence": "project-owned fixtures; live-site captures are provenance-restricted third-party content",
+      "licenseExpression": "CC0-1.0 OR 0BSD (project fixtures only)",
+      "role": "test-only",
+      "redistributed": false,
+      "strictTargetSatisfied": true,
+      "resolution": "Keep generated references, live-site captures and user content out of release artifacts (brief 5.4); ship only the original fixture HTML if a test corpus is distributed."
+    },
+    {
+      "component": "Build-only toolchain (DMD 2.113.0, lld-link, Python for the capture and comparison scripts)",
+      "versionOrCommit": "DMD 2.113.0; the rest as installed on the build host",
+      "paths": ["not in this repository"],
+      "origin": "installed system facility / upstream toolchain",
+      "rightsEvidence": "UNRESOLVED: the compiler's linker and support libraries have not been identified by inspection of a release binary",
+      "licenseExpression": "NOASSERTION",
+      "role": "build-only",
+      "redistributed": false,
+      "strictTargetSatisfied": false,
+      "resolution": "Inspect the released executable's static content and imports and classify every embedded support library before publishing a binary package."
+    },
+    {
+      "component": "Build outputs committed in the working tree",
+      "versionOrCommit": "generated by the current sources",
+      "paths": ["aurora-web/aurora-web.lib", "aurora-web/aurora-web-test-library.exe and .pdb", "aurora-web/*.obj", "vendor/aurora-d-0.4.5/*.exe and *.pdb"],
+      "origin": "generated by this project's own builds",
+      "rightsEvidence": "generated from the sources listed above; no separate grant needed while they are not published",
+      "licenseExpression": "inherits its inputs (BSL-1.0 and CC0-1.0 OR 0BSD mix)",
+      "role": "bundled-binary",
+      "redistributed": false,
+      "strictTargetSatisfied": false,
+      "resolution": "Regenerate from source and keep committed build outputs out of release artifacts, so the package's license inventory matches its actual contents."
+    },
+    {
+      "component": "Repository documentation and validation tooling",
+      "versionOrCommit": "as committed",
+      "paths": ["aurora-browser/docs/AGENT-HANDOFF.md", "aurora-browser/docs/IMPLEMENTATION-BRIEF.md", "aurora-opencode-pro/tools/capture-browser-reference.py", "aurora-opencode-pro/tools/browser-probe.d", "aurora-opencode-pro/tools/browser-engine-check.d"],
+      "origin": "original work written for this project",
+      "rightsEvidence": "owner's request for the browser task",
+      "licenseExpression": "CC0-1.0 OR 0BSD",
+      "role": "test-only",
+      "redistributed": false,
+      "strictTargetSatisfied": true,
+      "resolution": "None outstanding; add SPDX headers alongside the rest of the first-party migration."
+    }
+  ],
+  "notApplicableFindings": [
+    {
+      "component": "Certificate and trust data",
+      "finding": "No embedded certificate bundle, trust anchor or provenance test certificate exists in aurora-web/source (a search for PEM markers, a trust store or root-certificate tables finds nothing).",
+      "resolution": "Not applicable today. If trust-chain validation is added, its certificate data becomes an inventory entry with its own provenance and terms."
+    },
+    {
+      "component": "Web Platform Tests and Test262 suites",
+      "finding": "No external test suite is vendored: the corpus is original fixture HTML with references captured from the installed browser.",
+      "resolution": "If such a suite is ever added, keep its BSD-3-Clause notices intact in a separately pinned checkout outside the redistributable product (brief 5.4)."
+    }
+  ]
+}

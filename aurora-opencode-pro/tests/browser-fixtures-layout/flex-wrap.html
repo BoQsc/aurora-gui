@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><title>Multi-line flex reference</title>
+<style>
+html,body{margin:0;background:white}
+/* Three 100px items in a 250px wrapping row: the third cannot fit on the first
+   line, so it moves to a second line (CSS Flexbox 9.3) at that line's top. */
+.row{display:flex;flex-wrap:wrap;width:250px;background:#eef}
+.a{width:100px;height:20px;background:#2266cc}
+.b{width:100px;height:30px;background:#2a8a3a}
+.c{width:100px;height:20px;background:#cc2244}
+</style><div class="row"><div class="a"></div><div class="b"></div><div class="c"></div></div><div style="height:10px;background:#8060c0"></div>
