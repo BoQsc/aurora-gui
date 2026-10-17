@@ -22,8 +22,17 @@ import aurora.font : FontFace;
 import auroraweb.css : parseFontFaces, parseStylesheet, Rule;
 import auroraweb.dom : Element, TextNode;
 import auroraweb.dombind : bindDocument, dispatchHostEvent, dispatchHostEventNoBubble,
-    dispatchDocumentEvent, setDocumentScroll;
+    dispatchDocumentEvent, setDocumentScroll, setViewportSize;
 import auroraweb.shaping : registerWebFace;
+import auroraweb.woff : isWoff, woffToSfnt;
+
+/// One `<script>` waiting to run: inline text, or the URL of an external
+/// classic script.
+private struct PendingScript
+{
+    string code;   /// Inline source ("" for an external script).
+    string src;    /// Absolute URL of an external script ("" for inline).
+}
 
 /// Hex digit value, or -1 for a non-hex character.
 private static int hexDigit(char c)
@@ -821,6 +830,9 @@ final class WebPage
         if (w != _width || h != _height) _layoutDirty = true;
         _width = w;
         _height = h;
+        // Keep `window.innerWidth`/`innerHeight` and `matchMedia` reporting the
+        // viewport the page is about to be laid out in.
+        setViewportSize(_js, w, h);
     }
 
     int width() { return _width; }
@@ -840,7 +852,8 @@ final class WebPage
         _rules = [];
         extractStyles();
         collectScripts();
-        bindDocument(_root, _js, _js.globalScope, _resourceLoader);
+        bindDocument(_root, _js, _js.globalScope, _resourceLoader, _currentUrl,
+            _width, _height);
         _documentBound = true;
     }
 
@@ -1036,36 +1049,98 @@ final class WebPage
         return prefix ~ joined ~ suffix;
     }
 
-    /// Collect inline <script> content for execution.
-    private string[] _pendingScripts;
+    /// The page's scripts, in document order, collected for `executeScripts`.
+    private PendingScript[] _pendingScripts;
 
+    /// Collect the page's scripts, in document order.
+    ///
+    /// An external `<script src>` is a reference to the code, not the code: the
+    /// old collector read only `textContent`, so every script a page kept in a
+    /// file — which is where real pages keep their behaviour — was never
+    /// fetched and never ran, leaving whatever it was responsible for dead.
     private void collectScripts()
     {
         _pendingScripts = [];
         if (_root is null) return;
         void walk(Element e)
         {
-            if (e.tag == "script")
+            if (e.tag == "script" && runsAsScript(e))
             {
-                auto code = e.textContent();
-                if (code.strip().length)
-                    _pendingScripts ~= code;
+                if (auto src = "src" in e.attrs)
+                {
+                    // An empty `src` is a placeholder a template left behind,
+                    // not a fetch: there is no source to load.
+                    auto rawSrc = (*src).strip();
+                    if (rawSrc.length)
+                    {
+                        PendingScript pending;
+                        pending.src = normalizeUrlPath(resolveUrl(_currentUrl, rawSrc));
+                        if (pending.src.length) _pendingScripts ~= pending;
+                    }
+                }
+                else
+                {
+                    auto code = e.textContent();
+                    if (code.strip().length)
+                    {
+                        PendingScript pending;
+                        pending.code = code;
+                        _pendingScripts ~= pending;
+                    }
+                }
             }
             foreach (child; e.elements) walk(child);
         }
         walk(_root);
     }
 
-    /// Parse and execute all collected inline scripts in the page runtime.
+    /// `true` when a `<script>` element's type makes it JavaScript.
+    ///
+    /// A `type` of "" or `text/javascript` runs. A data block (`application/json`,
+    /// `text/template`, ...) does not, and running one would be a script error on
+    /// a page that is otherwise fine. A module is skipped: its scope and timing
+    /// are deferred by rules the engine does not implement, so evaluating it as a
+    /// classic script would run its code at the wrong time with the wrong
+    /// bindings — worse than leaving it alone.
+    private static bool runsAsScript(Element e)
+    {
+        auto type = "type" in e.attrs;
+        if (type is null) return true;
+        auto value = (*type).strip();
+        auto semi = indexOf(value, ";");
+        if (semi >= 0) value = value[0 .. semi].strip();
+        const lower = value.toLower();
+        if (lower.length == 0) return true;
+        if (lower == "module") return false;
+        return lower == "text/javascript" || lower == "application/javascript" ||
+            lower == "text/ecmascript" || lower == "application/ecmascript" ||
+            lower == "text/jscript" || lower == "text/livescript";
+    }
+
+    /// Parse and execute the page's scripts in its runtime, in document order,
+    /// then report `DOMContentLoaded`.
+    ///
+    /// A classic external script blocks the ones after it, so its URL is fetched
+    /// here, when the document's address is known and the page's loading state is
+    /// settled. A script that cannot be fetched or run is skipped: no page script
+    /// may abort a navigation.
     void executeScripts()
     {
         if (!_documentBound)
         {
-            bindDocument(_root, _js, _js.globalScope, _resourceLoader);
+            bindDocument(_root, _js, _js.globalScope, _resourceLoader, _currentUrl,
+                _width, _height);
             _documentBound = true;
         }
-        foreach (code; _pendingScripts)
+        foreach (pending; _pendingScripts)
         {
+            auto code = pending.code;
+            if (pending.src.length)
+            {
+                try code = toUTF8Decode(fetchBytes(pending.src));
+                catch (Exception exc) continue;
+            }
+            if (!code.strip().length) continue;
             try
             {
                 auto program = _js.parseInto(code);
@@ -1080,6 +1155,11 @@ final class WebPage
         _pendingScripts = [];
         // Run queued microtasks (Promise/async continuations).
         try _js.pumpMicrotasks();
+        catch (Exception exc) {}
+        // The document is parsed and its classic scripts have run, so the
+        // document's `DOMContentLoaded` listeners fire now: a script that waits
+        // for the event before touching the DOM must not be left hanging.
+        try dispatchDocumentEvent(_js, "DOMContentLoaded");
         catch (Exception exc) {}
         _layoutDirty = true; // scripts may have mutated the DOM
     }
@@ -1103,6 +1183,25 @@ final class WebPage
         const path = buildPath(dir, (++_webFontFileSeq).to!string ~ ".ttf");
         write(path, bytes);
         return path;
+    }
+
+    /// The bytes a font face is loaded from: a WOFF container is unpacked to the
+    /// sfnt inside it first.
+    ///
+    /// The shaper reads sfnt (ttf/otf) faces only, so a page whose face is
+    /// served as WOFF — FontAwesome, in the Django site's header — would
+    /// otherwise register no glyphs at all and fall back to a font that has no
+    /// icons. Bytes that are not WOFF, or that fail to unpack, are returned
+    /// unchanged: the following load then fails exactly as it did before.
+    private static ubyte[] fontBytesFor(ubyte[] bytes)
+    {
+        if (!isWoff(bytes)) return bytes;
+        try
+        {
+            auto sfnt = woffToSfnt(bytes);
+            return sfnt.length ? sfnt : bytes;
+        }
+        catch (Exception exc) return bytes;
     }
 
     /**
@@ -1136,7 +1235,8 @@ final class WebPage
             try
             {
                 auto bytes = isData ? decodeDataUrl(url) : fetchBytes(url);
-                if (bytes.length) loaded = FontFace.tryLoad(stageFontFile(bytes), 0);
+                if (bytes.length)
+                    loaded = FontFace.tryLoad(stageFontFile(fontBytesFor(bytes)), 0);
             }
             catch (Exception) loaded = null;
             // A face that fails must not be re-fetched by every sheet naming it.
@@ -1162,9 +1262,18 @@ final class WebPage
     }
 
     /// Parse and execute a script string in the page's runtime.
+    ///
+    /// The document is bound once per page load. Re-binding for every script
+    /// would hand each one a fresh `document`, cookie jar and storage area, so a
+    /// page's own state would vanish between its scripts.
     void runScript(string source)
     {
-        bindDocument(_root, _js, _js.globalScope, _resourceLoader);
+        if (!_documentBound)
+        {
+            bindDocument(_root, _js, _js.globalScope, _resourceLoader, _currentUrl,
+                _width, _height);
+            _documentBound = true;
+        }
         auto program = _js.parseInto(source);
         _js.runProgram(program, _js.makeObject());
         _js.pumpMicrotasks();
@@ -2278,9 +2387,10 @@ unittest
 
     // Unitless zero lengths: `margin: 0` must be 0, never stored as a real -1px
     // margin (a -1 dragged every such element one pixel up and left, and the
-    // error accumulated through nested blocks).
+    // error accumulated through nested blocks). The fixture body pins its own
+    // margin so the origin under test is the div's, not the UA body margin.
     auto z0p = new WebPage(300, 200);
-    z0p.setHtml(`<html><body>` ~
+    z0p.setHtml(`<html><body style="margin: 0">` ~
         `<div id="z0b" style="margin: 0; padding: 0; width: 40px; height: 10px"></div>` ~
         `<div id="z0a" style="position:absolute; top: 0; left: 0; width: 5px; height: 5px"></div>` ~
         `</body></html>`);
@@ -2670,4 +2780,85 @@ unittest
     wrapped.click(inner.box.x + 1, inner.box.y + 1);
     assert(("hit" in inner.attrs) !is null,
         "clicking through a wrapper must run the child's handler");
+}
+
+unittest
+{
+    import std.conv : to;
+
+    // Which `<script>` elements are collected for execution, and what an
+    // external one is recorded as. A data block (`application/json` /
+    // `application/ld+json`) and a module must not be evaluated as a classic
+    // script: running one is a script error on a page that is otherwise fine,
+    // and a module's deferred scope is not the classic script's.
+    auto page = new WebPage(800, 600);
+    // A document has an address: an external script's relative URL resolves
+    // against it (a page loaded without one has no script to fetch).
+    page._currentUrl = "https://example.com/index.html";
+    page.setHtml(
+        `<html><head>` ~
+        `<script type="application/json">{"a":1}</script>` ~
+        `<script type="module">import x from "./y.js";</script>` ~
+        `<script type="text/javascript">window.typed = 1;</script>` ~
+        `<script type="text/JavaScript; charset=utf-8">window.typed2 = 2;</script>` ~
+        `<script>window.plain = 3;</script>` ~
+        `<script src="/assets/app.js"></script>` ~
+        `<script src="app.js"></script>` ~
+        `<script src="https://cdn.example.com/x.js"></script>` ~
+        `<script src=""></script>` ~
+        `<script type="application/ld+json">{}</script>` ~
+        `</head><body></body></html>`);
+    string collected;
+    foreach (pending; page._pendingScripts)
+        collected ~= "[" ~ pending.src ~ "|" ~ pending.code ~ "]";
+    assert(page._pendingScripts.length == 6,
+        "expected six runnable scripts, got " ~ to!string(page._pendingScripts.length)
+        ~ ": " ~ collected);
+    assert(page._pendingScripts[0].code == "window.typed = 1;" &&
+        page._pendingScripts[1].code == "window.typed2 = 2;" &&
+        page._pendingScripts[2].code == "window.plain = 3;",
+        "inline scripts must be kept in document order");
+    assert(page._pendingScripts[3].src == "https://example.com/assets/app.js" &&
+        page._pendingScripts[4].src == "https://example.com/app.js" &&
+        page._pendingScripts[5].src == "https://cdn.example.com/x.js",
+        "an external script must be collected as its resolved URL: " ~ collected);
+
+    // The document's scripts run, and `DOMContentLoaded` is reported once they
+    // have: a script that waits for the event before touching the DOM (the
+    // Django header's switcher does) must not be left hanging.
+    auto loaded = new WebPage(400, 300);
+    loaded.setHtml(`<html><body><p id="p">before</p><script>` ~
+        `document.addEventListener("DOMContentLoaded", function () {` ~
+        `  document.getElementById("p").textContent = "after";` ~
+        `});</script></body></html>`);
+    loaded.executeScripts();
+    loaded.layout();
+    Element findParagraph(Element e)
+    {
+        if (e is null) return null;
+        if (e.tag == "p") return e;
+        foreach (child; e.elements)
+        {
+            auto found = findParagraph(child);
+            if (found !is null) return found;
+        }
+        return null;
+    }
+    auto p = findParagraph(loaded.root());
+    assert(p !is null, "the paragraph must exist");
+    assert(p.textContent() == "after",
+        "DOMContentLoaded must fire after the document's scripts, got '"
+        ~ p.textContent() ~ "'");
+
+    // A script that sets the html element's data attribute — how a page's own
+    // theme switcher records the chosen theme — reaches the DOM node.
+    auto themed = new WebPage(400, 300);
+    themed.setHtml(`<html><body><script>` ~
+        `document.documentElement.dataset.theme = "dark";` ~
+        `</script></body></html>`);
+    themed.executeScripts();
+    themed.layout();
+    auto themeAttr = "data-theme" in themed.root().attrs;
+    assert(themeAttr !is null && *themeAttr == "dark",
+        "the script's data-theme must reach the html element");
 }

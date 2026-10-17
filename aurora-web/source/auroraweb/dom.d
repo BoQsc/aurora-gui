@@ -203,7 +203,10 @@ struct ComputedStyle
     string fontSize = "16px";
     string fontWeight = "400";
     string fontStyle = "normal";
-    string fontFamily = "system-ui";
+    /// The initial CSS value is an empty family list: a page that names no
+    /// family is set in the browser's standard font, not in its UI font, and
+    /// `system-ui` is the name a page uses when it does want the interface font.
+    string fontFamily = "";
     string textAlign = "left";
     /// `text-transform` (CSS Text 3): none / uppercase / lowercase / capitalize.
     /// Applied where text is collapsed, before shaping, so measured widths match

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>nav list padding / line-box fixture</title>
+<style>
+/* CSS variables the copied django rules reference. */
+:root{
+  --menu:#ffffff;
+  --white-color:#ffffff;
+  --primary:#0C4B33;
+  --secondary-accent:#a0d3bd;
+  --body-fg:#0C3C26;
+  --sidebar-bg:#0C4B33;
+}
+body{margin:0;background:#ffffff;color:#0C3C26;
+  font-family:"Roboto",Corbel,Avenir,"Lucida Grande","Lucida Sans",sans-serif}
+
+/* ------------------------------------------------------------------ *
+ * Diagnostic cases. Each ul carries class="probe" so the engine probe
+ * (pageshot-probe) and the script below report the same boxes.
+ * ------------------------------------------------------------------ */
+
+/* A: a bare list. UA stylesheet only, so the left padding is the UA's. */
+#a{background:#eee;padding:4px}
+#a .probe{margin:0}
+
+/* B: an author rule clears the list padding, pretty printed. */
+#b{background:#eee;padding:4px}
+#b .probe{margin:10px 0 0;padding:0}
+#b li{display:block;font-size:13px;line-height:16px;font-weight:700;
+  text-transform:uppercase;margin:0;border:0;float:left}
+#b li>:not(.search){padding:10px}
+#b a{display:block;text-decoration:none;color:#0C3C26}
+@media screen and (min-width: 1280px){
+  #b .probe{display:flex;align-items:center;margin:2px 0}
+}
+
+/* C: django's own header rules for the nav, copied verbatim from the served
+ * stylesheet and kept minified exactly as served (one rule per the page's
+ * own single-line formatting). This is the shape that has to work. */
+#c header{background:#0C4B33;overflow:hidden;margin:0;padding:10px 0 6px;position:relative;z-index:0}
+#c header .container{display:flex;align-items:center}
+#c header nav{order:4;width:100%;background:#0C4B33;max-height:0;display:none;overflow:hidden;padding:0 2px;flex-basis:100%}
+#c header nav ul{margin:10px 0 0;padding:0}
+#c header nav li{font-size:13px;font-size:1.3rem;display:block;font-weight:700;line-height:16px;text-align:left;text-transform:uppercase;margin:0 10px;border-top:1px solid #106142}
+#c header nav li>:not(.search){padding:20px 0px}
+#c header nav a{color:var(--menu);display:block;text-decoration:none}
+@media screen and (min-width: 1280px){
+  #c header nav{width:auto;order:2;margin-left:auto;flex-basis:auto;display:block;max-height:none}
+  #c header nav ul{display:flex;align-items:center;margin:2px 0}
+  #c header nav li{margin:0;border:0;float:left;text-align:left}
+  #c header nav li>:not(.search){padding:10px}
+}
+
+/* D: the same rules, but with a *neighbouring* rule on the same physical line,
+ * the way the served sheet is minified (a parser that swallows the rule after
+ * one it mis-terminates will show up here and not in C). */
+#d header{background:#0C4B33;overflow:hidden;margin:0;padding:10px 0 6px;position:relative;z-index:0}
+#d header .container{display:flex;align-items:center}
+#d header nav{order:4;width:100%;background:#0C4B33;max-height:0;display:none;overflow:hidden;padding:0 2px;flex-basis:100%}
+#d header nav ul{margin:10px 0 0;padding:0} #d header nav li{font-size:13px;font-size:1.3rem;display:block;font-weight:700;line-height:16px;text-align:left;text-transform:uppercase;margin:0 10px;border-top:1px solid #106142} #d header nav li>:not(.search){padding:20px 0px} #d header nav a{color:var(--menu);display:block;text-decoration:none}
+@media screen and (min-width: 1280px){
+  #d header nav{width:auto;order:2;margin-left:auto;flex-basis:auto;display:block;max-height:none} #d header nav ul{display:flex;align-items:center;margin:2px 0} #d header nav li{margin:0;border:0;float:left;text-align:left} #d header nav li>:not(.search){padding:10px}
+}
+
+/* ------------------------------------------------------------------ *
+ * Pixel case: the same header geometry with no text, no fonts and no
+ * images, so every box edge is deterministic and an independent browser
+ * screenshot can be compared with this engine pixel for pixel.
+ * ------------------------------------------------------------------ */
+#px{padding:20px;background:#ffffff}
+#px header{background:#0C4B33;overflow:hidden;margin:0;padding:10px 0 6px;position:relative;z-index:0}
+#px header .container{display:flex;align-items:center;padding:0 4.16667%}
+#px header .logo{display:block;background:#ffffff;margin:10px 4px;overflow:hidden;text-indent:100%;width:104px;height:36px}
+#px header nav{order:2;margin-left:auto;padding:0 2px;flex-basis:auto;display:block}
+#px header nav ul{margin:2px 0;padding:0;display:flex;align-items:center}
+#px header nav li{display:block;font-size:13px;line-height:16px;font-weight:700;margin:0;border:0;float:left}
+#px header nav li>:not(.search){padding:10px}
+#px header nav a{display:block;text-decoration:none;color:var(--menu)}
+#px header .header-tools{display:flex;align-items:center;order:3;margin-left:0}
+#px header .ink{display:block;width:63px;height:16px;background:#ffffff}
+#px header .ink.sm{width:40px}
+</style>
+</head>
+<body>
+
+<section id="a">
+  <h1 style="font:400 14px sans-serif">A: bare list (UA list padding)</h1>
+  <ul class="probe"><li><a href="#">a</a></li><li><a href="#">b</a></li></ul>
+</section>
+
+<section id="b">
+  <h1 style="font:400 14px sans-serif">B: author padding:0, pretty printed</h1>
+  <ul class="probe"><li><a href="#">a</a></li><li><a href="#">b</a></li></ul>
+</section>
+
+<section id="c">
+  <h1 style="font:400 14px sans-serif">C: django nav rules, minified exactly as served</h1>
+  <header><div class="container"><nav><ul class="probe">
+    <li><a href="#">news</a></li><li><a href="#">download</a></li>
+  </ul></nav></div></header>
+</section>
+
+<section id="d">
+  <h1 style="font:400 14px sans-serif">D: same, neighbours on one physical line</h1>
+  <header><div class="container"><nav><ul class="probe">
+    <li><a href="#">news</a></li><li><a href="#">download</a></li>
+  </ul></nav></div></header>
+</section>
+
+<section id="px">
+  <h1 style="font:400 14px sans-serif">Pixel case: same geometry, no text</h1>
+  <header><div class="container">
+    <a class="logo" href="#"></a>
+    <nav><ul>
+      <li><a href="#"><span class="ink"></span></a></li>
+      <li><a href="#"><span class="ink sm"></span></a></li>
+      <li><a href="#"><span class="ink"></span></a></li>
+    </ul></nav>
+    <div class="header-tools"><div class="search"><span class="ink sm"></span></div></div>
+  </div></header>
+</section>
+
+<pre id="out">pending</pre>
+<script>
+// Report the same geometry the engine probe prints (box + resolved padding +
+// line box), so the two can be compared line for line.
+function r(el){
+  if(!el) return "null";
+  var b = el.getBoundingClientRect();
+  var s = getComputedStyle(el);
+  return b.x.toFixed(1)+","+b.y.toFixed(1)+" "+b.width.toFixed(1)+"x"+b.height.toFixed(1)+
+    " pad="+s.paddingTop+" "+s.paddingRight+" "+s.paddingBottom+" "+s.paddingLeft+
+    " mar="+s.marginTop+" "+s.marginLeft+
+    " display="+s.display+" lh="+s.lineHeight+" fs="+s.fontSize;
+}
+var lines = [];
+lines.push("viewport="+window.innerWidth+"x"+window.innerHeight);
+document.querySelectorAll("ul.probe").forEach(function(ul){
+  var id = ul.closest("section").id;
+  lines.push("["+id+"] ul "+r(ul));
+  ul.querySelectorAll("li").forEach(function(li, i){
+    lines.push("["+id+"]   li"+i+" "+r(li));
+    lines.push("["+id+"]     a "+r(li.querySelector("a")));
+  });
+});
+var px = document.querySelector("#px header");
+lines.push("[px] header "+r(px));
+lines.push("[px] container "+r(px.querySelector(".container")));
+var pxul = px.querySelector("nav ul");
+lines.push("[px] nav "+r(px.querySelector("nav")));
+lines.push("[px] ul "+r(pxul));
+pxul.querySelectorAll("li").forEach(function(li, i){
+  lines.push("[px]   li"+i+" "+r(li));
+  lines.push("[px]     a "+r(li.querySelector("a")));
+  lines.push("[px]       ink "+r(li.querySelector(".ink")));
+});
+lines.push("[px] header-tools "+r(px.querySelector(".header-tools")));
+lines.push("[px] search "+r(px.querySelector(".search")));
+lines.push("[px] ink-last "+r(px.querySelectorAll(".ink")[2]));
+document.getElementById("out").textContent = lines.join("\n");
+</script>
+</body>
+</html>

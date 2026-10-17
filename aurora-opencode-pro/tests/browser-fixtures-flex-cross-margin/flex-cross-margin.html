@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html,body{margin:0;background:#ffffff}
+/* The djangoproject.com header shape: a flex ROW whose items carry vertical
+   margins (`header .logo{margin:10px 4px}`). The line's cross size must be the
+   item's OUTER cross size (CSS Flexbox 9.4) and alignment must place the item's
+   MARGIN box (9.6), so the padded row is 10 + 56 + 6 = 72 tall and the logo's
+   border box starts 20px down (10 container padding + 10 item margin). */
+.row{display:flex;align-items:center;padding:10px 0 6px;background:#0c4b33}
+.logo{width:104px;height:36px;margin:10px 4px;background:#ffffff}
+.mark{width:40px;height:10px;margin-left:6px;background:#e5a03c}
+/* The other two cross-axis placements of the same margin box. */
+.start{display:flex;align-items:flex-start;background:#123c2a}
+.end{display:flex;align-items:flex-end;background:#1d5a3f}
+.box{width:60px;height:20px;margin:8px 0 12px;background:#ffffff}
+</style>
+<div class="row"><div class="logo"></div><div class="mark"></div></div>
+<div class="start"><div class="box"></div></div>
+<div class="end"><div class="box"></div></div>

@@ -128,6 +128,29 @@ const(FontFace) cssFace(string fontFamily, string fontWeight = "400",
     return resolved;
 }
 
+/**
+ * `cssFace`, with the browser's *standard* font as the fallback.
+ *
+ * A style that names no family — or names none that is installed — does not get
+ * the UI font. In Chromium a page with no CSS font is set in the standard font,
+ * which on Windows is Times New Roman, so a bare `<p>` is serif in every
+ * Windows browser. That face matters twice over: the standard font's ascent and
+ * descent are also what `line-height: normal` is measured from, so shaping a
+ * bare page in the UI font made every line of it taller than the reference as
+ * well as the wrong typeface.
+ *
+ * `system-ui` still resolves to the UI font, because that is the family name a
+ * page uses when it does want the interface font.
+ */
+const(FontFace) cssFaceOrStandard(string fontFamily, string fontWeight = "400",
+    string fontStyle = "normal")
+{
+    if (auto face = cssFace(fontFamily, fontWeight, fontStyle))
+        return face;
+    const italic = fontStyle == "italic" || fontStyle == "oblique";
+    return SystemFontInventory.loadBest("Times New Roman", weightClass(fontWeight), italic);
+}
+
 private TextLayout[string] _cache;
 private size_t _evictions;
 private size_t _shapings;   // real (non-memoized) text-engine invocations

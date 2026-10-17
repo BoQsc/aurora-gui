@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+html,body{margin:0;background:#ffffff}
+/* A box's own padding and border belong to its BORDER box, so the next in-flow
+   sibling starts at its border-box bottom, not at its content bottom. `.p` has a
+   definite height, `.q` an auto one, so both height paths are covered. */
+.p{width:100px;height:50px;padding:10px;border:5px solid #000000;background:#eeeeee}
+.q{width:100px;padding:10px;border:5px solid #000000;background:#dddddd}
+.q>.c{height:50px;background:#8888cc}
+.n{width:100px;height:20px;background:#cc2222}
+.m{width:100px;height:20px;background:#22cc22}
+</style>
+<div class="p"></div>
+<div class="n"></div>
+<div class="q"><div class="c"></div></div>
+<div class="m"></div>

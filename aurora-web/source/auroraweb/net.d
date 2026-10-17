@@ -50,6 +50,7 @@ struct Url
     auto schemeIdx = indexOf(s, "://");
     if (schemeIdx <= 0) return u;
     u.scheme = toLower(s[0 .. schemeIdx]);
+    if (u.scheme == "file") return parseFileUrl(s[schemeIdx + 3 .. $], u);
     if (u.scheme != "http" && u.scheme != "https") return u;
     s = s[schemeIdx + 3 .. $];
 
@@ -100,6 +101,225 @@ struct Url
     u.ok = true;
     return u;
     }
+}
+
+/// Parse the part of a `file://` URL after the scheme. Browsers treat the local
+/// filesystem as an ordinary origin; this loader served only `http`/`https`, so
+/// an engine-level `navigate()` of a local page left its "Navigation failed"
+/// document in place, and a local page's own stylesheets, scripts and images
+/// could not load at all.
+///
+/// `file:///C:/dir/page.html`, `file://localhost/C:/dir/page.html`,
+/// `file://server/share/page.html` (a UNC path) and the POSIX `file:///srv/x`
+/// form are accepted. A URL that names no path is rejected exactly as an
+/// invalid `http` URL is.
+private Url parseFileUrl(string rest, Url u)
+{
+    string s = rest;
+
+    // `#frag` and `?query` are not part of the path, but a local page's own
+    // links still carry them.
+    auto fragIdx = indexOf(s, "#");
+    if (fragIdx >= 0)
+    {
+        u.fragment = s[fragIdx + 1 .. $];
+        s = s[0 .. fragIdx];
+    }
+    auto queryIdx = indexOf(s, "?");
+    if (queryIdx >= 0)
+    {
+        u.query = s[queryIdx + 1 .. $];
+        s = s[0 .. queryIdx];
+    }
+
+    // Authority: everything before the first `/` - empty or `localhost` for a
+    // local path, a host name for a UNC share.
+    size_t slash = 0;
+    while (slash < s.length && s[slash] != '/') slash++;
+    auto authority = toLower(s[0 .. slash]);
+    auto path = slash < s.length ? s[slash .. $] : "";
+    if (path.length == 0) return u;              // `u.ok` stays false
+    if (authority.length && authority != "localhost")
+    {
+        // A file URL carries no port and no loopback address as a host.
+        if (authority == "127.0.0.1" || indexOf(authority, ":") >= 0) return u;
+        u.host = authority;
+    }
+    u.path = path;
+    u.ok = true;
+    return u;
+}
+
+/// The filesystem path a parsed `file://` URL names ("" when it names none).
+private string fileSystemPath(Url u)
+{
+    auto path = decodeFilePath(u.path);
+    if (path.length == 0) return "";
+    // A UNC share keeps its host: `file://server/share/page.html`.
+    if (u.host.length) return "//" ~ u.host ~ path;
+    // `file:///C:/dir/page.html` names the drive path `C:/dir/page.html`; on a
+    // POSIX host the leading slash is part of the path and stays.
+    if (path.length >= 3 && path[0] == '/' && path[2] == ':' &&
+        isAsciiAlpha(path[1]))
+        return path[1 .. $];
+    return path;
+}
+
+private bool isAsciiAlpha(char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+/// Decode `%20`-style escapes in a `file://` path: a local file name holding a
+/// space or a non-ASCII character is only representable in a URL that way.
+private string decodeFilePath(string s)
+{
+    if (indexOf(s, "%") < 0) return s;
+    char[] outBuf;
+    outBuf.reserve(s.length);
+    for (size_t i = 0; i < s.length; i++)
+    {
+        if (s[i] == '%' && i + 2 < s.length)
+        {
+            const hi = fileHexValue(s[i + 1]);
+            const lo = fileHexValue(s[i + 2]);
+            if (hi >= 0 && lo >= 0)
+            {
+                outBuf ~= cast(char) (hi * 16 + lo);
+                i += 2;
+                continue;
+            }
+        }
+        outBuf ~= s[i];
+    }
+    return cast(string) outBuf;
+}
+
+private int fileHexValue(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/// The `Content-Type` a local file's extension implies. Both `navigate` and the
+/// subresource paths branch on it, so a local page has to identify itself the
+/// same way a served one does.
+private string contentTypeForPath(string p)
+{
+    auto dot = lastIndexOf(p, ".");
+    auto slash = lastIndexOf(p, "/");
+    auto backslash = lastIndexOf(p, "\\");
+    auto lastSep = slash > backslash ? slash : backslash;
+    if (dot < 0 || dot < lastSep) return "application/octet-stream";
+    switch (toLower(p[dot .. $]))
+    {
+        case ".html", ".htm", ".xhtml": return "text/html";
+        case ".css": return "text/css";
+        case ".js", ".mjs": return "text/javascript";
+        case ".json": return "application/json";
+        case ".txt", ".md": return "text/plain";
+        case ".svg": return "image/svg+xml";
+        case ".png": return "image/png";
+        case ".jpg", ".jpeg": return "image/jpeg";
+        case ".gif": return "image/gif";
+        case ".webp": return "image/webp";
+        case ".ico": return "image/x-icon";
+        case ".woff": return "font/woff";
+        case ".woff2": return "font/woff2";
+        case ".ttf": return "font/ttf";
+        case ".otf": return "font/otf";
+        default: return "application/octet-stream";
+    }
+}
+
+/// Read a `file://` URL from disk and describe it like a response, so a local
+/// page and its subresources travel the same path as a fetched one: charset
+/// sniffing, `Content-Type` handling and the resource cache are all shared.
+private HttpResponse fileFetch(Url u, string url)
+{
+    HttpResponse res;
+    res.finalUrl = url;
+    auto fsPath = fileSystemPath(u);
+    if (fsPath.length == 0)
+    {
+        res.error = "no file path in URL: " ~ url;
+        return res;
+    }
+    try
+    {
+        import std.file : read;
+        res.body = cast(ubyte[]) read(fsPath);
+    }
+    catch (Exception e)
+    {
+        res.error = "cannot read " ~ fsPath ~ ": " ~ e.msg;
+        return res;
+    }
+    res.status = 200;
+    res.statusText = "OK";
+    res.headers["content-type"] = contentTypeForPath(fsPath);
+    return res;
+}
+
+unittest
+{
+    // A `file://` URL parses, keeps its path, and names a filesystem path.
+    auto local = Url.parse("file:///C:/dir/page%20one.html");
+    assert(local.ok, "a file:// URL must parse");
+    assert(local.scheme == "file");
+    assert(local.path == "/C:/dir/page%20one.html");
+    assert(fileSystemPath(local) == "C:/dir/page one.html");
+
+    auto posix = Url.parse("file:///srv/site/index.html");
+    assert(posix.ok && posix.host.length == 0);
+    assert(fileSystemPath(posix) == "/srv/site/index.html");
+
+    auto unc = Url.parse("file://server/share/page.html");
+    assert(unc.ok && unc.host == "server" && unc.path == "/share/page.html");
+    assert(fileSystemPath(unc) == "//server/share/page.html");
+
+    auto loopback = Url.parse("file://localhost/C:/x.html");
+    assert(loopback.ok && loopback.host.length == 0);
+    assert(fileSystemPath(loopback) == "C:/x.html");
+
+    // A file URL that names no path names nothing at all.
+    assert(!Url.parse("file://").ok);
+    assert(!Url.parse("file://host").ok);
+
+    // The extension decides the Content-Type.
+    assert(contentTypeForPath("C:/x/page.html") == "text/html");
+    assert(contentTypeForPath("C:/x/site.css") == "text/css");
+    assert(contentTypeForPath("/srv/a/logo.svg") == "image/svg+xml");
+    assert(contentTypeForPath("C:/x/no-extension") == "application/octet-stream");
+    assert(contentTypeForPath("C:/dir.with.dots/file") == "application/octet-stream");
+
+    // A real file is fetched through the same entry point as an HTTP URL.
+    import std.file : mkdirRecurse, remove, rmdir, tempDir, write;
+    import std.path : buildPath;
+    import std.string : replace;
+    auto dir = buildPath(tempDir(), "aurora-file-scheme-test");
+    mkdirRecurse(dir);
+    auto pagePath = buildPath(dir, "probe.html");
+    write(pagePath, "<html><body><p>local</p></body></html>");
+    auto res = httpFetch("file:///" ~ pagePath.replace("\\", "/"));
+    assert(res.error.length == 0, res.error);
+    assert(res.ok(), "a readable local file is a 200");
+    assert(res.headers["content-type"] == "text/html");
+    assert(cast(string) res.body == "<html><body><p>local</p></body></html>");
+
+    // A missing file reports an error rather than throwing.
+    auto missing = httpFetch("file:///" ~ dir.replace("\\", "/") ~ "/absent.html");
+    assert(missing.error.length > 0 && !missing.ok());
+
+    // A relative reference resolves against a file base, so a local page's own
+    // stylesheets and images load too.
+    assert(resolveUrl("file:///C:/site/index.html", "site.css") ==
+        "file:///C:/site/site.css");
+
+    try { remove(pagePath); } catch (Exception) {}
+    try { rmdir(dir); } catch (Exception) {}
 }
 
 /// An HTTP response, mirroring the Fetch API shape.
@@ -211,6 +431,8 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
             res.error = "invalid URL: " ~ currentUrl;
             return res;
         }
+
+        if (u.scheme == "file") return fileFetch(u, currentUrl);
 
         ByteTransport conn;
         try
@@ -660,6 +882,15 @@ private string resolveLocation(string baseUrl, string location)
 
 private string rebuildUrl(Url u)
 {
+    if (u.scheme == "file")
+    {
+        string f = "file://";
+        if (u.host.length) f ~= u.host;
+        f ~= u.path;
+        if (u.query.length) f ~= "?" ~ u.query;
+        if (u.fragment.length) f ~= "#" ~ u.fragment;
+        return f;
+    }
     string result = u.scheme ~ "://" ~ u.host;
     auto defaultPort = u.scheme == "https" ? 443 : 80;
     if (u.port != defaultPort) result ~= ":" ~ to!string(u.port);

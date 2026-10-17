@@ -24,7 +24,7 @@ import aurora.image : RgbaImage;
 import aurora.text.layout : TextLayout, TextLayoutOptions;
 import aurora.types : Point, Rect, maxInt, minInt;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
-import auroraweb.shaping : cssFace, shapeTextCached;
+import auroraweb.shaping : cssFaceOrStandard, shapeTextCached;
 
 import std.conv : to;
 import std.string : indexOf, lastIndexOf, split, startsWith, strip, toLower;
@@ -1123,13 +1123,13 @@ private double positionFraction(string value, bool horizontal, double dflt = 0.5
     return dflt;
 }
 
-/// The face this style's `font-family`/`font-weight`/`font-style` select, or null
-/// for the engine default. Layout uses the identical call, so measured and
-/// painted runs always shape with the same face.
+/// The face this style's `font-family`/`font-weight`/`font-style` select, or the
+/// browser's standard font for a style that names none. Layout uses the identical
+/// call, so measured and painted runs always shape with the same face.
 private const(FontFace) faceOf(const ComputedStyle* style)
 {
     return style is null ? null
-        : cssFace(style.fontFamily, style.fontWeight, style.fontStyle);
+        : cssFaceOrStandard(style.fontFamily, style.fontWeight, style.fontStyle);
 }
 
 /// Draw a text run using Aurora's TextLayout, wrapped at the given width.

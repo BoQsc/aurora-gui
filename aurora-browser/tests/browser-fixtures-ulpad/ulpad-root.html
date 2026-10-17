@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>root font-size / rem fixture</title>
+<style>
+/* django's served sheet sets this on the root; with it `1.3rem` is 13px, and
+ * without it `1.3rem` is 20.8px. Same rule set as the ulpad fixture, so the only
+ * variable between the two cases below is the root font-size. */
+html{font-size:62.5%}
+:root{
+  --menu:#ffffff;
+  --white-color:#ffffff;
+  --primary:#0C4B33;
+}
+body{margin:0;background:#ffffff;color:#0C3C26;
+  font-family:"Roboto",Corbel,Avenir,"Lucida Grande","Lucida Sans",sans-serif}
+
+/* E: the django nav rules, minified exactly as served. */
+#e header{background:#0C4B33;overflow:hidden;margin:0;padding:10px 0 6px;position:relative;z-index:0}
+#e header .container{display:flex;align-items:center}
+#e header nav{order:4;width:100%;background:#0C4B33;max-height:0;display:none;overflow:hidden;padding:0 2px;flex-basis:100%}
+#e header nav ul{margin:10px 0 0;padding:0}
+#e header nav li{font-size:13px;font-size:1.3rem;display:block;font-weight:700;line-height:16px;text-align:left;text-transform:uppercase;margin:0 10px;border-top:1px solid #106142}
+#e header nav li>:not(.search){padding:20px 0px}
+#e header nav a{color:var(--menu);display:block;text-decoration:none}
+@media screen and (min-width: 1280px){
+  #e header nav{width:auto;order:2;margin-left:auto;flex-basis:auto;display:block;max-height:none}
+  #e header nav ul{display:flex;align-items:center;margin:2px 0}
+  #e header nav li{margin:0;border:0;float:left;text-align:left}
+  #e header nav li>:not(.search){padding:10px}
+}
+
+/* F: same, but the rem-based font-size removed, so both engines use the px
+ * value and only the box arithmetic differs. */
+#f header{background:#0C4B33;overflow:hidden;margin:0;padding:10px 0 6px;position:relative;z-index:0}
+#f header .container{display:flex;align-items:center}
+#f header nav{order:4;width:100%;background:#0C4B33;max-height:0;display:none;overflow:hidden;padding:0 2px;flex-basis:100%}
+#f header nav ul{margin:10px 0 0;padding:0}
+#f header nav li{font-size:13px;display:block;font-weight:700;line-height:16px;text-align:left;text-transform:uppercase;margin:0 10px;border-top:1px solid #106142}
+#f header nav li>:not(.search){padding:20px 0px}
+#f header nav a{color:var(--menu);display:block;text-decoration:none}
+@media screen and (min-width: 1280px){
+  #f header nav{width:auto;order:2;margin-left:auto;flex-basis:auto;display:block;max-height:none}
+  #f header nav ul{display:flex;align-items:center;margin:2px 0}
+  #f header nav li{margin:0;border:0;float:left;text-align:left}
+  #f header nav li>:not(.search){padding:10px}
+}
+</style>
+</head>
+<body>
+
+<section id="e">
+  <h1 style="font:400 14px sans-serif">E: django nav rules with html{font-size:62.5%}</h1>
+  <header><div class="container"><nav><ul class="probe">
+    <li><a href="#">news</a></li><li><a href="#">download</a></li>
+  </ul></nav></div></header>
+</section>
+
+<section id="f">
+  <h1 style="font:400 14px sans-serif">F: django nav rules, px font-size only</h1>
+  <header><div class="container"><nav><ul class="probe">
+    <li><a href="#">news</a></li><li><a href="#">download</a></li>
+  </ul></nav></div></header>
+</section>
+
+<pre id="out">pending</pre>
+<script>
+function r(el){
+  if(!el) return "null";
+  var b = el.getBoundingClientRect();
+  var s = getComputedStyle(el);
+  return b.x.toFixed(1)+","+b.y.toFixed(1)+" "+b.width.toFixed(1)+"x"+b.height.toFixed(1)+
+    " pad="+s.paddingTop+" "+s.paddingRight+" "+s.paddingBottom+" "+s.paddingLeft+
+    " mar="+s.marginTop+" "+s.marginLeft+
+    " display="+s.display+" lh="+s.lineHeight+" fs="+s.fontSize+
+    " padBox="+s.boxSizing;
+}
+var lines = [];
+lines.push("viewport="+window.innerWidth+"x"+window.innerHeight);
+lines.push("html fs="+getComputedStyle(document.documentElement).fontSize+
+           " body fs="+getComputedStyle(document.body).fontSize);
+document.querySelectorAll("ul.probe").forEach(function(ul){
+  var id = ul.closest("section").id;
+  lines.push("["+id+"] ul "+r(ul));
+  ul.querySelectorAll("li").forEach(function(li, i){
+    lines.push("["+id+"]   li"+i+" "+r(li));
+    lines.push("["+id+"]     a "+r(li.querySelector("a")));
+  });
+});
+document.getElementById("out").textContent = lines.join("\n");
+</script>
+</body>
+</html>

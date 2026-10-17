@@ -725,7 +725,19 @@ final class JsRuntime
                 JsValue[] a;
                 return callFunction(getter, obj, a);
             }
-            return obj.obj.get(k);
+            auto own = obj.obj.get(k);
+            if (own.kind != JsKind.undefined) return own;
+            // A generic get hook, for a host object that owns property names it
+            // cannot enumerate (`window` bridging to the globals, a Storage
+            // area's keys). It must return undefined for a name it does not own.
+            auto generic = obj.obj.get("__getHandler");
+            if (generic.kind == JsKind.func)
+            {
+                JsValue[] a;
+                a ~= key;
+                return callFunction(generic, obj, a);
+            }
+            return own;
         }
         // Primitives: box string/number methods minimally.
         if (obj.kind == JsKind.string)

@@ -679,8 +679,8 @@ final class WebPageView : Widget
     /**
      * Load a document into the page. `auroraweb:` URLs use the offline built-in
      * pages; `http://`/`https://` URLs fetch the real document through the
-     * engine's WinINet layer (`WebPage.navigate`). Failed network fetches show
-     * the built-in error page.
+     * engine's own HTTP client, and `file://` URLs read it from disk
+     * (`WebPage.navigate`). Failed fetches show the built-in error page.
      */
     private void loadIntoPage(string url)
     {
@@ -693,7 +693,8 @@ final class WebPageView : Widget
             _page.setHtml(fetchHtml(url));
             _page.executeScripts();
         }
-        else if (lower.startsWith("http://") || lower.startsWith("https://"))
+        else if (lower.startsWith("http://") || lower.startsWith("https://") ||
+            lower.startsWith("file://"))
         {
             _page.navigate(url);
         }

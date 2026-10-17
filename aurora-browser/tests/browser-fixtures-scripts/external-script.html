@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>External script fixture</title>
+</head>
+<body>
+<h1 id="heading">heading untouched</h1>
+<p id="r1">external script did not run</p>
+<p id="r2">matchMedia ?</p>
+<p id="r3">cookie ?</p>
+<p id="r4">storage ?</p>
+<p id="r5">DOMContentLoaded ?</p>
+<script src="mark.js"></script>
+<script>
+  // This inline script runs after the external one and must observe its work:
+  // `data-after` only reads "true" when mark.js ran before this point.
+  document.getElementById('r1').setAttribute('data-after', String(window.markRan));
+  document.addEventListener('DOMContentLoaded', function () {
+    document.getElementById('r5').textContent = 'DOMContentLoaded ran';
+  });
+</script>
+</body>
+</html>

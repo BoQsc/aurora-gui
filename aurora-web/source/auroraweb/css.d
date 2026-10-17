@@ -35,9 +35,17 @@ struct MediaQuery
     bool anyCondition;   /// Bare `@media { ... }` (always matches).
     bool matched;        /// Set by applyMediaRules.
     string mediaType = "all";   /// "all", "screen" or "print".
+    /// `prefers-color-scheme` requirement: 0 = no such condition, 1 = dark
+    /// required, 2 = light required. The condition is recorded, not resolved at
+    /// parse time, and `matches` evaluates it against the live preference, so
+    /// rules stored from an earlier parse are re-filtered correctly if the
+    /// preference changes.
+    int scheme;
 
     bool matches(int vw, int vh) const
     {
+        if (scheme == 1 && !prefersDarkScheme()) return false;
+        if (scheme == 2 && prefersDarkScheme()) return false;
         if (anyCondition) return mediaType == "all" || mediaType == "screen" ||
             (mediaType == "print" && !g_screenMedia);
         if (mediaType == "print") return !g_screenMedia;   // we never print.
@@ -53,6 +61,62 @@ struct MediaQuery
 /// Whether the renderer is a screen (true by default). `@media print` rules
 /// never apply while we render on screen.
 private bool g_screenMedia = true;
+
+/// Whether `prefers-color-scheme` currently reports `dark`.
+bool prefersDarkScheme()
+{
+    return g_prefersDark;
+}
+
+/// Override the reported colour scheme, for a host application that offers its
+/// own light/dark setting instead of following the platform.
+void setPrefersDarkScheme(bool dark)
+{
+    g_prefersDark = dark;
+}
+
+/// The colour scheme reported to `prefers-color-scheme`: the platform's
+/// application preference, which is what a browser answers from. Windows keeps
+/// it in the Personalize key as `AppsUseLightTheme`; elsewhere the engine
+/// reports light. Read through the native registry API - no shell, no network.
+private bool initialPrefersDark()
+{
+    version (Windows)
+    {
+        import core.sys.windows.windef : DWORD, HKEY;
+        import core.sys.windows.winnt : KEY_READ;
+        import core.sys.windows.winreg : HKEY_CURRENT_USER, REG_DWORD,
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW;
+
+        HKEY key;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER,
+            ("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"w).ptr,
+            0, KEY_READ, &key) != 0)
+            return false;                   // no personalization key: stay light
+        scope (exit) RegCloseKey(key);
+        DWORD value;
+        DWORD size = value.sizeof;
+        DWORD kind;
+        if (RegQueryValueExW(key, ("AppsUseLightTheme"w).ptr, null, &kind,
+            &value, &size) != 0)
+            return false;
+        if (kind != REG_DWORD || size != value.sizeof)
+            return false;
+        return value == 0;                  // 0 = dark, 1 = light
+    }
+    else
+        return false;
+}
+
+/// The live preference. Initialized from the platform at startup and overridable
+/// by the host application.
+private bool g_prefersDark;
+
+static this()
+{
+    // Read at run time: the platform query has no compile-time interpretation.
+    g_prefersDark = initialPrefersDark();
+}
 
 /// Parsed `@keyframes` end states: animation name -> the declarations of the
 /// `to`/`100%` keyframe. The engine does not animate over time, but pages
@@ -113,13 +177,17 @@ struct WebFontFace
  * Choose the first source in one `@font-face` `src` descriptor that the engine
  * can decode.
  *
- * The engine shapes with uncompressed sfnt faces. `woff`/`woff2` sources are
- * skipped, exactly as an engine without the decompressor must: a browser that
- * cannot parse a source moves on to the next candidate in the same `src`, and
- * only if none is usable does it fall back to the next `font-family`. Real pages
- * list several formats in one `src` (Google Fonts lists woff2 alone unless the
- * request asks for TrueType), so picking the first *decodable* candidate rather
- * than the first candidate is what makes a webfont stylesheet usable.
+ * The engine shapes with uncompressed sfnt faces and can unwrap a WOFF 1.0
+ * container (auroraweb.woff), so `truetype`, `opentype` and `woff` sources are
+ * usable; `woff2` (brotli), `embedded-opentype` and the legacy `svg` font format
+ * are not. A candidate the engine cannot decode is skipped and the next one in
+ * the same `src` is tried, which is what a browser does, and only if none is
+ * usable does the `font-family` fall back.
+ *
+ * The format must be compared as a whole name, never as a substring: the legacy
+ * `format("embedded-opentype")` candidate that FontAwesome lists *first* used to
+ * match an `opentype` search and win, so the engine downloaded the EOT file,
+ * failed to load it, and rendered every icon-less page with no FontAwesome at all.
  */
 private string pickFontSrc(string value)
 {
@@ -132,15 +200,59 @@ private string pickFontSrc(string value)
         if (close < 0) continue;
         auto url = cand[open + 4 .. close].strip().strip("\"'").strip();
         if (url.length == 0) continue;
-        const lower = cand.toLower();
-        if (indexOf(lower, "woff") >= 0) continue;      // woff/woff2: compressed
-        // A declared format decides; without one, judge the extension.
-        if (indexOf(lower, "format(") >= 0 &&
-            indexOf(lower, "truetype") < 0 && indexOf(lower, "opentype") < 0)
+        // A declared format decides.
+        auto formats = fontSrcFormats(cand);
+        if (formats.length)
+        {
+            bool usable = false;
+            foreach (f; formats)
+                if (f == "truetype" || f == "opentype" || f == "woff") usable = true;
+            if (!usable) continue;
+            return url;
+        }
+        // Without a format hint, only the extensions this engine certainly
+        // cannot read are rejected: a hintless source may be any sfnt file (or
+        // a script that serves one).
+        auto path = url.toLower();
+        foreach (sep; ["?", "#"])
+        {
+            auto cut = indexOf(path, sep);
+            if (cut >= 0) path = path[0 .. cut];
+        }
+        if (endsWith(path, ".woff2") || endsWith(path, ".eot") || endsWith(path, ".svg"))
             continue;
         return url;
     }
     return null;
+}
+
+/// Every format name a `src` candidate declares: `format("woff")` -> ["woff"].
+private string[] fontSrcFormats(const string candidate)
+{
+    string[] names;
+    size_t i = 0;
+    while (true)
+    {
+        auto at = indexOf(candidate, "format(", i);
+        if (at < 0) break;
+        auto open = at + "format(".length - 1;
+        auto close = indexOf(candidate, ")", open);
+        if (close < 0) break;
+        // `format("woff")`, `format(woff)`, `format("woff-variations", "woff")`.
+        foreach (raw; candidate[open + 1 .. close].split(","))
+        {
+            auto name = raw.strip().strip("\"'").strip().toLower();
+            if (name.length) names ~= name;
+        }
+        i = close + 1;
+    }
+    return names;
+}
+
+/// `true` when `value` ends with `suffix` (ASCII, no case folding).
+private bool endsWith(string value, string suffix)
+{
+    return value.length >= suffix.length && value[$ - suffix.length .. $] == suffix;
 }
 
 /**
@@ -200,6 +312,58 @@ WebFontFace[] parseFontFaces(string css)
     return faces;
 }
 
+/// `@font-face` sources are picked by what this engine can decode.
+unittest
+{
+    // FontAwesome's real shape: an EOT candidate first (whose
+    // `format("embedded-opentype")` must not read as "opentype"), then WOFF,
+    // then TrueType, then the legacy SVG font.
+    auto faces = parseFontFaces(
+        "@font-face{font-family:FontAwesome;"
+        ~ "src:url('../fonts/fontawesome-webfont.eot?v=4.2.0');"
+        ~ "src:url('../fonts/fontawesome-webfont.eot?#iefix&v=4.2.0') format('embedded-opentype'),"
+        ~ "url('../fonts/fontawesome-webfont.woff?v=4.2.0') format('woff'),"
+        ~ "url('../fonts/fontawesome-webfont.ttf?v=4.2.0') format('truetype'),"
+        ~ "url('../fonts/fontawesome-webfont.svg?v=4.2.0#fontawesomeregular') format('svg');"
+        ~ "font-weight:normal;font-style:normal}");
+    assert(faces.length == 1, "one @font-face rule");
+    assert(faces[0].family == "FontAwesome", "the family descriptor is unquoted");
+    assert(faces[0].url == "../fonts/fontawesome-webfont.woff?v=4.2.0",
+        "WOFF is decodable, so it wins over the EOT and SVG candidates");
+    assert(faces[0].weight == "normal" && faces[0].style == "normal",
+        "the weight and style descriptors are kept");
+
+    // A woff2-only face cannot be decoded (brotli), so the family has no source:
+    // the caller falls back to the next family rather than failing the sheet.
+    faces = parseFontFaces("@font-face{font-family:Only2;"
+        ~ "src:url(a.woff2) format('woff2')}");
+    assert(faces.length == 0, "a woff2-only face must not resolve");
+
+    // Google Fonts' modern shape: the woff2 candidate is skipped and the woff
+    // one is used, so a webfont request still yields a face.
+    faces = parseFontFaces("@font-face{font-family:'Roboto';"
+        ~ "src:url(https://fonts.gstatic.com/roboto.woff2) format('woff2'),"
+        ~ "url(https://fonts.gstatic.com/roboto.woff) format('woff');"
+        ~ "font-weight:700}");
+    assert(faces.length == 1 && faces[0].url == "https://fonts.gstatic.com/roboto.woff",
+        "the woff candidate of a modern webfont request must be used");
+    assert(faces[0].weight == "700", "the numeric weight is kept");
+
+    // Sources without a format hint are judged by extension only where the
+    // engine certainly cannot read the file.
+    faces = parseFontFaces(
+        "@font-face{font-family:A;src:url(fonts/a.ttf)}"
+        ~ "@font-face{font-family:B;src:url(fonts/b.eot)}"
+        ~ "@font-face{font-family:C;src:url(fonts/c.woff)}"
+        ~ "@font-face{font-family:D;src:url(fonts/d.eot?#iefix)}"
+        ~ "@font-face{font-family:E;src:local('Helvetica'),url(serve.php?id=7)}");
+    assert(faces.length == 3, "three of these five faces have a usable source");
+    assert(faces[0].url == "fonts/a.ttf", "a plain TrueType url is usable");
+    assert(faces[1].url == "fonts/c.woff", "a plain WOFF url is usable");
+    assert(faces[2].family == "E" && faces[2].url == "serve.php?id=7",
+        "a hintless, extensionless source is still tried");
+}
+
 /// One CSS rule.
 struct Rule
 {
@@ -253,6 +417,172 @@ Rule[] parseStylesheet(string css)
     return parseStylesheet(css, 1280, 800);
 }
 
+/**
+ * Parse the prelude of an `@media` rule, or of a `window.matchMedia` query:
+ * "(max-width: 400px) and (min-width: 100px)".
+ *
+ * `viewportWidth`/`viewportHeight` are the size the query is read against. A
+ * comma-separated OR list keeps its first group that matches there, and the
+ * condition of the rest is kept for `applyMediaRules` to re-filter against the
+ * real viewport; a caller that knows only the query passes the viewport it is
+ * asking about.
+ *
+ * Module level because both callers share it: the stylesheet parser stores each
+ * rule's condition for `applyMediaRules` to re-filter, and `mediaQueryMatches`
+ * answers a page's `matchMedia` test — a script's query and the sheet's `@media`
+ * block must never disagree about the same condition.
+ */
+private MediaQuery parseMediaQueryString(string prelude, int viewportWidth,
+    int viewportHeight)
+{
+    MediaQuery mq;
+    const p = prelude.strip();
+    if (p.length == 0) { mq.anyCondition = true; return mq; }
+    // Split on ',' (OR groups) — we take the first group that could match.
+    auto groups = p.split(',');
+    // A leading media type keyword (`screen`, `print`, `all`) applies to
+    // every OR-group in the prelude. `not screen` / `not print` are also
+    // honored (e.g. `@media not print { ... }`).
+    string typeKeyword = "all";
+    bool typeNegated = false;
+    foreach (partRaw; groups)
+    {
+        auto part = partRaw.strip().toLower();
+        if (part.length == 0 || part[0] == '(') break;
+        auto firstWord = part;
+        auto sp = indexOf(part, " ");
+        if (sp >= 0) firstWord = part[0 .. sp];
+        if (firstWord == "not")
+        {
+            typeNegated = true;
+            auto rest = part[sp + 1 .. $].strip();
+            if (rest.length) firstWord = rest; else break;
+        }
+        if (firstWord == "screen" || firstWord == "print" || firstWord == "all")
+        {
+            typeKeyword = firstWord;
+            break;
+        }
+        break;
+    }
+    if (typeNegated)
+        typeKeyword = (typeKeyword == "screen") ? "print" : (typeKeyword == "print") ? "screen" : "all";
+    // Evaluate each group; keep the first that matches (OR semantics).
+    // When conditions are present but none match, return a query carrying
+    // those conditions (anyCondition == false) so the rule is stored and
+    // re-evaluated against the real viewport by `applyMediaRules` -- rather
+    // than being treated as condition-free (which made e.g. a
+    // `max-width: 1180px` block apply at 1350px).
+    MediaQuery firstCondQuery;
+    bool haveFirstCond = false;
+    foreach (group; groups)
+    {
+        MediaQuery g;
+        g.mediaType = typeKeyword;
+        bool hasCond = false;
+        auto parts = group.split("and");
+        foreach (partRaw; parts)
+        {
+            auto part = partRaw.strip();
+            if (part.length == 0) continue;
+            auto lower = part.toLower();
+            if (lower == "screen" || lower == "print" || lower == "all" || lower == "only")
+                continue;                    // media type, not a feature condition
+            hasCond = true;
+            auto paren = indexOf(part, "(");
+            auto parenEnd = lastIndexOf(part, ")");
+            if (paren < 0 || parenEnd < 0) continue;
+            auto inner = part[paren + 1 .. parenEnd].strip();
+            auto colon = indexOf(inner, ":");
+            if (colon < 0) continue;
+            auto prop = inner[0 .. colon].strip().toLower();
+            auto val = inner[colon + 1 .. $].strip();
+            auto num = parsePxOrZero(val);
+            if (prop == "max-width") g.maxWidth = num;
+            else if (prop == "min-width") g.minWidth = num;
+            else if (prop == "max-height") g.maxHeight = num;
+            else if (prop == "min-height") g.minHeight = num;
+            else if (prop == "prefers-color-scheme")
+            {
+                // Record the condition and let `matches` resolve it against
+                // the live preference. Answering it as an unknown feature
+                // (or as "dark never matches") left the query's OTHER
+                // conditions, e.g. `min-width: 768px`, to satisfy it, so a
+                // page's entire dark-theme block applied on top of its light
+                // rules and the two themes mixed: a real homepage kept the
+                // light banner background and took the dark theme's mint
+                // text, which is unreadable.
+                auto scheme = val.toLower();
+                if (scheme == "dark") g.scheme = 1;
+                else if (scheme == "light") g.scheme = 2;
+            }
+        }
+        if (hasCond)
+        {
+            if (g.matches(viewportWidth, viewportHeight))
+                return g;                    // this OR-group matches
+            if (!haveFirstCond) { firstCondQuery = g; haveFirstCond = true; }
+        }
+    }
+    if (haveFirstCond)
+        return firstCondQuery;               // stored; filtered per viewport
+    // Bare `@media screen { ... }` / `@media print { ... }` (no condition).
+    if (typeKeyword == "screen" || typeKeyword == "print" || typeKeyword == "all")
+    {
+        MediaQuery typeOnly;
+        typeOnly.mediaType = typeKeyword;
+        typeOnly.anyCondition = true;
+        return typeOnly;
+    }
+    return MediaQuery(-2, -2, -2, -2, false, false, "");
+}
+
+/// Answer a media query string, as `window.matchMedia(query).matches` must.
+bool mediaQueryMatches(string query, int viewportWidth, int viewportHeight)
+{
+    return parseMediaQueryString(query, viewportWidth, viewportHeight)
+        .matches(viewportWidth, viewportHeight);
+}
+
+/// `matchMedia` and the sheet's `@media` rules answer the same condition the
+/// same way, at every viewport width.
+unittest
+{
+    const keep = prefersDarkScheme();
+    scope (exit) setPrefersDarkScheme(keep);
+
+    setPrefersDarkScheme(false);
+    assert(!mediaQueryMatches("(prefers-color-scheme: dark)", 1280, 800),
+        "a light preference must not report dark");
+    assert(mediaQueryMatches("(prefers-color-scheme: light)", 1280, 800),
+        "a light preference reports light");
+    assert(mediaQueryMatches("(min-width: 768px)", 1280, 800), "1280 is at least 768");
+    assert(!mediaQueryMatches("(min-width: 768px)", 600, 800), "600 is below 768");
+    assert(mediaQueryMatches("screen and (max-width: 767px)", 600, 800),
+        "a screen-only query matches a narrow viewport");
+    assert(mediaQueryMatches("(min-width: 768px) and (max-width: 1023px)", 800, 600),
+        "both conditions of a conjunction must hold");
+    assert(!mediaQueryMatches("print", 1280, 800), "a print query is false on screen");
+    setPrefersDarkScheme(true);
+    assert(mediaQueryMatches("(prefers-color-scheme: dark)", 1280, 800),
+        "a dark preference reports dark");
+    assert(!mediaQueryMatches("(prefers-color-scheme: light)", 1280, 800),
+        "a dark preference does not report light");
+
+    // The two paths cannot disagree: a query `matchMedia` reports true is
+    // exactly one whose `@media` block applies at that viewport.
+    foreach (query; ["(min-width: 768px)", "(max-width: 400px)",
+        "(prefers-color-scheme: dark)", "(prefers-color-scheme: light)",
+        "screen and (min-width: 1280px)", "print"])
+        foreach (vw; [320, 400, 401, 768, 1279, 1280])
+        {
+            auto rules = parseStylesheet("@media " ~ query ~ "{.a{color:red}}", vw, 800);
+            const applied = applyMediaRules(rules, vw, 800).length == 1;
+            assert(applied == mediaQueryMatches(query, vw, 800),
+                "matchMedia and @media disagree about `" ~ query ~ "`");
+        }
+}
+
 Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
 {
     Rule[] rules;
@@ -272,110 +602,6 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
             auto end = indexOf(css, "*/", i + 2);
             i = end < 0 ? n : end + 2;
         }
-    }
-
-    // Parse the prelude of an @media rule: "(max-width: 400px) and (min-width: 100px)".
-    MediaQuery parseMediaQuery(string prelude)
-    {
-        MediaQuery mq;
-        const p = prelude.strip();
-        if (p.length == 0) { mq.anyCondition = true; return mq; }
-        // Split on ',' (OR groups) — we take the first group that could match.
-        auto groups = p.split(',');
-        // A leading media type keyword (`screen`, `print`, `all`) applies to
-        // every OR-group in the prelude. `not screen` / `not print` are also
-        // honored (e.g. `@media not print { ... }`).
-        string typeKeyword = "all";
-        bool typeNegated = false;
-        foreach (partRaw; groups)
-        {
-            auto part = partRaw.strip().toLower();
-            if (part.length == 0 || part[0] == '(') break;
-            auto firstWord = part;
-            auto sp = indexOf(part, " ");
-            if (sp >= 0) firstWord = part[0 .. sp];
-            if (firstWord == "not")
-            {
-                typeNegated = true;
-                auto rest = part[sp + 1 .. $].strip();
-                if (rest.length) firstWord = rest; else break;
-            }
-            if (firstWord == "screen" || firstWord == "print" || firstWord == "all")
-            {
-                typeKeyword = firstWord;
-                break;
-            }
-            break;
-        }
-        if (typeNegated)
-            typeKeyword = (typeKeyword == "screen") ? "print" : (typeKeyword == "print") ? "screen" : "all";
-        // Evaluate each group; keep the first that matches (OR semantics).
-        // When conditions are present but none match, return a query carrying
-        // those conditions (anyCondition == false) so the rule is stored and
-        // re-evaluated against the real viewport by `applyMediaRules` -- rather
-        // than being treated as condition-free (which made e.g. a
-        // `max-width: 1180px` block apply at 1350px).
-        MediaQuery firstCondQuery;
-        bool haveFirstCond = false;
-        foreach (group; groups)
-        {
-            MediaQuery g;
-            g.mediaType = typeKeyword;
-            bool hasCond = false;
-            auto parts = group.split("and");
-            foreach (partRaw; parts)
-            {
-                auto part = partRaw.strip();
-                if (part.length == 0) continue;
-                auto lower = part.toLower();
-                if (lower == "screen" || lower == "print" || lower == "all" || lower == "only")
-                    continue;                    // media type, not a feature condition
-                hasCond = true;
-                auto paren = indexOf(part, "(");
-                auto parenEnd = lastIndexOf(part, ")");
-                if (paren < 0 || parenEnd < 0) continue;
-                auto inner = part[paren + 1 .. parenEnd].strip();
-                auto colon = indexOf(inner, ":");
-                if (colon < 0) continue;
-                auto prop = inner[0 .. colon].strip().toLower();
-                auto val = inner[colon + 1 .. $].strip();
-                auto num = parsePxOrZero(val);
-                if (prop == "max-width") g.maxWidth = num;
-                else if (prop == "min-width") g.minWidth = num;
-                else if (prop == "max-height") g.maxHeight = num;
-                else if (prop == "min-height") g.minHeight = num;
-                else if (prop == "prefers-color-scheme")
-                {
-                    // The engine renders the LIGHT palette, so a `dark`
-                    // preference must never match. Ignoring the unknown feature
-                    // left the query's OTHER conditions (e.g. `min-width:768px`)
-                    // to satisfy it, so a page's entire dark-theme block applied
-                    // on top of its light rules and the two themes mixed: a real
-                    // homepage kept the light banner background and took the
-                    // dark theme's mint text, which is unreadable. `light` adds
-                    // no constraint since that is what we already render.
-                    if (val.toLower() == "dark")
-                        return MediaQuery(-2, -2, -2, -2, false, false, "");
-                }
-            }
-            if (hasCond)
-            {
-                if (g.matches(viewportWidth, viewportHeight))
-                    return g;                    // this OR-group matches
-                if (!haveFirstCond) { firstCondQuery = g; haveFirstCond = true; }
-            }
-        }
-        if (haveFirstCond)
-            return firstCondQuery;               // stored; filtered per viewport
-        // Bare `@media screen { ... }` / `@media print { ... }` (no condition).
-        if (typeKeyword == "screen" || typeKeyword == "print" || typeKeyword == "all")
-        {
-            MediaQuery typeOnly;
-            typeOnly.mediaType = typeKeyword;
-            typeOnly.anyCondition = true;
-            return typeOnly;
-        }
-        return MediaQuery(-2, -2, -2, -2, false, false, "");
     }
 
     // Parse the rules inside a block, optionally tagging each with a media query.
@@ -478,7 +704,7 @@ Rule[] parseStylesheet(string css, int viewportWidth, int viewportHeight)
                 auto brace = indexOf(css, "{", i);
                 if (brace < 0) { i = n; continue; }
                 auto prelude = css[i + 6 .. brace];
-                auto mq = parseMediaQuery(prelude);
+                auto mq = parseMediaQueryString(prelude, viewportWidth, viewportHeight);
                 // Find matching close.
                 int depth = 0;
                 auto k = brace;
@@ -942,12 +1168,25 @@ private Declaration[] parseDeclarations(string text){
                 if (!expandFontShorthand(result, rawValue, important))
                     result ~= Declaration(property, rawValue, important);
             }
-            else if (validDeclarationValue(property, rawValue))
-                result ~= Declaration(property, rawValue, important);
-            // else: the value is outside the property's grammar, so the whole
-            // declaration is discarded (CSS 2.1 4.1.8) and cannot override an
-            // earlier valid declaration. The common `flex-wrap: no-wrap` typo
-            // must lose to a base `flex-wrap: wrap` the way a browser does.
+            // `margin`/`padding` are positional shorthands (CSS 2.1 8.1/8.4):
+            // a shorthand sets ALL of its longhands, so it must be expanded
+            // here too. Carrying it as a single property let a longhand from a
+            // lower-priority rule survive and then win in resolveBoxMetrics:
+            // django serves `ul{padding-left:20px}` and
+            // `header nav ul{padding:0}`, so the header nav kept a phantom 20px
+            // left inset (the menu wrapped onto a second line and the header
+            // band sat 10px low), and `ol li,ul li{margin-top:10px}` survived
+            // `header nav li{margin:0}`.
+            else if (!expandBoxShorthand(result, property, rawValue, important))
+            {
+                if (validDeclarationValue(property, rawValue))
+                    result ~= Declaration(property, rawValue, important);
+                // else: the value is outside the property's grammar, so the whole
+                // declaration is discarded (CSS 2.1 4.1.8) and cannot override an
+                // earlier valid declaration.
+            }
+            // The common `flex-wrap: no-wrap` typo must lose to a base
+            // `flex-wrap: wrap` the way a browser does.
         }
         i = semi < 0 ? n : semi + 1;
     }
@@ -1077,6 +1316,66 @@ private bool expandFontShorthand(ref Declaration[] result, string value,
     if (lineHeight.length)
         result ~= Declaration("line-height", lineHeight, important);
     result ~= Declaration("font-family", family, important);
+    return true;
+}
+
+/// One side of a positional `margin`/`padding` shorthand, or "" when the token
+/// is not a length this engine resolves (`auto` is allowed for margins only).
+/// An unrecognised side makes the whole shorthand fall back to the ordinary
+/// property path rather than applying a half-expanded value.
+private string shorthandSideToken(string token, bool allowAuto)
+{
+    const t = token.strip();
+    if (!t.length) return "";
+    if (allowAuto && t.length == 4 && asciiLower(t) == "auto") return "auto";
+    if (t.length >= 5 && asciiLower(t[0 .. 5]) == "calc(") return t;
+    if (t == "0") return t;
+    foreach (unit; ["px", "rem", "em", "%", "vh", "vw", "pt", "pc", "ch", "ex"])
+        if (t.length > unit.length && asciiLower(t[$ - unit.length .. $]) == unit)
+            return t;
+    return "";
+}
+
+/// Expand a 1-4 value `margin`/`padding` shorthand into its longhands, in the
+/// declaration's own position, so the cascade decides exactly as CSS 2.1
+/// 8.1/8.4 requires. A shorthand sets ALL of its longhands, so it must clear a
+/// longhand an earlier lower-priority rule won. Returns false when the value is
+/// not such a shorthand - a CSS-wide keyword or a token that is not a length -
+/// letting the caller keep the original declaration and lose nothing.
+private bool expandBoxShorthand(ref Declaration[] result, string property,
+    string value, bool important)
+{
+    string[4] sides;
+    if (property == "margin")
+        sides = ["margin-top", "margin-right", "margin-bottom", "margin-left"];
+    else if (property == "padding")
+        sides = ["padding-top", "padding-right", "padding-bottom", "padding-left"];
+    else
+        return false;
+
+    switch (asciiLower(value.strip()))
+    {
+        case "inherit", "initial", "unset", "revert", "revert-layer":
+            return false;   // CSS-wide keyword: not a positional list
+        default:
+            break;
+    }
+
+    const tokens = value.split();
+    if (!tokens.length || tokens.length > 4) return false;
+    const allowAuto = property == "margin";   // `auto` is margins only
+    foreach (token; tokens)
+        if (!shorthandSideToken(token, allowAuto).length) return false;
+
+    // 1 value = all sides; 2 = vertical horizontal; 3 = top horizontal bottom;
+    // 4 = top right bottom left.
+    const top = tokens[0];
+    const horizontal = tokens[tokens.length >= 2 ? 1 : 0];
+    const bottom = tokens[tokens.length >= 3 ? 2 : 0];
+    const left = tokens.length >= 4 ? tokens[3] : horizontal;
+    const picked = [top, horizontal, bottom, left];
+    foreach (i, side; sides)
+        result ~= Declaration(side, picked[i], important);
     return true;
 }
 
@@ -1462,6 +1761,73 @@ unittest
 
 unittest
 {
+    // --- `margin`/`padding` are positional shorthands (CSS 2.1 8.1/8.4) ---
+    // A shorthand sets ALL of its longhands, so it must clear a longhand an
+    // earlier lower-priority rule won. django serves `ul{padding-left:20px}`
+    // and `header nav ul{padding:0}`; carrying the shorthand un-expanded left
+    // the header nav ul with a phantom 20px left inset (its menu wrapped onto a
+    // second line and the header band sat 10px below Edge's).
+    auto rules = parseStylesheet(
+        `ul { padding-left: 20px; margin-top: 10px; }
+         header nav ul { padding: 0; margin: 0; }
+         .two { padding: 5px 10px; }
+         .three { margin: 1px 2px 3px; }
+         .auto { margin: 0 auto; }
+         .kw { padding: inherit; }
+         .late { margin: 0; margin-left: 7px; }`);
+    auto header = new Element("header");
+    auto nav = new Element("nav");
+    nav.parent = header;
+    header.children ~= nav;
+    header.elements ~= nav;
+    auto ul = new Element("ul");
+    ul.parent = nav;
+    nav.children ~= ul;
+    nav.elements ~= ul;
+
+    auto c = cascadeFor(ul, rules);
+    assert(c.get("padding-left", "") == "0",
+        "`padding: 0` must reset the padding-left an earlier rule won, got '" ~
+        c.get("padding-left", "") ~ "'");
+    assert(c.get("margin-top", "") == "0",
+        "`margin: 0` must reset the margin-top an earlier rule won, got '" ~
+        c.get("margin-top", "") ~ "'");
+
+    auto two = new Element("div");
+    two.attrs["class"] = "two";
+    auto c2 = cascadeFor(two, rules);
+    assert(c2.get("padding-top", "") == "5px" && c2.get("padding-right", "") == "10px" &&
+        c2.get("padding-bottom", "") == "5px" && c2.get("padding-left", "") == "10px",
+        "`padding: 5px 10px` is vertical horizontal");
+
+    auto three = new Element("div");
+    three.attrs["class"] = "three";
+    auto c3 = cascadeFor(three, rules);
+    assert(c3.get("margin-top", "") == "1px" && c3.get("margin-right", "") == "2px" &&
+        c3.get("margin-bottom", "") == "3px" && c3.get("margin-left", "") == "2px",
+        "3-value shorthand: left mirrors right");
+
+    auto autoEl = new Element("div");
+    autoEl.attrs["class"] = "auto";
+    auto c4 = cascadeFor(autoEl, rules);
+    assert(c4.get("margin-left", "") == "auto" && c4.get("margin-top", "") == "0",
+        "`margin: 0 auto` must survive so centred boxes stay centred");
+
+    auto kw = new Element("div");
+    kw.attrs["class"] = "kw";
+    auto c5 = cascadeFor(kw, rules);
+    assert(c5.get("padding", "") == "inherit" && c5.get("padding-left", "") == "",
+        "a CSS-wide keyword is not a positional list and must be kept as-is");
+
+    auto late = new Element("div");
+    late.attrs["class"] = "late";
+    auto c6 = cascadeFor(late, rules);
+    assert(c6.get("margin-left", "") == "7px" && c6.get("margin-top", "") == "0",
+        "a longhand after the shorthand in the same rule still wins");
+}
+
+unittest
+{
     auto rules = parseStylesheet(`h1 { color: red; } #box { background: #00ff00; } .note { color: blue; }`);
     import std.conv : to;
     assert(rules.length == 3, "expected 3 rules, got " ~ rules.length.to!string);
@@ -1521,6 +1887,42 @@ unittest
     assert(applyMediaRules(rules, 1350, 800).length == 1, "only .b applies at 1350");
     assert(applyMediaRules(rules, 1180, 800).length == 2, "the max-width:1180 rule applies at 1180");
     assert(applyMediaRules(rules, 1280, 800).length == 1, "max-width:1180 must not apply at 1280");
+}
+
+version (unittest)
+unittest
+{
+    import std.conv : to;
+
+    // `prefers-color-scheme` is answered from the live preference rather than
+    // assumed, and a query that combines it with another condition has to
+    // satisfy both. The preference is read at parse AND at apply time, so a
+    // stylesheet parsed before a preference change is still filtered correctly.
+    auto keep = prefersDarkScheme();
+    scope (exit) setPrefersDarkScheme(keep);
+
+    auto css = `@media (prefers-color-scheme: dark) { .a { color: red; } }
+        @media (prefers-color-scheme: light) { .c { color: green; } }
+        @media (prefers-color-scheme: dark) and (min-width: 768px) { .d { color: orange; } }
+        .b { color: blue; }`;
+
+    setPrefersDarkScheme(false);
+    auto lightRules = parseStylesheet(css, 1280, 800);
+    assert(applyMediaRules(lightRules, 1280, 800).length == 2,
+        "with a light preference only .b and .c apply, got " ~
+        applyMediaRules(lightRules, 1280, 800).length.to!string);
+
+    setPrefersDarkScheme(true);
+    auto darkRules = parseStylesheet(css, 1280, 800);
+    assert(applyMediaRules(darkRules, 1280, 800).length == 3,
+        "with a dark preference .a, .b and .d apply, got " ~
+        applyMediaRules(darkRules, 1280, 800).length.to!string);
+    assert(applyMediaRules(darkRules, 400, 800).length == 2,
+        "the dark rule combined with min-width:768px still needs the width");
+
+    // Rules stored under one preference re-filter under the other.
+    assert(applyMediaRules(lightRules, 1280, 800).length == 3,
+        "a sheet parsed while light follows a later dark preference");
 }
 
 version (unittest)
@@ -1669,9 +2071,12 @@ unittest
     assert(rules.length == 1, "a `:not()` rule must survive parsing");
     auto index = buildRuleIndex(rules);
     auto cascade = cascadeFor(plain, rules, candidatesFor(index, plain));
-    assert(cascade.get("padding", "") == "10px",
+    // The shorthand expands to its longhands (CSS 2.1 8.4), so the value shows
+    // up on the sides rather than under the shorthand's own name.
+    assert(cascade.get("padding-top", "") == "10px" &&
+        cascade.get("padding-left", "") == "10px",
         "the `:not(.search)` rule must reach an ordinary child: got '" ~
-        cascade.get("padding", "") ~ "'");
+        cascade.get("padding-top", "") ~ "'");
 }
 
 unittest

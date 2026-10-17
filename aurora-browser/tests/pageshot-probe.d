@@ -14,9 +14,11 @@ module pageshot;
 
 import aurora;
 import aurorabrowser.appui : BrowserRoot, browserTheme, WebPageView;
+import auroraweb : WebPage;
 import auroraweb.dom : Element, TextNode;
 
 import std.conv : to;
+import std.file : readText;
 import std.string : indexOf, split;
 import std.stdio : stderr, write, writeln;
 
@@ -105,25 +107,37 @@ void printTree(Element element, int depth)
         " display=", element.style.display,
         " position=", element.style.position,
         " float=", element.style.floatStyle,
-        " overflow=", element.style.overflow);
+        " overflow=", element.style.overflow,
+        " pad=", element.box.paddingTop, ",", element.box.paddingRight, ",",
+        element.box.paddingBottom, ",", element.box.paddingLeft,
+        " mar=", element.box.marginTop, ",", element.box.marginLeft,
+        " f=", element.style.fontSize, "/", element.style.lineHeight,
+        " fsPx=", element.style.fontSizePx, "/", element.style.rootFontSizePx,
+        " declPad=", element.style.padding,
+        " declMar=", element.style.margin,
+        " lhPadL=", element.style.paddingLeft,
+        " lhMarT=", element.style.marginTop);
     foreach (child; element.elements)
         printTree(child, depth + 1);
 }
 
-/// Find the element carrying `needle` as a tag or class token and print its
-/// subtree; returns 1 when found.
+/// Print the subtree of every element carrying `needle` as a tag or class token
+/// and return how many were printed. A fixture can stack several cases; stopping
+/// at the first hid the rest.
 int dumpSubtree(Element element, string needle, int depth)
 {
     if (element is null || depth > 20) return 0;
+    int found = 0;
     auto cls = "class" in element.attrs;
     if (element.tag == needle || (cls !is null && hasClassToken(*cls, needle)))
     {
         printTree(element, 0);
+        // Do not descend into a match: its children are already printed.
         return 1;
     }
     foreach (child; element.elements)
-        if (dumpSubtree(child, needle, depth + 1)) return 1;
-    return 0;
+        found += dumpSubtree(child, needle, depth + 1);
+    return found;
 }
 
 /// Print the boxes of the element whose class contains `needle`, plus its
@@ -169,6 +183,36 @@ int countText(Element element, string needle)
     return found;
 }
 
+/// Render a local HTML fixture through the engine alone: no app chrome and no
+/// URL handling, exactly how the reference corpora load a fixture, so a case
+/// can be measured with the same probe used against the live sites.
+int runFixture(string[] args)
+{
+    // usage: pageshot --fixture <file.html> <width> <height> <out.ppm> [needle]
+    if (args.length < 6)
+    {
+        stderr.writeln("usage: pageshot --fixture <file.html> <width> <height> <out.ppm> [needle]");
+        return 2;
+    }
+    const path = args[2];
+    const w = to!int(args[3]);
+    const h = to!int(args[4]);
+    const outPath = args[5];
+    const needle = args.length >= 7 ? args[6] : "ul";
+    auto page = new WebPage(w, h);
+    page.setHtml(readText(path));
+    page.executeScripts();
+    page.layout();
+    writeln("fixture viewport=", page.width(), "x", page.height());
+    writeln("subtree probe: ", dumpSubtree(page.root(), needle, 0));
+    auto surface = new Surface(w, h);
+    surface.clear(Color.rgb(255, 255, 255));
+    page.paint(surface);
+    surface.savePpm(outPath);
+    writeln("captured ", w, "x", h, " -> ", outPath);
+    return 0;
+}
+
 int main(string[] args)
 {
     if (args.length < 5)
@@ -176,6 +220,8 @@ int main(string[] args)
         stderr.writeln("usage: pageshot <url> <width> <height> <out.ppm> [paints] [needle] [class]");
         return 2;
     }
+    if (args[1] == "--fixture")
+        return runFixture(args);
     const url = args[1];
     const w = to!int(args[2]);
     const h = to!int(args[3]);

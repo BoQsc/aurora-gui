@@ -24,7 +24,7 @@ import auroraweb.css : Rule, RuleIndex, buildRuleIndex, candidatesFor, cascadeFo
     applyMediaRules, parseStylesheet,
     keyframeEndState, pseudoElementRules;
 import auroraweb.dom : ComputedStyle, Element, InlineFragment, TextNode;
-import auroraweb.shaping : cssFace, normalLineHeight, shapeTextCached;
+import auroraweb.shaping : cssFace, cssFaceOrStandard, normalLineHeight, shapeTextCached;
 import aurora.image : RgbaImage;
 import aurora.font : FontFace, FontRole;
 import aurora.text.atlas : FontSystem;
@@ -34,13 +34,13 @@ import std.algorithm : max, min;
 import std.conv : to;
 import std.string : endsWith, indexOf, lastIndexOf, split, strip, toLower;
 
-/// The face this style's `font-family`/`font-weight`/`font-style` select, or null
-/// for the engine default. Paint resolves it identically, so measurement and
-/// painting always shape with the same face.
+/// The face this style's `font-family`/`font-weight`/`font-style` select, or the
+/// browser's standard font for a style that names none. Paint resolves it
+/// identically, so measurement and painting always shape with the same face.
 private const(FontFace) faceOf(const ComputedStyle* style)
 {
     return style is null ? null
-        : cssFace(style.fontFamily, style.fontWeight, style.fontStyle);
+        : cssFaceOrStandard(style.fontFamily, style.fontWeight, style.fontStyle);
 }
 
 /// Measure a text run into wrapped lines using Aurora's real text engine.
@@ -428,50 +428,10 @@ private void resolveStylesInto(Element element, Rule[] rules, in RuleIndex casca
     // `header nav li{font-size:1.3rem; font-weight:700}` therefore never reached
     // the `<a>` children: the menu measured ~25% too wide at 16px, wrapped past
     // its 1076px container and pushed the header from 68px to 136px tall.
-    // Each guard also requires the value to still be the initial one, so a UA
-    // rule (`h1{font-size:32px}`) or an author declaration is never overwritten.
-    int inheritedFontPx = -1;
-    if (element.parent !is null)
-    {
-        const p = element.parent.style;
-        if ("font-size" !in cascade && element.style.fontSize == "16px")
-        {
-            element.style.fontSize = p.fontSize;
-            // Use the parent's settled pixels verbatim: resolving the inherited
-            // string again would re-apply it (a child of a 62.5% root would
-            // recompute 62.5% of 10px instead of adopting the settled size).
-            inheritedFontPx = p.fontSizePx;
-        }
-        if ("font-weight" !in cascade && element.style.fontWeight == "400")
-            element.style.fontWeight = p.fontWeight;
-        if ("font-style" !in cascade && element.style.fontStyle == "normal")
-            element.style.fontStyle = p.fontStyle;
-        if ("font-family" !in cascade && element.style.fontFamily == "system-ui")
-            element.style.fontFamily = p.fontFamily;
-        if ("line-height" !in cascade && element.style.lineHeight == "auto")
-            element.style.lineHeight = p.lineHeight;
-        if ("letter-spacing" !in cascade && element.style.letterSpacing == "normal")
-            element.style.letterSpacing = p.letterSpacing;
-        if ("text-align" !in cascade && element.style.textAlign == "left")
-            element.style.textAlign = p.textAlign;
-        if ("text-transform" !in cascade && element.style.textTransform == "none")
-            element.style.textTransform = p.textTransform;
-        if ("text-indent" !in cascade && element.style.textIndent == "0px")
-            element.style.textIndent = p.textIndent;
-        if ("white-space" !in cascade && element.style.whiteSpace == "")
-            element.style.whiteSpace = p.whiteSpace;
-        if ("visibility" !in cascade && element.style.visibility == "visible")
-            element.style.visibility = p.visibility;
-    }
+    const int inheritedFontPx = element.parent is null ? -1
+        : inheritStyleFromParent(element.style, element.parent.style, cascade);
     element.style.fontSizePx = inheritedFontPx >= 0
         ? inheritedFontPx : resolveFontSize(element.style, parentFontPx);
-    // `color` is an inherited property: an element that declares no colour of
-    // its own uses its parent's. Without this every such element defaulted to
-    // black, so a real page's hero wordmark (`.hero h1` sets no colour, body does)
-    // painted black-on-black and looked missing.
-    if (element.parent !is null && ("color" !in cascade) &&
-        element.style.color == "black")
-        element.style.color = element.parent.style.color;
     // The root element establishes the `rem` base for all its descendants.
     const int childRootFont = (element.parent is null) ? element.style.fontSizePx : rootFontPx;
     // Generated pseudo-elements (CSS 12): build the ::before/::after boxes now
@@ -483,6 +443,137 @@ private void resolveStylesInto(Element element, Rule[] rules, in RuleIndex casca
     foreach (child; element.elements)
         resolveStylesInto(child, rules, cascadeIndex, viewportWidth, viewportHeight, custom,
             element.style.fontSizePx, childRootFont, beforeRules, afterRules);
+}
+
+/// Apply the CSS inherited properties (CSS 2.1 6.2 / 10.2) that a box does not
+/// declare itself from the box it belongs to.
+///
+/// Each guard also requires the value to still be the initial one, so a UA rule
+/// (`h1{font-size:32px}`) or an author declaration is never overwritten.
+///
+/// Returns the parent's settled font pixels when `font-size` was inherited, else
+/// -1: resolving the inherited string again would re-apply it (a child of a 62.5%
+/// root would recompute 62.5% of 10px instead of adopting the settled size).
+///
+/// Both real children and generated `::before`/`::after` boxes use this: a pseudo-
+/// element inherits from the element it decorates (CSS 2.1 12.1), and an icon face
+/// is declared on the element (`i.icon`), never repeated on its pseudo, so a
+/// generated box that kept the "inherit" sentinel resolved the STANDARD font for
+/// its `content` glyph and painted a tofu box instead of the icon.
+private int inheritStyleFromParent(ref ComputedStyle child, in ComputedStyle parent,
+    string[string] declared)
+{
+    int inheritedFontPx = -1;
+    if ("font-size" !in declared && child.fontSize == "16px")
+    {
+        child.fontSize = parent.fontSize;
+        inheritedFontPx = parent.fontSizePx;
+    }
+    if ("font-weight" !in declared && child.fontWeight == "400")
+        child.fontWeight = parent.fontWeight;
+    if ("font-style" !in declared && child.fontStyle == "normal")
+        child.fontStyle = parent.fontStyle;
+    if ("font-family" !in declared && child.fontFamily.length == 0)
+        child.fontFamily = parent.fontFamily;
+    if ("line-height" !in declared && child.lineHeight == "auto")
+        child.lineHeight = parent.lineHeight;
+    if ("letter-spacing" !in declared && child.letterSpacing == "normal")
+        child.letterSpacing = parent.letterSpacing;
+    if ("text-align" !in declared && child.textAlign == "left")
+        child.textAlign = parent.textAlign;
+    if ("text-transform" !in declared && child.textTransform == "none")
+        child.textTransform = parent.textTransform;
+    if ("text-indent" !in declared && child.textIndent == "0px")
+        child.textIndent = parent.textIndent;
+    if ("white-space" !in declared && child.whiteSpace == "")
+        child.whiteSpace = parent.whiteSpace;
+    if ("visibility" !in declared && child.visibility == "visible")
+        child.visibility = parent.visibility;
+    // `color` is an inherited property: an element that declares no colour of its
+    // own uses its parent's. Without this every such element defaulted to black,
+    // so a real page's hero wordmark (`.hero h1` sets no colour, body does)
+    // painted black-on-black and looked missing.
+    if ("color" !in declared && child.color == "black")
+        child.color = parent.color;
+    return inheritedFontPx;
+}
+
+/// The value of one hexadecimal digit, or -1 when the character is not one.
+private int hexValueOf(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/// Decode the CSS escape sequences of a `content` string (CSS Syntax 3, 4.3.7).
+///
+/// A `\` followed by up to six hex digits is that code point, and one optional
+/// whitespace character after the digits is consumed with it; a `\` before any
+/// other character stands for that character. Real pages write icon glyphs this
+/// way — FontAwesome's `content: "\f002"` — and laying out the six literal
+/// characters put a stray `\f002` where the magnifier glyph belongs (documented
+/// in docs/rendering-status.md).
+private string decodeCssContentEscapes(string text)
+{
+    char[] outChars;
+    for (size_t i = 0; i < text.length;)
+    {
+        const char c = text[i];
+        if (c != '\\')
+        {
+            outChars ~= c;
+            i++;
+            continue;
+        }
+        i++;                          // consume the backslash itself
+        if (i >= text.length) break;  // a trailing backslash escapes nothing
+        uint value = 0;
+        size_t digits = 0;
+        for (; i < text.length && digits < 6; digits++)
+        {
+            const d = hexValueOf(text[i]);
+            if (d < 0) break;
+            value = value * 16 + cast(uint) d;
+            i++;
+        }
+        if (digits == 0)
+        {
+            // `\<char>` stands for that character, so `\""` is a quote.
+            outChars ~= text[i];
+            i++;
+            continue;
+        }
+        if (i < text.length && (text[i] == ' ' || text[i] == '\t' ||
+            text[i] == '\n' || text[i] == '\r' || text[i] == '\f'))
+            i++;
+        // Not a Unicode scalar value: the REPLACEMENT CHARACTER (CSS Syntax 3).
+        if (value == 0 || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF))
+            value = 0xFFFD;
+        // UTF-8 by hand, so the module needs no extra import for a rare path.
+        if (value < 0x80)
+            outChars ~= cast(char) value;
+        else if (value < 0x800)
+        {
+            outChars ~= cast(char) (0xC0 | (value >> 6));
+            outChars ~= cast(char) (0x80 | (value & 0x3F));
+        }
+        else if (value < 0x10000)
+        {
+            outChars ~= cast(char) (0xE0 | (value >> 12));
+            outChars ~= cast(char) (0x80 | ((value >> 6) & 0x3F));
+            outChars ~= cast(char) (0x80 | (value & 0x3F));
+        }
+        else
+        {
+            outChars ~= cast(char) (0xF0 | (value >> 18));
+            outChars ~= cast(char) (0x80 | ((value >> 12) & 0x3F));
+            outChars ~= cast(char) (0x80 | ((value >> 6) & 0x3F));
+            outChars ~= cast(char) (0x80 | (value & 0x3F));
+        }
+    }
+    return cast(string) outChars;
 }
 
 /// Build one generated pseudo-element box, or null when the page has no usable
@@ -502,6 +593,15 @@ private Element buildPseudoElement(Element element, string which, in Rule[] rule
     auto pseudo = new Element("::" ~ which);
     pseudo.parent = element;
     pseudo.style = computedStyle(pseudo, rules, cascade, custom);
+    // A generated box is styled as a child of the element it decorates, so it
+    // takes that element's inherited properties (`font-family` above all: the
+    // icon faces live there) and resolves its lengths against the same context.
+    pseudo.style.viewportWidth = element.style.viewportWidth;
+    pseudo.style.viewportHeight = element.style.viewportHeight;
+    pseudo.style.rootFontSizePx = element.style.rootFontSizePx;
+    const int pseudoFontPx = inheritStyleFromParent(pseudo.style, element.style, cascade);
+    pseudo.style.fontSizePx = pseudoFontPx >= 0
+        ? pseudoFontPx : resolveFontSize(pseudo.style, element.style.fontSizePx);
     // Park the resolved `content` on the node so paint can use it as the box text.
     pseudo.style.content = raw;
 
@@ -511,6 +611,7 @@ private Element buildPseudoElement(Element element, string which, in Rule[] rule
         ((text[0] == '"' && text[$ - 1] == '"') ||
          (text[0] == '\'' && text[$ - 1] == '\'')))
         text = text[1 .. $ - 1];
+    text = decodeCssContentEscapes(text);
     if (text.length)
     {
         auto node = new TextNode(pseudo, text);
@@ -1035,10 +1136,6 @@ private string uaDisplay(string tag)
     }
 }
 
-/// Baseline user-agent styling for common HTML tags. Applied before the author
-/// cascade and inline `style=""`, so page CSS still overrides it. Without this,
-/// headings, paragraphs and lists had no default margins or type sizes and
-/// every block sat flush against the previous one.
 /// Expand tabs to eight spaces. The shaper's own tab advance is unreliable - a
 /// real page's `white-space: pre-wrap` link list (whose markup indents each link
 /// with tabs) came out LEFT of its content box and was clipped - and an explicit
@@ -1056,11 +1153,22 @@ private string expandTabs(string s)
     return result;
 }
 
+/// Baseline user-agent styling for common HTML tags. Applied before the author
+/// cascade and inline `style=""`, so page CSS still overrides it. Without this,
+/// headings, paragraphs and lists had no default margins or type sizes and
+/// every block sat flush against the previous one.
 private void applyUserAgentDefaults(ref ComputedStyle style, Element e)
 {
     const tag = e.tag;
     switch (tag)
     {
+        case "body":
+            // Chromium's html.css declares `body { margin: 8px }`, which is what
+            // insets a page that never mentions its own margin: without it every
+            // paragraph began 8px left of the reference and wrapped at the full
+            // viewport width instead of the body's content width.
+            style.margin = "8px";
+            break;
         case "h1":
             style.fontSize = "32px";
             style.fontWeight = "bold";
@@ -1119,6 +1227,22 @@ private void applyUserAgentDefaults(ref ComputedStyle style, Element e)
             break;
         case "code", "kbd", "samp":
             style.fontFamily = "monospace";
+            break;
+        case "a":
+            // Chromium's html.css styles every anchor that carries an `href`
+            // (`a:-webkit-any-link` matches both `:link` and `:visited`) with
+            // `color: -webkit-link; text-decoration: underline`. Without this a
+            // page that never names a link colour of its own painted every link
+            // in the inherited text colour with no underline at all, where the
+            // reference showed -webkit-link blue underlined - measured in the
+            // inline-block fixture as rgb(0,0,238) across the label's rows
+            // against our solid green pill. An anchor with no href is a
+            // placeholder, not a link, so it keeps the inherited style.
+            if ("href" in e.attrs)
+            {
+                style.color = "#0000EE";
+                style.textDecoration = "underline";
+            }
             break;
         case "input", "textarea", "select", "button":
             // `<input type="hidden">` is a form-only field: browsers hide it in
@@ -1793,6 +1917,22 @@ private int clampedContentHeight(Element element, int contentHeight)
     return clampMinMaxHeight(element, max(0, contentHeight));
 }
 
+/// The height of an element's BORDER box.
+///
+/// `box.height` stores the CONTENT box everywhere (paint.d adds the padding when
+/// it draws the border box, and CSS 10.6 measures an auto height from the
+/// content edge), so any placement that must clear the box - a following
+/// sibling, or a parent measuring itself - has to add the element's own padding
+/// and border. Advancing the flow by the content box left every padded
+/// container 30px short: a `padding:10px;border:5px` block advanced by 50 where
+/// Edge puts the next sibling at 80, and the parent of a padded header measured
+/// 16px too small, shifting everything below it.
+private int borderBoxHeight(const Element element)
+{
+    return element.box.height + element.box.paddingTop + element.box.paddingBottom +
+        element.box.borderTop + element.box.borderBottom;
+}
+
 unittest
 {
     // Box model: units, keyword values, auto margins and content-box min/max.
@@ -2011,6 +2151,40 @@ private static bool canCollapseWithChild(Element element)
         default:
             return false; // flex/grid/inline-block/table-cell establish a BFC
     }
+}
+
+/// True when a box is inline-level: it is part of its parent's INLINE content,
+/// so its margins never collapse with the parent's in either direction
+/// (CSS 8.3.1). Folding an inline-block child's margin into its paragraph moved
+/// the paragraph down by the child's margin-top, measured the paragraph from
+/// that shifted origin, and then let the child's margin-bottom escape out of the
+/// paragraph's own height: `<p><a style="display:inline-block;margin:15px 0">`
+/// measured 56px around a line whose bottom was 71px, so the paragraph was 15px
+/// short of its own content and the button overflowed it.
+private static bool isInlineLevelBox(string display)
+{
+    switch (display)
+    {
+        case "inline":
+        case "inline-block":
+        case "inline-flex":
+        case "inline-grid":
+        case "inline-table":
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// The root element's own margins never collapse (CSS 8.3.1), so the root box
+/// must not be treated as collapsing with its first/last child: doing so
+/// swallowed the child's margin into a root box whose origin is the viewport's,
+/// and the page then lost that space entirely. A `body { margin: 8px }` (the
+/// browser default) plus an `h1`'s own margin put the heading 8px lower than a
+/// browser places it, and the body's own margin vanished.
+private static bool collapsesWithChildren(Element element)
+{
+    return element.parent !is null;
 }
 
 /// The first child element that participates in normal flow, or null. Leading
@@ -2236,13 +2410,16 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
         flow.suppressTopMargin = false;
         effectiveTop = 0;
     }
-    else if (canCollapseWithChild(element))
+    else if (collapsesWithChildren(element) && canCollapseWithChild(element))
     {
         // A parent's top margin collapses with its first in-flow child's when
         // nothing separates them: the child's margin then moves the PARENT down
         // instead of adding space inside it.
         auto fc = firstInFlowChild(element);
-        if (fc !is null)
+        // Only a BLOCK-LEVEL first child collapses with the parent; an
+        // inline-level child is the parent's inline content.
+        if (fc !is null && !isInlineLevelBox(fc.style.display))
+
         {
             bool childTopAuto;
             const childTop = resolveSide(fc.style,
@@ -2411,8 +2588,14 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
         if (bfcRoot)
             foreach (fl; childFlow.floats[floatBase .. $])
                 innerBottom = max(innerBottom, fl.y + fl.height);
-        innerBottom += element.box.paddingBottom + element.box.borderBottom;
-        finalHeight = max(0, innerBottom - element.box.y);
+        // `innerBottom` is the CONTENT bottom in absolute coordinates - the inner
+        // flow starts at the content origin - so the content height is measured
+        // straight from the content top. Adding this box's own padding and border
+        // here stored the BORDER height, which paint then padded a second time,
+        // so every auto-height padded block painted one padding-and-border too
+        // tall (a `padding:10px;border:5px` box drew 110px where Edge draws 80).
+        finalHeight = max(0, innerBottom - element.box.y - element.box.paddingTop -
+            element.box.borderTop);
     }
     // `aspect-ratio` with an auto height: the box height follows the used width
     // (CSS Sizing 4). A real page's landscape figure declares
@@ -2433,10 +2616,12 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     // (CSS 8.3.1). The child's margin is already inside the measured content
     // height, so move it out of the box and fold it into this box's own bottom
     // margin — the flow advance below then keeps following content in place.
-    if (height < 0 && canCollapseBottom(element))
+    if (height < 0 && collapsesWithChildren(element) && canCollapseBottom(element))
     {
         auto lc = lastInFlowChild(element);
-        if (lc !is null)
+        // Same rule at the bottom edge: an inline-level last child's margin stays
+        // inside the parent's line box, and therefore inside its height.
+        if (lc !is null && !isInlineLevelBox(lc.style.display))
         {
             bool childBottomAuto;
             const childBottom = resolveSide(lc.style,
@@ -2470,7 +2655,7 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     // margin-bottom pulls following content up by the same amount (may overlap).
     flow.prevBottomMargin = element.box.marginBottom;
     flow.hasPrevBlock = true;
-    const bottom = layoutTop + element.box.height + element.box.marginBottom;
+    const bottom = layoutTop + borderBoxHeight(element) + element.box.marginBottom;
     if (bottom > flow.y) flow.y = bottom;
 }
 
@@ -2493,10 +2678,59 @@ private int fontHeightOf(T)(T layout, int pixelSize)
     return pixelSize;
 }
 
+/// Run `body` with `element`'s generated `::before`/`::after` boxes spliced into
+/// its child lists, then restore them (CSS 12 / 2.1 12.1).
+///
+/// Layout and paint must see a generated box as part of its element's content,
+/// while DOM and script APIs must never observe it, so the splice is scoped to one
+/// pass. `::before` goes first and `::after` last, exactly where CSS places
+/// generated content. `layoutChildren` splices the same way for a block's own
+/// pass; this covers the places that read an element's children directly instead
+/// (its own inline pass, which is where an inline `i.icon`'s glyph has to be
+/// measured — without it the icon contributed no width and painted nothing).
+private void withGeneratedBoxes(Element element, scope void delegate() body)
+{
+    if (element.pseudoBefore is null && element.pseudoAfter is null)
+    {
+        body();
+        return;
+    }
+    auto savedChildren = element.children;
+    auto savedElements = element.elements;
+    scope(exit)
+    {
+        element.children = savedChildren;
+        element.elements = savedElements;
+    }
+    typeof(element.children) splicedChildren;
+    typeof(element.elements) splicedElements;
+    if (element.pseudoBefore !is null)
+    {
+        splicedChildren ~= element.pseudoBefore;
+        splicedElements ~= element.pseudoBefore;
+    }
+    splicedChildren ~= savedChildren;
+    splicedElements ~= savedElements;
+    if (element.pseudoAfter !is null)
+    {
+        splicedChildren ~= element.pseudoAfter;
+        splicedElements ~= element.pseudoAfter;
+    }
+    element.children = splicedChildren;
+    element.elements = splicedElements;
+    body();
+}
+
 private void layoutDirectText(Element element, ref FlowContext flow,
     size_t from = 0, size_t to = size_t.max)
 {
     const pixelSize = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
+    // The block's own content top. `flow.y` is advanced as lines are laid out,
+    // so measuring the content height against its FINAL value double-counted
+    // the advance: the reduced inline-block case reported a 56px paragraph
+    // where its line bottom was 86px from the content top of 15, and the
+    // fixture's paragraph was short by the same 15px.
+    const int contentOrigin = flow.y;
     // line-height: an explicit px value sizes the line boxes; a percentage
     // resolves against THIS element's font-size; otherwise fall back to
     // font-size + 8px breathing room.
@@ -2587,7 +2821,13 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             const int leftEdge = flow.lineLeft(cursorY, lineH);
             const int rightEdge = flow.lineRight(cursorY, lineH);
             const int innerW = max(0, rightEdge - cursorX);
-            const string runText = collapsibleText(element, text);
+            string runText = collapsibleText(element, text);
+            // A collapsible space at the start of a LINE is removed (CSS Text 3
+            // 4.1.1). The sibling rule in `collapsibleText` cannot see the
+            // cursor, so a run that begins this line drops the separator here -
+            // the same test the whitespace-only branch above makes.
+            if (cursorX <= flow.x && runText.length > 0 && runText[0] == ' ')
+                runText = runText[1 .. $];
             text.paintText = runText;
                 auto layout = shapeText(runText, pixelSize,
                     noWrapText ? 1_000_000 : innerW, element.style.letterSpacingPx(),
@@ -2652,6 +2892,7 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                             cursorX, cursorY, cast(int) layout.width, lineH);
                     cursorX += cast(int) layout.width;
                 }
+
                 maxBottom = max(maxBottom, cursorY + lineH);
                 continue;
             }
@@ -2784,10 +3025,16 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 // top inset comes off too - without it a bordered inline-block
                 // painted padding+border lower than the line (the webfont
                 // fixture was 2px low).
-                ce.box.y = inlineBlockTop(ce.style.verticalAlign, cursorY, lineH,
+                // The line box contains the box's MARGIN box (CSS 10.8.1), so
+                // the box can never stick out above the line's top: a baseline
+                // placement that ignores `margin-top` paints the box above the
+                // paragraph that owns it (the homepage CTA sat 15px too high
+                // and was clipped by the page edge).
+                ce.box.y = max(inlineBlockTop(ce.style.verticalAlign, cursorY, lineH,
                     ce.box.height, baseline,
                     ce.box.paddingTop + ce.box.borderTop,
-                    ce.box.paddingBottom + ce.box.borderBottom);
+                    ce.box.paddingBottom + ce.box.borderBottom),
+                    cursorY + ce.box.marginTop);
             }
             noteLine(lineIndex, cursorX, cursorX + cw);
             placedElements ~= ce;
@@ -2822,9 +3069,34 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             // the label sat 241px right of its button, and the reconciler below
             // then dragged the button after its own label. A plain inline box
             // (`<b>`, `<em>`) really does share the parent's line.
-            sub.lineEnd = inlineBox ? sub.x + max(0, cw) : rightEdge;
+            // An inline-block with `width:auto` was sized FROM its content, so
+            // its own content must not wrap inside it. `cw` is that content's
+            // fractional advance rounded to a device pixel, and the rounding can
+            // land a fraction BELOW the content's own width (28 for 28.4px of
+            // text); laying the content out at that rounded width then re-wrapped
+            // its last cluster onto a second line. The phantom line counted in
+            // the sub-flow's content bottom, so an auto-height box grew to twice
+            // its one real line (28x46 for a single 18px line, and 141 instead of
+            // 118 for the CTA fixture banner) and the shared line cursor advanced
+            // below the label. Give the interior the content's own max-content
+            // width; a specified width still wraps normally.
+            int innerCw = cw;
+            if (inlineBox && ce.style.resolveLength(ce.style.width, flow.width) < 0)
+            {
+                const int ceSize = ce.style.fontSizePx > 0
+                    ? ce.style.fontSizePx : pixelSize;
+                auto innerLay = shapeText(ce.textContent(), ceSize, 0,
+                    ce.style.letterSpacingPx(), faceOf(&ce.style));
+                if (innerLay !is null)
+                {
+                    const int measured = cast(int) innerLay.width;
+                    innerCw = max(innerCw, measured < innerLay.width
+                        ? measured + 1 : measured);
+                }
+            }
+            sub.lineEnd = inlineBox ? sub.x + max(0, innerCw) : rightEdge;
             sub.lineCount = lineIndex;
-            layoutDirectText(ce, sub);
+            withGeneratedBoxes(ce, { layoutDirectText(ce, sub); });
             // The box was sized from its own line height before the content was
             // laid out; wrapped text can need more. Grow the box to the content
             // it actually has and re-place it - the baseline depends on the
@@ -2834,12 +3106,13 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 sub.contentBottom > ce.box.height)
             {
                 ce.box.height = sub.contentBottom;
-                ce.box.y = inlineBlockTop(ce.style.verticalAlign, cursorY, lineH,
+                ce.box.y = max(inlineBlockTop(ce.style.verticalAlign, cursorY, lineH,
                     ce.box.height, cursorY + pixelSize,
                     ce.box.paddingTop + ce.box.borderTop,
-                    ce.box.paddingBottom + ce.box.borderBottom);
+                    ce.box.paddingBottom + ce.box.borderBottom),
+                    cursorY + ce.box.marginTop);
                 sub.y = ce.box.y + ce.box.borderTop + ce.box.paddingTop;
-                layoutDirectText(ce, sub);
+                withGeneratedBoxes(ce, { layoutDirectText(ce, sub); });
             }
             // Merge back the sub-flow's text bottom. An inline-level box can be
             // TALLER than the strut, and the line box must grow to contain it
@@ -2849,9 +3122,22 @@ private void layoutDirectText(Element element, ref FlowContext flow,
             // The line box must contain the box's BORDER box, not just its
             // content: an inline-block with padding or a border is taller than
             // `height`, and the row after it has to clear that (CSS 10.8.1).
+            // It must contain the MARGIN box as well. Django's homepage CTA has
+            // `margin:15px 0` plus a higher-specificity `margin-bottom:40px`,
+            // and a line that stopped at the border box measured the button's
+            // paragraph 0px tall while Edge measured 101px - most of the ~55px
+            // of accumulated height the homepage lost below its hero.
+            // `height` is the CONTENT box - the paint adds its own insets - so
+            // the border box needs all four insets, not just the bottom two.
+            // The fixture's 46px content with `pad=10,20` paints 66px tall
+            // while the line bottom measured 56px, and Edge's own paragraph is
+            // then about 10px taller than the engine's for every padded chip.
             maxBottom = max(maxBottom, max(cursorY + lineH,
                 ce.box.y + ce.box.height +
-                    (inlineBox ? ce.box.paddingBottom + ce.box.borderBottom : 0)));
+                    (inlineBox ? ce.box.paddingTop + ce.box.borderTop +
+                        ce.box.paddingBottom + ce.box.borderBottom +
+                        ce.box.marginBottom : 0)));
+
             lineIndex = max(lineIndex, sub.lineCount);
             continue;
         }
@@ -2859,7 +3145,7 @@ private void layoutDirectText(Element element, ref FlowContext flow,
     }
     if (maxBottom > 0)
     {
-        flow.contentBottom = max(flow.contentBottom, maxBottom - flow.y);
+        flow.contentBottom = max(flow.contentBottom, maxBottom - contentOrigin);
         flow.lineCount = max(flow.lineCount, lineIndex + 1);
         if (maxBottom > flow.inlineBottomAbs) flow.inlineBottomAbs = maxBottom;
     }
@@ -3163,11 +3449,20 @@ private string collapsibleText(Element element, TextNode node)
     string result;
     bool pendingSpace = false;
     bool started = false;
+    // Leading whitespace is a separator too when inline content precedes this
+    // node: dropping it unconditionally painted "<a>DOCUMENTATION</a> end" as
+    // "DOCUMENTATIONend". Only the first node of a formatting context really
+    // begins a line, the mirror of `canSeparate` below; the cursor still
+    // overrides this where the layout knows the line's own left edge. A node the
+    // element does not list (a detached run) is the only content there is, so it
+    // begins the context too.
+    const bool atContextStart =
+        element.children.length == 0 || element.children[0] is node;
     foreach (char c; node.data)
     {
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
         {
-            if (started) pendingSpace = true;
+            if (started || !atContextStart) pendingSpace = true;
             continue;
         }
         if (pendingSpace)
@@ -3671,11 +3966,14 @@ private void layoutChildren(Element element, ref FlowContext flow, Element posit
 
     size_t runStart = 0;
     bool runPending = false;
-    // Only runs that contain an inline ELEMENT are flushed at a block
-    // boundary. Text-only runs keep accumulating and are laid out at the end
-    // exactly as before, because laying stray text out on its own line before
-    // every block added hundreds of pixels of blank space to real pages.
-    bool runHasElement = false;
+    // A pending run is flushed before the block that follows it, whether it
+    // holds an inline element or only text. CSS 2.1 9.2.1.1 makes text before a
+    // block-level sibling an anonymous block box that keeps document order;
+    // laying the block out first put its line above the label that precedes it
+    // ("<div>2 block:<span style=display:block>X</span></div>").
+    // Whitespace-only text nodes never start a run (below), so this cannot
+    // reintroduce the blank line boxes an unconditional flush added to indented
+    // real pages.
     foreach (childIndex, child; element.children)
     {
         auto childElement = cast(Element) child;
@@ -3700,17 +3998,15 @@ private void layoutChildren(Element element, ref FlowContext flow, Element posit
         if (childStyle.display == "inline" || childStyle.display == "inline-block")
         {
             if (!runPending) { runPending = true; runStart = childIndex; }
-            runHasElement = true;
             continue;
         }
-        if (runPending && runHasElement)
+        if (runPending)
         {
             const savedX = flow.x;
             layoutDirectText(element, flow, runStart, childIndex);
             flow.x = savedX;
             if (flow.inlineBottomAbs > flow.y) flow.y = flow.inlineBottomAbs;
             runPending = false;
-            runHasElement = false;
         }
         if (childStyle.display == "flex" || childStyle.display == "inline-flex")
             layoutFlex(childElement, flow, positionedAncestor);
@@ -3760,18 +4056,41 @@ private void layoutInlineChildren(Element element, ref FlowContext flow, Element
         flow.x = flow.x; // cursor stays; caller uses flow.
     }
 
-    foreach (child; element.children)
+    // Generated `::before`/`::after` boxes are part of this inline box's content
+    // (CSS 12). `layoutChildren` splices them into `children` for a block's own
+    // pass, but an INLINE element's content is placed by the enclosing block's
+    // inline pass, which reaches it here — so an inline `i.icon` never measured
+    // its `::before` glyph and the icon painted nothing. The membership test keeps
+    // the already-spliced case from measuring the same box twice.
+    bool alreadyInChildren(Element p)
+    {
+        foreach (c; element.children)
+            if (c is p) return true;
+        return false;
+    }
+    typeof(element.children) inlineChildren;
+    if (element.pseudoBefore !is null && !alreadyInChildren(element.pseudoBefore))
+        inlineChildren ~= element.pseudoBefore;
+    inlineChildren ~= element.children;
+    if (element.pseudoAfter !is null && !alreadyInChildren(element.pseudoAfter))
+        inlineChildren ~= element.pseudoAfter;
+    foreach (child; inlineChildren)
     {
         auto text = cast(TextNode) child;
         if (text !is null)
         {
-            const string runText = collapsibleText(element, text);
-            text.paintText = runText;
-            const int textWidth = cast(int)(runText.length * 8);
             // Shape the line around active floats.
             const int leftEdge = flow.lineLeft(currentLineY, lineHeight);
             const int rightEdge = flow.lineRight(currentLineY, lineHeight);
             if (currentLineX < leftEdge) currentLineX = leftEdge;
+            string runText = collapsibleText(element, text);
+            // Same line-start rule as the block path, and the same shape as the
+            // whitespace-only branch that follows: a separator at the start of a
+            // line is removed, one in the middle of a line is kept.
+            if (currentLineX <= leftEdge && runText.length > 0 && runText[0] == ' ')
+                runText = runText[1 .. $];
+            text.paintText = runText;
+            const int textWidth = cast(int)(runText.length * 8);
             if (currentLineX + textWidth > rightEdge && currentLineX > leftEdge)
             {
                 currentLineX = leftEdge;
@@ -4388,7 +4707,10 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
                 if (itemH < 0 && contentH > 0)
                     ce.box.height = max(0,
                         contentH + ce.box.paddingTop + ce.box.paddingBottom);
-                lineH = max(lineH, ce.box.height);
+                // The line's cross size covers the item's cross margins, and the
+                // aligned position is the margin box, exactly as the single-line
+                // row path above does (CSS Flexbox 9.4 and 9.6).
+                lineH = max(lineH, ce.box.height + ce.box.marginTop + ce.box.marginBottom);
                 lineCursor += widths[k] + ce.box.paddingLeft + ce.box.paddingRight +
                     ce.box.borderLeft + ce.box.borderRight +
                     ce.box.marginLeft + ce.box.marginRight + gapPx + lineGapExtra +
@@ -4424,9 +4746,10 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
                     }
                 }
                 else if (alignValue == "flex-end" || alignValue == "end")
-                    ce.box.y = lineTop + lineH - ce.box.height;
+                    ce.box.y = lineTop + lineH - ce.box.height - ce.box.marginBottom;
                 else if (alignValue == "center")
-                    ce.box.y = lineTop + (lineH - ce.box.height) / 2;
+                    ce.box.y = lineTop + (lineH - ce.box.height - ce.box.marginTop -
+                        ce.box.marginBottom) / 2 + ce.box.marginTop;
             }
             lineHeights ~= lineH;
             lineTop += lineH;
@@ -4621,7 +4944,12 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         const int contentH = max(sub.contentBottom, sub.y - subTop);
         if (itemH < 0 && contentH > 0)
             ce.box.height = max(0, contentH + ce.box.paddingTop + ce.box.paddingBottom);
-        maxChildHeight = max(maxChildHeight, ce.box.height);
+        // An item's OUTER cross size is what a flex line measures (CSS Flexbox
+        // 9.4), so its cross-axis margins are part of the line. Counting the
+        // border box alone left djangoproject.com's header 20px short: the
+        // `header .logo{margin:10px 4px}` contributed nothing, so the container
+        // measured 36px where Edge makes it 56 and the header ended 20px high.
+        maxChildHeight = max(maxChildHeight, ce.box.height + ce.box.marginTop + ce.box.marginBottom);
         // An item's own layout may have made it WIDER than the pre-layout
         // estimate (an inline-flex item with auto width sizes to its content), so
         // every following item must advance by the actual width. Advancing by the
@@ -4756,12 +5084,18 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         // (`align` is a D keyword, hence the name.)
         const string alignValue = (ce.style.alignSelf.length && ce.style.alignSelf != "auto")
             ? ce.style.alignSelf : style.alignItems;
+        // The box that alignment places is the item's MARGIN box (CSS Flexbox
+        // 9.6): its cross-axis margins offset it inside the line, which the
+        // column branch above already honours. Ignoring them put a margined item
+        // flush with the line's start and a centred one off by its own margin -
+        // django's 10px-margined logo sat at y=10 where Edge puts it at y=20.
         if (alignValue == "flex-start" || alignValue == "start")
-            ce.box.y = innerY;
+            ce.box.y = innerY + ce.box.marginTop;
         else if (alignValue == "flex-end" || alignValue == "end")
-            ce.box.y = innerY + crossSize - ce.box.height;
+            ce.box.y = innerY + crossSize - ce.box.height - ce.box.marginBottom;
         else if (alignValue == "center")
-            ce.box.y = innerY + (crossSize - ce.box.height) / 2;
+            ce.box.y = innerY + (crossSize - ce.box.height - ce.box.marginTop -
+                ce.box.marginBottom) / 2 + ce.box.marginTop;
     }
 
     // An inline-flex container with no explicit width sizes to its content:
@@ -4814,6 +5148,12 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         }
     }
     const hPx = resolveHeight(element);
+    // `box.height` is the CONTENT box throughout this engine (paint.d rebuilds
+    // the border box by adding padding and border), so the auto height must be
+    // the content height even for a `box-sizing: border-box` row: using a
+    // border-box height here painted a padded border-box row 100px tall where
+    // Edge paints 70. `clampedContentHeight` is that content height; the
+    // container's own padding and border are added by the painter, not here.
     element.box.height = hPx >= 0 ? hPx : clampedContentHeight(element, contentHeight);
 
     layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
@@ -4835,7 +5175,10 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     // 8.3.1) instead of being added in full.
     flow.prevBottomMargin = element.box.marginBottom;
     flow.hasPrevBlock = true;
-    flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
+    // The row measured itself as a CONTENT box (clampedContentHeight above), so
+    // the flow advances by the border box: without the container's own padding
+    // and border the next sibling sat one padding-and-border too high.
+    flow.y = max(flow.y, element.box.y + borderBoxHeight(element) + element.box.marginBottom);
 }
 
 private int sumWidths(int[] widths)
@@ -6311,6 +6654,90 @@ unittest
             to!string(gen.pseudoAfter.box.height));
     }
 
+    // --- a generated box inherits from the element it decorates ---
+    // An icon face lives on the element (`i.icon{font-family:FontAwesome}`) and
+    // the glyph comes from the pseudo's `content`, so the generated box must take
+    // the element's inherited properties (CSS 2.1 12.1). Keeping the "inherit"
+    // sentinel made it resolve the STANDARD font for that glyph: a real page's
+    // FontAwesome icons (django's search magnifier and theme toggle) had no such
+    // outline there and painted as tofu boxes.
+    {
+        auto rulesI = parseStylesheet(`
+            body { margin: 0; font-family: Georgia, serif; color: #101010; }
+            .icon { font-family: FontAwesome; color: #44B78B; font-size: 20px; }
+            .icon::before { content: "X"; }
+            .over::before { content: "y"; font-size: 10px; }
+            .glyph::before { content: "\f002"; }
+            .spaced::before { content: "\f002 x"; }
+        `, 200, 200);
+        auto docI = new Element("body");
+        auto icon = new Element("i");
+        icon.attrs["class"] = "icon";
+        auto over = new Element("i");
+        over.attrs["class"] = "over";
+        auto glyph = new Element("i");
+        glyph.attrs["class"] = "glyph";
+        auto spaced = new Element("i");
+        spaced.attrs["class"] = "spaced";
+        docI.children ~= icon;
+        docI.children ~= over;
+        docI.children ~= glyph;
+        docI.children ~= spaced;
+        docI.elements ~= icon;
+        docI.elements ~= over;
+        docI.elements ~= glyph;
+        docI.elements ~= spaced;
+        icon.parent = docI;
+        over.parent = docI;
+        glyph.parent = docI;
+        spaced.parent = docI;
+        applyStylesAndLayout(docI, rulesI, 200, 200);
+
+        assert(icon.pseudoBefore !is null,
+            "an icon's ::before box must still be generated");
+        assert(icon.pseudoBefore.style.fontFamily == "FontAwesome",
+            "a generated box must inherit the element's font family, got '" ~
+            icon.pseudoBefore.style.fontFamily ~ "'");
+        assert(icon.pseudoBefore.style.color == "#44B78B",
+            "a generated box must inherit color, got '" ~
+            icon.pseudoBefore.style.color ~ "'");
+        assert(icon.pseudoBefore.style.fontSize == "20px" &&
+            icon.pseudoBefore.style.fontSizePx == 20,
+            "a generated box must inherit settled font pixels, got '" ~
+            icon.pseudoBefore.style.fontSize ~ "' / " ~
+            to!string(icon.pseudoBefore.style.fontSizePx));
+        // The glyph itself must reach the inline flow: an inline `i.icon` is placed
+        // by the enclosing block's inline pass, so the generated box's text run is
+        // what has to be measured and painted.
+        auto iconText = icon.pseudoBefore.children.length
+            ? cast(TextNode) icon.pseudoBefore.children[0] : null;
+        assert(iconText !is null && iconText.paintText == "X" && iconText.layoutWidth > 0,
+            "the generated glyph must be measured inside an inline element, got '" ~
+            (iconText is null ? "<no text>" : iconText.paintText) ~ "' width " ~
+            (iconText is null ? "n/a" : to!string(iconText.layoutWidth)));
+        // A declaration the pseudo DOES carry wins over the inherited value.
+        assert(over.pseudoBefore !is null && over.pseudoBefore.style.fontSize == "10px" &&
+            over.pseudoBefore.style.fontSizePx == 10,
+            "the pseudo's own font-size must win over the inherited one, got '" ~
+            over.pseudoBefore.style.fontSize ~ "' / " ~
+            to!string(over.pseudoBefore.style.fontSizePx));
+        // `content` escapes decode to the glyph itself (CSS Syntax 3, 4.3.7).
+        // Every icon face on the real sites is addressed this way, and the six
+        // literal characters `\f002` were laid out where the magnifier belongs.
+        auto glyphText = glyph.pseudoBefore !is null && glyph.pseudoBefore.children.length
+            ? cast(TextNode) glyph.pseudoBefore.children[0] : null;
+        assert(glyphText !is null && glyphText.data == "\uF002",
+            "the \\f002 escape must decode to one glyph, got " ~
+            (glyphText is null ? "<no text>" : glyphText.data));
+        // One whitespace character after the hex digits belongs to the escape,
+        // so `"\f002 x"` is the glyph followed by a plain `x`.
+        auto spacedText = spaced.pseudoBefore !is null && spaced.pseudoBefore.children.length
+            ? cast(TextNode) spaced.pseudoBefore.children[0] : null;
+        assert(spacedText !is null && spacedText.data == "\uF002x",
+            "the space terminating a hex escape must not become content, got " ~
+            (spacedText is null ? "<no text>" : spacedText.data));
+    }
+
     // --- a NEGATIVE inset is a value, not "unset" ---
     {
         auto rulesN = parseStylesheet(`
@@ -6825,6 +7252,51 @@ unittest
             to!string(mb.box.x));
     }
 
+    // A row item's CROSS-axis (vertical) margins belong to the flex line and to
+    // the item's own placement: the line's cross size is the item's OUTER cross
+    // size (CSS Flexbox 9.4) and alignment places the item's MARGIN box (9.6).
+    // Counting only the border box under-measured a real page's header by 20px -
+    // `header .logo{margin:10px 4px}` contributed nothing, so the container
+    // measured 36px where Edge makes it 56, and the logo's border box landed at
+    // the line's start (y=10 from the container) where Edge puts it at y=20.
+    {
+        auto crow = new Element("div");
+        crow.style.display = "flex";
+        crow.style.alignItems = "center";
+        auto clogo = new Element("div");
+        clogo.style.width = "104px";
+        clogo.style.height = "36px";
+        clogo.style.margin = "10px 4px";
+        crow.children ~= clogo;
+        crow.elements ~= clogo;
+        clogo.parent = crow;
+
+        int[] crossAt;
+        string[] alignAt = ["center", "flex-start", "flex-end"];
+        foreach (which; alignAt)
+        {
+            crow.style.alignItems = which;
+            auto cf = FlowContext();
+            cf.x = 0;
+            cf.y = 0;
+            cf.width = 300;
+            cf.height = 200;
+            cf.lineEnd = 300;
+            layoutFlex(crow, cf, null);
+            crossAt ~= clogo.box.y;
+            if (which == "center")
+                assert(crow.box.height == 56,
+                    "a row's height must include its items' vertical margins " ~
+                    "(56), got " ~ to!string(crow.box.height));
+        }
+        // A 56px line holds a 36px item with 10px margins flush top and bottom,
+        // so all three alignments agree on y=10 - and the pre-fix code said 0.
+        foreach (i, which; alignAt)
+            assert(crossAt[i] == 10,
+                "align-items:" ~ which ~ " must place the item's margin box at " ~
+                "y=10 in a 56px line, got " ~ to!string(crossAt[i]));
+    }
+
     // The same tree laid out twice at different available widths must end
     // consistent: every item's contents stay inside it and items never overlap.
     // On a real page a child link kept the x from a stale pass while its
@@ -7254,14 +7726,19 @@ unittest
         flow.x = 0; flow.y = 0; flow.width = 300; flow.height = 300;
         flow.lineEnd = 300;
         layoutDirectText(container, flow);
-        // Text sits on the first line at y=0; baseline = 0 + 16 = 16.
-        // The inline-block's bottom must be on that baseline: y = 16 - 40.
-        assert(ib.box.y == 16 - 40,
-            "inline-block bottom should align with the baseline (y=" ~ (16 - 40).to!string ~
-            "), got " ~ ib.box.y.to!string);
-        assert(ib.box.y + ib.box.height == 16,
-            "inline-block bottom must be exactly on the baseline, got " ~
-            (ib.box.y + ib.box.height).to!string);
+        // Text sits on the first line at y=0. The 40px box is taller than the
+        // 16px strut, so the line box grows to contain the box's MARGIN box and
+        // the baseline moves down to the box's bottom (CSS 10.8.1): the box
+        // sits at the line's top and nothing is painted above the line. The
+        // earlier expectation here (y = 16 - 40) pinned a box 24px ABOVE its own
+        // line, which is what made django's homepage CTA sit above its
+        // paragraph and 15px higher than Edge painted it.
+        assert(ib.box.y == 0,
+            "a tall inline-block sits at the line's top (y=0), got " ~
+            ib.box.y.to!string);
+        assert(flow.contentBottom >= 40,
+            "the line box must grow to contain the tall inline-block (>= 40), got " ~
+            flow.contentBottom.to!string);
     }
 
     // --- a tall inline-block grows its line box (CSS 10.8.1) ---
@@ -7287,6 +7764,144 @@ unittest
         assert(flow.contentBottom == 40,
             "a 40px inline-block must grow the line box past the 20px strut, got " ~
             flow.contentBottom.to!string);
+    }
+}
+
+unittest
+{
+    // --- An inline-block's own margins belong to the line (CSS 10.8.1) ---
+    // Reduced from the fixture inlineblock-margin.html, where the paragraph
+    // measured 81px: 15 (the paragraph's collapsed top margin) + 46 (the
+    // button's content) + 20 (its padding) - that is, the border box only,
+    // with the button's own bottom margin contributing nothing even though the
+    // used top margin (15, off `margin: 15px 0`) reached the box.
+    auto parent = new Element("div");
+    parent.style.display = "block";
+    parent.style.width = "600px";
+    auto para = new Element("p");
+    para.style.display = "block";
+    para.parent = parent;
+    auto btn = new Element("a");
+    btn.style.display = "inline-block";
+    btn.style.width = "120px";
+    btn.style.padding = "10px 20px";
+    btn.style.margin = "15px 0";
+    btn.style.fontSize = "18px";
+    btn.style.lineHeight = "1.3";
+    btn.parent = para;
+    auto label = new TextNode(btn, "two");
+    btn.children ~= label;
+    para.children ~= btn;
+    para.elements ~= btn;
+    parent.children ~= para;
+    parent.elements ~= para;
+
+    auto flow = FlowContext();
+    flow.x = 0; flow.y = 0; flow.width = 600; flow.height = 600;
+    flow.lineEnd = 600;
+    layoutBlock(parent, flow, 600, null);
+
+    assert(btn.box.marginTop == 15,
+        "a two-value margin shorthand must set the top, got " ~
+        btn.box.marginTop.to!string);
+    const lineBottom = btn.box.y + btn.box.height + btn.box.paddingTop +
+        btn.box.borderTop + btn.box.paddingBottom + btn.box.borderBottom +
+        btn.box.marginBottom;
+    const paraContentTop = para.box.y + para.box.borderTop + para.box.paddingTop;
+    assert(para.box.height == lineBottom - paraContentTop,
+        "the line must contain the inline-block's margin box: paragraph " ~
+        para.box.height.to!string ~ "px vs line bottom " ~
+        lineBottom.to!string ~ "px from content top " ~
+        paraContentTop.to!string ~ "px (box y=" ~ btn.box.y.to!string ~
+        " h=" ~ btn.box.height.to!string ~ " pad=" ~
+        btn.box.paddingTop.to!string ~ "," ~ btn.box.paddingBottom.to!string ~
+        " margin=" ~ btn.box.marginTop.to!string ~ "," ~
+        btn.box.marginBottom.to!string ~ " para y=" ~ para.box.y.to!string ~
+        " parent y=" ~ parent.box.y.to!string ~ " flow=" ~
+        flow.y.to!string ~ "," ~ flow.contentBottom.to!string ~
+        "," ~ flow.inlineBottomAbs.to!string ~ ")");
+}
+
+
+unittest
+{
+    // --- Inline run separation (CSS Text 3 4.1.1) ---
+    // A collapsible space between an inline element and the text after it is a
+    // word separator. A run's leading whitespace used to be dropped
+    // unconditionally, so "<a>DOCUMENTATION</a> end" painted "DOCUMENTATIONend".
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        auto first = new TextNode(container, "1 inline: ");
+        auto link = new Element("a");
+        link.style.display = "inline";
+        link.parent = container;
+        auto linkText = new TextNode(link, "DOCUMENTATION");
+        link.children ~= linkText;
+        auto last = new TextNode(container, " end");
+        container.children ~= first;
+        container.children ~= link;
+        container.children ~= last;
+        container.elements ~= link;
+
+        assert(collapsibleText(container, last) == " end",
+            "a run after an inline element keeps its separator, got '" ~
+            collapsibleText(container, last) ~ "'");
+        assert(collapsibleText(container, first) == "1 inline: ",
+            "a run's trailing space before inline content is kept, got '" ~
+            collapsibleText(container, first) ~ "'");
+
+        // The first node of a formatting context begins a line, so its leading
+        // whitespace still collapses away: the rule that keeps markup indentation
+        // out of a paragraph's advance.
+        auto para = new Element("p");
+        auto only = new TextNode(para, "\n   Hello");
+        para.children ~= only;
+        assert(collapsibleText(para, only) == "Hello",
+            "leading whitespace of a line's first run is dropped, got '" ~
+            collapsibleText(para, only) ~ "'");
+
+        // A whitespace-only node between two inline elements is a separator too.
+        auto between = new TextNode(container, "\n  ");
+        auto link2 = new Element("a");
+        link2.style.display = "inline";
+        container.children ~= between;
+        container.children ~= link2;
+        container.elements ~= link2;
+        assert(collapsibleText(container, between) == " ",
+            "whitespace between inline elements collapses to one space, got '" ~
+            collapsibleText(container, between) ~ "'");
+    }
+
+    // --- A block-level box in an inline context keeps document order ---
+    // CSS 2.1 9.2.1.1: the text before it becomes an anonymous block box that
+    // stays above it. The run was flushed only when it also contained an inline
+    // ELEMENT, so the nested block was placed first and its line came out above
+    // the label that precedes it.
+    {
+        auto container = new Element("div");
+        container.style.display = "block";
+        container.style.width = "200px";
+        auto label = new TextNode(container, "2 block:");
+        auto block = new Element("span");
+        block.style.display = "block";
+        block.parent = container;
+        auto blockText = new TextNode(block, "DOCUMENTATION");
+        block.children ~= blockText;
+        container.children ~= label;
+        container.children ~= block;
+        container.elements ~= block;
+
+        auto flow = FlowContext();
+        flow.x = 0;
+        flow.y = 0;
+        flow.width = 200;
+        flow.height = 200;
+        flow.lineEnd = 200;
+        layoutChildren(container, flow, null);
+        assert(label.layoutY < block.box.y,
+            "the text before a block stays above it: label y=" ~
+            label.layoutY.to!string ~ " block y=" ~ block.box.y.to!string);
     }
 }
 

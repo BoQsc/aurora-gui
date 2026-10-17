@@ -679,6 +679,13 @@ private void renderChildren(Tag[] tags, size_t start, ubyte[] px, int w, int h,
     // artwork in a translating <g>, which then painted shifted and clipped.
     Mat[] levelT;
     levelT ~= parentTransform;
+    // Presentation attributes inherit down the tree exactly as transforms do:
+    // `fill` on a <g> applies to the shapes inside it (SVG 1.1 section 11.3).
+    // Only the transform used to be carried, so a container's fill was dropped
+    // and its shapes fell back to `currentColor` - djangoproject.com's wordmark
+    // sets a white fill on a <g> and turned near-black in the dark theme.
+    StyleCtx[] levelCtx;
+    levelCtx ~= ctx;
 
     for (size_t i = start; i < tags.length; i++)
     {
@@ -699,8 +706,10 @@ private void renderChildren(Tag[] tags, size_t start, ubyte[] px, int w, int h,
             continue;
         }
 
-        // Local style: inherit, then apply this element's presentation attrs.
-        auto local = ctx;
+        // Local style: inherit from the enclosing container, then apply this
+        // element's presentation attributes.
+        auto local = depth - 1 < cast(int) levelCtx.length
+            ? levelCtx[depth - 1] : ctx;
         local.depth = depth;
         applyPresentation(t, local);
         auto it = "transform" in t.attrs;
@@ -731,6 +740,9 @@ private void renderChildren(Tag[] tags, size_t start, ubyte[] px, int w, int h,
                     // The group's own transform is what its children inherit.
                     if (levelT.length <= depth) levelT.length = depth + 1;
                     levelT[depth] = local.transform;
+                    // Its presentation attributes, likewise.
+                    if (levelCtx.length <= depth) levelCtx.length = depth + 1;
+                    levelCtx[depth] = local;
                     depth++;
                 }
             }
@@ -1609,6 +1621,29 @@ unittest
         "<rect x='1' y='1' width='4' height='4' fill='#ffffff'/></g></svg>";
     auto id2 = decodeSvg(cast(const(ubyte)[]) d2);
     assert(id2 !is null && id2.width() == 20, "curves and transforms must rasterise");
+
+    // Presentation attributes inherit through containers (SVG 1.1 section
+    // 11.3): a `<g fill>` colours the shapes inside it even when they carry no
+    // fill of their own. djangoproject.com's wordmark is exactly this markup,
+    // and without the rule its paths took the element's CSS colour.
+    auto gf = "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>" ~
+        "<g fill='#ff0000'><rect width='8' height='8'/></g></svg>";
+    auto igf = decodeSvg(cast(const(ubyte)[]) gf);
+    assert(igf !is null, "a group-filled SVG must rasterise");
+    {
+        auto pgf = igf.pixels();
+        const midGf = (4 * 8 + 4) * 4;
+        assert(pgf[midGf] >= 200 && pgf[midGf + 1] <= 60 && pgf[midGf + 2] <= 60,
+            "a <g fill> must colour the shapes inside it; got " ~
+            to!string([pgf[midGf], pgf[midGf + 1], pgf[midGf + 2], pgf[midGf + 3]]));
+    }
+    // A group that turns the fill off must clear it for its own subtree only.
+    auto gn = "<svg xmlns='http://www.w3.org/2000/svg' width='8' height='8'>" ~
+        "<g fill='#ff0000'><g fill='none'><rect width='8' height='8'/></g></g></svg>";
+    auto ign = decodeSvg(cast(const(ubyte)[]) gn);
+    assert(ign !is null, "a fill='none' group must still rasterise");
+    assert(ign.pixels()[(4 * 8 + 4) * 4 + 3] == 0,
+        "a nested fill='none' must clear the inherited fill");
 
     // Other formats must not be claimed by the SVG path.
     auto png = cast(const(ubyte)[]) "\x89PNG\r\n\x1a\n";

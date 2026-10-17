@@ -10,24 +10,31 @@ module auroraweb.dombind;
  */
 
 import auroraweb.dom : AttrMap, ComputedStyle, Element, TextNode;
-import auroraweb.css : Selector, selectorMatches;
+import auroraweb.css : Selector, mediaQueryMatches, selectorMatches;
 import auroraweb.js : JsFuncDelegate, JsKind, JsObject, JsRuntime, JsScope,
     JsScriptFunc, JsValue;
+import auroraweb.net : Url;
 
 import std.array : split;
 import std.conv : to;
-import std.string : indexOf, strip, toLower, toUpper;
+import std.string : indexOf, replace, strip, toLower, toUpper;
 
 /// Bind a DOM tree into a JS runtime. Returns the `document` object value.
 /// `resourceLoader` (if given) enables the `fetch` global for page scripts:
 /// the loader is called with a URL string and must return the raw response
 /// bytes (or null on failure).
+/// `documentUrl` is the address the document was loaded from; `location`, and
+/// the origin a cookie is stored against, answer from it. `viewportWidth` and
+/// `viewportHeight` are the layout viewport the page is rendered in, which
+/// `window.innerWidth`/`innerHeight` and `matchMedia` report.
 JsValue bindDocument(Element root, JsRuntime rt, ref JsScope jsScope,
-    ubyte[] delegate(string url) @safe resourceLoader = null)
+    ubyte[] delegate(string url) @safe resourceLoader = null,
+    string documentUrl = "", int viewportWidth = 0, int viewportHeight = 0)
 {
     auto binder = new DocumentBinder(rt);
     _hostBinders[rt] = binder;
-    return binder.bind(root, jsScope, resourceLoader);
+    return binder.bind(root, jsScope, resourceLoader, documentUrl,
+        viewportWidth, viewportHeight);
 }
 
 /// One binder per bound document/runtime, so the HOST (the browser shell) can
@@ -88,6 +95,172 @@ void setDocumentScroll(JsRuntime rt, int scrollY)
         (*b).setViewportScroll(scrollY);
 }
 
+/// Publish the layout viewport size to the page (`window.innerWidth`,
+/// `innerHeight` and the conditions `matchMedia` answers). The host pushes it
+/// exactly like the scroll offset, so a resize keeps a page's view current
+/// instead of leaving it with the size the document was first bound at.
+void setViewportSize(JsRuntime rt, int width, int height)
+{
+    if (rt is null) return;
+    if (auto b = rt in _hostBinders)
+        (*b).setViewportSize(width, height);
+}
+
+/// One stored cookie: its value and the epoch second it expires at. `0` means a
+/// session cookie, which lasts for this document's lifetime.
+struct Cookie
+{
+    string value;
+    long expires;
+}
+
+/// The current time in whole seconds since the Unix epoch.
+private long unixNow()
+{
+    import std.datetime : Clock;
+    return Clock.currTime().toUnixTime();
+}
+
+/// Parse an integer, or 0 when the text is not one (`max-age=garbage`).
+private long parseLongOrZero(string text)
+{
+    auto t = text.strip();
+    if (t.length == 0) return 0;
+    long sign = 1;
+    size_t i = 0;
+    if (t[0] == '-' || t[0] == '+')
+    {
+        sign = t[0] == '-' ? -1 : 1;
+        i = 1;
+    }
+    if (i >= t.length) return 0;
+    long value = 0;
+    for (; i < t.length; ++i)
+    {
+        if (t[i] < '0' || t[i] > '9') return 0;
+        value = value * 10 + (t[i] - '0');
+    }
+    return sign * value;
+}
+
+/// Parse a cookie `expires` date (`Wed, 21 Oct 2015 07:28:00 GMT`, the only
+/// format left in use; the two 1990s formats differ only in separators).
+///
+/// Returns false for text that is not such a date: per the cookie spec an
+/// invalid `expires` attribute is ignored, which leaves the cookie a session
+/// cookie rather than deleting it.
+private bool parseCookieDate(string text, out long unixSeconds)
+{
+    static immutable months = ["jan", "feb", "mar", "apr", "may", "jun",
+        "jul", "aug", "sep", "oct", "nov", "dec"];
+    int day = -1, month = -1, year = -1, hour = 0, minute = 0, second = 0;
+    bool haveTime = false;
+    foreach (field; text.replace(",", " ").split())
+    {
+        if (indexOf(field, ":") >= 0)
+        {
+            auto time = field.split(":");
+            if (time.length != 3) continue;
+            hour = cast(int) parseLongOrZero(time[0]);
+            minute = cast(int) parseLongOrZero(time[1]);
+            second = cast(int) parseLongOrZero(time[2]);
+            haveTime = true;
+        }
+        else if (field.length == 4 && allDigits(field))
+            year = cast(int) parseLongOrZero(field);
+        else if (month < 0)
+        {
+            foreach (i, name; months)
+                if (field.toLower() == name) { month = cast(int) i; break; }
+        }
+        else if (day < 0 && allDigits(field))
+            day = cast(int) parseLongOrZero(field);
+    }
+    if (day < 0 || month < 0 || year < 0 || !haveTime) return false;
+    import std.datetime : DateTime, SysTime, UTC;
+    try
+    {
+        unixSeconds = SysTime(DateTime(year, month + 1, day, hour, minute, second), UTC()).toUnixTime();
+        return true;
+    }
+    catch (Exception exc)
+    {
+        return false;   // out-of-range fields: not a date we can honour
+    }
+}
+
+/// `true` when every character of `text` is an ASCII digit.
+private bool allDigits(string text)
+{
+    if (text.length == 0) return false;
+    foreach (c; text)
+        if (c < '0' || c > '9') return false;
+    return true;
+}
+
+/// Keep an `on<event>` DOM property wired to the engine's listener storage:
+/// `window.onload = fn` and `document.onclick = fn` must fire exactly like
+/// `addEventListener("load", fn)`, because the host dispatches the stored
+/// listener rather than reading the property.
+private void rememberHandler(JsObject target, string key, JsValue value)
+{
+    if (target is null || value.kind != JsKind.func) return;
+    if (key.length <= 2 || key[0 .. 2] != "on") return;
+    target.set("__event_" ~ key[2 .. $], value);
+}
+
+/// The platform name the engine reports to `navigator.platform`.
+private string hostPlatformName()
+{
+    version (Windows) return "Win32";
+    version (linux) return "Linux x86_64";
+    version (OSX) return "MacIntel";
+    return "Unknown";
+}
+
+/// Apply one `document.cookie = "name=value; expires=...; max-age=..."`.
+///
+/// `path`, `domain` and `secure` are parsed and ignored: the engine holds one
+/// document, so there is no second origin or path a cookie could be scoped
+/// against. `max-age` (and an `expires` in the past) deletes the cookie, and a
+/// cookie written with an explicit lifetime is dropped once it has passed.
+private void applyCookie(ref Cookie[string] jar, string text)
+{
+    auto parts = text.split(";");
+    if (parts.length == 0) return;
+    auto first = parts[0].strip();
+    auto eq = indexOf(first, "=");
+    if (eq <= 0) return;                     // no name: nothing to store
+    const name = first[0 .. eq].strip();
+    if (name.length == 0) return;
+    Cookie c;
+    c.value = first[eq + 1 .. $].strip();
+    bool remove = false;
+    foreach (attrRaw; parts[1 .. $])
+    {
+        auto attr = attrRaw.strip();
+        auto aeq = indexOf(attr, "=");
+        const key = (aeq < 0 ? attr : attr[0 .. aeq]).strip().toLower();
+        const val = aeq < 0 ? "" : attr[aeq + 1 .. $].strip();
+        if (key == "max-age")
+        {
+            const seconds = parseLongOrZero(val);
+            if (seconds <= 0) remove = true;
+            else c.expires = unixNow() + seconds;
+        }
+        else if (key == "expires")
+        {
+            long when;
+            if (parseCookieDate(val, when))
+            {
+                if (when <= unixNow()) remove = true;
+                else c.expires = when;
+            }
+        }
+    }
+    if (remove) jar.remove(name);
+    else jar[name] = c;
+}
 private final class DocumentBinder
 {
     JsObject[Element] wrappers;
@@ -95,6 +268,13 @@ private final class DocumentBinder
     JsRuntime rt;
     JsValue documentValue;   /// The bound `document` object (for document events).
     JsValue windowValue;     /// The bound `window` object (for window events).
+    /// Layout viewport the document is bound in: what `window.innerWidth`,
+    /// `innerHeight` and the conditions `matchMedia` answers report.
+    int viewportWidth;
+    int viewportHeight;
+    /// The document's cookie jar by name. A bound document is one origin on one
+    /// page load, so a name/value plus an expiry is all `document.cookie` needs.
+    Cookie[string] cookies;
 
     this(JsRuntime rt)
     {
@@ -102,8 +282,11 @@ private final class DocumentBinder
     }
 
     JsValue bind(Element root, ref JsScope jsScope,
-        ubyte[] delegate(string url) @safe resourceLoader)
+        ubyte[] delegate(string url) @safe resourceLoader, string documentUrl,
+        int viewportWidth, int viewportHeight)
     {
+        this.viewportWidth = viewportWidth;
+        this.viewportHeight = viewportHeight;
         // Build the document object.
         auto docObj = new JsObject();
         docObj.set("title", rt.makeString(documentTitle(root)));
@@ -274,6 +457,92 @@ private final class DocumentBinder
         windowObj.set("document", docVal);
         jsScope.declare("window", JsValue(JsKind.object, windowObj));
 
+        // location: the address the document was loaded from. A page reads it
+        // to decide whether it is running on its own host (`location.hostname`
+        // guards the Django site's search wiring) and to build absolute URLs.
+        auto locationValue = makeLocation(documentUrl);
+        windowObj.set("location", locationValue);
+        docObj.set("location", locationValue);
+        jsScope.declare("location", locationValue);
+
+        // The layout viewport, which scripts read to branch on the screen size.
+        windowObj.set("innerWidth", rt.makeNumber(viewportWidth));
+        windowObj.set("innerHeight", rt.makeNumber(viewportHeight));
+        windowObj.set("outerWidth", rt.makeNumber(viewportWidth));
+        windowObj.set("outerHeight", rt.makeNumber(viewportHeight));
+        // The engine paints one device pixel per CSS pixel, so the ratio is 1.
+        windowObj.set("devicePixelRatio", rt.makeNumber(1.0));
+        auto screenObj = rt.makeObject();
+        screenObj.obj.set("width", rt.makeNumber(viewportWidth));
+        screenObj.obj.set("height", rt.makeNumber(viewportHeight));
+        screenObj.obj.set("availWidth", rt.makeNumber(viewportWidth));
+        screenObj.obj.set("availHeight", rt.makeNumber(viewportHeight));
+        windowObj.set("screen", screenObj);
+        // The viewport names are globals too, exactly as in a browser: a page
+        // writes `innerWidth` as often as `window.innerWidth`, and a bare name
+        // that lives only on the window object resolves to nothing.
+        jsScope.declare("innerWidth", rt.makeNumber(viewportWidth));
+        jsScope.declare("innerHeight", rt.makeNumber(viewportHeight));
+        jsScope.declare("outerWidth", rt.makeNumber(viewportWidth));
+        jsScope.declare("outerHeight", rt.makeNumber(viewportHeight));
+        jsScope.declare("devicePixelRatio", rt.makeNumber(1.0));
+        jsScope.declare("screen", screenObj);
+
+        // matchMedia: answers from the same evaluator the stylesheet's `@media`
+        // rules use, so a script's test and the sheet it guards cannot disagree.
+        auto matchMediaValue = rt.makeNativeFunc((thisValue, args, rt2) {
+            return makeMediaQueryList(args.length ? rt2.toJsString(args[0]) : "");
+        });
+        windowObj.set("matchMedia", matchMediaValue);
+        jsScope.declare("matchMedia", matchMediaValue);
+
+        // document.cookie: the document's cookie jar, reached through a read
+        // hook and a write hook. The write hook forwards every other assignment
+        // (`document.title = ...`) to the object's ordinary properties.
+        docObj.set("__get_cookie", rt.makeNativeFunc((thisValue, args, rt2) {
+            return rt2.makeString(cookieHeader());
+        }));
+        docObj.set("__setHandler", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2 || thisValue.obj is null) return rt2.makeUndefined();
+            const key = rt2.toJsString(args[0]);
+            if (key == "cookie")
+            {
+                applyCookie(cookies, rt2.toJsString(args[1]));
+                return rt2.makeUndefined();
+            }
+            rememberHandler(thisValue.obj, key, args[1]);
+            thisValue.obj.set(key, args[1]);
+            return rt2.makeUndefined();
+        }));
+
+        // localStorage/sessionStorage: the Web Storage API, which pages keep
+        // small state in (the Django site remembers the chosen theme in one).
+        auto local = makeStorage();
+        auto session = makeStorage();
+        windowObj.set("localStorage", local);
+        windowObj.set("sessionStorage", session);
+        jsScope.declare("localStorage", local);
+        jsScope.declare("sessionStorage", session);
+
+        // navigator: scripts feature-detect through it. It must not claim to be
+        // Chrome or Firefox — a page that branches on a false user-agent string
+        // takes the wrong path — so it names this engine.
+        auto navObj = rt.makeObject();
+        navObj.obj.set("userAgent", rt.makeString("Mozilla/5.0 (compatible; AuroraWeb/0.1)"));
+        navObj.obj.set("appName", rt.makeString("AuroraWeb"));
+        navObj.obj.set("appVersion", rt.makeString("5.0 (compatible; AuroraWeb/0.1)"));
+        navObj.obj.set("platform", rt.makeString(hostPlatformName()));
+        navObj.obj.set("language", rt.makeString("en-US"));
+        auto languagesArr = rt.makeArray();
+        languagesArr.obj.set("0", rt.makeString("en-US"));
+        languagesArr.obj.arrayLength = 1;
+        navObj.obj.set("languages", languagesArr);
+        navObj.obj.set("cookieEnabled", rt.makeBoolean(true));
+        navObj.obj.set("onLine", rt.makeBoolean(true));
+        navObj.obj.set("doNotTrack", rt.makeString(""));
+        windowObj.set("navigator", navObj);
+        jsScope.declare("navigator", navObj);
+
         // Global Event constructor: new Event("click") returns a dispatchable
         // event object (type + preventDefault/stopPropagation stubs). Arbitrary
         // props (key, bubbles, ...) can be assigned afterwards by scripts.
@@ -306,9 +575,257 @@ private final class DocumentBinder
             rt.installFetchBuiltin();
         }
 
-        documentValue = docVal;
+        // `window` IS the global object in a browser: a name that is not a
+        // property of it still resolves (`window.setTimeout`, `window.fetch`),
+        // and assigning to one creates a global. These two hooks bridge the
+        // directions, so page code that spells a global either way works.
         windowValue = JsValue(JsKind.object, windowObj);
+        windowObj.set("window", windowValue);
+        windowObj.set("self", windowValue);
+        windowObj.set("globalThis", windowValue);
+        windowObj.set("top", windowValue);
+        windowObj.set("parent", windowValue);
+        jsScope.declare("self", windowValue);
+        jsScope.declare("globalThis", windowValue);
+        jsScope.declare("top", windowValue);
+        jsScope.declare("parent", windowValue);
+        windowObj.set("__getHandler", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0 || thisValue.obj is null) return rt2.makeUndefined();
+            return rt2.globalScope.get(rt2.toJsString(args[0]));
+        }));
+        windowObj.set("__setHandler", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2 || thisValue.obj is null) return rt2.makeUndefined();
+            const key = rt2.toJsString(args[0]);
+            if (key == "location")
+            {
+                // `window.location = "..."` means "navigate there". The engine
+                // cannot start a load from inside a script call, so the target
+                // is recorded as the address the page now reports.
+                auto target = args[1];
+                auto loc = thisValue.obj.get("location");
+                if (loc.obj !is null && target.kind == JsKind.string)
+                    loc.obj.set("href", target);
+                return rt2.makeUndefined();
+            }
+            rememberHandler(thisValue.obj, key, args[1]);
+            // Assigning to a `window` property creates a global in a browser.
+            if (!thisValue.obj.has(key)) rt2.globalScope.declare(key, args[1]);
+            thisValue.obj.set(key, args[1]);
+            return rt2.makeUndefined();
+        }));
+        documentValue = docVal;
         return docVal;
+    }
+
+    /// Build the `location` object for the document's address: the parts page
+    /// code reads (`href`, `host`, `hostname`, `pathname`, ...).
+    private JsValue makeLocation(string url)
+    {
+        auto obj = rt.makeObject();
+        string scheme, host, path, query, fragment;
+        ushort port;
+        if (url.length)
+        {
+            auto parsed = Url.parse(url);
+            if (parsed.ok)
+            {
+                scheme = parsed.scheme;
+                host = parsed.host;
+                port = parsed.port;
+                path = parsed.path;
+                query = parsed.query;
+                fragment = parsed.fragment;
+            }
+        }
+        // A default port is not part of the host a page prints: `location.host`
+        // on https://example.com is "example.com", never "example.com:443".
+        const defaultPort = cast(ushort) (scheme == "https" ? 443 : 80);
+        if (port == defaultPort) port = 0;
+        const authority = port ? host ~ ":" ~ to!string(port) : host;
+        obj.obj.set("href", rt.makeString(url));
+        obj.obj.set("protocol", rt.makeString(scheme.length ? scheme ~ ":" : ""));
+        obj.obj.set("hostname", rt.makeString(host));
+        obj.obj.set("host", rt.makeString(authority));
+        obj.obj.set("port", rt.makeString(port ? to!string(port) : ""));
+        obj.obj.set("pathname", rt.makeString(path.length ? path : (url.length ? "/" : "")));
+        obj.obj.set("search", rt.makeString(query.length ? "?" ~ query : ""));
+        obj.obj.set("hash", rt.makeString(fragment.length ? "#" ~ fragment : ""));
+        obj.obj.set("origin", rt.makeString(scheme.length && host.length
+            ? scheme ~ "://" ~ authority : ""));
+        obj.obj.set("toString", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto self = thisValue.obj !is null ? thisValue.obj.get("href") : JsValue.init;
+            return rt2.makeString(self.kind == JsKind.string ? self.strValue : "");
+        }));
+        // Navigation entry points. A page that calls them must not throw, but
+        // the engine cannot begin a load from inside a script call, so they
+        // record the target address instead of following it.
+        JsFuncDelegate navigate = (thisValue, args, rt2) {
+            if (args.length && thisValue.obj !is null)
+                thisValue.obj.set("href", rt2.makeString(rt2.toJsString(args[0])));
+            return rt2.makeUndefined();
+        };
+        obj.obj.set("assign", rt.makeNativeFunc(navigate));
+        obj.obj.set("replace", rt.makeNativeFunc(navigate));
+        obj.obj.set("reload", rt.makeNativeFunc((thisValue, args, rt2) {
+            return rt2.makeUndefined();
+        }));
+        return obj;
+    }
+
+    /// A `MediaQueryList` for `window.matchMedia(query)`. `.matches` answers
+    /// from the viewport the document is laid out in, evaluated by the same code
+    /// the stylesheet's `@media` rules use. The engine reflows only when the
+    /// host re-lays out the page, so a registered `change` listener is kept but
+    /// is not fired by a viewport change.
+    private JsValue makeMediaQueryList(string query)
+    {
+        auto obj = rt.makeObject();
+        obj.obj.set("media", rt.makeString(query));
+        obj.obj.set("matches", rt.makeBoolean(mediaQueryMatches(query, viewportWidth, viewportHeight)));
+        obj.obj.set("__setHandler", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2 || thisValue.obj is null) return rt2.makeUndefined();
+            rememberHandler(thisValue.obj, rt2.toJsString(args[0]), args[1]);
+            thisValue.obj.set(rt2.toJsString(args[0]), args[1]);
+            return rt2.makeUndefined();
+        }));
+        auto listen = rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2 || thisValue.obj is null || args[1].kind != JsKind.func)
+                return rt2.makeUndefined();
+            thisValue.obj.set("__event_change", args[1]);
+            return rt2.makeUndefined();
+        });
+        JsFuncDelegate drop = (thisValue, args, rt2) {
+            if (thisValue.obj !is null)
+                thisValue.obj.set("__event_change", rt2.makeUndefined());
+            return rt2.makeUndefined();
+        };
+        obj.obj.set("addEventListener", listen);
+        obj.obj.set("addListener", listen);      // the pre-2016 spelling
+        obj.obj.set("removeEventListener", rt.makeNativeFunc(drop));
+        obj.obj.set("removeListener", rt.makeNativeFunc(drop));
+        obj.obj.set("dispatchEvent", rt.makeNativeFunc((thisValue, args, rt2) {
+            return rt2.makeBoolean(true);
+        }));
+        return obj;
+    }
+
+    /// A `Storage` object (`localStorage`/`sessionStorage`): the methods a page
+    /// calls plus property-style access (`localStorage.theme = "dark"`), which
+    /// pages use interchangeably with `setItem`. The engine has no persistent
+    /// profile store, so both areas last for this document.
+    private JsValue makeStorage()
+    {
+        auto store = rt.makeObject();
+        store.obj.kind = "Storage";
+        string[] order;             // insertion order, which `key(i)` reports
+        string[string] items;
+        void put(string key, string value)
+        {
+            if (key in items) items[key] = value;
+            else
+            {
+                items[key] = value;
+                order ~= key;
+            }
+        }
+        void take(string key)
+        {
+            if (key in items) items.remove(key);
+            foreach (i, existing; order)
+                if (existing == key)
+                {
+                    order = order[0 .. i] ~ order[i + 1 .. $];
+                    break;
+                }
+        }
+        store.obj.set("getItem", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeNull();
+            auto found = rt2.toJsString(args[0]) in items;
+            return found is null ? rt2.makeNull() : rt2.makeString(*found);
+        }));
+        store.obj.set("setItem", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length >= 2) put(rt2.toJsString(args[0]), rt2.toJsString(args[1]));
+            return rt2.makeUndefined();
+        }));
+        store.obj.set("removeItem", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length) take(rt2.toJsString(args[0]));
+            return rt2.makeUndefined();
+        }));
+        store.obj.set("clear", rt.makeNativeFunc((thisValue, args, rt2) {
+            items = null;
+            order = null;
+            return rt2.makeUndefined();
+        }));
+        store.obj.set("key", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeNull();
+            auto index = args[0];
+            if (index.kind != JsKind.number && index.kind != JsKind.string)
+                return rt2.makeNull();
+            const text = index.kind == JsKind.string
+                ? index.strValue.strip()
+                : to!string(cast(long) index.numValue);
+            if (!allDigits(text)) return rt2.makeNull();
+            const i = parseLongOrZero(text);
+            if (i < 0 || i >= order.length) return rt2.makeNull();
+            return rt2.makeString(order[cast(size_t) i]);
+        }));
+        // Property-style access reads and writes the same map the methods use.
+        store.obj.set("__getHandler", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length == 0) return rt2.makeUndefined();
+            const key = rt2.toJsString(args[0]);
+            if (key == "length") return rt2.makeNumber(cast(double) order.length);
+            auto found = key in items;
+            return found is null ? rt2.makeUndefined() : rt2.makeString(*found);
+        }));
+        store.obj.set("__setHandler", rt.makeNativeFunc((thisValue, args, rt2) {
+            if (args.length < 2) return rt2.makeUndefined();
+            put(rt2.toJsString(args[0]), rt2.toJsString(args[1]));
+            return rt2.makeUndefined();
+        }));
+        return store;
+    }
+
+    /// The `document.cookie` string: this document's live cookies as
+    /// `name=value` pairs separated by "; ".
+    private string cookieHeader()
+    {
+        const now = unixNow();
+        string text;
+        foreach (name, c; cookies)
+        {
+            if (c.expires != 0 && c.expires <= now) continue;
+            if (text.length) text ~= "; ";
+            text ~= name ~ "=" ~ c.value;
+        }
+        return text;
+    }
+
+    /// Update the viewport the page sees after the host resized it.
+    void setViewportSize(int width, int height)
+    {
+        viewportWidth = width;
+        viewportHeight = height;
+        void publish(string name, double value)
+        {
+            rt.globalScope.declare(name, rt.makeNumber(value));
+        }
+        publish("innerWidth", width);
+        publish("innerHeight", height);
+        publish("outerWidth", width);
+        publish("outerHeight", height);
+        if (windowValue.obj is null) return;
+        windowValue.obj.set("innerWidth", rt.makeNumber(width));
+        windowValue.obj.set("innerHeight", rt.makeNumber(height));
+        windowValue.obj.set("outerWidth", rt.makeNumber(width));
+        windowValue.obj.set("outerHeight", rt.makeNumber(height));
+        auto screenObj = windowValue.obj.get("screen");
+        if (screenObj.obj !is null)
+        {
+            screenObj.obj.set("width", rt.makeNumber(width));
+            screenObj.obj.set("height", rt.makeNumber(height));
+            screenObj.obj.set("availWidth", rt.makeNumber(width));
+            screenObj.obj.set("availHeight", rt.makeNumber(height));
+        }
     }
 
     /// Build a minimal Fetch API Response object from the resource loader.
@@ -2655,4 +3172,77 @@ unittest
     }
     walk(root);
     assert(domText == "new", "DOM text node not updated, got '" ~ domText ~ "'");
+}
+
+unittest
+{
+    import auroraweb.html : parseHtml;
+    import auroraweb.js : parseScript;
+
+    // The browser surface a real page's own scripts reach for: `matchMedia`
+    // answered from the layout viewport, the `document.cookie` jar, the Web
+    // Storage areas, `location` and its parts, and the two directions of the
+    // `window` bridge (a global read through `window`, and an assignment to a
+    // `window` property becoming a global). The Django site's theme switcher
+    // uses every one of these before it can show its icons.
+    auto root = parseHtml(`<html><body><p id="p">hi</p></body></html>`);
+    auto rt = parseScript(
+        `__mq = window.matchMedia("(min-width: 100px) and (max-width: 1000px)").matches;` ~
+        `__mqFar = matchMedia("(min-width: 5000px)").matches;` ~
+        `__mqMedia = matchMedia("(min-width: 100px)").media;` ~
+        `__inner = window.innerWidth + "x" + innerHeight;` ~
+        `__setTimeout = typeof setTimeout;` ~
+        `document.cookie = "theme=dark; path=/";` ~
+        `document.cookie = "seen=1";` ~
+        `__cookie = document.cookie;` ~
+        `localStorage.setItem("theme", "dark");` ~
+        `localStorage.other = "x";` ~
+        `__store = localStorage.getItem("theme");` ~
+        `__storeProp = localStorage.other;` ~
+        `__storeLen = localStorage.length;` ~
+        `__storeKey0 = localStorage.key(0);` ~
+        `localStorage.removeItem("other");` ~
+        `__storeLen2 = localStorage.length;` ~
+        `__missing = String(localStorage.getItem("nope"));` ~
+        `__href = location.href;` ~
+        `__host = location.hostname;` ~
+        `__path = location.pathname;` ~
+        `document.title = "t";` ~
+        `__docTitle = document.title;` ~
+        `window.created = 42;` ~
+        `__created = created;` ~
+        `__selfIsWindow = (window === self);`);
+    bindDocument(root, rt, rt.globalScope, null, "https://example.com/x?q=1", 640, 480);
+    rt.runScript(rt.makeObject());
+
+    string get(string name)
+    {
+        return rt.toJsString(rt.globalScope.get(name));
+    }
+    assert(get("__mq") == "true", "matchMedia in range: " ~ get("__mq"));
+    assert(get("__mqFar") == "false", "matchMedia out of range: " ~ get("__mqFar"));
+    assert(get("__mqMedia") == "(min-width: 100px)", "media string: " ~ get("__mqMedia"));
+    assert(get("__inner") == "640x480", "innerWidth/innerHeight: " ~ get("__inner"));
+    assert(get("__setTimeout") == "function", "global through window: " ~ get("__setTimeout"));
+    assert(get("__cookie") == "theme=dark; seen=1", "cookie header: " ~ get("__cookie"));
+    assert(get("__store") == "dark", "storage getItem: " ~ get("__store"));
+    assert(get("__storeProp") == "x", "storage property read: " ~ get("__storeProp"));
+    assert(get("__storeLen") == "2", "storage length: " ~ get("__storeLen"));
+    assert(get("__storeKey0") == "theme", "storage key(0): " ~ get("__storeKey0"));
+    assert(get("__storeLen2") == "1", "storage length after remove: " ~ get("__storeLen2"));
+    assert(get("__missing") == "null", "missing item is null: " ~ get("__missing"));
+    assert(get("__href") == "https://example.com/x?q=1", "location.href: " ~ get("__href"));
+    assert(get("__host") == "example.com", "location.hostname: " ~ get("__host"));
+    assert(get("__path") == "/x", "location.pathname: " ~ get("__path"));
+    assert(get("__docTitle") == "t", "document.title: " ~ get("__docTitle"));
+    assert(get("__created") == "42", "window property became a global: " ~ get("__created"));
+    assert(get("__selfIsWindow") == "true", "window === self: " ~ get("__selfIsWindow"));
+
+    // A resize is published to the page, so its `innerWidth` and `matchMedia`
+    // answer the viewport it is laid out in rather than the one it was bound at.
+    setViewportSize(rt, 800, 600);
+    rt.runProgram(rt.parseInto(`__w = innerWidth + "x" + innerHeight;` ~
+        `__wide = matchMedia("(min-width: 700px)").matches;`), rt.makeObject());
+    assert(get("__w") == "800x600", "resized innerWidth: " ~ get("__w"));
+    assert(get("__wide") == "true", "resized matchMedia: " ~ get("__wide"));
 }
