@@ -163,6 +163,13 @@ void setScreenMedia(bool isScreen)
     g_screenMedia = isScreen;
 }
 
+/// One `unicode-range` segment: a closed range of code points.
+struct FontRange
+{
+    uint lo;   /// First code point in the segment.
+    uint hi;   /// Last code point in the segment (`== lo` for a single one).
+}
+
 /// One parsed `@font-face` rule: the family it defines and the first source the
 /// engine can actually decode.
 struct WebFontFace
@@ -171,6 +178,13 @@ struct WebFontFace
     string weight;      /// `font-weight` descriptor ("400", "bold", "700 900" -> "700").
     string style;       /// `font-style` descriptor ("normal"/"italic"/"oblique").
     string url;         /// First `src` url() whose format we can decode.
+    string display;     /// `font-display` descriptor ("auto" when it is absent).
+    /// `unicode-range` segments, empty when the descriptor is absent. A subset
+    /// face declares the code points it can draw, so a caller can skip the
+    /// subsets a document's own text cannot use instead of fetching them all:
+    /// Google Fonts serves three to six subsets per weight, of which a page
+    /// usually needs one.
+    FontRange[] ranges;
 }
 
 /**
@@ -308,10 +322,107 @@ WebFontFace[] parseFontFaces(string css)
             }
             else if (prop == "font-style") face.style = value.toLower();
             else if (prop == "src") face.url = pickFontSrc(value);
+            else if (prop == "font-display") face.display = value.toLower();
+            else if (prop == "unicode-range") face.ranges = parseUnicodeRange(value);
         }
         if (face.family.length && face.url.length) faces ~= face;
     }
     return faces;
+}
+
+/// Parse 1-6 hexadecimal digits into a code point (false when the text is not a
+/// hexadecimal number).
+private bool hexCodePoint(scope const(char)[] text, out uint code)
+{
+    if (text.length == 0 || text.length > 6) return false;
+    uint acc;
+    foreach (c; text)
+    {
+        uint d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return false;
+        acc = acc * 16 + d;
+    }
+    code = acc;
+    return true;
+}
+
+/// Parse one `unicode-range` descriptor into code-point segments. A segment that
+/// does not parse is dropped; an empty result leaves the face unconstrained.
+FontRange[] parseUnicodeRange(string value)
+{
+    FontRange[] ranges;
+    foreach (part; value.split(","))
+    {
+        auto text = part.strip();
+        if (text.length < 3 || (text[0] != 'u' && text[0] != 'U') || text[1] != '+')
+            continue;
+        text = text[2 .. $];
+        uint lo, hi;
+        bool ok;
+        const dash = indexOf(text, "-");
+        if (dash > 0)
+            ok = hexCodePoint(text[0 .. dash].strip(), lo)
+                && hexCodePoint(text[dash + 1 .. $].strip(), hi);
+        else if (indexOf(text, "?") >= 0)
+        {
+            // `U+04??` spans every code point its question marks can stand for.
+            char[] low = text.dup;
+            char[] high = text.dup;
+            foreach (i, c; text)
+                if (c == '?') { low[i] = '0'; high[i] = 'F'; }
+            ok = hexCodePoint(low, lo) && hexCodePoint(high, hi);
+        }
+        else if (hexCodePoint(text, lo))
+        {
+            hi = lo;
+            ok = true;
+        }
+        if (ok && lo <= hi && hi <= 0x10FFFF) ranges ~= FontRange(lo, hi);
+    }
+    return ranges;
+}
+
+/// `unicode-range` is what lets a page fetch only the subsets its text uses.
+unittest
+{
+    auto faces = parseFontFaces("@font-face{font-family:S;src:url(a.woff2);"
+        ~ "unicode-range:U+0000-00FF,U+0131,U+2000-206F}");
+    assert(faces.length == 1 && faces[0].ranges.length == 3,
+        "every segment of the descriptor is kept");
+    assert(faces[0].ranges[0].lo == 0 && faces[0].ranges[0].hi == 0xFF,
+        "a range keeps both of its ends");
+    assert(faces[0].ranges[1].lo == 0x131 && faces[0].ranges[1].hi == 0x131,
+        "a single code point spans itself");
+    assert(faces[0].ranges[2].lo == 0x2000 && faces[0].ranges[2].hi == 0x206F,
+        "the last segment is kept too");
+
+    // The question marks of `U+04??` stand for any hex digit, and a face that
+    // says nothing about its ranges stays unconstrained.
+    faces = parseFontFaces("@font-face{font-family:W;src:url(b.woff2);"
+        ~ "unicode-range:U+04??}");
+    assert(faces[0].ranges.length == 1 && faces[0].ranges[0].lo == 0x400
+        && faces[0].ranges[0].hi == 0x4FF, "a wildcard segment spans its nibbles");
+    faces = parseFontFaces("@font-face{font-family:N;src:url(c.woff2)}");
+    assert(faces[0].ranges.length == 0, "an absent unicode-range constrains nothing");
+}
+
+/// `font-display` describes whether text may be painted before a face arrives.
+unittest
+{
+    // Google Fonts' `&display=swap` response declares the descriptor that lets
+    // a page paint in the fallback face while the download is in flight.
+    auto faces = parseFontFaces("@font-face{font-family:S;"
+        ~ "src:url(a.woff2) format('woff2');font-display:swap}");
+    assert(faces.length == 1 && faces[0].display == "swap",
+        "the font-display descriptor is kept so callers can honour it");
+
+    // A sheet that says nothing gets CSS's own default, which does not swap.
+    faces = parseFontFaces("@font-face{font-family:B;src:url(b.woff2) format('woff2')}");
+    assert(faces.length == 1 && faces[0].display.length == 0,
+        "an absent font-display stays absent, i.e. CSS's `auto`");
 }
 
 /// `@font-face` sources are picked by what this engine can decode.

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>flex table grid geometry</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; color: #000000; }
+  /* Font is irrelevant here: every case is a solid rectangle, so no glyph can
+     decide a pixel. That is what lets the whole frame be compared byte-exact
+     against an independent Edge capture at the same 1280x638 viewport. */
+  body { font-size: 0; }
+  .case { position: absolute; }
+
+  /* 1. A padded flex container must stretch its item across the content box:
+     width is already the content box, so the item spans 300px, not 300-60. */
+  .c1 { left: 20px; top: 20px; width: 300px; height: 60px;
+        padding: 0 30px; display: flex; background: #c8c8c8; }
+  .c1 > i { flex: 1; height: 40px; background: #336699; }
+
+  /* 2. Cross-axis centring must move the item's whole box, not just its own
+     origin, so the painted rectangle sits centred in an 80px row. */
+  .c2 { left: 20px; top: 100px; width: 300px; height: 80px;
+        display: flex; align-items: center; background: #d8d8d8; }
+  .c2 > i { width: 60px; height: 34px; background: #993333; }
+
+  /* 3. A padded table container lays its cell out in the content box. */
+  .c3 { left: 20px; top: 200px; width: 300px; padding: 0 25px;
+        display: table; background: #e4e4e4; }
+  .c3 > i { display: table-cell; width: 100px; height: 50px; background: #339933; }
+
+  /* 4. A padded grid container's tracks span the content box. */
+  .c4 { left: 20px; top: 280px; width: 300px; height: 40px; padding: 12px 34px;
+        display: grid; grid-template-columns: 1fr 1fr; background: #dcdcdc; }
+  .c4 > i { height: 40px; background: #663399; }
+
+  /* 5. A unitless zero box-shadow spread stays zero and the shadow keeps its
+     full 10px offset instead of being inset by a stray -1px. */
+  .c5 { left: 480px; top: 20px; width: 120px; height: 60px;
+        background: #f0c040; box-shadow: 10px 10px 0 0 #000000; }
+</style>
+</head>
+<body>
+  <div class="case c1"><i></i></div>
+  <div class="case c2"><i></i></div>
+  <div class="case c3"><i></i></div>
+  <div class="case c4"><i></i><i></i></div>
+  <div class="case c5"></div>
+</body>
+</html>

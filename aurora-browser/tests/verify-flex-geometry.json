@@ -1,0 +1,104 @@
+{
+  "inputs": [
+    "aurora-web/source",
+    "aurora-browser/source",
+    "vendor/aurora-d-0.4.5/source",
+    "aurora-browser/tests/pageshot-probe.d",
+    "aurora-browser/tests/png2ppm.py",
+    "aurora-browser/tests/reference/flex-geometry.html",
+    "aurora-browser/tests/reference/flex-geometry.edge.png"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-version=AuroraHeadless",
+          "-i",
+          "-Iaurora-web/source",
+          "-Iaurora-browser/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/geomshot.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/geombuild",
+          "aurora-browser/tests/pageshot-probe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-unittest",
+          "-main",
+          "-i",
+          "-Iaurora-web/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/layout-ut.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/layoutut",
+          "aurora-web/source/auroraweb/layout.d"
+        ],
+        "workdir": ".",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/layout-ut.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/geomshot.exe",
+        "args": [
+          "--fixture",
+          "C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-browser/tests/reference/flex-geometry.html",
+          "1280",
+          "638",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/flex-geometry.actual.ppm"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/png2ppm.py",
+          "aurora-browser/tests/reference/flex-geometry.edge.png",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/flex-geometry.reference.ppm"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/flex-geometry.reference.ppm",
+      "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/flex-geometry.actual.ppm",
+      "maxDifferentPixels": 0,
+      "channelTolerance": 0,
+      "referenceSource": "INDEPENDENT ORACLE, NOT AN AURORA-TO-AURORA BASELINE: this frame is rendered by Microsoft Edge, captured on 2026-10-17 with `\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --headless=new --force-device-scale-factor=1 --window-size=1280,638 --hide-scrollbars --no-first-run --no-default-browser-check --user-data-dir=<scratch>\\edge-prof-geom --screenshot=aurora-browser/tests/reference/flex-geometry.edge.png file:///<repo>/aurora-browser/tests/reference/flex-geometry.html`. The fixture holds five box-geometry cases, each a solid rectangle so that no glyph can decide a pixel, at the engine's own 1280x638 page viewport and 1x device scale: (1) a flex container with padding 0 30px must stretch its item across its 300px content box, not its content box minus its own padding; (2) a flex row with align-items:center must paint the item's whole box centred, so the rectangle sits at (80-34)/2 in the 80px row; (3) a padded display:table container lays its cell out in the content box; (4) a padded display:grid container's two 1fr tracks span the content box; (5) a unitless-zero box-shadow spread stays zero, so the shadow keeps its full 10px offset. The engine renders the same fixture through aurora-browser/tests/pageshot-probe.d --fixture at the same 1280x638 viewport (no app chrome, no scaling), and the two frames are compared pixel-for-pixel with channelTolerance 0."
+    }
+  ]
+}

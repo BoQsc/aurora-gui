@@ -1066,6 +1066,9 @@ final class WebPageView : Widget
         auto clipped = canvas.clipped(Rect(0, 0, size().width, size().height));
         auto translated = clipped.translated(0, -_scrollY);
         _page.paint(translated, 0, 0);
+        // A painted frame is what a `font-display: swap` face waits for: this
+        // frame is on screen, so the next pass may fetch the real face.
+        _page.notePaint();
         // Scrollbar indicator (right edge).
         if (_contentHeight > size().height)
         {

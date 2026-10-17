@@ -116,6 +116,92 @@ Measured on the user's own large page `https://boqsc.eu/` (183 KB of HTML,
 Larger numbers for an unoptimized probe build (1998 ms / 14-24 ms / 745 ms) are
 recorded in `rendering-status.md`.
 
+### Measured: time to first content (progressive loading)
+
+The load used to be a single blocking call: the stylesheet, every web font and
+every image were fetched before any frame, so the page showed nothing until the
+last byte. Measured with `loadtime.d`, the unoptimized probe whose numbers
+`rendering-status.md` records, at the same viewports:
+
+| Measurement | One blocking load | First paint split from images | Now: images streamed, no pass waits for them |
+| --- | --- | --- | --- |
+| boqsc.eu, first content on screen | 8502 ms | 1758 ms (document + first layout) + 30 ms (first frame) | 1669.9 ms (1641.0 ms document + first layout, 28.8 ms first frame) |
+| boqsc.eu, settled | ~9.6 s | 7.99 s (best of four runs; 2.2 s of it is the page's own 3.5 MB PNG, 1.2 s the 24 pooled web-font files, 2.4 s the pass that re-measures the text once the real faces are registered) | 5978.5 ms after 49 frames; 2338.9 ms of it is the page's own 3.5 MB PNG, and the frame that collects and decodes that image is 148.0 ms |
+| djangoproject.com, first content | 1642 ms | 1308 ms (document + first layout) + 19 ms | 1274.3 ms (1255.2 ms document + first layout, 19.0 ms first frame) |
+| djangoproject.com, settled | 1934 ms | 1679 ms | 1628.2 ms after 6 frames |
+
+What changed: a document's first passes fetch no network image and each later pass
+fetches a ramped number of them (2, then 4, 8, 16); a pass's images go out
+**together** on worker threads instead of one after another - the trace shows one
+shared start offset for a whole batch (boqsc.eu's two images at 2160.3 ms and its
+next three at 3462.8 ms, djangoproject.com's three at 1460.0-1460.2 ms, each
+against a 1.3-2.2 s transfer, so they overlap), and the profiler process now
+exits 0; `font-display: swap` faces wait for a painted frame
+(`WebPage.notePaint`, called from `WebPageView.onPaint`) before downloading and
+re-measuring; and the UA advertises woff2, which the engine decodes, so Google
+Fonts negotiates woff2 subsets instead of ~1.4 MB of full TrueType faces. The
+fidelity evidence is unchanged: `verify-render.json` still renders
+djangoproject.com to the same frame (`CBAC1963...`, 0 mismatched) and the three
+Edge corpora still pass 0 mismatched.
+
+The image batch then stopped blocking the pass that started it. A pass records the
+URLs it would fetch, hands them to a worker (`WebPage.startImageBatch`) and
+returns to paint; a later pass collects the responses and decodes them on the main
+thread (`collectImageBatch`, both in `aurora-web/source/auroraweb/package.d`).
+Measured on `loadtime.d` at the same viewports: on djangoproject.com the two
+requests went out at 1311.4 ms while frames 2-5 took 19-29 ms, and on boqsc.eu the
+two icons went out at 1709.5 ms while frames 3-48 took 40-61 ms each, against a
+1167.0 ms and a 2338.9 ms transfer no frame waited for. Only the pass that
+collects a landed batch pays: 24.1 ms on djangoproject.com, 1587.3 ms on boqsc.eu
+for the 1.65 MB icon pair and the 3.5 MB PNG it then decodes.
+
+Two elements naming one image no longer fetch it twice. The collect-only walk
+that sizes the next batch recorded a URL whose response the same pass was about
+to decode, and `mayFetch` charged budget for a URL already in the resource cache,
+so djangoproject.com's footer logo - the same SVG its header names - cost a fresh
+78-90 ms request for bytes in hand. After the fix each page requests every image
+URL exactly once, djangoproject.com's two batches are (logo, heart) then
+(threespot, andrevv), and its settle fell from 1859 ms to 1628 ms.
+
+**What the batch costs, measured.** The worker-exit path is understood now: a
+worker must not leave a *pooled* connection behind, because the process then dies
+at shut-down with 0xC0000005 (re-measured this session with an engine-linked
+probe: two workers fetching one-shot exit clean, two workers pooling fault). So
+every worker request is one-shot (`Connection: close`) and pays a handshake of
+its own. That is cheap against a fast host - the image batches above overlap two
+and three ways - and expensive against a slow one. A worker batch of the 24
+web-font files to fonts.gstatic.com returned nothing at all: every request
+stalled 26 s and came back an empty response, and capping the batch at six still
+failed. A standalone probe measured the limit: 2 concurrent one-shot fetches to
+that host 2/2 in 3.9 s, 4 concurrent 4/4 in 9.9 s, 6 concurrent 0/6 in 13.2 s.
+The batch therefore runs in groups of at most six (`prefetchResponses`), and the
+web-font files are deliberately *not* batched: on the main thread's pooled
+connection the same 24 files cost 20-86 ms each after one 1211 ms handshake,
+about 1.2 s in total, against 13-26 s as a worker batch. Batching them was tried
+this session and reverted for exactly that reason.
+
+What is left is the page's own weight and third-party latency rather than
+serialisation the engine could remove: a 3.5 MB PNG takes 2.2 s wherever it is
+fetched, and Google Fonts' CSS alone costs 1.3-1.5 s of the blocking document
+load on boqsc.eu.
+
+**Profiled: the pass that registers the new faces, and the pass that waits for an
+image batch.** Timed in pieces on boqsc.eu, the 2.26-2.36 s pass that follows the
+first paint is 2.19-2.29 s of its face-registration loop against 68-120 ms of
+cascade and layout and 0 ms of image work, and inside that loop each of the 24
+faces costs a 20-85 ms fetch (1185 ms for the first, which pays the connection
+handshake) plus a 1-14 ms woff2 decode, under 1 ms of staging and a 4-6 ms font
+load. So that pass is waiting on the network, not decoding or re-measuring: 24
+files crossing one pooled keep-alive connection in sequence. A pass that started an
+image batch used to wait the same way and for the same reason - measured at
+1006-1166 ms inside `loadImages` for the two-image batch and 2183-2190 ms for the
+three-image one, against 25-30 ms of cascade and layout and 0-83 ms of image work
+in the passes with nothing to wait for. That wait is gone, see the streaming
+numbers above. Neither wait was CPU the engine could speed up;
+the lever is fewer and better-overlapped requests (Google Fonts serves three to
+six `unicode-range` subsets per weight, of which a Latin page needs one), not a
+faster pass.
+
 ## Backlog: explicitly not claimed
 
 - **Glyph-exact text.** Advances, baselines and wrap points differ from

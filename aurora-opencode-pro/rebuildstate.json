@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Living-planning-0.66.18",
+  "reason": "Append-plan-items-0.66.20",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-17 10:23:52.5716248 UTC",
-  "finishedAt": "2026-10-17 10:24:44.0262375 UTC",
-  "durationMs": 51453,
+  "startedAt": "2026-10-17 11:41:36.3470527 UTC",
+  "finishedAt": "2026-10-17 11:42:15.8578875 UTC",
+  "durationMs": 39511,
   "exitCode": 0,
   "errors": []
 }

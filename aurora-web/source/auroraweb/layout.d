@@ -3825,6 +3825,17 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
         cbH = cb.box.height + cb.box.paddingTop + cb.box.paddingBottom;
     }
 
+    // An out-of-flow element normally never takes the in-flow child path that
+    // resolves its own box, yet everything below reads box.margin*, box.padding*
+    // and box.border* as already resolved - and so do the content origin and
+    // painted box of a flex/grid/table container. Without this,
+    // `position:absolute; width:300px; padding:0 30px` laid out and painted as a
+    // 300px box with no padding at all and started its items at the border edge,
+    // while Edge paints the 360px padding box and starts them at x=50.
+    // Resolving here (the containing block width is known by now) keeps this
+    // ahead of every consumer and is idempotent across passes.
+    resolveBoxMetrics(element, cbW);
+
     const w = resolveWidth(element, cbW);
     const h = style.resolveLength(style.height, cbH);
     element.box.width = w;
@@ -5821,12 +5832,21 @@ private bool isTableCell(Element e)
 /// Basic table layout: table -> rows -> cells.
 private void layoutTable(Element element, ref FlowContext flow, Element positionedAncestor)
 {
-    resolveBoxMetrics(element, flow.width);
-    element.box.x = flow.x + element.box.marginLeft;
-    element.box.y = collapsedTopY(flow, element);
+    // An out-of-flow table's box is already placed - and its padding resolved -
+    // by layoutAbsolute. Setting it from this flow a second time added the
+    // padding twice, so `position:absolute; left:20px; padding:0 25px` landed at
+    // x=45 and, with the flow's cursor, threw the cells further off still.
+    const bool positioned = element.style.position == "absolute" ||
+        element.style.position == "fixed";
+    if (!positioned)
+    {
+        resolveBoxMetrics(element, flow.width);
+        element.box.x = flow.x + element.box.marginLeft;
+        element.box.y = collapsedTopY(flow, element);
+        element.box.width = resolveWidth(element, flow.width);
+    }
     // As in `layoutFlex`: `width` is the content box, so cells span `width` itself.
-    const width = resolveWidth(element, flow.width);
-    element.box.width = width;
+    const width = element.box.width;
 
     const innerX = element.box.x + element.box.paddingLeft + element.box.borderLeft;
     const innerY = element.box.y + element.box.paddingTop + element.box.borderTop;
@@ -5845,6 +5865,25 @@ private void layoutTable(Element element, ref FlowContext flow, Element position
         if (ce.tag == "tr" || ce.style.display == "table-row")
         {
             rows ~= ce;
+            rowCount++;
+        }
+    }
+    if (rows.length == 0)
+    {
+        // CSS 17.2: bare cell children of a table container are wrapped in an
+        // anonymous table row. It generates no box, but it does the row's work -
+        // without it `display:table` + `display:table-cell` laid out as an
+        // all-zero table, since only `<tr>` and `display:table-row` matched.
+        auto anon = new Element("div");
+        anon.style.display = "table-row";
+        foreach (child; element.children)
+        {
+            auto ce = cast(Element) child;
+            if (ce !is null && isTableCell(ce)) anon.elements ~= ce;
+        }
+        if (anon.elements.length)
+        {
+            rows ~= anon;
             rowCount++;
         }
     }

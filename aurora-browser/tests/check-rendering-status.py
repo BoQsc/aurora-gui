@@ -95,6 +95,15 @@ class RenderingStatusRecord(unittest.TestCase):
             "the served Roboto-Light woff2 hash that pins the decode is missing",
         )
 
+    def test_box_model_corpus_recorded(self):
+        for required in ("aurora-browser/tests/reference/flex-geometry.html",
+                         "aurora-browser/tests/reference/flex-geometry.edge.png",
+                         "aurora-browser/tests/verify-flex-geometry.json",
+                         "anonymous table row",
+                         "38,404 mismatched of 816,640"):
+            with self.subTest(required=required):
+                self.assertIn(required, self.text)
+
     def test_no_stale_claims(self):
         for stale in ("19 rows", "next item to close", "compressed formats",
                       "`woff2` is the remaining format gap",

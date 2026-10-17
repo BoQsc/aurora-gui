@@ -20,6 +20,7 @@ import std.array : split, join;
 import std.conv : to;
 import std.string : indexOf, lastIndexOf, toLower, strip;
 import std.zlib : uncompress;
+import std.stdio : stderr;
 
 import auroraweb.transport : ByteTransport, TcpTransport, TransportException;
 import auroraweb.tls : TlsTransport;
@@ -453,7 +454,15 @@ private struct PooledConnection
     MonoTime used;
 }
 
-private PooledConnection[string] _connectionPool;
+/// Process-wide, not thread-local: a pass's image batch is fetched on more than
+/// one thread (see package.prefetchResponses). A thread-local pool is destroyed
+/// when its thread exits, and a worker thread dying with a live connection in it
+/// faults the process during shut-down with 0xC0000005 - measured with a
+/// standalone engine probe: a worker thread running `httpFetch` exits
+/// -1073741819 when the pool is left populated, and exits 0 when the same run
+/// empties that thread's pool first. A connection belongs to whichever thread
+/// takes it out of the pool until it puts it back or closes it.
+private __gshared PooledConnection[string] _connectionPool;
 
 /// A page opens a handful of origins (document host, static host, analytics);
 /// a burst of one-off hosts must not grow this without bound.
@@ -503,40 +512,68 @@ private void dropOldestPooledConnection()
     }
 }
 
+import core.sync.mutex : Mutex;
+
+/// The pool's lock is process-wide too. Held only for the map itself, never
+/// across a socket operation.
+private __gshared Mutex _poolMutex;
+
+/// Guard for `cookieJar`.
+private __gshared Mutex _jarMutex;
+
+/// A non-shared `static this()` runs in every thread, so it would hand each
+/// thread its own lock (and wipe the pool) - the guard has to be the shared one.
+shared static this()
+{
+    _connectionPool = null;
+    _poolMutex = new Mutex;
+    _jarMutex = new Mutex;
+    _loadTraceMutex = new Mutex;
+}
+
 /// Take the pooled connection for `key` out of the pool, if there is one.
 private bool takePooledConnection(string key, out ByteTransport conn,
     out HttpStream stream)
 {
-    pruneConnectionPool();
-    if (auto hit = key in _connectionPool)
+    synchronized (_poolMutex)
     {
-        auto entry = *hit;
-        _connectionPool.remove(key);
-        if (entry.conn is null || entry.stream is null) return false;
-        conn = entry.conn;
-        stream = entry.stream;
-        return true;
+        pruneConnectionPool();
+        if (auto hit = key in _connectionPool)
+        {
+            auto entry = *hit;
+            _connectionPool.remove(key);
+            if (entry.conn is null || entry.stream is null) return false;
+            conn = entry.conn;
+            stream = entry.stream;
+            return true;
+        }
+        return false;
     }
-    return false;
 }
 
 /// Keep a connection for the next request to the same origin.
 private void keepPooledConnection(string key, ByteTransport conn,
     HttpStream stream)
 {
-    if (conn is null || stream is null) return;
-    pruneConnectionPool();
-    _connectionPool[key] = PooledConnection(conn, stream, MonoTime.currTime);
-    while (_connectionPool.length > maxPooledConnections)
-        dropOldestPooledConnection();
+    synchronized (_poolMutex)
+    {
+        if (conn is null || stream is null) return;
+        pruneConnectionPool();
+        _connectionPool[key] = PooledConnection(conn, stream, MonoTime.currTime);
+        while (_connectionPool.length > maxPooledConnections)
+            dropOldestPooledConnection();
+    }
 }
 
 /// Forget every pooled connection (tests, and a full cache clear).
 void clearConnectionPool()
 {
-    foreach (key; _connectionPool.keys)
-        _connectionPool[key].conn.close();
-    _connectionPool = null;
+    synchronized (_poolMutex)
+    {
+        foreach (key; _connectionPool.keys)
+            _connectionPool[key].conn.close();
+        _connectionPool = null;
+    }
 }
 
 /// Connect a fresh TCP (and, for `https`, TLS) connection and its read stream.
@@ -672,8 +709,76 @@ private bool exchange(ByteTransport conn, HttpStream stream, const(ubyte)[] req,
 /// and extra headers. Redirects are followed up to 10 hops (relative and
 /// absolute). Never throws for ordinary network failures; returns an
 /// `HttpResponse` with `error` set instead.
+/// Opt-in per-request trace. Every resource the engine loads - the document,
+/// stylesheets, scripts, images, fonts - comes through `httpFetch`, so turning
+/// this on attributes a page open's wall-clock time to individual requests
+/// instead of guessing at it. Off by default: it costs one clock read per
+/// request and writes only when a profile run has asked for it.
+/// Shared, not thread-local: the host sets it once before a profile run and
+/// every thread has to see it. A thread-local flag hid the requests a worker
+/// issued (measured: the batch's second request was fetched and reported by the
+/// batch, but never traced).
+__gshared bool loadTraceEnabled = false;
+
+/// Origin for the trace's start offsets: the first traced fetch of a run. The
+/// trace line is written when a request finishes, so without the start offset a
+/// reader cannot tell two requests that overlapped from two that queued - which
+/// is the whole point of issuing a pass's images together.
+private __gshared bool loadTraceStarted;
+private __gshared MonoTime loadTraceOrigin;
+
+/// Serialises the trace's writes. A pass's images are fetched on worker threads,
+/// so several lines can be produced at the same instant; unlocked writes to one
+/// stream interleave (a line straddling another) and a lost line makes a
+/// concurrent batch read as a serial one.
+private __gshared Mutex _loadTraceMutex;
+
+/// Write one line of the opt-in load trace.
+void loadTrace(Args...)(Args args)
+{
+    synchronized (_loadTraceMutex)
+    {
+        stderr.write(args, "\n");
+        stderr.flush();
+    }
+}
+
+/// Fetch a URL. Wraps `httpFetchTraced` with the opt-in trace above.
+///
+/// `keepAlive` false asks for a one-shot request: the request says
+/// `Connection: close`, no pooled connection is taken or kept, and the socket is
+/// closed by the fetch itself. Off-thread callers (the engine's image batch) use
+/// it: a worker that keeps a pooled connection alive while the process exits
+/// takes the process down with it (measured: 0xC0000005 after the batch has
+/// already reported 200 for every URL; the same batch without keep-alive exits
+/// clean). The pool belongs to the thread that issues the page's own fetches.
 HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
-    string[string] extraHeaders = null)
+    string[string] extraHeaders = null, bool keepAlive = true)
+{
+    const started = MonoTime.currTime;
+    auto res = httpFetchTraced(url, method, body, extraHeaders, keepAlive);
+    if (loadTraceEnabled)
+    {
+        if (!loadTraceStarted)
+        {
+            loadTraceStarted = true;
+            loadTraceOrigin = started;
+        }
+        const ms = (MonoTime.currTime - started).total!"nsecs" / 1.0e6;
+        const at = (started - loadTraceOrigin).total!"nsecs" / 1.0e6;
+        import std.format : format;
+        loadTrace(format("fetch %8.1f ms at %8.1f ms  %s  %s", ms, at, url,
+            res.error.length ? "ERROR: " ~ res.error
+                             : "HTTP " ~ to!string(res.status) ~ "  " ~
+                               to!string(res.body.length) ~ " bytes"));
+    }
+    return res;
+}
+
+/// The fetch itself, without the trace wrapper.
+private HttpResponse httpFetchTraced(string url, string method = "GET",
+    ubyte[] body = null, string[string] extraHeaders = null,
+    bool keepAlive = true)
 {
     HttpResponse res;
     res.finalUrl = url;
@@ -694,7 +799,7 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
         ByteTransport conn;
         HttpStream stream;
         const key = poolKey(u);
-        const reused = takePooledConnection(key, conn, stream);
+        const reused = keepAlive && takePooledConnection(key, conn, stream);
         if (!reused && !openConnection(u, conn, stream, res)) return res;
 
         string target = u.path.length ? u.path : "/";
@@ -706,7 +811,15 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
 
         string req = method ~ " " ~ target ~ " HTTP/1.1\r\n"
             ~ "Host: " ~ hostHeader ~ "\r\n"
-            ~ "User-Agent: Mozilla/5.0 (Aurora Browser)\r\n"
+            // Content negotiation reads this string. Google Fonts' CSS API
+            // serves full TrueType faces - measured at 1.4 MB across eleven
+            // files on one real page - to an agent it does not recognise, and
+            // woff2 to a browser it does. The engine decodes woff2 (woff2.d
+            // over brotli.d), so it advertises the compatible token real
+            // browsers advertise while still naming itself.
+            ~ "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+              ~ "AppleWebKit/537.36 (KHTML, like Gecko) Aurora Browser/0.66 "
+              ~ "Chrome/120.0.0.0 Safari/537.36\r\n"
             ~ "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
             ~ "Accept-Encoding: gzip, deflate\r\n"
             ~ "Connection: keep-alive\r\n";
@@ -735,7 +848,7 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
             conn.close();
             return res;
         }
-        if (reusable) keepPooledConnection(key, conn, stream);
+        if (keepAlive && reusable) keepPooledConnection(key, conn, stream);
         else conn.close();
 
         // Redirect.
@@ -864,8 +977,11 @@ struct Cookie
     bool secure;    /// Only sent over HTTPS.
 }
 
-/// Module-level cookie jar shared by all `httpFetch` calls.
-Cookie[] cookieJar;
+/// Cookie jar shared by all `httpFetch` calls. Process-wide, like the pool: a
+/// `Set-Cookie` seen by a fetch running on a worker thread (see
+/// package.prefetchResponses) belongs to the browser, and a thread-local jar
+/// would silently drop it when that thread ended. Guarded by `_jarMutex`.
+__gshared Cookie[] cookieJar;
 
 /// Check whether `body` starts with the gzip magic bytes `1f 8b`.
 bool looksLikeGzip(ubyte[] body)
@@ -935,20 +1051,23 @@ ubyte[] decodeBody(ubyte[] data, string encoding)
 /// existing cookie with the same name/domain/path.
 private void storeSetCookie(string setCookieValue, string url)
 {
-    auto u = Url.parse(url);
-    if (!u.ok) return;
-    auto cookie = parseSetCookie(setCookieValue, u.host, u.path);
-    if (cookie.name.length == 0) return;
-    foreach (i, c; cookieJar)
+    synchronized (_jarMutex)
     {
-        if (c.name == cookie.name && c.domain == cookie.domain &&
-            c.path == cookie.path)
+        auto u = Url.parse(url);
+        if (!u.ok) return;
+        auto cookie = parseSetCookie(setCookieValue, u.host, u.path);
+        if (cookie.name.length == 0) return;
+        foreach (i, c; cookieJar)
         {
-            cookieJar[i] = cookie;
-            return;
+            if (c.name == cookie.name && c.domain == cookie.domain &&
+                c.path == cookie.path)
+            {
+                cookieJar[i] = cookie;
+                return;
+            }
         }
+        cookieJar ~= cookie;
     }
-    cookieJar ~= cookie;
 }
 
 /// Parse a single `Set-Cookie` header value into a `Cookie`. `defaultDomain`
@@ -1009,19 +1128,22 @@ Cookie parseSetCookie(string header, string defaultDomain, string defaultPath)
 /// request path; Secure cookies are only sent over HTTPS.
 string cookieHeader(string url)
 {
-    if (cookieJar.length == 0) return "";
-    auto u = Url.parse(url);
-    if (!u.ok) return "";
-
-    string[] pieces;
-    foreach (c; cookieJar)
+    synchronized (_jarMutex)
     {
-        if (!cookieMatches(c, u.host, u.path, u.scheme == "https"))
-            continue;
-        pieces ~= c.name ~ "=" ~ c.value;
+        if (cookieJar.length == 0) return "";
+        auto u = Url.parse(url);
+        if (!u.ok) return "";
+
+        string[] pieces;
+        foreach (c; cookieJar)
+        {
+            if (!cookieMatches(c, u.host, u.path, u.scheme == "https"))
+                continue;
+            pieces ~= c.name ~ "=" ~ c.value;
+        }
+        if (pieces.length == 0) return "";
+        return "Cookie: " ~ pieces.join("; ");
     }
-    if (pieces.length == 0) return "";
-    return "Cookie: " ~ pieces.join("; ");
 }
 
 private bool cookieMatches(const Cookie c, string host, string path, bool https)

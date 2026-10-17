@@ -417,6 +417,25 @@ captures of `djangoproject.com` at 1280x800 with eight repaints taking
 1.33-1.61 s and the heavier `boqsc.eu` 8.58-8.99 s, so the network and paint
 phases still dominate a page open.
 
+Re-run against the engine with the non-blocking image batch and the shared-URL
+fetch fix in `aurora-web/source/auroraweb/package.d`, the three in-checkout
+corpora are green with every render step at `mismatchedPixels 0`, each reporting
+`43 modules passed unittests` and `PASS independent click-handler and
+link-destination assertions`: `browser-reference-layout` (`inputsSha256
+3FB3894B…`, six cases - flex-wrap, overflow-clip, relative-offset,
+stacking-order, table-layout, transform-translate),
+`browser-reference-line-height-normal` (`B1CD800E…`) and
+`browser-reference-web-font` (`A3460888…`, its frame `AB5E409B…` unchanged from
+the fixture-corrected re-freeze). The app recipe
+`aurora-browser/tests/verify-render.json` ran green end to end against the same
+engine at `inputsSha256 35CC2D40…`: compile, the smoke suite `ALL PASSED`, both
+captures, render `mismatchedPixels 0` of 1,024,000 with the frame byte-identical
+to its baseline (`CBAC1963…`), the release `aurora-browser-new.exe` compile and
+the live `djangoproject.com` capture - so the batching change moved no painted
+pixel. Its load effect is in `browser-completion-profile.md` (boqsc.eu first
+content 1669.9 ms and settle 5978.5 ms; djangoproject.com 1274.3 ms and
+1628.2 ms, from 1859 ms before the shared URL stopped being fetched twice).
+
 ## What those tools cannot see
 
 - **Live pages.** `boqsc.eu` and `djangoproject.com` are checked by rendering
@@ -431,6 +450,19 @@ phases still dominate a page open.
   window's framebuffer, logical size x display scale (1600x1000 at 125%), which
   no 1:1 reference can be compared against - the app is correct there too, and
   Edge at the same 125% device scale puts the same page at the same coordinates.
+  That scale is the platform's, never a stretched bitmap: the process selects
+  `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2` in a `shared static this()` before
+  any HWND exists (`vendor/aurora-d-0.4.5/source/aurora/platform/win32.d:195-242`),
+  the client area is created from the requested logical size through
+  `_displayScale.logicalToPhysical` (`win32.d:1068-1070`, re-applied by
+  `resizeClientToLogical` at `win32.d:1150` when the monitor DPI differs), and
+  layout stays in 96-DPI units while glyphs rasterize at the monitor's physical
+  size (`vendor/aurora-d-0.4.5/source/aurora/canvas.d:389-392`). Measured on this
+  machine on 2026-10-17: the desktop is 120 DPI (125%), an unaware process on it
+  reports a 1536x864 screen while an aware one reports 1920x1080, so a 1080x680
+  request is a 1350x850 physical client laying out 1080x680 CSS pixels - the same
+  convention Edge follows, which is why no other browser's window shows the page
+  at a different size or with Windows-stretched text here.
   The Edge oracle is unaffected, because it renders fixtures offscreen at scale 1.
 - **Text metrics.** Glyph advances, wrapping points and baselines differ from
   Edge's font stack, so cases are deliberately written without text where the
@@ -451,6 +483,51 @@ phases still dominate a page open.
   vertical text, scroll containers, filters and blend modes, canvas, media,
   colour management and native form control appearance are not claimed at all;
   the full list with its evidence lives in `browser-completion-profile.md`.
+
+## The in-repo independent geometry corpus
+
+The `aurora-opencode-pro/` checkout the corpora below were built in is no longer
+present, so their recipes cannot be re-run. The corpus that pins the box-model
+work that replaced them lives in this repository and needs no checkout:
+
+- `aurora-browser/tests/reference/flex-geometry.html` - five cases in a
+  1280x638 viewport: an absolutely positioned flex container with
+  `padding:0 25px`, the same for a grid container, a padded `display:table`
+  container whose only child is a bare `display:table-cell`, a padded
+  `display:grid` container whose two `1fr` tracks fill the content box, and a
+  unitless-zero `box-shadow` spread beside a 10px offset.
+- `aurora-browser/tests/reference/flex-geometry.edge.png` - the reference: a
+  1280x638, device scale factor 1 headless Edge capture of that fixture
+  (4,055 bytes).
+- `aurora-browser/tests/verify-flex-geometry.json` - the recipe: it compiles
+  `aurora-browser/tests/pageshot-probe.d`, runs the engine's layout module with
+  `-unittest -main` (21 modules pass), renders the fixture through the same
+  probe at the same viewport and compares the two frames pixel-for-pixel at
+  channel tolerance 0.
+
+It was written to measure a defect an Aurora-to-Aurora baseline cannot see: an
+out-of-flow element never takes the in-flow child path that runs
+`resolveBoxMetrics`, so `position:absolute; left:20px; width:300px;
+padding:0 25px` painted a 300px box with **no padding at all** and started its
+flex/grid/table items at the border edge, where Edge starts them 25px inside a
+360px padding box. `layoutAbsolute` now resolves an element's own box metrics
+against its containing block width before the width and inset math,
+`layoutTable` no longer re-places an out-of-flow table's box (that step added
+the padding a second time, moving x=20 to x=45), and bare cell children of a
+table container are wrapped in the anonymous table row of CSS 17.2, without
+which such a table laid out as an all-zero box.
+
+Measured on 2026-10-17: the corpus went from 38,404 mismatched of 816,640
+(`actualSha256 52A3D4CA…` against `referenceSha256 99A4A532…`) to **0 of
+816,640**, with the engine's layout unittests passing in the same run. The
+`aurora-opencode-pro/` corpora listed below are now the record of what earlier
+fixes pinned and cannot be re-verified, so this corpus is the current
+independent evidence for the box-model item region.
+
+`aurora-browser/tests/verify-render.json` is the Aurora-to-Aurora regression
+baseline, not an oracle. The same change moved it by 3 pixels of 1,024,000 (page
+rows 213-214 and 732), so its baseline was re-frozen to frame `3571CCE5…`, with
+the superseded frame kept beside it as `django29ref-pre-padbox.ppm`.
 
 ## Superseded corpora
 

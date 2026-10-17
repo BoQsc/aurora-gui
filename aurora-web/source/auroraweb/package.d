@@ -19,7 +19,7 @@ module auroraweb;
 import aurora.canvas : Canvas;
 import aurora.surface : Surface;
 import aurora.font : FontFace;
-import auroraweb.css : parseFontFaces, parseStylesheet, Rule;
+import auroraweb.css : parseFontFaces, parseStylesheet, Rule, WebFontFace;
 import auroraweb.dom : Element, TextNode;
 import auroraweb.dombind : bindDocument, dispatchHostEvent, dispatchHostEventNoBubble,
     dispatchDocumentEvent, evaluateIntersectionObservers, setDocumentScroll, setViewportSize;
@@ -469,6 +469,61 @@ private ubyte[] cacheResource(string url, ubyte[] bytes,
 }
 
 import std.string : indexOf, lastIndexOf, strip, startsWith, toLower;
+import std.parallelism : Task;
+
+/// Fetch an image batch on a worker thread and return its responses, by index.
+///
+/// A worker fetches and does nothing else - no DOM, no resource cache, no
+/// trace, no decode - so the calling thread stays the only one touching page
+/// state. The batch returns instead of waiting: its caller keeps painting, and
+/// a later pass collects the responses (see `WebPage.startImageBatch`).
+///
+/// The workers ask for one-shot requests (`net.httpFetch` with `keepAlive`
+/// false), because a worker that leaves a pooled connection behind takes the
+/// process down with it when it exits: measured, a batch reports HTTP 200 for
+/// every URL and the process then dies with 0xC0000005, while the same batch
+/// whose workers close their own connections exits clean. The connection pool
+/// therefore stays the calling thread's, and no worker ever mutates it.
+private HttpResponse[] fetchImageBatch(string[] urls)
+{
+    import auroraweb.net : httpFetch;
+    import std.parallelism : taskPool;
+    import std.range : iota;
+    auto responses = new HttpResponse[](urls.length);
+    // Requests started together. Two or three at once always succeeded here,
+    // but twenty-four at once against one host did not: every one of them
+    // stalled and came back 26 s later as an empty response. So the batch runs
+    // in groups, which is also what a browser does - it keeps a few
+    // connections per host, not one per pending request.
+    enum maxConcurrentRequests = 6;
+    foreach (start; iota(0, urls.length, maxConcurrentRequests))
+    {
+        const stop = start + maxConcurrentRequests < urls.length
+            ? start + maxConcurrentRequests : urls.length;
+        foreach (i; taskPool.parallel(iota(start, stop)))
+        {
+            try
+            {
+                auto res = httpFetch(urls[i], "GET", null, null, false);
+                // Recorded whatever it is, so the walk that collects this batch
+                // can mark the element tried either way: an image that failed
+                // must not be requested again on every following pass (that is
+                // how the inline path marked it, and the page would otherwise
+                // never settle).
+                responses[i] = res;
+            }
+            catch (Throwable t)
+            {
+                // One dead subresource must not fail the batch.
+                HttpResponse failed;
+                failed.finalUrl = urls[i];
+                failed.error = t.msg;
+                responses[i] = failed;
+            }
+        }
+    }
+    return responses;
+}
 
 /**
  * A single loaded web page: DOM, style, scripts, layout, and paint.
@@ -483,6 +538,10 @@ final class WebPage
     bool _documentBound;
     bool _layoutDirty = true;   /// Document/style/viewport changed since last layout.
     bool _imagesPending;        /// A layout pass deferred image fetches (see loadImages).
+    int _docPasses;             /// Completed layout passes for the current document.
+    int _imagePasses;           /// Passes that spent image budget (see loadImages).
+    bool _webFontsPending;      /// A layout pass deferred a `font-display: swap` download.
+    bool _paintedOnce;          /// A frame has been painted since the last navigation.
     size_t _styleInputs;        /// Fingerprint of the tree the styles were resolved from.
     int _docGen;                /// Bumped whenever the document tree is replaced.
     int _laidOutWidth = -1;     /// Viewport width used by the most recent layout.
@@ -502,6 +561,29 @@ final class WebPage
         _resourceLoaderWithHeaders;
     /// The URL of the document most recently loaded through `navigate()`.
     string _currentUrl;
+    /// Image URLs the current pass is fetching. `loadImages` walks the document
+    /// once to fill this (no network, no element flags touched), starts those
+    /// requests together, then walks again with the bytes in hand.
+    string[] _pendingImageUrls;
+    /// True during that first, collect-only walk: `fetchBytes` records the URL
+    /// instead of requesting it.
+    bool _collectingUrls;
+    /// Responses the pass's parallel batch already fetched, by URL, waiting for
+    /// the walk to decode them. Consumed (and emptied) as the walk runs.
+    HttpResponse[string] _prefetchedResponses;
+    /// The image batch this page started on its own thread and has not collected
+    /// yet, the URLs it is fetching, and whether it is still in flight. A pass
+    /// that waited for its own batch froze the window for the whole download -
+    /// measured 2.2 s for boqsc.eu's 1.6 MB + 3.5 MB pair, with the web-font
+    /// pass queued behind it - so a batch is started in one pass and collected
+    /// in a later one, and the frames in between paint with the bytes that have
+    /// already arrived.
+    /// `task()` hands back a heap Task, so the handle is a pointer. It is kept
+    /// for the whole batch and never freed by hand: the batch is one per pass,
+    /// and freeing it while the pool still refers to it is not worth the risk.
+    Task!(fetchImageBatch, string[])* _imageBatch;
+    string[] _imageBatchUrls;   /// URLs `_imageBatch` is fetching, in order.
+    bool _imageBatchInFlight;   /// `_imageBatch` was started, not yet collected.
 
     /// Global runtime (so scripts can be loaded incrementally).
     JsRuntime jsRuntime() { return _js; }
@@ -691,11 +773,47 @@ final class WebPage
     /// Fetch a URL and return the raw response bytes (empty on failure).
     ubyte[] fetchBytes(string url)
     {
-        // Stylesheets, images and scripts all arrive here, so consult the
-        // shared cache before touching the network.
         if (url.length)
+        {
+            // The pass's collect-only walk records what it would fetch instead
+            // of fetching it, so the whole batch can go out together.
+            if (_collectingUrls)
+            {
+                import std.algorithm.searching : canFind;
+                // A response this pass's batch already brought needs no request:
+                // recording it here sent the worker after bytes the pass was
+                // about to decode. djangoproject.com's header and footer both
+                // name the same logo SVG, and the second element cost a fresh
+                // 78 ms request for a file that was already in hand.
+                if (url in _prefetchedResponses) return (cast(ubyte[]) null);
+                // Nor does a URL whose bytes are already in the resource cache
+                // from an earlier pass - the same image named twice on a page,
+                // or an icon reused across pages.
+                if (auto hit = url in _resourceCache)
+                    if (mayReuse(*hit)) return (cast(ubyte[]) null);
+                // One request per URL: two elements naming the same image must
+                // not queue it twice.
+                if (!_pendingImageUrls.canFind(url)) _pendingImageUrls ~= url;
+                return (cast(ubyte[]) null);
+            }
+            // A response the pass's parallel batch already fetched. It enters the
+            // resource cache here, on the calling thread: a worker thread only
+            // fetches, because the cache, the trace and the decoder are not
+            // shared between threads.
+            if (auto pre = url in _prefetchedResponses)
+            {
+                auto res = *pre;
+                _prefetchedResponses.remove(url);
+                if (res.body.length == 0) return (cast(ubyte[]) null);
+                if (auto ct = "content-type" in res.headers)
+                    _resourceContentTypes[url] = *ct;
+                return cacheResource(url, res.body, res.headers);
+            }
+            // Stylesheets, images and scripts all arrive here, so consult the
+            // shared cache before touching the network.
             if (auto hit = url in _resourceCache)
                 if (mayReuse(*hit)) return (*hit).bytes;
+        }
         if (_resourceLoader !is null)
         {
             try
@@ -849,6 +967,14 @@ final class WebPage
         resetEventLoop();
         _root = parseHtml(html);
         ++_docGen;   // a new tree must always be styled, however alike it looks
+        // A new document gets a fresh pass count: its first frames paint markup
+        // and styles before any network image is fetched.
+        _docPasses = 0;
+        _deferredFaces = [];
+        _unusedFaces = [];
+        _unusedCodePoints = [];
+        _webFontsPending = false;
+        _paintedOnce = false;
         _layoutDirty = true;
         _rules = [];
         extractStyles();
@@ -1228,31 +1354,188 @@ final class WebPage
         if (!faces.length) return;
         foreach (face; faces)
         {
-            auto url = face.url;
-            if (!url.length) continue;
-            auto lower = url.toLower();
-            const isData = lower.length >= 5 && lower[0 .. 5] == "data:";
-            if (!isData && indexOf(url, "://") < 0)
-                url = normalizeUrlPath(resolveUrl(baseUrl, url));
-            if (auto cached = url in _webFontFaces)
+            // A face that declares `swap` (Google Fonts' `&display=swap`),
+            // `fallback` or `optional` must not hold up the first frames: the
+            // page paints in its fallback face now and the real one is
+            // downloaded while the page is already visible. Fonts measured
+            // 2.4 s - the largest single block - of one real page's first
+            // paint. `auto` and `block` keep the blocking behaviour.
+            if (defersFirstPaint(face) && _docPasses < 2)
             {
-                if (*cached !is null)
-                    registerWebFace(face.family, face.weight, face.style, *cached);
+                _deferredFaces ~= DeferredFace(face, baseUrl);
+                _webFontsPending = true;
                 continue;
             }
-            FontFace loaded;
-            try
-            {
-                auto bytes = isData ? decodeDataUrl(url) : fetchBytes(url);
-                if (bytes.length)
-                    loaded = FontFace.tryLoad(stageFontFile(fontBytesFor(bytes)), 0);
-            }
-            catch (Exception) loaded = null;
-            // A face that fails must not be re-fetched by every sheet naming it.
-            _webFontFaces[url] = loaded;
-            if (loaded !is null)
-                registerWebFace(face.family, face.weight, face.style, loaded);
+            loadWebFontFace(face, baseUrl);
         }
+    }
+
+    /// One `@font-face` source whose `font-display` lets the earlier frames
+    /// paint without it, with the address its `url()` resolves against.
+    private struct DeferredFace
+    {
+        WebFontFace face;
+        string baseUrl;
+    }
+
+    /// Faces `loadWebFonts` queued because their `font-display` allows the
+    /// first passes to paint in the fallback face.
+    private DeferredFace[] _deferredFaces;
+
+    /// Faces a pass set aside because their `unicode-range` cannot match any code
+    /// point the document's own content draws (see `layout`). They are kept
+    /// rather than dropped: text a script inserts later can make one usable, and
+    /// they are re-checked as soon as the content changes.
+    private DeferredFace[] _unusedFaces;
+
+    /// The document's code points when `_unusedFaces` was last evaluated.
+    private uint[] _unusedCodePoints;
+
+    /// True when a face's `font-display` says text may be painted before it
+    /// loads. The engine has no font timeout, so the block period of `auto` and
+    /// `block` is the whole download; the three swap-style values are the ones
+    /// CSS Fonts 4 defines as never blocking text.
+    private static bool defersFirstPaint(const WebFontFace face)
+    {
+        const d = face.display.toLower();
+        return d == "swap" || d == "fallback" || d == "optional";
+    }
+
+    /// True when a face may be needed for content drawn with these code points. A
+    /// face that declares no `unicode-range` is unconstrained; one whose ranges
+    /// cannot match any code point the document draws is a subset this page will
+    /// never use - a face a browser does not fetch.
+    private static bool faceCoversText(const WebFontFace face, const uint[] points)
+    {
+        if (face.ranges.length == 0) return true;
+        foreach (p; points)
+            foreach (r; face.ranges)
+                if (p >= r.lo && p <= r.hi) return true;
+        return false;
+    }
+
+    /// Sorted, de-duplicated code points the document's own content can draw: the
+    /// text nodes, the attribute values (a `title` or `alt` is drawn in the
+    /// page's font), and the CSS `content` strings of `::before`/`::after`, whose
+    /// escapes are how an icon font names the glyph it draws.
+    private uint[] textCodePoints()
+    {
+        import std.algorithm : sort;
+        uint[] points;
+        void add(string s) { foreach (dchar c; s) points ~= cast(uint) c; }
+        void walk(Element e)
+        {
+            if (e is null) return;
+            foreach (name, value; e.attrs) add(value);
+            foreach (child; e.children)
+            {
+                if (auto text = cast(TextNode) child) add(text.data);
+                else if (auto element = cast(Element) child) walk(element);
+            }
+        }
+        walk(_root);
+        foreach (rule; _rules)
+        {
+            bool generated = false;
+            foreach (sel; rule.selectors)
+                if (sel.pseudoElement.length) generated = true;
+            if (!generated) continue;
+            foreach (decl; rule.declarations)
+                if (decl.property == "content") addCssContent(decl.value, (uint c) { points ~= c; });
+        }
+        points.sort();
+        uint[] unique;
+        foreach (p; points)
+            if (unique.length == 0 || unique[$ - 1] != p) unique ~= p;
+        return unique;
+    }
+
+    /// Hand every code point a CSS string value draws to `sink`: the literal
+    /// characters, and each `\XXXXXX` escape, which is how generated content
+    /// names a glyph from an icon font.
+    private static void addCssContent(string value, scope void delegate(uint) sink)
+    {
+        string literal;
+        void flush()
+        {
+            if (!literal.length) return;
+            foreach (dchar c; literal) sink(cast(uint) c);
+            literal = "";
+        }
+        for (size_t i = 0; i < value.length; i++)
+        {
+            if (value[i] != '\\') { literal ~= value[i]; continue; }
+            size_t j = i + 1;
+            uint code;
+            int digits;
+            while (j < value.length && digits < 6)
+            {
+                const c = value[j];
+                uint d;
+                if (c >= '0' && c <= '9') d = c - '0';
+                else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+                else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+                else break;
+                code = code * 16 + d;
+                ++digits;
+                ++j;
+            }
+            if (digits == 0) { literal ~= value[i]; continue; }
+            flush();
+            if (code <= 0x10FFFF) sink(code);
+            i = j - 1;
+        }
+        flush();
+    }
+
+    /// The absolute URL a face loads from, resolved against the sheet that named
+    /// it, or "" when it names none. A `data:` URL carries its own bytes and is
+    /// returned untouched.
+    private static string fontFaceUrl(WebFontFace face, string baseUrl)
+    {
+        auto url = face.url;
+        if (!url.length) return "";
+        const lower = url.toLower();
+        const isData = lower.length >= 5 && lower[0 .. 5] == "data:";
+        if (!isData && indexOf(url, "://") < 0)
+            url = normalizeUrlPath(resolveUrl(baseUrl, url));
+        return url;
+    }
+
+    /// True for a face URL that carries its own bytes instead of naming a file
+    /// to download.
+    private static bool isDataFontUrl(string url)
+    {
+        return url.length >= 5 && url[0 .. 5].toLower() == "data:";
+    }
+
+    /// Download, stage and register one `@font-face` source. Every failure is
+    /// silent: a browser that cannot fetch or parse a face falls back to the
+    /// next `font-family`, which is what shape resolution already does when no
+    /// web face is registered.
+    private void loadWebFontFace(WebFontFace face, string baseUrl)
+    {
+        const url = fontFaceUrl(face, baseUrl);
+        if (!url.length) return;
+        const isData = isDataFontUrl(url);
+        if (auto cached = url in _webFontFaces)
+        {
+            if (*cached !is null)
+                registerWebFace(face.family, face.weight, face.style, *cached);
+            return;
+        }
+        FontFace loaded;
+        try
+        {
+            auto bytes = isData ? decodeDataUrl(url) : fetchBytes(url);
+            if (bytes.length)
+                loaded = FontFace.tryLoad(stageFontFile(fontBytesFor(bytes)), 0);
+        }
+        catch (Exception) loaded = null;
+        // A face that fails must not be re-fetched by every sheet naming it.
+        _webFontFaces[url] = loaded;
+        if (loaded !is null)
+            registerWebFace(face.family, face.weight, face.style, loaded);
     }
 
     /// Parse CSS and append to the stylesheet. `baseUrl` is the address the CSS
@@ -1349,9 +1632,59 @@ final class WebPage
         return loop !is null && loop.framePending();
     }
 
+    /// Note that the host has painted a frame. A `font-display: swap` face
+    /// waits for this: the frame the user just saw drew the fallback face, and
+    /// the next pass fetches the real one. `registerWebFace` drops the shaping
+    /// caches, so that pass also measures and paints with the real face.
+    void notePaint()
+    {
+        _paintedOnce = true;
+        if (_deferredFaces.length) _layoutDirty = true;
+    }
+
     /// Re-layout after DOM/style mutation.
     void layout()
     {
+        // A deferred `font-display: swap` face waits for a frame to have been
+        // painted: that frame showed the fallback face, which is what `swap`
+        // asks for, and this pass downloads the real one. `registerWebFace`
+        // drops the face and shaping caches, so this same pass measures and
+        // paints the text with it. Keyed on a painted frame and not on a pass
+        // count: the engine runs passes of its own inside the blocking
+        // navigation, so a pass count let the download back into the load.
+        if (_paintedOnce)
+        {
+            // A subset a page cannot use is a request and a decode spent for
+            // nothing, and one measured page's 24 font files were 2.2 s of that
+            // pass, so a face whose `unicode-range` cannot match any code point
+            // the document draws is set aside instead of fetched.
+            if (_unusedFaces.length)
+            {
+                // Text a script added since then may need one of them after all.
+                auto points = textCodePoints();
+                if (points != _unusedCodePoints)
+                {
+                    _deferredFaces ~= _unusedFaces;
+                    _unusedFaces = [];
+                }
+            }
+            if (_deferredFaces.length)
+            {
+                auto queued = _deferredFaces;
+                _deferredFaces = [];
+                _webFontsPending = false;
+                auto points = textCodePoints();
+                foreach (q; queued)
+                {
+                    if (faceCoversText(q.face, points)) loadWebFontFace(q.face, q.baseUrl);
+                    else
+                    {
+                        _unusedFaces ~= q;
+                        _unusedCodePoints = points;
+                    }
+                }
+            }
+        }
         // Resolving the cascade is the most expensive part of a pass, and the
         // document stays dirty while images trickle in a few per pass. Compare a
         // fingerprint of everything style resolution reads - the rule list, the
@@ -1378,8 +1711,9 @@ final class WebPage
         // the document dirty: the next paint loads more. Clearing this
         // unconditionally stranded every image after the first pass, which is
         // why a live browser showed none of them.
-        _layoutDirty = _imagesPending;
+        _layoutDirty = _imagesPending || _webFontsPending;
         ++_layoutGen;
+        ++_docPasses;
         // `IntersectionObserver` callbacks describe the geometry this pass just
         // produced, so they are delivered here - the point a browser queues them
         // too. A callback usually changes the DOM (adds a class, swaps a lazy
@@ -1468,6 +1802,99 @@ final class WebPage
         return svgCssColor(e is null ? "" : e.style.color);
     }
 
+    /// Start a pass's recorded image requests together, without waiting for
+    /// them. A worker fetches and does nothing else - no DOM, no resource cache,
+    /// no trace, no decode - so the calling thread stays the only one touching
+    /// page state. A lone URL is fetched here instead: a thread costs more than
+    /// the request it carries.
+    ///
+    /// Returns true when the requests are now in flight on a worker: the caller
+    /// must not fetch them itself and must keep asking for frames until a later
+    /// pass collects them (see `collectImageBatch`). A pass that waited for its
+    /// own batch instead froze the window for the whole download - measured
+    /// 2.2 s for boqsc.eu's 1.6 MB + 3.5 MB pair - with the web-font pass queued
+    /// behind it, which is the wait this split removes.
+    ///
+    /// The requests are one-shot (`keepAlive` false) for the reason given in
+    /// `fetchImageBatch`: an off-thread socket must not outlive its own thread.
+    private bool startImageBatch(string[] urls)
+    {
+        if (urls.length == 0) return false;
+        // A page with its own resource loader owns its fetch path (a host's
+        // custom scheme, a test double). A worker goes straight to the network
+        // and would bypass it, so such a page keeps the serial walk instead,
+        // which calls the loader on this thread as it expects.
+        if (_resourceLoader !is null) return false;
+        import auroraweb.net : loadTrace, loadTraceEnabled;
+        if (loadTraceEnabled)
+        {
+            // One line per batch: how many requests it decided to start
+            // together, and therefore whether they can overlap at all.
+            loadTrace("image batch: ", urls.length, " url(s), ",
+                urls.length > 1 ? "not waited for" : "fetched here");
+            foreach (u; urls) loadTrace("  batch url: ", u);
+        }
+        if (urls.length == 1)
+        {
+            try
+            {
+                auto res = httpFetch(urls[0]);
+                if (res.status == 200 && res.body.length)
+                    _prefetchedResponses[urls[0]] = res;
+            }
+            catch (Throwable t)
+            {
+                if (loadTraceEnabled)
+                    loadTrace("  batch fetch threw: ", urls[0], ": ", t.msg);
+            }
+            return false;
+        }
+        import std.parallelism : task;
+        // The URLs are copied: the worker reads them while this pass walks on
+        // and reuses its own collection buffer.
+        _imageBatchUrls = urls.dup;
+        _imageBatch = task!fetchImageBatch(_imageBatchUrls);
+        // A thread of its own, not the shared pool: the batch is one long-lived
+        // unit of work, and its groups are themselves spread over the pool (see
+        // `fetchImageBatch`). The thread ends with the batch, so an off-thread
+        // socket never outlives the call that opened it.
+        _imageBatch.executeInNewThread();
+        _imageBatchInFlight = true;
+        return true;
+    }
+
+    /// Take the responses of the image batch this page started, once its worker
+    /// is finished, as this pass's prefetched map. Returns false while the batch
+    /// is still in flight, so the caller paints and asks again next pass instead
+    /// of blocking on the download. `collectedNow` reports whether responses
+    /// actually arrived, so the caller can tell "a batch landed" from "there was
+    /// no batch" without looking at the map.
+    private bool collectImageBatch(out HttpResponse[string] collected,
+        out bool collectedNow)
+    {
+        collected = null;
+        collectedNow = false;
+        if (!_imageBatchInFlight) return true;
+        if (!_imageBatch.done) return false;
+        import auroraweb.net : loadTrace, loadTraceEnabled;
+        auto responses = _imageBatch.yieldForce;
+        _imageBatchInFlight = false;
+        collectedNow = true;
+        if (loadTraceEnabled)
+            foreach (i, url; _imageBatchUrls)
+                loadTrace("  batch result: ",
+                    i < responses.length ? responses[i].body.length : 0,
+                    " bytes  ", url);
+        foreach (i, url; _imageBatchUrls)
+            // Every recorded response, including a failure: the walk needs to
+            // see the URL as "already answered" so it marks the element tried
+            // instead of starting the same request again.
+            if (i < responses.length && responses[i].finalUrl.length)
+                collected[url] = responses[i];
+        _imageBatchUrls.length = 0;
+        return true;
+    }
+
     /// Find <img> elements without a decoded image and load them, and decode
     /// any CSS `background-image: url("...")` references.
     private void loadImages()
@@ -1484,43 +1911,67 @@ final class WebPage
         // Only the very first paint of the document skips network images (so the
         // page appears immediately). Every later pass fetches without limit, so
         // an image can never be stranded waiting for its turn.
-        int networkFetchesLeft = _layoutGen > 0 ? int.max : 0;
+        // Fetch a bounded batch per pass, and none until the document has been
+        // laid out a few times. Its markup and styles are then on screen in the
+        // first frames, and images keep arriving a few at a time while the host
+        // repaints - instead of the whole image load happening in one pass
+        // before that frame. Measured on boqsc.eu, the single pre-paint pass was
+        // 8.4 s of frozen window with nothing painted until the last byte.
+        // Keyed on a pass count rather than on a paint having happened, so a
+        // host (or a test) that pumps `layout` still gets its images.
+        enum networkImagesPerPass = 2;
+        // The first image pass starts a couple of requests, then the budget
+        // doubles. A flat pair per pass serialises the heavy images: measured on
+        // boqsc.eu, three passes cost 1.06 s + 1.00 s + 2.30 s, because each pair
+        // held one 1.6 MB icon plus one small .ico, so the two icons never went
+        // out together at all. Ramping keeps the first paint on the first pair
+        // (the page still appears at once) and stops a page with many images
+        // from paying one fetch wall per pair.
+        const int imageBudget = _docPasses >= 3
+            ? networkImagesPerPass << (_imagePasses < 4 ? _imagePasses : 4)
+            : 0;
+        int networkFetchesLeft = imageBudget;
         bool deferredFetch = false;
         void walk(Element e)
         {
-            // Decide whether this element needs the network. Local work — a
-            // `data:` image, inline SVG, or nothing to load — is never budgeted.
-            bool needsNetwork = false;
-            if (e.tag == "img" && e.image is null && !e.imageLoadTried)
+            // Whether this element may do network work, decided at the `<img>`
+            // and background-image sites below, where the target URL is known.
+            // Local work — a `data:` image, inline SVG, or nothing to load — is
+            // never budgeted. A response the pass's batch already brought is
+            // decoded without budget, since it costs no request: that is what
+            // lets the pass which collects a batch finish its images instead of
+            // fetching anything of its own (measured: without it those passes
+            // did the page's remaining fetches inline, 950 ms and 2055 ms each).
+            // Anything else costs one unit of this pass's budget, and out of
+            // budget the walk stops at that element, leaving it untouched so it
+            // is not marked as tried, for the next frame to continue. The
+            // collect-only walk starts no request, but it is what sizes the next
+            // batch, so it records at most this pass's budget and stops there.
+            bool mayFetch(string target)
             {
-                auto candidate = effectiveImageSrc(e, _width);
-                needsNetwork = candidate.length > 0 &&
-                    !(candidate.length >= 5 && candidate[0 .. 5].toLower() == "data:");
-            }
-            else if (e.backgroundImage is null && !e.backgroundLoadTried &&
-                e.style.backgroundImage.length > 4 &&
-                e.style.backgroundImage[0 .. 4].toLower() == "url(")
-            {
-                needsNetwork = true;
-            }
-
-            // Once this pass's budget is spent, stop visiting: the remaining
-            // elements stay untouched (so they are not marked as tried) and the
-            // document is marked dirty so the next frame continues.
-            if (needsNetwork)
-            {
+                if (target in _prefetchedResponses) return true;
+                // Bytes already in the resource cache cost no request either, so
+                // they are decoded without budget. Charging for them made the
+                // second element naming an image this pass had just fetched wait
+                // for a later pass even though the bytes were in hand.
+                if (auto hit = target in _resourceCache)
+                    if (mayReuse(*hit)) return true;
                 if (networkFetchesLeft <= 0)
                 {
                     deferredFetch = true;
                     _imagesPending = true;
                     _layoutDirty = true;
-                    return;
+                    return false;
                 }
                 networkFetchesLeft--;
+                return true;
             }
             // Inline <svg> markup — the shape most icon markup takes in HTML.
             // Serialise the subtree and let the engine's own rasteriser read it.
-            if (e.tag == "svg" && e.image is null && !e.imageLoadTried)
+            // The collect-only walk does none of this local work: it runs again
+            // as the real walk, and an SVG decoded twice would be wasted.
+            if (!_collectingUrls && e.tag == "svg" && e.image is null &&
+                !e.imageLoadTried)
             {
                 e.imageLoadTried = true;
                 try
@@ -1577,28 +2028,37 @@ final class WebPage
                 }
                 if (effective.length)
                 {
+                    // Resolve the target before the mark and the budget check:
+                    // a response this pass's batch already brought costs no
+                    // budget and is decoded here, while anything else has to
+                    // wait for a batch instead of blocking this frame.
+                    // `data:` URLs are decoded locally; everything else is
+                    // fetched (resolution would mangle a data URL). A page
+                    // created without a URL (`setHtml`) has no base to resolve
+                    // against, so the relative URL is kept as-is rather than
+                    // resolving to the empty string.
+                    auto srcValue = effective;
+                    auto target = _currentUrl.length
+                        ? resolveUrl(_currentUrl, srcValue) : srcValue;
+                    const bool localData = srcValue.length >= 5 &&
+                        srcValue[0 .. 5].toLower() == "data:";
+                    if (!localData && !mayFetch(target)) return;
                     // Mark BEFORE fetching: a failing/absent URL must not be
                     // re-fetched on every layout (that repeated real network I/O
                     // once per frame while the image stayed unset).
-                    e.imageLoadTried = true;
+                    // During the collect-only walk the element stays untouched,
+                    // so the real walk reaches it again and finds the response
+                    // this pass's batch fetched.
+                    e.imageLoadTried = !_collectingUrls;
                     try
                     {
-                        // `data:` URLs are decoded locally; everything else is
-                        // fetched (resolution would mangle a data URL). A page
-                        // created without a URL (`setHtml`) has no base to
-                        // resolve against, so the relative URL is kept as-is
-                        // rather than resolving to the empty string.
-                        auto srcValue = effective;
-                        auto target = _currentUrl.length
-                            ? resolveUrl(_currentUrl, srcValue) : srcValue;
-                        auto bytes = (srcValue.length >= 5 &&
-                            srcValue[0 .. 5].toLower() == "data:") ?
-                            decodeDataUrl(srcValue) :
-                            fetchBytes(target);
+                        auto bytes = localData ? decodeDataUrl(srcValue)
+                            : fetchBytes(target);
                         // A candidate that returned nothing (404, unsupported
                         // format) must fall back to the plain `src`, like a
                         // browser, instead of leaving a blank image.
-                        if (bytes.length == 0 && !e.imageFallbackTried &&
+                        if (!_collectingUrls && bytes.length == 0 &&
+                            !e.imageFallbackTried &&
                             srcAttr !is null && (*srcAttr).strip().length)
                         {
                             e.imageFallbackTried = true;
@@ -1663,13 +2123,15 @@ final class WebPage
                 auto url = urlFromBackgroundImage(e.style.backgroundImage);
                 if (url.length)
                 {
-                    e.backgroundLoadTried = true;
+                    const bool localData = url.length >= 5 &&
+                        url[0 .. 5].toLower() == "data:";
+                    if (!localData && !mayFetch(resolveUrl(_currentUrl, url)))
+                        return;
+                    e.backgroundLoadTried = !_collectingUrls;
                     try
                     {
-                        auto bytes = (url.length >= 5 &&
-                            url[0 .. 5].toLower() == "data:") ?
-                            decodeDataUrl(url) :
-                            fetchBytes(resolveUrl(_currentUrl, url));
+                        auto bytes = localData ? decodeDataUrl(url)
+                            : fetchBytes(resolveUrl(_currentUrl, url));
                         if (bytes.length)
                         {
                             // Shared decoder so CSS background images work for
@@ -1722,7 +2184,106 @@ final class WebPage
             }
             foreach (child; e.elements) walk(child);
         }
+        // Two walks over the same tree. The first only records the URLs this
+        // pass would fetch - it starts no request and changes no element flag,
+        // so the second walk selects exactly the same elements. Those requests
+        // then go out together, and each image arrives over its own connection
+        // instead of one request after another end to end: boqsc.eu's four
+        // images were 4.8s of its load fetched that way. The second walk is the
+        // load itself, and finds each response already in hand.
+        //
+        // A batch an earlier pass started may have arrived by now: its responses
+        // become this pass's prefetched map, and the walk below decodes them on
+        // this thread, exactly as when the pass had fetched them itself.
+        HttpResponse[string] collected;
+        bool collectedNow;
+        const bool batchFinished = collectImageBatch(collected, collectedNow);
+        _pendingImageUrls.length = 0;
+        // The responses the batch brought are in hand before the collect-only
+        // walk runs, so that walk neither charges budget for them nor records
+        // them for the next batch (see fetchBytes). Recording them made the page
+        // re-request images it had just received - djangoproject.com's shared
+        // logo SVG among them. `collected` is empty when no batch landed, which
+        // is exactly the clear this replaces.
+        _prefetchedResponses = collected;
+        if (_root !is null && imageBudget > 0 && batchFinished)
+        {
+            _collectingUrls = true;
+            scope (exit) _collectingUrls = false;
+            walk(_root);
+        }
+        // A pass that has just collected a batch starts nothing: the walk below
+        // decodes the bytes that arrived, and only what still needs a request is
+        // left recorded for the next batch, which the pass after this one starts.
+        // Starting a batch here as well re-requested every image that had just
+        // landed, so the page re-fetched its own images forever and never
+        // settled (measured: the same five URLs at 1.2-4.2 s each, pass after
+        // pass, and still pending after 20 s).
+        bool startedBatch = false;
+        bool walkedToFetch = false;
+        if (collectedNow)
+        {
+            // Nothing new may be requested this pass: the responses the batch
+            // brought are decoded without budget (see `mayFetch`) and everything
+            // else waits for the batch the next pass starts. Spending the normal
+            // budget here let the walk page past the responses it had and fetch
+            // the rest of the page's images inline, which is a frame blocked for
+            // the whole download again (measured: a 950 ms and a 2055 ms pass).
+            networkFetchesLeft = 0;
+        }
+        else if (batchFinished)
+        {
+            // Start this pass's requests, but do not wait for them: the bytes
+            // arrive while the host paints, and a later pass decodes them.
+            // Waiting here was the rest of the freeze - measured 2.2 s for
+            // boqsc.eu's 1.6 MB + 3.5 MB pair - with the web-font pass queued
+            // behind it. A lone URL is fetched here instead (a thread costs more
+            // than the request), and it is then in the map like a batch response.
+            startedBatch = startImageBatch(_pendingImageUrls);
+            if (startedBatch)
+            {
+                // The batch is in flight: this pass must fetch nothing of its
+                // own. Leaving the budget the collect walk had used in place
+                // made the walk request every image the batch had just started
+                // a second time on this thread (measured: the batch and the walk
+                // fetched each URL at the same instant, and the walk then ran
+                // the page's images serially for another 3.5 s).
+                networkFetchesLeft = 0;
+            }
+            else
+            {
+                networkFetchesLeft = imageBudget;
+                walkedToFetch = true;
+            }
+        }
+        else
+        {
+            // A batch is in flight: this pass fetches nothing of its own, so no
+            // element is requested twice. The walk sees an empty map for those
+            // URLs and leaves every network image to the pass that collects it.
+            networkFetchesLeft = 0;
+        }
+        deferredFetch = false;
         if (_root !is null) walk(_root);
+        // This pass moved requests along - started them, or spent budget on the
+        // responses a batch brought - so the next pass may start more of them
+        // together (the budget ramp above). A pass that only waited does not
+        // count, or a slow batch would ramp the next one's size for nothing.
+        if (startedBatch || collectedNow ||
+            (walkedToFetch && networkFetchesLeft < imageBudget))
+            ++_imagePasses;
+        // Keep asking for frames while a batch is in flight, even when the walk
+        // above had nothing left to defer: the batch's own responses still have
+        // to be collected, and only a later pass can do that.
+        if (!batchFinished)
+        {
+            _imagesPending = true;
+            _layoutDirty = true;
+        }
+        // Responses the batch fetched but the walk did not need are dropped: they
+        // were fetched for this pass, and the cache holds the ones that were used.
+        _prefetchedResponses = null;
+        _pendingImageUrls.length = 0;
     }
 
     /// Extract the URL inside `url("...")`/`url('...')`/`url(...)`.

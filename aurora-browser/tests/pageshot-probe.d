@@ -36,6 +36,22 @@ WebPageView findView(Widget widget)
     return null;
 }
 
+/// Drive the engine's remaining work to completion. Images stream in a couple
+/// per layout pass, and the live app's frames advance that work because the
+/// host invalidates every tick; a test driver's `paint` only repaints what is
+/// already invalidated, so without this the capture is a page whose images
+/// never arrived. Bounded, so a page that never settles cannot hang a run.
+void settlePage(BrowserRoot root)
+{
+    auto view = findView(root);
+    if (view is null || view.page() is null) return;
+    foreach (i; 0 .. 200)
+    {
+        if (!view.page().layoutPending()) break;
+        view.page().layout();
+    }
+}
+
 /// Count generated ::before/::after boxes in the tree and describe the first one
 /// that declares a background (so its resolved style can be inspected).
 int countPseudos(Element element, ref string desc)
@@ -250,7 +266,10 @@ int main(string[] args)
     // single paint would capture the page before its images arrive (and any
     // screenshot forces repaints, which is how it flatters the live app).
     foreach (i; 0 .. paints)
+    {
         driver.paint();
+        settlePage(root);
+    }
     // Same-driver geometry: report the boxes of the page the painter actually
     // used, so the capture can be compared against the engine's own numbers
     // rather than guessed from pixels.
@@ -280,6 +299,22 @@ int main(string[] args)
         }
         else
             writeln("no page view found");
+    }
+    // The engine can gain its last image on the settle above - the pass that
+    // collects a batch decodes it - and settling alone schedules no paint, so
+    // the capture would be the frame from before that image arrived. Ask for
+    // the repaint the live app's own tick requests while work is pending, then
+    // paint once more, so the capture is the settled page. A blocking loader
+    // never showed the difference (its first paint was already complete), which
+    // is why this only surfaced once images started streaming in.
+    {
+        auto view = findView(root);
+        if (view !is null)
+        {
+            settlePage(root);
+            view.invalidate();
+            driver.paint();
+        }
     }
     window.saveScreenshot(outPath);
     window.close();
