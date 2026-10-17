@@ -74,8 +74,7 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
         session.contract.currentIntent = "conversation";
         return;
     }
-    const fresh = session.objective.length == 0 || session.taskStatus == "completed" ||
-        explicitlyNewTask(text) || (intent == RequestIntent.analysis && session.contract.intent != "analysis");
+    const fresh = session.objective.length == 0 || session.taskStatus == "completed" || explicitlyNewTask(text);
     if (fresh)
     {
         if (session.objective.length)
@@ -89,14 +88,34 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
     }
     if (!session.contract.id.length)
     {
-        session.contract.id = messageId;
-        session.contract.startMessageId = messageId;
+        string anchor = messageId;
+        RequestIntent originalIntent = intent;
+        if (!fresh)
+        {
+            originalIntent = requestIntent(session.objective);
+            foreach_reverse (index; activeMessagePath(session))
+            {
+                const ref message = session.messages[index];
+                if (message.id != messageId && message.role == "user" && !message.internal &&
+                    requestIntent(message.content) == originalIntent)
+                { anchor = message.id; break; }
+            }
+        }
+        session.contract.id = anchor;
+        session.contract.startMessageId = anchor;
         session.contract.requestedOutcome = session.objective;
-        session.contract.intent = intent == RequestIntent.continuation ? "implementation" : name;
+        session.contract.intent = originalIntent == RequestIntent.continuation ? "implementation" : requestIntentName(originalIntent);
     }
+    if (intent == RequestIntent.implementation && session.contract.intent == "analysis")
+        session.contract.intent = "implementation";
     session.contract.currentIntent = name;
     session.contract.blocker = "";
     session.taskStatus = "active";
+}
+
+bool taskInvestigation(const ref ChatSession session)
+{
+    return session.contract.currentIntent == "analysis" && session.contract.intent != "analysis";
 }
 
 void remapTaskContract(ref ChatSession session, string[string] ids)
@@ -331,9 +350,30 @@ bool taskRequiresPlan(const ref ChatSession session)
     return changedPaths.length > 1 || actions >= 6;
 }
 
-TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(TaskStep)[] previous)
+TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(TaskStep)[] previous,
+    bool retainCompleted = true)
 {
     auto steps = taskStepsFromJson(value);
+    if (retainCompleted)
+        foreach_reverse (oldIndex, old; previous)
+            if (old.status == "completed")
+            {
+                bool found;
+                foreach (step; steps)
+                    if ((old.id.length && step.id == old.id) || step.text == old.text) found = true;
+                if (found) continue;
+                size_t insertAt = steps.length;
+                bool anchored;
+                foreach (later; previous[oldIndex + 1 .. $])
+                {
+                    foreach (i, step; steps)
+                        if ((later.id.length && step.id == later.id) || step.text == later.text)
+                        { insertAt = i; anchored = true; break; }
+                    if (anchored) break;
+                }
+                auto retained = TaskStep(old.text, old.status, old.id, old.kind, old.done, old.evidence.dup, old.blocker);
+                steps = steps[0 .. insertAt] ~ retained ~ steps[insertAt .. $];
+            }
     auto index = taskEvidenceIndex(session);
     auto path = taskMessagePath(session);
     foreach (ref step; steps)
@@ -370,13 +410,84 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
     return steps;
 }
 
+TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep)[] steps, JSONValue root = JSONValue.init)
+{
+    TaskWorkContext result;
+    size_t current = steps.length;
+    foreach (i, step; steps) if (step.status == "in_progress") { current = i; break; }
+    if (current == steps.length)
+        foreach (i, step; steps) if (step.status != "completed") { current = i; break; }
+    if (current == steps.length) return result;
+    if (session.contract.work.stepId == steps[current].id) result = session.contract.work;
+    result.stepId = steps[current].id;
+    if (!result.action.length) result.action = steps[current].text;
+    size_t next = steps.length;
+    foreach (i, step; steps[current + 1 .. $])
+        if (step.status != "completed") { next = current + 1 + i; break; }
+    if (next == steps.length)
+        foreach (i, step; steps[0 .. current])
+            if (step.status != "completed") { next = i; break; }
+    const nextId = next < steps.length ? steps[next].id : "";
+    if (result.nextStepId != nextId || !result.nextAction.length)
+        result.nextAction = next < steps.length ? steps[next].text : "";
+    result.nextStepId = nextId;
+    if (root.type != JSONType.object) return result;
+    if (auto context = "work_context" in root.object)
+    {
+        if (context.type == JSONType.null_)
+        { ChatSession empty; return workContextForPlan(empty, steps); }
+        if (context.type != JSONType.object) return result;
+        const originalAction = result.action;
+        foreach (i, key; ["action", "next_action", "detour_reason", "done_when", "return_to"])
+            if (auto field = key in context.object)
+                if (field.type == JSONType.string)
+                {
+                    const text = field.str.strip();
+                    switch (i)
+                    {
+                        case 0: result.action = text; break;
+                        case 1: result.nextAction = text; break;
+                        case 2:
+                            if (result.detourReason != text) { result.doneWhen = ""; result.returnTo = ""; }
+                            result.detourReason = text; break;
+                        case 3: result.doneWhen = text; break;
+                        case 4: result.returnTo = text; break;
+                        default: break;
+                    }
+                }
+        if (result.detourReason.length && !result.returnTo.length) result.returnTo = originalAction;
+        if (!result.detourReason.length) { result.doneWhen = ""; result.returnTo = ""; }
+        if (!result.action.length) result.action = steps[current].text;
+    }
+    return result;
+}
+
+NestedPlan[] retainNestedWork(const(TaskStep)[] previous, const(TaskStep)[] steps, const(NestedPlan)[] plans)
+{
+    NestedPlan[] result;
+    foreach (plan; plans)
+        if (plan.parentStep >= 1 && plan.parentStep <= previous.length)
+        {
+            const parent = previous[plan.parentStep - 1];
+            foreach (i, step; steps)
+                if ((parent.id.length && step.id == parent.id) || (!parent.id.length && step.text == parent.text))
+                {
+                    TaskStep[] children;
+                    foreach (child; plan.steps)
+                        children ~= TaskStep(child.text, child.status, child.id, child.kind, child.done, child.evidence.dup, child.blocker);
+                    result ~= NestedPlan(i + 1, children, plan.expanded);
+                    break;
+                }
+        }
+    return result;
+}
+
 string planUpdateError(const ref ChatSession session, string arguments, const(TaskStep)[] previous)
 {
     JSONValue root;
     try root = parseJSON(arguments);
     catch (Exception) return "Error: invalid plan JSON.";
     if (root.type != JSONType.object || !("plan" in root.object)) return "Error: plan is required.";
-    auto steps = normalizedPlan(session, root["plan"], previous);
     auto evidenceIndex = taskEvidenceIndex(session);
     bool replacement;
     if (auto f = "replace_entire_plan" in root.object) replacement = f.type == JSONType.true_;
@@ -385,6 +496,24 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         const request = latestTaskRequest(session).toLower();
         if (!explicitlyNewTask(request) && !explicitPlanReplacementRequested(request))
             return "Error: replacing unfinished outcomes requires an explicit user scope change. Preserve their IDs and statuses.";
+    }
+    auto steps = normalizedPlan(session, root["plan"], previous, !replacement);
+    if (auto context = "work_context" in root.object)
+    {
+        if (context.type != JSONType.object && context.type != JSONType.null_)
+            return "Error: work_context must be an object, or null to clear a detour.";
+        if (context.type == JSONType.object)
+        {
+            foreach (key; ["step_id", "action", "next_action", "detour_reason", "done_when", "return_to"])
+                if (auto field = key in context.object)
+                    if (field.type != JSONType.string) return "Error: work_context." ~ key ~ " must be a string.";
+            const work = workContextForPlan(session, steps, root);
+            if (auto id = "step_id" in context.object)
+                if (id.str.length && id.str != work.stepId)
+                    return "Error: work_context belongs to the active step " ~ work.stepId ~ ". Omit step_id to bind it automatically.";
+            if (work.detourReason.length && (!work.doneWhen.length || !work.returnTo.length))
+                return "Error: record done_when and return_to for the detour, preserving its parent outcome.";
+        }
     }
     foreach (old; previous)
         if (old.status != "completed" && !replacement)
@@ -398,13 +527,16 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     {
         if (step.id in ids) return "Error: duplicate plan step ID: " ~ step.id;
         ids[step.id] = true;
+        bool unchangedCompleted;
+        foreach (old; previous)
+            if (old.status == "completed" && step == old) unchangedCompleted = true;
         foreach (id; step.evidence)
         {
             auto proof = id in evidenceIndex;
-            if (proof is null || !compatibleEvidence(step, *proof, session.verificationStatus == "passed"))
+            if (proof is null || !compatibleEvidence(step, *proof, unchangedCompleted || session.verificationStatus == "passed"))
                 return "Error: evidence is missing, failed, stale or incompatible: " ~ id;
         }
-        if (step.status == "completed" && !supportedStep(session, step, evidenceIndex))
+        if (step.status == "completed" && !unchangedCompleted && !supportedStep(session, step, evidenceIndex))
             return "Error: completion needs successful evidence for '" ~ step.text ~ "'. Cite tool-call IDs; run the relevant check for verification outcomes.";
     }
     return "";

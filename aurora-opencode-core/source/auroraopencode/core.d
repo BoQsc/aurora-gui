@@ -845,6 +845,17 @@ public TaskStep[] taskStepsFromJson(JSONValue value)
     return result;
 }
 
+public struct TaskWorkContext
+{
+    string stepId;
+    string action;
+    string nextAction;
+    string detourReason;
+    string doneWhen;
+    string returnTo;
+    string nextStepId;
+}
+
 public struct TaskContract
 {
     string id;
@@ -855,6 +866,7 @@ public struct TaskContract
     string[] constraints;
     string[] decisions;
     string blocker;
+    TaskWorkContext work;
 }
 
 public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
@@ -868,6 +880,15 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
     value["constraints"] = JSONValue(session.contract.constraints);
     value["decisions"] = JSONValue(session.contract.decisions);
     value["blocker"] = session.contract.blocker;
+    JSONValue work;
+    work["stepId"] = session.contract.work.stepId;
+    work["action"] = session.contract.work.action;
+    work["nextAction"] = session.contract.work.nextAction;
+    work["detourReason"] = session.contract.work.detourReason;
+    work["doneWhen"] = session.contract.work.doneWhen;
+    work["returnTo"] = session.contract.work.returnTo;
+    work["nextStepId"] = session.contract.work.nextStepId;
+    value["workContext"] = work;
     root["taskContract"] = value;
     root["taskArchive"] = JSONValue(session.taskArchive);
     root["taskSteps"] = taskStepsToJson(session.taskSteps);
@@ -898,6 +919,18 @@ public void readTaskContract(ref ChatSession session, JSONValue root)
             session.contract = TaskContract(field("id"), field("startMessageId"),
                 field("intent"), field("currentIntent"), field("requestedOutcome"),
                 list("constraints"), list("decisions"), field("blocker"));
+            if (auto work = "workContext" in value.object)
+                if (work.type == JSONType.object)
+                {
+                    string workField(string key)
+                    {
+                        if (auto found = key in work.object)
+                            if (found.type == JSONType.string) return found.str;
+                        return "";
+                    }
+                    session.contract.work = TaskWorkContext(workField("stepId"), workField("action"),
+                        workField("nextAction"), workField("detourReason"), workField("doneWhen"), workField("returnTo"), workField("nextStepId"));
+                }
         }
     if (auto value = "taskArchive" in root.object)
         if (value.type == JSONType.array)

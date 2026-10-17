@@ -77,7 +77,7 @@ import auroraopencode.planmode : experimentalStrictPlanEnabled,
 import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
-    restoreBranchTask, taskHasActionEvidence;
+    restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
@@ -15008,9 +15008,16 @@ private string _suggestExcludeId;
             " · current request: " ~ session.contract.currentIntent ~ "\n");
         prompt.put("Objective: " ~ (session.objective.length > 0
             ? session.objective : "(not set)") ~ "\n");
+        if (session.contract.requestedOutcome.length && session.contract.requestedOutcome != session.objective)
+            prompt.put("Requested outcome: " ~ session.contract.requestedOutcome ~ "\n");
         const currentRequest = latestActualUserRequest(session);
         if (currentRequest.length > 0 && currentRequest != session.objective)
             prompt.put("Current request: " ~ currentRequest ~ "\n");
+        const work = workContextForPlan(session, session.taskSteps);
+        if (work.stepId.length) prompt.put("Current step: " ~ work.stepId ~ "\nWorking on: " ~ work.action ~ "\n");
+        if (work.nextAction.length) prompt.put("Next action: " ~ work.nextAction ~ "\n");
+        if (work.detourReason.length)
+            prompt.put("Detour: " ~ work.detourReason ~ "\nDone when: " ~ work.doneWhen ~ "\nReturn to: " ~ work.returnTo ~ "\n");
         prompt.put("Status: " ~ (session.taskStatus.length > 0
             ? session.taskStatus : "active") ~ "\n");
         prompt.put("Turn: " ~ (session.turnStatus.length > 0
@@ -15045,10 +15052,10 @@ private string _suggestExcludeId;
                         " (done: " ~ step.done ~ "; evidence: " ~ join(step.evidence, ", ") ~ ")\n");
             }
         }
-        if (answerOnlyRequest(currentRequest))
+        if (answerOnlyRequest(currentRequest) || taskInvestigation(session))
             prompt.put("The latest request asks for an explanation. Answer it from the " ~
                 "evidence; do not resume desktop actions or reconcile the older checklist. " ~
-                "The unfinished objective remains recorded for a later explicit resume.\n");
+                "Preserve the parent objective, current step and return point. The unfinished work remains recorded for resume.\n");
         else
             prompt.put("Treat this state as authoritative. Update the plan as work " ~
                 "changes. Do not claim completion while verification is required " ~
@@ -18378,6 +18385,8 @@ private void pollButtonSuggestionRequest()
         session.turnStatus = "completed";
         if (session.taskStatus == "waiting_input")
             updateStatus("Independent work complete · awaiting required information.");
+        else if (taskInvestigation(*session))
+            session.taskStatus = session.verificationStatus == "required" ? "verifying" : "active";
         else if (hasIncompleteTaskSteps(*session))
         {
             session.taskStatus = "active";
@@ -19126,7 +19135,7 @@ private void pollButtonSuggestionRequest()
         // exists. Long evidence-gathering runs often never call `update_plan`,
         // leaving the plan empty, so nudge the model to record one. The app
         // never invents the steps itself: the plan stays model-owned.
-        if (session.taskSteps.length == 0 && !answerOnlyRequest(latestActualUserRequest(session)) &&
+        if (session.taskSteps.length == 0 && !answerOnlyRequest(latestActualUserRequest(session)) && !taskInvestigation(session) &&
             session.contract.currentIntent != "analysis")
             checkpoint.content ~= "\n\nBefore editing, record the durable plan " ~
                 "with a single update_plan call (the concrete remaining steps " ~
@@ -19390,7 +19399,7 @@ private void pollButtonSuggestionRequest()
         // The UI may clear/replace its live arrays as soon as the user cancels
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
-        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)));
+        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)) || session.contract.currentIntent == "analysis");
         if (_durabilityBlocked)
         {
             stopActiveTurn();
@@ -19761,12 +19770,13 @@ private void pollButtonSuggestionRequest()
         // the task's actual goal instead of a copy of the user's message, which
         // is also the chat title. An omitted field keeps the current objective.
         if (auto field = "objective" in root.object)
-            if (field.type == JSONType.string)
+            if (!taskInvestigation(session) && field.type == JSONType.string)
             {
                 const value = field.str.strip();
                 if (value.length > 0) session.objective = value;
             }
-        auto steps = normalizedPlan(session, *plan, session.taskSteps);
+        const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
+        auto steps = normalizedPlan(session, *plan, session.taskSteps, !replacement);
         foreach (key; ["constraints", "decisions"])
             if (auto field = key in root.object)
                 if (field.type == JSONType.array)
@@ -19776,17 +19786,8 @@ private void pollButtonSuggestionRequest()
                     if (key == "constraints") session.contract.constraints = values;
                     else session.contract.decisions = values;
                 }
-        // Keep experimental substeps only while their numbered parent still
-        // names the same top-level outcome after this full-plan replacement.
-        NestedPlan[] retained;
-        foreach (nested; session.nestedPlans)
-            if (nested.parentStep >= 1 &&
-                nested.parentStep <= steps.length &&
-                nested.parentStep <= session.taskSteps.length &&
-                steps[nested.parentStep - 1].text ==
-                    session.taskSteps[nested.parentStep - 1].text)
-                retained ~= nested;
-        session.nestedPlans = retained;
+        session.nestedPlans = replacement ? null : retainNestedWork(session.taskSteps, steps, session.nestedPlans);
+        session.contract.work = workContextForPlan(session, steps, root);
         session.taskSteps = steps;
         bool complete = steps.length > 0;
         foreach (step; steps)
@@ -19827,7 +19828,8 @@ private void pollButtonSuggestionRequest()
         const parent = cast(size_t) root["parent_step"].integer;
         TaskStep[] previous;
         foreach (nested; session.nestedPlans) if (nested.parentStep == parent) previous = nested.steps;
-        auto steps = normalizedPlan(session, root["plan"], previous);
+        const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
+        auto steps = normalizedPlan(session, root["plan"], previous, !replacement);
         foreach (ref nested; session.nestedPlans)
             if (nested.parentStep == parent)
             {
@@ -21230,7 +21232,9 @@ private void pollButtonSuggestionRequest()
     {
         const error = planUpdateError(session, arguments, session.taskSteps);
         if (error.length) return error;
-        auto steps = normalizedPlan(session, parseJSON(arguments)["plan"], session.taskSteps);
+        const root = parseJSON(arguments);
+        const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
+        auto steps = normalizedPlan(session, root["plan"], session.taskSteps, !replacement);
         foreach (nested; session.nestedPlans)
             if (nested.parentStep <= session.taskSteps.length)
                 foreach (step; steps)
@@ -22380,7 +22384,7 @@ private void pollButtonSuggestionRequest()
         // conversation route id so its frames hit the gateway's cache instead
         // of a cold, slow route on every step.
         setComputerUseSession(sessionRoutingKey(*session));
-        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)));
+        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)) || session.contract.currentIntent == "analysis");
         // A user-initiated request opens the turn before a possible summary
         // request, so Stop and queued guidance work while compaction runs.
         if (userTurn)
@@ -22712,7 +22716,7 @@ private void pollButtonSuggestionRequest()
             logAutoContinue("skip: agent output recovery exhausted");
             return;
         }
-        if (answerOnlyRequest(latestActualUserRequest(*session)))
+        if (answerOnlyRequest(latestActualUserRequest(*session)) || taskInvestigation(*session))
         {
             _autoContinuePendingSession = -1;
             logAutoContinue("skip: latest request asks for an explanation");
@@ -22841,7 +22845,7 @@ private void pollButtonSuggestionRequest()
                 "the previous response at its output limit. Continue exactly " ~
                 "from the point where it stopped. Do not repeat or summarize " ~
                 "text already present, and preserve the current branch.";
-        else if (explanationOnlyRequest(latestActualUserRequest(*session)))
+        else if (explanationOnlyRequest(latestActualUserRequest(*session)) || taskInvestigation(*session))
             continuation.content = "Continue answering the user's explanation request " ~
                 "from the recorded evidence. Do not resume the older desktop task.";
         else if (message.finishReason == "cancelled" ||
@@ -30743,6 +30747,14 @@ private void pollButtonSuggestionRequest()
     public string verificationStatusForTesting() const
     {
         return _current < 0 ? "" : _sessions[_current].verificationStatus;
+    }
+
+    public string taskStateJsonForTesting() const
+    {
+        if (_current < 0) return "{}";
+        auto state = parseJSON(activeTaskStateJson(_sessions[_current]));
+        writeTaskContract(state, _sessions[_current]);
+        return state.toString();
     }
 
     public size_t taskStepCountForTesting() const

@@ -201,10 +201,9 @@ private string operatingContractSection(in SystemPromptContext ctx)
 private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
-        "1. Define success. For multi-step work, call update_plan before substantial inspection or implementation. " ~
-        "Use a short plan of concrete outcomes with stable IDs and done conditions. Keep one step in_progress; " ~
+        "1. Define success. Plan outcomes before substantial inspection or edits, with stable IDs and done conditions. Keep one step in_progress; " ~
         "update at phase boundaries. Skip plans for direct answers, quick exploration, and single edits. " ~
-        "Preserve requested top-level step counts; use update_subplan for optional detail.\n" ~
+        "Preserve objectives, outcomes and requested step counts. Record current/next actions and detour reason/exit/return in update_plan.work_context.\n" ~
         "2. Read explicit paths directly, including paths outside the workspace. Discover paths only when " ~
         "unknown or a direct read fails. Each lookup resolves a named unknown. Read before editing.\n" ~
         "3. Apply the smallest complete change, batching all known related edits. Analysis requests call for " ~

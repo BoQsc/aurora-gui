@@ -8,7 +8,7 @@ import std.path : buildPath, dirName, isAbsolute;
 import std.regex : matchAll;
 import std.string : strip, toLower, startsWith, split;
 import auroraopencode.taskflow : taskMessagePath;
-import auroraopencode.requestintent : answerOnlyRequest;
+import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent;
 
 /// Only real user messages can retarget a task. Tool output, summaries and
 /// restart reasons cannot change the checkout that owns its effects/evidence.
@@ -49,6 +49,8 @@ string taskWorkspace(const ref ChatSession session, string projectWorkspace)
     {
         const message = session.messages[index];
         if (message.role != "user" || message.internal) continue;
+        if (answerOnlyRequest(message.content) ||
+            (session.contract.intent != "analysis" && requestIntent(message.content) == RequestIntent.analysis)) continue;
         string messageRoot;
         bool ambiguous;
         foreach (match; matchAll(message.content, `(?<![:/A-Za-z0-9])(?:[A-Za-z]:[\\/]|/(?!/))(?:(?![A-Za-z]:[\\/]|[ \t]+/(?!/))[^\r\n<>"` ~ "`" ~ `])+`))
@@ -121,7 +123,8 @@ string[] requiredEvidence(const ref ChatSession session)
     string request = session.contract.requestedOutcome.length ? session.contract.requestedOutcome : session.objective;
     foreach (index; taskMessagePath(session))
         if (session.messages[index].role == "user" && !session.messages[index].internal &&
-            !answerOnlyRequest(session.messages[index].content))
+            !answerOnlyRequest(session.messages[index].content) &&
+            (session.contract.intent == "analysis" || requestIntent(session.messages[index].content) != RequestIntent.analysis))
             request ~= "\n" ~ session.messages[index].content;
     request = request.toLower();
     const visual = request.canFind("render") || request.canFind("layout") ||

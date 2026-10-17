@@ -1,20 +1,27 @@
 # Conversation quality
 
 The current request and its durable task have separate intent and identity.
-Questions preserve unfinished work without resuming it. Explicit task switches
+Questions and investigations preserve the parent objective, plan and work position without resuming implementation. Explicit task switches
 archive the old contract and start fresh requirements. Completed tasks get a new
 objective on the next action request. Continuation can restore archived work.
 Intent recognition is conservative local English parsing; the full instruction
 remains available to the model. It is not a general natural-language classifier.
 
 Plans keep stable IDs, acceptance conditions (`done`), categories, evidence and
-blockers. Updates preserve omitted metadata and reject dropped unfinished
+blockers. Updates preserve omitted metadata, restore omitted completed steps in their original relative order, and reject dropped unfinished
 outcomes at every plan size. Completed steps need compatible successful tool
 evidence. Verification steps additionally need an accepted current check.
 Unfinished substeps prevent parent/task completion. Small proven actions do not
 require a plan; work that grows across multiple edited files or several actions
 requires an outcome checklist before completion. Evidence shows what executed;
 it cannot establish that a model chose complete behavioral assertions.
+
+`update_plan.work_context` records the current action, next action and a detour's
+reason, completion condition and return point under its stable parent step ID.
+This context survives storage, copies, branches and compaction, and resets when
+the active outcome changes. Nested work follows its parent's stable ID across
+renames and reordering. Original requested outcomes accompany model-written
+objective summaries so compaction cannot silently narrow the scope.
 
 An empty action task cannot settle merely because the model said it was done.
 Stagnation resets on newly supported evidence or accepted verification, not the

@@ -2,7 +2,7 @@ module auroraopencode.taskcontinuation;
 
 import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.requestintent : answerOnlyRequest;
-import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan;
+import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.json : JSONValue, JSONType, parseJSON;
@@ -92,7 +92,7 @@ bool unfinishedTask(const ref ChatSession session)
 TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabled)
 {
     TaskContinuation result;
-    if (!toolsEnabled || session.taskStatus == "waiting_input" ||
+    if (!toolsEnabled || session.taskStatus == "waiting_input" || taskInvestigation(session) ||
         session.queuedFollowUps.length || !unfinishedTask(session)) return result;
     auto path = activeMessagePath(session);
     size_t begin;
