@@ -12,9 +12,9 @@
     font-weight: 400;
     src: url(https://cdn.jsdelivr.net/gh/googlefonts/roboto@2.138/src/hinted/Roboto-Regular.ttf) format('truetype');
   }
-  /* The first source is a woff2 the engine cannot decode. A browser that cannot
-     parse a source must go on to the next one in the same src, so both engines
-     have to end up on the same TrueType file. */
+  /* The first source is a woff2 URL that does not exist, so no engine can fetch
+     it. A browser that cannot use a source must go on to the next one in the
+     same src, so both engines have to end up on the same TrueType file. */
   @font-face {
     font-family: 'Aurora Fixture Web Face Two';
     font-style: normal;

@@ -714,8 +714,17 @@ private void paintElement(Element element, Canvas canvas)
                     ? max(0, element.parent.box.width) : innerWidth;
                 const int runWrap = element.style.display == "inline"
                     ? max(max(innerWidth, parentWrap), text.layoutWidth) : innerWidth;
-                drawTextRun(contentCanvas,
-                    text.paintText.length ? text.paintText : text.data,
+                const string runText = text.paintText.length
+                    ? text.paintText : text.data;
+                // A wrapped run inside a centred/right-aligned block moves each
+                // LINE, not the run: see `drawAlignedLines`. Everything else
+                // keeps the single-call path, byte for byte.
+                if (text.layoutWidth > 0 &&
+                    drawAlignedLines(contentCanvas, runText, element.style,
+                        wrappedRunLayout(runText, element.style, runWrap),
+                        text, alignBlock(element), textClip))
+                    continue;
+                drawTextRun(contentCanvas, runText,
                     Point(text.layoutX, text.layoutY),
                     element.style, runWrap, text, textClip);
                 continue;
@@ -1195,6 +1204,98 @@ private void drawTextRun(Canvas canvas, string text, Point origin,
             baseline = origin.y + 1;
         canvas.drawLine(Point(x0, baseline), Point(x1, baseline), color);
     }
+}
+
+/// Shape a run exactly as `drawTextRun` does, so a caller can inspect the line
+/// breaks that call will produce (same memoized shaping, same options).
+private TextLayout wrappedRunLayout(string text, const ComputedStyle style,
+    int maxWidth)
+{
+    const bool noWrap = style.whiteSpace == "nowrap" || style.whiteSpace == "pre";
+    const int wrapW = (maxWidth > 0 && !noWrap) ? maxWidth + 1 : 0;
+    return shapeTextCached(text, style.fontSizePx > 0 ? style.fontSizePx : 16,
+        wrapW, wrapW > 0, style.letterSpacingPx(), faceOf(&style));
+}
+
+/// The block container whose `text-align` governs `element`'s lines: the
+/// nearest ancestor that is not inline-level. `text-align` inherits, so the
+/// computed value on that block is the one that applies to its line boxes; a
+/// block that is left-aligned (or names no alignment) returns null and the
+/// caller paints the run exactly as before.
+private Element alignBlock(Element element)
+{
+    for (auto e = element.parent; e !is null; e = e.parent)
+    {
+        if (e.style.display == "inline") continue;
+        const a = e.style.textAlign;
+        return (a == "center" || a == "right") ? e : null;
+    }
+    return null;
+}
+
+/// Draw a wrapped run one line at a time when its block centres or
+/// right-aligns its lines. `text-align` positions every finished LINE inside
+/// the block's content width, but the layout pass records one x for a whole run
+/// — the line the run STARTS on — and paint replayed the run's entire wrapped
+/// layout at that x, so every later line inherited the first line's shift.
+/// Measured against an Edge frame of djangoproject.com, the hero tagline's
+/// second line began at the first line's left edge instead of being centred
+/// under it. Offsets are relative to line 0, so line 0 is placed exactly where
+/// this run has always been placed and only the later lines move. Returns false
+/// when the run needs no per-line placement, so the caller keeps the single
+/// `drawLayout` call.
+private bool drawAlignedLines(Canvas canvas, string runText,
+    const ComputedStyle style, TextLayout layout, TextNode node, Element block,
+    bool useBackgroundColor)
+{
+    if (layout is null || node is null || block is null) return false;
+    if (layout.lines.length < 2) return false;
+    const int availW = max(0, block.box.width);
+    if (availW <= 0) return false;
+    // A hard tab is expanded by the shaper, so the layout's logical indices no
+    // longer address this string; leave such a run to the single-call path.
+    if (indexOf(runText, '\t') >= 0) return false;
+
+    const bool right = block.style.textAlign == "right";
+    auto chars = to!dstring(runText);
+    int[] dx;
+    int[] dy;
+    size_t[] starts;
+    size_t[] ends;
+    bool moved = false;
+    int baseShift = 0;
+    foreach (i, line; layout.lines)
+    {
+        const int lineW = cast(int) line.width;
+        int shift = right ? availW - lineW : (availW - lineW) / 2;
+        if (shift < 0) shift = 0;
+        if (i == 0) baseShift = shift;
+        const int lineDx = shift - baseShift + cast(int) line.x -
+            cast(int) layout.lines[0].x;
+        const int lineDy = cast(int) line.y - cast(int) layout.lines[0].y;
+        if (lineDx != 0 || lineDy != 0) moved = true;
+        dx ~= lineDx;
+        dy ~= lineDy;
+        starts ~= min(chars.length, line.logicalStart);
+        ends ~= min(chars.length, line.logicalEnd);
+    }
+    if (!moved) return false;
+
+    foreach (i; 0 .. layout.lines.length)
+    {
+        auto slice = chars[starts[i] .. ends[i]];
+        // The break's own space stays on the line it was measured with, so a
+        // continuation line never starts with one; skip blanks defensively so
+        // an empty slice cannot place a stray advance.
+        while (slice.length && (slice[0] == ' ' || slice[0] == '\n' ||
+            slice[0] == '\r'))
+            slice = slice[1 .. $];
+        if (slice.length == 0) continue;
+        drawTextRun(canvas, to!string(slice),
+            Point(node.layoutX + dx[i], node.layoutY + dy[i]), style, 0,
+            i == 0 ? node : null, useBackgroundColor);
+    }
+    return true;
 }
 
 /// The element's border-radius in px (0 when not rounded). The single-value

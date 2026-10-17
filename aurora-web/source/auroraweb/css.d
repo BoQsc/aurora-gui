@@ -177,12 +177,13 @@ struct WebFontFace
  * Choose the first source in one `@font-face` `src` descriptor that the engine
  * can decode.
  *
- * The engine shapes with uncompressed sfnt faces and can unwrap a WOFF 1.0
- * container (auroraweb.woff), so `truetype`, `opentype` and `woff` sources are
- * usable; `woff2` (brotli), `embedded-opentype` and the legacy `svg` font format
- * are not. A candidate the engine cannot decode is skipped and the next one in
- * the same `src` is tried, which is what a browser does, and only if none is
- * usable does the `font-family` fall back.
+ * The engine shapes with uncompressed sfnt faces, can unwrap a WOFF 1.0
+ * container (auroraweb.woff) and can decode a WOFF 2.0 container
+ * (auroraweb.woff2: brotli plus the table reconstruction), so `truetype`,
+ * `opentype`, `woff` and `woff2` sources are usable; `embedded-opentype` and
+ * the legacy `svg` font format are not. A candidate the engine cannot decode is
+ * skipped and the next one in the same `src` is tried, which is what a browser
+ * does, and only if none is usable does the `font-family` fall back.
  *
  * The format must be compared as a whole name, never as a substring: the legacy
  * `format("embedded-opentype")` candidate that FontAwesome lists *first* used to
@@ -206,7 +207,8 @@ private string pickFontSrc(string value)
         {
             bool usable = false;
             foreach (f; formats)
-                if (f == "truetype" || f == "opentype" || f == "woff") usable = true;
+                if (f == "truetype" || f == "opentype" || f == "woff" || f == "woff2")
+                    usable = true;
             if (!usable) continue;
             return url;
         }
@@ -219,7 +221,7 @@ private string pickFontSrc(string value)
             auto cut = indexOf(path, sep);
             if (cut >= 0) path = path[0 .. cut];
         }
-        if (endsWith(path, ".woff2") || endsWith(path, ".eot") || endsWith(path, ".svg"))
+        if (endsWith(path, ".eot") || endsWith(path, ".svg"))
             continue;
         return url;
     }
@@ -333,20 +335,22 @@ unittest
     assert(faces[0].weight == "normal" && faces[0].style == "normal",
         "the weight and style descriptors are kept");
 
-    // A woff2-only face cannot be decoded (brotli), so the family has no source:
-    // the caller falls back to the next family rather than failing the sheet.
+    // A woff2-only face is decodable (auroraweb.woff2), so the family resolves
+    // to the real face a browser would use instead of a substitute.
     faces = parseFontFaces("@font-face{font-family:Only2;"
         ~ "src:url(a.woff2) format('woff2')}");
-    assert(faces.length == 0, "a woff2-only face must not resolve");
+    assert(faces.length == 1 && faces[0].url == "a.woff2",
+        "a woff2-only face resolves to its own source");
 
-    // Google Fonts' modern shape: the woff2 candidate is skipped and the woff
-    // one is used, so a webfont request still yields a face.
+    // Google Fonts' modern shape: the woff2 candidate comes first and, being
+    // decodable, wins — like a browser that negotiated the newest format.
     faces = parseFontFaces("@font-face{font-family:'Roboto';"
         ~ "src:url(https://fonts.gstatic.com/roboto.woff2) format('woff2'),"
         ~ "url(https://fonts.gstatic.com/roboto.woff) format('woff');"
         ~ "font-weight:700}");
-    assert(faces.length == 1 && faces[0].url == "https://fonts.gstatic.com/roboto.woff",
-        "the woff candidate of a modern webfont request must be used");
+    assert(faces.length == 1 &&
+        faces[0].url == "https://fonts.gstatic.com/roboto.woff2",
+        "the woff2 candidate of a modern webfont request must be used");
     assert(faces[0].weight == "700", "the numeric weight is kept");
 
     // Sources without a format hint are judged by extension only where the
@@ -356,12 +360,15 @@ unittest
         ~ "@font-face{font-family:B;src:url(fonts/b.eot)}"
         ~ "@font-face{font-family:C;src:url(fonts/c.woff)}"
         ~ "@font-face{font-family:D;src:url(fonts/d.eot?#iefix)}"
-        ~ "@font-face{font-family:E;src:local('Helvetica'),url(serve.php?id=7)}");
-    assert(faces.length == 3, "three of these five faces have a usable source");
+        ~ "@font-face{font-family:E;src:local('Helvetica'),url(serve.php?id=7)}"
+        ~ "@font-face{font-family:F;src:url(fonts/f.woff2)}");
+    assert(faces.length == 4, "four of these six faces have a usable source");
     assert(faces[0].url == "fonts/a.ttf", "a plain TrueType url is usable");
     assert(faces[1].url == "fonts/c.woff", "a plain WOFF url is usable");
     assert(faces[2].family == "E" && faces[2].url == "serve.php?id=7",
         "a hintless, extensionless source is still tried");
+    assert(faces[3].family == "F" && faces[3].url == "fonts/f.woff2",
+        "a plain WOFF2 url is usable");
 }
 
 /// One CSS rule.

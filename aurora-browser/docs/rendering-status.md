@@ -142,7 +142,7 @@ three cases; this is the corpus that pinned the content-box item region):
 
 | Fixture | Behaviour pinned by Edge |
 | --- | --- |
-| `webfont.html` | `@font-face` is the only possible source of the two families it uses, so the shaped advance width of twenty `m`s can only match Edge if the rule was parsed, its `src` list walked past the first entry (a woff2 the engine cannot decode) to the TrueType that follows, the file fetched and the resulting face used for measurement; the two identically-sized chips 12px apart also pin inline-block shrink-to-fit, baseline placement and the collapsed space between them. `color: transparent` keeps glyph rasterisation out of the pixels while the text still drives the width. |
+| `webfont.html` | `@font-face` is the only possible source of the two families it uses, so the shaped advance width of twenty `m`s can only match Edge if the rule was parsed, its `src` list walked past the first entry (a woff2 URL that does not exist) to the TrueType that follows, the file fetched and the resulting face used for measurement; the two identically-sized chips 12px apart also pin inline-block shrink-to-fit, baseline placement and the collapsed space between them. `color: transparent` keeps glyph rasterisation out of the pixels while the text still drives the width. |
 
 `aurora-opencode-pro/tests/browser-fixtures-flex-cross-margin/` (corpus
 **-17**, one case):
@@ -193,12 +193,34 @@ destination.
   then fetched, registered as a face and used by layout, measurement, shaping and
   painting. The engine decodes the uncompressed `sfnt` (TrueType/OpenType)
   containers and unwraps a WOFF 1.0 one (`woff.d`, reached through `css.d`
-  pickFontSrc); `woff2`, `embedded-opentype` and the legacy `svg` font format are
-  skipped, so the fixture's second family still pins the walk past a woff2 to the
-  TrueType that follows it, and the fixture as a whole pins the path with a family
-  no machine installs. Verified on a real page as well: `djangoproject.com`'s nav
-  icons come from FontAwesome's woff-only face and land where Edge's do (see
-  "Known-site measured status").
+  pickFontSrc), and decodes a WOFF 2.0 one (`woff2.d` over `brotli.d`, reached
+  the same way); `embedded-opentype` and the legacy `svg` font format are
+  skipped, so the fixture's second family still pins the walk past a woff2 whose
+  URL does not exist to the TrueType that follows it, and the fixture as a whole
+  pins the path with a family no machine installs. Verified on a real page as
+  well: `djangoproject.com`'s nav icons come from FontAwesome's woff-only face
+  and land where Edge's do (see "Known-site measured status").
+
+- **WOFF 2.0 webfonts (the `djangoproject.com` text faces).** The site's
+  stylesheet declares every text face as `woff2` alone - all seven `@font-face`
+  rules carry a single `src:url(...woff2) format("woff2")`, and only the
+  FontAwesome icon face is served as `woff` - so until now the page fell through
+  its family list to an installed substitute and every text band was shaped with
+  the wrong glyphs and the wrong advances. `brotli.d` is a from-scratch RFC 7932
+  decoder (stream header, meta-block loop, prefix codes, context maps, repeat
+  codes, ring-buffer distances) and `woff2.d` is the container: header and
+  `UIntBase128`/`255UInt16` directory, the transformed `glyf`/`loca` triplet
+  form, `hmtx` reconstruction and sfnt assembly with recalculated checksums.
+  Evidence against the file the site itself serves
+  (`Roboto-Light.4b97d1da126a.woff2`, SHA-256
+  `2772d27df0741ab3683a2f581c84edae744918d64249098eb2387db81c24bdbe`): its
+  Brotli stream decodes to the 139743 bytes the header declares, the
+  reconstructed `glyf` is byte-identical to `fontTools`' independent woff2
+  decode for all 1321 glyphs, and the assembled font's whole-font checksum
+  matches the sfnt's own `0x2981146554`. On the live page the shaped advances
+  are then Edge's: with the stylesheet's `letter-spacing:-1px`, the CTA label
+  `Get started with Django` at 18px inks 167 against an independent Edge frame's
+  166, and the tagline's first word at 36px inks 101 against Edge's 102.
 
 - **Inline and inline-block geometry (same corpus).** Five conventions were
   wrong at once. An auto-height inline-block was sized from the containing
@@ -308,7 +330,7 @@ again; its last run, before these fixes, was clean (smoke `ALL PASSED`,
 `mismatchedPixels 0`, `inputsSha256 A87741D9…`).
 
 Re-run against this engine, the recipe's **tests** step is clean:
-`headless_smoke: ALL PASSED`, 93 checks, including the real-input ones that route
+`headless_smoke: ALL PASSED`, 91 checks, including the real-input ones that route
 a pointer through `UiTestDriver.moveTo` / `wheel` / `doubleClick` / `rightClick`
 (`headless_smoke.d` 449-520 - the `:hover`, `onmouseenter`, `onwheel`,
 `ondblclick` and `oncontextmenu` page callbacks). An earlier run of this recipe
@@ -341,6 +363,59 @@ band - page rows 12, 23..42 (the nav row), 46, 76..83 (the search field), 231,
 the substitute-font metric class recorded above, not layout or palette. The
 superseded light frame is kept beside the new one as
 `django29ref-pre-color-scheme.ppm`.
+
+Later the same day, after the WOFF 2.0 webfont fix (see "Engine fixes pinned by
+these corpora"): the app recipe ran clean against a re-frozen baseline -
+`passed: true`, smoke `ALL PASSED` (91 checks, measured by counting the suite's
+own PASS lines), render `mismatchedPixels 0` of 1,024,000 with reference and
+frame both carrying SHA-256
+`CBAC1963BBEFB00D83E455EE3420B15154254D44723F8B03047D7E0F9907DFE0`, plus the
+release `aurora-browser-new.exe` compile and the live `djangoproject.com`
+capture (`inputsSha256 FD534029…`, `recipeSha256 9C5B8C7D…`). This re-freeze is
+for the decoder, not for the page: the superseded frame was captured while the
+site's text faces were still undecodable, so it records substitute-face text,
+and it is kept beside the new one as `django29ref-pre-woff2.ppm` (SHA-256
+`A76F187028EFF991DA3FF057D2D027A85297B5E66E7609A68D8401D468164517`). Against
+the independent Edge frame `edge-live-new.png` (page-only 1280x638, SHA-256
+`f1daf365c218968859cec146fe5dc99c31bc74397b81268312d52e4ff136534b`) the new
+frame differs in 2249 of 40832 64-cell rows (5.5%) against the superseded
+frame's 1631 (4.0%), and the measured cause of that increase is one line break
+in the hero: the tagline string through `apps` measures 698.05px with the
+stylesheet's own `letter-spacing:-1px` and the served Roboto Light, against the
+rule's `max-width:700px`, so Edge breaks two pixels the other side of that
+edge. Independent of that break, the same-string glyph advances now agree with
+Edge - the CTA label `Get started with Django` at 18px inks 167px against 166,
+the tagline's first word at 36px inks 101px against 102 - which is the coupling
+the substitute faces could not produce.
+
+The decoder did not disturb the Edge-referenced fixtures. Re-run after it,
+`browser-reference-web-font` - the corpus whose `src` list walks past a woff2 -
+matched its frozen Edge reference at `mismatchedPixels 0` of 76,800,
+`browser-reference-layout` matched at 0 on all six of its cases and
+`browser-reference-line-height-normal` at 0 on its one case, each reporting
+`43 modules passed unittests` and `PASS independent click-handler and
+link-destination assertions`.
+
+Two further consequences of the real faces, measured in the same Edge pair.
+The dark green header band now ends at page y=137 against Edge's 138 - it ended
+at 132 while the text faces were undecodable, which is the 5px residue this
+document recorded as a line-box height difference of the substitute stack, so
+the real Roboto line boxes closed it. And the CTA button's box is `506..773`:
+the label's own advance plus `padding:1em 50px`, centred on the 1280px content
+box, which is what the stylesheet declares. Edge's is `545..834` - 62px of side
+padding, its centre 49.5px right of the page centre - while the label inside it,
+the same string at the same size, inks 166px against this engine's 167px. That
+difference is therefore in the button box Edge paints, not in the text or its
+metrics, and it is left open as an Edge-side residue rather than matched by
+changing the engine away from the declared padding.
+
+What the decoder costs: 12.63 ms per face, measured over twenty decodes of the
+site's own 67,608-byte `Roboto-Light` woff2 to a 152,492-byte sfnt
+(`woff2time.d` in the capture directory, run with `dmd -run`). A page using half
+a dozen faces therefore pays tens of milliseconds, against end-to-end probe
+captures of `djangoproject.com` at 1280x800 with eight repaints taking
+1.33-1.61 s and the heavier `boqsc.eu` 8.58-8.99 s, so the network and paint
+phases still dominate a page open.
 
 ## What those tools cannot see
 
@@ -415,15 +490,20 @@ subresources are served from the bounded cache instead of being re-fetched.
   `third-party-inventory.json` with the resolution it needs.
 - Both `dub.json` files still declare `"license": "BSL-1.0"` with author
   `"OpenAI"`; that metadata change was explicitly set aside for now.
-- Web faces are supported in the uncompressed `sfnt` (TrueType/OpenType) form and
-  in a WOFF 1.0 container. `woff.d` unwraps the container to that same sfnt:
-  header and table directory, then each table's stream inflated with `std.zlib`
-  where the container says it is compressed. Its unittests cover compressed
-  tables, tables stored verbatim, and a malformed container being rejected.
-  `woff2` is the remaining format gap - it needs Brotli, which nothing in the
-  tree implements - so a `src` entry in that format is skipped and the walk goes
-  on to the next candidate, as are `embedded-opentype` and the legacy `svg` font
-  format. Measured on a real page rather than reasoned about:
+- Web faces are supported in the uncompressed `sfnt` (TrueType/OpenType) form, in
+  a WOFF 1.0 container and in a WOFF 2.0 container. `woff.d` unwraps the WOFF 1.0
+  container to that same sfnt: header and table directory, then each table's
+  stream inflated with `std.zlib` where the container says it is compressed. Its
+  unittests cover compressed tables, tables stored verbatim, and a malformed
+  container being rejected. `woff2.d`, over `brotli.d`, decodes the WOFF 2.0
+  container instead of carrying it: the transformed `glyf`/`loca` pair and `hmtx`
+  are rebuilt and the table data stream is Brotli-decoded from scratch, and its
+  unittests cover `UIntBase128`, `255UInt16` and the triplet decoding table while
+  `brotli.d`'s cover an uncompressed meta-block, the specification's published
+  literal context tables and a damaged stream being reported rather than thrown.
+  `embedded-opentype` and the legacy `svg` font format are what remains skipped,
+  exactly as a browser skips a source it cannot parse. Measured on a real page
+  rather than reasoned about:
   `djangoproject.com`'s nav icons can only come from FontAwesome's woff face, and
   their ink columns match an independent Edge frame's within 1..4px, the heart
   icon at x 1071..1078 against Edge's 1074..1080.
@@ -433,7 +513,11 @@ subresources are served from the bounded cache instead of being re-fetched.
   a TrueType source and a woff2-then-TrueType `src`, and both resolve the same
   way with or without woff support. A family no machine installs whose only
   candidate source is a woff is the fixture that would pin it; it is not in the
-  tree yet.
+  tree yet. The WOFF 2.0 path is pinned the same way the live page pins it: every
+  text face `djangoproject.com` serves is woff2-only, so a decode that stops
+  working drops the page onto a substitute face, moves the measured advances
+  above by whole percent, and fails `verify-render.json`'s frozen capture of that
+  page.
 - The `file://` scheme is supported by both the engine and the browser shell. It
   was not: the loader served only `http`/`https`, so an engine-level navigation to
   a local page left its "Navigation failed" document in place (a capture of it
@@ -449,14 +533,20 @@ subresources are served from the bounded cache instead of being re-fetched.
   Content-Types, a real file read, a missing file (an error, not a throw) and
   relative resolution; `dub test` passes 57 modules.
 - `aurora-browser/tests/verify-render.json` passes end to end on the current
-  sources: compile, `headless_smoke: ALL PASSED` (93 checks, the real-input hover,
+  sources: compile, `headless_smoke: ALL PASSED` (91 checks, the real-input hover,
   wheel, double-click, right-click and scroll-listener checks included), the
   engine's `django` capture against its baseline with `mismatchedPixels 0` of
-  1,024,000 (frame SHA-256 `8DD90E90…`), the release app compile and the live app
+  1,024,000 (frame SHA-256 `CBAC1963…`), the release app compile and the live app
   capture. That baseline is an Aurora-to-Aurora regression check - it detects a
-  change and cannot prove correctness - and it was re-frozen here for the
-  platform colour scheme; the independent dark Edge frame behind that re-freeze
-  and the 6.1%-of-cells agreement with it are recorded under "Last full re-run".
+  change and cannot prove correctness - and it was last re-frozen for the WOFF 2.0
+  webfont fix, which is why its text is no longer substitute-face text: with the
+  site's woff2 faces decoded, the same-string CTA label inks 167px against an
+  independent Edge frame's 166px and the tagline's first word 101px against
+  Edge's 102px, and whole-page structural agreement against that same Edge frame
+  is 5.5% of 64-cell rows where the substitute-face frame had 4.0% - the increase
+  being the hero tagline's knife-edge line break (698.05px of the stylesheet's own
+  metrics against its `max-width:700px`), not a regression. The re-freeze history
+  and the earlier colour-scheme measurement are recorded under "Last full re-run".
 
 ## Inline-level margin collapse, re-measured against Edge (2026-10-17)
 
@@ -650,15 +740,16 @@ Confirmed defect:
   is a flex item that is allowed to shrink, so its width is not the fault; the
   item advances are, and the site's text faces are why they are wider than
   Edge's.
-- `boqsc.eu` text faces. The site's faces are served as woff2 - which is
-  what Google Fonts' current CSS does - and the engine skips those (`css.d` walks
-  `src` and skips the woff2 ones - see "Known limitations carried forward") and
-  shapes its text in an installed
-  substitute, which is wider; that is the mechanism the new fixture pins for a
-  TrueType source. The site's own font requests have not been measured yet, so
-  this is the leading explanation for the remaining advance difference rather
-  than a confirmed cause. It is also the next support gap for webfont-dependent
-  sites: see "Known limitations carried forward".
+- `boqsc.eu` text faces. The site's faces are served as woff2 - which is what
+  Google Fonts' current CSS does - and the engine used to skip those (`css.d`
+  walked `src` and skipped the woff2 ones) and shape its text in an installed
+  substitute, which is wider. That skip is closed: `css.d` now accepts a `woff2`
+  source and `woff2.d` decodes it (see "Known limitations carried forward"), so
+  this page shapes in the faces Google's CSS asks for. The toolbar's remaining
+  advance difference was attributed to substitute-face metrics, which that
+  mechanism can no longer explain; the page is captured by `verify-render.json`
+  and needs re-measuring against an Edge frame of its own before that residue is
+  called explained.
 
 Ruled out, with the evidence that ruled it out:
 

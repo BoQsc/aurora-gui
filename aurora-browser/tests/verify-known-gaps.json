@@ -1,6 +1,8 @@
 {
   "inputs": [
     "aurora-web/source/auroraweb/woff.d",
+    "aurora-web/source/auroraweb/woff2.d",
+    "aurora-web/source/auroraweb/brotli.d",
     "aurora-web/source/auroraweb/css.d",
     "aurora-browser/docs/rendering-status.md"
   ],
@@ -27,6 +29,33 @@
       "kind": "tests",
       "command": {
         "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/woff-ut.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-unittest",
+          "-main",
+          "-i",
+          "-Iaurora-web/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/woff2-ut.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/woff2ut",
+          "aurora-web/source/auroraweb/woff2.d"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/woff2-ut.exe",
         "args": [],
         "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
         "timeout": 120000

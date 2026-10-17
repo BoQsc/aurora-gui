@@ -15,7 +15,7 @@ module auroraweb.net;
  * boundary. Only genuinely exceptional conditions throw.
  */
 
-import core.time : Duration, dur;
+import core.time : Duration, MonoTime, dur;
 import std.array : split, join;
 import std.conv : to;
 import std.string : indexOf, lastIndexOf, toLower, strip;
@@ -409,6 +409,263 @@ private final class HttpStream
         _pos = _buf.length;
         return bytes;
     }
+
+    /// Read a `Transfer-Encoding: chunked` body: each chunk's size line, data
+    /// and terminator, then the trailer section. Reading to EOF instead would
+    /// wait for the peer to close, which a keep-alive connection never does.
+    /// `complete` is false when the peer closed mid-chunk.
+    ubyte[] readChunked(out bool complete)
+    {
+        complete = false;
+        ubyte[] outBytes;
+        while (true)
+        {
+            auto sizeLine = readLine();
+            if (sizeLine is null) return outBytes;
+            auto semi = indexOf(sizeLine, ";");
+            auto size = hexToLong(strip(semi >= 0 ? sizeLine[0 .. semi] : sizeLine));
+            if (size <= 0)
+            {
+                string trailer;
+                while ((trailer = readLine()) !is null && trailer.length) {}
+                complete = true;
+                return outBytes;
+            }
+            auto data = readExact(cast(size_t) size);
+            outBytes ~= data;
+            if (data.length < cast(size_t) size) return outBytes;
+            // The chunk terminator is CRLF. It is read as bytes on purpose: an
+            // empty line's `.dup` is indistinguishable from the null that
+            // readLine reports at EOF, which ended this loop after chunk one.
+            if (readExact(2).length < 2) return outBytes;
+        }
+    }
+}
+
+/// A live connection kept for reuse. HTTP/1.1 keep-alive is the difference
+/// between one TCP+TLS handshake per request and one per origin: a real page's
+/// 11 subresources cost 57..101ms each (~830ms of a ~1.2s open) when every
+/// request reconnected.
+private struct PooledConnection
+{
+    ByteTransport conn;
+    HttpStream stream;
+    MonoTime used;
+}
+
+private PooledConnection[string] _connectionPool;
+
+/// A page opens a handful of origins (document host, static host, analytics);
+/// a burst of one-off hosts must not grow this without bound.
+private enum size_t maxPooledConnections = 8;
+
+/// Servers close an idle keep-alive socket after ~5..15s. Dropping our own idle
+/// connections earlier avoids paying a failed request to discover that.
+private enum Duration pooledIdleTimeout = dur!"seconds"(10);
+
+/// The connection's origin as a pool key: scheme, host and port.
+private string poolKey(const ref Url u)
+{
+    return u.scheme ~ "://" ~ u.host ~ ":" ~ to!string(u.port);
+}
+
+/// Close and forget pooled connections that have been idle too long.
+private void pruneConnectionPool()
+{
+    const now = MonoTime.currTime;
+    foreach (key; _connectionPool.keys)
+    {
+        auto entry = key in _connectionPool;
+        if (entry is null) continue;
+        if (now - (*entry).used > pooledIdleTimeout)
+        {
+            (*entry).conn.close();
+            _connectionPool.remove(key);
+        }
+    }
+}
+
+/// Drop the least recently used pooled connection (the pool is full).
+private void dropOldestPooledConnection()
+{
+    string oldest;
+    MonoTime oldestUsed;
+    foreach (key, ref entry; _connectionPool)
+        if (!oldest.length || entry.used < oldestUsed)
+        {
+            oldest = key;
+            oldestUsed = entry.used;
+        }
+    if (oldest.length)
+    {
+        _connectionPool[oldest].conn.close();
+        _connectionPool.remove(oldest);
+    }
+}
+
+/// Take the pooled connection for `key` out of the pool, if there is one.
+private bool takePooledConnection(string key, out ByteTransport conn,
+    out HttpStream stream)
+{
+    pruneConnectionPool();
+    if (auto hit = key in _connectionPool)
+    {
+        auto entry = *hit;
+        _connectionPool.remove(key);
+        if (entry.conn is null || entry.stream is null) return false;
+        conn = entry.conn;
+        stream = entry.stream;
+        return true;
+    }
+    return false;
+}
+
+/// Keep a connection for the next request to the same origin.
+private void keepPooledConnection(string key, ByteTransport conn,
+    HttpStream stream)
+{
+    if (conn is null || stream is null) return;
+    pruneConnectionPool();
+    _connectionPool[key] = PooledConnection(conn, stream, MonoTime.currTime);
+    while (_connectionPool.length > maxPooledConnections)
+        dropOldestPooledConnection();
+}
+
+/// Forget every pooled connection (tests, and a full cache clear).
+void clearConnectionPool()
+{
+    foreach (key; _connectionPool.keys)
+        _connectionPool[key].conn.close();
+    _connectionPool = null;
+}
+
+/// Connect a fresh TCP (and, for `https`, TLS) connection and its read stream.
+private bool openConnection(const ref Url u, out ByteTransport conn,
+    out HttpStream stream, ref HttpResponse res)
+{
+    try
+    {
+        auto tcp = TcpTransport.connect(u.host, u.port);
+        try
+            conn = u.scheme == "https"
+                ? cast(ByteTransport) TlsTransport.connect(u.host, tcp)
+                : cast(ByteTransport) tcp;
+        catch (Exception e)
+        {
+            tcp.close();
+            throw e;
+        }
+    }
+    catch (Exception e)
+    {
+        res.error = e.msg;
+        return false;
+    }
+    stream = new HttpStream(conn);
+    return true;
+}
+
+/// Send `req` (and `body`) on a connected transport and parse one response into
+/// `res`. Returns false when the exchange could not happen at all - a transport
+/// failure, or a connection the peer had already closed - so the caller can
+/// reconnect. `reusable` reports whether the connection may serve another
+/// request: keep-alive needs a framed body (Content-Length, a completed chunked
+/// body, or a status that carries none) and no `Connection: close`.
+private bool exchange(ByteTransport conn, HttpStream stream, const(ubyte)[] req,
+    ubyte[] body, string method, string currentUrl, ref HttpResponse res,
+    out bool reusable)
+{
+    reusable = false;
+    try
+    {
+        conn.writeAll(req);
+        if (body.length) conn.writeAll(cast(const(ubyte)[]) body);
+    }
+    catch (TransportException e)
+    {
+        res.error = e.msg;
+        return false;
+    }
+
+    // Status line, skipping any 1xx informational responses.
+    int status;
+    string statusLine;
+    while (true)
+    {
+        statusLine = stream.readLine();
+        if (statusLine is null || statusLine.length == 0)
+        {
+            res.error = "empty response from " ~ currentUrl;
+            return false;
+        }
+        status = parseStatusCode(statusLine);
+        if (status < 100 || status >= 200) break;
+        string l;
+        while ((l = stream.readLine()) !is null && l.length) {}
+    }
+    res.status = status;
+    res.statusText = statusTextOf(statusLine);
+    res.error = "";
+
+    // Headers.
+    string[string] headers;
+    string[] setCookies;
+    string line;
+    while ((line = stream.readLine()) !is null && line.length)
+    {
+        auto colon = indexOf(line, ":");
+        if (colon <= 0) continue;
+        auto name = toLower(line[0 .. colon]).strip();
+        auto value = line[colon + 1 .. $].strip();
+        if (name == "set-cookie") setCookies ~= value;
+        headers[name] = value;
+    }
+    res.headers = headers;
+    foreach (sc; setCookies) storeSetCookie(sc, currentUrl);
+
+    // Body framing: chunked, content-length, or read-to-close. A redirect's
+    // body is read here too, or the bytes would be mistaken for the next
+    // response's status line on a reused connection.
+    const bodyless = method == "HEAD" || status == 204 || status == 304 ||
+        (status >= 100 && status < 200);
+    bool framed = bodyless;
+    ubyte[] raw;
+    if (!bodyless)
+    {
+        auto te = "transfer-encoding" in headers;
+        auto cl = "content-length" in headers;
+        if (te !is null && indexOf(toLower(*te), "chunked") >= 0)
+        {
+            bool complete;
+            raw = stream.readChunked(complete);
+            framed = complete;
+        }
+        else if (cl !is null)
+        {
+            auto want = cast(size_t) parseLong((*cl).strip());
+            raw = stream.readExact(want);
+            framed = raw.length == want;
+        }
+        else
+        {
+            // Framed by the peer closing: this connection cannot be reused.
+            raw = stream.readToEof();
+        }
+    }
+
+    auto enc = "content-encoding" in headers;
+    if (enc !is null && (*enc).length)
+    {
+        auto decoded = decodeBody(raw, toLower(*enc));
+        if (decoded.length) raw = decoded;
+    }
+
+    res.body = raw;
+    auto connection = "connection" in headers;
+    const closed = connection !is null &&
+        indexOf(toLower(*connection), "close") >= 0;
+    reusable = framed && !closed;
+    return true;
 }
 
 /// Synchronous HTTP/1.1 client. Fetches `url` with `method`, an optional body
@@ -435,19 +692,10 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
         if (u.scheme == "file") return fileFetch(u, currentUrl);
 
         ByteTransport conn;
-        try
-        {
-            auto tcp = TcpTransport.connect(u.host, u.port);
-            conn = u.scheme == "https"
-                ? cast(ByteTransport) TlsTransport.connect(u.host, tcp)
-                : cast(ByteTransport) tcp;
-        }
-        catch (Exception e)
-        {
-            res.error = e.msg;
-            return res;
-        }
-        scope (exit) conn.close();
+        HttpStream stream;
+        const key = poolKey(u);
+        const reused = takePooledConnection(key, conn, stream);
+        if (!reused && !openConnection(u, conn, stream, res)) return res;
 
         string target = u.path.length ? u.path : "/";
         if (u.query.length) target ~= "?" ~ u.query;
@@ -461,7 +709,7 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
             ~ "User-Agent: Mozilla/5.0 (Aurora Browser)\r\n"
             ~ "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
             ~ "Accept-Encoding: gzip, deflate\r\n"
-            ~ "Connection: close\r\n";
+            ~ "Connection: keep-alive\r\n";
         foreach (k, v; extraHeaders)
             req ~= k ~ ": " ~ v ~ "\r\n";
         auto cookieLine = cookieHeader(currentUrl);
@@ -469,57 +717,31 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
         if (body.length) req ~= "Content-Length: " ~ to!string(body.length) ~ "\r\n";
         req ~= "\r\n";
 
-        try
+        bool reusable;
+        bool exchanged = exchange(conn, stream, cast(const(ubyte)[]) req, body,
+            method, currentUrl, res, reusable);
+        if (!exchanged && reused)
         {
-            conn.writeAll(cast(const(ubyte)[]) req);
-            if (body.length) conn.writeAll(cast(const(ubyte)[]) body);
+            // A pooled socket the server had already closed. Keep-alive sockets
+            // die on the server's own schedule, so reconnect and try once more
+            // rather than fail a request a fresh connection would have served.
+            conn.close();
+            if (!openConnection(u, conn, stream, res)) return res;
+            exchanged = exchange(conn, stream, cast(const(ubyte)[]) req, body,
+                method, currentUrl, res, reusable);
         }
-        catch (TransportException e)
+        if (!exchanged)
         {
-            res.error = e.msg;
+            conn.close();
             return res;
         }
-
-        auto stream = new HttpStream(conn);
-
-        // Status line, skipping any 1xx informational responses.
-        int status;
-        string statusLine;
-        while (true)
-        {
-            statusLine = stream.readLine();
-            if (statusLine is null || statusLine.length == 0)
-            {
-                res.error = "empty response from " ~ currentUrl;
-                return res;
-            }
-            status = parseStatusCode(statusLine);
-            if (status < 100 || status >= 200) break;
-            string l;
-            while ((l = stream.readLine()) !is null && l.length) {}
-        }
-        res.status = status;
-        res.statusText = statusTextOf(statusLine);
-
-        // Headers.
-        string[string] headers;
-        string[] setCookies;
-        string line;
-        while ((line = stream.readLine()) !is null && line.length)
-        {
-            auto colon = indexOf(line, ":");
-            if (colon <= 0) continue;
-            auto name = toLower(line[0 .. colon]).strip();
-            auto value = line[colon + 1 .. $].strip();
-            if (name == "set-cookie") setCookies ~= value;
-            headers[name] = value;
-        }
-        res.headers = headers;
-        foreach (sc; setCookies) storeSetCookie(sc, currentUrl);
+        if (reusable) keepPooledConnection(key, conn, stream);
+        else conn.close();
 
         // Redirect.
-        auto location = "location" in headers;
-        if (status >= 300 && status < 400 && location !is null && (*location).length)
+        auto location = "location" in res.headers;
+        if (res.status >= 300 && res.status < 400 && location !is null &&
+            (*location).length)
         {
             if (hop == 10)
             {
@@ -535,7 +757,8 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
             currentUrl = next;
             res.finalUrl = currentUrl;
             // 303, and 301/302 answering a POST, become a bodyless GET.
-            if (status == 303 || ((status == 301 || status == 302) && method == "POST"))
+            if (res.status == 303 ||
+                ((res.status == 301 || res.status == 302) && method == "POST"))
             {
                 method = "GET";
                 body = null;
@@ -543,25 +766,6 @@ HttpResponse httpFetch(string url, string method = "GET", ubyte[] body = null,
             continue;
         }
 
-        // Body framing: chunked, content-length, or read-to-close.
-        ubyte[] raw;
-        auto te = "transfer-encoding" in headers;
-        auto cl = "content-length" in headers;
-        if (te !is null && indexOf(toLower(*te), "chunked") >= 0)
-            raw = decodeChunked(stream.readToEof());
-        else if (cl !is null)
-            raw = stream.readExact(cast(size_t) parseLong((*cl).strip()));
-        else
-            raw = stream.readToEof();
-
-        auto enc = "content-encoding" in headers;
-        if (enc !is null && (*enc).length)
-        {
-            auto decoded = decodeBody(raw, toLower(*enc));
-            if (decoded.length) raw = decoded;
-        }
-
-        res.body = raw;
         res.finalUrl = currentUrl;
         return res;
     }
@@ -1139,7 +1343,8 @@ version (unittest)
 
     unittest
     {
-        import std.socket : Socket, InternetAddress, AddressFamily, SocketType;
+        import std.socket : Socket, InternetAddress, AddressFamily, SocketOption,
+            SocketOptionLevel, SocketType;
         import std.zlib : compress;
 
         Thread[] keep;
@@ -1181,6 +1386,52 @@ version (unittest)
         assert(cast(string) r5.body == "final", "redirect body: " ~ cast(string) r5.body);
         assert(r5.finalUrl == "http://127.0.0.1:" ~ to!string(pB) ~ "/final",
             "finalUrl: " ~ r5.finalUrl);
+
+        // 5) Keep-alive: two sequential requests to one origin must reuse ONE
+        //    connection. Every request otherwise pays a fresh TCP+TLS
+        //    handshake, which is what made a real page's 11 subresources cost
+        //    57..101ms each (measured; see scratch/stageprobe2).
+        {
+            clearConnectionPool();
+            auto listener = new Socket(AddressFamily.INET, SocketType.STREAM);
+            listener.setOption(SocketOptionLevel.SOCKET, SocketOption.REUSEADDR, 1);
+            listener.bind(new InternetAddress("127.0.0.1", 0));
+            listener.listen(4);
+            const port = (cast(InternetAddress) listener.localAddress).port;
+            int connections;
+            int served;
+            auto t = new Thread({
+                while (served < 2)
+                {
+                    auto conn = listener.accept();
+                    if (conn is null) break;
+                    ++connections;
+                    while (served < 2)
+                    {
+                        ubyte[4096] req;
+                        auto n = conn.receive(req);
+                        if (n <= 0) break;
+                        conn.send(cast(ubyte[])
+                            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+                        ++served;
+                    }
+                    conn.close();
+                }
+                listener.close();
+            });
+            t.start();
+            keep ~= t;
+
+            const base = "http://127.0.0.1:" ~ to!string(port);
+            auto a = httpFetch(base ~ "/a");
+            auto b = httpFetch(base ~ "/b");
+            assert(cast(string) a.body == "ok" && cast(string) b.body == "ok",
+                "both keep-alive responses carry the body");
+            assert(connections == 1,
+                "a second request to one origin must reuse its connection, saw "
+                ~ to!string(connections));
+            clearConnectionPool();
+        }
     }
 }
 

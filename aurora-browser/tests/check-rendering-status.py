@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Pins what docs/rendering-status.md records about the two real-site gaps closed
-on 2026-10-17: djangoproject.com's logo placement and the WOFF 1.0 webfont path.
+"""Pins what docs/rendering-status.md records about the real-site gaps closed on
+2026-10-17: djangoproject.com's logo placement, the WOFF 1.0 webfont path and the
+WOFF 2.0 webfont path its text faces need.
 
 Every assertion quotes a measurement taken against an independent Edge frame, so
 the record cannot silently drift back to the claims those measurements replaced
 (the logo "19 rows" above its box, woff among "compressed formats" the engine
-skips).  The stale forms are asserted absent as well.
+skips, a woff2 source "skipped" as a format gap).  The stale forms are asserted
+absent as well.
 
 Run:  python -u -B aurora-browser/tests/check-rendering-status.py
 """
@@ -69,12 +71,12 @@ class RenderingStatusRecord(unittest.TestCase):
             "the woff decode path in css.d pickFontSrc is missing",
         )
 
-    def test_woff_limitation_is_current(self):
-        """The current limitation wording: woff 1.0 decoded, woff2 the gap."""
+    def test_woff2_decode_record_is_current(self):
+        """The current wording: WOFF 1.0 unwrapped, WOFF 2.0 decoded."""
         self.assertIn(
-            "`woff2` is the remaining format gap",
+            "`woff2.d`, over `brotli.d`, decodes the WOFF 2.0 container",
             self.text,
-            "the remaining woff2 gap is missing",
+            "the woff2 decode path is missing from the record",
         )
         self.assertIn(
             "Its unittests cover compressed tables, tables stored verbatim, "
@@ -87,9 +89,16 @@ class RenderingStatusRecord(unittest.TestCase):
             self.text,
             "the missing woff-only fixture should be recorded as a gap",
         )
+        self.assertIn(
+            "2772d27df0741ab3683a2f581c84edae744918d64249098eb2387db81c24bdbe",
+            self.text,
+            "the served Roboto-Light woff2 hash that pins the decode is missing",
+        )
 
     def test_no_stale_claims(self):
-        for stale in ("19 rows", "next item to close", "compressed formats"):
+        for stale in ("19 rows", "next item to close", "compressed formats",
+                      "`woff2` is the remaining format gap",
+                      "and skips the woff2 ones"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, self.text, f"stale claim is back: {stale}")
 

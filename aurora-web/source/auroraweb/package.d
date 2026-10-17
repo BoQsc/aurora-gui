@@ -25,6 +25,7 @@ import auroraweb.dombind : bindDocument, dispatchHostEvent, dispatchHostEventNoB
     dispatchDocumentEvent, evaluateIntersectionObservers, setDocumentScroll, setViewportSize;
 import auroraweb.shaping : registerWebFace;
 import auroraweb.woff : isWoff, woffToSfnt;
+import auroraweb.woff2 : isWoff2, woff2ToSfnt;
 
 /// One `<script>` waiting to run: inline text, or the URL of an external
 /// classic script.
@@ -1185,16 +1186,24 @@ final class WebPage
         return path;
     }
 
-    /// The bytes a font face is loaded from: a WOFF container is unpacked to the
-    /// sfnt inside it first.
+    /// The bytes a font face is loaded from: a WOFF or WOFF2 container is
+    /// unpacked to the sfnt inside it first.
     ///
     /// The shaper reads sfnt (ttf/otf) faces only, so a page whose face is
     /// served as WOFF — FontAwesome, in the Django site's header — would
     /// otherwise register no glyphs at all and fall back to a font that has no
-    /// icons. Bytes that are not WOFF, or that fail to unpack, are returned
-    /// unchanged: the following load then fails exactly as it did before.
+    /// icons. The same holds for WOFF2, which is what most current sites serve
+    /// exclusively. Bytes that are neither container, or that fail to unpack,
+    /// are returned unchanged: the following load then fails exactly as it did
+    /// before.
     private static ubyte[] fontBytesFor(ubyte[] bytes)
     {
+        if (isWoff2(bytes))
+        {
+            string error;
+            auto sfnt = woff2ToSfnt(bytes, error);
+            return sfnt.length ? sfnt : bytes;
+        }
         if (!isWoff(bytes)) return bytes;
         try
         {

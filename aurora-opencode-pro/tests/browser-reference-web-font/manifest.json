@@ -11,10 +11,10 @@
     {
       "name": "webfont",
       "html": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-fixtures-web-font\\webfont.html",
-      "htmlSha256": "95a278314a5d41b75c337793c8f4b298ae135ee4a7c79b58455e891d62bae01c",
+      "htmlSha256": "6a581a2d3e80c4670cec7a847597e9c4d0ebde6d34b638d4b0f163d98e191ca8",
       "reference": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\browser-reference-web-font\\webfont.png",
       "referenceSha256": "e55645662f5f97baa82c46552fdab67e8a1df71348fe8a5d93c16a37080403a1",
-      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 95a278314a5d41b75c337793c8f4b298ae135ee4a7c79b58455e891d62bae01c; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
+      "referenceSource": "Installed reference browser C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe; frozen HTML 6a581a2d3e80c4670cec7a847597e9c4d0ebde6d34b638d4b0f163d98e191ca8; viewport {'width': 320, 'height': 240, 'deviceScaleFactor': 1}"
     }
   ]
 }
