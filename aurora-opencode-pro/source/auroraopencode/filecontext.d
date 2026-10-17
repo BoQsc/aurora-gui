@@ -27,7 +27,12 @@ public SystemPromptModule fileContextPromptModule()
         "labels are fine when the link carries the full target. Use the actual " ~
         "tool workspace to resolve relative paths, including paths outside it; " ~
         "never invent a location. Keep web and remote resource URLs intact. " ~
-        "When a reference is ambiguous, ask for its base folder.\n");
+        "Apply this rule only to actual filesystem references, never slash-separated " ~
+        "concepts, alternatives, API names, version numbers or specification sections. " ~
+        "Do not invent links or paths to satisfy the rule. Use an explicit ./ prefix " ~
+        "or an absolute link for extensionless directories. When a reference is " ~
+        "ambiguous, ask for its base folder. Before sending, check that every local " ~
+        "link names the intended file and that ordinary prose remains plain text.\n");
 }
 
 public struct FileReferenceSpan
@@ -211,6 +216,10 @@ public final class FileContextStore
                                         target.type != JSONType.string) continue;
                                     bool tool;
                                     if (auto flag = "tool" in refValue.object) tool = flag.type == JSONType.true_;
+                                    // Discard metadata created by older, overly broad
+                                    // slash-count recognition instead of reviving it.
+                                    if (!tool && !validProseReference(mention.str, target.str))
+                                    { value.dirty = true; continue; }
                                     message.references ~= FileReference(mention.str, target.str, tool);
                                 }
                         value.messages[key] = message;
@@ -318,16 +327,18 @@ public final class FileContextStore
         if (previous != saved.references) entry.dirty = true;
     }
 
+    private bool validProseReference(string mention, string target)
+    {
+        if (looksLikeLocalPath(toUTF32(mention)) || filenameLike(toUTF32(mention))) return true;
+        try return exists(target);
+        catch (Exception) return false;
+    }
+
     private string resolveCandidate(string mention, string base)
     {
         const target = absoluteFileTarget(mention, base);
         if (target.length == 0) return "";
-        try
-        {
-            if (looksLikeLocalPath(toUTF32(mention)) || filenameLike(toUTF32(mention)) || exists(target)) return target;
-        }
-        catch (Exception) {}
-        return "";
+        return validProseReference(mention, target) ? target : "";
     }
 
     public string resolve(string id, const ref ChatMessage message, string mention, string workspace)

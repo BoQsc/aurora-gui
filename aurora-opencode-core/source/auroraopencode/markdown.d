@@ -600,8 +600,8 @@ private bool isAsciiAlpha(dchar c) @safe pure nothrow @nogc
 
 /// Whether `tok` reads as a local filesystem path rather than an ordinary
 /// slash-bearing word. URLs are excluded, and a bare relative path needs a
-/// filename extension or a nested folder so prose such as "and/or", "24/7" or
-/// "TCP/IP" is left alone.
+/// filename extension. Slash counts alone are not evidence: prose such as
+/// "Position/size/coordinates" and "block/inline/float/absolute" is common.
 bool looksLikeLocalPath(dstring tok) @safe pure nothrow @nogc
 {
     const n = tok.length;
@@ -637,17 +637,15 @@ bool looksLikeLocalPath(dstring tok) @safe pure nothrow @nogc
         return true;
     if (n >= 2 && tok[0] == '~' && (tok[1] == '/' || tok[1] == '\\'))
         return true;
-    // Otherwise require a filename extension in the final segment, or a nested
-    // path, to avoid linking ordinary fraction/word slashes.
+    // Otherwise require a filename extension in the final segment. Relative
+    // extensionless folders need an explicit prefix/link or filesystem evidence
+    // from the caller; guessing from their depth turns prose into fake links.
     foreach_reverse (idx, ch; tok)
     {
         if (ch == '/' || ch == '\\') break;
         if (ch == '.') return true;
     }
-    size_t separators;
-    foreach (ch; tok)
-        if (ch == '/' || ch == '\\') ++separators;
-    return separators >= 2;
+    return false;
 }
 
 /// Match a local-path token starting at `i`, yielding the one-past-the-end
@@ -1975,7 +1973,9 @@ unittest
     }
 
     // Ordinary slash-bearing prose must not become a link.
-    foreach (run; parseMarkdown("and/or 24/7 TCP/IP"d)[0].runs)
+    foreach (run; parseMarkdown(
+        "and/or 24/7 TCP/IP Position/size/coordinates " ~
+        "block/inline/float/absolute client/scroll/page #9/#11/#14/#29"d)[0].runs)
         assert(run.style != InlineStyle.link,
             "prose slashes were mistaken for a path");
 

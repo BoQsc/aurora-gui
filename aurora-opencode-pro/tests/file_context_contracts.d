@@ -5,9 +5,13 @@ import auroraopencode.core : ChatMessage, ChatSession, Settings, ensureMessageGr
     loadSettings, saveSettings, setOpencodeStateDirectoryForTesting, opencodeTheme;
 import auroraopencode.filecontext;
 import auroraopencode.appui : OpenCodeRoot;
+import auroraopencode.markdown : InlineStyle, BlockType, looksLikeLocalPath, localPathTokens, parseMarkdown;
 import std.algorithm : canFind;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, readText, tempDir, write;
+import std.digest.sha : sha256Of;
+import std.digest : toHexString;
+import std.json : JSONValue, parseJSON;
 import std.path : absolutePath, buildPath;
 import std.stdio : writeln;
 import std.string : indexOf, replace;
@@ -45,6 +49,29 @@ void main()
     assert(absoluteFileTarget(`\\server\share\folder\file.txt`, first) == `\\server\share\folder\file.txt`);
 
     auto store = new FileContextStore(metadata);
+    foreach (prose; ["Position/size/coordinates", "block/inline/float/absolute",
+        "client/scroll/page", "#9/#11/#14/#29", "and/or", "24/7", "TCP/IP"])
+    {
+        assert(!looksLikeLocalPath(toUTF32(prose)), "Prose misclassified: " ~ prose);
+        assert(localPathTokens(toUTF32(prose)).length == 0, "Prose gained path tokens: " ~ prose);
+        foreach (wrapped; [prose, "`" ~ prose ~ "`", "- " ~ prose,
+            "| Meaning | Value |\n| --- | --- |\n| " ~ prose ~ " | plain |"])
+            foreach (block; parseMarkdown(toUTF32(wrapped)))
+            {
+                foreach (run; block.runs) assert(run.target.length == 0, "Prose gained a link: " ~ wrapped);
+                foreach (item; block.items)
+                    foreach (run; item) assert(run.target.length == 0, "List prose gained a link: " ~ wrapped);
+                foreach (cell; block.tableCells)
+                    foreach (run; cell) assert(run.target.length == 0, "Table prose gained a link: " ~ wrapped);
+            }
+    }
+    foreach (file; ["source/app.d", "./source", "../source", "C:/work/source", `\\server\share\source`, "file:///C:/work/source"])
+        assert(looksLikeLocalPath(toUTF32(file)), "Real path lost recognition: " ~ file);
+    const authored = parseMarkdown("[specification](https://example.com/client/scroll/page) [folder](./source)"d);
+    size_t authoredLinks;
+    foreach (run; authored[0].runs)
+        if (run.target.length) ++authoredLinks;
+    assert(authoredLinks == 2, "Authored web/folder links lost their targets");
     ChatSession session;
     session.id = "conversation-1";
     ChatMessage message;
@@ -60,9 +87,25 @@ void main()
     const selected = toUTF32("See read me.md here");
     assert(store.referenceAt(session.id, message, selected, 8, first) == buildPath(first, "read me.md"));
     assert(store.resolve(session.id, message, "ordinary", first) == "");
+    foreach (prose; ["Position/size/coordinates", "block/inline/float/absolute", "client/scroll/page", "#9/#11/#14/#29"])
+        assert(store.resolve(session.id, message, prose, first) == "", "Prose gained filesystem metadata: " ~ prose);
+    mkdirRecurse(buildPath(first, "actual", "nested", "folder"));
+    assert(store.resolve(session.id, message, "actual/nested/folder", first) == buildPath(first, "actual", "nested", "folder"));
     assert(store.mainFolder(session, first) == first);
     store.pendingWrite()();
+    // Reproduce a sidecar written by the old slash-count recognizer. resolve()
+    // must reject it before a new capture has a chance to clean the message.
+    const sidecar = buildPath(metadata, toHexString(sha256Of(session.id)) ~ ".json");
+    auto savedMetadata = parseJSON(readText(sidecar));
+    JSONValue fake;
+    fake["mention"] = "Position/size/coordinates";
+    fake["target"] = buildPath(first, "Position", "size", "coordinates");
+    fake["tool"] = false;
+    savedMetadata["messages"][message.id]["references"].array ~= fake;
+    write(sidecar, savedMetadata.toString);
     store = new FileContextStore(metadata);
+    assert(store.resolve(session.id, message, "Position/size/coordinates", second) == "",
+        "A saved false reference bypassed the stricter recognizer");
     assert(store.resolve(session.id, message, "source/app.d", second) == buildPath(first, "source", "app.d"),
         "Moving a chat retargeted a historical reference");
     assert(store.mainFolder(session, second) == first);
@@ -152,5 +195,22 @@ void main()
     assert(loadSettings().smartFileContext);
     assert(root.sessionContextMenuLabelsForTesting(0).canFind("Open main folder"));
     assert(root.systemPromptViewerTextForTesting().indexOf("## File references") >= 0);
+    root.dismissPopupForTesting();
+    root.newChatForTesting();
+    root.beginStreamForTesting();
+    const example = "**Yes, the authority exists.** Position/size/coordinates are defined by specs.\n\n" ~
+        "- **Positioning contexts:** block/inline/float/absolute layout.\n" ~
+        "- **Coordinates as numbers:** client/scroll/page coordinate spaces.\n" ~
+        "- **Text metrics:** Unicode UAX #9/#11/#14/#29.\n\n" ~
+        "A real file still links: source/app.d and [web reference](https://example.com/spec).";
+    root.streamContentForTesting(example);
+    root.finishStreamForTesting();
+    root.projectTranscriptForTesting();
+    assert(driver.paint());
+    foreach (prose; ["Position/size/coordinates", "block/inline/float/absolute", "client/scroll/page", "#9/#11/#14/#29"])
+        assert(root.messagePathLinkRectForTesting(0, prose).width == 0, "Rendered prose was linked: " ~ prose);
+    assert(root.messagePathLinkRectForTesting(0, buildPath(first, "source", "app.d")).width > 0,
+        "A real file stopped carrying its absolute target");
+    window.saveScreenshot(buildPath(state, "prose-and-real-paths.ppm"));
     writeln("PASS absolute references, filenames, spaces, file URI, UNC, line suffixes, project moves, restart, tool weighting, manual folder, re-detect, unloaded sidebar and ambiguity; artifacts=", state);
 }

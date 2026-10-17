@@ -32,6 +32,12 @@ Legacy history is enriched when loaded. Metadata cannot reconstruct the original
 workspace of old references that predates this feature; its initial base is the
 conversation's workspace at the time it is first enriched.
 
+Automatic path recognition is conservative: slash-separated concepts such as
+`Position/size/coordinates`, `client/scroll/page` and `#9/#11/#14/#29` remain
+ordinary text. A relative extensionless folder needs an explicit `./` prefix,
+an authored link or evidence that it exists. Previously saved false references
+are discarded when their optional sidecar is loaded.
+
 Removal: delete `source/auroraopencode/filecontext.d` and every
 `filecontext:begin` through `filecontext:end` region in `appui.d` and the core's
 `core.d`. Optional sidecars may be retained or deleted. Verify with
