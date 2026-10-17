@@ -189,13 +189,16 @@ int main()
     append(verifying, "tool", "Compiler passed", "run");
     verifying.messages[$ - 1].toolArgs = `{"program":"dmd","args":["parser.d"]}`;
     verifying.messages[$ - 1].verificationCheck = "dmd compile";
-    verifying.verificationStatus = "passed";
+    verifying.verificationStatus = "required";
+    verifying.verificationScope = "current";
+    verifying.messages[$ - 1].verificationScope = "current";
     const finishTests = `{"plan":[{"id":"test","step":"Verify parser","status":"completed"}]}`;
     assert(planUpdateError(verifying, finishTests, verifying.taskSteps).length,
         "Compilation certified a required behavioral test outcome");
     append(verifying, "tool", "Tests passed", "run");
     verifying.messages[$ - 1].toolArgs = `{"program":"python","args":["-m","pytest"]}`;
     verifying.messages[$ - 1].verificationCheck = "pytest";
+    verifying.messages[$ - 1].verificationScope = "current";
     assert(!planUpdateError(verifying, finishTests, verifying.taskSteps).length);
     const sandbox = buildPath(tempDir(), "aurora-quality-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(sandbox);

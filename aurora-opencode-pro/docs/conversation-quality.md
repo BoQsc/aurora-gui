@@ -29,7 +29,7 @@ IDs cannot silently change, duplicate outcomes are rejected, and completed
 acceptance cannot change while remaining checked. Reasons accompany durable
 decisions; an explained focus switch retains the paused outcome's return point.
 Entering editing or accepted verification prompts early internal reconciliation
-when the active item still describes an earlier phase. Reminders stay bounded
+when the active item still describes an earlier phase. Tool counts alone never mark a healthy plan stale or demand maintenance. Reminders stay bounded
 and do not block tools, ask permission, or tick work without evidence.
 An accepted optional check also records a passed verification result, so an
 explicit verification outcome can complete even when no code change required it.
@@ -68,6 +68,11 @@ Task metadata survives normal storage, journal replay, copies, compaction and
 branch selection. Earlier contracts and transcripts are retained. The active
 plan's acceptance condition is available in its objective tooltip. Structured
 constraints, decisions, rejected hypotheses and evidence accompany compaction.
+The model receives a bounded projection of that state, prioritizing objective,
+work position, return point, constraints and unfinished outcomes. Completed IDs,
+accepted checker call IDs and recent plan-change reasons accompany it. The full
+plan and audit remain saved. A large accumulated audit cannot overflow a rolling
+checkpoint header and force compaction after every tool result.
 
 New settings default to Concise. Explicit existing verbosity choices are kept.
 The base prompt also requests concise, useful progress and final answers.

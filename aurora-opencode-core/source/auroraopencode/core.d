@@ -765,6 +765,7 @@ public struct ChatMessage
     string taskStateJson; // Branch-local state; persistence only, never model prose.
     bool workspaceChanged;
     string verificationCheck; // Accepted checker receipt, scoped to this task's source.
+    string verificationScope;
     // Experimental multi-agent: which participant authored this message. Empty
     // means the default single agent, so legacy transcripts are unaffected.
     // See docs/multi-agent-single-conversation.md.
@@ -890,6 +891,7 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
     work["nextStepId"] = session.contract.work.nextStepId;
     value["workContext"] = work;
     root["taskContract"] = value;
+    root["verificationScope"] = session.verificationScope;
     root["taskArchive"] = JSONValue(session.taskArchive);
     root["taskSteps"] = taskStepsToJson(session.taskSteps);
     root["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
@@ -898,6 +900,9 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
 public void readTaskContract(ref ChatSession session, JSONValue root)
 {
     if (root.type != JSONType.object) return;
+    session.verificationScope = "";
+    if (auto receiptScope = "verificationScope" in root.object)
+        if (receiptScope.type == JSONType.string) session.verificationScope = receiptScope.str;
     if (auto value = "taskContract" in root.object)
         if (value.type == JSONType.object)
         {
@@ -1095,6 +1100,7 @@ public struct ChatSession
     // activity instead of creation order. Zero means "unknown" (a snapshot
     // written before this field existed) and sorts as the oldest.
     long updatedAt;
+    string verificationScope;
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ import std.algorithm : canFind;
 import std.file : exists, isDir;
 import std.path : buildPath, dirName, isAbsolute;
 import std.regex : matchAll;
-import std.string : strip, toLower, startsWith, split;
+import std.string : strip, toLower, startsWith, split, join;
 import auroraopencode.taskflow : taskMessagePath;
 import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent;
 
@@ -131,7 +131,7 @@ string[] requiredEvidence(const ref ChatSession session)
         request.canFind("screenshot") || request.canFind("visual correctness");
     string[] result;
     if (visual) result = ["compile", "tests", "render"];
-    if (visual && (request.canFind("interact") || request.canFind("web browser")))
+    if (visual && request.canFind("interact"))
         result ~= "interaction";
     return result;
 }
@@ -144,6 +144,38 @@ bool satisfiesEvidence(string check, const(string)[] required)
     const supplied = check[7 .. $].split(",");
     foreach (kind; required) if (!supplied.canFind(kind)) return false;
     return true;
+}
+
+string verificationScope(string workspace, ulong revision)
+{
+    import core.time : MonoTime;
+    import std.process : thisProcessID;
+    import std.conv : to;
+    static string epoch;
+    if (!epoch.length) epoch = to!string(thisProcessID()) ~ ":" ~ to!string(MonoTime.currTime.ticks);
+    return checkoutIdentity(workspace) ~ "|" ~ epoch ~ "|" ~ to!string(revision);
+}
+
+string verificationCoverage(const ref ChatSession session, string extraCheck = "")
+{
+    string[] kinds;
+    void add(string check)
+    {
+        string[] supplied;
+        if (check.startsWith("verify:")) supplied = check[7 .. $].split(",");
+        else if (check.canFind("compile") || check.canFind("build") || check == "cargo check") supplied = ["compile"];
+        else if (check.canFind("test")) supplied = ["tests"];
+        foreach (kind; supplied) if (kind.length && !kinds.canFind(kind)) kinds ~= kind;
+    }
+    foreach (index; taskMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (!session.verificationScope.length || message.verificationScope != session.verificationScope) continue;
+        if (!message.verificationCheck.length) kinds = null; // A rejected checker supersedes earlier receipts.
+        else if (!message.failed) add(message.verificationCheck);
+    }
+    if (extraCheck.length) add(extraCheck);
+    return "verify:" ~ kinds.join(",");
 }
 
 bool diagnosticToolAllowed(string name)

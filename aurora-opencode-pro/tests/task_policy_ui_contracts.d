@@ -8,7 +8,7 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.file : mkdirRecurse, write, read, tempDir;
 import std.path : absolutePath, buildPath;
-import std.json : JSONValue;
+import std.json : JSONValue, JSONType, parseJSON;
 import std.conv : to;
 import std.string : indexOf;
 import std.stdio : writeln;
@@ -78,6 +78,33 @@ int main(string[] arguments)
     }
     dispatch(OpenCodeToolCall("compile", "run", compiler.toString()));
     assert(root.verificationStatusForTesting() == "required", "Compilation cleared visual/interaction requirements");
+    auto partial = parseJSON(recipe.toString());
+    partial["steps"] = JSONValue([tests, render]);
+    const partialPath = buildPath(source,"partial.json");
+    write(partialPath, partial.toPrettyString());
+    JSONValue partialArgs; partialArgs["recipe"] = partialPath;
+    dispatch(OpenCodeToolCall("partial", "verify", partialArgs.toString()));
+    const partialResult = parseJSON(root.lastToolResultForTesting());
+    assert(partialResult["receipt"]["acceptedForCurrentSource"].type == JSONType.true_);
+    assert(partialResult["receipt"]["coverageComplete"].type == JSONType.false_);
+    assert(partialResult["receipt"]["toolCallId"].str == "partial");
+    assert(root.verificationStatusForTesting() == "required");
+    root.applyPlanForTesting(`{"plan":[{"id":"pixels","step":"Check pixels","kind":"verify","done":"Render matches","status":"in_progress"}]}`);
+    dispatch(OpenCodeToolCall("finish-pixels", "update_plan",
+        `{"plan":[{"id":"pixels","step":"Check pixels","status":"completed","evidence":["partial"]}]}`));
+    bool pixelsComplete;
+    foreach (row; parseJSON(root.taskStateJsonForTesting())["taskSteps"].array)
+        if (row["id"].str == "pixels") pixelsComplete = row["status"].str == "completed";
+    assert(pixelsComplete, root.lastToolResultForTesting());
+    assert(root.verificationStatusForTesting() == "required");
+    auto interactionOnly = parseJSON(recipe.toString());
+    interactionOnly["steps"] = JSONValue([interaction]);
+    const interactionPath = buildPath(source,"interaction.json");
+    write(interactionPath, interactionOnly.toPrettyString());
+    JSONValue interactionArgs; interactionArgs["recipe"] = interactionPath;
+    dispatch(OpenCodeToolCall("interaction-only", "verify", interactionArgs.toString()));
+    assert(root.verificationStatusForTesting() == "passed", root.lastToolResultForTesting());
+    writeln("PASS partial native receipts complete their plan outcomes and aggregate coverage across separate checks");
     dispatch(OpenCodeToolCall("verify", "verify", args.toString()));
     assert(root.verificationStatusForTesting() == "passed", root.lastToolResultForTesting());
     writeln("PASS actual GUI/scheduler accepts a scratch-built external checkout's typed recipe and rejects compilation-only completion");
@@ -85,6 +112,12 @@ int main(string[] arguments)
     dispatch(OpenCodeToolCall("wrong-render", "verify", args.toString()));
     assert(root.verificationStatusForTesting() == "required", "Wrong pixels left the GUI verification state green");
     writeln("PASS a visual mismatch invalidates accepted GUI evidence");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    root.pauseToolContinuationForTesting();
+    dispatch(OpenCodeToolCall("after-failure-interaction", "verify", interactionArgs.toString()));
+    assert(root.verificationStatusForTesting() == "required", "A partial check revived superseded receipts after reload");
+    writeln("PASS failed checker boundary and receipt scope survive persistence and reload");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Owner's task"]);

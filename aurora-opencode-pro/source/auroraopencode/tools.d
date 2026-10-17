@@ -535,7 +535,7 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "this again whenever a step's status changes, marking a finished step " ~
         "`completed` and the next one `in_progress`, so the checklist never " ~
         "shows finished work as pending. At most one step may be in_progress " ~
-        "at a time. Use a few concrete outcomes. Append new outcomes at the end; Aurora normalizes insertions automatically. Preserve all outcomes and stable IDs; omitted completed outcomes are retained automatically. Keep the " ~
+        "at a time. Use a few concrete outcomes. Keep evidence citations and routine plan maintenance inside their outcome, without separate checklist rows. Use accepted check toolCallId receipts as evidence even while other verification categories remain outstanding. Append new outcomes at the end; Aurora normalizes insertions automatically. Preserve all outcomes and stable IDs; omitted completed outcomes are retained automatically. Keep the " ~
         "original checklist when working through one of its steps; put " ~
         "temporary substeps in the conversation or use update_subplan when " ~
         "available. Set replace_entire_plan " ~

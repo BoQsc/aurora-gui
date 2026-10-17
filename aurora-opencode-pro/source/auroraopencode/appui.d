@@ -78,8 +78,9 @@ import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
     restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
+import auroraopencode.taskcontext : taskContext;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
-import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
+import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.requestbuilder : projectRequestMessages;
@@ -10827,7 +10828,6 @@ private string _suggestExcludeId;
     // unfinished steps and the model runs this many tool results without an
     // update_plan call, the checklist has drifted from the actual work; nudge
     // the model to refresh it before continuing.
-    private static immutable int planRefreshNudgeCalls = 16;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -15003,54 +15003,14 @@ private string _suggestExcludeId;
         if (session.objective.length == 0 && session.taskSteps.length == 0 &&
             session.verificationStatus.length == 0) return "";
         auto prompt = appender!string();
-        prompt.put("\n\n# Durable Task State\n");
-        prompt.put("Task: " ~ session.contract.id ~ " · intent: " ~ session.contract.intent ~
-            " · current request: " ~ session.contract.currentIntent ~ "\n");
-        prompt.put("Objective: " ~ (session.objective.length > 0
-            ? session.objective : "(not set)") ~ "\n");
-        if (session.contract.requestedOutcome.length && session.contract.requestedOutcome != session.objective)
-            prompt.put("Requested outcome: " ~ session.contract.requestedOutcome ~ "\n");
         const currentRequest = latestActualUserRequest(session);
-        if (currentRequest.length > 0 && currentRequest != session.objective)
-            prompt.put("Current request: " ~ currentRequest ~ "\n");
-        const work = workContextForPlan(session, session.taskSteps);
-        if (work.stepId.length) prompt.put("Current step: " ~ work.stepId ~ "\nWorking on: " ~ work.action ~ "\n");
-        if (work.nextAction.length) prompt.put("Next action: " ~ work.nextAction ~ "\n");
-        if (work.detourReason.length)
-            prompt.put("Detour: " ~ work.detourReason ~ "\nDone when: " ~ work.doneWhen ~ "\nReturn to: " ~ work.returnTo ~ "\n");
-        prompt.put("Status: " ~ (session.taskStatus.length > 0
-            ? session.taskStatus : "active") ~ "\n");
-        prompt.put("Turn: " ~ (session.turnStatus.length > 0
-            ? session.turnStatus : "idle") ~ "\n");
-        prompt.put("Verification: " ~ (session.verificationStatus.length > 0
-            ? session.verificationStatus : "not_required") ~ "\n");
+        prompt.put("\n\n# Durable Task State\n" ~ taskContext(session, currentRequest, nestedEnabled));
         const evidence = requiredEvidence(session);
         if (evidence.length)
         {
             prompt.put("Required evidence (current source inputs):");
             foreach (kind; evidence) prompt.put(" " ~ kind);
             prompt.put(". Use a saved verify recipe; a compiler check alone does not satisfy these outcomes.\n");
-        }
-        if (session.taskSteps.length > 0)
-        {
-            prompt.put("Checklist:\n");
-            foreach (step; session.taskSteps)
-                prompt.put("- [" ~ step.status ~ "] " ~ step.id ~ ": " ~ step.text ~
-                    " (done: " ~ step.done ~ "; evidence: " ~ join(step.evidence, ", ") ~ ")\n");
-        }
-        foreach (constraint; session.contract.constraints) prompt.put("Constraint: " ~ constraint ~ "\n");
-        foreach (decision; session.contract.decisions) prompt.put("Decision: " ~ decision ~ "\n");
-        if (session.contract.blocker.length) prompt.put("Blocker: " ~ session.contract.blocker ~ "\n");
-        if (nestedEnabled && session.nestedPlans.length > 0)
-        {
-            prompt.put("Experimental substeps (under numbered main steps):\n");
-            foreach (nested; session.nestedPlans)
-            {
-                prompt.put("Step " ~ to!string(nested.parentStep) ~ ":\n");
-                foreach (step; nested.steps)
-                    prompt.put("  - [" ~ step.status ~ "] " ~ step.id ~ ": " ~ step.text ~
-                        " (done: " ~ step.done ~ "; evidence: " ~ join(step.evidence, ", ") ~ ")\n");
-            }
         }
         if (answerOnlyRequest(currentRequest) || taskInvestigation(session))
             prompt.put("The latest request asks for an explanation. Answer it from the " ~
@@ -15160,6 +15120,7 @@ private string _suggestExcludeId;
         if (message.taskStateJson.length) payload["taskStateJson"] = message.taskStateJson;
         if (message.workspaceChanged) payload["workspaceChanged"] = true;
         if (message.verificationCheck.length) payload["verificationCheck"] = message.verificationCheck;
+        if (message.verificationScope.length) payload["verificationScope"] = message.verificationScope;
         if (message.toolCallId.length > 0)
             payload["toolCallId"] = message.toolCallId;
         if (message.toolName.length > 0) payload["toolName"] = message.toolName;
@@ -19065,7 +19026,17 @@ private void pollButtonSuggestionRequest()
     /// Returns true when a reminder was queued.
     private static bool checklistStale(const ref ChatSession session)
     {
-        return hasIncompleteTaskSteps(session) && toolResultsSincePlanUpdate(session) >= planRefreshNudgeCalls;
+        if (!hasIncompleteTaskSteps(session) || session.taskStatus == "waiting_input" || taskInvestigation(session)) return false;
+        const phase = planWorkPhase(session);
+        bool active;
+        foreach (step; session.taskSteps)
+            if (step.status == "in_progress")
+            {
+                active = true;
+                if ((phase >= 1 && step.kind != "edit" && step.kind != "verify") ||
+                    (phase >= 2 && step.kind != "verify")) return true;
+            }
+        return !active;
     }
 
     private static int planWorkPhase(const ref ChatSession session)
@@ -19101,8 +19072,7 @@ private void pollButtonSuggestionRequest()
         }
         const lastPhase = session.id in _planNudgedPhase ? _planNudgedPhase[session.id] : 0;
         if (lastNudged > 0 && phase <= lastPhase) return false;
-        const refreshDue = hasIncompleteTaskSteps(session) &&
-            since >= planRefreshNudgeCalls;
+        const refreshDue = checklistStale(session);
         bool phaseDue;
         foreach (step; session.taskSteps)
             if (step.status == "in_progress")
@@ -19119,12 +19089,7 @@ private void pollButtonSuggestionRequest()
                 ? "Work has moved into editing or verification. Reconcile the existing outcomes: tick only work proven complete, " ~
                     "keep unfinished outcomes visible, and explain a focus change or detour. Continue useful work without asking permission."
                 : refreshDue
-                ? "Your durable checklist is stale: it still shows steps " ~
-                    "pending or in_progress, but no update_plan call has " ~
-                    "refreshed it for " ~ to!string(since) ~ " tool results. " ~
-                    "Call update_plan now to mark finished steps completed and " ~
-                    "set exactly one remaining step in_progress (rewrite the " ~
-                    "steps if they no longer match the work)."
+                ? "The plan has unfinished outcomes without a current work position. Record the active outcome or an explained pause; keep completed work accurate and continue useful work."
                 : "No durable plan is recorded for this turn after " ~
                     to!string(readOnlyExplorationCount(session)) ~ " read-only " ~
                     "inspections. Consider a short update_plan if it helps track " ~
@@ -19536,6 +19501,8 @@ private void pollButtonSuggestionRequest()
                 break;
             }
 
+        const receiptWorkspace = workspaceForSession(sessionIndex);
+        session.verificationScope = verificationScope(receiptWorkspace, toolWorkspaceRevision(receiptWorkspace));
         const planError = !event.toolFailed && event.toolName == "update_plan"
             ? planReplacementError(*session, toolArgs) : "";
         const subplanError = !event.toolFailed &&
@@ -19547,16 +19514,39 @@ private void pollButtonSuggestionRequest()
             ? taskBlockerError(toolArgs) : "";
         const toolFailed = event.toolFailed || planError.length > 0 ||
             subplanError.length > 0 || imageError.length > 0 || blockerError.length > 0;
-        const toolText = planError.length > 0 ? planError :
+        string toolText = planError.length > 0 ? planError :
             subplanError.length > 0 ? subplanError :
             imageError.length > 0 ? imageError :
             blockerError.length > 0 ? blockerError :
             !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) : event.text;
-        const acceptedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
+        const scopedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
             event.verificationCheck.length > 0 &&
             sameCheckout(event.verificationWorkspace, workspaceForSession(sessionIndex)) &&
-            event.verificationRevision == toolWorkspaceRevision(event.verificationWorkspace) &&
-            satisfiesEvidence(event.verificationCheck, requiredEvidence(*session));
+            event.verificationRevision == toolWorkspaceRevision(event.verificationWorkspace);
+        const coverage = verificationCoverage(*session, scopedVerification ? event.verificationCheck : "");
+        const acceptedVerification = scopedVerification && satisfiesEvidence(coverage, requiredEvidence(*session));
+        const checkerAttempt = event.verificationCheck.length || event.toolName == "verify";
+        if (checkerAttempt)
+        {
+            JSONValue receipt;
+            receipt["toolCallId"] = event.toolCallId;
+            receipt["check"] = event.verificationCheck;
+            receipt["acceptedForCurrentSource"] = scopedVerification;
+            receipt["coverageComplete"] = acceptedVerification;
+            receipt["coverage"] = coverage;
+            string[] remaining;
+            foreach (kind; requiredEvidence(*session))
+                if (!satisfiesEvidence(coverage, [kind])) remaining ~= kind;
+            receipt["remaining"] = JSONValue(remaining);
+            if (!scopedVerification) receipt["reason"] = toolFailed ? "The checker failed." : "Checker workspace or source revision does not match the current task.";
+            else if (!acceptedVerification) receipt["reason"] = "This check is valid evidence; overall task verification still needs the remaining required categories.";
+            if (event.toolName == "verify")
+            {
+                try { auto result = parseJSON(toolText); result["receipt"] = receipt; toolText = result.toPrettyString(); }
+                catch (Exception) {}
+            }
+            else toolText ~= "\nVerification receipt: " ~ receipt.toString();
+        }
         ChatMessage toolMessage;
         toolMessage.role = "tool";
         toolMessage.content = toolText;
@@ -19568,7 +19558,8 @@ private void pollButtonSuggestionRequest()
         toolMessage.diffDeletions = event.diffDeletions;
         toolMessage.toolDiff = event.diffText;
         toolMessage.workspaceChanged = event.workspaceChanged;
-        toolMessage.verificationCheck = acceptedVerification ? event.verificationCheck : "";
+        toolMessage.verificationCheck = scopedVerification ? event.verificationCheck : "";
+        toolMessage.verificationScope = checkerAttempt ? session.verificationScope : "";
         toolMessage.toolElapsedMs = event.elapsedMs;
         toolMessage.time = currentTimestamp();
         appendMessage(*session, toolMessage);
@@ -19592,6 +19583,12 @@ private void pollButtonSuggestionRequest()
         {
             session.verificationStatus = "required";
             session.taskStatus = "active";
+            publishThreadUpdated(*session);
+        }
+        else if (checkerAttempt && !scopedVerification)
+        {
+            session.verificationStatus = "required";
+            if (session.taskStatus != "waiting_input") session.taskStatus = "active";
             publishThreadUpdated(*session);
         }
         else if (acceptedVerification)
@@ -21302,43 +21299,9 @@ private void pollButtonSuggestionRequest()
         if (summaryBudget < 900 || fixedRequestBytes >=
             cast(size_t) contextLimit * 4) return false;
         auto header = appender!string();
-        header.put("Earlier conversation checkpoint. The full transcript " ~
-            "remains saved; continue from this work state and the recent " ~
-            "messages below.\n## Objective\n");
-        string objective = session.objective;
-        if (objective.length == 0)
-            foreach (index; path)
-                if (session.messages[index].role == "user" &&
-                    !session.messages[index].internal)
-                {
-                    objective = session.messages[index].content;
-                    break;
-                }
-        header.put(checkpointEdges(objective, 1200));
-        string currentInstruction;
-        foreach_reverse (index; path)
-            if (session.messages[index].role == "user" &&
-                !session.messages[index].internal)
-            {
-                currentInstruction = session.messages[index].content;
-                break;
-            }
-        if (currentInstruction.length > 0 && currentInstruction != objective)
-            header.put("\n## Latest user instruction\n" ~
-                checkpointEdges(currentInstruction, 1000));
-        header.put("\n## Work state\n");
-        foreach (step; session.taskSteps)
-            header.put("- [" ~ step.status ~ "] " ~
-                step.id ~ ": " ~ checkpointSnippet(step.text, 320) ~
-                "; done: " ~ checkpointSnippet(step.done, 320) ~
-                "; evidence: " ~ join(step.evidence, ", ") ~ "\n");
-        foreach (constraint; session.contract.constraints) header.put("Constraint: " ~ constraint ~ "\n");
-        foreach (decision; session.contract.decisions) header.put("Decision: " ~ decision ~ "\n");
-        if (session.contract.blocker.length) header.put("Blocker: " ~ session.contract.blocker ~ "\n");
-        if (session.verificationStatus.length > 0)
-            header.put("Verification: " ~ session.verificationStatus ~ "\n");
+        header.put("Earlier conversation checkpoint. Full task records and transcript remain saved.\n");
+        header.put(taskContext(session, latestActualUserRequest(session), true, summaryBudget * 2 / 3));
         header.put("## Earlier context\n");
-        if (header.data.length + 300 >= summaryBudget) return false;
         string previous;
         if (start > 0)
             previous = checkpointSnippet(session.compactionSummary,
@@ -21351,14 +21314,14 @@ private void pollButtonSuggestionRequest()
             if (message.internal) continue;
             string entry = "- " ~ message.role ~ ": ";
             if (message.role == "tool")
-                entry ~= message.toolName ~ " result: " ~
+                entry ~= message.toolName ~ " tool_call_id=" ~ message.toolCallId ~ "; accepted_check=" ~ message.verificationCheck ~ " result: " ~
                     checkpointSnippet(shortenToolOutput(message.content, 350), 900);
             else
                 entry ~= checkpointEdges(message.content,
                     message.role == "user" ? 1800 : 900);
             if (message.toolCalls.length > 0)
                 foreach (call; message.toolCalls)
-                    entry ~= " [called " ~ call.name ~ ": " ~
+                    entry ~= " [called " ~ call.name ~ " id=" ~ call.id ~ ": " ~
                         checkpointSnippet(call.arguments, 240) ~ "]";
             entry ~= "\n";
             entries ~= entry;
@@ -21375,7 +21338,7 @@ private void pollButtonSuggestionRequest()
         checkpoint.put(header.data);
         if (previous.length > 0)
             checkpoint.put("Previous checkpoint excerpt:\n" ~ previous ~ "\n");
-        foreach (entry; entries) checkpoint.put(entry);
+        foreach (entry; entries) checkpoint.put(checkpointSnippet(entry, entryBudget));
         session.compactionSummary = checkpoint.data;
         session.compactedThroughMessageId = session.messages[path[boundary]].id;
         return true;
@@ -21462,14 +21425,14 @@ private void pollButtonSuggestionRequest()
             if (message.internal) continue;
             string entry = "[" ~ message.role ~ "] ";
             if (message.role == "tool")
-                entry ~= message.toolName ~ ": " ~
+                entry ~= message.toolName ~ " tool_call_id=" ~ message.toolCallId ~ "; accepted_check=" ~ message.verificationCheck ~ ": " ~
                     checkpointEdges(message.content, 1600);
             else
                 entry ~= checkpointEdges(message.content,
                     message.role == "user" ? 4000 : 2200);
             if (message.toolCalls.length > 0)
                 foreach (call; message.toolCalls)
-                    entry ~= "\n[tool call] " ~ call.name ~ " " ~
+                    entry ~= "\n[tool call] " ~ call.name ~ " id=" ~ call.id ~ " " ~
                         checkpointEdges(call.arguments, 800);
             entry ~= "\n\n";
             entries ~= entry;
@@ -28197,6 +28160,7 @@ private void pollButtonSuggestionRequest()
         if (message.taskStateJson.length) messageJson["taskStateJson"] = message.taskStateJson;
         if (message.workspaceChanged) messageJson["workspaceChanged"] = true;
         if (message.verificationCheck.length) messageJson["verificationCheck"] = message.verificationCheck;
+        if (message.verificationScope.length) messageJson["verificationScope"] = message.verificationScope;
         if (message.totalTokens > 0 || message.completionTokens > 0)
         {
             messageJson["promptTokens"] = message.promptTokens;
@@ -28743,6 +28707,8 @@ private void pollButtonSuggestionRequest()
                 message.workspaceChanged = f.type == JSONType.true_;
             if (auto f = "verificationCheck" in messageValue.object)
                 if (f.type == JSONType.string) message.verificationCheck = f.str;
+            if (auto f = "verificationScope" in messageValue.object)
+                if (f.type == JSONType.string) message.verificationScope = f.str;
             if (auto f = "promptTokens" in messageValue.object)
                 if (f.type == JSONType.integer)
                     message.promptTokens = cast(int) f.integer;
@@ -29220,6 +29186,8 @@ private void pollButtonSuggestionRequest()
                                         message.workspaceChanged = f.type == JSONType.true_;
                                     if (auto f = "verificationCheck" in messageValue.object)
                                         if (f.type == JSONType.string) message.verificationCheck = f.str;
+                                    if (auto f = "verificationScope" in messageValue.object)
+                                        if (f.type == JSONType.string) message.verificationScope = f.str;
                                     if (auto f = "promptTokens" in messageValue.object)
                                         if (f.type == JSONType.integer)
                                             message.promptTokens = cast(int) f.integer;

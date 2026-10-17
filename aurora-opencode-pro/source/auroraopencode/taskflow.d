@@ -257,36 +257,42 @@ bool evidenceMatches(const ref ChatSession session, const ref TaskStep step, str
 {
     auto index = taskEvidenceIndex(session);
     auto proof = id in index;
-    return proof !is null && compatibleEvidence(step, *proof, session.verificationStatus == "passed");
+    return proof !is null && compatibleEvidence(step, *proof, false);
 }
 
 string[string] taskEvidenceIndex(const ref ChatSession session)
 {
     string[string] result;
-    foreach (index; taskMessagePath(session))
+    bool current = true;
+    foreach_reverse (index; taskMessagePath(session))
     {
         const ref message = session.messages[index];
+        if (session.verificationScope.length && message.verificationScope == session.verificationScope &&
+            !message.verificationCheck.length) current = false;
         const kind = evidenceKind(message);
         if (!kind.length) continue;
-        const proof = kind == "verify" ? kind ~ "|" ~ message.verificationCheck : kind;
+        const proof = kind == "verify"
+            ? (current && session.verificationScope.length && message.verificationScope == session.verificationScope ? "verify-current|" : "verify|") ~ message.verificationCheck
+            : kind;
         result[message.id] = proof;
-        if (message.toolCallId.length) result[message.toolCallId] = proof;
+        if (message.toolCallId.length && !(message.toolCallId in result)) result[message.toolCallId] = proof;
     }
     return result;
 }
 
-bool compatibleEvidence(string kind, string proof, bool verified)
+bool compatibleEvidence(string kind, string proof, bool allowHistorical)
 {
     if (!proof.length) return false;
-    if (kind == "verify") return proof.startsWith("verify|") && verified;
+    if (kind == "verify") return (proof.startsWith("verify-current|") && proof.length > 15) ||
+        (allowHistorical && proof.startsWith("verify|") && proof.length > 7);
     if (kind == "edit") return proof == "edit" || proof == "action";
-    if (kind == "research") return proof == "research" || proof.startsWith("verify|");
+    if (kind == "research") return proof == "research" || proof.startsWith("verify|") || proof.startsWith("verify-current|");
     return true;
 }
 
-bool compatibleEvidence(const ref TaskStep step, string proof, bool verified)
+bool compatibleEvidence(const ref TaskStep step, string proof, bool allowHistorical)
 {
-    if (!compatibleEvidence(step.kind, proof, verified)) return false;
+    if (!compatibleEvidence(step.kind, proof, allowHistorical)) return false;
     if (step.kind == "verify" && matchFirst(step.done.toLower(), `\b(tests?|assertions?|pytest|unittest)\b`))
         return proof.canFind("tests") || proof.canFind("pytest") || proof.canFind("unittest") ||
             proof.canFind(" test");
@@ -298,7 +304,7 @@ bool supportedStep(const ref ChatSession session, const ref TaskStep step, const
     if (step.status != "completed") return false;
     foreach (id; step.evidence)
         if (auto proof = id in index)
-            if (compatibleEvidence(step, *proof, session.verificationStatus == "passed")) return true;
+            if (compatibleEvidence(step, *proof, true)) return true;
     return false;
 }
 
@@ -465,7 +471,7 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
                 const ref message = session.messages[slot];
                 const id = message.toolCallId.length ? message.toolCallId : message.id;
                 if (auto proof = id in index)
-                    if (compatibleEvidence(step, *proof, session.verificationStatus == "passed"))
+                    if (compatibleEvidence(step, *proof, false))
                     { step.evidence = [id]; break; }
             }
     }
@@ -689,7 +695,7 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         foreach (id; step.evidence)
         {
             auto proof = id in evidenceIndex;
-            if (proof is null || !compatibleEvidence(step, *proof, unchangedCompleted || session.verificationStatus == "passed"))
+            if (proof is null || !compatibleEvidence(step, *proof, unchangedCompleted))
                 return "Error: evidence is missing, failed, stale or incompatible: " ~ id;
         }
         if (step.status == "completed" && !unchangedCompleted && !supportedStep(session, step, evidenceIndex))

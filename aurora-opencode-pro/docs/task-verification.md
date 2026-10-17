@@ -42,6 +42,14 @@ are frozen before commands run. Changes invalidate the result. Receipts record
 commands, results, source/recipe hashes, reference provenance, image dimensions,
 image hashes and mismatched pixels.
 
+Every successful checker targeting the current checkout/source revision receives
+an accepted receipt with its tool call ID. Individual outcomes can cite it while
+other required categories remain outstanding. Overall task verification combines
+accepted categories from separate checks at the same source revision; partial
+coverage cannot certify the whole task. Failed checks supersede earlier current
+receipts, and source changes or process restarts prevent their reuse for newly
+completed outcomes. Already recorded historical outcomes remain saved.
+
 Types: `compile`, `tests`, `render`, `interaction`, `prepare`. Preparation alone
 supplies no verification. Compilation requires a recognized compiler/build
 attributable to the task checkout. Test/interaction commands must execute real
@@ -93,8 +101,7 @@ regressions does not mean the browser corpus passes.
 Continuation measures completed outcomes and accepted verification. Novel
 queries, no-match results, repeated builds and plan rewrites alone cannot reset
 stagnation. Three stalled continuations trigger a new diagnosis using a reduced
-case, independent expectations and contradictory evidence. Three further stalls
-require attention, preserving work/history. Actual outcome progress resets the
+case, independent expectations and contradictory evidence. Further stalls trigger recurring recovery with a changed approach, preserving work/history. Actual outcome progress resets the
 window. Productive tool work has no fixed round cap.
 
 The model/context button's context menu exposes two controls:
@@ -112,8 +119,10 @@ The model/context button's context menu exposes two controls:
   resumes after the diagnosis. Aurora never automatically chooses a more
   expensive model or changes the task's main model.
 
-Checklist reminders allow sixteen results instead of four, and remain bounded
-per refresh cycle. Identical durable checkpoints are coalesced. History is kept.
+Checklist reminders follow a missing work position or a phase mismatch, rather
+than elapsed tool counts, and remain advisory. Identical durable checkpoints
+are coalesced. Bounded task-state projections keep rolling checkpoint headers
+within their budget even after many plan revisions. Full history is kept.
 
 ## Network inactivity and checks
 

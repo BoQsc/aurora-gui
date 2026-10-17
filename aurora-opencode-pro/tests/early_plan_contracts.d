@@ -167,16 +167,15 @@ int main()
     const usersBefore = root.userMessageCountForTesting();
     context(4);
     assert(root.userMessageCountForTesting() == usersBefore, "A short healthy phase still forced plan maintenance");
-    context(12);
-    assert(root.userMessageCountForTesting() == usersBefore + 1);
-    context(4);
-    assert(root.userMessageCountForTesting() == usersBefore + 1, "Stale-plan reminder spammed");
+    context(40);
+    assert(root.userMessageCountForTesting() == usersBefore,
+        "Healthy work was interrupted by count-based plan maintenance");
+    assert(!root.planNeedsUpdateForTesting(), "Healthy work was mislabeled stale");
     record(advanced);
     const usersAfterRefresh = root.userMessageCountForTesting();
     context(16);
-    assert(root.userMessageCountForTesting() == usersAfterRefresh + 1,
-        "Updating the plan did not rearm its progress reminder");
-    writeln("PASS short phases avoid maintenance; bounded refresh guidance appears after sixteen results");
+    assert(root.userMessageCountForTesting() == usersAfterRefresh);
+    writeln("PASS healthy phases avoid plan maintenance and stale badges regardless of tool count");
 
     fresh();
     root.injectToolResultForTesting("update_plan", "invalid plan", true, "{}");

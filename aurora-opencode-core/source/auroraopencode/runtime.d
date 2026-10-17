@@ -636,6 +636,8 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
         if (f.type == JSONType.string) message.taskStateJson = f.str;
     if (auto f = "workspaceChanged" in payload.object)
         message.workspaceChanged = f.type == JSONType.true_;
+    if (auto f = "verificationScope" in payload.object)
+        if (f.type == JSONType.string) message.verificationScope = f.str;
     if (auto f = "verificationCheck" in payload.object)
         if (f.type == JSONType.string) message.verificationCheck = f.str;
     if (auto f = "toolCallId" in payload.object)
