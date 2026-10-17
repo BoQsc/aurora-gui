@@ -188,11 +188,18 @@ destination.
 - **`@font-face` webfonts (`browser-reference-web-font`).** The engine parsed
   `@font-face` rules but never fetched a face, so a page whose text depends on a
   webfont was shaped in whatever installed family came next and came out wider
-  than Edge. `src` entries are now resolved in order, skipping the compressed
-  woff/woff2 formats the engine cannot decode exactly as a browser skips a
-  source it cannot parse, then fetched, registered as a face and used by layout,
-  measurement, shaping and painting. The fixture pins the whole path with a
-  family no machine installs.
+  than Edge. `src` entries are now resolved in order - a candidate the engine
+  cannot decode is skipped exactly as a browser skips a source it cannot parse -
+  then fetched, registered as a face and used by layout, measurement, shaping and
+  painting. The engine decodes the uncompressed `sfnt` (TrueType/OpenType)
+  containers and unwraps a WOFF 1.0 one (`woff.d`, reached through `css.d`
+  pickFontSrc); `woff2`, `embedded-opentype` and the legacy `svg` font format are
+  skipped, so the fixture's second family still pins the walk past a woff2 to the
+  TrueType that follows it, and the fixture as a whole pins the path with a family
+  no machine installs. Verified on a real page as well: `djangoproject.com`'s nav
+  icons come from FontAwesome's woff-only face and land where Edge's do (see
+  "Known-site measured status").
+
 - **Inline and inline-block geometry (same corpus).** Five conventions were
   wrong at once. An auto-height inline-block was sized from the containing
   block's line box instead of its own content (21px where Edge has 14px). Its
@@ -222,6 +229,23 @@ destination.
    for byte, 0 mismatched pixels. (Corrected below: the height was never the
    fault - advancing the flow past the row ignored the row's own padding and
    border. See "Padded containers: the content box and the border box".)
+
+- **A flex item's aligned content moves with its box (real page, `layout.d`
+  unittest).** Cross-axis alignment set the aligned item's own `box.y` but left
+  everything inside it at the position the unaligned layout had given it, so an
+  aligned item's box and its own content disagreed by exactly the distance
+  alignment moved the box: the item's background and border sat in the right row
+  while its text, images and inline-block content painted up to 8px above it.
+  The alignment sites (`flex-start`, `flex-end` and centre) now shift the item's
+  whole box tree by the same delta that moves its box (`placeItemY`,
+  `shiftBoxTreeY`), which is what the main-axis path already did.
+  `djangoproject.com`'s header nav row is the case that exposed it: its labels'
+  ink moved from page y 23..38 to y 31..46 against an independent Edge frame's
+  33..41, and the row's light-ink columns then agreed with Edge within 1..4px
+  across x 395..1279. The `flex-cross-margin` fixture cannot catch this class -
+  every box in it is a flat colour with no text, so nothing inside a placed item
+  can be left behind - so the pin is a `layout.d` unittest asserting that a
+  centred flex item's text moves with its box.
 
 - **Padded containers: the content box and the border box (-18).** `box.width`
   and `box.height` store the CONTENT box, and `paint.d` adds the element's padding
@@ -391,11 +415,25 @@ subresources are served from the bounded cache instead of being re-fetched.
   `third-party-inventory.json` with the resolution it needs.
 - Both `dub.json` files still declare `"license": "BSL-1.0"` with author
   `"OpenAI"`; that metadata change was explicitly set aside for now.
-- Web faces are supported only in the uncompressed `sfnt` (TrueType/OpenType)
-  form: a `src` entry that is `woff` or `woff2` is skipped, and a face that
-  lists only those never loads. A `woff` face needs little more than a zlib
-  inflate, which druntime already provides; `woff2` additionally needs Brotli,
-  which nothing in the tree implements.
+- Web faces are supported in the uncompressed `sfnt` (TrueType/OpenType) form and
+  in a WOFF 1.0 container. `woff.d` unwraps the container to that same sfnt:
+  header and table directory, then each table's stream inflated with `std.zlib`
+  where the container says it is compressed. Its unittests cover compressed
+  tables, tables stored verbatim, and a malformed container being rejected.
+  `woff2` is the remaining format gap - it needs Brotli, which nothing in the
+  tree implements - so a `src` entry in that format is skipped and the walk goes
+  on to the next candidate, as are `embedded-opentype` and the legacy `svg` font
+  format. Measured on a real page rather than reasoned about:
+  `djangoproject.com`'s nav icons can only come from FontAwesome's woff face, and
+  their ink columns match an independent Edge frame's within 1..4px, the heart
+  icon at x 1071..1078 against Edge's 1074..1080.
+- The WOFF *decode* path is pinned by those unittests and by that live page; it
+  has no frozen fixture that would fail if the engine stopped unwrapping
+  containers, because the `browser-reference-web-font` corpus's two families use
+  a TrueType source and a woff2-then-TrueType `src`, and both resolve the same
+  way with or without woff support. A family no machine installs whose only
+  candidate source is a woff is the fixture that would pin it; it is not in the
+  tree yet.
 - The `file://` scheme is supported by both the engine and the browser shell. It
   was not: the loader served only `http`/`https`, so an engine-level navigation to
   a local page left its "Navigation failed" document in place (a capture of it
@@ -537,7 +575,7 @@ a share of the 638-row page area:
 
 | Site | Cells differing vs Edge | Notes |
 | --- | --- | --- |
-| `djangoproject.com` | 9.1% page-only (origin 0, 638 rows) / 10.4% app capture (origin 162, 476 rows) | Re-measured after the generated-content fixes below. The earlier 15.1% came from a mismatched viewport and is superseded. The header's own geometry is confirmed correct against Edge by the engine's box dump, which the same probe prints (`pageshot <url> 1280 800 <out> 8 <needle> header`): `header` 1280x132, `nav` 854x66, and `header-tools` is the second flex line at page y=76 - 10px of container padding plus the 66px first line, which is exactly Edge's own search row - with `search` 240x46 centred inside it, `input` 192x30 and `a.logo` 104x36. The logo is drawn: `django-logo.svg` declares `width="104px" height="36px" viewBox="0 0 104 36"`, so its intrinsic size is the box itself, and the frame's ink for it matches Edge's glyph shape row for row - the same stem, x-height and descender every row - but sits 19 rows higher, engine ink at page y 1..36 against Edge's 20..55. The element's own box is at page y=25 (`header .logo{margin:10px 4px;margin-left:10px}`), and Edge paints its background from its box top, so the engine is placing this element's background about 24px above its box: `backgroundDestRect` computes the right origin (`boxY + (boxH - h) * pctY`, 0 for the rule's `center center` on a box that is the image's own size), so this is a paint-side offset specific to the element rather than the placement rule, and it is the next item to close. The remaining cells are text: the engine and Edge now agree on the dark palette, and the only measured layout gap is the header's total, 132 against Edge's 138 - the substitute font's own line box, about 2px per line, the same class of difference recorded below. With the inline-formatting fixes (below) in place, re-measured page-only (origin 0, 638 rows) against an Edge frame captured minutes apart, the same front page scores 9.5% (3864 of 40832 cells, worst row 63), in the same bands: 23..41 (nav marker and nav ink), 235..259, 279..306, 357..422, 485..549 (the largest, 1272 cells) and 591..627. |
+| `djangoproject.com` | 9.1% page-only (origin 0, 638 rows) / 10.4% app capture (origin 162, 476 rows) | Re-measured after the generated-content fixes below. The earlier 15.1% came from a mismatched viewport and is superseded. The header's own geometry is confirmed correct against Edge by the engine's box dump, which the same probe prints (`pageshot <url> 1280 800 <out> 8 <needle> header`): `header` 1280x132, `nav` 854x66, and `header-tools` is the second flex line at page y=76 - 10px of container padding plus the 66px first line, which is exactly Edge's own search row - with `search` 240x46 centred inside it, `input` 192x30 and `a.logo` 104x36. The logo is drawn and sits in the row Edge puts it in: `django-logo.svg` declares `width="104px" height="36px" viewBox="0 0 104 36"`, so its intrinsic size is the box itself, and on page-only frames (origin 0) its ink occupies page y 20..55 x 61..164 against Edge's page y 20..55 x 63..166 - the same stem, x-height and descender on each of those rows, with per-row ink counts (12, 12, 32, 87, 65, 65, 75, 12, 22, 8 against Edge's 12, 12, 34, 87, 65, 66, 75, 12, 22, 9) that differ by one column at most. The 19-rows-higher reading this row used to record came from an app capture at page origin 162 and is superseded: the element's own box (`header .logo{margin:10px 4px;margin-left:10px}`) is in the row Edge puts the wordmark in. Two measured residues remain in this header and neither moves a box: the nav labels' ink band is page y 31..46 where Edge's is 33..41 (the alignment fix in "Engine fixes pinned by these corpora" moved it 8 rows down from 23..38, and the engine's substitute face covers a taller band at those x positions than Edge's face), and the nav `ul`'s own top edge lands on a half-pixel boundary at its aligned position, so the engine paints one row there that Edge does not: x 383..1222 at page y 20, rgb(16,97,66) against the header's rgb(12,75,51), 22 apart in one channel. Everywhere else the header's light-ink columns agree with Edge's within 1..4px across x 395..1279, including the FontAwesome icons that only the page's own woff face can supply - the heart at engine x 1071..1078 against Edge's x 1074..1080. The remaining cells are text: the engine and Edge now agree on the dark palette, and the only measured layout gap is the header's total, 132 against Edge's 138 - the substitute font's own line box, about 2px per line, the same class of difference recorded below. With the inline-formatting fixes (below) in place, re-measured page-only (origin 0, 638 rows) against an Edge frame captured minutes apart, the same front page scores 9.5% (3864 of 40832 cells, worst row 63), in the same bands: 23..41 (nav marker and nav ink), 235..259, 279..306, 357..422, 485..549 (the largest, 1272 cells) and 591..627. |
 | `docs.djangoproject.com` | 15.3% page-only (origin 0) | Pair comparison re-run after the generated-content fixes; the earlier 17.1% was at a mismatched viewport and is superseded. Reproduces the homepage's differing header rows, 9..46, 62..75 and 108..121, so its nav ink and search rows sit where Edge's do with the same substitute-face metric gap, over the docs sidebar and TOC layout. |
 | `boqsc.eu` (the required integration target) | 28.0% app capture (origin 162, 476 rows) | Re-measured after the generated-content fixes: the same engine frame captured without waiting (page-only, origin 0) scores 46.8%, so most of that figure is the heavy page still loading, not a layout fault. It is not a geometry oracle: the page's hero is a carousel and two captures legitimately show different slides (its first band measures 0..28 in the engine and 0..40 in Edge on these frames). The box-level measurements in "Confirmed defect" remain the comparable figures for it. |
 
@@ -612,9 +650,10 @@ Confirmed defect:
   is a flex item that is allowed to shrink, so its width is not the fault; the
   item advances are, and the site's text faces are why they are wider than
   Edge's.
-- `boqsc.eu` text faces. If the site's faces are served as woff2 - which is what
-  Google Fonts' current CSS does - the engine skips them (`css.d` walks `src`
-  and skips the compressed formats) and shapes its text in an installed
+- `boqsc.eu` text faces. The site's faces are served as woff2 - which is
+  what Google Fonts' current CSS does - and the engine skips those (`css.d` walks
+  `src` and skips the woff2 ones - see "Known limitations carried forward") and
+  shapes its text in an installed
   substitute, which is wider; that is the mechanism the new fixture pins for a
   TrueType source. The site's own font requests have not been measured yet, so
   this is the leading explanation for the remaining advance difference rather

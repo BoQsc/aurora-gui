@@ -17,7 +17,7 @@ import auroraweb.net : Url;
 
 import std.array : split;
 import std.conv : to;
-import std.string : indexOf, replace, strip, toLower, toUpper;
+import std.string : endsWith, indexOf, replace, strip, toLower, toUpper;
 
 /// Bind a DOM tree into a JS runtime. Returns the `document` object value.
 /// `resourceLoader` (if given) enables the `fetch` global for page scripts:
@@ -104,6 +104,20 @@ void setViewportSize(JsRuntime rt, int width, int height)
     if (rt is null) return;
     if (auto b = rt in _hostBinders)
         (*b).setViewportSize(width, height);
+}
+
+/// Deliver the `IntersectionObserver` callbacks the geometry of the last layout
+/// pass warrants. The page calls this at the end of every layout, which is where
+/// a browser queues the callbacks too: pages reveal content, start animations
+/// and swap in lazy images from them. Returns true when at least one callback
+/// ran, because a callback usually mutates the DOM and the page must lay out
+/// again.
+bool evaluateIntersectionObservers(JsRuntime rt)
+{
+    if (rt is null) return false;
+    if (auto b = rt in _hostBinders)
+        return (*b).evaluateIntersectionObservers();
+    return false;
 }
 
 /// One stored cookie: its value and the epoch second it expires at. `0` means a
@@ -261,6 +275,18 @@ private void applyCookie(ref Cookie[string] jar, string text)
     if (remove) jar.remove(name);
     else jar[name] = c;
 }
+/// One observed target of one `IntersectionObserver`: the observer object (its
+/// callback and options live there) and the element whose intersection with the
+/// viewport decides when the next callback fires.
+private struct IoObservation
+{
+    JsObject observer;
+    Element target;
+    bool reported;          /// The first (always delivered) callback has run.
+    bool lastIntersecting;  /// Intersection state the last callback reported.
+    double lastRatio;       /// Ratio the last callback reported.
+}
+
 private final class DocumentBinder
 {
     JsObject[Element] wrappers;
@@ -275,6 +301,12 @@ private final class DocumentBinder
     /// The document's cookie jar by name. A bound document is one origin on one
     /// page load, so a name/value plus an expiry is all `document.cookie` needs.
     Cookie[string] cookies;
+    /// The viewport's scroll offset. The host publishes it (see
+    /// `setViewportScroll`) so geometry reads are viewport-relative, exactly as
+    /// `getBoundingClientRect` and `IntersectionObserverEntry` report them.
+    int viewportScrollY;
+    /// Live `IntersectionObserver` registrations, one row per observed target.
+    IoObservation[] ioObservations;
 
     this(JsRuntime rt)
     {
@@ -564,6 +596,77 @@ private final class DocumentBinder
             }));
             return evt;
         }));
+        // IntersectionObserver: pages reveal content with it - animation
+        // classes, lazy images, sticky headers, a hint that a control is
+        // searchable. A script that calls `new IntersectionObserver(...)` in a
+        // browser continues past it, so a page whose script would throw here
+        // ran none of the code after it (django's header never reached the
+        // statement that adds "(Ctrl+K)" to its search field). Targets are
+        // evaluated right after every layout pass, so the callback reports the
+        // geometry a browser would - including the immediate first callback for
+        // whatever is already on screen when `observe()` is called.
+        auto intersectionObserverCtor = rt.makeNativeFunc((thisValue, args, rt2) {
+            auto observer = rt2.makeObject();
+            observer.obj.set("__callback", args.length ? args[0] : rt2.makeUndefined());
+            observer.obj.set("__targets", rt2.makeArray());
+            observer.obj.set("root", rt2.makeNull());
+            observer.obj.set("rootMargin", rt2.makeString("0px"));
+            observer.obj.set("thresholds", rt2.makeNumber(0.0));
+            if (args.length > 1 && args[1].obj !is null)
+            {
+                auto options = args[1];
+                auto root = options.obj.get("root");
+                if (root.kind != JsKind.undefined) observer.obj.set("root", root);
+                auto margin = options.obj.get("rootMargin");
+                if (margin.kind == JsKind.string) observer.obj.set("rootMargin", margin);
+                auto threshold = options.obj.get("threshold");
+                if (threshold.kind == JsKind.number || threshold.kind == JsKind.object)
+                    observer.obj.set("thresholds", threshold);
+            }
+            observer.obj.set("observe", rt2.makeNativeFunc((oThis, oArgs, oRt) {
+                if (oThis.obj is null || oArgs.length == 0) return oRt.makeUndefined();
+                auto target = unwrap(oArgs[0]);
+                if (target is null) return oRt.makeUndefined();
+                foreach (ref row; ioObservations)
+                    if (row.observer is oThis.obj && row.target is target)
+                        return oRt.makeUndefined();
+                IoObservation row;
+                row.observer = oThis.obj;
+                row.target = target;
+                ioObservations ~= row;
+                addObservedTarget(oThis, oArgs[0]);
+                return oRt.makeUndefined();
+            }));
+            observer.obj.set("unobserve", rt2.makeNativeFunc((oThis, oArgs, oRt) {
+                if (oThis.obj is null || oArgs.length == 0) return oRt.makeUndefined();
+                auto target = unwrap(oArgs[0]);
+                IoObservation[] kept;
+                foreach (ref row; ioObservations)
+                {
+                    if (row.observer is oThis.obj && row.target is target) continue;
+                    kept ~= row;
+                }
+                ioObservations = kept;
+                removeObservedTarget(oThis, oArgs[0]);
+                return oRt.makeUndefined();
+            }));
+            observer.obj.set("disconnect", rt2.makeNativeFunc((oThis, oArgs, oRt) {
+                if (oThis.obj is null) return oRt.makeUndefined();
+                IoObservation[] kept;
+                foreach (ref row; ioObservations)
+                    if (row.observer !is oThis.obj) kept ~= row;
+                ioObservations = kept;
+                return oRt.makeUndefined();
+            }));
+            // Entries are delivered as they are computed, so no delivery is
+            // ever pending by the time a page asks (`takeRecords` is empty).
+            observer.obj.set("takeRecords", rt2.makeNativeFunc((oThis, oArgs, oRt) {
+                return oRt.makeArray();
+            }));
+            return observer;
+        });
+        windowObj.set("IntersectionObserver", intersectionObserverCtor);
+        jsScope.declare("IntersectionObserver", intersectionObserverCtor);
 
         // fetch: route page fetches through the page's resource loader and
         // expose a minimal Fetch-like response with a synchronous .then() shim.
@@ -949,6 +1052,50 @@ private final class DocumentBinder
         obj.set("className", rt.makeString(el.attrs.get("class", "")));
         obj.set("style", rt.makeString(el.attrs.get("style", "")));
         obj.set("textContent", rt.makeString(el.textContent()));
+        // Element geometry (CSSOM View). Scripts measure layout with these:
+        // scroll effects, sticky headers, "reveal on scroll", tooltips and
+        // canvas overlays all read `getBoundingClientRect` before they do
+        // anything else, and a page whose script throws on the missing method
+        // never runs the rest of its code. The numbers come from the box the
+        // last layout pass filled in, so a rect read after a layout (or from an
+        // observer callback) is the geometry the frame paints.
+        obj.set("getBoundingClientRect", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto target = unwrap(thisValue);
+            if (target is null) return rectValue(0, 0, 0, 0);
+            double x, y, w, h;
+            borderBoxInViewport(target, x, y, w, h);
+            return rectValue(x, y, w, h);
+        }));
+        obj.set("__get_offsetWidth", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto target = unwrap(thisValue);
+            if (target is null) return rt2.makeNumber(0);
+            double x, y, w, h;
+            borderBoxInViewport(target, x, y, w, h);
+            return rt2.makeNumber(w);
+        }));
+        obj.set("__get_offsetHeight", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto target = unwrap(thisValue);
+            if (target is null) return rt2.makeNumber(0);
+            double x, y, w, h;
+            borderBoxInViewport(target, x, y, w, h);
+            return rt2.makeNumber(h);
+        }));
+        // The client box is the padding box: the border edge is where the
+        // painted border starts, so the borders come back off.
+        obj.set("__get_clientWidth", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto target = unwrap(thisValue);
+            if (target is null) return rt2.makeNumber(0);
+            double x, y, w, h;
+            borderBoxInViewport(target, x, y, w, h);
+            return rt2.makeNumber(w - target.box.borderLeft - target.box.borderRight);
+        }));
+        obj.set("__get_clientHeight", rt.makeNativeFunc((thisValue, args, rt2) {
+            auto target = unwrap(thisValue);
+            if (target is null) return rt2.makeNumber(0);
+            double x, y, w, h;
+            borderBoxInViewport(target, x, y, w, h);
+            return rt2.makeNumber(h - target.box.borderTop - target.box.borderBottom);
+        }));
 
         // Inline event-handler attributes (`onclick`, `oninput`, `onchange`,
         // ...): compile the attribute source into a handler function and
@@ -2111,9 +2258,238 @@ private final class DocumentBinder
         return cancelled.kind == JsKind.boolean && cancelled.boolValue;
     }
 
+    /// The border box of `el` in the coordinate system `getBoundingClientRect`
+    /// reports: the box the layout pass placed at its border edge, shifted by
+    /// the viewport scroll so `top` counts down the visible area. `Box.x`/`y`
+    /// are the border-box origin while `Box.width`/`height` are the CONTENT
+    /// size, so the paddings and borders complete the border box - the same
+    /// arithmetic the painter uses to draw the field's own background.
+    private void borderBoxInViewport(Element el, out double x, out double y,
+        out double width, out double height)
+    {
+        x = el.box.x;
+        y = el.box.y - viewportScrollY;
+        width = el.box.width + el.box.paddingLeft + el.box.paddingRight +
+            el.box.borderLeft + el.box.borderRight;
+        height = el.box.height + el.box.paddingTop + el.box.paddingBottom +
+            el.box.borderTop + el.box.borderBottom;
+    }
+
+    /// A DOMRect-shaped object (CSSOM View) for the geometry reads.
+    private JsValue rectValue(double x, double y, double width, double height)
+    {
+        auto rect = rt.makeObject();
+        rect.obj.set("x", rt.makeNumber(x));
+        rect.obj.set("y", rt.makeNumber(y));
+        rect.obj.set("left", rt.makeNumber(x));
+        rect.obj.set("top", rt.makeNumber(y));
+        rect.obj.set("right", rt.makeNumber(x + width));
+        rect.obj.set("bottom", rt.makeNumber(y + height));
+        rect.obj.set("width", rt.makeNumber(width));
+        rect.obj.set("height", rt.makeNumber(height));
+        return rect;
+    }
+
+    /// Add `target` to the observer's own `__targets` list.
+    private void addObservedTarget(JsValue observer, JsValue target)
+    {
+        if (observer.obj is null) return;
+        auto list = observer.obj.get("__targets");
+        if (list.obj is null)
+        {
+            list = rt.makeArray();
+            observer.obj.set("__targets", list);
+        }
+        const size_t at = list.obj.arrayLength;
+        list.obj.set(to!string(at), target);
+        if (at + 1 > list.obj.arrayLength) list.obj.arrayLength = at + 1;
+    }
+
+    /// Drop `target` from the observer's own `__targets` list.
+    private void removeObservedTarget(JsValue observer, JsValue target)
+    {
+        if (observer.obj is null || target.obj is null) return;
+        auto list = observer.obj.get("__targets");
+        if (list.obj is null) return;
+        auto kept = rt.makeArray();
+        size_t at = 0;
+        for (size_t i = 0; i < list.obj.arrayLength; i++)
+        {
+            auto item = list.obj.get(to!string(i));
+            if (item.obj is target.obj) continue;
+            kept.obj.set(to!string(at), item);
+            at++;
+        }
+        kept.obj.arrayLength = at;
+        observer.obj.set("__targets", kept);
+    }
+
+    /// The observer's threshold list. A page passes one number or an array;
+    /// nothing means the single threshold 0 (fire on every entry and exit).
+    private double[] observerThresholds(JsValue observer)
+    {
+        double[] result;
+        if (observer.obj !is null)
+        {
+            auto value = observer.obj.get("thresholds");
+            if (value.kind == JsKind.number) result ~= value.numValue;
+            else if (value.obj !is null)
+            {
+                for (size_t i = 0; i < value.obj.arrayLength; i++)
+                {
+                    auto item = value.obj.get(to!string(i));
+                    if (item.kind == JsKind.number) result ~= item.numValue;
+                }
+            }
+        }
+        if (result.length == 0) result ~= 0.0;
+        import std.algorithm : sort;
+        result.sort();
+        return result;
+    }
+
+    /// Whether the ratio crossed one of the thresholds, which is what makes an
+    /// observer report a target that stayed inside (or outside) the root.
+    private static bool crossedThreshold(double before, double after,
+        double[] thresholds)
+    {
+        foreach (t; thresholds)
+            if ((before < t && after >= t) || (before >= t && after < t))
+                return true;
+        return false;
+    }
+
+    /// One number of a `rootMargin` string, in pixels (`px`, unitless) or as a
+    /// fraction of the root (`%`).
+    private static double rootMarginValue(string token, out bool isPercent)
+    {
+        auto t = token.strip();
+        isPercent = t.endsWith("%");
+        if (isPercent) t = t[0 .. $ - 1];
+        else if (t.endsWith("px")) t = t[0 .. $ - 2];
+        try return to!double(t.strip());
+        catch (Exception) return 0.0;
+    }
+
+    /// Grow (or shrink) the root rectangle by a `rootMargin` string, following
+    /// the CSS shorthand's 1/2/3/4-value patterns. Percentages resolve against
+    /// the matching viewport dimension, as they do in a browser.
+    private static void applyRootMargin(string text, double viewportWidth,
+        double viewportHeight, ref double rootTop, ref double rootRight,
+        ref double rootBottom, ref double rootLeft)
+    {
+        double[4] value;
+        bool[4] percent;
+        int count = 0;
+        foreach (token; text.split())
+        {
+            if (count == 4) break;
+            value[count] = rootMarginValue(token, percent[count]);
+            count++;
+        }
+        if (count == 0) return;
+        const double top = value[0];
+        const double right = count > 1 ? value[1] : value[0];
+        const double bottom = count > 2 ? value[2] : value[0];
+        const double left = count > 3 ? value[3] : (count > 1 ? value[1] : value[0]);
+        const bool topPct = percent[0];
+        const bool rightPct = count > 1 ? percent[1] : percent[0];
+        const bool bottomPct = count > 2 ? percent[2] : percent[0];
+        const bool leftPct = count > 3 ? percent[3] : (count > 1 ? percent[1] : percent[0]);
+        rootTop += topPct ? top / 100.0 * viewportHeight : top;
+        rootBottom += bottomPct ? bottom / 100.0 * viewportHeight : bottom;
+        rootLeft += leftPct ? left / 100.0 * viewportWidth : left;
+        rootRight += rightPct ? right / 100.0 * viewportWidth : right;
+    }
+
+    /// Deliver the callbacks the current geometry warrants, one batch per
+    /// observer, in registration order. Returns true when a callback ran.
+    bool evaluateIntersectionObservers()
+    {
+        import std.algorithm : max, min;
+        if (ioObservations.length == 0) return false;
+        JsObject[] observers;
+        JsValue[][] batches;
+        const double time = rt.eventLoop !is null ? rt.eventLoop.now() : 0.0;
+        foreach (ref row; ioObservations)
+        {
+            if (row.observer is null || row.target is null) continue;
+            double boxX, boxY, boxW, boxH;
+            borderBoxInViewport(row.target, boxX, boxY, boxW, boxH);
+            double rootTop = 0, rootLeft = 0;
+            double rootBottom = viewportHeight, rootRight = viewportWidth;
+            auto margin = row.observer.get("rootMargin");
+            if (margin.kind == JsKind.string && margin.strValue.strip().length)
+                applyRootMargin(margin.strValue, viewportWidth, viewportHeight,
+                    rootTop, rootRight, rootBottom, rootLeft);
+            const double interLeft = max(boxX, rootLeft);
+            const double interTop = max(boxY, rootTop);
+            const double interRight = min(boxX + boxW, rootRight);
+            const double interBottom = min(boxY + boxH, rootBottom);
+            const double interW = max(0.0, interRight - interLeft);
+            const double interH = max(0.0, interBottom - interTop);
+            const double boxArea = boxW * boxH;
+            const double interArea = interW * interH;
+            const bool intersecting = interArea > 0.0;
+            // A zero-area target still reports whether it is inside the root.
+            const double ratio = boxArea > 0.0
+                ? (interArea >= boxArea ? 1.0 : interArea / boxArea)
+                : (intersecting ? 1.0 : 0.0);
+            if (row.reported && intersecting == row.lastIntersecting &&
+                !crossedThreshold(row.lastRatio, ratio, observerThresholds(
+                    JsValue(JsKind.object, row.observer))))
+                continue;
+            row.reported = true;
+            row.lastIntersecting = intersecting;
+            row.lastRatio = ratio;
+            auto entry = rt.makeObject();
+            entry.obj.set("time", rt.makeNumber(time));
+            entry.obj.set("target", wrap(row.target));
+            entry.obj.set("rootBounds", rectValue(rootLeft, rootTop,
+                rootRight - rootLeft, rootBottom - rootTop));
+            entry.obj.set("boundingClientRect", rectValue(boxX, boxY, boxW, boxH));
+            entry.obj.set("intersectionRect", rectValue(interLeft, interTop, interW, interH));
+            entry.obj.set("isIntersecting", rt.makeBoolean(intersecting));
+            entry.obj.set("intersectionRatio", rt.makeNumber(ratio));
+            auto value = JsValue(JsKind.object, entry.obj);
+            size_t at = observers.length;
+            foreach (i, existing; observers)
+                if (existing is row.observer) { at = i; break; }
+            if (at == observers.length)
+            {
+                observers ~= row.observer;
+                batches ~= [value];
+            }
+            else
+                batches[at] ~= value;
+        }
+        if (observers.length == 0) return false;
+        foreach (i, observer; observers)
+        {
+            auto callback = observer.get("__callback");
+            if (callback.kind != JsKind.func) continue;
+            auto entries = rt.makeArray();
+            foreach (at, entry; batches[i])
+            {
+                entries.obj.set(to!string(at), entry);
+                if (at + 1 > entries.obj.arrayLength)
+                    entries.obj.arrayLength = at + 1;
+            }
+            JsValue[] args;
+            args ~= entries;
+            args ~= JsValue(JsKind.object, observer);
+            // A failing callback must not tear down the layout pass; the page
+            // keeps its observers and reports again on the next crossing.
+            try rt.callFunction(callback, JsValue(JsKind.object, observer), args);
+            catch (Exception) { rt.lastHadException = true; }
+        }
+        return true;
+    }
+
     /// Publish the viewport scroll offset to the page's globals.
     void setViewportScroll(int scrollY)
     {
+        viewportScrollY = scrollY;
         if (windowValue.obj !is null)
         {
             windowValue.obj.set("scrollY", rt.makeNumber(scrollY));

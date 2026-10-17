@@ -102,6 +102,111 @@ private string transformed(string transform, string text)
         transform == "capitalize" ? applyTextTransform(transform, text) : text;
 }
 
+/// Does the `size` attribute govern this control's own width? Chromium sizes a
+/// *text entry* control by the number of characters that fit; the other input
+/// types have rules of their own (a checkbox/radio/date control is fixed, a
+/// submit button shrink-to-fits its label, a file control has its own chrome),
+/// so the intrinsic control model below must not claim those.
+private bool controlSizedByChars(Element e)
+{
+    if (e.tag != "input" && e.tag != "textarea") return false;
+    if (e.tag == "textarea") return true;              // `cols`, default 20
+    if (auto t = "type" in e.attrs)
+    {
+        const type = (*t).strip().toLower();
+        return type.length == 0 || type == "text" || type == "search" ||
+            type == "tel" || type == "url" || type == "email" ||
+            type == "password" || type == "number";
+    }
+    return true;                                       // no type = text
+}
+
+/// The number of line boxes a `textarea` shows: its `rows` attribute, default 2
+/// (Chromium's UA sheet). Its height is that many line boxes plus chrome.
+private int textareaRows(Element e)
+{
+    if (auto v = "rows" in e.attrs)
+    {
+        const n = (*v).strip();
+        if (n.length)
+            try
+            {
+                const parsed = to!int(n);
+                if (parsed >= 1) return parsed;
+            }
+            catch (Exception) { /* a malformed attribute keeps the default */ }
+    }
+    return 2;
+}
+
+/// The `width: auto` CONTENT width of a text control, or `-1` when the control
+/// model does not govern this element (`own` is its padding + border).
+///
+/// A control is replaced-like: its automatic width is its intrinsic control
+/// width, not the containing block's. Without this an `input` stretched to its
+/// container — the placeholder fixture's fields measured 1264px wide where Edge
+/// gives 177 — and any field inside a wide column did the same on a real page.
+///
+/// Chromium derives that width from the `size` attribute in characters. Fitted
+/// against Edge's own boxes for a `size` sweep (4/10/20/40 at the 13.3333px
+/// control font, at 16px and at 20px) the BORDER box is exactly
+///
+///     size x avgCharWidth + round(2.1 x fontPx) + 9
+///
+/// where `avgCharWidth` is the face's mean advance over the lowercase alphabet,
+/// digits and space — 0.503em for Arial, i.e. the 7px Edge reports at 13.3333px
+/// and 8px at 16px. All ten measured boxes reproduce to the pixel, and the model
+/// follows the face, so a control set in a wider family widens with it.
+private int controlContentWidth(Element e, int own)
+{
+    if (!controlSizedByChars(e)) return -1;
+    int chars = 20;                                    // Chromium's default
+    const attr = e.tag == "textarea" ? "cols" : "size";
+    if (auto v = attr in e.attrs)
+    {
+        const n = (*v).strip();
+        if (n.length)
+            try
+            {
+                const parsed = to!int(n);
+                if (parsed >= 1) chars = parsed;
+            }
+            catch (Exception) { /* a malformed attribute keeps the default */ }
+    }
+    const fontPx = e.style.fontSizePx > 0 ? e.style.fontSizePx : 16;
+    // The font-SCALED term follows the CSS font size, not the engine's integer
+    // text pixel size: Chromium's control font is 13.3333px, and rounding that
+    // to 13 loses a pixel of it (176 where Edge gives 177). The per-character
+    // term stays the engine's own measurement, because that is the size the
+    // glyphs are actually shaped at.
+    double cssPx = fontPx;
+    if (endsWith(e.style.fontSize, "px"))
+        try cssPx = to!double(e.style.fontSize[0 .. $ - 2]);
+        catch (Exception) { /* not a plain px length: keep the integer size */ }
+    // One shaped run of the reference set, memoized by the shape cache.
+    auto measured = shapeText("abcdefghijklmnopqrstuvwxyz0123456789 ", fontPx,
+        0, 0.0, faceOf(&e.style));
+    const int avg = measured !is null && measured.width > 0
+        ? cast(int) (measured.width / 37.0 + 0.5) : max(1, fontPx / 2);
+    const int borderBox = chars * avg + cast(int) (2.1 * cssPx + 0.5) + 9;
+    return max(0, borderBox - own);
+}
+
+/// A width derived from a measured text run, rounded UP to whole pixels.
+///
+/// Boxes are stored as whole pixels, so truncating a measured run makes the box
+/// narrower than the text it holds and the run then wraps onto a second line -
+/// where a browser, which keeps fractional widths internally, keeps one. Each of
+/// django's 13px uppercase header labels was 1px narrower than its own text, so
+/// every label wrapped and the menu came out 16px too tall with two rows of ink
+/// where Edge paints one. `TextLayout.measuredSize` rounds up the same way.
+private static int measuredWidth(const TextLayout run, int fallback)
+{
+    if (run is null || run.width <= 0) return fallback;
+    const int whole = cast(int) run.width;
+    return run.width > whole ? whole + 1 : whole;
+}
+
 private int intrinsicWidth(Element e, int percentBase)
 {
     resolveBoxMetrics(e, percentBase);
@@ -110,6 +215,10 @@ private int intrinsicWidth(Element e, int percentBase)
 
     const explicit = e.style.resolveLength(e.style.width, percentBase);
     if (explicit >= 0) return explicit + own;
+
+    // A text control's automatic width is its own, not its content's.
+    const int control = controlContentWidth(e, own);
+    if (control >= 0) return control + own;
 
     int inlineW = 0;
     int blockW = 0;
@@ -139,7 +248,7 @@ private int intrinsicWidth(Element e, int percentBase)
                 // the flex item then wrapped its own label mid-word.
                 auto lay = shapeText(transformed(e.style.textTransform, t.data),
                     pixelSize, 1_000_000, 0.0, faceOf(&e.style));
-                inlineW += lay !is null ? cast(int) lay.width : cast(int)(t.data.length * 8);
+                inlineW += measuredWidth(lay, cast(int)(t.data.length * 8));
                 itemCount++;
             }
             continue;
@@ -176,7 +285,7 @@ private int intrinsicWidth(Element e, int percentBase)
         if (txt.length)
         {
             auto lay = shapeText(txt, pixelSize, 1_000_000, 0.0, faceOf(&e.style));
-            content = lay !is null ? cast(int) lay.width : cast(int)(txt.length * 8);
+            content = measuredWidth(lay, cast(int)(txt.length * 8));
         }
     }
     return content + own;
@@ -212,7 +321,7 @@ private int minContentWidth(Element e, int percentBase, bool ignoreSpecifiedWidt
             foreach (word; transformed(e.style.textTransform, t.data).split())
             {
                 auto lay = shapeText(word, pixelSize, 1_000_000, 0.0, faceOf(&e.style));
-                if (lay !is null) widestWord = max(widestWord, cast(int) lay.width);
+                widestWord = max(widestWord, measuredWidth(lay, 0));
             }
             if (!isCollapsibleWhitespaceOnly(t.data)) itemCount++;
             continue;
@@ -242,7 +351,7 @@ private int minContentWidth(Element e, int percentBase, bool ignoreSpecifiedWidt
         foreach (word; transformed(e.style.textTransform, e.textContent()).split())
         {
             auto lay = shapeText(word, pixelSize, 1_000_000, 0.0, faceOf(&e.style));
-            if (lay !is null) content = max(content, cast(int) lay.width);
+            content = max(content, measuredWidth(lay, 0));
         }
     }
     return content + own;
@@ -307,7 +416,7 @@ private void resolveStyles(Element element, Rule[] rules, int viewportWidth, int
     auto cascadeIndex = buildRuleIndex(rules);
     resolveStylesInto(element, rules, cascadeIndex, viewportWidth, viewportHeight,
         noCustom, 16, 16, pseudoElementRules(rules, "before"),
-        pseudoElementRules(rules, "after"));
+        pseudoElementRules(rules, "after"), pseudoElementRules(rules, "placeholder"));
 }
 
 /// Resolve styles, inheriting CSS custom properties (`--name`) down the tree.
@@ -390,7 +499,7 @@ private int resolveFontSize(in ComputedStyle style, int parentPx)
 private void resolveStylesInto(Element element, Rule[] rules, in RuleIndex cascadeIndex,
     int viewportWidth, int viewportHeight, string[string] inheritedCustom,
     int parentFontPx = 16, int rootFontPx = 16, in Rule[] beforeRules = null,
-    in Rule[] afterRules = null)
+    in Rule[] afterRules = null, in Rule[] placeholderRules = null)
 {
     auto cascade = cascadeFor(element, rules, candidatesFor(cascadeIndex, element));
     // Custom properties: inherit the parent's (already-settled) map and only
@@ -434,6 +543,22 @@ private void resolveStylesInto(Element element, Rule[] rules, in RuleIndex casca
         ? inheritedFontPx : resolveFontSize(element.style, parentFontPx);
     // The root element establishes the `rem` base for all its descendants.
     const int childRootFont = (element.parent is null) ? element.style.fontSizePx : rootFontPx;
+    // `::placeholder` (CSS Pseudo 4): the hint a control paints while it is
+    // empty. The declaration lives on the control's selector but describes the
+    // hint, so it is resolved into its own field instead of the control's
+    // `color` - a page sets the two differently (Chromium's UA sheet mutes the
+    // hint; django's dark theme un-mutes it with `var(--body-fg)`).
+    if (placeholderRules.length &&
+        (element.tag == "input" || element.tag == "textarea"))
+    {
+        auto placeholderCascade = cascadeFor(element, placeholderRules);
+        if ("color" in placeholderCascade)
+        {
+            auto placeholderStyle = computedStyle(element, placeholderRules,
+                placeholderCascade, custom);
+            element.style.placeholderColor = placeholderStyle.color;
+        }
+    }
     // Generated pseudo-elements (CSS 12): build the ::before/::after boxes now
     // that this element's style (and inherited custom properties) are settled.
     element.pseudoBefore = buildPseudoElement(element, "before", beforeRules,
@@ -442,7 +567,8 @@ private void resolveStylesInto(Element element, Rule[] rules, in RuleIndex casca
         custom, parentFontPx, childRootFont);
     foreach (child; element.elements)
         resolveStylesInto(child, rules, cascadeIndex, viewportWidth, viewportHeight, custom,
-            element.style.fontSizePx, childRootFont, beforeRules, afterRules);
+            element.style.fontSizePx, childRootFont, beforeRules, afterRules,
+            placeholderRules);
 }
 
 /// Apply the CSS inherited properties (CSS 2.1 6.2 / 10.2) that a box does not
@@ -1262,11 +1388,31 @@ private void applyUserAgentDefaults(ref ComputedStyle style, Element e)
             style.border = "1px solid";
             style.borderStyle = "solid";
             style.borderColor = "#767676";
-            style.fontSize = "13px";
-            style.padding = (tag == "button") ? "2px 8px" : "1px 3px";
-            // Text fields have no child content, so without a default height
-            // they collapse to their padding/border and read as an empty box.
-            if (tag == "input" || tag == "select")
+            // Chromium's html.css styles these with the `font` SHORTHAND:
+            // `font: 400 13.3333px Arial`, which names the FAMILY as well as the
+            // size. Setting only the size left a field with no family of its own,
+            // so a control inherited the page's (the inheritance guard adopts the
+            // parent's family while the child's is empty) and its hint text was
+            // painted in that face. Measured on the placeholder fixture against
+            // an Edge frame of the same file, the same 15-character placeholder
+            // came out 106px wide in the engine against 88px in Edge — the field
+            // was set in the page's monospace body font where Edge used Arial —
+            // and the identical ~20% overshoot sat in django's header search
+            // placeholder (192px engine vs 157px Edge).
+            style.fontFamily = "Arial";
+            style.fontSize = "13.3333px";
+            // 2px of block padding, not 1: with the control's 1px border that is
+            // the 6px of chrome Edge spends around a field's line box, which is
+            // what the measured control heights come to (see layoutBlock: 21px
+            // at the 13.3333px control font, 22 at 14px, 24 at 16px).
+            style.padding = (tag == "button") ? "2px 8px" : "2px 3px";
+            // A TEXT control has no child content, yet it is not a zero-height
+            // box: its inner editor holds one empty line box. That line box is
+            // now measured from the control's own font at layout time, so the
+            // height follows the page's font size instead of ignoring it. The
+            // other input types (a checkbox, a radio, a date control) have no
+            // line box of their own, so they keep a UA height.
+            if (tag == "input" && !controlSizedByChars(e))
                 style.height = "20px";
             break;
         default:
@@ -2132,6 +2278,29 @@ private int spaceAdvance(FaceT)(int pixelSize, FaceT face)
 }
 
 /// Layout a block-level element and its children in normal flow.
+/// True when `element` is laid out as a flex item, i.e. its parent is a flex
+/// container.
+private static bool isFlexItem(Element element)
+{
+    auto parent = element.parent;
+    if (parent is null) return false;
+    const d = parent.style.display;
+    return d == "flex" || d == "inline-flex";
+}
+
+/// True when the element's declared `float` actually applies.
+///
+/// CSS Flexbox 4.1: `float` has no effect on a flex item - the used value is
+/// `none` and the item stays on its flex line. django's header menu is
+/// `ul{display:flex;align-items:center}` holding `li{float:left}` items whose
+/// links carry `padding:10px`; honouring that float took the items out of the
+/// flex line, so the row came out 20px too tall and its labels painted 10px
+/// above where Edge paints the same page.
+private static bool floatApplies(Element element)
+{
+    return element.style.floatStyle != "none" && !isFlexItem(element);
+}
+
 /// True when a block's own top margin collapses with its first in-flow child's:
 /// nothing separates them (no top border or padding), the block is static and
 /// it does not establish a block formatting context (CSS 8.3.1).
@@ -2140,7 +2309,7 @@ private static bool canCollapseWithChild(Element element)
     auto style = element.style;
     if (element.box.borderTop != 0 || element.box.paddingTop != 0) return false;
     if (style.position != "static") return false;
-    if (style.floatStyle != "none") return false;
+    if (floatApplies(element)) return false;
     if (style.overflow.length && style.overflow != "visible") return false;
     switch (style.display)
     {
@@ -2198,7 +2367,7 @@ private static Element firstInFlowChild(Element element)
         auto ps = ce.style.position;
         if (ps == "absolute" || ps == "fixed") continue;
         if (ce.style.display == "none") continue;
-        if (ce.style.floatStyle != "none") continue;
+        if (floatApplies(ce)) continue;
         return ce;
     }
     return null;
@@ -2212,7 +2381,7 @@ private static bool canCollapseBottom(Element element)
     auto style = element.style;
     if (element.box.borderBottom != 0 || element.box.paddingBottom != 0) return false;
     if (style.position != "static") return false;
-    if (style.floatStyle != "none") return false;
+    if (floatApplies(element)) return false;
     if (style.overflow.length && style.overflow != "visible") return false;
     switch (style.display)
     {
@@ -2236,7 +2405,7 @@ private static Element lastInFlowChild(Element element)
         auto ps = ce.style.position;
         if (ps == "absolute" || ps == "fixed") continue;
         if (ce.style.display == "none") continue;
-        if (ce.style.floatStyle != "none") continue;
+        if (floatApplies(ce)) continue;
         found = ce;
     }
     return found;
@@ -2301,7 +2470,7 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     int height = resolveHeight(element);
     element.box.height = max(0, height);
 
-    if (style.floatStyle != "none")
+    if (floatApplies(element))
     {
         // CSS 9.5.1: a float goes as far to its own side as possible on the
         // current line, but it may not overlap a float that is already active in
@@ -2551,7 +2720,7 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
     // escaping past a real BFC root - without it the rects climbed out of an
     // `overflow:hidden` container and every ancestor re-shortened its lines,
     // which reflowed django's whole footer.
-    bool bfcRoot = element.style.floatStyle != "none" ||
+    bool bfcRoot = floatApplies(element) ||
         element.style.position == "absolute" ||
         element.style.position == "fixed" ||
         (element.style.overflow.length && element.style.overflow != "visible");
@@ -2596,6 +2765,23 @@ private void layoutBlock(Element element, ref FlowContext flow, int containingWi
         // tall (a `padding:10px;border:5px` box drew 110px where Edge draws 80).
         finalHeight = max(0, innerBottom - element.box.y - element.box.paddingTop -
             element.box.borderTop);
+    }
+    // An EMPTY text control is one line tall, not zero: its inner editor holds a
+    // single empty line box, and the box model adds the control's own padding and
+    // border on top of it. The engine measured 0 for a control with no children,
+    // so the UA sheet had to hard-code a height - a fixed 20px that ignored the
+    // page's font size and was a pixel short even at the default. Measured against
+    // Edge's frames of the control fixture, a one-line control is
+    // line-height(normal) + 6px of chrome at every size: 21px at the 13.3333px
+    // control font, 22px at 14px and 24px at 16px.
+    if (height < 0 && finalHeight == 0 &&
+        (controlSizedByChars(element) || element.tag == "select" ||
+         element.tag == "button"))
+    {
+        const int lineBox = resolveLineHeight(element,
+            style.fontSizePx > 0 ? style.fontSizePx : 16);
+        finalHeight = lineBox *
+            (element.tag == "textarea" ? textareaRows(element) : 1);
     }
     // `aspect-ratio` with an auto height: the box height follows the used width
     // (CSS Sizing 4). A real page's landscape figure declares
@@ -3270,6 +3456,40 @@ private void shiftSubtree(Element ce, int shift)
     }
 }
 
+/// Shift an element's whole box tree vertically — every descendant element box
+/// and text run — by `dy` px. The horizontal helper above has no `y` twin and a
+/// flex item's cross-axis position is only settled after its contents have been
+/// laid out, so the later move needs one.
+private void shiftBoxTreeY(Element ce, int dy)
+{
+    if (dy == 0) return;
+    ce.box.y += dy;
+    foreach (child; ce.children)
+    {
+        auto t = cast(TextNode) child;
+        if (t !is null)
+        {
+            if (t.layoutWidth > 0) t.layoutY += dy;
+            continue;
+        }
+        auto e2 = cast(Element) child;
+        if (e2 is null) continue;
+        shiftBoxTreeY(e2, dy);
+    }
+}
+
+/// Place a flex item on its container's cross axis, carrying its contents.
+///
+/// An item's own cross size — and therefore its centred or end-aligned `y` — is
+/// only known once its contents have been laid out, so alignment runs after that
+/// and must move the subtree too. Moving the box alone left djangoproject.com's
+/// header nav painting its links ~10px above where Edge puts them: the nav was
+/// centred in the row (y 10 -> 18) while its `ul` stayed at the old y.
+private void placeItemY(Element ce, int targetY)
+{
+    shiftBoxTreeY(ce, targetY - ce.box.y);
+}
+
 /// The leftmost placed text run inside `e` - its own text plus any nested inline
 /// descendants - or `int.max` when it holds none. Used to keep an inline box
 /// seated on its own text after an alignment shift.
@@ -3369,7 +3589,17 @@ private int resolveWidth(Element element, int containingWidth)
         // to the content (CSS 10.3.3).
         return clampMinMaxWidth(element, max(0, widthPx));
     }
-    else if (style.display == "inline-block")
+
+    // `width: auto` on a text control is the control's intrinsic width, not the
+    // containing block's: a control is replaced-like. Stretching an `input` to
+    // its column left the placeholder fixture's fields 1264px wide against
+    // Edge's 177, and it is the same rule that makes a field on a real page as
+    // wide as its `size` attribute says.
+    const int control = controlContentWidth(element, element.box.paddingLeft +
+        element.box.paddingRight + element.box.borderLeft + element.box.borderRight);
+    if (control >= 0) return clampMinMaxWidth(element, control);
+
+    if (style.display == "inline-block")
     {
         // An inline-block with a decoded image sizes to the image's intrinsic
         // width; otherwise shrink-to-fit its content — measure the widest
@@ -4746,10 +4976,10 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
                     }
                 }
                 else if (alignValue == "flex-end" || alignValue == "end")
-                    ce.box.y = lineTop + lineH - ce.box.height - ce.box.marginBottom;
+                    placeItemY(ce, lineTop + lineH - ce.box.height - ce.box.marginBottom);
                 else if (alignValue == "center")
-                    ce.box.y = lineTop + (lineH - ce.box.height - ce.box.marginTop -
-                        ce.box.marginBottom) / 2 + ce.box.marginTop;
+                    placeItemY(ce, lineTop + (lineH - ce.box.height - ce.box.marginTop -
+                        ce.box.marginBottom) / 2 + ce.box.marginTop);
             }
             lineHeights ~= lineH;
             lineTop += lineH;
@@ -5074,11 +5304,11 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
             const int outerH = ce.box.height + ce.box.paddingTop + ce.box.paddingBottom +
                 ce.box.borderTop + ce.box.borderBottom + ce.box.marginTop + ce.box.marginBottom;
             if (ce.box.marginTopAuto && ce.box.marginBottomAuto)
-                ce.box.y = innerY + (crossSize - outerH) / 2;
+                placeItemY(ce, innerY + (crossSize - outerH) / 2);
             else if (ce.box.marginTopAuto)
-                ce.box.y = innerY + crossSize - outerH;
+                placeItemY(ce, innerY + crossSize - outerH);
             else
-                ce.box.y = innerY;
+                placeItemY(ce, innerY);
             continue;
         }
         // (`align` is a D keyword, hence the name.)
@@ -5090,12 +5320,12 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         // flush with the line's start and a centred one off by its own margin -
         // django's 10px-margined logo sat at y=10 where Edge puts it at y=20.
         if (alignValue == "flex-start" || alignValue == "start")
-            ce.box.y = innerY + ce.box.marginTop;
+            placeItemY(ce, innerY + ce.box.marginTop);
         else if (alignValue == "flex-end" || alignValue == "end")
-            ce.box.y = innerY + crossSize - ce.box.height - ce.box.marginBottom;
+            placeItemY(ce, innerY + crossSize - ce.box.height - ce.box.marginBottom);
         else if (alignValue == "center")
-            ce.box.y = innerY + (crossSize - ce.box.height - ce.box.marginTop -
-                ce.box.marginBottom) / 2 + ce.box.marginTop;
+            placeItemY(ce, innerY + (crossSize - ce.box.height - ce.box.marginTop -
+                ce.box.marginBottom) / 2 + ce.box.marginTop);
     }
 
     // An inline-flex container with no explicit width sizes to its content:
@@ -5114,7 +5344,7 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
             if (tn is null) continue;
             const px = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
             auto lay = shapeText(tn.data, px, 0, 0.0, faceOf(&element.style));
-            if (lay !is null) textW = max(textW, cast(int) lay.width);
+            textW = max(textW, measuredWidth(lay, 0));
         }
         // Sum the items' OUTER sizes (content + padding + border + margins): an
         // auto-width container was sized from content widths alone, so it came
@@ -7903,6 +8133,123 @@ unittest
             "the text before a block stays above it: label y=" ~
             label.layoutY.to!string ~ " block y=" ~ block.box.y.to!string);
     }
+}
+
+unittest
+{
+    // --- `float` has no effect on a flex item (CSS Flexbox 4.1) ---
+    // django's header menu is `ul{display:flex;align-items:center}` holding
+    // `li{float:left}` items whose links carry `padding:10px`. Honouring that
+    // float pulled the items out of the flex line: the row grew 20px taller
+    // than Edge's and the labels painted 10px above Edge's on the same page.
+    // The two layouts below differ only in the `float` declaration, so every
+    // box must come out identical.
+    Element navRow(string floatVal)
+    {
+        auto ul = new Element("ul");
+        ul.style.display = "flex";
+        ul.style.alignItems = "center";
+        auto li = new Element("li");
+        li.style.display = "block";
+        li.style.floatStyle = floatVal;
+        li.style.fontSizePx = 13;
+        li.style.lineHeight = "16px";
+        auto a = new Element("a");
+        a.style.display = "block";
+        a.style.padding = "10px";
+        auto label = new TextNode(a, "Overview");
+        a.children ~= label;
+        a.parent = li;
+        li.children ~= a;
+        li.elements ~= a;
+        li.parent = ul;
+        ul.children ~= li;
+        ul.elements ~= li;
+        auto flow = FlowContext();
+        flow.x = 0;
+        flow.y = 0;
+        flow.width = 400;
+        flow.height = 80;
+        flow.lineEnd = 400;
+        layoutFlex(ul, flow, null);
+        return ul;
+    }
+    auto floated = navRow("left");
+    auto plain = navRow("none");
+    auto fli = cast(Element) floated.elements[0];
+    auto pli = cast(Element) plain.elements[0];
+    assert(fli.box.x == pli.box.x && fli.box.y == pli.box.y &&
+        fli.box.width == pli.box.width && fli.box.height == pli.box.height,
+        "a float must not change a flex item's box: floated " ~
+        fli.box.x.to!string ~ "," ~ fli.box.y.to!string ~ " " ~
+        fli.box.width.to!string ~ "x" ~ fli.box.height.to!string ~ " vs plain " ~
+        pli.box.x.to!string ~ "," ~ pli.box.y.to!string ~ " " ~
+        pli.box.width.to!string ~ "x" ~ pli.box.height.to!string);
+    assert(floated.box.height == plain.box.height,
+        "a float must not change the flex row's height: " ~
+        floated.box.height.to!string ~ " vs " ~ plain.box.height.to!string);
+    // The item wraps its block child's BORDER box (content + the child's own
+    // padding), and the child must stay on ONE line: before measured widths were
+    // rounded up, the item's content box was a fraction of a pixel narrower than
+    // the label, so every label wrapped and both boxes doubled.
+    auto fla = cast(Element) fli.elements[0];
+    assert(fli.box.height == fla.box.height + fla.box.paddingTop + fla.box.paddingBottom,
+        "the flex item must be as tall as its child's border box: item " ~
+        fli.box.height.to!string ~ " child " ~ fla.box.height.to!string ~
+        " + " ~ fla.box.paddingTop.to!string ~ "/" ~
+        fla.box.paddingBottom.to!string);
+    assert(fla.box.height <= 20,
+        "a single-line label must not wrap inside its own item, got " ~
+        fla.box.height.to!string ~ "px of text");
+}
+
+unittest
+{
+    // --- cross-axis alignment carries the item's contents with it ---
+    // An item's own cross size, and so its centred `y`, is only known once its
+    // contents have been laid out, so alignment runs last and must move the
+    // subtree. django's header centres a nav in a taller row: moving the nav's
+    // box alone (y 10 -> 18) left its `ul` and links at the old y, and the menu
+    // painted ~10px above where Edge puts it on the same page.
+    auto row = new Element("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    auto tall = new Element("div");
+    tall.style.width = "20px";
+    tall.style.height = "60px";
+    tall.parent = row;
+    row.children ~= tall;
+    row.elements ~= tall;
+    auto nav = new Element("nav");
+    nav.style.display = "block";
+    nav.style.width = "100px";
+    auto link = new Element("a");
+    link.style.display = "block";
+    auto label = new TextNode(link, "Overview");
+    link.children ~= label;
+    link.parent = nav;
+    nav.children ~= link;
+    nav.elements ~= link;
+    nav.parent = row;
+    row.children ~= nav;
+    row.elements ~= nav;
+
+    auto rowFlow = FlowContext();
+    rowFlow.x = 0;
+    rowFlow.y = 0;
+    rowFlow.width = 400;
+    rowFlow.height = 400;
+    rowFlow.lineEnd = 400;
+    layoutFlex(row, rowFlow, null);
+
+    // The 60px sibling makes a 60px line, so the shorter nav is centred below
+    // the row's top edge and its text has to travel with it.
+    assert(nav.box.y > 0,
+        "a centred flex item must move down its line, got y=" ~
+        nav.box.y.to!string);
+    assert(label.layoutY >= nav.box.y,
+        "the aligned item's text must move with its box: text y=" ~
+        label.layoutY.to!string ~ " item y=" ~ nav.box.y.to!string);
 }
 
 

@@ -177,6 +177,12 @@ struct ComputedStyle
 {
     string display = "inline";
     string color = "black";
+    /// Colour the hint text of an empty form control is painted with (empty =
+    /// the engine's neutral placeholder grey). A control's own `color` is the
+    /// colour of the text the user types, so the two cannot share one field:
+    /// django's dark theme gives its search hint `var(--body-fg)` while the UA
+    /// sheet colours the typed text separately.
+    string placeholderColor = "";
     string background = "transparent";
     string backgroundImage = "none";
     string backgroundSize = "auto";

@@ -22,7 +22,7 @@ import aurora.font : FontFace;
 import auroraweb.css : parseFontFaces, parseStylesheet, Rule;
 import auroraweb.dom : Element, TextNode;
 import auroraweb.dombind : bindDocument, dispatchHostEvent, dispatchHostEventNoBubble,
-    dispatchDocumentEvent, setDocumentScroll, setViewportSize;
+    dispatchDocumentEvent, evaluateIntersectionObservers, setDocumentScroll, setViewportSize;
 import auroraweb.shaping : registerWebFace;
 import auroraweb.woff : isWoff, woffToSfnt;
 
@@ -1371,6 +1371,12 @@ final class WebPage
         // why a live browser showed none of them.
         _layoutDirty = _imagesPending;
         ++_layoutGen;
+        // `IntersectionObserver` callbacks describe the geometry this pass just
+        // produced, so they are delivered here - the point a browser queues them
+        // too. A callback usually changes the DOM (adds a class, swaps a lazy
+        // image in), so the document is dirty again when one ran.
+        if (evaluateIntersectionObservers(_js))
+            _layoutDirty = true;
     }
 
     /// Fingerprint of every input to style resolution (see `layout`). Attributes

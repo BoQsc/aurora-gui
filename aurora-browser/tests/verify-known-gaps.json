@@ -1,0 +1,49 @@
+{
+  "inputs": [
+    "aurora-web/source/auroraweb/woff.d",
+    "aurora-web/source/auroraweb/css.d",
+    "aurora-browser/docs/rendering-status.md"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-unittest",
+          "-main",
+          "-i",
+          "-Iaurora-web/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/woff-ut.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/woffut",
+          "aurora-web/source/auroraweb/woff.d"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/woff-ut.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/check-rendering-status.py"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    }
+  ]
+}

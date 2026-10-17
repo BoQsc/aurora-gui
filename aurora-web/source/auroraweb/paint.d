@@ -770,6 +770,11 @@ private void paintElement(Element element, Canvas canvas)
         auto value = "value" in element.attrs;
         const textSize = element.style.fontSizePx > 0 ? element.style.fontSizePx : 13;
         const textColor = parseColorOrDefault(element.style.color, Color.rgb(0, 0, 0));
+        // A `::placeholder` rule colours the hint text alone; with none the
+        // engine's neutral grey stands in for the UA sheet's muted hint.
+        const placeholderColor = element.style.placeholderColor.length
+            ? parseColorOrDefault(element.style.placeholderColor, Color.rgb(150, 150, 156))
+            : Color.rgb(150, 150, 156);
         auto shown = (value !is null) ? *value : "";
         bool placeholderShown = false;
         if (shown.length == 0)
@@ -784,25 +789,31 @@ private void paintElement(Element element, Canvas canvas)
         }
         if (shown.length)
         {
+            // Chromium paints a control's text at the CONTENT origin: the UA
+            // sheet's `padding: 2px 3px` IS the inset the user sees. A further
+            // +3/+3 offset here double-counted it, which measured against an
+            // Edge frame of the same fixture painted the hint 3px low and 3px
+            // right (engine rows 12..23 at x 11 against Edge's rows 9..21 at
+            // x 8 for the same 15-character hint).
             auto layout = shapeTextCached(shown, textSize,
-                maxInt(1, contentW - 6), false, 0.0, faceOf(&element.style));
+                maxInt(1, contentW), false, 0.0, faceOf(&element.style));
             if (layout !is null)
-                contentCanvas.drawLayout(Point(innerX + 3, innerY + 3), layout,
-                    placeholderShown ? Color.rgb(150, 150, 156) : textColor);
+                contentCanvas.drawLayout(Point(innerX, innerY), layout,
+                    placeholderShown ? placeholderColor : textColor);
         }
         // A focused field paints a caret at its caret offset.
         if (element.focused && !placeholderShown)
         {
             size_t at = element.caret;
             if (at > shown.length) at = shown.length;
-            int caretX = innerX + 3;
+            int caretX = innerX;
             if (at > 0)
             {
                 auto head = shapeTextCached(shown[0 .. at], textSize,
-                    maxInt(1, contentW - 6), false, 0.0, faceOf(&element.style));
+                    maxInt(1, contentW), false, 0.0, faceOf(&element.style));
                 if (head !is null) caretX += cast(int) head.width;
             }
-            const caretTop = innerY + 3;
+            const caretTop = innerY;
             const caretHeight = maxInt(4, textSize);
             if (caretX >= innerX && caretX < innerX + contentW)
                 contentCanvas.fillRect(Rect(caretX, caretTop, 1, caretHeight), textColor);
@@ -960,6 +971,10 @@ unittest
     field.box.y = 0;
     field.box.width = 100;
     field.box.height = 20;
+    // The control chrome the UA sheet gives a field: the caret belongs at the
+    // CONTENT origin (border + padding), which is what a browser paints.
+    field.box.borderLeft = 1;
+    field.box.paddingLeft = 3;
     field.style.fontSizePx = 13;
     field.style.color = "#000000";
     field.attrs["value"] = "";
@@ -972,7 +987,7 @@ unittest
     paintElement(field, Canvas(s1));
     bool dark = false;
     foreach (y; 4 .. 18)
-        if (((s1.pixel(3, y) >> 16) & 0xff) < 128) dark = true;
+        if (((s1.pixel(4, y) >> 16) & 0xff) < 128) dark = true;
     assert(dark, "a focused empty field must paint a caret at the content origin");
 
     field.focused = false;

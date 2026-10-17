@@ -1062,6 +1062,16 @@ private void parseCompound(string part, out Selector compound)
                 compound.isPseudoElement = true;
                 compound.pseudoElement = pname;
             }
+            else if (pname == "placeholder" || pname == "webkit-input-placeholder" ||
+                pname == "moz-placeholder" || pname == "ms-input-placeholder")
+            {
+                // `input::placeholder` (and the prefixed spellings pages still
+                // ship) styles the hint text of an empty control, not the
+                // control itself. Collected like `::before`/`::after` and read
+                // by the painter, which otherwise used one hardcoded grey.
+                compound.isPseudoElement = true;
+                compound.pseudoElement = "placeholder";
+            }
             // State pseudo-classes the renderer CAN evaluate against the
             // element's tracked interaction state.
             else if (pname == "hover") compound.isHover = true;
