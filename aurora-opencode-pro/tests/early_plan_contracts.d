@@ -191,7 +191,9 @@ int main()
     writeln("PASS failed plan calls and earlier completed plans do not satisfy a new task");
 
     auto prompt = buildSystemPrompt(true, state, "win32");
-    assert(prompt.indexOf("planning never gates normal execution or completion") >= 0);
+    assert(prompt.indexOf("Default to a short living plan for multi-step or ongoing work") >= 0);
+    assert(prompt.indexOf("Plan maintenance never gates normal execution or completion") >= 0);
+    assert(prompt.indexOf("Update at phase changes or detours") >= 0);
     assert(prompt.indexOf("Adapt steps as evidence changes") >= 0);
     assert(prompt.indexOf("single edits") >= 0);
     window.close();

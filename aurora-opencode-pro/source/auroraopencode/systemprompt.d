@@ -191,7 +191,7 @@ private string operatingContractSection(in SystemPromptContext ctx)
     return "\n# Operating contract\n" ~
         "- Ask only for information that materially changes the result or authorization for an irreversible action.\n" ~
         "- Before substantial work, briefly state the first action. Update when the phase, evidence or approach changes.\n" ~
-        "- When using update_plan, keep it current. Preserve requested step counts; use update_subplan for optional detail. Never invent work.\n" ~
+        "- Preserve requested step counts; use update_subplan for detail. Never invent work.\n" ~
         "- Every lookup must resolve a named unknown. Batch independent lookups and reread changed or incomplete evidence. " ~
         "If uncertainty blocks action, name the remaining unknown; legitimate validation and rereading remain available.\n" ~
         "- Inspect running commands with process or do independent work. Never relaunch or end the turn because a command is running. " ~
@@ -201,9 +201,10 @@ private string operatingContractSection(in SystemPromptContext ctx)
 private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
-        "1. Define success. Use a short plan when it helps complex or ongoing work; planning never gates normal execution or completion. " ~
-        "Skip plans for direct answers, quick exploration, and single edits. Adapt steps as evidence changes, preserving objectives and outcomes. " ~
-        "When planning, use stable IDs and done conditions; record current/next actions and detour reason/exit/return in update_plan.work_context.\n" ~
+        "1. Define success. Default to a short living plan for multi-step or ongoing work, with stable IDs and done conditions. " ~
+        "Adapt steps as evidence changes, preserving objectives and outcomes. Update at phase changes or detours. " ~
+        "Skip plans for direct answers, quick exploration, and single edits. Track current/next actions and detour reason/exit/return " ~
+        "in update_plan.work_context. Plan maintenance never gates normal execution or completion.\n" ~
         "2. Read explicit paths directly, including paths outside the workspace. Discover paths only when " ~
         "unknown or a direct read fails. Each lookup resolves a named unknown. Read before editing.\n" ~
         "3. Apply the smallest complete change, batching all known related edits. Analysis requests call for " ~

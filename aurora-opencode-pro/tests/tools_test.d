@@ -1145,7 +1145,10 @@ int main(string[] args)
     assert(toolSteeringPrompt(false).indexOf(
         "Skip plans for direct answers, quick exploration") >= 0 &&
         toolSteeringPrompt(false).indexOf(
-            "planning never gates normal execution or completion") >= 0 &&
+            "Default to a short living plan for multi-step or ongoing work") >= 0 &&
+        toolSteeringPrompt(false).indexOf("Update at phase changes or detours") >= 0 &&
+        toolSteeringPrompt(false).indexOf(
+            "Plan maintenance never gates normal execution or completion") >= 0 &&
         toolSteeringPrompt(false).indexOf("Adapt steps as evidence changes") >= 0 &&
         toolSteeringPrompt(false).indexOf(
             "Finish authorized work and verification") >= 0 &&
@@ -1238,6 +1241,7 @@ int main(string[] args)
             "The standalone directive must carry the style section and vary");
     }
     writeln("Optional verbosity selector shapes the prompt safely");
+    writeln("MEASURE steering_prompt_bytes=", toolSteeringPrompt(false).length);
     assert(toolSteeringPrompt(false).length < 9_000,
         "Steering prompt should stay bounded; tool syntax belongs in schemas");
     // The app can edit its own source; the prompt must forbid the agent from
