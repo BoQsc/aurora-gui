@@ -59,8 +59,21 @@ the same completion gate and reports application-recorded evidence to its parent
 user-owned fact only after the agent records inspected sources/alternatives and
 finishes independent work. Permission-to-continue questions and external-error
 reports are rejected with recovery guidance. Genuine absent information remains
-`waiting_input`; it is never certified as completed. A supplied fact resumes the
-same objective. The legacy `task_blocker` name follows these same rules.
+`waiting_input`; it is never certified as completed. With multiple unfinished
+outcomes/actions, `blocked_steps` must identify each remaining dependency;
+`independent_work_complete` alone cannot pause unrelated work. Embedded routine
+permission questions and locked-build obstacles are rejected with recovery
+guidance. A supplied fact resumes the same objective. The legacy `task_blocker`
+name follows these same rules.
+
+The waiting state must correspond to an accepted essential-information request
+on the active branch after the latest user message. On startup, a completed
+false pause in the visible chat resumes the unfinished objective automatically.
+Genuine missing facts and an explicit Stop remain respected. Legacy plans gain
+a durable identity anchored before their first matching task snapshot, so a
+later question or short confirmation does not hide earlier task evidence.
+Unfinished work continues with useful tool actions; delivery summaries are
+reserved for completion.
 Provider/account outages and unavailable essential facts cannot be solved by
 removing a completion gate; failures and incomplete work remain honestly recorded.
 

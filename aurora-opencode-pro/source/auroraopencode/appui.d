@@ -77,10 +77,10 @@ import auroraopencode.planmode : experimentalStrictPlanEnabled,
 import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
-    restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
+    restoreBranchTask, initializeLegacyTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
-import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
+import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError, taskInputError, taskAwaitingInput;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
@@ -11510,6 +11510,7 @@ private string _suggestExcludeId;
         _client.fetchModels();
         _input.requestFocus();
         prepareResumeAfterCrash();
+        recoverInvalidInputPause();
         phase("finish");
     }
 
@@ -11639,6 +11640,29 @@ private string _suggestExcludeId;
      * process ended is added to it, and the request is resumed, so a crash
      * costs a delay rather than the turn.
      */
+    private bool recoverInvalidInputPause()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length || !ensureThreadLoaded(_current)) return false;
+        auto session = &_sessions[_current];
+        if (initializeLegacyTask(*session)) { publishThreadUpdated(*session); markDirty(); }
+        if (session.taskStatus != "waiting_input" || session.turnStatus != "completed" || taskAwaitingInput(*session) ||
+            !_settings.toolsEnabled || !_settings.apiKey.length) return false;
+        session.taskStatus = "active"; session.contract.blocker = "";
+        session.turnStatus = "interrupted";
+        if (!_resumeCountdown)
+        {
+            _resumeTargets = [_current]; _resumeTarget = _current; _resumeOwnerId = session.id;
+            _resumePrompt = "Continuation request: the previous request_input paused this task for a recoverable technical obstacle, without an essential missing user fact. " ~
+                "Resume the authorized objective and unfinished outcomes now. Keep the user's running applications intact. " ~
+                "Use verify to isolate locked compiler outputs, or use a separate output path. Preserve completed work and current recipe evidence; " ~
+                "routine process inspection does not invalidate unchanged verification inputs. Continue with useful actions; do not ask permission or repeat a delivery summary while work remains.";
+            _resumeCountdown = resumeDelayTicks;
+        }
+        else if (!_resumeTargets.canFind(_current)) _resumeTargets ~= _current;
+        publishThreadUpdated(*session); markDirty();
+        return true;
+    }
+
     private void prepareResumeAfterCrash()
     {
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
@@ -12260,6 +12284,7 @@ private string _suggestExcludeId;
     public void prepareResumeForTesting()
     {
         prepareResumeAfterCrash();
+        recoverInvalidInputPause();
     }
 
     /// Test-only: drop any pending startup-resume request, so a test that
@@ -18321,6 +18346,8 @@ private void pollButtonSuggestionRequest()
             _execution.diagnosticActive = false;
             _execution.diagnosticRequestsRemaining = 0;
         }
+        if (session.taskStatus == "waiting_input" && !taskAwaitingInput(*session))
+        { session.taskStatus = "active"; session.contract.blocker = ""; }
         const continuation = taskContinuation(*session, _settings.toolsEnabled);
         if (continuation.action == TaskContinuationAction.continueWork ||
             continuation.action == TaskContinuationAction.replan)
@@ -19503,6 +19530,7 @@ private void pollButtonSuggestionRequest()
                 break;
             }
 
+        initializeLegacyTask(*session);
         const receiptWorkspace = workspaceForSession(sessionIndex);
         session.verificationScope = verificationScope(receiptWorkspace, toolWorkspaceRevision(receiptWorkspace));
         const planError = !event.toolFailed && event.toolName == "update_plan"
@@ -19515,7 +19543,7 @@ private void pollButtonSuggestionRequest()
         const planView = !event.toolFailed && event.toolName == "read_plan" ? readPlanText(*session, toolArgs) : "";
         const planViewError = planView.startsWith("Error:") ? planView : "";
         const blockerError = !event.toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input")
-            ? taskBlockerError(toolArgs) : "";
+            ? taskInputError(*session, toolArgs) : "";
         const toolFailed = event.toolFailed || planError.length > 0 ||
             subplanError.length > 0 || imageError.length > 0 || blockerError.length > 0 || planViewError.length > 0;
         string toolText = planViewError.length > 0 ? planViewError : planError.length > 0 ? planError :
@@ -19528,9 +19556,9 @@ private void pollButtonSuggestionRequest()
             event.verificationCheck.length > 0 &&
             sameCheckout(event.verificationWorkspace, workspaceForSession(sessionIndex)) &&
             event.verificationRevision == toolWorkspaceRevision(event.verificationWorkspace);
-        const coverage = verificationCoverage(*session, scopedVerification ? event.verificationCheck : "");
-        const acceptedVerification = scopedVerification && satisfiesEvidence(coverage, requiredEvidence(*session));
         const checkerAttempt = event.verificationCheck.length || event.toolName == "verify";
+        const coverage = checkerAttempt ? verificationCoverage(*session, scopedVerification ? event.verificationCheck : "") : "";
+        const acceptedVerification = scopedVerification && satisfiesEvidence(coverage, requiredEvidence(*session));
         if (checkerAttempt)
         {
             JSONValue receipt;
@@ -19804,6 +19832,7 @@ private void pollButtonSuggestionRequest()
         session.contract.workItems = normalizedWorkItems(session, root, steps);
         session.contract.work = workContextForPlan(session, steps, root);
         session.taskSteps = steps;
+        initializeLegacyTask(session);
         bool complete = steps.length > 0;
         foreach (step; steps)
             if (step.status != "completed") complete = false;
@@ -22684,7 +22713,7 @@ private void pollButtonSuggestionRequest()
         }
         auto session = &_sessions[sessionIndex];
         if (session.messages.length == 0) return;
-        if (session.taskStatus == "waiting_input")
+        if (taskAwaitingInput(*session))
         {
             _autoContinuePendingSession = -1;
             logAutoContinue("skip: task needs attention");
@@ -28510,6 +28539,8 @@ private void pollButtonSuggestionRequest()
             if (auto messages = "messages" in value.object)
                 parseMessagesJson(*messages, detached);
             session.messages = detached.messages;
+            ensureMessageGraph(session);
+            initializeLegacyTask(session);
             _threadLoadErrors.remove(session.id);
             return true;
         }

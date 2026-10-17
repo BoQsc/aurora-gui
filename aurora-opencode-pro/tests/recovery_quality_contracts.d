@@ -1,0 +1,121 @@
+module recovery_quality_contracts;
+import auroraopencode.core;
+import auroraopencode.taskflow;
+import auroraopencode.taskcontinuation;
+import auroraopencode.taskpolicy;
+import auroraopencode.tools;
+import auroraopencode.checkout : canonicalPath;
+import auroraopencode.verification : workspaceCommandEffect, WorkspaceCommandEffect;
+import std.json : JSONValue, parseJSON;
+import std.file : mkdirRecurse, write, read, readText, tempDir;
+import std.path : buildPath, absolutePath;
+import std.process : spawnProcess, Config, kill, wait, tryWait;
+import std.conv : to;
+import std.string : indexOf;
+import std.stdio : writeln;
+import core.time : MonoTime;
+
+void append(ref ChatSession s, string id, string role, string content, string name = "")
+{
+    ChatMessage m; m.id=id; m.parentId=s.activeLeafId; m.role=role; m.content=content;
+    m.toolName=name; m.toolCallId=name.length?id:""; s.messages~=m; s.activeLeafId=id;
+}
+int main(string[] argv)
+{
+    const helper = runFilesystemHelperMode(argv); if (helper >= 0) return helper;
+    const permission = `{"required_fact":"Whether I may close the running window, or the user will close it","reason":"The release link step cannot overwrite a mapped image","question":"A running window maps the executable. Do you want me to close it, or will you close it yourself?","checked":["Process and output inspected"],"independent_work_complete":true}`;
+    assert(taskBlockerError(permission).indexOf("Recover internally") >= 0);
+    const essential = `{"required_fact":"Deployment destination","reason":"Destination absent from local configuration","question":"Which deployment server should I use?","checked":["Local deployment configuration"],"independent_work_complete":true}`;
+    assert(!taskBlockerError(essential).length, taskBlockerError(essential));
+    ChatSession waiting;
+    append(waiting,"user","user","Deploy the prepared result.");
+    waiting.objective="Deploy the prepared result."; waiting.taskStatus="waiting_input";
+    waiting.taskSteps=[TaskStep("Deploy", "pending", "deploy")];
+    append(waiting,"false-input","tool","Asked to close a window","request_input");
+    waiting.messages[$-1].toolArgs=permission;
+    assert(!taskAwaitingInput(waiting));
+    assert(taskContinuation(waiting,true).action != TaskContinuationAction.settle);
+    waiting.messages[$-1].toolArgs=essential;
+    assert(taskAwaitingInput(waiting));
+    assert(taskContinuation(waiting,true).action == TaskContinuationAction.settle);
+    waiting.taskSteps ~= TaskStep("Independent report", "pending", "report");
+    assert(taskInputError(waiting,essential).length, "Self-reported independence hid unfinished work");
+
+    ChatSession legacy;
+    legacy.objective="Implement progressive loading"; legacy.taskStatus="active";
+    legacy.taskSteps=[TaskStep("Progressive loader", "completed", "load", "edit", "Loader saved", ["saved"])];
+    append(legacy,"original","user","Implement progressive loading");
+    append(legacy,"saved","tool","Loader saved","write");
+    append(legacy,"checkpoint","assistant","Loading implemented");
+    legacy.messages[$-1].taskStateJson=activeTaskStateJson(legacy);
+    append(legacy,"question","user","What independent measurement can we use?");
+    append(legacy,"yes","user","yes");
+    acceptTaskRequest(legacy,"yes","yes");
+    assert(legacy.contract.startMessageId=="original" && legacy.contract.requestedOutcome==legacy.objective);
+    assert(supportedStep(legacy,legacy.taskSteps[0]), "A short acknowledgement lost the earlier task's evidence");
+    legacy.taskSteps[0].evidence=["legacy-receipt-not-in-current-window"];
+    assert(!planUpdateError(legacy,`{"work_context":{"action":"Measure new fixture"}}`,legacy.taskSteps).length);
+    assert(!planUpdateError(legacy,`{"plan":[{"id":"load","step":"Progressive loader, measured","status":"completed"}]}`,legacy.taskSteps).length);
+
+    const root=absolutePath(buildPath(tempDir(),"aurora-recovery-"~to!string(MonoTime.currTime.ticks)));
+    mkdirRecurse(buildPath(root,".git")); mkdirRecurse(buildPath(root,"src"));
+    setOpencodeStateDirectoryForTesting(buildPath(root,"state"));
+    const source=buildPath(root,"src/main.d");
+    const code="import core.thread; import core.time; int main(string[] a) { if(a.length>1) Thread.sleep(60.seconds); return 0; }\n";
+    write(source,code);
+    const exe=buildPath(root,"held.exe");
+    JSONValue command; command["program"]="dmd"; command["args"]=["-of="~exe,source]; command["workdir"]=root;
+    auto compiled=executeTool(OpenCodeToolCall("initial","run",command.toString()),root);
+    assert(!compiled.failed,compiled.output);
+    auto holder=spawnProcess([exe,"--hold"],null,Config.suppressConsole);
+    void closeHolder() { try { kill(holder); wait(holder); } catch(Exception) {} }
+    scope(exit) closeHolder();
+    const originalImage=cast(ubyte[])read(exe);
+    const reference=buildPath(root,"expected.ppm"), actual=buildPath(root,"actual.ppm");
+    write(reference,"P6\n1 1\n255\n"~cast(string)[cast(ubyte)20,40,60]); write(actual,read(reference));
+    JSONValue compile; compile["kind"]="compile"; compile["command"]=command;
+    JSONValue invocation; invocation["program"]=exe; invocation["workdir"]=root;
+    JSONValue tests; tests["kind"]="tests"; tests["command"]=invocation;
+    JSONValue render; render["kind"]="render"; render["reference"]=reference; render["actual"]=actual; render["referenceSource"]="Independent fixture pixels";
+    JSONValue recipe; recipe["inputs"]=["src"]; recipe["steps"]=[compile,tests,render];
+    const path=buildPath(root,"verify.json"); const recipeText=recipe.toPrettyString(); write(path,recipeText);
+    JSONValue arguments; arguments["recipe"]=path;
+    auto verified=executeTool(OpenCodeToolCall("receipt","verify",arguments.toString()),root);
+    assert(!verified.failed,verified.output);
+    auto report=parseJSON(verified.output);
+    assert("isolatedBuildOutputs" in report.object, "Locked image was not isolated");
+    assert(report["steps"][1]["command"]["program"].str != exe, "Tests ran the old locked image");
+    assert(cast(ubyte[])read(exe)==originalImage && readText(path)==recipeText);
+    assert(!tryWait(holder).terminated, "The original process was stopped");
+
+    ChatSession proof;
+    proof.id="recipe-proof"; proof.objective="Verify the fixture";
+    append(proof,"request","user","Verify the fixture"); acceptTaskRequest(proof,proof.objective,"request");
+    proof.verificationScope=verificationScope(root,999);
+    append(proof,"recipe-pass","tool",verified.output,"verify");
+    proof.messages[$-1].verificationCheck=verified.verification.check;
+    proof.messages[$-1].verificationScope=verificationScope(root,1);
+    TaskStep check=TaskStep("Verify fixture","in_progress","check","verify","Regression tests pass");
+    assert(evidenceMatches(proof,check,"recipe-pass"), "Unchanged recipe inputs were invalidated by an unrelated revision");
+    write(buildPath(root,"notes.md"),"Documentation changed");
+    assert(evidenceMatches(proof,check,"recipe-pass"));
+    write(source,code~"// source changed\n");
+    assert(!evidenceMatches(proof,check,"recipe-pass"), "Source mutation reused stale recipe proof");
+    write(source,code);
+    assert(evidenceMatches(proof,check,"recipe-pass"));
+    write(actual,"P6\n1 1\n255\n"~cast(string)[cast(ubyte)21,40,60]);
+    auto bad=executeTool(OpenCodeToolCall("bad","verify",arguments.toString()),root);
+    assert(bad.failed);
+    append(proof,"recipe-failure","tool",bad.output,"verify"); proof.messages[$-1].failed=true;
+    proof.messages[$-1].verificationScope=proof.verificationScope;
+    assert(!evidenceMatches(proof,check,"recipe-pass"), "Later failing pixels left superseded proof current");
+    check.status="completed"; check.evidence=["recipe-pass"];
+    assert(supportedStep(proof,check), "Failed later check erased historical completion");
+    size_t at;
+    assert(workspaceCommandEffect("tasklist",["/V"],at)==WorkspaceCommandEffect.readOnly);
+    assert(workspaceCommandEffect("wmic",["process","where","processid=1","get","ParentProcessId"],at)==WorkspaceCommandEffect.readOnly);
+    assert(workspaceCommandEffect("wmic",["process","call","terminate"],at)==WorkspaceCommandEffect.unknown);
+    writeln("PASS locked output builds and tests a new image without closing the old process or changing the recipe");
+    writeln("PASS input-based proof freshness, historical completion, legacy identity and essential-input boundaries");
+    return 0;
+}

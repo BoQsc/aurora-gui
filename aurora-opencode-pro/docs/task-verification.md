@@ -42,13 +42,25 @@ are frozen before commands run. Changes invalidate the result. Receipts record
 commands, results, source/recipe hashes, reference provenance, image dimensions,
 image hashes and mismatched pixels.
 
-Every successful checker targeting the current checkout/source revision receives
-an accepted receipt with its tool call ID. Individual outcomes can cite it while
-other required categories remain outstanding. Overall task verification combines
-accepted categories from separate checks at the same source revision; partial
-coverage cannot certify the whole task. Failed checks supersede earlier current
-receipts, and source changes or process restarts prevent their reuse for newly
-completed outcomes. Already recorded historical outcomes remain saved.
+Every successful checker targeting the task checkout receives an accepted receipt
+with its tool call ID. Individual outcomes can cite it while other required
+categories remain outstanding; partial coverage cannot certify the whole task.
+Native recipe receipts remain current when the recipe, declared source inputs
+and independent reference hashes still match. Unrelated process queries,
+document edits or application restarts do not discard unchanged recipe proof.
+A later failed recipe or render case supersedes the affected proof. Plain
+command checks remain tied to the native source generation. Changed inputs
+require fresh checks before completing new outcomes. Historical completions stay
+recorded, and metadata updates do not reopen them or revalidate pending rows.
+Input validation uses bounded inventory and hash caches within one native source
+generation; changing file inventories refreshes content hashes.
+
+For D compilers with an explicit `-of=` output, a locked executable is built to
+a unique temporary artifact automatically. Later recipe commands use that
+artifact. Receipts record requested and effective commands and the output map.
+The original executable, running window, recipe and independent references are
+preserved. Other build systems can recover by selecting a separate output path;
+a locked image is not a missing user-owned fact.
 
 Types: `compile`, `tests`, `render`, `interaction`, `prepare`. Preparation alone
 supplies no verification. Compilation requires a recognized compiler/build

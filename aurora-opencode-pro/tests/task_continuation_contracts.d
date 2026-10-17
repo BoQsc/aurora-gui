@@ -92,6 +92,8 @@ int main()
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
     session.queuedFollowUps = null;
     session.taskStatus = "waiting_input";
+    append(session, "tool", "Essential destination missing", false, "request_input",
+        `{"reason":"Deployment destination is absent","required_fact":"Deployment destination","question":"Which deployment server should I use?","checked":["Local deployment configuration"],"independent_work_complete":true,"blocked_steps":["Implement","Verify"]}`);
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
     writeln("PASS repeated prose/tools/failed calls/planning do not mask a stall; branch and human boundaries reset it");
 

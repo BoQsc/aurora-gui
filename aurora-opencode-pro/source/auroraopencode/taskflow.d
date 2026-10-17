@@ -34,8 +34,59 @@ size_t[] taskMessagePath(const ref ChatSession session)
     return path;
 }
 
+bool initializeLegacyTask(ref ChatSession session)
+{
+    if (session.contract.id.length || !session.objective.length || !session.messages.length) return false;
+    const path = activeMessagePath(session);
+    size_t boundary = path.length;
+    bool snapshot;
+    foreach (i, index; path)
+        if (session.messages[index].taskStateJson.length)
+            try
+            {
+                const state = parseJSON(session.messages[index].taskStateJson);
+                if (state["objective"].str == session.objective) { boundary = i; snapshot = true; break; }
+            }
+            catch (Exception) {}
+    string anchor;
+    const originalIntent = requestIntent(session.objective);
+    if (snapshot)
+    {
+        foreach (index; path[0 .. boundary])
+            if (session.messages[index].role == "user" && !session.messages[index].internal)
+                anchor = session.messages[index].id;
+    }
+    else
+    {
+        foreach_reverse (index; path)
+            if (session.messages[index].role == "user" && !session.messages[index].internal &&
+                session.messages[index].content.strip() == session.objective.strip())
+            { anchor = session.messages[index].id; break; }
+        if (!anchor.length && originalIntent != RequestIntent.conversation && originalIntent != RequestIntent.continuation && originalIntent != RequestIntent.clarification)
+            foreach_reverse (index; path)
+                if (session.messages[index].role == "user" && !session.messages[index].internal &&
+                    requestIntent(session.messages[index].content) == originalIntent)
+                { anchor = session.messages[index].id; break; }
+    }
+    if (!anchor.length)
+        foreach (index; path)
+            if (session.messages[index].role == "user" && !session.messages[index].internal)
+            { anchor = session.messages[index].id; break; }
+    if (!anchor.length) return false;
+    session.contract.id = anchor; session.contract.startMessageId = anchor;
+    if (!session.contract.requestedOutcome.length) session.contract.requestedOutcome = session.objective;
+    auto intent = requestIntent(session.objective);
+    if (intent == RequestIntent.conversation || intent == RequestIntent.continuation)
+        intent = session.taskSteps.length ? RequestIntent.implementation : intent;
+    session.contract.intent = requestIntentName(intent);
+    if (!session.contract.currentIntent.length || session.contract.currentIntent == "conversation")
+        session.contract.currentIntent = session.contract.intent;
+    return true;
+}
+
 void acceptTaskRequest(ref ChatSession session, string text, string messageId)
 {
+    initializeLegacyTask(session);
     const intent = requestIntent(text);
     const name = requestIntentName(intent);
     if (intent == RequestIntent.conversation)
@@ -205,6 +256,7 @@ void restoreBranchTask(ref ChatSession session)
         if (session.messages[index].taskStateJson.length && !session.messages[index].authorId.length)
         {
             restoreActiveTaskState(session, session.messages[index].taskStateJson);
+            initializeLegacyTask(session);
             return;
         }
     if (!session.contract.id.length) return; // Legacy state has no branch receipts.
@@ -262,20 +314,24 @@ bool evidenceMatches(const ref ChatSession session, const ref TaskStep step, str
     return proof !is null && compatibleEvidence(step, *proof, false);
 }
 
-string[string] taskEvidenceIndex(const ref ChatSession session)
+string[string] taskEvidenceIndex(const ref ChatSession session, bool currentChecks = true)
 {
     string[string] result;
     bool current = true;
+    import auroraopencode.recipeevidence : RecipeEvidenceCache;
+    RecipeEvidenceCache recipes;
     foreach_reverse (index; taskMessagePath(session))
     {
         const ref message = session.messages[index];
-        if (session.verificationScope.length && message.verificationScope == session.verificationScope &&
+        if (currentChecks) recipes.observe(message);
+        const recipe = currentChecks ? recipes.key(message) : "";
+        if (!recipe.length && session.verificationScope.length && message.verificationScope == session.verificationScope &&
             !message.verificationCheck.length) current = false;
         const kind = evidenceKind(message);
         if (!kind.length) continue;
-        const proof = kind == "verify"
-            ? (current && session.verificationScope.length && message.verificationScope == session.verificationScope ? "verify-current|" : "verify|") ~ message.verificationCheck
-            : kind;
+        const fresh = currentChecks && (recipe.length ? recipes.current(message, session.verificationScope) :
+            current && session.verificationScope.length && message.verificationScope == session.verificationScope);
+        const proof = kind == "verify" ? (fresh ? "verify-current|" : "verify|") ~ message.verificationCheck : kind;
         result[message.id] = proof;
         if (message.toolCallId.length && !(message.toolCallId in result)) result[message.toolCallId] = proof;
     }
@@ -443,8 +499,9 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
                 auto retained = TaskStep(old.text, old.status, old.id, old.kind, old.done, old.evidence.dup, old.blocker);
                 steps = steps[0 .. insertAt] ~ retained ~ steps[insertAt .. $];
             }
-    auto index = taskEvidenceIndex(session);
-    auto path = taskMessagePath(session);
+    string[string] index;
+    size_t[] path;
+    bool indexed;
     foreach (ref step; steps)
     {
         foreach (old; previous)
@@ -468,6 +525,8 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
         }
         if (!step.done.length) step.done = step.text;
         if (step.status == "completed" && !step.evidence.length)
+        {
+            if (!indexed) { index = taskEvidenceIndex(session); path = taskMessagePath(session); indexed = true; }
             foreach_reverse (slot; path)
             {
                 const ref message = session.messages[slot];
@@ -476,6 +535,7 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
                     if (compatibleEvidence(step, *proof, false))
                     { step.evidence = [id]; break; }
             }
+        }
     }
     if (retainCompleted && previous.length)
     {
@@ -664,7 +724,8 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     if (!update) return "Error: provide plan, work_items, work_context or task metadata.";
     if (auto plan = "plan" in root.object)
         if (plan.type != JSONType.array || !plan.array.length) return "Error: plan must be a non-empty array.";
-    auto evidenceIndex = taskEvidenceIndex(session);
+    string[string] evidenceIndex;
+    bool indexed;
     bool replacement;
     if (auto f = "replace_entire_plan" in root.object) replacement = f.type == JSONType.true_;
     if (replacement)
@@ -726,6 +787,11 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
             foreach (step; steps) if (samePlanStep(old, step)) retained = true;
             if (!retained) return "Error: unfinished outcome omitted: " ~ old.text ~ ". Preserve it or use a subplan.";
         }
+    if (!("plan" in root.object))
+    {
+        import auroraopencode.worktracking : workItemsError;
+        return workItemsError(session, root, steps);
+    }
     bool[string] ids;
     bool[string] texts;
     int active;
@@ -747,6 +813,8 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
                 old.kind == step.kind && old.done == step.done && old.evidence == step.evidence)
                 unchangedCompleted = true;
         }
+        if (unchangedCompleted || step.status != "completed") continue;
+        if (!indexed) { evidenceIndex = taskEvidenceIndex(session); indexed = true; }
         foreach (id; step.evidence)
         {
             auto proof = id in evidenceIndex;

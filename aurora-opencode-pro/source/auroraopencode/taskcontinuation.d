@@ -7,7 +7,8 @@ import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvide
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.json : JSONValue, JSONType, parseJSON;
-import std.string : startsWith, indexOf, strip, toLower;
+import std.string : startsWith, indexOf, strip, toLower, split, join;
+import std.regex : matchFirst;
 
 enum taskContinuationMarker = "Continuation: unfinished authorized work\n";
 enum taskStallLimit = 3;
@@ -71,7 +72,7 @@ struct TaskContinuation
 
 bool unfinishedTask(const ref ChatSession session)
 {
-    auto evidenceIndex = taskEvidenceIndex(session);
+    auto evidenceIndex = taskEvidenceIndex(session, false);
     foreach (step; session.taskSteps)
         if (step.status != "completed" ||
             (session.contract.id.length && !supportedStep(session, step, evidenceIndex))) return true;
@@ -96,7 +97,7 @@ bool unfinishedTask(const ref ChatSession session)
 TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabled)
 {
     TaskContinuation result;
-    if (!toolsEnabled || session.taskStatus == "waiting_input" || taskInvestigation(session) ||
+    if (!toolsEnabled || taskAwaitingInput(session) || taskInvestigation(session) ||
         session.queuedFollowUps.length || !unfinishedTask(session)) return result;
     auto path = activeMessagePath(session);
     size_t begin;
@@ -150,7 +151,7 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     }
     result.tools = cast(int) evidence.length;
     bool[string] completedEvidence;
-    auto evidenceIndex = taskEvidenceIndex(session);
+    auto evidenceIndex = taskEvidenceIndex(session, false);
     foreach (step; session.taskSteps)
         if (supportedStep(session, step, evidenceIndex))
         {
@@ -232,10 +233,18 @@ string taskBlockerError(string arguments)
             return "Recover internally: inspect the dependency, try alternatives or wait for its result while completing independent work. External errors do not pause the task.";
         if (!field("reason").length || !field("question").length || !field("required_fact").length)
             return "request_input requires reason, question and the essential user-owned required_fact. Routine tool, testing and planning choices are yours to resolve.";
-        const question = field("question").toLower();
+        const question = field("question").toLower().split().join(" ");
         foreach (phrase; ["may i ", "can i ", "should i ", "shall i ", "would you like", "do you want", "permission", "say continue"])
             if (question.startsWith(phrase))
                 return "Continue the authorized work. Do not ask permission for routine execution or verification.";
+        const need = field("required_fact").toLower().split().join(" ");
+        const context = (field("reason") ~ " " ~ need ~ " " ~ field("question")).toLower().split().join(" ");
+        if (matchFirst(need, `\b(permission|approval|consent|whether i|whether we|may i|can i|allowed to|close .*window|close .*process)\b`) ||
+            matchFirst(question, `\b(do you want me to|will you .*yourself|(?:may|should) i (?:close|stop|kill|run|test|continue)|permission to|say continue)\b`))
+            return "Recover internally: this asks for permission for a routine workaround, not missing user information. Preserve the running application; build and test a unique output instead of closing its window.";
+        if (matchFirst(context, `\b(locked|mapped image|file in use|sharing violation|link step|release link|permission denied|linker|running executable)\b`) &&
+            matchFirst(context, `\b(build|compile|executable|window|process|output|\.exe)\b`))
+            return "Recover internally: a locked build output is a technical obstacle. Use verify, which isolates locked compiler outputs, or choose a separate artifact path. Keep the user's application running and finish the task.";
         const checked = "checked" in value.object;
         if (checked is null || checked.type != JSONType.array || !checked.array.length)
             return "Inspect available sources and alternatives first; record them in checked.";
@@ -248,4 +257,41 @@ string taskBlockerError(string arguments)
         return "";
     }
     catch (Exception) { return "request_input requires valid JSON. Continue the task with available tools."; }
+}
+
+
+string taskInputError(const ref ChatSession session, string arguments)
+{
+    const error = taskBlockerError(arguments);
+    if (error.length) return error;
+    const value = parseJSON(arguments);
+    string[] remaining;
+    foreach (step; session.taskSteps) if (step.status != "completed") remaining ~= step.id.length ? step.id : step.text;
+    foreach (item; session.contract.workItems) if (item.required && item.step.status != "completed") remaining ~= item.step.id;
+    foreach (plan; session.nestedPlans) foreach (step; plan.steps) if (step.status != "completed") remaining ~= step.id.length ? step.id : step.text;
+    if (remaining.length > 1)
+    {
+        string[] blocked;
+        if (auto ids = "blocked_steps" in value.object)
+            if (ids.type == JSONType.array)
+                foreach (id; ids.array) if (id.type == JSONType.string) blocked ~= id.str;
+        import std.algorithm : canFind;
+        foreach (id; remaining)
+            if (!blocked.canFind(id)) return "Complete independent work first. Name only remaining outcome/action IDs that actually depend on the missing fact in blocked_steps; independent_work_complete alone cannot pause unfinished outcomes.";
+    }
+    return "";
+}
+
+bool taskAwaitingInput(const ref ChatSession session)
+{
+    if (session.taskStatus != "waiting_input") return false;
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role == "user" && !message.internal) return false;
+        if (message.role == "tool" && !message.failed &&
+            (message.toolName == "request_input" || message.toolName == "task_blocker"))
+            return taskInputError(session, message.toolArgs).length == 0;
+    }
+    return false;
 }

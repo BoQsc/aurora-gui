@@ -17,7 +17,8 @@ TaskWorkItem[] normalizedWorkItems(const ref ChatSession session, JSONValue root
             item.step.done, item.step.evidence.dup, item.step.blocker), item.parentId, item.origin, item.reason, item.required);
     auto updates = "work_items" in root.object;
     if (updates is null || updates.type != JSONType.array) return items;
-    auto evidence = taskEvidenceIndex(session);
+    string[string] evidence;
+    bool indexed;
     foreach (row; updates.array)
     {
         if (row.type != JSONType.object) continue;
@@ -78,6 +79,8 @@ TaskWorkItem[] normalizedWorkItems(const ref ChatSession session, JSONValue root
         const alreadyCompleted = at < items.length && items[at].step.status == "completed";
         if (alreadyCompleted && item.step.status != "completed") item.step.evidence = null;
         if (item.step.status == "completed" && !alreadyCompleted && !item.step.evidence.length)
+        {
+            if (!indexed) { evidence = taskEvidenceIndex(session); indexed = true; }
             foreach_reverse (index; activeMessagePath(session))
             {
                 const ref message = session.messages[index];
@@ -85,6 +88,7 @@ TaskWorkItem[] normalizedWorkItems(const ref ChatSession session, JSONValue root
                 if (auto proof = proofId in evidence)
                     if (compatibleEvidence(item.step, *proof, false)) { item.step.evidence = [proofId]; break; }
             }
+        }
         if (at < items.length) items[at] = item;
         else items ~= item;
     }
@@ -134,7 +138,9 @@ string workItemsError(const ref ChatSession session, JSONValue root, const(TaskS
         }
     }
     auto items = normalizedWorkItems(session, root, parents);
-    auto evidence = taskEvidenceIndex(session);
+    if (!items.length) return "";
+    string[string] evidence;
+    bool indexed;
     foreach (item; items)
     {
         if (!item.step.text.length || !["pending", "in_progress", "completed", "deferred"].canFind(item.step.status))
@@ -169,6 +175,7 @@ string workItemsError(const ref ChatSession session, JSONValue root, const(TaskS
         }
         if (item.step.status == "completed" && !unchangedCompleted)
         {
+            if (!indexed) { evidence = taskEvidenceIndex(session); indexed = true; }
             foreach (id; item.step.evidence)
                 if (auto proof = id in evidence)
                 { if (!compatibleEvidence(item.step, *proof, false)) return "Error: work item completion needs compatible current evidence."; }

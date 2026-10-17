@@ -9,10 +9,13 @@ import std.conv : to;
 import std.digest : toHexString;
 import std.digest.sha : SHA256, sha256Of;
 import std.exception : enforce;
-import std.file : readText, read, exists, isDir, isFile, isSymlink, getSize, dirEntries, SpanMode;
+import std.file : readText, read, exists, isDir, isFile, isSymlink, getSize, dirEntries, SpanMode, tempDir, mkdirRecurse, timeLastModified;
+import std.stdio : File;
+import std.path : baseName;
+import core.time : MonoTime;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.path : absolutePath, buildPath;
-import std.string : startsWith, endsWith;
+import std.string : startsWith, endsWith, toLower, indexOf;
 
 struct VerificationRun
 {
@@ -39,7 +42,7 @@ OpenCodeToolDef verificationToolDefinition()
         "compile/tests/interaction, and render steps comparing current pixels " ~
         "against an independently specified reference image. It records source " ~
         "and recipe hashes, fails on changed inputs or a failing step, and stops " ~
-        "at the first failure. Use this for build/test/render sequences instead " ~
+        "at the first failure. Locked compiler outputs use separate artifacts automatically, preserving the running app and recipe. Use this for build/test/render sequences instead " ~
         "of separate model rounds. Compilation alone cannot verify rendering. " ~
         "Recipe format: {inputs:[source paths],steps:[{kind:compile/tests/interaction/prepare," ~
         "command:{program,args,workdir,timeout}},{kind:render,reference,actual,referenceSource}]}. " ~
@@ -94,6 +97,76 @@ private string fingerprint(string workspace, JSONValue inputs, bool delegate() c
     return hash.finish().toHexString().idup;
 }
 
+private bool outputLocked(string path)
+{
+    if (!exists(path)) return false;
+    try { auto handle = File(path, "r+b"); handle.close(); return false; }
+    catch (Exception) { return true; }
+}
+
+private string commandDirectory(JSONValue command, string workspace)
+{
+    if (auto value = "workdir" in command.object)
+        if (value.type == JSONType.string) return absolutePath(value.str, workspace);
+    return workspace;
+}
+
+private struct RecipeOutputs
+{
+    string[string] replacements;
+    string directory;
+    JSONValue adapt(JSONValue original, string workspace)
+    {
+        auto command = parseJSON(original.toString());
+        const workdir = commandDirectory(command, workspace);
+        string resolve(string path) { return canonicalPath(absolutePath(path, workdir)); }
+        auto program = command["program"].str;
+        const sourceProgram = resolve(program);
+        if (auto mapped = sourceProgram in replacements) command["program"] = *mapped;
+        import std.path : stripExtension;
+        const compiler = stripExtension(baseName(program)).toLower();
+        if (!("args" in command.object)) return command;
+        auto args = command["args"].array;
+        bool isolated;
+        foreach (i, ref arg; args)
+        {
+            auto text = arg.str;
+            const output = (compiler == "dmd" || compiler == "ldc2" || compiler == "gdc") && text.startsWith("-of=");
+            if (output)
+            {
+                const target = resolve(text[4 .. $]);
+                if (outputLocked(target))
+                {
+                    if (!directory.length)
+                    {
+                        directory = buildPath(tempDir(), "aurora-verify-" ~ to!string(MonoTime.currTime.ticks));
+                        mkdirRecurse(directory);
+                    }
+                    auto replacement = buildPath(directory, to!string(replacements.length) ~ "-" ~ baseName(target));
+                    replacements[target] = replacement;
+                    arg = "-of=" ~ replacement;
+                    isolated = true;
+                }
+            }
+            else if (replacements.length && !text.startsWith("-") && text.indexOf("://") < 0)
+            {
+                const path = resolve(text);
+                if (auto mapped = path in replacements) arg = *mapped;
+            }
+        }
+        if (isolated)
+            foreach (ref arg; args)
+                if (arg.str.startsWith("-od="))
+                {
+                    const objects = buildPath(directory, "objects");
+                    mkdirRecurse(objects);
+                    arg = "-od=" ~ objects;
+                }
+        command["args"] = args;
+        return command;
+    }
+}
+
 RecipeResult runVerificationRecipe(string arguments, string workspace,
     VerificationRun delegate(JSONValue) run,
     bool delegate() cancelled = null, void delegate(string) progress = null)
@@ -102,6 +175,8 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
     result.workspace = workspace;
     JSONValue report;
     report["steps"] = JSONValue.emptyArray;
+    RecipeOutputs outputs;
+    JSONValue activeStep;
     try
     {
         const args = parseJSON(arguments);
@@ -147,6 +222,7 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
         string[] kinds;
         foreach (index, step; steps.array)
         {
+            activeStep = step;
             enforce(cancelled is null || !cancelled(), "Verification cancelled.");
             const kind = step["kind"].str;
             enforce(["compile", "tests", "render", "interaction", "prepare"].canFind(kind), "Unknown verification kind.");
@@ -208,7 +284,8 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
             }
             else
             {
-                auto command = parseJSON(step["command"].toString());
+                auto command = outputs.adapt(step["command"], workspace);
+                row["requestedCommand"] = step["command"];
                 enforce(command.type == JSONType.object, "Step command must contain a program and argument list.");
                 command["background"] = false;
                 if (!("timeout" in command.object)) command["timeout"] = 120_000;
@@ -240,7 +317,77 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
     {
         report["passed"] = false;
         report["error"] = error.msg;
+        if (activeStep.type == JSONType.object) report["failedStep"] = activeStep;
+    }
+    if (outputs.replacements.length)
+    {
+        JSONValue isolated;
+        foreach (original, effective; outputs.replacements) isolated[original] = effective;
+        report["isolatedBuildOutputs"] = isolated;
+        report["isolationReason"] = "The original build output is in use or unwritable; verification used a separate artifact and preserved the running application.";
     }
     result.output = report.toPrettyString();
     return result;
+}
+
+public string verificationInputsFingerprint(string workspace, JSONValue inputs)
+{
+    return fingerprint(workspace, inputs, null);
+}
+
+
+public string verificationInputsSignature(string workspace, JSONValue inputs)
+{
+    string[string] inventories;
+    return verificationInputsSignature(workspace, inputs, inventories);
+}
+
+public string verificationInputsSignature(string workspace, JSONValue inputs, ref string[string] inventories)
+{
+    enforce(inputs.type == JSONType.array && inputs.array.length > 0 && inputs.array.length <= 64, "Invalid recipe inputs.");
+    string[] components;
+    foreach (input; inputs.array)
+    {
+        enforce(input.type == JSONType.string, "Invalid input path.");
+        const path = canonicalPath(absolutePath(input.str, workspace));
+        enforce(checkoutIdentity(path) == checkoutIdentity(workspace), "Input leaves checkout.");
+        string signature;
+        if (auto cached = path in inventories) signature = *cached;
+        else
+        {
+            string[] states;
+            size_t entries;
+            ulong bytes;
+            void fileState(string current, ulong size, long modified)
+            {
+                enforce(++entries <= 20_000, "Input inventory exceeds bound.");
+                bytes += size; enforce(bytes <= 64UL * 1024 * 1024, "Inputs exceed bound.");
+                states ~= current ~ " " ~ to!string(size) ~ " " ~ to!string(modified);
+            }
+            void directoryState(string current, size_t depth)
+            {
+                enforce(++entries <= 20_000 && depth <= 64, "Invalid input inventory.");
+                states ~= "dir " ~ current;
+                foreach (entry; dirEntries(current, SpanMode.shallow))
+                {
+                    enforce(!entry.isSymlink, "Input inventory contains a link.");
+                    if (entry.isDir) directoryState(entry.name, depth + 1);
+                    else { enforce(entry.isFile, "Invalid input file."); fileState(entry.name, entry.size, entry.timeLastModified.stdTime); }
+                }
+            }
+            enforce(!isSymlink(path), "Input inventory contains a link.");
+            if (isDir(path)) directoryState(path, 0);
+            else { enforce(isFile(path), "Missing input."); fileState(path, getSize(path), timeLastModified(path).stdTime); }
+            states.sort();
+            SHA256 hash;
+            foreach (state; states) { hash.put(cast(const(ubyte)[]) state); hash.put(cast(const(ubyte)[]) "\0"); }
+            signature = hash.finish().toHexString().idup;
+            inventories[path] = signature;
+        }
+        components ~= path ~ " " ~ signature;
+    }
+    components.sort();
+    SHA256 result;
+    foreach (component; components) { result.put(cast(const(ubyte)[]) component); result.put(cast(const(ubyte)[]) "\0"); }
+    return result.finish().toHexString().idup;
 }

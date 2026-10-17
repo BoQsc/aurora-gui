@@ -7,7 +7,7 @@ import std.file : exists, isDir;
 import std.path : buildPath, dirName, isAbsolute;
 import std.regex : matchAll;
 import std.string : strip, toLower, startsWith, split, join;
-import auroraopencode.taskflow : taskMessagePath;
+import auroraopencode.taskflow : taskMessagePath, taskEvidenceIndex;
 import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestIntent;
 
 /// Only real user messages can retarget a task. Tool output, summaries and
@@ -167,12 +167,12 @@ string verificationCoverage(const ref ChatSession session, string extraCheck = "
         else if (check.canFind("test")) supplied = ["tests"];
         foreach (kind; supplied) if (kind.length && !kinds.canFind(kind)) kinds ~= kind;
     }
+    const evidence = taskEvidenceIndex(session);
     foreach (index; taskMessagePath(session))
     {
         const ref message = session.messages[index];
-        if (!session.verificationScope.length || message.verificationScope != session.verificationScope) continue;
-        if (!message.verificationCheck.length) kinds = null; // A rejected checker supersedes earlier receipts.
-        else if (!message.failed) add(message.verificationCheck);
+        if (auto proof = message.id in evidence)
+            if ((*proof).startsWith("verify-current|")) add(message.verificationCheck);
     }
     if (extraCheck.length) add(extraCheck);
     return "verify:" ~ kinds.join(",");

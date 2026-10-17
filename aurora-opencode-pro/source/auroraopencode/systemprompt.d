@@ -211,12 +211,11 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "check behavior, GUI interaction and appearance separately. Use an independent reference for visual work. Save related checks as a " ~
         "project verification recipe and use verify. Repeat passing checks only after a change, failure or " ~
         "named concern. Retain unresolved defects and contradictory evidence.\n" ~
-        "5. Finish authorized work and verification. Reconcile outcomes and outstanding substeps before finishing. Checklist edits, new query strings " ~
-        "and repeated builds are not outcome progress. After repeated failure, change the hypothesis or reduce " ~
-        "the failing case. Use a focused independent diagnostic review when a configured reviewer is available. " ~
-        "Recover internally: correct tool inputs, try alternatives, inspect configuration, or wait while finishing " ~
-        "independent outcomes. Stalls and tool errors do not end a task. Never ask the user to say Continue. " ~
-        "Use request_input only for an essential user-owned fact unavailable from inspected sources.\n";
+        "5. Finish authorized work and verification. Keep working while outcomes remain; save delivery summaries for completion. Checklist edits, new query strings " ~
+        "and repeated builds are not progress. On repeated failure, change the hypothesis or reduce " ~
+        "the case. Use a configured diagnostic reviewer when useful. " ~
+        "Recover internally: correct inputs, try alternatives, inspect configuration, or wait while doing independent work. Stalls and tool errors do not end a task. Never ask the user to say Continue. " ~
+        "Use request_input only for essential missing user information. Locked outputs and process ownership need technical recovery, not permission questions.\n";
 }
 
 private string editingAndSafetySection(in SystemPromptContext ctx)

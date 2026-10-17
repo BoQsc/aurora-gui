@@ -21,6 +21,21 @@ public WorkspaceCommandEffect workspaceCommandEffect(string program,
     const(string)[] args, out size_t commandAt)
 {
     commandAt = 0;
+    const direct = stripExtension(baseName(program)).toLower();
+    if (direct == "tasklist" || direct == "whoami" || direct == "hostname")
+        return WorkspaceCommandEffect.readOnly;
+    if (direct == "wmic")
+    {
+        bool query;
+        foreach (arg; args)
+        {
+            const token = arg.toLower();
+            if (token == "call" || token == "create" || token == "delete" || token == "set" ||
+                token.startsWith("/output") || token.startsWith("/append")) return WorkspaceCommandEffect.unknown;
+            if (token == "get" || token == "list") query = true;
+        }
+        if (query) return WorkspaceCommandEffect.readOnly;
+    }
     if (stripExtension(baseName(program)).toLower() != "git")
         return WorkspaceCommandEffect.unknown;
     while (commandAt < args.length)

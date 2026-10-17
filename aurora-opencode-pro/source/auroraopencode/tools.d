@@ -518,8 +518,8 @@ private OpenCodeToolDef taskBlockerToolDefinition()
         "from available sources. First inspect local configuration and alternatives and complete " ~
         "all independent outcomes. Routine errors, unavailable tools, testing choices and stalled " ~
         "approaches require internal recovery, not user intervention. Never ask permission to continue " ~
-        "authorized work. Preserve unfinished outcomes while awaiting the answer.",
-        `{"type":"object","properties":{"reason":{"type":"string"},"required_fact":{"type":"string","description":"The essential fact only the user can supply, such as an absent deployment destination"},"question":{"type":"string"},"checked":{"type":"array","items":{"type":"string"},"description":"Concrete sources and alternatives already inspected"},"independent_work_complete":{"type":"boolean","description":"True after completing all work that does not depend on the missing fact"}},"required":["reason","required_fact","question","checked","independent_work_complete"]}`);
+        "authorized work. A locked output, running process, or permission to close a window is a technical recovery choice: verify can isolate locked compiler outputs. Preserve unfinished outcomes while awaiting genuinely missing information.",
+        `{"type":"object","properties":{"reason":{"type":"string"},"required_fact":{"type":"string","description":"The essential fact only the user can supply, such as an absent deployment destination"},"question":{"type":"string"},"checked":{"type":"array","items":{"type":"string"},"description":"Concrete sources and alternatives already inspected"},"independent_work_complete":{"type":"boolean","description":"True after completing all work that does not depend on the missing fact"},"blocked_steps":{"type":"array","items":{"type":"string"},"description":"IDs of every remaining outcome/action that genuinely depends on this missing fact. Finish all other work first; required when more than one outcome remains."}},"required":["reason","required_fact","question","checked","independent_work_complete"]}`);
 }
 
 /// Record the visible plan, with at most one step in progress.
