@@ -52,6 +52,17 @@ int main()
     until(delegate() { return !root.startupPendingForTesting(); });
 
     root.newChatForTesting();
+    send("Write seven fixture Markdown documents.");
+    settled();
+    assert(root.taskStatusForTesting() == "completed" && root.taskStepCountForTesting() == 0);
+    assert(root.lastAssistantContentForTesting() == "Seven documents written.");
+    foreach (i; 0 .. 7)
+        assert(readText(buildPath(workspace, "document-" ~ to!string(i) ~ ".md")) == "Document " ~ to!string(i));
+    root.persistForTesting(); root.reloadSessionsForTesting();
+    assert(root.taskStatusForTesting() == "completed" && root.taskStepCountForTesting() == 0);
+    writeln("PASS seven native file writes finish without a plan or extra continuation, including after reload");
+
+    root.newChatForTesting();
     send("Finish all six fixture steps.");
     settled();
     assert(root.taskStatusForTesting() == "completed");

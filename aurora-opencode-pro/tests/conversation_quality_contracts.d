@@ -5,6 +5,7 @@ import auroraopencode.requestintent;
 import auroraopencode.taskflow;
 import auroraopencode.taskcontinuation;
 import auroraopencode.taskpolicy;
+import auroraopencode.planmode : setStrictPlanSetting;
 import auroraopencode.runtime;
 import std.conv : to;
 import std.json : JSONValue, parseJSON;
@@ -18,6 +19,7 @@ import auroraopencode.toolscheduler : scheduleToolBatch;
 import auroraopencode.tools : ChangeContext, ToolCancellation;
 import std.file : tempDir, mkdirRecurse, write, exists;
 import std.path : buildPath;
+import std.process : environment;
 
 void append(ref ChatSession s, string role, string text, string tool = "", bool failed = false)
 {
@@ -34,6 +36,9 @@ void request(ref ChatSession s, string text)
 
 int main()
 {
+    environment["AURORA_STRICT_PLAN"] = "0";
+    setStrictPlanSetting(false);
+    scope(exit) setStrictPlanSetting(false);
     const started = MonoTime.currTime;
     foreach (text; ["Can you refactor the remaining implementation?", "Could you optimize it?",
             "Explain the failure and refactor it.", "Help me fix this.", "I want you to improve this.",
@@ -80,6 +85,26 @@ int main()
     assert(unfinishedTask(s), "Compiling unchanged code completed an implementation request");
     append(s, "tool", "parser changed", "edit");
     assert(!unfinishedTask(s), "A trivial completed action was forced into a plan");
+    ChatSession unplanned;
+    request(unplanned, "Write seven Markdown documents.");
+    foreach (i; 0 .. 7)
+    {
+        append(unplanned, "tool", "Document written", "write");
+        unplanned.messages[$ - 1].toolArgs = `{"filePath":"document-` ~ to!string(i) ~ `.md"}`;
+    }
+    assert(!taskRequiresPlan(unplanned) && !unfinishedTask(unplanned),
+        "Multi-file completed work was forced into a planning ceremony");
+    assert(taskContinuation(unplanned, true).action == TaskContinuationAction.settle,
+        "Missing optional plan added a completion round");
+    unplanned.verificationStatus = "required";
+    assert(unfinishedTask(unplanned), "Optional planning bypassed required verification");
+    unplanned.verificationStatus = "passed";
+    assert(!unfinishedTask(unplanned));
+    setStrictPlanSetting(true);
+    assert(taskRequiresPlan(unplanned) && unfinishedTask(unplanned),
+        "Explicit strict mode no longer requires its checklist");
+    setStrictPlanSetting(false);
+    writeln("PASS multi-file work finishes without a plan; verification and opt-in strict mode remain effective");
     s.taskStatus = "completed";
     request(s, "Analyze the parser.");
     assert(s.contract.intent == "analysis");

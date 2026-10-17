@@ -191,8 +191,8 @@ int main()
     writeln("PASS failed plan calls and earlier completed plans do not satisfy a new task");
 
     auto prompt = buildSystemPrompt(true, state, "win32");
-    assert(prompt.indexOf("before substantial inspection") >= 0);
-    assert(prompt.indexOf("update at phase boundaries") >= 0);
+    assert(prompt.indexOf("planning never gates normal execution or completion") >= 0);
+    assert(prompt.indexOf("Adapt steps as evidence changes") >= 0);
     assert(prompt.indexOf("single edits") >= 0);
     window.close();
     return 0;

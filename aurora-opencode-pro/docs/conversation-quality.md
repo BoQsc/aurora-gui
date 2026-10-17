@@ -11,9 +11,11 @@ Plans keep stable IDs, acceptance conditions (`done`), categories, evidence and
 blockers. Updates preserve omitted metadata, restore omitted completed steps in their original relative order, and reject dropped unfinished
 outcomes at every plan size. Completed steps need compatible successful tool
 evidence. Verification steps additionally need an accepted current check.
-Unfinished substeps prevent parent/task completion. Small proven actions do not
-require a plan; work that grows across multiple edited files or several actions
-requires an outcome checklist before completion. Evidence shows what executed;
+Unfinished substeps prevent parent/task completion. Plans are optional by default,
+including work across multiple files or many actions. Missing a plan never pauses
+normal tools or adds a completion round. Short adaptable plans help track complex
+or ongoing work; strict checklist enforcement requires an explicit opt-in.
+Action evidence and required verification remain necessary. Evidence shows what executed;
 it cannot establish that a model chose complete behavioral assertions.
 
 `update_plan.work_context` records the current action, next action and a detour's

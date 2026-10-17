@@ -22,6 +22,7 @@ prompts = {
     "What does the fixture pending plan mean?": "question",
     "Finish the fixture cancellation task.": "cancel",
     "Commit existing work only.": "commit",
+    "Write seven fixture Markdown documents.": "unplanned",
 }
 
 
@@ -84,6 +85,14 @@ class Provider(http.server.BaseHTTPRequestHandler):
                     "plan": [{"step": f"Outcome {i}", "status": "completed"} for i in range(6)]})]
             else:
                 content = "All six outcomes completed." if stage == 5 else f"Partial outcome {stage} landed. Say the word and I will continue."
+        elif scenario == "unplanned":
+            if rounds[scenario] > 2:
+                failures.append("Optional planning added a completion round")
+            if "document-6" not in results:
+                tools = [call(f"document-{i}", "write", {
+                    "filePath": f"document-{i}.md", "content": f"Document {i}"}) for i in range(7)]
+            else:
+                content = "Seven documents written."
         elif scenario == "commit":
             if "commit-status" not in results:
                 tools = [call("commit-add", "run", {"program": "git", "args": ["add", "-A"]}),
@@ -168,12 +177,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Provider)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
-    env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
+    env = dict(os.environ, AURORA_STRICT_PLAN="0",
+               AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
     subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"), *([] if "--debug" in sys.argv else ["--release"]),
                     "latency_cleanup_contracts", "task_continuation_contracts", "task_continuation_ui_contracts"],
                    cwd=package.parent, env=env, check=True, timeout=300)
     assert not failures, failures
-    assert rounds == {"work": 13, "commit": 2, "stall": 14, "toolstall": 44, "output": 7, "obstacle": 5, "input": 3, "question": 1, "cancel": 2}, rounds
+    assert rounds == {"work": 13, "unplanned": 2, "commit": 2, "stall": 14, "toolstall": 44, "output": 7, "obstacle": 5, "input": 3, "question": 1, "cancel": 2}, rounds
     print("PASS recovered beyond previous reply/tool limits; required input and Stop remain controlled", dict(rounds))
 finally:
     server.shutdown()

@@ -19116,12 +19116,11 @@ private void pollButtonSuggestionRequest()
                     "Call update_plan now to mark finished steps completed and " ~
                     "set exactly one remaining step in_progress (rewrite the " ~
                     "steps if they no longer match the work)."
-                : "No durable plan is recorded for this turn, yet " ~
+                : "No durable plan is recorded for this turn after " ~
                     to!string(readOnlyExplorationCount(session)) ~ " read-only " ~
-                    "inspections have run. Call update_plan now with the " ~
-                    "concrete remaining steps and their statuses, including the " ~
-                    "investigation still underway, so the checklist reflects " ~
-                    "the work before you continue.";
+                    "inspections. Consider a short update_plan if it helps track " ~
+                    "remaining outcomes and the current investigation. Planning " ~
+                    "must not delay useful work or completion.";
         return true;
     }
 
@@ -19131,15 +19130,13 @@ private void pollButtonSuggestionRequest()
         checkpoint.role = "user";
         checkpoint.internal = true;
         checkpoint.content = explorationGuidance(session);
-        // The completion gate can only reconcile a durable checklist that
-        // exists. Long evidence-gathering runs often never call `update_plan`,
-        // leaving the plan empty, so nudge the model to record one. The app
-        // never invents the steps itself: the plan stays model-owned.
+        // Offer tracking for a long investigation without making a plan a
+        // prerequisite to editing or finishing. Steps stay model-owned.
         if (session.taskSteps.length == 0 && !answerOnlyRequest(latestActualUserRequest(session)) && !taskInvestigation(session) &&
             session.contract.currentIntent != "analysis")
-            checkpoint.content ~= "\n\nBefore editing, record the durable plan " ~
-                "with a single update_plan call (the concrete remaining steps " ~
-                "and their statuses) so the checklist reflects the work.";
+            checkpoint.content ~= "\n\nIf tracking remaining outcomes would help, " ~
+                "record a short update_plan with the current action. Continue " ~
+                "useful work without waiting for a plan.";
         appendMessage(session, checkpoint);
         publishThreadUpdated(session);
         markDirty();

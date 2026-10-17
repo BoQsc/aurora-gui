@@ -2,6 +2,7 @@ module auroraopencode.taskflow;
 
 import auroraopencode.core;
 import auroraopencode.requestintent;
+import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.verification : verificationCheck;
 import std.algorithm : canFind;
 import std.conv : to;
@@ -330,6 +331,9 @@ bool taskHasActionEvidence(const ref ChatSession session, bool includeResearch =
 
 bool taskRequiresPlan(const ref ChatSession session)
 {
+    // Work size may suggest a plan, but only the explicitly enabled strict
+    // mode can require one. Completed work must not trigger planning rounds.
+    if (!experimentalStrictPlanEnabled()) return false;
     bool[string] changedPaths;
     int actions;
     foreach (index; taskMessagePath(session))

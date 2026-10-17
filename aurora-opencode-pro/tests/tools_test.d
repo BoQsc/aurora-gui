@@ -1145,6 +1145,9 @@ int main(string[] args)
     assert(toolSteeringPrompt(false).indexOf(
         "Skip plans for direct answers, quick exploration") >= 0 &&
         toolSteeringPrompt(false).indexOf(
+            "planning never gates normal execution or completion") >= 0 &&
+        toolSteeringPrompt(false).indexOf("Adapt steps as evidence changes") >= 0 &&
+        toolSteeringPrompt(false).indexOf(
             "Finish authorized work and verification") >= 0 &&
         toolSteeringPrompt(false).indexOf("request_input") >= 0,
         "Steering prompt must scope plans and define a stopping condition");
