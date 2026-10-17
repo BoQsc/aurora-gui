@@ -12,6 +12,8 @@ module app;
 
 import aurora;
 import aurorabrowser.appui : BrowserRoot, browserTheme;
+import core.thread : Thread;
+import core.time : msecs;
 
 private int runScreenshot(string path, string startUrl)
 {
@@ -29,6 +31,16 @@ private int runScreenshot(string path, string startUrl)
         root.openUrlAtStartup(startUrl);
     auto driver = new UiTestDriver(window);
     driver.resize(Size(options.width, options.height));
+    // A network document is fetched off the window now, so the host's own
+    // passes are what apply it: tick and paint until it is in, or the capture
+    // would be the frame before the load. A local or built-in page is already
+    // in hand, so it keeps the single paint it had.
+    for (int guard = 0; root.loadPendingForTesting() && guard < 400; ++guard)
+    {
+        root.tickTree(0.02);
+        driver.paint();
+        Thread.sleep(5.msecs);
+    }
     driver.paint();
     window.saveScreenshot(path);
     window.close();

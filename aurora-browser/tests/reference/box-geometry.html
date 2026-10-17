@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>box model and positioning rects</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; color: #000000; }
+  /* Every case is a solid rectangle and carries no text, so no glyph and no font
+     face can decide a pixel or a rect. That is what lets this fixture be
+     compared against an independent Edge capture at the engine's own 1280x638
+     viewport, and each box against Edge's own getBoundingClientRect numbers.
+
+     Every case paints its own rectangle, including cases J and L, whose geometry
+     the two renderers used to disagree about (see their comments): the pixel
+     comparison is 0 different pixels over the whole 1280x638 frame, so no case
+     hides behind a rect row.
+
+     Every case is placed with pixel insets, so no case depends on the viewport:
+     Edge's headless layout viewport is 1256x598 for a --window-size=1280,638
+     capture (measured: `html` reports a 1256px rect with --hide-scrollbars),
+     while the engine's fixture viewport is the requested 1280x638. A
+     `position: fixed` case is therefore absent - it is viewport-relative by
+     definition and cannot agree across those two viewports; that rule is
+     exercised against real pages instead.
+
+     This file carries no script: capture-edge-rects.py injects its measurement
+     code into a scratch copy, so the engine never runs measurement code. */
+  body { font-size: 0; }
+  #rect-dump { display: none; }
+
+  /* A. CSS 2.1 10.1 / 8.1: width and height are the CONTENT box, so padding and
+     border grow the border box: 300 + 2*30 + 2*5 = 370 wide, 40 + 2*5 = 50 tall. */
+  .a1 { position: absolute; left: 20px; top: 20px; width: 300px; height: 40px;
+        padding: 0 30px; border: 5px solid #000000; background: #c8c8c8; }
+
+  /* B. CSS 2.1 10.3.7: `left` and `top` place the MARGIN edge of an absolutely
+     positioned box, so a 7px margin offsets the border box by 7px. */
+  .b1 { position: absolute; left: 20px; top: 100px; width: 100px; height: 20px;
+        margin: 7px; background: #336699; }
+
+  /* G. CSS 2.1 10.3.7 constraint solving: with both horizontal insets and
+     width:auto the box stretches between them, inside a definite-width
+     containing block: 400 - 20 - 40 = 340. */
+  .g0 { position: absolute; left: 520px; top: 20px; width: 400px; height: 60px;
+        background: #bbbbdd; }
+  .g0 > i { position: absolute; left: 20px; right: 40px; top: 10px; height: 20px;
+            background: #2200aa; }
+
+  /* C. CSS 2.1 10.2 / 10.5: a percentage resolves against the containing block's
+     CONTENT box (300 wide, so 50% is 150), and a child's own static flow starts
+     at that content origin. */
+  .c1 { position: absolute; left: 20px; top: 200px; width: 300px; height: 60px;
+        padding: 0 40px; border: 8px solid #666666; background: #eeeeee; }
+  .c1 > i { display: block; width: 50%; height: 20px; background: #990000; }
+  .c1 > b { display: block; width: 100%; height: 10px; margin-top: 30px;
+            background: #cc0000; }
+
+  /* D. CSS 2.1 10.4: min-width raises a 100px width to 160, max-width lowers a
+     300px width to 120. */
+  .d1 { position: absolute; left: 20px; top: 300px; width: 100px; min-width: 160px;
+        height: 20px; background: #339933; }
+  .d2 { position: absolute; left: 220px; top: 300px; width: 300px; max-width: 120px;
+        height: 20px; background: #66cc66; }
+
+  /* E. CSS 2.1 8.3.1: a 20px bottom margin and a 30px top margin between adjacent
+     blocks collapse to 30px, so the second block starts 50px below the first. */
+  .e1 { position: absolute; left: 20px; top: 380px; width: 200px; background: #dddddd; }
+  .e1 > i { display: block; height: 20px; margin-bottom: 20px; background: #111111; }
+  .e1 > b { display: block; height: 20px; margin-top: 30px; background: #444444; }
+
+  /* F. CSS 2.1 9.4.3: relative positioning offsets the box without consuming flow
+     space, so the sibling below stays where static flow put it. */
+  .f1 { position: absolute; left: 300px; top: 380px; width: 200px; background: #f0f0f0; }
+  .f1 > i { display: block; position: relative; top: 12px; left: 8px; width: 100px;
+            height: 20px; background: #cc6600; }
+  .f1 > b { display: block; width: 100px; height: 20px; background: #666666; }
+
+  /* H. CSS 2.1 10.1: an absolutely positioned child resolves its insets against
+     the PADDING box of its positioned ancestor, which spans x 525..765 and
+     y 105..245 here, so right:10px and bottom:10px land inside those edges. */
+  .h1 { position: absolute; left: 520px; top: 100px; width: 200px; height: 100px;
+        padding: 20px; border: 5px solid #333333; background: #f8f8f8; }
+  .h1 > i { position: absolute; right: 10px; bottom: 10px; width: 50px; height: 30px;
+            background: #dd2200; }
+
+  /* J. CSS 2.1 10.5: a percentage height resolves against the containing block's
+     content height (80px, so 50% is 40), and the child paints inside it. A
+     container whose only in-flow content is that child is what exposed the
+     engine resolving the percentage against its OWN containing block (the empty
+     body, 0) instead of its own content height; both renderers now report
+     800 200 40 40 for the child. */
+  .j1 { position: absolute; left: 800px; top: 200px; width: 120px; height: 80px;
+        background: #ccccff; }
+  .j1 > i { display: block; width: 40px; height: 50%; background: #6633cc; }
+
+  /* K. CSS 2.1 10.3.7 with auto margins: left:0 and right:0 with margin:0 auto
+     centres a 200px box in the containing block, which splits 400-200 into 100. */
+  .k0 { position: absolute; left: 700px; top: 380px; width: 400px; height: 40px;
+        background: #dddddd; }
+  .k0 > i { position: absolute; left: 0; right: 0; width: 200px; margin: 0 auto;
+            top: 10px; height: 20px; background: #ff8800; }
+
+  /* L. CSS box-sizing (border-box): width and height then INCLUDE padding and
+     border, so the border box stays 200x40 while the content box is 200-40-8
+     wide and 200-0-8 tall. Both are painted - the fill is the 152x32 content box
+     and the ring is the 4px border - so a border-box mix-up cannot hide: the
+     engine's absolutely positioned path used to store the declared height as the
+     content height and painted 48 tall. Edge reports 20 520 200 40, and so does
+     the engine now. */
+  .l1 { position: absolute; left: 20px; top: 520px; box-sizing: border-box;
+        width: 200px; height: 40px; padding: 0 20px;
+        border: 4px solid #333333; background: #d0d0d0; }
+</style>
+</head>
+<body>
+  <div class="a1" data-rect="a1-content-box-padding-border"></div>
+  <div class="b1" data-rect="b1-absolute-inset-is-margin-edge"></div>
+  <div class="g0" data-rect="g0-definite-container">
+    <i data-rect="g1-auto-width-between-insets"></i>
+  </div>
+  <div class="c1" data-rect="c1-percentage-container">
+    <i data-rect="c1-child-50-percent-width"></i>
+    <b data-rect="c1-child-100-percent-width"></b>
+  </div>
+  <div class="d1" data-rect="d1-min-width-clamp"></div>
+  <div class="d2" data-rect="d2-max-width-clamp"></div>
+  <div class="e1" data-rect="e1-collapsed-margin-container">
+    <i data-rect="e1-first-block"></i>
+    <b data-rect="e1-second-block"></b>
+  </div>
+  <div class="f1" data-rect="f1-relative-container">
+    <i data-rect="f1-relative-offset"></i>
+    <b data-rect="f1-sibling-unmoved"></b>
+  </div>
+  <div class="h1" data-rect="h1-positioned-ancestor">
+    <i data-rect="h1-absolute-child-padding-box"></i>
+  </div>
+  <div class="j1" data-rect="j1-percentage-container">
+    <i data-rect="j1-child-50-percent-height"></i>
+  </div>
+  <div class="k0" data-rect="k0-definite-container">
+    <i data-rect="k1-auto-margin-centring"></i>
+  </div>
+  <div class="l1" data-rect="l1-border-box-sizing"></div>
+  <pre id="rect-dump"></pre>
+</body>
+</html>

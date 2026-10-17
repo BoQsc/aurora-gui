@@ -676,6 +676,28 @@ final class WebPageView : Widget
         invalidate();
     }
 
+    /// Start a load without waiting for it. The engine fetches the document on
+    /// a worker and applies it in a later pass, so the host keeps painting - the
+    /// loading state first, then the page as it arrives. The synchronous
+    /// `setUrl` froze the window for the whole round trip: measured 2024 ms on
+    /// one page with not a single frame painted, 1529 ms of it a stylesheet the
+    /// first layout fetched inline.
+    void beginLoad(string url)
+    {
+        if (_page is null) return;
+        setCurrentUrl(url);
+        _lastError = "";
+        _failedUrl = "";
+        _page.beginNavigate(url);
+        invalidate();
+    }
+
+    /// True while a load started by `beginLoad` has not been applied yet.
+    bool loadPending()
+    {
+        return _page !is null && _page.navigationPending();
+    }
+
     /**
      * Load a document into the page. `auroraweb:` URLs use the offline built-in
      * pages; `http://`/`https://` URLs fetch the real document through the
@@ -1408,6 +1430,21 @@ private struct Tab
     string title;       /// last known page title
 }
 
+/// A network load that is still in flight. The engine has its request on a
+/// worker, so the app cannot report success or failure when the load is asked
+/// for; what the completion must do is recorded here and applied by
+/// `BrowserRoot.onTick` once the document is in.
+private struct PendingLoad
+{
+    bool active;
+    int tabIndex;        /// tab the load belongs to (the user may switch away)
+    string url;
+    bool appendHistory;  /// commit a new history entry (address bar, link)
+    int prevPosition;    /// history position to restore if the load fails
+    string statusPrefix; /// "Loaded", "Back to", "Forward to", "Reloaded"
+    bool updateChrome;   /// refresh the address bar, title and bookmark star
+}
+
 // ---------------------------------------------------------------------------
 // Browser root
 // ---------------------------------------------------------------------------
@@ -1449,6 +1486,7 @@ final class BrowserRoot : Widget
     private string[] _bookmarks;   /// bookmarked URLs (order preserved)
     private string _homeUrl;       /// configured home page (persisted)
     private bool _loading;         /// page currently loading (status/button state)
+    private PendingLoad _pendingLoad; /// network load still in flight (see onTick)
 
     this(GuiWindow window)
     {
@@ -1614,11 +1652,107 @@ final class BrowserRoot : Widget
         navigateTo(target);
     }
 
+    /// True for the URLs whose document is a network round trip. Any other
+    /// scheme (`auroraweb:`, `file://`) is already local, so it keeps the
+    /// synchronous path: deferring a read from disk buys nothing, and the
+    /// built-in pages must be ready the moment they are asked for.
+    private static bool isNetworkUrl(string url)
+    {
+        const lower = url.toLower();
+        return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    /// Start a network load that does not block the window: the chrome shows
+    /// its loading state at once, the engine fetches the document on a worker,
+    /// and the outcome is applied by `onTick` when the document is in.
+    private void beginNetworkLoad(string url, bool appendHistory,
+        int prevPosition, string statusPrefix, bool updateChrome)
+    {
+        if (_active < 0 || _active >= cast(int) _tabs.length) return;
+        auto tab = &_tabs[_active];
+        _loading = true;
+        _reloadButton.setIcon(IconKind.close);
+        updateStatus("Loading " ~ url ~ "...");
+        tab.view.setCurrentUrl(url);
+        _pendingLoad = PendingLoad(true, _active, url, appendHistory,
+            prevPosition, statusPrefix, updateChrome);
+        tab.view.beginLoad(url);
+        invalidate();
+    }
+
+    /// Apply a finished network load: the chrome, the status line and, when the
+    /// request asked for it, the history entry. `onTick` calls this the moment
+    /// the document is in, so the window stayed live for the whole download.
+    private void finishNetworkLoad()
+    {
+        auto req = _pendingLoad;
+        _pendingLoad.active = false;
+        if (req.tabIndex < 0 || req.tabIndex >= cast(int) _tabs.length) return;
+        auto tab = &_tabs[cast(size_t) req.tabIndex];
+        const failed = tab.view.errorReasonForTesting().length > 0 ||
+            tab.view.showsErrorPage();
+        _loading = false;
+        _reloadButton.setIcon(IconKind.refresh);
+        const isActive = req.tabIndex == _active;
+        if (failed)
+        {
+            tab.position = req.prevPosition;
+            if (isActive)
+            {
+                updateChrome();
+                updateStatus("Failed to load " ~ req.url);
+            }
+            return;
+        }
+        if (req.appendHistory)
+        {
+            tab.history.length = cast(size_t) req.prevPosition + 1;
+            tab.history ~= req.url;
+            tab.position = cast(int) tab.history.length - 1;
+        }
+        tab.title = pageTitle(tab.view);
+        if (isActive && req.updateChrome)
+        {
+            _address.setText(req.url, false);
+            setWindowTitle(tab.title);
+            _bookmarkButton.setText(isBookmarked(req.url) ? "★" : "☆");
+        }
+        updateChrome();
+        if (isActive)
+            updateStatus(req.statusPrefix ~ " " ~ req.url);
+    }
+
+    /// Apply a finished network load, and keep asking for frames while one is
+    /// still in flight: the engine's passes are what apply the document, and
+    /// the host is what drives them.
+    protected override void onTick(double deltaSeconds)
+    {
+        super.onTick(deltaSeconds);
+        if (!_pendingLoad.active) return;
+        if (_pendingLoad.tabIndex < 0 ||
+            _pendingLoad.tabIndex >= cast(int) _tabs.length) return;
+        auto tab = &_tabs[cast(size_t) _pendingLoad.tabIndex];
+        if (tab.view.loadPending())
+            invalidate();
+        else
+            finishNetworkLoad();
+    }
+
     private void navigateTo(string url)
     {
         if (_active < 0 || _active >= cast(int) _tabs.length) return;
         auto tab = &_tabs[_active];
         const prevPosition = tab.position;
+
+        // A network document is fetched without blocking the window, so the
+        // load starts here and its outcome is applied by `onTick`: the URL is
+        // committed to history only once the document is in, exactly as the
+        // synchronous path below commits it.
+        if (isNetworkUrl(url))
+        {
+            beginNetworkLoad(url, true, prevPosition, "Loaded", true);
+            return;
+        }
 
         // Load first. On a successful load the URL is committed to history;
         // on failure the previous entry is preserved and the error page shown.
@@ -1679,6 +1813,14 @@ final class BrowserRoot : Widget
         if (_active < 0 || _active >= cast(int) _tabs.length) return;
         auto tab = &_tabs[_active];
         const url = tab.history[cast(size_t) index];
+        // A network page is re-fetched without blocking the window; the
+        // completion sets the title and the status line. History does not move:
+        // back and forward already chose the entry.
+        if (isNetworkUrl(url))
+        {
+            beginNetworkLoad(url, false, tab.position, statusPrefix, true);
+            return;
+        }
         loadUrl(url);
         tab.title = pageTitle(tab.view);
         updateStatus(statusPrefix ~ " " ~ url);
@@ -1707,6 +1849,12 @@ final class BrowserRoot : Widget
     {
         if (_active < 0 || _active >= cast(int) _tabs.length) return;
         auto tab = &_tabs[_active];
+        if (isNetworkUrl(tab.view.currentUrl()))
+        {
+            beginNetworkLoad(tab.view.currentUrl(), false, tab.position,
+                "Reloaded", true);
+            return;
+        }
         loadUrl(tab.view.currentUrl());
         tab.title = pageTitle(tab.view);
         setWindowTitle(tab.title);
@@ -2098,6 +2246,25 @@ final class BrowserRoot : Widget
     public bool isLoadingForTesting() const
     {
         return _loading;
+    }
+
+    /// Test-only: is a progressive network load still in flight?
+    public bool loadPendingForTesting() const
+    {
+        return _pendingLoad.active;
+    }
+
+    /// Test-only: commit a progressive load whose document is in, exactly as the
+    /// tick after it would. A driver that pumps the page itself - a probe
+    /// settling a screenshot - never ticks the root, so without this the capture
+    /// keeps the chrome's loading state (empty URL, home title, close icon)
+    /// although the page it captured is complete.
+    public bool finishLoadForTesting()
+    {
+        if (!_pendingLoad.active) return false;
+        finishNetworkLoad();
+        invalidate();
+        return true;
     }
 
     /// Test-only: the configured home page URL.

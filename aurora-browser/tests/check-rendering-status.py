@@ -104,10 +104,46 @@ class RenderingStatusRecord(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, self.text)
 
+    def test_flow_sizing_corpus_recorded(self):
+        """The second in-repo corpus: real flow sizing, Edge-verified."""
+        for required in ("aurora-browser/tests/reference/flow-sizing.html",
+                         "aurora-browser/tests/reference/flow-sizing.edge.png",
+                         "aurora-browser/tests/verify-flow-sizing.json",
+                         "table-layout: fixed",
+                         "painted 16x18 instead of Edge's 80x20 and 60x20 "
+                         "at x 30 and x 110",
+                         "0 mismatched of 816,640"):
+            with self.subTest(required=required):
+                self.assertIn(required, self.text)
+
+    def test_box_geometry_corpus_recorded(self):
+        """The third in-repo corpus: numeric rects against Edge, plus its frame."""
+        for required in ("aurora-browser/tests/reference/box-geometry.html",
+                         "aurora-browser/tests/reference/box-geometry.edge.tsv",
+                         "aurora-browser/tests/reference/box-geometry.edge.png",
+                         "aurora-browser/tests/verify-box-geometry.json",
+                         "aurora-browser/tests/compare_rects.py",
+                         "aurora-browser/tests/capture-edge-rects.py",
+                         "22 compared, 22 equal to Edge exactly, 0 of 819,200 "
+                         "pixels differing",
+                         "AD21B644",
+                         "j1-child-50-percent-height",
+                         "l1-border-box-sizing",
+                         "both renderers report `800 200 40 40`",
+                         "both renderers report `20 520 200 40`",
+                         "0 of 1,024,000 pixels differing",
+                         "1256x598"):
+            with self.subTest(required=required):
+                self.assertIn(required, self.text)
+
     def test_no_stale_claims(self):
         for stale in ("19 rows", "next item to close", "compressed formats",
                       "`woff2` is the remaining format gap",
-                      "and skips the woff2 ones"):
+                      "and skips the woff2 ones",
+                      "against a containing height of 0",
+                      "48 tall against Edge's 40",
+                      "would move the frozen djangoproject.com acceptance frame",
+                      "rather than silently ignored"):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale, self.text, f"stale claim is back: {stale}")
 

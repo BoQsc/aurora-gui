@@ -141,7 +141,7 @@ exits 0; `font-display: swap` faces wait for a painted frame
 re-measuring; and the UA advertises woff2, which the engine decodes, so Google
 Fonts negotiates woff2 subsets instead of ~1.4 MB of full TrueType faces. The
 fidelity evidence is unchanged: `verify-render.json` still renders
-djangoproject.com to the same frame (`CBAC1963...`, 0 mismatched) and the three
+djangoproject.com to the same frame (`3571CCE5...`, 0 mismatched) and the three
 Edge corpora still pass 0 mismatched.
 
 The image batch then stopped blocking the pass that started it. A pass records the
@@ -179,6 +179,65 @@ web-font files are deliberately *not* batched: on the main thread's pooled
 connection the same 24 files cost 20-86 ms each after one 1211 ms handshake,
 about 1.2 s in total, against 13-26 s as a worker batch. Batching them was tried
 this session and reverted for exactly that reason.
+
+**The document itself left the click path, and then every stylesheet.** The last
+blocking call was the one the navigation made: `openUrlAtStartup` fetched the
+document, parsed it and laid it out before it returned, so no frame could be
+painted until it finished - the 1641.0 ms and 1255.2 ms of "document + first
+layout" in the table above. The document, and then each external stylesheet a
+document names, is now fetched by a worker and applied by a later pass
+(`WebPage.beginNavigate`/`serviceNavigation` and the style batch
+`serviceStylesheets` in `aurora-web/source/auroraweb/package.d`), so that call
+returns at once and the browser paints the loading state, and then the page, on
+the frames that follow; `navigationPending()` covers the navigation in flight -
+the document and the stylesheets the document itself names. Font faces are still
+queued only once a frame has been painted, which is now a contract with the
+driver and not an internal detail: a headless driver that never paints never
+opens that gate, and the faces it should have registered stay unregistered until
+it does.
+
+Measured on the current sources, 1080x680, unoptimized probe builds - `loadtime.d`
+for the call a click makes and `loadprobe.d` for a frame-paced loop that splits
+every frame into its engine pass and its paint:
+
+| Measurement | Before this change | Now |
+| --- | --- | --- |
+| boqsc.eu, the navigation call (document fetch + parse + first layout) | 1641.0 ms | 0.6179 ms (`loadtime.d`), 0.0 ms (`loadprobe.d`) |
+| boqsc.eu, first paint | nothing before the call returned | frame 0, 0.0 ms |
+| boqsc.eu, the document applied (parsed, styled, laid out, painted) | in the call | frame 6 at 719.0 ms |
+| boqsc.eu, settled | 5978.5 ms after 49 frames | 4711.0 ms after 65 frames (`loadtime.d` 4539.19 ms) |
+| djangoproject.com, the navigation call | 1255.2 ms | 0.8231 ms (`loadtime.d`), 0.0 ms (`loadprobe.d`) |
+| djangoproject.com, first paint | nothing before the call returned | frame 0, 0.0 ms |
+| djangoproject.com, the document applied | in the call | frame 4 at 1036.0 ms |
+| djangoproject.com, settled | 1628.2 ms after 6 frames | 2177.0 ms after 18 frames (`loadtime.d` 2304.41 ms) |
+
+No frame in either load waits for the network any more. boqsc.eu's document is
+292.4 ms out, its `fonts.googleapis.com` sheet goes out at 323.0 ms and lands
+1389.1 ms later, its two image pairs overlap (1420.1 ms of transfer alongside
+245.7 ms, then 1361.5 ms alongside 317.0 ms) and its own 3.5 MB PNG takes
+2367.1 ms - and the document is applied on frame 6 while that sheet is still in
+flight. djangoproject.com's render-blocking `output.bd0f2d884efe.css`
+(135,162 bytes) fetches in 108.6 ms with frames painting through it, and its
+eight woff2 faces cross the pooled connection one after another in 50.7-81.6 ms
+each. The settled repaint costs 17-19 ms on boqsc.eu and 14-15 ms on
+djangoproject.com.
+
+Two measured consequences. The first layout no longer waits for a stylesheet, so
+a document is laid out and painted without the sheet and laid out again when it
+lands: the page can show its unstyled body over that window, where a browser
+holds the paint instead. And the pass that *applies* a document, a stylesheet or
+a set of faces is still one frame of CPU work - 778 ms for djangoproject.com's
+document together with its stylesheet (frame 4 of 18, the stylesheet landing as
+that frame ends), 489 ms for its face registration (frame 16), and on boqsc.eu
+467 ms for the pass that decodes and registers its served woff2 faces and
+re-shapes the text (its pass 467 ms, its paint 331 ms, frame 62 of 65). Under
+`loadtime.d`, which measures the pass alone with no paint, djangoproject.com's
+last four passes are 126.9, 124.4, 140.2 and 90.6 ms and boqsc.eu's final batch
+collect and 3.5 MB decode is 93.6 ms. Every other load frame is 18-94 ms on
+boqsc.eu and 19-86 ms on djangoproject.com. So the network no longer blocks a
+frame on either page and what is left per frame is the apply work itself -
+parse, cascade, layout, script and shape in one slice; making it incremental is
+what would take the largest frame below a quarter second on a page this heavy.
 
 What is left is the page's own weight and third-party latency rather than
 serialisation the engine could remove: a 3.5 MB PNG takes 2.2 s wherever it is

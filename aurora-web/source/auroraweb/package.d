@@ -525,6 +525,69 @@ private HttpResponse[] fetchImageBatch(string[] urls)
     return responses;
 }
 
+/// Fetch the faces a pass queued, one at a time, on the batch's own thread.
+///
+/// Faces are fetched serially and over the host's pooled connections, unlike an
+/// image batch. Both differences are measured against fonts.gstatic.com: six of
+/// these requests issued together all failed after 16 s as an empty response,
+/// while the same requests one at a time reused one connection after the first
+/// handshake (1164 ms, then 22-85 ms each; ten files in 1524 ms). They are also
+/// one origin's files for one page, so a wider batch has nothing to overlap
+/// with. Emptying the pool before the thread returns is what keeps a worker that
+/// used it exit-clean (see `net._connectionPool`); the cost is that the calling
+/// thread's next request opens a fresh connection.
+private HttpResponse[] fetchFaceBatch(string[] urls)
+{
+    import auroraweb.net : httpFetch, clearConnectionPool;
+    auto responses = new HttpResponse[](urls.length);
+    foreach (i, url; urls)
+    {
+        try responses[i] = httpFetch(url);
+        catch (Throwable t)
+        {
+            // One dead face must not fail the batch.
+            HttpResponse failed;
+            failed.finalUrl = url;
+            failed.error = t.msg;
+            responses[i] = failed;
+        }
+    }
+    clearConnectionPool();
+    return responses;
+}
+
+/// Fetch the document of a progressive navigation on its own thread, for the
+/// reason `fetchImageBatch` gives: the pass that started it must return so the
+/// host can paint. Without this the whole round trip happened inside the
+/// navigation call itself (measured: 247 ms of a page's load, with every frame
+/// of the window frozen), and the user saw a dead window instead of a loading
+/// state and then the page.
+///
+/// The request is one-shot (`keepAlive` false) for the reason given in
+/// `fetchImageBatch`: a pooled connection left behind by an exiting worker took
+/// the process down. The pool stays the calling thread's, so the subresources
+/// this document then asks for still reuse it.
+///
+/// A failure is returned, never thrown: a dead server has to end as the error
+/// page, not as a failed pass.
+private HttpResponse fetchProgressiveDocument(string url)
+{
+    import auroraweb.net : httpFetch;
+    try
+    {
+        auto res = httpFetch(url, "GET", null, null, false);
+        if (res.finalUrl.length == 0) res.finalUrl = url;
+        return res;
+    }
+    catch (Throwable t)
+    {
+        HttpResponse failed;
+        failed.finalUrl = url;
+        failed.error = t.msg;
+        return failed;
+    }
+}
+
 /**
  * A single loaded web page: DOM, style, scripts, layout, and paint.
  */
@@ -540,9 +603,12 @@ final class WebPage
     bool _imagesPending;        /// A layout pass deferred image fetches (see loadImages).
     int _docPasses;             /// Completed layout passes for the current document.
     int _imagePasses;           /// Passes that spent image budget (see loadImages).
-    bool _webFontsPending;      /// A layout pass deferred a `font-display: swap` download.
+    bool _webFontsPending;      /// A `@font-face` file is queued or in flight (see serviceWebFonts).
     bool _paintedOnce;          /// A frame has been painted since the last navigation.
     size_t _styleInputs;        /// Fingerprint of the tree the styles were resolved from.
+    size_t _contentGen;         /// Bumped where content a layout depends on lands outside
+                                /// that fingerprint: a decoded image, a registered face.
+    size_t _laidOutContent;     /// `_contentGen` as of the most recent layout.
     int _docGen;                /// Bumped whenever the document tree is replaced.
     int _laidOutWidth = -1;     /// Viewport width used by the most recent layout.
     int _laidOutHeight = -1;    /// Viewport height used by the most recent layout.
@@ -584,6 +650,29 @@ final class WebPage
     Task!(fetchImageBatch, string[])* _imageBatch;
     string[] _imageBatchUrls;   /// URLs `_imageBatch` is fetching, in order.
     bool _imageBatchInFlight;   /// `_imageBatch` was started, not yet collected.
+
+    /// Progressive navigation (see `beginNavigate`): the document's own fetch
+    /// runs on a worker and the pass after it applies the response, so the host
+    /// paints the previous document and its loading state instead of freezing
+    /// for the whole round trip.
+    bool _navPending;           /// A progressive navigation is not applied yet.
+    int _navStage;              /// 0 idle, 1 to start, 2 in flight, 3 ready.
+    string _navUrl;             /// Document URL of the pending navigation.
+    HttpResponse _navResponse;  /// The response stage 3 has in hand.
+    Task!(fetchProgressiveDocument, string)* _navTask;
+    bool _navTaskInFlight;      /// `_navTask` was started, not yet collected.
+
+    /// External stylesheets a <link> declared whose bytes are not here yet.
+    /// They are fetched on a worker (never inline: the first layout is exactly
+    /// what waits for them - one measured page spent 1529 ms of its 2024 ms
+    /// load inside that fetch) and applied by a later pass.
+    string[] _pendingStyleUrls;           /// Sheets this load still owes.
+    HttpResponse[string] _styleResponses; /// Fetched sheets, by URL.
+    string[] _styleBatchUrls;             /// URLs `_styleBatch` is fetching.
+    Task!(fetchImageBatch, string[])* _styleBatch;
+    bool _styleBatchInFlight;             /// `_styleBatch` started, not collected.
+    bool _styleSheetsPending;             /// A pass still owes sheet work.
+    int _layoutDepth;                     /// Layout passes in flight (see layout).
 
     /// Global runtime (so scripts can be loaded incrementally).
     JsRuntime jsRuntime() { return _js; }
@@ -833,21 +922,324 @@ final class WebPage
         return cacheResource(url, res.body, res.headers);
     }
 
-    /// Fetch a URL, and if the response looks like HTML (Content-Type
-    /// text/html or the body starts with '<'), parse it as the new document
-    /// and run any scripts, then re-layout. Sets `_currentUrl`.
+    /// Fetch a URL and apply it there and then, and if the response looks like
+    /// HTML (Content-Type text/html or the body starts with '<') it becomes the
+    /// new document with its scripts run, then re-layout. Sets `_currentUrl`.
+    ///
+    /// This call blocks for the whole round trip, which is exactly the freeze
+    /// `beginNavigate` exists to remove; it stays for the callers that must have
+    /// the document in hand when they return: a host's own resource loader, a
+    /// `file://` read, a test double.
     void navigate(string url)
     {
         _currentUrl = url;
         auto res = _resourceLoader !is null
             ? loaderResponse(url)
             : httpFetch(url);
+        applyNavigationResponse(res, url);
+    }
+
+    /// Start a navigation that does not block the caller. The document is
+    /// fetched on a worker (see `fetchProgressiveDocument`) and applied by a
+    /// later `layout()` pass (`serviceNavigation`); between the two the host
+    /// paints the previous document with its loading state, which is what a
+    /// browser shows while a response is in flight. `navigationPending()` says
+    /// when the new document is in.
+    void beginNavigate(string url)
+    {
+        _currentUrl = url;
+        _navPending = true;
+        _navStage = 1;
+        _layoutDirty = true;
+    }
+
+    /// True while a navigation started by `beginNavigate` has not been applied.
+    bool navigationPending() const { return _navPending; }
+
+    /// Advance a progressive navigation one step: start its fetch on a worker,
+    /// or hand the response on once the worker has it. Called from `layout()`,
+    /// so any host that paints drives it, and public so a headless driver can
+    /// run it without painting.
+    void serviceNavigation()
+    {
+        if (!_navPending) return;
+        if (_navStage == 1)
+        {
+            _navUrl = _currentUrl;
+            if (_resourceLoader !is null)
+            {
+                // A host's own loader owns its fetch path and expects to be
+                // called on this thread (a custom scheme, a test double).
+                _navResponse = loaderResponse(_navUrl);
+                _navStage = 3;
+                return;
+            }
+            import std.parallelism : task;
+            _navTask = task!fetchProgressiveDocument(_navUrl);
+            // A thread of its own, for the reason `startImageBatch` gives: the
+            // request is one long-lived unit of work and its socket must not
+            // outlive the call that opened it.
+            _navTask.executeInNewThread();
+            _navTaskInFlight = true;
+            _navStage = 2;
+            _layoutDirty = true;
+            return;
+        }
+        if (_navStage == 2)
+        {
+            if (!_navTask.done)
+            {
+                // Still downloading: ask for another frame, so the collection
+                // below happens as soon as the worker is done.
+                _layoutDirty = true;
+                return;
+            }
+            _navResponse = _navTask.yieldForce;
+            _navTaskInFlight = false;
+            _navStage = 3;
+        }
+        // Stage 3, the response is in hand. The pending state is cleared BEFORE
+        // it is applied: applying lays the document out, and only a pass whose
+        // depth is zero lays out on its own (see `finishDocumentLayout`), so a
+        // pass that called this one lays the new tree out itself, once.
+        auto res = _navResponse;
+        _navPending = false;
+        _navStage = 0;
+        _navResponse = HttpResponse.init;
+        applyNavigationResponse(res, _navUrl);
+    }
+
+    /// Record an external stylesheet whose bytes the network still owes this
+    /// document, to be fetched by `serviceStylesheets` and applied by the pass
+    /// that collects it. A URL is recorded once, so two <link> elements naming
+    /// the same sheet cause one request.
+    private void addPendingStyleUrl(string url)
+    {
+        foreach (u; _pendingStyleUrls)
+            if (u == url) return;
+        _pendingStyleUrls ~= url;
+        _styleSheetsPending = true;
+        _layoutDirty = true;
+    }
+
+    /// True for the schemes whose fetch is a network round trip. A `file://`
+    /// read is already local, and a worker's one-shot HTTP request cannot open
+    /// one, so a local scheme keeps the direct read in `extractStyles`.
+    private static bool isNetworkSchemeUrl(string url)
+    {
+        const lower = url.toLower();
+        return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    /// Fetch and apply the external stylesheets this document declared. The
+    /// fetches run on a worker and the sheets are applied by a later pass, so
+    /// the first layout - the first thing the user could see - never waits for
+    /// a stylesheet. A sheet that cannot be fetched is dropped, exactly as a
+    /// browser drops one: the document keeps the styles it already has.
+    void serviceStylesheets()
+    {
+        if (_styleBatchInFlight)
+        {
+            if (!_styleBatch.done)
+            {
+                _styleSheetsPending = true;
+                _layoutDirty = true;
+                return;
+            }
+            auto responses = _styleBatch.yieldForce;
+            _styleBatchInFlight = false;
+            foreach (i, url; _styleBatchUrls)
+                if (i < responses.length && responses[i].finalUrl.length)
+                    _styleResponses[url] = responses[i];
+            _styleBatchUrls.length = 0;
+        }
+        if (_pendingStyleUrls.length)
+        {
+            if (_resourceLoader !is null)
+            {
+                // A host's loader owns the fetch path and expects this thread.
+                foreach (url; _pendingStyleUrls)
+                    _styleResponses[url] = loaderResponse(url);
+            }
+            else
+            {
+                import std.parallelism : task;
+                _styleBatchUrls = _pendingStyleUrls.dup;
+                _styleBatch = task!fetchImageBatch(_styleBatchUrls);
+                _styleBatch.executeInNewThread();
+                _styleBatchInFlight = true;
+            }
+            _pendingStyleUrls.length = 0;
+        }
+        // Apply every sheet whose bytes have arrived. A sheet is applied once:
+        // the URL leaves the map here, so the next pass has nothing to do.
+        if (_styleResponses.length)
+        {
+            string[] done;
+            foreach (url, res; _styleResponses)
+            {
+                done ~= url;
+                if (res.body.length == 0) continue;   // a dead sheet is dropped
+                if (auto ct = "content-type" in res.headers)
+                    _resourceContentTypes[url] = *ct;
+                cacheResource(url, res.body, res.headers);
+                const css = decodeStyleSheet(res.body, contentTypeOf(url),
+                    _documentEncoding);
+                if (css.length)
+                {
+                    auto added = parseStylesheet(css);
+                    // A linked sheet resolves its url() and its `@font-face`
+                    // src against ITS OWN URL, not the document.
+                    absolutizeUrls(added, url);
+                    _rules ~= added;
+                    loadWebFonts(css, url);
+                    _layoutDirty = true;
+                }
+            }
+            foreach (url; done) _styleResponses.remove(url);
+        }
+        _styleSheetsPending = _pendingStyleUrls.length > 0 ||
+            _styleBatchInFlight || _styleResponses.length > 0;
+        if (_styleSheetsPending) _layoutDirty = true;
+    }
+
+    /// Queue one `@font-face` file for the worker, or register it now when
+    /// nothing has to be fetched: a data URL is already in hand, and a face an
+    /// earlier pass downloaded is in `_webFontFaces` (the corpus sweeps render
+    /// many pages in one process, so a font is downloaded and parsed once).
+    private void queueWebFontFace(WebFontFace face, string baseUrl)
+    {
+        const url = fontFaceUrl(face, baseUrl);
+        if (!url.length) return;
+        if (auto cached = url in _webFontFaces)
+        {
+            if (*cached !is null)
+            {
+                registerWebFace(face.family, face.weight, face.style, *cached);
+                ++_contentGen;
+            }
+            return;
+        }
+        if (isDataFontUrl(url))
+        {
+            // No request, so no worker and no wait: decode it here.
+            registerFetchedFace(PendingFace(face, url), decodeDataUrl(url));
+            return;
+        }
+        _pendingFaces ~= PendingFace(face, url);
+        _webFontsPending = true;
+        _layoutDirty = true;
+    }
+
+    /// Stage, unpack and register the bytes a worker brought back for one face.
+    /// Runs on the collecting pass's own thread: `registerWebFace` drops the
+    /// shaping caches, and the pass that runs it measures and paints the text
+    /// with the real face. A failure is stored as such, exactly as the inline
+    /// path did, so a dead face is not requested again by every later sheet.
+    private void registerFetchedFace(PendingFace pf, ubyte[] bytes)
+    {
+        FontFace loaded;
+        if (bytes.length)
+        {
+            try loaded = FontFace.tryLoad(stageFontFile(fontBytesFor(bytes)), 0);
+            catch (Exception) loaded = null;
+        }
+        _webFontFaces[pf.url] = loaded;
+        if (loaded !is null)
+        {
+            registerWebFace(pf.face.family, pf.face.weight, pf.face.style, loaded);
+            // Text measured with the fallback face now measures differently.
+            ++_contentGen;
+        }
+    }
+
+    /// Fetch the faces a pass queued, on a worker, and register the ones whose
+    /// bytes have arrived. Called from `layout()`, so every pass advances the
+    /// swap from the fallback face to the sheet's own: a pass that is waiting
+    /// for its worker leaves the document dirty to ask for another frame,
+    /// exactly as a pending image batch does.
+    void serviceWebFonts()
+    {
+        if (_faceBatchInFlight)
+        {
+            if (!_faceBatchTask.done)
+            {
+                _webFontsPending = true;
+                _layoutDirty = true;
+                return;
+            }
+            auto responses = _faceBatchTask.yieldForce;
+            _faceBatchInFlight = false;
+            foreach (i, pf; _faceBatch)
+                if (i < responses.length)
+                    _fetchedFaces ~= FetchedFace(pf, responses[i].body);
+            _faceBatch.length = 0;
+            _faceBatchUrls.length = 0;
+        }
+        if (_pendingFaces.length)
+        {
+            _faceBatch = _pendingFaces;
+            _pendingFaces = [];
+            if (_resourceLoader !is null)
+            {
+                // A host's loader owns the fetch path and expects this thread.
+                foreach (pf; _faceBatch)
+                    _fetchedFaces ~= FetchedFace(pf, fetchBytes(pf.url));
+                _faceBatch.length = 0;
+            }
+            else
+            {
+                import std.parallelism : task;
+                _faceBatchUrls = [];
+                foreach (pf; _faceBatch) _faceBatchUrls ~= pf.url;
+                _faceBatchTask = task!fetchFaceBatch(_faceBatchUrls);
+                // A thread of its own, for the reason `startImageBatch` gives,
+                // and serial within it, for the reason `fetchFaceBatch` gives.
+                _faceBatchTask.executeInNewThread();
+                _faceBatchInFlight = true;
+            }
+        }
+        // Register a couple per pass, and only a couple: a face's registration
+        // parses its file and drops the shaping caches, so the pass that runs it
+        // also re-measures the text it draws with the real face. Registering the
+        // whole sheet in the pass that collected it was one frame of 2735 ms on
+        // a real page; spread over passes, each frame stays near the cost of the
+        // text it reshapes.
+        enum maxFacesPerPass = 2;
+        int registered = 0;
+        while (registered < maxFacesPerPass && _fetchedFaces.length)
+        {
+            auto ff = _fetchedFaces[0];
+            _fetchedFaces = _fetchedFaces[1 .. $];
+            registerFetchedFace(ff.pending, ff.bytes);
+            ++registered;
+        }
+        _webFontsPending = _faceBatchInFlight || _pendingFaces.length > 0 ||
+            _fetchedFaces.length > 0;
+        if (_webFontsPending) _layoutDirty = true;
+    }
+
+    /// Lay a freshly applied document out. A pass that is already running lays
+    /// the new tree out itself, so this only starts one when the apply came from
+    /// a caller outside layout (the synchronous `navigate`).
+    private void finishDocumentLayout()
+    {
+        if (_layoutDepth == 0) layout();
+        else _layoutDirty = true;
+    }
+
+    /// Apply a fetched document: the error page, the HTML document decoded by
+    /// its own charset, or a non-HTML body rendered as text so the response is
+    /// visible and the next layout is safe. Both `navigate` (synchronous) and
+    /// `serviceNavigation` (progressive) end here.
+    private void applyNavigationResponse(HttpResponse res, string url)
+    {
         if (res.error.length || res.body.length == 0)
         {
             setHtml("<html><body><h1>Navigation failed</h1><p>" ~
                 escapeHtml(res.error.length ? res.error
                     : "empty response from " ~ url) ~ "</p></body></html>");
-            layout();
+            finishDocumentLayout();
             return;
         }
 
@@ -871,7 +1263,7 @@ final class WebPage
             _documentEncoding = sniffEncoding(res.body, ct is null ? "" : *ct);
             setHtml(decodeText(res.body, ct is null ? "" : *ct));
             executeScripts();
-            layout();
+            finishDocumentLayout();
         }
         else
         {
@@ -884,7 +1276,7 @@ final class WebPage
             const text = decodeText(res.body, ct is null ? "" : *ct);
             setHtml("<html><body><pre>" ~ escapeHtml(text) ~ "</pre></body></html>");
             executeScripts();
-            layout();
+            finishDocumentLayout();
         }
     }
 
@@ -1012,6 +1404,7 @@ final class WebPage
                 if (href.length)
                 {
                     string css;
+                    bool deferredSheet = false;
                     try
                     {
                         if (href.length >= 5 && href[0 .. 5].toLower() == "data:")
@@ -1030,16 +1423,47 @@ final class WebPage
                         {
                             auto target = _currentUrl.length
                                 ? resolveUrl(_currentUrl, href) : href;
-                            // Decode the sheet by ITS OWN charset when it has one,
-                            // else by the document's (CSS 4.4). Decoding it as
-                            // UTF-8 unconditionally silently broke every rule whose
-                            // selector had a non-ASCII class name.
-                            css = decodeStyleSheet(fetchBytes(target),
-                                contentTypeOf(target), _documentEncoding);
+                            // A network sheet must not be fetched here: this walk
+                            // runs inside the first layout, the first thing the
+                            // user could see, and one measured page spent 1529 ms
+                            // of its 2024 ms load in exactly this line. Such a
+                            // sheet is recorded instead and applied by the pass
+                            // that collects its batch (`serviceStylesheets`), so
+                            // the document paints unstyled first and styled as
+                            // soon as the sheet lands, which is what a browser
+                            // does. A local scheme keeps the direct read: a
+                            // `file://` sheet is already in hand, and a worker's
+                            // one-shot HTTP request cannot open one.
+                            if (auto ready = target in _styleResponses)
+                            {
+                                auto bytes = (*ready).body;
+                                if (bytes.length)
+                                {
+                                    if (auto ct = "content-type" in (*ready).headers)
+                                        _resourceContentTypes[target] = *ct;
+                                    cacheResource(target, bytes, (*ready).headers);
+                                }
+                                css = decodeStyleSheet(bytes,
+                                    contentTypeOf(target), _documentEncoding);
+                            }
+                            else if (isNetworkSchemeUrl(target))
+                            {
+                                addPendingStyleUrl(target);
+                                deferredSheet = true;
+                            }
+                            else
+                            {
+                                // Decode the sheet by ITS OWN charset when it has
+                                // one, else by the document's (CSS 4.4). Decoding
+                                // it as UTF-8 unconditionally silently broke every
+                                // rule whose selector had a non-ASCII class name.
+                                css = decodeStyleSheet(fetchBytes(target),
+                                    contentTypeOf(target), _documentEncoding);
+                            }
                         }
                     }
                     catch (Exception) css = "";
-                    if (css.length)
+                    if (!deferredSheet && css.length)
                     {
                         auto added = parseStylesheet(css);
                         // A linked sheet resolves its url() against ITS OWN URL,
@@ -1340,13 +1764,23 @@ final class WebPage
     }
 
     /**
-     * Download, stage and register the faces a stylesheet defines with
-     * `@font-face`.
+     * Queue the faces a stylesheet defines with `@font-face` for the worker.
      *
      * Every failure is per source and silent: a browser that cannot fetch or
      * parse a face falls back to the next `font-family`, which is exactly what
      * shape resolution already does when no web face is registered. A sheet that
      * defines no face returns after one scan.
+     *
+     * No face is fetched on this thread, whatever its `font-display`. A page's
+     * own stylesheet can arrive long after its document - Google Fonts took
+     * 2.0 s on boqsc.eu - and a pass that downloaded the faces where it parsed
+     * the sheet froze the window for the whole download: measured 24 faces
+     * fetched serially, 3.2 s in one frame. `font-display` therefore no longer
+     * decides between loading here and deferring: the faces are always queued,
+     * and the frames before a file arrives paint the fallback face, which is
+     * what a browser does once its block period is over. The document stays
+     * dirty while a face is queued or in flight (see `serviceWebFonts`), so the
+     * settled layout still uses the face the sheet asked for.
      */
     private void loadWebFonts(string css, string baseUrl)
     {
@@ -1354,32 +1788,20 @@ final class WebPage
         if (!faces.length) return;
         foreach (face; faces)
         {
-            // A face that declares `swap` (Google Fonts' `&display=swap`),
-            // `fallback` or `optional` must not hold up the first frames: the
-            // page paints in its fallback face now and the real one is
-            // downloaded while the page is already visible. Fonts measured
-            // 2.4 s - the largest single block - of one real page's first
-            // paint. `auto` and `block` keep the blocking behaviour.
-            if (defersFirstPaint(face) && _docPasses < 2)
-            {
-                _deferredFaces ~= DeferredFace(face, baseUrl);
-                _webFontsPending = true;
-                continue;
-            }
-            loadWebFontFace(face, baseUrl);
+            _deferredFaces ~= DeferredFace(face, baseUrl);
+            _webFontsPending = true;
         }
     }
 
-    /// One `@font-face` source whose `font-display` lets the earlier frames
-    /// paint without it, with the address its `url()` resolves against.
+    /// One `@font-face` source waiting for a pass to queue its file, with the
+    /// address its `url()` resolves against.
     private struct DeferredFace
     {
         WebFontFace face;
         string baseUrl;
     }
 
-    /// Faces `loadWebFonts` queued because their `font-display` allows the
-    /// first passes to paint in the fallback face.
+    /// Faces `loadWebFonts` set aside for the pass that queues their files.
     private DeferredFace[] _deferredFaces;
 
     /// Faces a pass set aside because their `unicode-range` cannot match any code
@@ -1391,15 +1813,38 @@ final class WebPage
     /// The document's code points when `_unusedFaces` was last evaluated.
     private uint[] _unusedCodePoints;
 
-    /// True when a face's `font-display` says text may be painted before it
-    /// loads. The engine has no font timeout, so the block period of `auto` and
-    /// `block` is the whole download; the three swap-style values are the ones
-    /// CSS Fonts 4 defines as never blocking text.
-    private static bool defersFirstPaint(const WebFontFace face)
+    /// A face waiting for the file its `src` names.
+    private struct PendingFace
     {
-        const d = face.display.toLower();
-        return d == "swap" || d == "fallback" || d == "optional";
+        WebFontFace face;
+        string url;
     }
+
+    /// Faces a pass wants fetched. No face file is fetched on the pass's own
+    /// thread: the frames before it arrives paint the fallback face, so its file
+    /// is fetched on a worker like an image and a later pass registers what came
+    /// back. Fetched inline it was the largest single block in a pass: 1982 ms of
+    /// one frame cold, and 3.2 s for boqsc.eu's 24 faces fetched serially.
+    private PendingFace[] _pendingFaces;
+    private PendingFace[] _faceBatch;   /// Faces `_faceBatchUrls` is fetching.
+    private string[] _faceBatchUrls;    /// Their URLs, in order.
+    Task!(fetchFaceBatch, string[])* _faceBatchTask;
+    bool _faceBatchInFlight;            /// `_faceBatchTask` started, uncollected.
+
+    /// One face whose bytes have arrived and whose registration is queued.
+    private struct FetchedFace
+    {
+        PendingFace pending;
+        ubyte[] bytes;
+    }
+
+    /// Faces fetched and waiting for their turn to register. Registered a few
+    /// per pass: each one parses a font file and drops the shaping caches, so a
+    /// whole Google Fonts sheet registered in one pass is one long frame -
+    /// measured 2735 ms for boqsc.eu's 24 faces, which is the bar the per-pass
+    /// budget in `serviceWebFonts` removes.
+    private FetchedFace[] _fetchedFaces;
+
 
     /// True when a face may be needed for content drawn with these code points. A
     /// face that declares no `unicode-range` is unconstrained; one whose ranges
@@ -1509,34 +1954,6 @@ final class WebPage
         return url.length >= 5 && url[0 .. 5].toLower() == "data:";
     }
 
-    /// Download, stage and register one `@font-face` source. Every failure is
-    /// silent: a browser that cannot fetch or parse a face falls back to the
-    /// next `font-family`, which is what shape resolution already does when no
-    /// web face is registered.
-    private void loadWebFontFace(WebFontFace face, string baseUrl)
-    {
-        const url = fontFaceUrl(face, baseUrl);
-        if (!url.length) return;
-        const isData = isDataFontUrl(url);
-        if (auto cached = url in _webFontFaces)
-        {
-            if (*cached !is null)
-                registerWebFace(face.family, face.weight, face.style, *cached);
-            return;
-        }
-        FontFace loaded;
-        try
-        {
-            auto bytes = isData ? decodeDataUrl(url) : fetchBytes(url);
-            if (bytes.length)
-                loaded = FontFace.tryLoad(stageFontFile(fontBytesFor(bytes)), 0);
-        }
-        catch (Exception) loaded = null;
-        // A face that fails must not be re-fetched by every sheet naming it.
-        _webFontFaces[url] = loaded;
-        if (loaded !is null)
-            registerWebFace(face.family, face.weight, face.style, loaded);
-    }
 
     /// Parse CSS and append to the stylesheet. `baseUrl` is the address the CSS
     /// came from (a linked sheet's own URL, or the document for a <style>), used
@@ -1632,10 +2049,10 @@ final class WebPage
         return loop !is null && loop.framePending();
     }
 
-    /// Note that the host has painted a frame. A `font-display: swap` face
-    /// waits for this: the frame the user just saw drew the fallback face, and
-    /// the next pass fetches the real one. `registerWebFace` drops the shaping
-    /// caches, so that pass also measures and paints with the real face.
+    /// Note that the host has painted a frame. A queued face waits for this: the
+    /// frame the user just saw drew the fallback face, and the next pass fetches
+    /// the real one. `registerWebFace` drops the shaping caches, so the pass that
+    /// registers it also measures and paints with the real face.
     void notePaint()
     {
         _paintedOnce = true;
@@ -1645,12 +2062,21 @@ final class WebPage
     /// Re-layout after DOM/style mutation.
     void layout()
     {
-        // A deferred `font-display: swap` face waits for a frame to have been
-        // painted: that frame showed the fallback face, which is what `swap`
-        // asks for, and this pass downloads the real one. `registerWebFace`
-        // drops the face and shaping caches, so this same pass measures and
-        // paints the text with it. Keyed on a painted frame and not on a pass
-        // count: the engine runs passes of its own inside the blocking
+        // A pass is what advances the work an earlier frame deferred: the
+        // response of a navigation and the stylesheets the document still owes
+        // are applied here, before this pass lays anything out. That order is
+        // the point of the split - the frame the host painted before this pass
+        // was the loading state, and this pass paints what arrived.
+        ++_layoutDepth;
+        scope (exit) --_layoutDepth;
+        serviceNavigation();
+        serviceStylesheets();
+        serviceWebFonts();
+        // A queued face waits for a frame to have been painted: that frame drew
+        // the fallback face, and this pass asks for the real one. `registerWebFace`
+        // drops the face and shaping caches, so the pass that collects the file
+        // measures and paints the text with it. Keyed on a painted frame and not
+        // on a pass count: the engine runs passes of its own inside a blocking
         // navigation, so a pass count let the download back into the load.
         if (_paintedOnce)
         {
@@ -1676,7 +2102,9 @@ final class WebPage
                 auto points = textCodePoints();
                 foreach (q; queued)
                 {
-                    if (faceCoversText(q.face, points)) loadWebFontFace(q.face, q.baseUrl);
+                    // Queued rather than fetched: the pass that collects the
+                    // file registers it (serviceWebFonts).
+                    if (faceCoversText(q.face, points)) queueWebFontFace(q.face, q.baseUrl);
                     else
                     {
                         _unusedFaces ~= q;
@@ -1693,26 +2121,42 @@ final class WebPage
         // rebuilding only geometry. Without this the cascade ran once per arriving
         // image: 18-19 passes on a real page, and one large page's single pass
         // alone exceeded 90 seconds.
+        //
+        // The same comparison decides whether this pass lays the tree out at
+        // all. `_layoutDirty` is true for as long as a worker owes the document
+        // something, so a pass that was only waiting for one used to re-lay out a
+        // tree that had not changed: 258 ms of each of the 11 waiting frames of
+        // one real page's load. `_contentGen` carries the content that arrives
+        // outside the fingerprint, so a decoded image or a registered face still
+        // lays the document out again.
         const size_t inputs = styleInputsHash();
-        if (inputs == _styleInputs)
+        const bool unchanged = inputs == _styleInputs &&
+            _contentGen == _laidOutContent &&
+            _width == _laidOutWidth && _height == _laidOutHeight;
+        if (!unchanged)
         {
-            import auroraweb.layout : layoutRoot = layout;
-            layoutRoot(_root, _width, _height);
-        }
-        else
-        {
-            applyStylesAndLayout(_root, _rules, _width, _height);
-            _styleInputs = inputs;
+            if (inputs == _styleInputs)
+            {
+                import auroraweb.layout : layoutRoot = layout;
+                layoutRoot(_root, _width, _height);
+            }
+            else
+            {
+                applyStylesAndLayout(_root, _rules, _width, _height);
+                _styleInputs = inputs;
+            }
+            _laidOutContent = _contentGen;
+            _laidOutWidth = _width;
+            _laidOutHeight = _height;
+            ++_layoutGen;
         }
         loadImages();
-        _laidOutWidth = _width;
-        _laidOutHeight = _height;
         // Images are fetched a few per pass, so a pass that deferred work leaves
         // the document dirty: the next paint loads more. Clearing this
         // unconditionally stranded every image after the first pass, which is
         // why a live browser showed none of them.
-        _layoutDirty = _imagesPending || _webFontsPending;
-        ++_layoutGen;
+        _layoutDirty = _imagesPending || _webFontsPending ||
+            _styleSheetsPending || _navPending;
         ++_docPasses;
         // `IntersectionObserver` callbacks describe the geometry this pass just
         // produced, so they are delivered here - the point a browser queues them
@@ -1789,8 +2233,9 @@ final class WebPage
     /// Mark the document as needing a re-layout (DOM/style/JS mutation).
     void markLayoutDirty() { _layoutDirty = true; }
 
-    /// True while the document still needs layout work — including images that
-    /// load progressively — so a host keeps requesting frames until it settles.
+    /// True while the document still needs layout work — including images and
+    /// stylesheets that load progressively, and a navigation whose response has
+    /// not arrived — so a host keeps requesting frames until it settles.
     bool layoutPending() const { return _layoutDirty; }
 
     /// The CSS `color` an SVG inherits, so `fill="currentColor"` icons draw in
@@ -1979,7 +2424,11 @@ final class WebPage
                     import auroraweb.svg : decodeSvg;
                     auto img = decodeSvg(cast(const(ubyte)[]) svgMarkup(e),
                         svgInkColor(e));
-                    if (img !is null) e.image = img;
+                    if (img !is null)
+                    {
+                        e.image = img;
+                        ++_contentGen;
+                    }
                 }
                 catch (Throwable)
                 {
@@ -2101,6 +2550,7 @@ final class WebPage
                             if (img !is null)
                             {
                                 e.image = img;
+                                ++_contentGen;
                                 // Default intrinsic size if no width/height given.
                                 if (e.style.width == "auto")
                                     e.box.width = img.width;
@@ -2173,7 +2623,10 @@ final class WebPage
                             // See above: untrusted SVG markup must not crash.
                             catch (Throwable) img = null;
                             if (img !is null)
+                            {
                                 e.backgroundImage = img;
+                                ++_contentGen;
+                            }
                         }
                     }
                     catch (Exception exc)

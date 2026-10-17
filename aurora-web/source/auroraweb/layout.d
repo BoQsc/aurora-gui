@@ -858,6 +858,7 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
     applyDeclaration(style, "letter-spacing", cascade.get("letter-spacing", ""));
     applyDeclaration(style, "text-indent", cascade.get("text-indent", ""));
     applyDeclaration(style, "box-sizing", cascade.get("box-sizing", ""));
+    applyDeclaration(style, "table-layout", cascade.get("table-layout", ""));
     applyDeclaration(style, "grid-template-columns", cascade.get("grid-template-columns", ""));
     applyDeclaration(style, "grid-template-rows", cascade.get("grid-template-rows", ""));
     applyDeclaration(style, "column-gap", cascade.get("column-gap", ""));
@@ -1689,6 +1690,9 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
         case "text-indent": style.textIndent = value.strip(); break;
         case "box-sizing":
             if (value == "border-box" || value == "content-box") style.boxSizing = value;
+            break;
+        case "table-layout":
+            if (value == "fixed" || value == "auto") style.tableLayout = value;
             break;
         case "border-radius": style.borderRadius = value; break;
         case "box-shadow":
@@ -3300,6 +3304,31 @@ private void layoutDirectText(Element element, ref FlowContext flow,
                 sub.y = ce.box.y + ce.box.borderTop + ce.box.paddingTop;
                 withGeneratedBoxes(ce, { layoutDirectText(ce, sub); });
             }
+            // Block-level children are not inline content: the run above lays
+            // out the box's own TEXT only, so such a child kept its 0x0 default
+            // box and an auto height stayed one line tall. Edge sizes an
+            // inline-block wrapper to the children it contains - an 80x20 chip
+            // made the wrapper 80x20, not 16x18. Gated on having element
+            // children, so the common text-only inline-block (a button label, a
+            // badge) keeps exactly the path it had.
+            if (ce.style.display == "inline-block" && hasBoxChild(ce))
+            {
+                const int contentTop = sub.y;
+                layoutInlineBlockChildren(ce, sub, positionedAncestorOf(ce));
+                const int contentH = max(sub.contentBottom,
+                    inlineBlockChildBottom(ce, contentTop) - contentTop);
+                if (resolveHeight(ce) < 0 && contentH > ce.box.height)
+                {
+                    ce.box.height = contentH;
+                    ce.box.y = max(inlineBlockTop(ce.style.verticalAlign, cursorY, lineH,
+                        ce.box.height, cursorY + pixelSize,
+                        ce.box.paddingTop + ce.box.borderTop,
+                        ce.box.paddingBottom + ce.box.borderBottom),
+                        cursorY + ce.box.marginTop);
+                    sub.y = ce.box.y + ce.box.borderTop + ce.box.paddingTop;
+                    layoutInlineBlockChildren(ce, sub, positionedAncestorOf(ce));
+                }
+            }
             // Merge back the sub-flow's text bottom. An inline-level box can be
             // TALLER than the strut, and the line box must grow to contain it
             // (CSS 10.8.1): a 40px inline-block inside a 20px line left the line
@@ -3624,7 +3653,31 @@ private int resolveWidth(Element element, int containingWidth)
                     : cast(int)(content.length * 8);
             }
             else
-                width = 16;
+            {
+                // No text of its own: shrink-to-fit the element children it
+                // wraps. The fixed 16px placeholder made a `display:inline-block`
+                // wrapper around an 80x20 chip 16px wide, so the chip painted
+                // 16px wide and the next inline-block sat 64px left of where
+                // Edge puts it.
+                bool hasElementChild = false;
+                foreach (ch; element.elements)
+                    if (ch !is null && ch.style.display != "none")
+                    {
+                        hasElementChild = true;
+                        break;
+                    }
+                int fit = 0;
+                if (hasElementChild)
+                {
+                    // `intrinsicWidth` reports a border-box width, while
+                    // `resolveWidth` must return the CONTENT width.
+                    const int intrinsic = intrinsicWidth(element, containingWidth);
+                    const int own = element.box.paddingLeft + element.box.paddingRight +
+                        element.box.borderLeft + element.box.borderRight;
+                    fit = intrinsic - own;
+                }
+                width = fit > 0 ? fit : 16;
+            }
         }
     }
     else
@@ -3753,25 +3806,44 @@ private double parseAspectRatio(string value)
     return w / h;
 }
 
-private int resolveHeight(Element element)
+/// The CONTENT-box height a declared `height` resolves to, or -1 for `auto`.
+/// `box.height` is the CONTENT box everywhere else in this engine (paint
+/// reconstructs the border box by adding padding), so this is the exact mirror of
+/// `resolveWidth`. It used to clamp the content and then ADD padding+border, so
+/// paint added them a second time: the box-model fixture's
+/// `height:70px;padding:11px;border:7px` painted 142px tall where Edge paints 106
+/// (70 + 22 + 14), while its width was already correct.
+///
+/// `base` is the height a percentage resolves against: the parent's flow height
+/// for an in-flow box, the positioned ancestor's padding box for an absolutely
+/// positioned one, the viewport for a fixed one.
+private int resolveDefiniteHeight(Element element, int base)
 {
     auto style = element.style;
-    auto heightPx = style.resolveLength(style.height, style.containingHeight);
-    if (heightPx >= 0)
+    const declared = style.resolveLength(style.height, base);
+    if (declared < 0) return -1;
+    const clamped = clampMinMaxHeight(element, max(0, declared));
+    // `box-sizing:border-box` declares the BORDER box, so the content height is
+    // what padding and border leave. The absolutely positioned path used to store
+    // the declaration as the content height instead: an
+    // `position:absolute; box-sizing:border-box; height:40px; padding:0 20px;
+    // border:4px solid` box painted 48px tall where Edge paints 40 (the
+    // box-geometry fixture's `l1-border-box-sizing` row), while the in-flow path
+    // (`resolveHeight`) already subtracted them.
+    if (style.boxSizing == "border-box")
     {
         const padBorder = element.box.paddingTop + element.box.paddingBottom +
             element.box.borderTop + element.box.borderBottom;
-        if (style.boxSizing == "border-box")
-            return max(0, clampMinMaxHeight(element, max(0, heightPx)) - padBorder);
-        // `box.height` is the CONTENT box everywhere else in this engine (paint
-        // reconstructs the border box by adding padding), so this branch must
-        // return a content height too - exactly the mirror of `resolveWidth`.
-        // It used to clamp the content and then ADD padding+border, so paint
-        // added them a second time: the box-model fixture's
-        // `height:70px;padding:11px;border:7px` painted 142px tall where Edge
-        // paints 106 (70 + 22 + 14), while its width was already correct.
-        return clampMinMaxHeight(element, max(0, heightPx));
+        return max(0, clamped - padBorder);
     }
+    return clamped;
+}
+
+private int resolveHeight(Element element)
+{
+    auto style = element.style;
+    const definite = resolveDefiniteHeight(element, style.containingHeight);
+    if (definite >= 0) return definite;
     // `aspect-ratio` (CSS Sizing 4): with a definite width, an auto height is
     // width / ratio. A real page's landscape figure declares
     // `aspect-ratio: 1200 / 520` (with width: min(100%, 35.7rem)); without this
@@ -3837,9 +3909,15 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     resolveBoxMetrics(element, cbW);
 
     const w = resolveWidth(element, cbW);
-    const h = style.resolveLength(style.height, cbH);
+    // `resolveDefiniteHeight`, not a bare `resolveLength`: the declaration is a
+    // border-box height when `box-sizing` says so, exactly as in the in-flow path.
+    const h = resolveDefiniteHeight(element, cbH);
     element.box.width = w;
-    element.box.height = h >= 0 ? clampMinMaxHeight(element, max(0, h)) : 0;
+    element.box.height = h >= 0 ? h : 0;
+    // Whether this element ends up with a height of its own, which is what its
+    // children's percentage heights resolve against.
+    bool heightDefinite = h >= 0;
+    const bool heightAuto = h < 0;
 
     const topV = style.resolveLength(style.top, cbH);
     const leftV = style.resolveLength(style.left, cbW);
@@ -3884,13 +3962,14 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     // Same rule vertically (CSS 10.6.4): `height: auto` with both insets is
     // solved from the containing block rather than collapsing or stretching.
     int absH = h;
-    if (style.resolveLength(style.height, cbH) < 0 && topGiven && bottomGiven)
+    if (heightAuto && topGiven && bottomGiven)
     {
         absH = max(0, cbH - topV - bottomV - element.box.marginTop -
             element.box.marginBottom - element.box.paddingTop -
             element.box.paddingBottom - element.box.borderTop -
             element.box.borderBottom);
         element.box.height = absH;
+        heightDefinite = true;
     }
 
     // `margin: auto` on an axis whose two insets are both given distributes the
@@ -3937,9 +4016,21 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
     auto childFlow = FlowContext();
     childFlow.x = element.box.x + element.box.paddingLeft + element.box.borderLeft;
     childFlow.y = element.box.y + element.box.paddingTop + element.box.borderTop;
-    childFlow.width = max(0, absW - element.box.paddingLeft - element.box.paddingRight -
-        element.box.borderLeft - element.box.borderRight);
-    childFlow.height = cbH;
+    // `absW` is the CONTENT width - `resolveWidth` returns the content box and
+    // the both-insets rule above solves `cbW - insets - margins - padding -
+    // border` - so the padding and border must NOT be taken off a second time.
+    // Subtracting them again gave every child of a padded absolutely positioned
+    // box 2x its padding less width: a `width:380px; padding:10px` cell laid its
+    // children out 360px wide where Edge paints 380px, and a `clear:left` bar
+    // inside another came out 20px short of Edge's.
+    childFlow.width = max(0, absW);
+    // A child's percentage height resolves against THIS element's content box
+    // (CSS 10.5), not against this element's own containing block. Handing the
+    // children `cbH` left `.j1 { position:absolute; height:80px } > i {
+    // height:50% }` standing 0 tall - `cbH` was the empty body's height - where
+    // Edge reports 40 (the box-geometry fixture's `j1-child-50-percent-height`
+    // row). An element with no height of its own keeps the containing-block base.
+    childFlow.height = heightDefinite ? element.box.height : cbH;
     childFlow.lineEnd = childFlow.x + childFlow.width;
     // Honor the element's OWN display (a flex/grid popup lays its children as
     // items, not as stacked blocks).
@@ -3997,7 +4088,16 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
             if (childEl !is null)
             {
                 if (childEl.style.display == "none") continue;
-                contentBottom = max(contentBottom, childEl.box.y + childEl.box.height);
+                // An absolutely positioned box establishes a block formatting
+                // context, so an in-flow child's bottom margin stays INSIDE it
+                // (CSS 8.3.1) and the auto height must reach that child's bottom
+                // MARGIN edge (CSS 10.6.7). Dropping the margin made a padded
+                // cell measure 80px where Edge measures 90, so its own
+                // background and the box after it sat 10px high.
+                const bool inFlowChild = childEl.style.position != "absolute" &&
+                    childEl.style.position != "fixed";
+                contentBottom = max(contentBottom, childEl.box.y + childEl.box.height +
+                    (inFlowChild ? childEl.box.marginBottom : 0));
                 continue;
             }
             auto childText = cast(TextNode) child;
@@ -4024,9 +4124,11 @@ private void layoutFixed(Element element, int containingWidth, int viewportWidth
     const cbH = viewportHeight;
 
     int w = resolveWidth(element, cbW);
-    const h = style.resolveLength(style.height, cbH);
+    // Same rule as the absolute path above: a declared height is a border-box
+    // height when `box-sizing:border-box` says so.
+    const h = resolveDefiniteHeight(element, cbH);
     element.box.width = w;
-    element.box.height = h >= 0 ? clampMinMaxHeight(element, max(0, h)) : 0;
+    element.box.height = h >= 0 ? h : 0;
 
     // With `width`/`height` auto and BOTH insets given, the used size fills the
     // inset rectangle (CSS 10.3.7 horizontal / 10.6.4 vertical). A fixed layer
@@ -4389,6 +4491,58 @@ private void layoutInlineChildren(Element element, ref FlowContext flow, Element
     flow.y += max(0, (lineIndex + 1) * lineHeight - flow.contentBottom * 0);
     // Ensure flow.y advances past all lines laid out here.
     flow.y = max(flow.y, flow.y + lineHeight * max(1, lineIndex + 1));
+}
+
+/// True when an element has at least one element child that generates a box.
+private static bool hasBoxChild(Element element)
+{
+    foreach (child; element.elements)
+        if (child !is null && child.style.display != "none") return true;
+    return false;
+}
+
+/// The nearest positioned ancestor of `element` (including `element` itself),
+/// i.e. the containing block its absolutely positioned descendants resolve
+/// against. `layoutDirectText` is entered without a threaded
+/// `positionedAncestor`, so it derives the one that applies to the inline-block
+/// whose block children it lays out instead of reaching for a name that is not
+/// in scope there.
+private static Element positionedAncestorOf(Element element)
+{
+    for (auto a = element; a !is null; a = a.parent)
+    {
+        auto p = a.style.position;
+        if (p == "relative" || p == "absolute" || p == "fixed") return a;
+    }
+    return null;
+}
+
+/// Lay out the ELEMENT children of an inline-block through the normal child
+/// path. The inline run places the box itself and lays out its own text, but a
+/// block-level child (a fixed-size chip, an icon wrapper) never reached
+/// `layoutChildren`, so it kept its 0x0 default box and the wrapper stayed one
+/// line tall where Edge sizes the wrapper to the children it contains.
+private void layoutInlineBlockChildren(Element element, ref FlowContext inner,
+    Element positionedAncestor)
+{
+    if (!hasBoxChild(element)) return;
+    withGeneratedBoxes(element, { layoutChildren(element, inner, positionedAncestor); });
+}
+
+/// The bottom border edge of an inline-block's in-flow element children, so an
+/// auto-height wrapper can be measured from the content it actually contains.
+private static int inlineBlockChildBottom(Element element, int fallback)
+{
+    int bottom = fallback;
+    foreach (child; element.elements)
+    {
+        auto ce = cast(Element) child;
+        if (ce is null || ce.style.display == "none") continue;
+        auto ps = ce.style.position;
+        if (ps == "absolute" || ps == "fixed") continue;
+        bottom = max(bottom, ce.box.y + ce.box.height + ce.box.marginBottom);
+    }
+    return bottom;
 }
 
 private void layoutInlineBlock(Element element, ref FlowContext flow, Element positionedAncestor)
@@ -5897,6 +6051,68 @@ private void layoutTable(Element element, ref FlowContext flow, Element position
     if (maxCols == 0) maxCols = 1;
     const colW = innerW / maxCols;
 
+    // CSS 17.5.2: a column takes the width its FIRST-ROW cell declares, and the
+    // space left over is shared by the columns whose cells are `auto`. Giving
+    // every column `innerW / maxCols` ignored the declarations entirely, so a
+    // table whose first cell is `width:25%` and whose second is `auto` painted
+    // 50/50 - the sizing corpus' case 6 put the column boundary at x=1060 where
+    // Edge puts it at x=985 (75 + 225 of a 300px table).
+    auto colWidths = new int[maxCols];
+    auto colFixed = new bool[maxCols];
+    bool anyDeclared = false;
+    // Only `table-layout: fixed` takes the column widths from the first row's
+    // declarations (CSS 17.5.2.1). The default `auto` algorithm sizes columns
+    // from their CONTENT and spreads the table's own width across them, so a
+    // `display:table` whose only cell says `width:100px` still fills a 300px
+    // table - honouring that declaration painted a 100px cell inside a 300px
+    // table and broke the flex/table/grid corpus' case 3.
+    const bool fixedLayout = element.style.tableLayout == "fixed";
+    if (fixedLayout)
+    foreach (row; rows)
+    {
+        int ci = 0;
+        foreach (c; row.elements)
+        {
+            if (!isTableCell(c)) continue;
+            if (ci >= maxCols) break;
+            // The first row only: CSS 17.5.2.1 lets a later row's declaration
+            // narrow its column but not override the first row's.
+            const int declaredW = c.style.resolveLength(c.style.width, innerW);
+            if (declaredW >= 0 && !colFixed[ci])
+            {
+                colWidths[ci] = clampMinMaxWidth(c, max(0, declaredW));
+                colFixed[ci] = true;
+                anyDeclared = true;
+            }
+            ci++;
+        }
+        break;
+    }
+    if (anyDeclared)
+    {
+        int declared = 0;
+        int autoCols = 0;
+        foreach (i; 0 .. maxCols)
+        {
+            if (colFixed[i]) declared += colWidths[i];
+            else autoCols++;
+        }
+        if (autoCols > 0)
+        {
+            const int rest = max(0, innerW - declared);
+            const int share = rest / autoCols;
+            int extra = rest % autoCols;
+            foreach (i; 0 .. maxCols)
+            {
+                if (colFixed[i]) continue;
+                colWidths[i] = share + (extra > 0 ? 1 : 0);
+                if (extra > 0) extra--;
+            }
+        }
+    }
+    else
+        foreach (i; 0 .. maxCols) colWidths[i] = colW;
+
     int y = innerY;
     foreach (row; rows)
     {
@@ -5905,13 +6121,15 @@ private void layoutTable(Element element, ref FlowContext flow, Element position
         row.box.width = innerW;
         int x = innerX;
         int rowH = 0;
+        int ci = 0;
         foreach (c; row.elements)
         {
             if (!isTableCell(c)) continue;
+            const int cw = ci < maxCols ? colWidths[ci] : colW;
             c.box.x = x;
             c.box.y = y;
-            c.box.width = colW;
-            resolveBoxMetrics(c, colW);
+            c.box.width = cw;
+            resolveBoxMetrics(c, cw);
             const hPx = c.style.resolveLength(c.style.height, 0);
             c.box.height = hPx >= 0 ? hPx : 18;
             rowH = max(rowH, c.box.height);
@@ -5919,10 +6137,11 @@ private void layoutTable(Element element, ref FlowContext flow, Element position
             auto sub = FlowContext();
             sub.x = c.box.x + c.box.paddingLeft;
             sub.y = c.box.y + c.box.paddingTop;
-            sub.width = max(0, colW - c.box.paddingLeft - c.box.paddingRight);
+            sub.width = max(0, cw - c.box.paddingLeft - c.box.paddingRight);
             sub.lineEnd = sub.x + sub.width;
             layoutChildren(c, sub, c);
-            x += colW;
+            x += cw;
+            ci++;
         }
         row.box.height = rowH;
         // Every cell stretches to the row's height (CSS 17.5.3): a single taller
@@ -6241,6 +6460,57 @@ unittest
         assert(td00.box.x == 0, "td00.x = 0, got " ~ td00.box.x.to!string);
         assert(td01.box.x == 100, "td01.x = 100, got " ~ td01.box.x.to!string);
         assert(td10.box.y >= td00.box.y + td00.box.height, "row2 below row1");
+    }
+
+    // Fixed table layout: the FIRST row's declarations decide the columns, so a
+    // 25% first cell beside an `auto` second splits a 300px table 75/225
+    // (CSS 17.5.2.1). The default `auto` algorithm instead spreads the table's
+    // own width across its columns, which is why the declarations must be
+    // honoured only under `table-layout: fixed` - Edge painted 75/225 for the
+    // first and a full-width cell for the second.
+    {
+        static Element buildTable(string layout, string firstWidth)
+        {
+            auto table = new Element("table");
+            table.style.display = "table";
+            table.style.tableLayout = layout;
+            table.style.width = "300px";
+            auto tr = new Element("tr");
+            tr.style.display = "table-row";
+            tr.parent = table;
+            table.children ~= tr; table.elements ~= tr;
+            foreach (w; [firstWidth, ""])
+            {
+                auto td = new Element("td");
+                td.style.display = "table-cell";
+                td.style.height = "20px";
+                td.style.width = w;
+                td.parent = tr;
+                tr.children ~= td; tr.elements ~= td;
+            }
+            return table;
+        }
+        auto fixedT = buildTable("fixed", "25%");
+        auto fixedFlow = FlowContext();
+        fixedFlow.x = 0; fixedFlow.y = 0; fixedFlow.width = 300; fixedFlow.height = 100;
+        layoutTable(fixedT, fixedFlow, null);
+        auto fRow = cast(Element) fixedT.elements[0];
+        auto f0 = cast(Element) fRow.elements[0];
+        auto f1 = cast(Element) fRow.elements[1];
+        assert(f0.box.width == 75, "fixed 25% column = 75, got " ~ f0.box.width.to!string);
+        assert(f1.box.x == 75 && f1.box.width == 225,
+            "fixed auto column takes the rest (x=75 w=225), got x=" ~ f1.box.x.to!string ~
+            " w=" ~ f1.box.width.to!string);
+
+        auto autoT = buildTable("auto", "25%");
+        auto autoFlow = FlowContext();
+        autoFlow.x = 0; autoFlow.y = 0; autoFlow.width = 300; autoFlow.height = 100;
+        layoutTable(autoT, autoFlow, null);
+        auto aRow = cast(Element) autoT.elements[0];
+        auto a0 = cast(Element) aRow.elements[0];
+        auto a1 = cast(Element) aRow.elements[1];
+        assert(a0.box.width == 150 && a1.box.x == 150,
+            "auto layout keeps equal columns (150/150), got " ~ a0.box.width.to!string);
     }
 }
 

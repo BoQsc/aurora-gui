@@ -20,7 +20,10 @@ import auroraweb.dom : Element, TextNode;
 import std.conv : to;
 import std.file : readText;
 import std.string : indexOf, split;
-import std.stdio : stderr, write, writeln;
+import std.stdio : File, stderr, write, writeln;
+import core.thread : Thread;
+import core.time : msecs;
+import std.datetime.stopwatch : AutoStart, StopWatch;
 
 /// Depth-first search for the page view inside the widget tree.
 WebPageView findView(Widget widget)
@@ -40,15 +43,34 @@ WebPageView findView(Widget widget)
 /// per layout pass, and the live app's frames advance that work because the
 /// host invalidates every tick; a test driver's `paint` only repaints what is
 /// already invalidated, so without this the capture is a page whose images
-/// never arrived. Bounded, so a page that never settles cannot hang a run.
-void settlePage(BrowserRoot root)
+/// never arrived. A network document and its stylesheets arrive the same way
+/// now - a worker fetches them and a later pass applies them - so the loop also
+/// services those and gives the worker the time it needs. Bounded by both the
+/// iteration count and the wall clock, so a page that never settles cannot hang
+/// a run.
+///
+/// Each pass also asks for the frame the tick would paint, and that is what
+/// advances a deferred `@font-face`: the engine queues a face's file only once
+/// a frame of the document has been painted (that frame drew the fallback
+/// face), and a driver's paint reaches the view only when the view was
+/// invalidated first. Without it a page whose CSS lives in a linked sheet - so
+/// its faces arrive after the document - was captured in the fallback face for
+/// every run, however long the loop waited.
+void settlePage(BrowserRoot root, UiTestDriver driver)
 {
     auto view = findView(root);
     if (view is null || view.page() is null) return;
+    auto deadline = StopWatch(AutoStart.yes);
     foreach (i; 0 .. 200)
     {
+        view.page().serviceNavigation();
+        view.page().serviceStylesheets();
         if (!view.page().layoutPending()) break;
         view.page().layout();
+        view.invalidate();
+        driver.paint();
+        if (deadline.peek.total!"msecs" > 120000.0) break;
+        Thread.sleep(5.msecs);
     }
 }
 
@@ -199,28 +221,74 @@ int countText(Element element, string needle)
     return found;
 }
 
+/// Collect one TSV row per element carrying a `data-rect` attribute, in document
+/// order: the name from the attribute, then the element's border box in page
+/// coordinates. `getBoundingClientRect` reports the border box too, so this is
+/// the engine's answer to the same question the Edge reference capture asks, and
+/// the two dumps can be compared as numbers rather than as pixels.
+void collectRects(Element element, ref string rows, ref int count)
+{
+    if (element is null) return;
+    auto name = "data-rect" in element.attrs;
+    if (name !is null && (*name).length)
+    {
+        // `box.width/height` is the CONTENT box (layout stores it that way
+        // everywhere); `getBoundingClientRect` reports the BORDER box, so
+        // reconstruct it exactly as the painter reconstructs its own
+        // background (paint.d, and borderBoxInViewport in dombind.d).
+        const bw = element.box.width + element.box.paddingLeft +
+            element.box.paddingRight + element.box.borderLeft + element.box.borderRight;
+        const bh = element.box.height + element.box.paddingTop +
+            element.box.paddingBottom + element.box.borderTop + element.box.borderBottom;
+        rows ~= *name ~ "\t" ~ to!string(element.box.x) ~ "\t" ~
+            to!string(element.box.y) ~ "\t" ~ to!string(bw) ~ "\t" ~
+            to!string(bh) ~ "\n";
+        count++;
+    }
+    foreach (child; element.elements)
+        collectRects(child, rows, count);
+}
+
 /// Render a local HTML fixture through the engine alone: no app chrome and no
 /// URL handling, exactly how the reference corpora load a fixture, so a case
 /// can be measured with the same probe used against the live sites.
 int runFixture(string[] args)
 {
-    // usage: pageshot --fixture <file.html> <width> <height> <out.ppm> [needle]
+    // usage: pageshot --fixture <file.html> <width> <height> <out.ppm>
+    //                    [needle] [--rects <out.tsv>]
     if (args.length < 6)
     {
-        stderr.writeln("usage: pageshot --fixture <file.html> <width> <height> <out.ppm> [needle]");
+        stderr.writeln("usage: pageshot --fixture <file.html> <width> <height> <out.ppm> [needle] [--rects <out.tsv>]");
         return 2;
     }
     const path = args[2];
     const w = to!int(args[3]);
     const h = to!int(args[4]);
     const outPath = args[5];
-    const needle = args.length >= 7 ? args[6] : "ul";
+    string needle = "ul";
+    string rectsPath;
+    for (size_t i = 6; i < args.length; ++i)
+    {
+        if (args[i] == "--rects" && i + 1 < args.length) rectsPath = args[++i];
+        else if (args[i] == "--needle" && i + 1 < args.length) needle = args[++i];
+        else needle = args[i];      // bare needle, the older form
+    }
     auto page = new WebPage(w, h);
     page.setHtml(readText(path));
     page.executeScripts();
     page.layout();
     writeln("fixture viewport=", page.width(), "x", page.height());
     writeln("subtree probe: ", dumpSubtree(page.root(), needle, 0));
+    if (rectsPath.length)
+    {
+        string rows;
+        int count;
+        collectRects(page.root(), rows, count);
+        auto dump = File(rectsPath, "w");
+        dump.write(rows);
+        dump.close();
+        writeln("rects: ", count, " rows -> ", rectsPath);
+    }
     auto surface = new Surface(w, h);
     surface.clear(Color.rgb(255, 255, 255));
     page.paint(surface);
@@ -268,7 +336,7 @@ int main(string[] args)
     foreach (i; 0 .. paints)
     {
         driver.paint();
-        settlePage(root);
+        settlePage(root, driver);
     }
     // Same-driver geometry: report the boxes of the page the painter actually
     // used, so the capture can be compared against the engine's own numbers
@@ -311,7 +379,13 @@ int main(string[] args)
         auto view = findView(root);
         if (view !is null)
         {
-            settlePage(root);
+            settlePage(root, driver);
+            // The live app's tick is what commits a finished progressive load:
+            // the URL, the page title, the tab label and the reload icon. This
+            // driver pumps the page directly and never ticks the root, so the
+            // capture would otherwise show a complete page under a chrome that
+            // still says it is loading.
+            root.finishLoadForTesting();
             view.invalidate();
             driver.paint();
         }

@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Append-plan-items-0.66.20",
+  "reason": "",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-17 11:41:36.3470527 UTC",
-  "finishedAt": "2026-10-17 11:42:15.8578875 UTC",
-  "durationMs": 39511,
+  "startedAt": "2026-10-17 18:52:45.083476 UTC",
+  "finishedAt": "2026-10-17 18:53:25.250044 UTC",
+  "durationMs": 40166,
   "exitCode": 0,
   "errors": []
 }

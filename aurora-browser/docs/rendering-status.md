@@ -529,6 +529,125 @@ baseline, not an oracle. The same change moved it by 3 pixels of 1,024,000 (page
 rows 213-214 and 732), so its baseline was re-frozen to frame `3571CCE5…`, with
 the superseded frame kept beside it as `django29ref-pre-padbox.ppm`.
 
+A second corpus in the same repository pins real **flow** sizing, the paths a
+box-model fixture does not reach:
+
+- `aurora-browser/tests/reference/flow-sizing.html` - six cases at the same
+  1280x638 viewport, each in its own absolutely positioned cell so a divergence
+  can be attributed by coordinate: margin collapsing between block siblings, a
+  50% width resolving against the containing block's content box, `min-width`
+  and `max-width` clamping, a shrink-to-fit `inline-block` taking its widest
+  content with a second one beside it on the same line, two left floats with a
+  `clear:left` block starting below the taller one, and a `table-layout: fixed`
+  table giving 25% and 75% of its 300px width to one column each. Every case is
+  a solid rectangle, so no glyph can decide a pixel.
+- `aurora-browser/tests/reference/flow-sizing.edge.png` - the independent
+  reference: a 1280x638, device scale factor 1 headless Edge capture of it.
+- `aurora-browser/tests/verify-flow-sizing.json` - the recipe, the same shape as
+  the flex one: compile the probe, run `layout.d` with `-unittest -main` (21
+  modules pass), render the fixture through the probe, compare at channel
+  tolerance 0.
+
+It closed two defects. An interrupted edit had left `layoutDirectText` calling
+`layoutInlineBlockChildren` with a `positionedAncestor` parameter that function
+no longer takes, so an inline-block's contents were laid out against the wrong
+containing block: the two chips of case 4 painted 16x18 instead of Edge's 80x20
+and 60x20 at x 30 and x 110. `layoutTable` also split a table's columns equally
+and ignored the first row's declared widths, so case 6's 25% column painted the
+same 150px as its neighbour's `auto` column; under `table-layout: fixed` the
+declared width now decides its own column and the leftover space is shared by
+the `auto` columns. The declaration is honoured only under `table-layout:
+fixed` (`Style.tableLayout`, set in `layout.d` applyDeclaration), because
+honouring it unconditionally regressed this repository's flex corpus: a
+`display:table` whose only cell declares `width:100px` inside a 300px table
+must still fill 300px, the behaviour CSS's `auto` algorithm specifies and Edge
+paints.
+
+Measured on 2026-10-17: 0 mismatched of 816,640, the frame's
+`actualSha256 6C33FC27…` equal to its `referenceSha256 6C33FC27…`, with the
+layout unittests passing in the same run, and the flex corpus still 0 of
+816,640 (`actual == reference == 99A4A532…`). The rule is pinned from both
+sides by a `layout.d` unittest - 75/225 with `table-layout: fixed`, 150/150
+without it.
+
+A third corpus in the same repository pins **numbers** rather than pixels: the
+box-model and positioning rules as `getBoundingClientRect` rects, so a divergence
+is a value to compare clause by clause instead of a region of pixels to eyeball.
+
+- `aurora-browser/tests/reference/box-geometry.html` - twelve cases at the same
+  1280x638 viewport, each a solid rectangle that carries no text and each placed
+  with pixel insets: a content box whose padding and border grow the border box,
+  `left`/`top` placing the margin edge, a `left:20px; right:40px; width:auto`
+  stretch solved inside a definite 400px containing block, percentage width and
+  height resolving against a containing block's content box, `min-width` and
+  `max-width` clamping, collapsed adjacent margins, a `position:relative` offset
+  that consumes no flow space, an absolutely positioned child resolved against
+  its ancestor's padding box, `margin:0 auto` centring between both insets, and
+  `box-sizing:border-box`.
+- `aurora-browser/tests/reference/box-geometry.edge.tsv` - the oracle: 22 rects
+  (`name x y width height`) measured by `getBoundingClientRect` in headless Edge
+  at the same viewport, captured together with the frame below by
+  `aurora-browser/tests/capture-edge-rects.py`, which injects its measurement
+  script into a scratch copy of the fixture so the committed fixture stays
+  script-free and the engine never runs measurement code.
+- `aurora-browser/tests/reference/box-geometry.edge.png` - the pixel oracle from
+  the same run: a 1280x638, device scale factor 1 headless Edge capture.
+- `aurora-browser/tests/pageshot-probe.d --rects` - the engine side: the same
+  probe's subtree walk writes `name x y width height` per `data-rect` element,
+  reconstructing the border box from what layout stores (`box.x/y` is the
+  border-box origin and `box.width/height` is the content box, the arithmetic
+  `paint.d` and `borderBoxInViewport` already use).
+- `aurora-browser/tests/compare_rects.py` - the comparison: every row must match
+  the Edge oracle within `--tolerance` (0 here, so the numbers must be equal, not
+  merely close). It still accepts an explicit `--known-open` ledger for a corpus
+  that has one to carry; this corpus passes none.
+- `aurora-browser/tests/verify-box-geometry.json` - the recipe: compile the probe,
+  run `layout.d` with `-unittest -main` (21 modules pass), dump the engine's rects
+  and frame, compare the rect table, then compare the frames at channel
+  tolerance 0.
+
+Measured on 2026-10-17: 22 compared, 22 equal to Edge exactly, 0 of 819,200
+pixels differing (`actualSha256 AD21B644…` equal to its `referenceSha256
+AD21B644…`), with the layout unittests passing in the same run. No row is held
+aside any more.
+
+The two rows this corpus once recorded as **known open** are fixed, each against
+Edge's own numbers:
+
+- `j1-child-50-percent-height`: the engine resolved `height: 50%` against its own
+  containing block - the empty body, whose height is 0 - instead of against the
+  containing block's content height. `layoutAbsolute` in `layout.d` now hands its
+  children the element's own content height whenever it has one, and both
+  renderers report `800 200 40 40` for the child.
+- `l1-border-box-sizing`: the absolutely positioned path stored a declaration as
+  the content height even under `box-sizing:border-box`, so its border box came
+  out 48 tall. The declared height now goes through the shared
+  `resolveDefiniteHeight` helper - the rule `resolveHeight` already applied in
+  flow, which the fixed path uses too - and both renderers report
+  `20 520 200 40`.
+
+Both cases paint now: the percentage-height child carries a background, and the
+border-box case paints a 4px ring around its 152x32 content fill. A regression in
+either rule therefore shows up as pixels as well as in those two rect rows, which
+is why the frame this corpus compares was recaptured from Edge.
+
+Neither rule moves the real page the acceptance recipe measures: captured from
+the fixed engine at 1280x800 and device scale 1, djangoproject.com's frame is
+byte-identical to its pre-fix baseline (`3571CCE5…`), 0 of 1,024,000 pixels
+differing, so that frozen baseline stands unmodified.
+
+One case is deliberately absent rather than recorded as a failure: `position:
+fixed` is viewport-relative, and Edge's headless layout viewport is 1256x598 for
+a 1280x638 window (measured: `html`'s rect is 1256 wide with `--hide-scrollbars`)
+against the engine's requested 1280x638, so a fixed box cannot agree across the
+two. Every other case is placed with pixel insets, so none of them depends on the
+viewport.
+
+The fixture, the probe's rect-dump mode, `capture-edge-rects.py` and
+`compare_rects.py` are original work of this repository under the same CC0/0BSD
+terms as the rest of the corpus; Edge is only the oracle that produced the
+committed numbers and frame.
+
 ## Superseded corpora
 
 - `browser-reference-validation/` (v1): box-model, flex-grid, svg-position.
@@ -613,10 +732,11 @@ subresources are served from the bounded cache instead of being re-fetched.
   sources: compile, `headless_smoke: ALL PASSED` (91 checks, the real-input hover,
   wheel, double-click, right-click and scroll-listener checks included), the
   engine's `django` capture against its baseline with `mismatchedPixels 0` of
-  1,024,000 (frame SHA-256 `CBAC1963…`), the release app compile and the live app
-  capture. That baseline is an Aurora-to-Aurora regression check - it detects a
-  change and cannot prove correctness - and it was last re-frozen for the WOFF 2.0
-  webfont fix, which is why its text is no longer substitute-face text: with the
+  1,024,000 (reference and frame SHA-256 `3571CCE5…`, the out-of-flow
+  padding-box re-freeze recorded under "Last full re-run"), the release app
+  compile and the live app capture. That baseline is an Aurora-to-Aurora
+  regression check - it detects a change and cannot prove correctness. The WOFF
+  2.0 webfont fix is why its text is no longer substitute-face text: with the
   site's woff2 faces decoded, the same-string CTA label inks 167px against an
   independent Edge frame's 166px and the tagline's first word 101px against
   Edge's 102px, and whole-page structural agreement against that same Edge frame

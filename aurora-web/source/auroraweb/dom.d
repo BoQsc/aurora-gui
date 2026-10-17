@@ -277,6 +277,7 @@ struct ComputedStyle
     string paddingBottom = "";
     string paddingLeft = "";
     string boxSizing = "content-box";
+    string tableLayout = "auto";
     string textIndent = "0px";
     string borderTopStyle = "";
     string borderRightStyle = "";

@@ -1,0 +1,125 @@
+{
+  "inputs": [
+    "aurora-web/source",
+    "aurora-browser/source",
+    "vendor/aurora-d-0.4.5/source",
+    "aurora-browser/tests/pageshot-probe.d",
+    "aurora-browser/tests/png2ppm.py",
+    "aurora-browser/tests/compare_rects.py",
+    "aurora-browser/tests/reference/box-geometry.html",
+    "aurora-browser/tests/reference/box-geometry.edge.png",
+    "aurora-browser/tests/reference/box-geometry.edge.tsv"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-version=AuroraHeadless",
+          "-i",
+          "-Iaurora-web/source",
+          "-Iaurora-browser/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/boxshot.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/boxbuild",
+          "aurora-browser/tests/pageshot-probe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-unittest",
+          "-main",
+          "-i",
+          "-Iaurora-web/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-layout-ut.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/boxlayoutut",
+          "aurora-web/source/auroraweb/layout.d"
+        ],
+        "workdir": ".",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-layout-ut.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/boxshot.exe",
+        "args": [
+          "--fixture",
+          "C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-browser/tests/reference/box-geometry.html",
+          "1280",
+          "638",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-geometry.actual.ppm",
+          "--rects",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-geometry.actual.tsv"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/png2ppm.py",
+          "aurora-browser/tests/reference/box-geometry.edge.png",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-geometry.reference.ppm"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/compare_rects.py",
+          "aurora-browser/tests/reference/box-geometry.edge.tsv",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-geometry.actual.tsv",
+          "--tolerance",
+          "0"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-geometry.reference.ppm",
+      "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/box-geometry.actual.ppm",
+      "maxDifferentPixels": 0,
+      "channelTolerance": 0,
+      "referenceSource": "INDEPENDENT ORACLE, NOT AN AURORA-TO-AURORA BASELINE: this frame is rendered by Microsoft Edge, captured on this machine by `python aurora-browser/tests/capture-edge-rects.py --html aurora-browser/tests/reference/box-geometry.html --tsv aurora-browser/tests/reference/box-geometry.edge.tsv --png aurora-browser/tests/reference/box-geometry.edge.png --width 1280 --height 638`, which drives `\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --headless=new --force-device-scale-factor=1 --window-size=1280,638 --hide-scrollbars --no-first-run --no-default-browser-check --user-data-dir=<scratch>\\edge-profile`. The scratch copy is the committed fixture with the measurement script from capture-edge-rects.py injected before </body>, so the committed fixture stays script-free and the engine never runs measurement code; the same run's --dump-dom produced the rect oracle the compare_rects.py step above diffs the engine's own dump against (getBoundingClientRect per data-rect name, 22 rows). The fixture holds twelve box-model and positioning cases, each a solid rectangle that carries no text so that no glyph can decide a pixel, and each placed with pixel insets so no case depends on the viewport: (1) a content-box element with padding 0 30px and a 5px border must paint a 370x50 border box from a 300x40 content box; (2) `left`/`top` place the margin edge of an absolutely positioned box, so a 7px margin offsets it by 7; (3) a stretch case, `left:20px; right:40px; width:auto`, must solve to 340px inside a definite 400px containing block; (4) percentage children resolve against the containing block's content box (50% of 300 is 150) and start at that content origin; (5) min-width raises 100 to 160 while max-width lowers 300 to 120; (6) adjacent 20px bottom and 30px top margins collapse to 30; (7) position:relative offsets its box without consuming flow space, so its sibling stays put; (8) an absolutely positioned child resolves right/bottom against its ancestor's padding box; (9) `margin:0 auto` with both insets given centres a 200px box in a 400px block; (10) box-sizing:border-box keeps the border box at 200x40, with both the 4px border ring and the 152x32 content fill painted; (11) a percentage height against a definite 80px containing height, with its child painted so the geometry is visible in the frame as well as in the rect row; (12) `position: fixed` is deliberately absent because Edge's headless layout viewport is 1256x598 for a 1280x638 window (measured: html's rect is 1256 wide) while the engine's fixture viewport is the requested 1280x638, so a viewport-relative box cannot agree across the two. Nothing is carried on a ledger any more: the two rows that were once --known-open are fixed and now match Edge's own numbers. (a) `j1-child-50-percent-height`: the engine resolved `height:50%` against its own containing block - the empty body, whose height is 0 - instead of against its containing block's content height; layout.d's layoutAbsolute now hands its children the element's own content height when it has one, and both renderers report 800 200 40 40 for the child. (b) `l1-border-box-sizing`: the absolutely positioned path stored a border-box declaration as the content height, so its border box came out 48 tall; the declared height now goes through the shared resolveDefiniteHeight helper, the same rule the in-flow path already applied, and both renderers report 20 520 200 40. Because case J's child and case L's box now paint, a regression in either rule shows up here as pixels as well as in those two rect rows. Re-run capture-edge-rects.py against a newer Edge to refresh both oracles. This file is original work, released under CC0/0BSD with the rest of the corpus. The engine renders the same fixture through aurora-browser/tests/pageshot-probe.d --fixture at the same 1280x638 viewport (no app chrome, no scaling), and the two frames are compared pixel-for-pixel with channelTolerance 0."
+    }
+  ]
+}
