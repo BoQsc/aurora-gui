@@ -64,8 +64,10 @@ int main(string[] args)
     check("background_is_not_proven_readonly", background, true);
     check("retire_images_is_context_only", OpenCodeToolCall("retire", "retire_images",
         `{"imageIds":["synthetic-image"],"summary":"Synthetic visual facts preserved."}`), false);
-    check("blocker_is_control_only", OpenCodeToolCall("blocker", "task_blocker",
-        `{"kind":"external","reason":"Synthetic dependency unavailable"}`), false);
+    check("external_obstacle_recovers_without_mutation", OpenCodeToolCall("obstacle", "task_blocker",
+        `{"kind":"external","reason":"Synthetic dependency unavailable"}`), false, true);
+    check("required_input_is_control_only", OpenCodeToolCall("input", "request_input",
+        `{"reason":"Deployment destination absent","required_fact":"Destination","question":"Which server?","checked":["Project configuration"],"independent_work_complete":true}`), false);
     const developer = buildPath(tempDir(), "aurora-command-source-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(developer);
     auto previous = installDeveloperToolSource(developer);
