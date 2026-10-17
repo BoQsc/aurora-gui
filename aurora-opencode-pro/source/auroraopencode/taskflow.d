@@ -5,6 +5,7 @@ import auroraopencode.requestintent;
 import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.verification : verificationCheck;
 import std.algorithm : canFind;
+import std.array : appender;
 import std.conv : to;
 import std.digest : toHexString;
 import std.digest.sha : sha256Of;
@@ -468,7 +469,38 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
                     { step.evidence = [id]; break; }
             }
     }
+    if (retainCompleted && previous.length)
+    {
+        TaskStep[] existing, added;
+        foreach (step; steps)
+        {
+            bool known;
+            foreach (old; previous) if (samePlanStep(old, step)) { known = true; break; }
+            if (known) existing ~= step;
+            else added ~= step;
+        }
+        steps = existing ~ added;
+    }
     return steps;
+}
+
+string planUpdateText(const ref ChatSession session, string arguments)
+{
+    const root = parseJSON(arguments);
+    const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
+    const steps = normalizedPlan(session, root["plan"], session.taskSteps, !replacement);
+    auto output = appender!string();
+    output.put("Plan updated");
+    if (auto reason = "explanation" in root.object)
+        if (reason.type == JSONType.string && reason.str.length) output.put(" (" ~ reason.str ~ ")");
+    output.put(":");
+    foreach (i, step; steps)
+    {
+        const marker = step.status == "completed" ? "[x]" : step.status == "in_progress" ? "[>]" : "[ ]";
+        output.put("\n" ~ to!string(i + 1) ~ ". " ~ marker ~ " " ~ step.text);
+        if (step.done.length) output.put(" (done: " ~ step.done ~ ")");
+    }
+    return output.data;
 }
 
 TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep)[] steps, JSONValue root = JSONValue.init)

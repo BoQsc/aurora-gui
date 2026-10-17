@@ -121,9 +121,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
                     failures.append("Explained focus switch lost the automatic return point")
                 tools = [call("consistency-return", "update_plan", consistency_plan(["in_progress", "completed"]))]
             elif "consistency-add" not in results:
-                tools = [call("consistency-add", "update_plan", consistency_plan(["completed", "completed", "in_progress"],
-                    "Inspection exposed a compatibility outcome needed for the requested result."))]
+                plan = consistency_plan(["completed", "completed", "in_progress"],
+                    "Inspection exposed a compatibility outcome needed for the requested result.")
+                plan["plan"] = [plan["plan"][0], plan["plan"][2], plan["plan"][1]]
+                tools = [call("consistency-add", "update_plan", plan)]
             elif "consistency-reopen-bad" not in results:
+                if "2. [x] Second outcome" not in results["consistency-add"] or "3. [>] Compatibility outcome" not in results["consistency-add"]:
+                    failures.append("A middle insertion was not appended, or the tool reported a different order")
                 tools = [call("consistency-reopen-bad", "update_plan", consistency_plan(["pending", "completed", "in_progress"],
                     "The compatibility outcome exposed a defect in the first outcome.")),
                          call("consistency-third", "write", {"filePath": "consistent-third.md", "content": "Compatibility outcome"})]

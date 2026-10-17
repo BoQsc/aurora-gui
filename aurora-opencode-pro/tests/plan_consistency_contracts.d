@@ -37,6 +37,24 @@ int main()
     assert(s.contract.decisions.length == 1 && s.contract.decisions[0].indexOf("compatibility") >= 0);
     rememberPlanRevision(s, extra, s.taskSteps, extended);
     assert(s.contract.decisions.length == 1, "The same rationale was duplicated");
+    auto inserted = parseJSON(extra.toString());
+    auto addition = inserted["plan"][2];
+    inserted["plan"] = JSONValue([inserted["plan"][0], addition, inserted["plan"][1]]);
+    assert(!planUpdateError(s, inserted.toString(), s.taskSteps).length);
+    auto appended = normalizedPlan(s, inserted["plan"], s.taskSteps);
+    assert(appended[0].id == "a" && appended[1].id == "b" && appended[2].id == "c",
+        "A new outcome appeared between existing outcomes");
+    assert(workContextForPlan(s, appended).nextStepId == "b", "An insertion displaced the existing next outcome");
+    const feedback = planUpdateText(s, inserted.toString());
+    assert(feedback.indexOf("2. [ ] Second outcome") >= 0 && feedback.indexOf("3. [ ] Compatibility outcome") >= 0,
+        "Tool feedback disagreed with the applied order");
+    inserted["plan"] = JSONValue([addition, base["plan"][0], base["plan"][1],
+        parseJSON(`{"id":"d","step":"Another discovered outcome","status":"pending"}`)]);
+    appended = normalizedPlan(s, inserted["plan"], s.taskSteps);
+    assert(appended[0].id == "a" && appended[1].id == "b" && appended[2].id == "c" && appended[3].id == "d",
+        "Prepending discoveries changed the existing order or the discovery order");
+    auto replacementOrder = normalizedPlan(s, inserted["plan"], s.taskSteps, false);
+    assert(replacementOrder[0].id == "c", "Explicit user-directed replacement lost its requested order");
 
     auto jump = parseJSON(initial);
     jump["plan"][0]["status"] = "pending";
@@ -66,6 +84,11 @@ int main()
     assert(!planUpdateError(s, forward.toString(), s.taskSteps).length,
         "Normal evidence-backed advancement demanded an explanation");
     auto completed = normalizedPlan(s, forward["plan"], s.taskSteps);
+    auto omitted = parseJSON(extra.toString());
+    omitted["plan"] = JSONValue([addition, forward["plan"][1]]);
+    auto retained = normalizedPlan(s, omitted["plan"], completed);
+    assert(retained[0] == completed[0] && retained[1].id == "b" && retained[2].id == "c",
+        "Appending new work displaced an omitted historical completion");
 
     auto reopen = parseJSON(forward.toString());
     reopen["plan"][0]["status"] = "pending";

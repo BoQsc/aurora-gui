@@ -11,7 +11,7 @@ import std.process : environment;
 import std.string : indexOf;
 import std.stdio : writeln;
 import auroraopencode.tools : executeTool;
-import std.json : JSONValue;
+import std.json : JSONValue, parseJSON;
 
 int main()
 {
@@ -75,6 +75,8 @@ int main()
     assert(root.taskStatusForTesting() == "completed");
     const consistent = root.taskStateJsonForTesting();
     assert(consistent.indexOf("Plan change:") >= 0 && consistent.indexOf("compatibility outcome") >= 0);
+    const orderedSteps = parseJSON(consistent)["taskSteps"].array;
+    foreach (i; 0 .. 3) assert(orderedSteps[i]["id"].str == "c" ~ to!string(i), "An inserted outcome changed the persisted order");
     writeln("PASS invalid additions/jumps/reopening recover internally while real work continues; justified detours, return points, correction and completion persist");
 
     root.newChatForTesting();

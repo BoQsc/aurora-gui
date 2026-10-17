@@ -77,7 +77,7 @@ import auroraopencode.planmode : experimentalStrictPlanEnabled,
 import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
-    restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision;
+    restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
@@ -19550,7 +19550,8 @@ private void pollButtonSuggestionRequest()
         const toolText = planError.length > 0 ? planError :
             subplanError.length > 0 ? subplanError :
             imageError.length > 0 ? imageError :
-            blockerError.length > 0 ? blockerError : event.text;
+            blockerError.length > 0 ? blockerError :
+            !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) : event.text;
         const acceptedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
             event.verificationCheck.length > 0 &&
             sameCheckout(event.verificationWorkspace, workspaceForSession(sessionIndex)) &&

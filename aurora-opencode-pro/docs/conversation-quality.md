@@ -17,7 +17,11 @@ and detours while preserving objectives and completed outcomes. Direct answers,
 quick exploration and single edits need no plan. Plan maintenance is advisory:
 missing a plan never pauses normal tools or adds a completion round. Strict
 checklist enforcement requires an explicit opt-in.
-Existing plans require an explanation for added outcomes, changed acceptance,
+New outcomes are appended after existing items automatically, even when the
+model submits them at the beginning or in the middle. Their relative order is
+preserved. Tool feedback reports the applied order. Explicit user-directed plan
+replacement can establish a new order.
+Existing plans require an explanation for additions, changed acceptance,
 reordering, or pausing/skipping unfinished work. Normal completed-to-next progress
 needs no explanation. Completed outcomes can reopen only with an explicit
 `reopen_steps` ID and a reason; their old completion evidence is cleared. Stable
