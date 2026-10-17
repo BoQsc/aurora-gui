@@ -15067,7 +15067,11 @@ private string _suggestExcludeId;
     private bool ensureDurableTaskCheckpoint(ref ChatSession session,
         bool nestedEnabled)
     {
-        const state = durableTaskPrompt(session, nestedEnabled);
+        const state = durableTaskPrompt(session, nestedEnabled) ~
+            (_settings.verbosity == "concise"
+                ? "\nVisible reply: at most three short sentences, target 40 words and no more than 80 unless detail was requested. " ~
+                  "State the result and verification once. No unsolicited code or examples. Resolve uncertainty and check calculations before answering; do not narrate self-corrections.\n"
+                : "");
         if (state.length == 0) return false;
         if (controlHistoryCompactionNeeded(session))
         {
@@ -22193,8 +22197,8 @@ private void pollButtonSuggestionRequest()
             if (_finalAnswerRequested)
                 systemPrompt.content = "Produce the final response now from " ~
                     "the evidence already gathered. No tools are available in " ~
-                    "this request. Give the useful result, or state one " ~
-                    "specific unresolved blocker. Do not ask to call tools." ~
+                    "this request. Give the concise useful result and accurately state " ~
+                    "any remaining outcome. Do not ask permission to call tools." ~
                     // The final-answer round builds its own minimal prompt, so
                     // it must re-apply the selected response style; otherwise
                     // the answer the user reads would ignore verbosity.

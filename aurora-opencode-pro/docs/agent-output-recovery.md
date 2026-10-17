@@ -7,11 +7,10 @@ calls. Detection covers growing streams and settled responses, including a
 single complete invocation with no structured call.
 
 The failed response stays in the saved chat for diagnosis but is excluded from
-subsequent provider requests. Aurora offers one recovery attempt per real user
-instruction, retaining tool schemas and successful tool results. A second
-failure leaves a visible error and a blocked task; automatic resend and
-computer-use continuation cannot restart it. A new user instruction opens a
-fresh recovery budget. The budget is recorded in the conversation branch.
+subsequent provider requests. Aurora retains tool schemas and successful tool
+results while requesting a valid action or supported answer. Repeated failures
+continue recovery and can route to the configured diagnostic reviewer. They do
+not require the user to restart an unfinished task. Stop still cancels execution.
 
 Whole-answer replays with only a small addition also use this recovery path.
 For llama.cpp, folding a trailing system continuation now adds a wire-only user
@@ -22,8 +21,9 @@ The identical-call limit counts executions since the latest real user
 instruction or successful file mutation. Source edits, including comment and
 whitespace changes, release an identical build command. No-op and failed edits
 do not release it.
-An exhausted call receives the same single recovery attempt; requesting it
-again stops the task instead of opening an unlimited loop of skipped results.
+An exhausted call is skipped and recovery requests a different action or
+hypothesis. Its repeated effects are never executed, and its limit does not
+terminate the user's whole plan.
 
 ## Provider diagnostics
 
@@ -51,7 +51,7 @@ python scripts/check-opencode-chat.py --pro
 ```
 
 The first check uses a local HTTP/SSE fixture and separate test executables.
-It verifies one recovery, no execution of printed XML, stopping after repeated
+It verifies recovery, no execution of printed XML, continued recovery after repeated
 failure, prose-loop recovery, replay detection, diagnostic redaction, and build
 guard resets. The optional snapshot replays the three identified archived
 responses. These checks do not contact a model provider or replace the live app.
