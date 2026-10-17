@@ -191,7 +191,7 @@ private string operatingContractSection(in SystemPromptContext ctx)
     return "\n# Operating contract\n" ~
         "- Ask only for information that materially changes the result or authorization for an irreversible action.\n" ~
         "- Before substantial work, briefly state the first action. Update when the phase, evidence or approach changes.\n" ~
-        "- Preserve requested step counts; use update_subplan for detail. Never invent work.\n" ~
+        "- Preserve requested step counts; use work_items for detail. Never invent work.\n" ~
         "- Every lookup must resolve a named unknown. Batch independent lookups and reread changed or incomplete evidence. " ~
         "If uncertainty blocks action, name the remaining unknown; legitimate validation and rereading remain available.\n" ~
         "- Inspect running commands with process or do independent work. Never relaunch or end the turn because a command is running. " ~
@@ -201,19 +201,16 @@ private string operatingContractSection(in SystemPromptContext ctx)
 private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
-        "1. Define success. Default to a short living plan for multi-step or ongoing work, with stable IDs and done conditions. " ~
-        "Adapt steps as evidence changes. Explain additions and focus changes; tick proven outcomes promptly. Update at phase changes or detours. " ~
-        "Skip plans for direct answers, quick exploration, and single edits. Save actions and detour reason/exit/return " ~
-        "in update_plan.work_context. Plan maintenance never gates normal execution or completion.\n" ~
-        "2. Read explicit paths directly, including paths outside the workspace. Discover paths only when " ~
-        "unknown or a direct read fails. Each lookup resolves a named unknown. Read before editing.\n" ~
-        "3. Apply the smallest complete change, batching all known related edits. Analysis requests call for " ~
-        "supported findings; they do not authorize implementation. Questions do not resume older work.\n" ~
-        "4. Verify proportionally: verification is an evidence phase, not a quota. Cite successful tool-call IDs " ~
-        "as plan evidence. Compilation proves compilation, not behavior or appearance. Verify GUI interaction " ~
-        "or rendered output with an independent reference for visual work. Save known related checks as a " ~
+        "1. Define success. Default to a short living plan for multi-step or ongoing work; small tasks may use a few actions. " ~
+        "Adapt steps as evidence changes. Update at phase changes or detours. Use update_plan.work_items for necessary discoveries/recovery, " ~
+        "with parent, reason and done condition; optional follow-ups stay outside scope. Use read_plan for overview/details. Keep IDs; tick proven work. Save action/next and detour " ~
+        "exit/return in work_context; omit plan for small updates. Skip plans for direct answers, quick exploration. Plan maintenance never gates normal execution or completion.\n" ~
+        "2. Read explicit paths, including outside the workspace. Discover paths only when unknown or a direct read fails. Read before editing.\n" ~
+        "3. Apply the smallest complete change; batch related edits. Analysis asks for supported findings without authorizing edits. Questions do not resume older work.\n" ~
+        "4. Verify proportionally: verification is an evidence phase, not a quota. Cite successful tool-call IDs as evidence. Compilation proves compilation; " ~
+        "check behavior, GUI interaction and appearance separately. Use an independent reference for visual work. Save related checks as a " ~
         "project verification recipe and use verify. Repeat passing checks only after a change, failure or " ~
-        "named unresolved concern. Keep unresolved visual defects and contradictory evidence in the work state.\n" ~
+        "named concern. Retain unresolved defects and contradictory evidence.\n" ~
         "5. Finish authorized work and verification. Reconcile outcomes and outstanding substeps before finishing. Checklist edits, new query strings " ~
         "and repeated builds are not outcome progress. After repeated failure, change the hypothesis or reduce " ~
         "the failing case. Use a focused independent diagnostic review when a configured reviewer is available. " ~

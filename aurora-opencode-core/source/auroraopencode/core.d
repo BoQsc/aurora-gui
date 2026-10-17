@@ -855,6 +855,57 @@ public struct TaskWorkContext
     string doneWhen;
     string returnTo;
     string nextStepId;
+    string workItemId;
+}
+
+public struct TaskWorkItem
+{
+    TaskStep step;
+    string parentId;
+    string origin = "planned";
+    string reason;
+    bool required = true;
+}
+
+public JSONValue taskWorkItemsToJson(const(TaskWorkItem)[] items)
+{
+    auto result = JSONValue(string[].init);
+    foreach (item; items)
+    {
+        auto row = taskStepsToJson([item.step])[0];
+        row["parentId"] = item.parentId; row["origin"] = item.origin;
+        row["reason"] = item.reason; row["required"] = item.required;
+        result.array ~= row;
+    }
+    return result;
+}
+
+public TaskWorkItem[] taskWorkItemsFromJson(JSONValue value)
+{
+    TaskWorkItem[] result;
+    if (value.type != JSONType.array) return result;
+    foreach (row; value.array)
+    {
+        if (row.type != JSONType.object) continue;
+        auto copy = parseJSON(row.toString());
+        const deferred = "status" in row.object && row["status"].type == JSONType.string && row["status"].str == "deferred";
+        if (deferred) copy["status"] = "pending";
+        auto steps = taskStepsFromJson(JSONValue([copy]));
+        if (!steps.length) continue;
+        TaskWorkItem item; item.step = steps[0];
+        if (deferred) item.step.status = "deferred";
+        foreach (key; ["parentId", "origin", "reason"])
+            if (auto field = key in row.object)
+                if (field.type == JSONType.string)
+                {
+                    if (key == "parentId") item.parentId = field.str;
+                    else if (key == "origin") item.origin = field.str;
+                    else item.reason = field.str;
+                }
+        if (auto field = "required" in row.object) item.required = field.type != JSONType.false_;
+        result ~= item;
+    }
+    return result;
 }
 
 public struct TaskContract
@@ -868,6 +919,7 @@ public struct TaskContract
     string[] decisions;
     string blocker;
     TaskWorkContext work;
+    TaskWorkItem[] workItems;
 }
 
 public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
@@ -889,7 +941,9 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
     work["doneWhen"] = session.contract.work.doneWhen;
     work["returnTo"] = session.contract.work.returnTo;
     work["nextStepId"] = session.contract.work.nextStepId;
+    work["workItemId"] = session.contract.work.workItemId;
     value["workContext"] = work;
+    value["workItems"] = taskWorkItemsToJson(session.contract.workItems);
     root["taskContract"] = value;
     root["verificationScope"] = session.verificationScope;
     root["taskArchive"] = JSONValue(session.taskArchive);
@@ -924,6 +978,7 @@ public void readTaskContract(ref ChatSession session, JSONValue root)
             session.contract = TaskContract(field("id"), field("startMessageId"),
                 field("intent"), field("currentIntent"), field("requestedOutcome"),
                 list("constraints"), list("decisions"), field("blocker"));
+            if (auto items = "workItems" in value.object) session.contract.workItems = taskWorkItemsFromJson(*items);
             if (auto work = "workContext" in value.object)
                 if (work.type == JSONType.object)
                 {
@@ -934,7 +989,7 @@ public void readTaskContract(ref ChatSession session, JSONValue root)
                         return "";
                     }
                     session.contract.work = TaskWorkContext(workField("stepId"), workField("action"),
-                        workField("nextAction"), workField("detourReason"), workField("doneWhen"), workField("returnTo"), workField("nextStepId"));
+                        workField("nextAction"), workField("detourReason"), workField("doneWhen"), workField("returnTo"), workField("nextStepId"), workField("workItemId"));
                 }
         }
     if (auto value = "taskArchive" in root.object)

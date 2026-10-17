@@ -1150,7 +1150,7 @@ int main(string[] args)
         toolSteeringPrompt(false).indexOf(
             "Plan maintenance never gates normal execution or completion") >= 0 &&
         toolSteeringPrompt(false).indexOf("Adapt steps as evidence changes") >= 0 &&
-        toolSteeringPrompt(false).indexOf("Explain additions and focus changes; tick proven outcomes promptly") >= 0 &&
+        toolSteeringPrompt(false).indexOf("Use update_plan.work_items for necessary discoveries/recovery") >= 0 &&
         toolSteeringPrompt(false).indexOf(
             "Finish authorized work and verification") >= 0 &&
         toolSteeringPrompt(false).indexOf("request_input") >= 0,

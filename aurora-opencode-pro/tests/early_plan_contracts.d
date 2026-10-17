@@ -219,12 +219,24 @@ int main()
     foreach (i; 0 .. 3) assert(root.taskStepStatusForTesting(i) == "completed");
     writeln("PASS editing and accepted verification trigger bounded reconciliation without delaying tools or fabricating ticks");
 
+    fresh();
+    record(`{"plan":[{"id":"project","step":"Deliver the document","kind":"edit","status":"in_progress"}]}`);
+    run([OpenCodeToolCall("current-phase-write", "write", `{"filePath":` ~ JSONValue(phaseFile).toString ~ `,"content":"phase complete"}`)]);
+    record(`{"work_items":[{"id":"child-check","step":"Verify document","kind":"verify","status":"in_progress","done":"Regression tests pass"}]}`);
+    const beforeChildCheck = root.userMessageCountForTesting();
+    run([OpenCodeToolCall("child-check-receipt", "run", `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`)]);
+    assert(root.userMessageCountForTesting() == beforeChildCheck && !root.planNeedsUpdateForTesting(),
+        "A tracked verification action incorrectly made its broader outcome stale");
+    record(`{"work_items":[{"id":"child-check","status":"completed","evidence":["child-check-receipt"]}]}`);
+    assert(root.taskStepStatusForTesting(0) == "in_progress");
+    writeln("PASS detailed work tracks a phase within a broader outcome without forcing a checklist rewrite");
+
     auto prompt = buildSystemPrompt(true, state, "win32");
     assert(prompt.indexOf("Default to a short living plan for multi-step or ongoing work") >= 0);
     assert(prompt.indexOf("Plan maintenance never gates normal execution or completion") >= 0);
     assert(prompt.indexOf("Update at phase changes or detours") >= 0);
     assert(prompt.indexOf("Adapt steps as evidence changes") >= 0);
-    assert(prompt.indexOf("single edits") >= 0);
+    assert(prompt.indexOf("small tasks may use a few actions") >= 0);
     window.close();
     return 0;
 }

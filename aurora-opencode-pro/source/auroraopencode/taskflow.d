@@ -4,7 +4,7 @@ import auroraopencode.core;
 import auroraopencode.requestintent;
 import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.verification : verificationCheck;
-import std.algorithm : canFind;
+import std.algorithm : canFind, min;
 import std.array : appender;
 import std.conv : to;
 import std.digest : toHexString;
@@ -129,6 +129,8 @@ void remapTaskContract(ref ChatSession session, string[string] ids)
     foreach (ref plan; session.nestedPlans)
         foreach (ref step; plan.steps)
             foreach (ref evidence; step.evidence) if (auto mapped = evidence in ids) evidence = *mapped;
+    foreach (ref item; session.contract.workItems)
+        foreach (ref evidence; item.step.evidence) if (auto mapped = evidence in ids) evidence = *mapped;
     foreach (ref snapshot; session.taskArchive)
         try
         {
@@ -230,7 +232,7 @@ string evidenceKind(const ref ChatMessage message)
         }
         catch (Exception) {}
     if (message.role != "tool" || message.failed) return "";
-    if (["read", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
+    if (["read", "read_plan", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
     if (message.toolName == "dshell") return message.toolArgs.canFind("\"list\"") || message.toolArgs.canFind("\"info\"") ? "research" : "";
     if (["write", "edit", "apply_patch", "copy", "move", "rename", "remove", "download", "create_folder"].canFind(message.toolName)) return "edit";
     if (message.toolName == "verify") return "verify";
@@ -494,17 +496,31 @@ string planUpdateText(const ref ChatSession session, string arguments)
 {
     const root = parseJSON(arguments);
     const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-    const steps = normalizedPlan(session, root["plan"], session.taskSteps, !replacement);
+    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement) : session.taskSteps;
     auto output = appender!string();
     output.put("Plan updated");
     if (auto reason = "explanation" in root.object)
         if (reason.type == JSONType.string && reason.str.length) output.put(" (" ~ reason.str ~ ")");
     output.put(":");
-    foreach (i, step; steps)
+    if ("plan" in root.object) foreach (i, step; steps)
     {
         const marker = step.status == "completed" ? "[x]" : step.status == "in_progress" ? "[>]" : "[ ]";
         output.put("\n" ~ to!string(i + 1) ~ ". " ~ marker ~ " " ~ step.text);
         if (step.done.length) output.put(" (done: " ~ step.done ~ ")");
+    }
+    if (!("plan" in root.object)) output.put(" checklist retained.");
+    if ("work_items" in root.object)
+    {
+        import auroraopencode.worktracking : normalizedWorkItems;
+        foreach (item; normalizedWorkItems(session, root, steps))
+            foreach (row; root["work_items"].array)
+                if (("id" in row.object && row["id"].str == item.step.id) ||
+                    (!("id" in row.object) && "step" in row.object && row["step"].str == item.step.text))
+                {
+                    output.put("\nWork " ~ item.step.id ~ " [" ~ item.step.status ~ "] " ~ item.step.text ~
+                        (item.required ? " (required)" : " (follow-up)"));
+                    break;
+                }
     }
     return output.data;
 }
@@ -516,12 +532,21 @@ TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep
     foreach (i, step; steps) if (step.status == "in_progress") { current = i; break; }
     if (current == steps.length)
         foreach (i, step; steps) if (step.status != "completed") { current = i; break; }
-    if (current == steps.length) return result;
-    if (session.contract.work.stepId == steps[current].id) result = session.contract.work;
-    result.stepId = steps[current].id;
-    if (!result.action.length) result.action = steps[current].text;
+    if (current == steps.length && steps.length) return result;
+    if (!steps.length)
+    {
+        result = session.contract.work;
+        result.stepId = ""; result.nextStepId = "";
+        if (!result.action.length) result.action = session.objective;
+    }
+    if (current < steps.length && session.contract.work.stepId == steps[current].id) result = session.contract.work;
+    if (current < steps.length)
+    {
+        result.stepId = steps[current].id;
+        if (!result.action.length) result.action = steps[current].text;
+    }
     size_t next = steps.length;
-    foreach (i, step; steps[current + 1 .. $])
+    foreach (i, step; steps[min(current + 1, steps.length) .. $])
         if (step.status != "completed") { next = current + 1 + i; break; }
     if (next == steps.length)
         foreach (i, step; steps[0 .. current])
@@ -530,6 +555,30 @@ TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep
     if (result.nextStepId != nextId || !result.nextAction.length)
         result.nextAction = next < steps.length ? steps[next].text : "";
     result.nextStepId = nextId;
+    string activeItem;
+    foreach (item; session.contract.workItems)
+        if (item.parentId == result.stepId && item.step.status == "in_progress" && item.required)
+        {
+            activeItem = item.step.id;
+            if (result.workItemId != activeItem)
+            {
+                result.action = item.step.text;
+                result.nextAction = next < steps.length ? steps[next].text : "";
+                foreach (remaining; session.contract.workItems)
+                    if (remaining.parentId == result.stepId && remaining.required && remaining.step.status == "pending")
+                    { result.nextAction = remaining.step.text; break; }
+            }
+            break;
+        }
+    if (!activeItem.length && result.workItemId.length)
+    {
+        result.action = current < steps.length ? steps[current].text : session.objective;
+        result.nextAction = next < steps.length ? steps[next].text : "";
+        foreach (remaining; session.contract.workItems)
+            if (remaining.parentId == result.stepId && remaining.required && remaining.step.status == "pending")
+            { result.nextAction = remaining.step.text; break; }
+    }
+    result.workItemId = activeItem;
     if (root.type != JSONType.object) return result;
     if (auto context = "work_context" in root.object)
     {
@@ -537,7 +586,7 @@ TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep
         { ChatSession empty; result = workContextForPlan(empty, steps); }
         else if (context.type == JSONType.object)
         {
-            const originalAction = result.action;
+            const originalAction = session.contract.work.action.length ? session.contract.work.action : result.action;
             foreach (i, key; ["action", "next_action", "detour_reason", "done_when", "return_to"])
                 if (auto field = key in context.object)
                     if (field.type == JSONType.string)
@@ -556,8 +605,9 @@ TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep
                         }
                     }
             if (result.detourReason.length && !result.returnTo.length) result.returnTo = originalAction;
+            if (result.detourReason.length && !result.doneWhen.length) result.doneWhen = current < steps.length ? steps[current].done : session.objective;
             if (!result.detourReason.length) { result.doneWhen = ""; result.returnTo = ""; }
-            if (!result.action.length) result.action = steps[current].text;
+            if (!result.action.length) result.action = current < steps.length ? steps[current].text : session.objective;
         }
     }
     // Moving to independent work can be legitimate. Keep the paused outcome's
@@ -608,7 +658,12 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     JSONValue root;
     try root = parseJSON(arguments);
     catch (Exception) return "Error: invalid plan JSON.";
-    if (root.type != JSONType.object || !("plan" in root.object)) return "Error: plan is required.";
+    if (root.type != JSONType.object) return "Error: update_plan requires an object.";
+    bool update;
+    foreach (key; ["plan", "work_items", "work_context", "objective", "constraints", "decisions"]) if (key in root.object) update = true;
+    if (!update) return "Error: provide plan, work_items, work_context or task metadata.";
+    if (auto plan = "plan" in root.object)
+        if (plan.type != JSONType.array || !plan.array.length) return "Error: plan must be a non-empty array.";
     auto evidenceIndex = taskEvidenceIndex(session);
     bool replacement;
     if (auto f = "replace_entire_plan" in root.object) replacement = f.type == JSONType.true_;
@@ -618,7 +673,7 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         if (!explicitlyNewTask(request) && !explicitPlanReplacementRequested(request))
             return "Error: replacing unfinished outcomes requires an explicit user scope change. Preserve their IDs and statuses.";
     }
-    auto steps = normalizedPlan(session, root["plan"], previous, !replacement);
+    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], previous, !replacement) : previous;
     string reason;
     if (auto field = "explanation" in root.object)
     {
@@ -701,7 +756,8 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         if (step.status == "completed" && !unchangedCompleted && !supportedStep(session, step, evidenceIndex))
             return "Error: completion needs successful evidence for '" ~ step.text ~ "'. Cite tool-call IDs; run the relevant check for verification outcomes.";
     }
-    return "";
+    import auroraopencode.worktracking : workItemsError;
+    return workItemsError(session, root, steps);
 }
 
 string explorationGuidance(const ref ChatSession session)

@@ -523,11 +523,17 @@ private OpenCodeToolDef taskBlockerToolDefinition()
 }
 
 /// Record the visible plan, with at most one step in progress.
+private OpenCodeToolDef readPlanToolDefinition()
+{
+    return OpenCodeToolDef("read_plan", "Read this task without changing it. Summary shows objective, position and outstanding work. Details pages full outcome/action records, optionally under parent_id. Use this to recover precise acceptance, discoveries or follow-ups after compaction.",
+        `{"type":"object","properties":{"view":{"type":"string","enum":["summary","details"]},"collection":{"type":"string","enum":["outcomes","actions"]},"parent_id":{"type":"string"},"include_completed":{"type":"boolean"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}`);
+}
+
 private OpenCodeToolDef updatePlanToolDefinition()
 {
     return OpenCodeToolDef(
         "update_plan",
-        "Update the task plan with a list of steps, each carrying a status " ~
+        "Track the objective, outcomes and small work incrementally. Use work_items for meaningful discoveries, recovery actions and optional follow-ups; record their reason, parent and completion condition. Omit plan when only recording small work or work_context. Required actions remain accountable; optional follow-ups must not expand the current scope. Update the task plan with a list of steps, each carrying a status " ~
         "of `pending`, `in_progress` or `completed`. Record the plan before " ~
         "starting a multi-step task, before substantial inspection or edits: " ~
         "include investigation when needed, list known steps up front, mark the current " ~
@@ -545,7 +551,7 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "chat title. Each item may optionally carry `kind` " ~
         "(research|edit|verify|answer|other), `id`, `evidence` (successful tool-call IDs), and `done` (how completion is " ~
         "proven). Completion needs supporting evidence. Add outcomes only for requested work or concrete findings. Explain additions, reordering, changed acceptance and paused/skipped outcomes in explanation. To reopen completed work, list its stable ID in reopen_steps and explain the defect or changed requirement. Normal completed-to-next progress needs no explanation. Use work_context for current/next actions and detour reason, done_when and return_to; clear it with null on return. Update at phase boundaries.",
-        `{"type":"object","properties":{"objective":{"type":"string","description":"A concise, rewritten statement of the task's goal in your own words, not a copy of the user's message or the chat title"},"explanation":{"type":"string","description":"Why additions, reordering, changed acceptance, pauses, skips or reopening are needed for the requested goal or a concrete finding."},"reopen_steps":{"type":"array","items":{"type":"string"},"description":"Stable IDs of completed outcomes deliberately reopened; explanation must name the defect or changed requirement."},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"},"kind":{"type":"string","enum":["research","edit","verify","answer","other"],"description":"Optional step category; informational only, never required"},"done":{"type":"string","description":"Concrete acceptance condition; preserved on later updates when omitted."},"id":{"type":"string","description":"Stable outcome ID; reuse it when updating this step. Omission reuses the matching existing step or assigns an ID."},"evidence":{"type":"array","items":{"type":"string"},"description":"Successful tool-call IDs proving this outcome. Completed outcomes require matching evidence; verification needs an accepted current check."},"blocker":{"type":"string","description":"Specific remaining blocker, when any."}},"required":["step","status"]},"description":"The full checklist, including existing steps"},"constraints":{"type":"array","items":{"type":"string"},"description":"Current user constraints, retained when omitted."},"decisions":{"type":"array","items":{"type":"string"},"description":"Established decisions and rejected hypotheses needed after compaction; retained when omitted."},"work_context":{"type":["object","null"],"description":"Durable work position under the current outcome. Omitted fields persist; null clears detour context. Current step is bound automatically.","properties":{"step_id":{"type":"string"},"action":{"type":"string"},"next_action":{"type":"string"},"detour_reason":{"type":"string"},"done_when":{"type":"string"},"return_to":{"type":"string"}}}},"required":["plan"]}`
+        `{"type":"object","properties":{"objective":{"type":"string","description":"A concise, rewritten statement of the task's goal in your own words, not a copy of the user's message or the chat title"},"explanation":{"type":"string","description":"Why additions, reordering, changed acceptance, pauses, skips or reopening are needed for the requested goal or a concrete finding."},"reopen_steps":{"type":"array","items":{"type":"string"},"description":"Stable IDs of completed outcomes deliberately reopened; explanation must name the defect or changed requirement."},"replace_entire_plan":{"type":"boolean","description":"True only when the user explicitly asks to discard the existing plan and replace it"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status"},"kind":{"type":"string","enum":["research","edit","verify","answer","other"],"description":"Optional step category; informational only, never required"},"done":{"type":"string","description":"Concrete acceptance condition; preserved on later updates when omitted."},"id":{"type":"string","description":"Stable outcome ID; reuse it when updating this step. Omission reuses the matching existing step or assigns an ID."},"evidence":{"type":"array","items":{"type":"string"},"description":"Successful tool-call IDs proving this outcome. Completed outcomes require matching evidence; verification needs an accepted current check."},"blocker":{"type":"string","description":"Specific remaining blocker, when any."}},"required":["step","status"]},"description":"Optional full outcome checklist. Omit for small work records, detours or metadata updates; existing outcomes remain unchanged."},"constraints":{"type":"array","items":{"type":"string"},"description":"Current user constraints, retained when omitted."},"decisions":{"type":"array","items":{"type":"string"},"description":"Established decisions and rejected hypotheses needed after compaction; retained when omitted."},"work_context":{"type":["object","null"],"description":"Durable work position under the current outcome. Omitted fields persist; null clears detour context. Current step is bound automatically.","properties":{"step_id":{"type":"string"},"action":{"type":"string"},"next_action":{"type":"string"},"detour_reason":{"type":"string"},"done_when":{"type":"string"},"return_to":{"type":"string"}}},"work_items":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string","description":"Task step text"},"status":{"type":"string","enum":["pending","in_progress","completed","deferred"],"description":"Step status"},"kind":{"type":"string","enum":["research","edit","verify","answer","other"],"description":"Optional step category; informational only, never required"},"done":{"type":"string","description":"Concrete acceptance condition; preserved on later updates when omitted."},"id":{"type":"string","description":"Stable outcome ID; reuse it when updating this step. Omission reuses the matching existing step or assigns an ID."},"evidence":{"type":"array","items":{"type":"string"},"description":"Successful tool-call IDs proving this outcome. Completed outcomes require matching evidence; verification needs an accepted current check."},"blocker":{"type":"string","description":"Specific remaining blocker, when any."},"parent_id":{"type":"string","description":"Stable parent outcome ID. Omit to use the active outcome; empty attaches to the objective."},"origin":{"type":"string","enum":["planned","discovery","recovery"]},"reason":{"type":"string","description":"Why unexpected work is needed, or why a follow-up is outside the current objective."},"required":{"type":"boolean","description":"Defaults true. Required work must finish. False records an optional follow-up without expanding current scope."}}},"description":"Incremental small actions/discoveries/recovery work. Existing IDs update in place; new records append; omitted records persist. New records need step text; existing records can be updated by id alone."}},"anyOf":[{"required":["plan"]},{"required":["work_items"]},{"required":["work_context"]},{"required":["objective"]},{"required":["constraints"]},{"required":["decisions"]}]}`
     );
 }
 
@@ -812,6 +818,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        readPlanToolDefinition(),
         taskBlockerToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
@@ -881,6 +888,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         editToolDefinition(),
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
+        readPlanToolDefinition(),
         taskBlockerToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
@@ -4622,6 +4630,12 @@ private ToolExecution runUpdatePlan(string args, string workspace)
     if (value.type != JSONType.object)
         return ToolExecution("update_plan",
             "Error: update_plan requires a `plan` array.", true);
+    if (!("plan" in value.object))
+    {
+        foreach (key; ["work_items", "work_context", "objective", "constraints", "decisions"])
+            if (key in value.object) return ToolExecution("update_plan", "Plan updated; checklist retained. Work records and context will be reconciled with the current task.", false);
+        return ToolExecution("update_plan", "Error: provide plan, work_items, work_context or task metadata.", true);
+    }
     JSONValue[] plan;
     if (auto field = "plan" in value.object)
         if (field.type == JSONType.array)
@@ -6346,6 +6360,8 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return runEdit(call.arguments, workspace);
         case "apply_patch":
             return runApplyPatch(call.arguments, workspace);
+        case "read_plan":
+            return ToolExecution("read_plan", "Reading this conversation's durable task state.", false);
         case "update_plan":
             return runUpdatePlan(call.arguments, workspace);
         case "task_blocker":

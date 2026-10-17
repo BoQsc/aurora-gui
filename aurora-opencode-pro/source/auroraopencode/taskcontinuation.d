@@ -1,6 +1,7 @@
 module auroraopencode.taskcontinuation;
 
 import auroraopencode.core : ChatSession, activeMessagePath;
+import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.requestintent : answerOnlyRequest;
 import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
 import std.digest.sha : sha256Of;
@@ -78,6 +79,9 @@ bool unfinishedTask(const ref ChatSession session)
         foreach (step; plan.steps)
             if (step.status != "completed" ||
                 (session.contract.id.length && !supportedStep(session, step, evidenceIndex))) return true;
+    foreach (item; session.contract.workItems)
+        if (item.required && (item.step.status != "completed" ||
+            (session.contract.id.length && !supportedStep(session, item.step, evidenceIndex)))) return true;
     if (session.contract.id.length && session.taskSteps.length == 0 &&
         (session.contract.currentIntent == "implementation" || session.contract.currentIntent == "continuation") &&
         (!taskHasActionEvidence(session) || taskRequiresPlan(session))) return true;
@@ -160,6 +164,12 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
                 ++result.completed;
                 foreach (id; step.evidence) completedEvidence[id] = true;
             }
+    foreach (item; session.contract.workItems)
+        if (item.required && supportedStep(session, item.step, evidenceIndex))
+        {
+            ++result.completed;
+            foreach (id; item.step.evidence) completedEvidence[id] = true;
+        }
     foreach (id; completedEvidence.keys) result.evidence ~= id;
     result.verified = session.verificationStatus == "passed";
     result.verificationRequired = session.verificationStatus == "required" || session.verificationStatus == "failed";
@@ -168,9 +178,20 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
             "with update_plan and cite successful tool-call IDs for completed work; do not invent extra work. ";
     if (!taskHasActionEvidence(session) && session.contract.intent != "analysis")
         result.remaining ~= "Actual requested action evidence is still missing; prose or a check of unchanged code is insufficient. ";
+    size_t omitted;
+    void remaining(string label, string text, string done)
+    {
+        if (result.remaining.length < 5000)
+            result.remaining ~= label ~ taskExcerpt(text, 320) ~ ". Acceptance: " ~ taskExcerpt(done, 320) ~ ". ";
+        else ++omitted;
+    }
     foreach (step; session.taskSteps)
         if (step.status != "completed" || !supportedStep(session, step, evidenceIndex))
-            result.remaining ~= "Remaining outcome: " ~ step.text ~ ". Acceptance: " ~ step.done ~ ". ";
+            remaining("Remaining outcome: ", step.text, step.done);
+    foreach (item; session.contract.workItems)
+        if (item.required && (item.step.status != "completed" || !supportedStep(session, item.step, evidenceIndex)))
+            remaining("Required action: ", item.step.text, item.step.done);
+    if (omitted) result.remaining ~= "More required work remains saved; use read_plan details to recover its exact acceptance. ";
     if (previous.type == JSONType.object)
     {
         bool newEvidence;

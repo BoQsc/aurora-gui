@@ -79,6 +79,51 @@ The base prompt also requests concise, useful progress and final answers.
 Verbosity controls visible language independently of reasoning effort. Tool
 batching, the stable prompt prefix and image retirement remain supported.
 
+## Adaptive work and discoveries
+
+The durable task tracks the requested objective, larger outcomes and small work
+records. A small task can use only work records; a larger task attaches them to
+stable outcome IDs. `update_plan` accepts incremental `work_items` and
+`work_context` without resending the checklist. Omitted records persist and new
+records append. Completing the active small action updates its recorded focus;
+explicit context can describe the more precise next action.
+
+Record discoveries that change necessary work, approach or acceptance. Each
+record identifies its parent, reason, origin (`planned`, `discovery`, `recovery`)
+and completion condition. Batch related notes with useful execution. Ordinary
+tool results do not require a new record. Planned detail and necessary recovery
+belong under existing outcomes; a new requested result belongs at the end of the
+outcome list. Detours retain an exit condition and return point. Existing parent
+acceptance supplies defaults when those are already known.
+
+Required work remains outstanding until supported by compatible successful tool
+evidence. It cannot disappear from an incremental update, and an outcome cannot
+complete with open required actions. Explicit, explained optional follow-ups
+remain saved outside current scope; they do not silently become new obligations.
+Reclassification, reparenting or reopening requires an explanation, and changed
+completed acceptance requires reopening first. No records are required for a
+quick answer or a task that needs no tracking.
+
+`read_plan` provides a read-only summary or paged full details. Details can select
+outcomes or actions and filter actions by parent ID, including objective-level
+actions with an empty parent. Offset/limit and completed-record controls let the
+agent recover precise evidence or acceptance after compaction without rewriting
+state. The normal model context prioritizes current actions and required open
+work, counts retained records and shows recent optional follow-ups. Full records
+survive persistence, snapshots, branch navigation, task archives and journal
+replay. No UI layout changes are involved.
+
+```json
+{"work_items":[{"id":"compat","step":"Preserve legacy IDs","parent_id":"import","origin":"discovery","reason":"Existing files use the legacy format","done":"Legacy regression passes","status":"in_progress"}],"work_context":{"action":"Preserve legacy IDs","detour_reason":"Legacy format discovered","done_when":"Legacy regression passes","return_to":"Finish importer"}}
+```
+
+```json
+{"view":"details","collection":"actions","parent_id":"import","offset":0,"limit":12}
+```
+
+Run `python tests/test_adaptive_work.py` for real HTTP/native coverage, or add
+`--production` to exercise the built executable in isolated fixture storage.
+
 ## Verification and measurement
 
 `tests/conversation_quality_contracts.d` covers intent, scope switches,

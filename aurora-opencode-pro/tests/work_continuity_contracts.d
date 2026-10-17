@@ -66,7 +66,7 @@ int main()
 
     auto bad = parseJSON(partial.toString());
     bad["work_context"] = parseJSON(`{"action":"Migrate","detour_reason":"Required compatibility"}`);
-    assert(planUpdateError(s, bad.toString(), s.taskSteps).length, "A detour had no exit condition");
+    assert(!planUpdateError(s, bad.toString(), s.taskSteps).length, "The existing outcome could not supply a detour exit condition");
     bad["work_context"] = parseJSON(`{"step_id":"other","action":"Migrate"}`);
     assert(planUpdateError(s, bad.toString(), s.taskSteps).length);
     s.taskSteps = normalizedPlan(s, partial["plan"], s.taskSteps);

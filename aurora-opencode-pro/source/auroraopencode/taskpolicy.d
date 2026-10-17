@@ -180,7 +180,7 @@ string verificationCoverage(const ref ChatSession session, string extraCheck = "
 
 bool diagnosticToolAllowed(string name)
 {
-    return ["read", "grep", "glob", "view_image", "checksum", "tool_status"].canFind(name);
+    return ["read", "read_plan", "grep", "glob", "view_image", "checksum", "tool_status"].canFind(name);
 }
 
 /// The primary rebuild owner gets its reason/diagnostics. Other chats resume

@@ -79,6 +79,7 @@ import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateEr
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
     restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
 import auroraopencode.taskcontext : taskContext;
+import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
@@ -19026,8 +19027,9 @@ private void pollButtonSuggestionRequest()
     /// Returns true when a reminder was queued.
     private static bool checklistStale(const ref ChatSession session)
     {
-        if (!hasIncompleteTaskSteps(session) || session.taskStatus == "waiting_input" || taskInvestigation(session)) return false;
+        if (!session.taskSteps.length || !hasIncompleteTaskSteps(session) || session.taskStatus == "waiting_input" || taskInvestigation(session)) return false;
         const phase = planWorkPhase(session);
+        if (workTracksPhase(session, phase)) return false;
         bool active;
         foreach (step; session.taskSteps)
             if (step.status == "in_progress")
@@ -19075,7 +19077,7 @@ private void pollButtonSuggestionRequest()
         const refreshDue = checklistStale(session);
         bool phaseDue;
         foreach (step; session.taskSteps)
-            if (step.status == "in_progress")
+            if (step.status == "in_progress" && !workTracksPhase(session, phase))
                 phaseDue = (phase >= 1 && step.kind != "edit" && step.kind != "verify") ||
                     (phase >= 2 && step.kind != "verify");
         const recordDue = !hasIncompleteTaskSteps(session) &&
@@ -19510,15 +19512,18 @@ private void pollButtonSuggestionRequest()
             ? nestedPlanError(*session, toolArgs) : "";
         const imageError = !event.toolFailed && event.toolName == "retire_images"
             ? retireImagesSessionError(*session, toolArgs) : "";
+        const planView = !event.toolFailed && event.toolName == "read_plan" ? readPlanText(*session, toolArgs) : "";
+        const planViewError = planView.startsWith("Error:") ? planView : "";
         const blockerError = !event.toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input")
             ? taskBlockerError(toolArgs) : "";
         const toolFailed = event.toolFailed || planError.length > 0 ||
-            subplanError.length > 0 || imageError.length > 0 || blockerError.length > 0;
-        string toolText = planError.length > 0 ? planError :
+            subplanError.length > 0 || imageError.length > 0 || blockerError.length > 0 || planViewError.length > 0;
+        string toolText = planViewError.length > 0 ? planViewError : planError.length > 0 ? planError :
             subplanError.length > 0 ? subplanError :
             imageError.length > 0 ? imageError :
             blockerError.length > 0 ? blockerError :
-            !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) : event.text;
+            !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) :
+            !toolFailed && event.toolName == "read_plan" ? planView : event.text;
         const scopedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
             event.verificationCheck.length > 0 &&
             sameCheckout(event.verificationWorkspace, workspaceForSession(sessionIndex)) &&
@@ -19768,7 +19773,7 @@ private void pollButtonSuggestionRequest()
         catch (Exception) return;
         if (root.type != JSONType.object) return;
         auto plan = "plan" in root.object;
-        if (plan is null || plan.type != JSONType.array) return;
+        if (plan !is null && plan.type != JSONType.array) return;
         // The model rewrites the durable objective here so the plan card shows
         // the task's actual goal instead of a copy of the user's message, which
         // is also the chat title. An omitted field keeps the current objective.
@@ -19779,7 +19784,7 @@ private void pollButtonSuggestionRequest()
                 if (value.length > 0) session.objective = value;
             }
         const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        auto steps = normalizedPlan(session, *plan, session.taskSteps, !replacement);
+        auto steps = plan !is null ? normalizedPlan(session, *plan, session.taskSteps, !replacement) : session.taskSteps.dup;
         foreach (key; ["constraints", "decisions"])
             if (auto field = key in root.object)
                 if (field.type == JSONType.array)
@@ -19796,12 +19801,13 @@ private void pollButtonSuggestionRequest()
                 }
         session.nestedPlans = replacement ? null : retainNestedWork(session.taskSteps, steps, session.nestedPlans);
         rememberPlanRevision(session, root, session.taskSteps, steps);
+        session.contract.workItems = normalizedWorkItems(session, root, steps);
         session.contract.work = workContextForPlan(session, steps, root);
         session.taskSteps = steps;
         bool complete = steps.length > 0;
         foreach (step; steps)
             if (step.status != "completed") complete = false;
-        if (complete)
+        if (complete && !requiredWorkRemaining(session))
             session.taskStatus = session.verificationStatus == "required"
                 ? "verifying" : "completed";
         else if (session.taskStatus != "reviewing")
@@ -19862,7 +19868,7 @@ private void pollButtonSuggestionRequest()
             if (step.status != "completed") return true;
         foreach (plan; session.nestedPlans)
             foreach (step; plan.steps) if (step.status != "completed") return true;
-        return false;
+        return requiredWorkRemaining(session);
     }
 
     /// Move guidance entered during a live turn into the transcript only at a
@@ -21244,7 +21250,7 @@ private void pollButtonSuggestionRequest()
         if (error.length) return error;
         const root = parseJSON(arguments);
         const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        auto steps = normalizedPlan(session, root["plan"], session.taskSteps, !replacement);
+        const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement) : session.taskSteps;
         foreach (nested; session.nestedPlans)
             if (nested.parentStep <= session.taskSteps.length)
                 foreach (step; steps)

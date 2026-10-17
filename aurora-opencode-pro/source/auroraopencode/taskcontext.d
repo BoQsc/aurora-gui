@@ -7,7 +7,7 @@ import std.array : appender;
 import std.conv : to;
 import std.string : startsWith;
 
-private string excerpt(string value, size_t bytes)
+string taskExcerpt(string value, size_t bytes)
 {
     if (value.length <= bytes) return value;
     if (bytes < 4) return "";
@@ -24,7 +24,7 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     {
         if (!value.length || output.data.length + label.length + 5 >= budget) return;
         const available = budget - output.data.length - label.length - 1;
-        output.put(label ~ excerpt(value, min(limit, available)) ~ "\n");
+        output.put(label ~ taskExcerpt(value, min(limit, available)) ~ "\n");
     }
     line("Task: ", session.contract.id ~ " · intent: " ~ session.contract.intent ~ " · current request: " ~ session.contract.currentIntent, 256);
     const goalLimit = min(cast(size_t) 1200, budget / 8);
@@ -33,6 +33,7 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     if (request != session.objective) line("Current request: ", request, goalLimit);
     const work = workContextForPlan(session, session.taskSteps);
     line("Current step: ", work.stepId, 128);
+    line("Current action ID: ", work.workItemId, 128);
     line("Working on: ", work.action, 400);
     line("Next action: ", work.nextAction, 320);
     line("Detour: ", work.detourReason, 320);
@@ -51,7 +52,7 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     foreach (i, step; session.taskSteps)
         if (step.status != "completed")
             line(to!string(i + 1) ~ ". [" ~ step.status ~ "] " ~ step.id ~ ": ",
-                excerpt(step.text, perStep / 2) ~ "; done: " ~ excerpt(step.done, perStep / 2), perStep);
+                taskExcerpt(step.text, perStep / 2) ~ "; done: " ~ taskExcerpt(step.done, perStep / 2), perStep);
     string completed;
     foreach (step; session.taskSteps)
         if (step.status == "completed") completed ~= (completed.length ? ", " : "") ~ step.id;
@@ -70,6 +71,30 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
         if (auto proof = message.id in evidence)
             if ((*proof).startsWith("verify-current|") && receipts++ < 6)
                 line("Accepted check: ", (message.toolCallId.length ? message.toolCallId : message.id) ~ " = " ~ message.verificationCheck, 200);
+    }
+    if (session.contract.workItems.length)
+    {
+        size_t closedWork, openWork, followups;
+        const workBudget = min(cast(size_t) 3000, budget / 4);
+        const workStart = output.data.length;
+        foreach (status; ["in_progress", "pending"])
+            foreach (item; session.contract.workItems)
+                if (item.required && item.step.status == status && output.data.length - workStart < workBudget)
+                    line("Required action " ~ item.step.id ~ " [" ~ item.step.status ~ "] under " ~
+                        (item.parentId.length ? item.parentId : "objective") ~ ": ",
+                        item.step.text ~ "; done: " ~ item.step.done ~ "; " ~ item.origin ~ ": " ~ item.reason, 360);
+        foreach (item; session.contract.workItems)
+        {
+            if (item.step.status == "completed") ++closedWork;
+            else if (item.required) ++openWork;
+            else ++followups;
+        }
+        line("Work summary: ", to!string(openWork) ~ " required unfinished; " ~ to!string(closedWork) ~
+            " completed; " ~ to!string(followups) ~ " optional follow-ups. read_plan provides full details.", 160);
+        size_t shown;
+        foreach_reverse (item; session.contract.workItems)
+            if (!item.required && item.step.status != "completed" && shown++ < 3)
+                line("Optional follow-up " ~ item.step.id ~ ": ", item.step.text ~ "; why outside scope: " ~ item.reason, 240);
     }
     // Established decisions precede the recent audit trail; full text remains saved.
     foreach_reverse (decision; session.contract.decisions)
