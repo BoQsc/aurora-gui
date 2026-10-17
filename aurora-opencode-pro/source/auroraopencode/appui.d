@@ -77,7 +77,7 @@ import auroraopencode.planmode : experimentalStrictPlanEnabled,
 import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
-    restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork;
+    restoreBranchTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
@@ -19077,6 +19077,7 @@ private void pollButtonSuggestionRequest()
             if (message.role == "user" && !message.internal) { phase = 0; continue; }
             if (message.role != "tool" || message.failed) continue;
             if (message.toolName == "update_plan" || message.toolName == "update_subplan") { phase = 0; continue; }
+            if (message.toolName == "verify" || message.verificationCheck.length) phase = 2;
             if (message.toolName == "edit" || message.toolName == "write" || message.toolName == "apply_patch" ||
                 message.toolName == "remove" || message.toolName == "move" || message.toolName == "rename") phase = maxInt(phase, 1);
         }
@@ -19102,14 +19103,22 @@ private void pollButtonSuggestionRequest()
         if (lastNudged > 0 && phase <= lastPhase) return false;
         const refreshDue = hasIncompleteTaskSteps(session) &&
             since >= planRefreshNudgeCalls;
+        bool phaseDue;
+        foreach (step; session.taskSteps)
+            if (step.status == "in_progress")
+                phaseDue = (phase >= 1 && step.kind != "edit" && step.kind != "verify") ||
+                    (phase >= 2 && step.kind != "verify");
         const recordDue = !hasIncompleteTaskSteps(session) &&
             !planRecordedThisTurn(session) &&
             readOnlyExplorationCount(session) >= planGateExplorationCalls;
-        if (!refreshDue && !recordDue) return false;
+        if (!refreshDue && !recordDue && !phaseDue) return false;
         _planNudgedAt[session.id] = since;
         _planNudgedPhase[session.id] = phase;
         if (_pendingProgressGuidance.length == 0)
-            _pendingProgressGuidance = refreshDue
+            _pendingProgressGuidance = phaseDue
+                ? "Work has moved into editing or verification. Reconcile the existing outcomes: tick only work proven complete, " ~
+                    "keep unfinished outcomes visible, and explain a focus change or detour. Continue useful work without asking permission."
+                : refreshDue
                 ? "Your durable checklist is stale: it still shows steps " ~
                     "pending or in_progress, but no update_plan call has " ~
                     "refreshed it for " ~ to!string(since) ~ " tool results. " ~
@@ -19584,8 +19593,7 @@ private void pollButtonSuggestionRequest()
             session.taskStatus = "active";
             publishThreadUpdated(*session);
         }
-        else if (acceptedVerification &&
-            session.verificationStatus == "required")
+        else if (acceptedVerification)
         {
             invalidateChangedWorkspaceEvidence();
             const evidenceKey = buildNormalizedPath(event.verificationWorkspace).toLower();
@@ -19594,8 +19602,8 @@ private void pollButtonSuggestionRequest()
             _execution.verifiedWorkspace = event.verificationWorkspace;
             _execution.verifiedWorkspaceRevision = event.verificationRevision;
             session.verificationStatus = "passed";
-            session.taskStatus = hasIncompleteTaskSteps(*session)
-                ? "active" : "completed";
+            if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
+                session.taskStatus = hasIncompleteTaskSteps(*session) ? "active" : "completed";
             publishThreadUpdated(*session);
         }
 
@@ -19781,9 +19789,15 @@ private void pollButtonSuggestionRequest()
                     string[] values;
                     foreach (item; field.array) if (item.type == JSONType.string) values ~= item.str;
                     if (key == "constraints") session.contract.constraints = values;
-                    else session.contract.decisions = values;
+                    else
+                    {
+                        foreach (decision; session.contract.decisions)
+                            if (decision.startsWith("Plan change: ") && !values.canFind(decision)) values ~= decision;
+                        session.contract.decisions = values;
+                    }
                 }
         session.nestedPlans = replacement ? null : retainNestedWork(session.taskSteps, steps, session.nestedPlans);
+        rememberPlanRevision(session, root, session.taskSteps, steps);
         session.contract.work = workContextForPlan(session, steps, root);
         session.taskSteps = steps;
         bool complete = steps.length > 0;
@@ -19830,6 +19844,7 @@ private void pollButtonSuggestionRequest()
         foreach (ref nested; session.nestedPlans)
             if (nested.parentStep == parent)
             {
+                rememberPlanRevision(session, root, nested.steps, steps);
                 nested.steps = steps;
                 publishThreadUpdated(session);
                 markDirty();

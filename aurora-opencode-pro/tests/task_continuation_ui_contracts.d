@@ -63,6 +63,21 @@ int main()
     writeln("PASS seven native file writes finish without a plan or extra continuation, including after reload");
 
     root.newChatForTesting();
+    send("Implement the fixture plan consistency task.");
+    settled();
+    assert(root.taskStatusForTesting() == "completed" && root.taskStepCountForTesting() == 3);
+    foreach (i; 0 .. 3) assert(root.taskStepStatusForTesting(i) == "completed");
+    assert(root.lastAssistantContentForTesting() == "All consistent outcomes completed.");
+    assert(readText(buildPath(workspace, "consistent-first.md")) == "First outcome corrected");
+    assert(readText(buildPath(workspace, "consistent-second.md")) == "Second outcome");
+    assert(readText(buildPath(workspace, "consistent-third.md")) == "Compatibility outcome");
+    root.persistForTesting(); root.reloadSessionsForTesting();
+    assert(root.taskStatusForTesting() == "completed");
+    const consistent = root.taskStateJsonForTesting();
+    assert(consistent.indexOf("Plan change:") >= 0 && consistent.indexOf("compatibility outcome") >= 0);
+    writeln("PASS invalid additions/jumps/reopening recover internally while real work continues; justified detours, return points, correction and completion persist");
+
+    root.newChatForTesting();
     send("Finish all six fixture steps.");
     settled();
     assert(root.taskStatusForTesting() == "completed");

@@ -17,6 +17,18 @@ and detours while preserving objectives and completed outcomes. Direct answers,
 quick exploration and single edits need no plan. Plan maintenance is advisory:
 missing a plan never pauses normal tools or adds a completion round. Strict
 checklist enforcement requires an explicit opt-in.
+Existing plans require an explanation for added outcomes, changed acceptance,
+reordering, or pausing/skipping unfinished work. Normal completed-to-next progress
+needs no explanation. Completed outcomes can reopen only with an explicit
+`reopen_steps` ID and a reason; their old completion evidence is cleared. Stable
+IDs cannot silently change, duplicate outcomes are rejected, and completed
+acceptance cannot change while remaining checked. Reasons accompany durable
+decisions; an explained focus switch retains the paused outcome's return point.
+Entering editing or accepted verification prompts early internal reconciliation
+when the active item still describes an earlier phase. Reminders stay bounded
+and do not block tools, ask permission, or tick work without evidence.
+An accepted optional check also records a passed verification result, so an
+explicit verification outcome can complete even when no code change required it.
 Action evidence and required verification remain necessary. Evidence shows what executed;
 it cannot establish that a model chose complete behavioral assertions.
 
@@ -69,7 +81,7 @@ without provider requests.
 Run the existing HTTP/SSE suites for actual scheduler, UI and transport behavior:
 
 ```text
-python tests/run_architecture_checks.py conversation_quality_contracts task_continuation_contracts task_policy_contracts early_plan_contracts tools_test history_preservation_contracts
+python tests/run_architecture_checks.py plan_consistency_contracts conversation_quality_contracts task_continuation_contracts task_policy_contracts early_plan_contracts tools_test history_preservation_contracts
 python tests/test_conversation_flow.py
 python tests/test_task_continuation.py
 python tests/test_task_diagnosis.py

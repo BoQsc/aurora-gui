@@ -354,6 +354,62 @@ bool taskRequiresPlan(const ref ChatSession session)
     return changedPaths.length > 1 || actions >= 6;
 }
 
+private bool samePlanStep(const ref TaskStep a, const ref TaskStep b)
+{
+    return a.id.length && b.id.length ? a.id == b.id : a.text == b.text;
+}
+
+private struct PlanRevision
+{
+    bool added, reordered, changedAcceptance, interrupted, outOfOrder;
+    string[] reopened;
+    bool needsReason() const
+    { return added || reordered || changedAcceptance || interrupted || outOfOrder || reopened.length > 0; }
+}
+
+private PlanRevision inspectPlanRevision(const(TaskStep)[] previous, const(TaskStep)[] steps)
+{
+    PlanRevision result;
+    if (!previous.length) return result;
+    size_t last;
+    bool matched;
+    string priorActive, active;
+    foreach (old; previous) if (old.status == "in_progress") priorActive = old.id;
+    size_t firstUnfinished = steps.length, activeIndex = steps.length;
+    foreach (i, step; steps)
+    {
+        if (step.status != "completed" && firstUnfinished == steps.length) firstUnfinished = i;
+        if (step.status == "in_progress") { active = step.id; activeIndex = i; }
+        bool found;
+        foreach (j, old; previous)
+            if (samePlanStep(old, step))
+            {
+                found = true;
+                if (matched && j < last) result.reordered = true;
+                matched = true; last = j;
+                if ((old.done.length && old.done != step.done) || (old.kind.length && old.kind != step.kind))
+                    result.changedAcceptance = true;
+                if (old.status == "completed" && step.status != "completed") result.reopened ~= step.id;
+                if (old.status == "in_progress" && step.status == "pending") result.interrupted = true;
+                break;
+            }
+        if (!found) result.added = true;
+    }
+    result.outOfOrder = active.length && active != priorActive && activeIndex > firstUnfinished;
+    return result;
+}
+
+void rememberPlanRevision(ref ChatSession session, JSONValue root, const(TaskStep)[] previous, const(TaskStep)[] steps)
+{
+    if (!inspectPlanRevision(previous, steps).needsReason()) return;
+    if (auto reason = "explanation" in root.object)
+        if (reason.type == JSONType.string && reason.str.strip().length)
+        {
+            const decision = "Plan change: " ~ reason.str.strip();
+            if (!session.contract.decisions.canFind(decision)) session.contract.decisions ~= decision;
+        }
+}
+
 TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(TaskStep)[] previous,
     bool retainCompleted = true)
 {
@@ -364,14 +420,14 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
             {
                 bool found;
                 foreach (step; steps)
-                    if ((old.id.length && step.id == old.id) || step.text == old.text) found = true;
+                    if (samePlanStep(old, step)) found = true;
                 if (found) continue;
                 size_t insertAt = steps.length;
                 bool anchored;
                 foreach (later; previous[oldIndex + 1 .. $])
                 {
                     foreach (i, step; steps)
-                        if ((later.id.length && step.id == later.id) || step.text == later.text)
+                        if (samePlanStep(later, step))
                         { insertAt = i; anchored = true; break; }
                     if (anchored) break;
                 }
@@ -388,7 +444,8 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
                 if (!step.id.length) step.id = old.id;
                 if (!step.kind.length) step.kind = old.kind;
                 if (!step.done.length) step.done = old.done;
-                if (!step.evidence.length) step.evidence = old.evidence.dup;
+                if (old.status == "completed" && step.status != "completed") step.evidence = null;
+                else if (!step.evidence.length) step.evidence = old.evidence.dup;
                 break;
             }
         if (!step.id.length) step.id = "step-" ~ sha256Of(session.contract.id ~ "\n" ~ step.text).toHexString()[0 .. 16].idup;
@@ -439,30 +496,52 @@ TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep
     if (auto context = "work_context" in root.object)
     {
         if (context.type == JSONType.null_)
-        { ChatSession empty; return workContextForPlan(empty, steps); }
-        if (context.type != JSONType.object) return result;
-        const originalAction = result.action;
-        foreach (i, key; ["action", "next_action", "detour_reason", "done_when", "return_to"])
-            if (auto field = key in context.object)
-                if (field.type == JSONType.string)
-                {
-                    const text = field.str.strip();
-                    switch (i)
+        { ChatSession empty; result = workContextForPlan(empty, steps); }
+        else if (context.type == JSONType.object)
+        {
+            const originalAction = result.action;
+            foreach (i, key; ["action", "next_action", "detour_reason", "done_when", "return_to"])
+                if (auto field = key in context.object)
+                    if (field.type == JSONType.string)
                     {
-                        case 0: result.action = text; break;
-                        case 1: result.nextAction = text; break;
-                        case 2:
-                            if (result.detourReason != text) { result.doneWhen = ""; result.returnTo = ""; }
-                            result.detourReason = text; break;
-                        case 3: result.doneWhen = text; break;
-                        case 4: result.returnTo = text; break;
-                        default: break;
+                        const text = field.str.strip();
+                        switch (i)
+                        {
+                            case 0: result.action = text; break;
+                            case 1: result.nextAction = text; break;
+                            case 2:
+                                if (result.detourReason != text) { result.doneWhen = ""; result.returnTo = ""; }
+                                result.detourReason = text; break;
+                            case 3: result.doneWhen = text; break;
+                            case 4: result.returnTo = text; break;
+                            default: break;
+                        }
                     }
-                }
-        if (result.detourReason.length && !result.returnTo.length) result.returnTo = originalAction;
-        if (!result.detourReason.length) { result.doneWhen = ""; result.returnTo = ""; }
-        if (!result.action.length) result.action = steps[current].text;
+            if (result.detourReason.length && !result.returnTo.length) result.returnTo = originalAction;
+            if (!result.detourReason.length) { result.doneWhen = ""; result.returnTo = ""; }
+            if (!result.action.length) result.action = steps[current].text;
+        }
     }
+    // Moving to independent work can be legitimate. Keep the paused outcome's
+    // return point even when the model supplied only the explanation.
+    bool explicitReturn;
+    if (auto context = "work_context" in root.object)
+        if (context.type == JSONType.object)
+            if (auto field = "return_to" in context.object)
+                explicitReturn = field.type == JSONType.string && field.str.strip().length > 0;
+    foreach (old; session.taskSteps)
+            if (old.status == "in_progress" && old.id != result.stepId)
+                foreach (step; steps)
+                    if (samePlanStep(old, step) && step.status == "pending")
+                        if (auto reason = "explanation" in root.object)
+                            if (reason.type == JSONType.string && reason.str.strip().length)
+                            {
+                                if (!result.detourReason.length) result.detourReason = reason.str.strip();
+                                if (!result.doneWhen.length) result.doneWhen = steps[current].done;
+                                if (!explicitReturn)
+                                    result.returnTo = session.contract.work.stepId == old.id && session.contract.work.action.length
+                                        ? session.contract.work.action : old.text;
+                            }
     return result;
 }
 
@@ -502,6 +581,34 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
             return "Error: replacing unfinished outcomes requires an explicit user scope change. Preserve their IDs and statuses.";
     }
     auto steps = normalizedPlan(session, root["plan"], previous, !replacement);
+    string reason;
+    if (auto field = "explanation" in root.object)
+    {
+        if (field.type != JSONType.string) return "Error: explanation must be a string.";
+        reason = field.str.strip();
+    }
+    string[] reopened;
+    if (auto field = "reopen_steps" in root.object)
+    {
+        if (field.type != JSONType.array) return "Error: reopen_steps must contain stable outcome IDs.";
+        foreach (entry; field.array)
+        {
+            if (entry.type != JSONType.string || !entry.str.strip().length)
+                return "Error: reopen_steps must contain stable outcome IDs.";
+            reopened ~= entry.str;
+        }
+    }
+    const revision = inspectPlanRevision(previous, steps);
+    if (!replacement)
+    {
+        if (revision.needsReason() && !reason.length)
+            return "Error: explain additions, reordering, changed acceptance, or a paused/skipped outcome in explanation. Tie the change to the user's goal or a concrete finding; preserve unfinished work.";
+        foreach (id; revision.reopened)
+            if (!reopened.canFind(id))
+                return "Error: completed outcome '" ~ id ~ "' cannot silently become unfinished. List its ID in reopen_steps and explain the new defect or changed requirement.";
+        foreach (id; reopened)
+            if (!revision.reopened.canFind(id)) return "Error: reopen_steps names an outcome that is not being reopened: " ~ id;
+    }
     if (auto context = "work_context" in root.object)
     {
         if (context.type != JSONType.object && context.type != JSONType.null_)
@@ -523,17 +630,30 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         if (old.status != "completed" && !replacement)
         {
             bool retained;
-            foreach (step; steps) if (step.id == old.id || step.text == old.text) retained = true;
+            foreach (step; steps) if (samePlanStep(old, step)) retained = true;
             if (!retained) return "Error: unfinished outcome omitted: " ~ old.text ~ ". Preserve it or use a subplan.";
         }
     bool[string] ids;
+    bool[string] texts;
+    int active;
     foreach (step; steps)
     {
         if (step.id in ids) return "Error: duplicate plan step ID: " ~ step.id;
         ids[step.id] = true;
+        const text = step.text.strip().toLower();
+        if (text in texts) return "Error: duplicate plan outcome: " ~ step.text ~ ". Reuse its existing stable ID.";
+        texts[text] = true;
+        if (step.status == "in_progress" && ++active > 1) return "Error: at most one plan outcome may be in_progress.";
         bool unchangedCompleted;
         foreach (old; previous)
-            if (old.status == "completed" && step == old) unchangedCompleted = true;
+        {
+            if (samePlanStep(old, step) && old.status == "completed" && step.status == "completed" &&
+                ((old.done.length && old.done != step.done) || (old.kind.length && old.kind != step.kind)))
+                return "Error: completed acceptance cannot silently change. Reopen the outcome with a reason, or add a justified follow-up outcome.";
+            if (old.status == "completed" && step.status == "completed" && samePlanStep(old, step) &&
+                old.kind == step.kind && old.done == step.done && old.evidence == step.evidence)
+                unchangedCompleted = true;
+        }
         foreach (id; step.evidence)
         {
             auto proof = id in evidenceIndex;

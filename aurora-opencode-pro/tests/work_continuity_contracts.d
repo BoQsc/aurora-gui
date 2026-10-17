@@ -100,6 +100,9 @@ int main()
     history.verificationStatus = "required";
     const remaining = `{"plan":[{"id":"s2","step":"Implement second stage","status":"in_progress"}]}`;
     assert(!planUpdateError(history, remaining, history.taskSteps).length);
+    const renamedHistory = `{"plan":[{"id":"v1","step":"First-stage regressions verified","status":"completed"},{"id":"s2","step":"Implement second stage","status":"in_progress"}]}`;
+    assert(!planUpdateError(history, renamedHistory, history.taskSteps).length,
+        "A title refinement invalidated a historical completion while fresh verification remained required");
     history.taskSteps = normalizedPlan(history, parseJSON(remaining)["plan"], history.taskSteps);
     assert(history.taskSteps.length == 2 && unfinishedTask(history));
     ChatSession legacy;

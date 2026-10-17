@@ -9,7 +9,7 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
 import std.file : mkdirRecurse, write, readText;
-import std.json : JSONValue;
+import std.json : JSONValue, parseJSON;
 import std.path : absolutePath, buildPath;
 import std.process : environment;
 import std.stdio : writeln;
@@ -81,7 +81,7 @@ int main()
     void record(string args)
     {
         run([OpenCodeToolCall("plan_" ~ to!string(++identity), "update_plan", args)]);
-        assert(root.lastToolResultForTesting().indexOf("Plan updated") >= 0);
+        assert(root.lastToolResultForTesting().indexOf("Plan updated") >= 0, root.lastToolResultForTesting());
     }
 
     const startup = MonoTime.currTime + 5.seconds;
@@ -189,6 +189,36 @@ int main()
     assert(root.lastToolResultForTesting().indexOf("deferred for planning") >= 0,
         "Old completed checklist suppressed planning for a new request");
     writeln("PASS failed plan calls and earlier completed plans do not satisfy a new task");
+
+    root.setStrictPlanEnabledForTesting(false);
+    fresh();
+    root.setTaskStateForTesting("Write and optionally verify the phase document", "active", "not_required");
+    const phasePlan = `{"plan":[{"id":"inspect","step":"Inspect inputs","kind":"other","status":"in_progress"},{"id":"edit","step":"Write phase document","kind":"edit","status":"pending"},{"id":"check","step":"Verify phase document","kind":"verify","status":"pending"}]}`;
+    record(phasePlan);
+    run([readCall()]);
+    const phaseFile = buildPath(state, "phase.md");
+    const beforeEdit = root.userMessageCountForTesting();
+    run([OpenCodeToolCall("phase_write", "write", `{"filePath":` ~ JSONValue(phaseFile).toString ~ `,"content":"phase complete"}`)]);
+    assert(root.userMessageCountForTesting() == beforeEdit + 1 &&
+        root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0);
+    assert(root.taskStepStatusForTesting(0) == "in_progress", "A phase reminder fabricated completion");
+    run([readCall(), readCall()]);
+    assert(root.userMessageCountForTesting() == beforeEdit + 1, "Phase guidance repeated without a phase change");
+    auto phaseAdvanced = parseJSON(phasePlan);
+    phaseAdvanced["plan"][0]["status"] = "completed";
+    phaseAdvanced["plan"][1]["status"] = "in_progress";
+    record(phaseAdvanced.toString());
+    write(buildPath(state, "test_phase.py"), "import unittest\nfrom pathlib import Path\nclass Phase(unittest.TestCase):\n def test_document(self): self.assertEqual(Path('phase.md').read_text(), 'phase complete')\n");
+    const beforeCheck = root.userMessageCountForTesting();
+    assert(root.verificationStatusForTesting() == "not_required");
+    run([OpenCodeToolCall("phase_check", "run", `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`)]);
+    assert(root.verificationStatusForTesting() == "passed", "An accepted optional check could not satisfy a recorded verification outcome");
+    assert(root.userMessageCountForTesting() == beforeCheck + 1 &&
+        root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0);
+    foreach (ref step; phaseAdvanced["plan"].array) step["status"] = "completed";
+    record(phaseAdvanced.toString());
+    foreach (i; 0 .. 3) assert(root.taskStepStatusForTesting(i) == "completed");
+    writeln("PASS editing and accepted verification trigger bounded reconciliation without delaying tools or fabricating ticks");
 
     auto prompt = buildSystemPrompt(true, state, "win32");
     assert(prompt.indexOf("Default to a short living plan for multi-step or ongoing work") >= 0);

@@ -202,8 +202,8 @@ private string executionLoopSection(in SystemPromptContext ctx)
 {
     return "\n# Execution loop\n" ~
         "1. Define success. Default to a short living plan for multi-step or ongoing work, with stable IDs and done conditions. " ~
-        "Adapt steps as evidence changes, preserving objectives and outcomes. Update at phase changes or detours. " ~
-        "Skip plans for direct answers, quick exploration, and single edits. Track current/next actions and detour reason/exit/return " ~
+        "Adapt steps as evidence changes. Explain additions and focus changes; tick proven outcomes promptly. Update at phase changes or detours. " ~
+        "Skip plans for direct answers, quick exploration, and single edits. Save actions and detour reason/exit/return " ~
         "in update_plan.work_context. Plan maintenance never gates normal execution or completion.\n" ~
         "2. Read explicit paths directly, including paths outside the workspace. Discover paths only when " ~
         "unknown or a direct read fails. Each lookup resolves a named unknown. Read before editing.\n" ~

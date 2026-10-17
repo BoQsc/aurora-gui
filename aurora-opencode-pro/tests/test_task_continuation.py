@@ -23,12 +23,26 @@ prompts = {
     "Finish the fixture cancellation task.": "cancel",
     "Commit existing work only.": "commit",
     "Write seven fixture Markdown documents.": "unplanned",
+    "Implement the fixture plan consistency task.": "consistency",
 }
 
 
 def call(identity, name, arguments):
     return {"id": identity, "type": "function",
             "function": {"name": name, "arguments": json.dumps(arguments)}}
+
+
+def consistency_plan(statuses, explanation=None, corrected=False):
+    labels = ["First outcome", "Second outcome", "Compatibility outcome"]
+    evidence = ["consistency-corrected" if corrected else "consistency-first",
+                "consistency-second", "consistency-third"]
+    plan = {"plan": [{"id": f"c{i}", "step": labels[i], "kind": "edit",
+                       "done": labels[i] + " saved", "status": status,
+                       **({"evidence": [evidence[i]]} if status == "completed" else {})}
+                      for i, status in enumerate(statuses)]}
+    if explanation:
+        plan["explanation"] = explanation
+    return plan
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -85,6 +99,45 @@ class Provider(http.server.BaseHTTPRequestHandler):
                     "plan": [{"step": f"Outcome {i}", "status": "completed"} for i in range(6)]})]
             else:
                 content = "All six outcomes completed." if stage == 5 else f"Partial outcome {stage} landed. Say the word and I will continue."
+        elif scenario == "consistency":
+            for identity, fragment in [("consistency-add-bad", "explanation"),
+                                       ("consistency-jump-bad", "explanation"),
+                                       ("consistency-reopen-bad", "reopen_steps")]:
+                if identity in results and (not results[identity].startswith("Error:") or fragment not in results[identity]):
+                    failures.append("Invalid plan transition accepted: " + identity)
+            if "consistency-base" not in results:
+                tools = [call("consistency-base", "update_plan", consistency_plan(["in_progress", "pending"])),
+                         call("consistency-first", "write", {"filePath": "consistent-first.md", "content": "First outcome"})]
+            elif "consistency-add-bad" not in results:
+                tools = [call("consistency-add-bad", "update_plan", consistency_plan(["in_progress", "pending", "pending"])),
+                         call("consistency-jump-bad", "update_plan", consistency_plan(["pending", "in_progress"])),
+                         call("consistency-second", "write", {"filePath": "consistent-second.md", "content": "Second outcome"})]
+            elif "consistency-detour" not in results:
+                tools = [call("consistency-detour", "update_plan", consistency_plan(["pending", "in_progress"],
+                    "The second outcome establishes compatibility needed to finish the first."))]
+            elif "consistency-return" not in results:
+                text = "\n".join(m.get("content", "") for m in messages if isinstance(m.get("content"), str))
+                if "Return to: First outcome" not in text:
+                    failures.append("Explained focus switch lost the automatic return point")
+                tools = [call("consistency-return", "update_plan", consistency_plan(["in_progress", "completed"]))]
+            elif "consistency-add" not in results:
+                tools = [call("consistency-add", "update_plan", consistency_plan(["completed", "completed", "in_progress"],
+                    "Inspection exposed a compatibility outcome needed for the requested result."))]
+            elif "consistency-reopen-bad" not in results:
+                tools = [call("consistency-reopen-bad", "update_plan", consistency_plan(["pending", "completed", "in_progress"],
+                    "The compatibility outcome exposed a defect in the first outcome.")),
+                         call("consistency-third", "write", {"filePath": "consistent-third.md", "content": "Compatibility outcome"})]
+            elif "consistency-reopen" not in results:
+                plan = consistency_plan(["in_progress", "completed", "completed"],
+                    "The compatibility outcome exposed a defect requiring a correction to the first outcome.")
+                plan["reopen_steps"] = ["c0"]
+                tools = [call("consistency-reopen", "update_plan", plan)]
+            elif "consistency-corrected" not in results:
+                tools = [call("consistency-corrected", "write", {"filePath": "consistent-first.md", "content": "First outcome corrected"})]
+            elif "consistency-finish" not in results:
+                tools = [call("consistency-finish", "update_plan", consistency_plan(["completed"] * 3, corrected=True))]
+            else:
+                content = "All consistent outcomes completed."
         elif scenario == "unplanned":
             if rounds[scenario] > 2:
                 failures.append("Optional planning added a completion round")
@@ -183,7 +236,7 @@ try:
                     "latency_cleanup_contracts", "task_continuation_contracts", "task_continuation_ui_contracts"],
                    cwd=package.parent, env=env, check=True, timeout=300)
     assert not failures, failures
-    assert rounds == {"work": 13, "unplanned": 2, "commit": 2, "stall": 14, "toolstall": 44, "output": 7, "obstacle": 5, "input": 3, "question": 1, "cancel": 2}, rounds
+    assert rounds == {"work": 13, "unplanned": 2, "consistency": 10, "commit": 2, "stall": 14, "toolstall": 44, "output": 7, "obstacle": 5, "input": 3, "question": 1, "cancel": 2}, rounds
     print("PASS recovered beyond previous reply/tool limits; required input and Stop remain controlled", dict(rounds))
 finally:
     server.shutdown()
