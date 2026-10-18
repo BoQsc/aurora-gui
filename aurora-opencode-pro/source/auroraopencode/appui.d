@@ -10906,6 +10906,20 @@ private string _suggestExcludeId;
     private bool _journalTailReady;
     private bool _journalTailInFlight;
     private bool _journalTailRepairQueued;
+    // Byte offset the cached events start at: a read only serves the startup
+    // replay when it starts exactly at the checkpoint the replay seeks to.
+    private ulong _journalTailOffset = ulong.max;
+    // The journal range the startup replay merges, read on the snapshot owner
+    // so the restore never parses the journal on the UI thread.
+    private AgentRuntimeEvent[] _replayEvents;
+    private ulong _replayBytes = ulong.max;
+    private ulong _replayOffset = ulong.max;
+    private bool _replayReady;
+    private bool _replayInFlight;
+    // Ticks the startup restore may wait for that read before reading through
+    // the runtime, so a checkpoint that keeps moving cannot stall the history.
+    private int _startupReplayWaits;
+    private static immutable int startupReplayWaitTicks = 600;
     // Settings writes are debounced off the click path for the same reason as
     // the session snapshot: a synchronous file write inside an input handler
     // delays the frame that shows the result of the click.
@@ -29171,7 +29185,7 @@ private void pollButtonSuggestionRequest()
                 if (!readFoldedMarker(opencodeStateDirectory(), foldedSequence,
                         foldedOffset) || foldedSequence < latest)
                 {
-                    const events = _runtime.eventsFrom(foldedOffset);
+                    const events = replayJournalEvents(foldedOffset);
                     foreach (deletedId; deletedAgentRuntimeThreadIds(events))
                         foreach_reverse (index; 0 .. _sessions.length)
                             if (_sessions[index].id == deletedId)
@@ -29550,7 +29564,7 @@ private void pollButtonSuggestionRequest()
             if (!readFoldedMarker(opencodeStateDirectory(), foldedSequence,
                     foldedOffset) || foldedSequence < latest)
             {
-                const events = _runtime.eventsFrom(foldedOffset);
+                const events = replayJournalEvents(foldedOffset);
                 foreach (deletedId; deletedAgentRuntimeThreadIds(events))
                     foreach_reverse (index; 0 .. _sessions.length)
                         if (_sessions[index].id == deletedId)
@@ -29846,12 +29860,99 @@ private void pollButtonSuggestionRequest()
             {
                 _journalTailEvents = events;
                 _journalTailBytes = bytes;
+                _journalTailOffset = offset;
                 _journalTailReady = events !is null;
                 _journalTailInFlight = false;
             }
         });
         if (!accepted)
             synchronized (this) _journalTailInFlight = false;
+    }
+
+    /// Whether the snapshot owner has already read the journal range the
+    /// startup replay merges, so the restore never parses the journal on the UI
+    /// thread. The range starts at the checkpoint the replay seeks to, or at the
+    /// start of the journal when there is no usable checkpoint. After a bounded
+    /// number of ticks the restore proceeds and reads through the runtime, so a
+    /// checkpoint that keeps moving cannot stall the restored history.
+    private bool startupReplayReady()
+    {
+        if (_runtime is null) return true;
+        if (++_startupReplayWaits > startupReplayWaitTicks) return true;
+        ulong bytes;
+        try bytes = _runtime.journalSize();
+        catch (Throwable) return true;
+        ulong foldedSequence;
+        ulong foldedOffset;
+        const marked = readFoldedMarker(opencodeStateDirectory(), foldedSequence,
+            foldedOffset);
+        bool needed;
+        try needed = !marked || foldedSequence < _runtime.latestSequence();
+        catch (Throwable) needed = true;
+        if (!needed) return true;
+        const offset = marked ? foldedOffset : 0;
+        return replayRangeReady(bytes, offset);
+    }
+
+    /// The replayed journal range, taken from the read the snapshot owner
+    /// performed for exactly that range. Reads through the runtime only when
+    /// that read produced nothing, which `startupReplayReady` has already waited
+    /// out, so this never waits on the journal in the normal case.
+    private AgentRuntimeEvent[] replayJournalEvents(ulong offset)
+    {
+        ulong bytes;
+        try bytes = _runtime.journalSize();
+        catch (Throwable) return _runtime.eventsFrom(offset);
+        bool cached;
+        synchronized (this)
+            cached = _replayReady && _replayBytes == bytes &&
+                _replayOffset == offset;
+        return cached && _replayEvents !is null ? _replayEvents
+            : _runtime.eventsFrom(offset);
+    }
+
+    /// True once the snapshot owner has finished reading the replay range, even
+    /// when that read produced nothing, so the restore runs without reading the
+    /// journal on the UI thread.
+    private bool replayRangeReady(ulong bytes, ulong offset)
+    {
+        synchronized (this)
+            if (_replayReady && _replayBytes == bytes && _replayOffset == offset)
+                return true;
+        requestReplayRange(bytes, offset);
+        return false;
+    }
+
+    /// Read the journal range the startup replay merges on the snapshot owner,
+    /// for the same reason the repair tail is read there: the restore must
+    /// never parse the journal on the UI thread.
+    private void requestReplayRange(ulong bytes, ulong offset)
+    {
+        if (_runtime is null) return;
+        synchronized (this)
+        {
+            if (_replayInFlight || (_replayReady && _replayBytes == bytes &&
+                    _replayOffset == offset))
+                return;
+            _replayInFlight = true;
+        }
+        const accepted = _snapshotRepository.submit(delegate() {
+            AgentRuntimeEvent[] events;
+            try events = _runtime.eventsFrom(offset);
+            catch (Throwable) {}
+            synchronized (this)
+            {
+                _replayEvents = events;
+                _replayBytes = bytes;
+                _replayOffset = offset;
+                // The read is finished either way: a failed one falls back to
+                // the runtime at the replay site instead of holding the restore.
+                _replayReady = true;
+                _replayInFlight = false;
+            }
+        });
+        if (!accepted)
+            synchronized (this) _replayInFlight = false;
     }
 
     /// Apply a repair that was queued while the journal tail was still being
@@ -30522,7 +30623,7 @@ private void pollButtonSuggestionRequest()
         // Wait for the off-thread snapshot parse before walking the trees: the
         // window is already painted and responsive, so the restore only needs
         // to run once its data is ready.
-        if (_startupLoadPending && _snapshotParseDone)
+        if (_startupLoadPending && _snapshotParseDone && startupReplayReady())
         {
             _startupLoadPending = false;
             loadStartupState();
