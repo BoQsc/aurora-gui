@@ -648,6 +648,107 @@ The fixture, the probe's rect-dump mode, `capture-edge-rects.py` and
 terms as the rest of the corpus; Edge is only the oracle that produced the
 committed numbers and frame.
 
+Two further corpora in the same repository pin the two real-page divergences the
+boqsc.eu campaign started from, each against an independent Edge capture of its
+own fixture at the same geometry:
+
+- `aurora-browser/tests/reference/article-panel.html` - class A geometry: the
+  hero's clamped flex item, a `max-width:544px` panel inside a grid item whose
+  content is far wider. Case A is the page's own `38% / 1fr` columns of a 1000px
+  cell with a 544px clamp, case B a 300px/1fr split with a 480px clamp and case C
+  the page's own `minmax(0, calc(0.38 * 100%))` column form. Every case sits in
+  an absolutely positioned cell of fixed width, so nothing depends on the
+  viewport.
+- `aurora-browser/tests/reference/article-panel.edge.png` - the independent
+  reference: `msedge.exe --headless=new --force-device-scale-factor=1
+  --window-size=1280,638 --hide-scrollbars --no-first-run
+  --no-default-browser-check --user-data-dir=<scratch> --screenshot=<file>
+  file:///<repo>/aurora-browser/tests/reference/article-panel.html`, i.e. a
+  1280x638 page viewport at device scale factor 1, no browser chrome, no scaling,
+  scrollbars hidden and the platform colour scheme as served - which the fixture
+  cannot observe, because every case declares its own colours. The frame is the
+  oracle, and Edge's own boundaries were read inside it (panels A and C end at
+  x=944, panel B at x=800, i.e. exactly the clamps): `capture-edge-rects.py`'s
+  rect-dump path returned an empty DOM for every fixture on this machine that
+  day, so this fixture carries no committed rect table. It is a pixel-only
+  fixture and needs no `data-rect` names.
+- `aurora-browser/tests/verify-article-panel.json` - the recipe: compile the
+  probe, run `layout.d` with `-unittest -main` (21 modules pass), render the
+  fixture through the probe at the same 1280x638 viewport and compare at channel
+  tolerance 0.
+
+It closed the **clamped flex item**: `layoutFlex` grew an item's used width to the
+item's own content after its children had been laid out and never re-applied
+`min`/`max-width`, so the `max-width:544px` panel came out 1920px wide and painted
+over the whole column where Edge's is 544px. On boqsc.eu the same rule painted the
+hero's right column at its full 779px content width. `resolveFlexItemWidth` now
+re-clamps the used width with `clampMinMaxWidth` after `layoutContents` and
+re-lays the children out when the clamp changed it. Measured on 2026-10-17: 0
+mismatched of 816,640 (`actualSha256 13AB4D92…` equal to its `referenceSha256
+13AB4D92…`), with the engine's own rect dump reporting 544, 480 and 544 for the
+three panels, 620 and 600 for the two grid items and 120 tall for all three cells.
+Known open, not covered by this corpus: each grid item declares its own height,
+because an item whose `align-items:flex-start` did not stretch to its row still
+painted white below each panel where Edge paints the void background; that is a
+separate defect with its own plan row.
+
+The gradient corpus is the repository's one **class D** case, and the only one
+compared with a tolerance:
+
+- `aurora-browser/tests/reference/linear-gradient.html` - five cases, each a
+  solid rectangle in an absolutely positioned 120x120 cell at integer insets:
+  (A) `linear-gradient(180deg, #000, #fff)`, (B) the same with no angle at all,
+  (C) the horizontal `90deg` form, (D) three stops with an explicit 70% position
+  (`#000 0%, #f00 70%, #00f 100%`) and (E) the fading-mask form boqsc.eu's own
+  `body::before` and `.hero__topography` use -
+  `linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.12) 70%, transparent)`.
+  Its header records the class, the reason and the measured budget; the fixture
+  itself is script-free and paints no text.
+- `aurora-browser/tests/reference/linear-gradient.edge.png` - the independent
+  reference frame, `msedge.exe --headless=new --force-device-scale-factor=1
+  --window-size=1280,638 --hide-scrollbars --no-first-run
+  --no-default-browser-check --user-data-dir=<scratch> --screenshot=<file>
+  file:///<repo>/aurora-browser/tests/reference/linear-gradient.html`, the same
+  geometry as the engine's own frame.
+- `aurora-browser/tests/verify-linear-gradient.json` - the recipe, the same shape
+  as the others except that its render step is `channelTolerance 1` with
+  `maxDifferentPixels 0`, which is the whole point of the class: the budget
+  admits the ramp's rounding and nothing else, so a moved edge, a wrong colour or
+  a two-unit divergence still fails.
+
+It closed two defects that had one symptom. `package.d` rasterised a CSS gradient
+only inside the `url(` branch of background loading, so a plain `background:
+linear-gradient(...)` set `backgroundGradient` but reached no rasteriser and
+every such box painted the gradient's first stop flat through `layout.d`'s
+fallback colour; the rasterisation is now hoisted out of that branch. Separately,
+`svg.d`'s default linear-gradient direction started the gradient line at the box
+centre (`y1 = 0.5`) instead of the top edge, so `linear-gradient(a, b)` with no
+angle painted its first stop flat over the top half. With both fixed, case A
+reports y=65 `rgb(12,12,12)`, y=120 `rgb(129,129,129)` and y=175
+`rgb(245,245,245)` against Edge's 12, 128 and 246, and case D's three stops
+report `rgb(17,0,0)`, `rgb(184,0,0)` and `rgb(32,0,223)` against Edge's 17, 183
+and 32,0,223 - every stop interpolated, none painted flat.
+
+Measured on 2026-10-17: 17,430 of the fixture's 57,600 ramp pixels differ by
+exactly 1 channel unit and 0 differ by more than 1 (`actualSha256 B702DDB2…`),
+the fading-mask case is exact at 0 of its 14,400 pixels, and the five cells'
+rects are the committed integer insets. The same change is visible on the page
+the campaign started from: compared with the campaign's own earlier page-only
+engine frame (`eng-boqsc.ppm`) against the Edge frame of boqsc.eu
+(`edge-boqsc.png`, 1280x638, window `--window-size=1280,638 --hide-scrollbars`),
+the 64-cell structural profile of `site-struct.py` falls from 13,730 to 9,323
+differing cells of 40,832 (33.6% to 22.8%) on a fresh 25-paint capture from the
+fixed engine at the same geometry. What remains there is not the gradient: the
+hero's photograph still does not load into this engine, and the residual bands
+are the text and control bands this document already records as the
+substitute-font class. The two gradient fixes moved no other baseline: on the
+repository's acceptance recipe, djangoproject.com at 1280x800 is byte-identical
+to its frozen frame (`3571CCE5…`, 0 of 1,024,000 pixels).
+
+The fixture, the recipes and the Edge captures above are original work of this
+repository under the same CC0/0BSD terms as the rest of the corpus; Edge is only
+the oracle that produced the committed frames.
+
 ## Superseded corpora
 
 - `browser-reference-validation/` (v1): box-model, flex-grid, svg-position.

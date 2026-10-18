@@ -23,7 +23,7 @@ module auroraweb.layout;
 import auroraweb.css : Rule, RuleIndex, buildRuleIndex, candidatesFor, cascadeFor,
     applyMediaRules, parseStylesheet,
     keyframeEndState, pseudoElementRules;
-import auroraweb.dom : ComputedStyle, Element, InlineFragment, TextNode;
+import auroraweb.dom : ComputedStyle, Element, InlineFragment, TextNode, splitShorthand;
 import auroraweb.shaping : cssFace, cssFaceOrStandard, normalLineHeight, shapeTextCached;
 import aurora.image : RgbaImage;
 import aurora.font : FontFace, FontRole;
@@ -205,6 +205,19 @@ private static int measuredWidth(const TextLayout run, int fallback)
     if (run is null || run.width <= 0) return fallback;
     const int whole = cast(int) run.width;
     return run.width > whole ? whole + 1 : whole;
+}
+
+/// An element's own horizontal padding plus border.
+///
+/// `intrinsicWidth` and `minContentWidth` report a BORDER box (their content plus
+/// `own`) so that a shrink-to-fit ancestor can sum complete child boxes, while a
+/// flex item's `box.width` is its CONTENT box - the contract `paint` rebuilds the
+/// border box from. The flex code therefore has to convert between the two
+/// conventions: it adds `own` back when it advances the line, so a basis that
+/// still contains `own` counts the item's padding and border twice.
+private int ownWidth(Element e)
+{
+    return e.box.paddingLeft + e.box.paddingRight + e.box.borderLeft + e.box.borderRight;
 }
 
 private int intrinsicWidth(Element e, int percentBase)
@@ -422,7 +435,8 @@ private void resolveStyles(Element element, Rule[] rules, int viewportWidth, int
 /// Resolve styles, inheriting CSS custom properties (`--name`) down the tree.
 /// Resolve `font-size` to px: `px` passes through, `rem` scales the root size,
 /// `em`/`%` scale the parent size, `vw`/`vh` scale the viewport, and
-/// `clamp()/min()/max()` take their first resolvable component. An empty value
+/// `clamp()/min()/max()` clamp their bounds around the middle value. Fractional
+/// results round to the nearest pixel like every other length. An empty value
 /// inherits the parent size.
 private int resolveFontSize(in ComputedStyle style, int parentPx)
 {
@@ -430,26 +444,45 @@ private int resolveFontSize(in ComputedStyle style, int parentPx)
     const s = style.fontSize.strip();
     if (s.length == 0) return parentPx;
 
+    // Round a fractional size to whole pixels, ties away from zero: a browser
+    // keeps the fraction (1.3rem is 20.8px), and truncating instead made every
+    // fractional font size up to a pixel small.
+    int roundPx(double v)
+    {
+        if (v != v) return 0;                 // NaN
+        return cast(int) (v < 0 ? v - 0.5 : v + 0.5);
+    }
+
     int one(string raw)
     {
         const v = raw.strip();
         if (v.length >= 3 && v[$ - 2 .. $] == "px") return cssInt(v[0 .. $ - 2].strip());
         if (v.length >= 3 && v[$ - 3 .. $] == "rem")
-            return cast(int)(cssDouble(v[0 .. $ - 3].strip()) * style.rootFontSizePx);
+            return roundPx(cssDouble(v[0 .. $ - 3].strip()) * style.rootFontSizePx);
         if (v.length >= 2 && v[$ - 2 .. $] == "em")
-            return cast(int)(cssDouble(v[0 .. $ - 2].strip()) * parentPx);
+            return roundPx(cssDouble(v[0 .. $ - 2].strip()) * parentPx);
         // `$ - 3` was an off-by-one: "11vw" ends in "1vw", never "vw", so every
         // vw/vh font size resolved to -1. clamp() then rejected that component
         // and fell back to its first valid one, so a real page's hero type sat
         // at its floor (56px) instead of clamp(3.5rem, 11vw, 7rem) = 112px.
+        //
+        // The percentage is fractional too: `cssInt` read "5.8vw" as 5vw and
+        // "1.15vw" as 1vw, so boqsc.eu's
+        // `.hero h1 { font-size: clamp(4rem, 5.8vw, 5.1rem) }` resolved its
+        // middle value to 5% of 1280 = 64px - its floor - where a browser uses
+        // 74.24px, and `.hero__lede, .hero__body { font-size: clamp(0.98rem,
+        // 1.15vw, 1.14rem) }` resolved to 1vw, taking the 15.68px floor instead
+        // of 14.72px. The heading painted a size too small and the oversized
+        // body re-wrapped into more lines while every element above it sat 7px
+        // high.
         if (v.length >= 3 && v[$ - 2 .. $] == "vw")
-            return style.viewportWidth * cssInt(v[0 .. $ - 2].strip()) / 100;
+            return roundPx(style.viewportWidth * (cssDouble(v[0 .. $ - 2].strip()) / 100.0));
         if (v.length >= 3 && v[$ - 2 .. $] == "vh")
-            return style.viewportHeight * cssInt(v[0 .. $ - 2].strip()) / 100;
+            return roundPx(style.viewportHeight * (cssDouble(v[0 .. $ - 2].strip()) / 100.0));
         if (v.length >= 2 && v[$ - 1] == '%')
             // `cssInt` truncated the fraction: a page's 62.5% rem base became
             // 62%, so a 16px parent yielded 9px instead of the intended 10px.
-            return cast(int)(parentPx * cssDouble(v[0 .. $ - 1].strip()) / 100.0 + 0.5);
+            return roundPx(parentPx * (cssDouble(v[0 .. $ - 1].strip()) / 100.0));
         return -1;
     }
 
@@ -906,6 +939,23 @@ private ComputedStyle computedStyle(Element element, in Rule[] rules,
         foreach (decl; parseInlineDeclarations(*inlineStyle))
             applyDeclaration(style, decl.property, decl.value);
     }
+    // CSS Position 3 section 2: `position: absolute` / `fixed` blockifies the
+    // box's display. An inline generated pseudo-element therefore lays out as a
+    // block, which is why boqsc.eu's `body::before` veil — `position: fixed`
+    // with a mask — was laid by the inline path and built no layer for its own
+    // mask, and why paint.d's mask guard needs a special case for a positioned
+    // inline box. Relative positioning stays in flow and does not blockify.
+    if (style.position == "absolute" || style.position == "fixed")
+    {
+        switch (style.display)
+        {
+            case "inline": case "inline-block": style.display = "block"; break;
+            case "inline-flex": style.display = "flex"; break;
+            case "inline-grid": style.display = "grid"; break;
+            case "inline-table": style.display = "table"; break;
+            default: break;
+        }
+    }
     return style;
 }
 
@@ -1062,6 +1112,33 @@ private string asciiLowered(string s) @trusted
     foreach (k, c; s)
         buf[k] = (c >= 'A' && c <= 'Z') ? cast(char) (c + 32) : c;
     return cast(string) buf[0 .. s.length];
+}
+
+/// Split a `background`/`background-image` value at its top-level commas and
+/// keep the gradient token of every layer, in paint order (first = on top).
+/// Commas inside a layer belong to it: `rgba(1, 2, 3, 0.5)` and
+/// `radial-gradient(circle at 18% 14%, ...)` must not split one layer in two,
+/// hence the parenthesis depth.
+private string[] extractGradientTokens(string value)
+{
+    string[] layers;
+    ptrdiff_t start = 0;
+    int depth = 0;
+    const len = cast(ptrdiff_t) value.length;
+    for (ptrdiff_t i = 0; i <= len; i++)
+    {
+        const atEnd = i == len;
+        const c = atEnd ? ' ' : value[i];
+        if (!atEnd && c == '(') depth++;
+        else if (!atEnd && c == ')') depth--;
+        else if (atEnd || (c == ',' && depth == 0))
+        {
+            auto g = extractGradientToken(value[start .. i]);
+            if (g.length) layers ~= g;
+            start = i + 1;
+        }
+    }
+    return layers;
 }
 
 /// Extract a `linear-gradient(...)` / `radial-gradient(...)` token, balancing
@@ -1231,8 +1308,9 @@ private string uaDisplay(string tag)
              "ul", "ol", "dl", "dt", "dd", "table", "tr", "form",
              "section", "article", "aside", "header", "footer", "nav",
              "main", "blockquote", "pre", "hr", "fieldset", "figure",
-             "figcaption", "address", "video", "audio", "canvas":
+             "figcaption", "address", "video", "audio", "canvas", "details":
             return "block";
+        case "summary":
         case "li":
             return "list-item";
         case "td", "th":
@@ -1452,9 +1530,14 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
                 auto u = extractUrlToken(value);
                 if (u.length) style.backgroundImage = u;
                 // The shorthand also carries a gradient (very common for heroes
-                // and cards). Without this the property painted nothing.
-                auto g = extractGradientToken(value);
-                if (g.length) style.backgroundGradient = g;
+                // and cards). Without this the property painted nothing. It may
+                // carry a *list* of them (CSS layers), and every layer has to
+                // survive or a stacked background paints only its top layer.
+                // The shorthand resets the whole background, so an empty list
+                // also clears a gradient an earlier rule set.
+                auto gs = extractGradientTokens(value);
+                style.backgroundGradients = gs;
+                style.backgroundGradient = gs.length ? gs[0] : "none";
                 // The shorthand carries the repeat mode too.
                 const vl = value.toLower();
                 if (indexOf(vl, "no-repeat") >= 0) style.backgroundRepeat = "no-repeat";
@@ -1469,16 +1552,27 @@ private void applyDeclaration(ref ComputedStyle style, string property, string v
             {
                 const v = value.strip();
                 if (v == "none" || v.length == 0)
+                {
                     style.backgroundImage = "none";
+                    style.backgroundGradients = null;
+                    style.backgroundGradient = "none";
+                }
                 else if (v.length >= 4 && v[0 .. 4].toLower() == "url(" && v[$ - 1] == ')')
+                {
                     style.backgroundImage = v;
+                    style.backgroundGradients = null;
+                    style.backgroundGradient = "none";
+                }
                 else
                 {
                     // A gradient is real content, not an unusable URL: keep the
                     // token so the renderer can rasterise it (they were dropped,
-                    // so every gradient background painted nothing).
-                    auto g = extractGradientToken(v);
-                    style.backgroundGradient = g.length ? g : "none";
+                    // so every gradient background painted nothing). A value may
+                    // list several images; every gradient layer is kept in paint
+                    // order, first listed on top.
+                    auto gs = extractGradientTokens(v);
+                    style.backgroundGradients = gs;
+                    style.backgroundGradient = gs.length ? gs[0] : "none";
                     style.backgroundImage = "none";
                 }
             }
@@ -1985,10 +2079,18 @@ private string extractUrlToken(string value)
 /// resolve to 0 instead of shrinking the box with an invalid negative value.
 private static bool isResolvableLength(string token)
 {
-    if (token.length >= 5 && token[0 .. 5] == "calc(") return true;
-    if (token == "0") return true;
+    const t = token.strip();
+    // Every functional length resolves: `resolveLength` evaluates calc(), and
+    // clamp()/min()/max() over their arguments. Accepting only `calc(` meant a
+    // declared `clamp()` side was read as an invalid value and became 0 - which
+    // is how boqsc.eu's `padding-inline: clamp(4rem, 11vw, 11rem)` toolbar
+    // inset was lost even once the declaration reached the box metrics.
+    foreach (fn; ["calc(", "clamp(", "min(", "max("])
+        if (t.length > fn.length && t[0 .. fn.length] == fn && t[$ - 1] == ')')
+            return true;
+    if (t == "0") return true;
     foreach (unit; ["px", "rem", "%", "em", "vh", "vw", "pt", "pc", "ch", "ex"])
-        if (token.length > unit.length && token[$ - unit.length .. $] == unit)
+        if (t.length > unit.length && t[$ - unit.length .. $] == unit)
             return true;
     return false;
 }
@@ -2014,9 +2116,13 @@ private int resolveSide(ComputedStyle style, string value, int base, int sideInd
 
 /// Pick one side out of a 1-4 value shorthand (`margin: a b c d` rules) where
 /// sideIndex is 0=top, 1=right, 2=bottom, 3=left. "" for an empty shorthand.
+/// Values are split outside parentheses (`splitShorthand`), so a functional
+/// argument is one side however many spaces it holds: a bare whitespace split
+/// read `padding: 0.25rem clamp(1rem, 2vw, 2rem)` as four sides and gave
+/// `0.25rem 0 0 0`.
 private static string shorthandToken(string value, int sideIndex)
 {
-    auto parts = value.split();
+    auto parts = splitShorthand(value);
     switch (parts.length)
     {
         case 0: return "";
@@ -2120,6 +2226,36 @@ unittest
     layoutBlock(em, flow, 400, null);
     assert(em.box.paddingTop == 20 && em.box.paddingLeft == 20,
         "em must resolve against the element's own font size");
+
+    // A functional length is ONE shorthand value. `0.25rem clamp(1rem, 2vw,
+    // 2rem)` is the vertical/horizontal pair a browser reads, not four sides;
+    // the whitespace split gave `0.25rem 0 0 0`, which is how boqsc.eu's
+    // toolbar lost its inset and its brand sat at x=0. At a 1256px viewport
+    // 2vw is 25.12px, so clamp(16, 25.12, 32) is 25px.
+    auto fnPad = new Element("div");
+    fnPad.style.display = "block";
+    fnPad.style.fontSizePx = 16;
+    fnPad.style.viewportWidth = 1256;
+    fnPad.style.padding = "0.25rem clamp(1rem, 2vw, 2rem)";
+    layoutBlock(fnPad, flow, 1256, null);
+    assert(fnPad.box.paddingTop == 4 && fnPad.box.paddingBottom == 4,
+        "the first token is the vertical padding, got " ~ fnPad.box.paddingTop.to!string);
+    assert(fnPad.box.paddingLeft == 25 && fnPad.box.paddingRight == 25,
+        "clamp() must resolve as one side value, got " ~
+        fnPad.box.paddingLeft.to!string);
+
+    // The same clamp() typed as a single side (what the cascade's expansion of
+    // `.home-page .site-toolbar__inner { padding-inline: clamp(4rem, 11vw,
+    // 11rem) }` produces at 1256px: 11vw = 138px, inside 64..176).
+    auto logicalPad = new Element("div");
+    logicalPad.style.display = "block";
+    logicalPad.style.fontSizePx = 16;
+    logicalPad.style.viewportWidth = 1256;
+    logicalPad.style.paddingLeft = "clamp(4rem, 11vw, 11rem)";
+    logicalPad.style.paddingRight = "clamp(4rem, 11vw, 11rem)";
+    layoutBlock(logicalPad, flow, 1256, null);
+    assert(logicalPad.box.paddingLeft == 138 && logicalPad.box.paddingRight == 138,
+        "a clamp() side must resolve: " ~ logicalPad.box.paddingLeft.to!string);
 
     // vh resolves against the viewport height.
     auto vh = new Element("div");
@@ -3775,12 +3911,31 @@ private string collapsibleText(Element element, TextNode node)
 /// Unicode whitespace, which wrongly includes U+00A0, so it discarded a
 /// `<div>&nbsp;</div>` as an empty text node: the element then had no line box
 /// at all and collapsed to zero height instead of one line of space.
+private bool isCollapsible(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
 private bool isCollapsibleWhitespaceOnly(string s)
 {
     foreach (char c; s)
-        if (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f')
-            return false;
+        if (!isCollapsible(c)) return false;
     return true;
+}
+
+/// The same text with its collapsible whitespace (CSS Text 3) removed from both
+/// ends, internal runs left alone - U+00A0 is not collapsible and survives.
+/// Leading and trailing white space in a text run is not rendered, so it must
+/// not contribute to the box that shrink-wraps it: an inline-flex container
+/// around an indented label measured 23px wider than the same box around the
+/// bare label.
+private string stripCollapsible(string s)
+{
+    size_t a = 0;
+    size_t b = s.length;
+    while (a < b && isCollapsible(s[a])) a++;
+    while (b > a && isCollapsible(s[b - 1])) b--;
+    return s[a .. b];
 }
 
 /// Parse `aspect-ratio: <w> / <h>` (or a bare number) into width/height. Returns
@@ -4050,7 +4205,14 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
         {
             auto childEl = cast(Element) child;
             if (childEl is null || childEl.style.display == "none") continue;
+            // `box.x` is the child's BORDER box origin and `box.width` its
+            // CONTENT width, so the right edge has to add the child's own
+            // padding and border back (plus the right margin, which does sit
+            // outside the border box). Leaving them out made the container one
+            // item-padding too narrow per child, so the last item stuck out of
+            // its own container.
             contentRight = max(contentRight, childEl.box.x + childEl.box.width +
+                childEl.box.paddingRight + childEl.box.borderRight +
                 childEl.box.marginRight);
         }
         const int fitPadBorder = element.box.paddingLeft + element.box.paddingRight +
@@ -4058,15 +4220,51 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
         const int fitAvailable = cbW - (leftGiven ? leftV : 0) - (rightGiven ? rightV : 0);
         const int fitWanted = min(max(0, contentRight - childFlow.x),
             max(0, fitAvailable - fitPadBorder));
-        const int fitW = clampMinMaxWidth(element, fitWanted) + fitPadBorder;
+        int fitW = clampMinMaxWidth(element, fitWanted) + fitPadBorder;
+        // A wrapping row's preferred (max-content) width is the SUM of its
+        // items, not the rightmost child of the line it already wrapped: after
+        // the wrap that is only the widest line, so `position:absolute`
+        // `display:flex; flex-wrap:wrap` came out the width of its first line
+        // and the items it had just folded could never sit on one line
+        // (boqsc.eu's `.site-dock`, a 470px pill holding four items in Edge,
+        // measured 408 here and wrapped its fourth entry onto a second row).
+        int flexPreferred = 0;
+        if (isRowFlexContainer(element) && style.flexWrap == "wrap")
+        {
+            const int flexGap = max(0, style.resolveLength(style.gap, cbW));
+            int flexSum = 0;
+            int flexItems = 0;
+            foreach (child; element.children)
+            {
+                auto childEl = cast(Element) child;
+                if (childEl is null || childEl.style.display == "none") continue;
+                if (childEl.style.position == "absolute" ||
+                    childEl.style.position == "fixed") continue;
+                flexSum += childEl.box.width + childEl.box.paddingLeft +
+                    childEl.box.paddingRight + childEl.box.borderLeft +
+                    childEl.box.borderRight + childEl.box.marginLeft +
+                    childEl.box.marginRight;
+                flexItems++;
+            }
+            if (flexItems > 0)
+                flexPreferred = flexSum + flexGap * (flexItems - 1) + fitPadBorder;
+        }
+        if (flexPreferred > 0)
+            fitW = min(max(fitW, flexPreferred), max(0, fitAvailable));
         if (fitW > 0 && fitW != absW)
         {
             absW = fitW;
-            element.box.width = absW;
             if (rightGiven)
                 element.box.x = cbX + cbW - absW - rightV - element.box.marginRight;
+            // `fitW` counts the element's own padding and border, but
+            // `element.box.width` is the CONTENT box everywhere else in this
+            // module - it is what the painter adds the padding and border back
+            // to - so storing the border-box number here painted the fitted box
+            // `padding + border` too wide and laid its content into a region
+            // that was `padding + border` too narrow.
+            element.box.width = max(0, absW - fitPadBorder);
             childFlow.x = element.box.x + element.box.paddingLeft + element.box.borderLeft;
-            childFlow.width = max(0, absW - fitPadBorder);
+            childFlow.width = element.box.width;
             childFlow.lineEnd = childFlow.x + childFlow.width;
             layoutContents(element, childFlow, element);
         }
@@ -4096,7 +4294,13 @@ private void layoutAbsolute(Element element, int containingWidth, Element positi
                 // background and the box after it sat 10px high.
                 const bool inFlowChild = childEl.style.position != "absolute" &&
                     childEl.style.position != "fixed";
+                // `box.height` is the child's CONTENT height and `box.y` its
+                // border-box origin, so the bottom edge has to add the child's
+                // own bottom padding and border back before the margin that
+                // CSS 10.6.7 reaches. Without it a padded row's own box came out
+                // `padding + border` short of the item it held.
                 contentBottom = max(contentBottom, childEl.box.y + childEl.box.height +
+                    childEl.box.paddingBottom + childEl.box.borderBottom +
                     (inFlowChild ? childEl.box.marginBottom : 0));
                 continue;
             }
@@ -4627,6 +4831,44 @@ private void layOwnDirectText(Element element, int innerX, int innerY, int inner
 private void layoutFlex(Element element, ref FlowContext flow, Element positionedAncestor,
     bool positioned = false)
 {
+    // Generated `::before`/`::after` boxes (CSS 12) are items of their container
+    // like any other child — CSS generates them INSIDE the element, so a flex
+    // container lays them out as flex items. They are deliberately kept out of
+    // `children`/`elements` so DOM and script APIs never see them, so the item
+    // collection below (and the out-of-flow pass further down) has to splice them
+    // in for this pass only, `::before` first and `::after` last, exactly where
+    // CSS places generated content. Without it a generated box was never
+    // collected as an item: boqsc.eu's toolbar pills are `display: inline-flex`
+    // with `.site-toolbar__menu-summary::after { content: "▾" }`, and the caret
+    // got no width, no placement and no paint, so every pill came out ~15px
+    // narrow and the right-aligned actions row sat ~50px left of Edge's.
+    auto savedChildren = element.children;
+    auto savedElements = element.elements;
+    scope(exit)
+    {
+        element.children = savedChildren;
+        element.elements = savedElements;
+    }
+    if (element.pseudoBefore !is null || element.pseudoAfter !is null)
+    {
+        typeof(element.children) splicedChildren;
+        typeof(element.elements) splicedElements;
+        if (element.pseudoBefore !is null)
+        {
+            splicedChildren ~= element.pseudoBefore;
+            splicedElements ~= element.pseudoBefore;
+        }
+        splicedChildren ~= savedChildren;
+        splicedElements ~= savedElements;
+        if (element.pseudoAfter !is null)
+        {
+            splicedChildren ~= element.pseudoAfter;
+            splicedElements ~= element.pseudoAfter;
+        }
+        element.children = splicedChildren;
+        element.elements = splicedElements;
+    }
+
     const bool inline = element.style.display == "inline-flex";
     if (!positioned)
     {
@@ -4684,7 +4926,15 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         const int basisLen = ce.style.resolveLength(ce.style.flexBasis, innerW);
         auto basis = basisLen >= 0 ? basisLen : ce.style.resolveLength(ce.style.width, innerW);
         if (basis < 0)
-            basis = grow == 0 ? intrinsicWidth(ce, innerW) : 0;
+            // `intrinsicWidth` is a BORDER box; the basis is a content width (see
+            // `ownWidth`). Counting the item's own padding/border as content -
+            // and then adding it back when advancing the line - made every
+            // padded item 22px wider than its painted box, so a row that exactly
+            // held its items overflowed by that much. That is what wrapped
+            // boqsc.eu's toolbar actions (whose "Home" pill carries 20px of
+            // padding and a 2px border) onto a second line and pushed its whole
+            // page 15px down against Edge.
+            basis = grow == 0 ? max(0, intrinsicWidth(ce, innerW) - ownWidth(ce)) : 0;
         itemWidths ~= basis >= 0 ? basis : 0;
     }
 
@@ -4915,7 +5165,9 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
                 // ignored here — otherwise a `width:200px;flex-shrink:1` item
                 // would floor back at 200 and never shrink.
                 ce.style.containingWidth = innerW;
-                const int minC = minContentWidth(ce, innerW, true);
+                // `minContentWidth` is a border box as well, and the floor has
+                // to match `baseWidths`, which holds content widths.
+                const int minC = max(0, minContentWidth(ce, innerW, true) - ownWidth(ce));
                 const int floorW = ce.style.resolveLength(ce.style.width, innerW) >= 0
                     ? min(baseWidths[i], minC) : minC;
                 itemWidths[i] = max(floorW, max(0, baseWidths[i] - cut));
@@ -4939,7 +5191,7 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     {
         if (ce.style.resolveLength(ce.style.width, innerW) >= 0) continue;
         ce.style.containingWidth = innerW;
-        itemWidths[i] = max(itemWidths[i], minContentWidth(ce, innerW));
+        itemWidths[i] = max(itemWidths[i], max(0, minContentWidth(ce, innerW) - ownWidth(ce)));
     }
 
     // flex-wrap: wrap — items that do not fit continue on a following line
@@ -4958,7 +5210,7 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         {
             if (ce.style.resolveLength(ce.style.width, innerW) >= 0) continue;
             ce.style.containingWidth = innerW;
-            baseWidths[i] = max(baseWidths[i], minContentWidth(ce, innerW));
+            baseWidths[i] = max(baseWidths[i], max(0, minContentWidth(ce, innerW) - ownWidth(ce)));
         }
 
         // Partition into lines by outer width, using the base (pre-grow) widths.
@@ -5098,14 +5350,23 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
                 sub.lineEnd = sub.x + sub.width;
                 const int subTop = sub.y;
                 layoutContents(ce, sub, ce);
-                const int contentH = max(sub.contentBottom, sub.y - subTop);
+                // `layoutContents` leaves the flow at the laid element's BORDER
+                // box bottom while `subTop` is that element's CONTENT top, so the
+                // bottom padding and border have to come off before this reads as
+                // a content height: without it every padded item inflated by its
+                // own padding (boqsc.eu's toolbar pills measured 20 where the
+                // box model says 15, and the row measured 46 where its CSS says
+                // 42).
+                const int contentH = max(sub.contentBottom,
+                    sub.y - subTop - ce.box.paddingBottom - ce.box.borderBottom);
                 if (itemH < 0 && contentH > 0)
-                    ce.box.height = max(0,
-                        contentH + ce.box.paddingTop + ce.box.paddingBottom);
+                    ce.box.height = max(0, contentH);
                 // The line's cross size covers the item's cross margins, and the
-                // aligned position is the margin box, exactly as the single-line
-                // row path above does (CSS Flexbox 9.4 and 9.6).
-                lineH = max(lineH, ce.box.height + ce.box.marginTop + ce.box.marginBottom);
+                // item's own padding and border, exactly as the single-line row
+                // path below does (CSS Flexbox 9.4 and 9.6).
+                lineH = max(lineH, ce.box.height + ce.box.paddingTop +
+                    ce.box.paddingBottom + ce.box.borderTop + ce.box.borderBottom +
+                    ce.box.marginTop + ce.box.marginBottom);
                 lineCursor += widths[k] + ce.box.paddingLeft + ce.box.paddingRight +
                     ce.box.borderLeft + ce.box.borderRight +
                     ce.box.marginLeft + ce.box.marginRight + gapPx + lineGapExtra +
@@ -5246,12 +5507,54 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         element.box.height = element.style.resolveLength(element.style.height,
             style.containingHeight) >= 0
             ? element.style.resolveLength(element.style.height, style.containingHeight)
-            : contentBoxHeight(element, lineTop - innerY);
+            : clampedContentHeight(element, lineTop - innerY);
         layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
         flow.prevBottomMargin = element.box.marginBottom;
         flow.hasPrevBlock = true;
-        flow.y = max(flow.y, element.box.y + element.box.height + element.box.marginBottom);
+        // `box.height` is the CONTENT box, so the flow advances by the border
+        // box, exactly as the single-line path below does.
+        flow.y = max(flow.y, element.box.y + borderBoxHeight(element) +
+            element.box.marginBottom);
         return;
+    }
+
+    // The element's OWN direct text is an anonymous flex item (CSS Flexbox 4.1),
+    // so it holds a place on the main axis ahead of the items CSS places after
+    // it — in particular the `::after` generated box. Lay the text out here (its
+    // position is the content start, which this engine has always used) and read
+    // the advance it was given, so what follows it can follow the text. boqsc.eu's
+    // toolbar pills are `display: inline-flex` with
+    // `.site-toolbar__menu-summary::after { content: "▾" }`: the caret had no
+    // item slot at all before, and once it had one it landed on top of the label
+    // at the pill's left edge instead of after it.
+    int ownTextW = 0;
+    // Whether the element's own text has been laid out already. The pass below
+    // must not run twice: it also lays out inline descendants, so a second run
+    // would re-derive a generated `::after` box at the container's start and
+    // undo the flex placement of the items above.
+    bool ownTextLaid = false;
+    {
+        bool hasOwnText = false;
+        foreach (ch; element.children)
+        {
+            auto t = cast(TextNode) ch;
+            if (t !is null && !isCollapsibleWhitespaceOnly(t.data))
+            {
+                hasOwnText = true;
+                break;
+            }
+        }
+        if (hasOwnText)
+        {
+            layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
+            ownTextLaid = true;
+            foreach (ch; element.children)
+            {
+                auto t = cast(TextNode) ch;
+                if (t is null) continue;
+                ownTextW = max(ownTextW, t.layoutWidth);
+            }
+        }
     }
 
     // justify-content.
@@ -5260,6 +5563,11 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     // overstates the free space and pushes a centred row off its container
     // (the real page's toolbar jumped to x=1292 before this was fixed).
     int used = gapTotal;
+    // The anonymous text item occupies the main axis too: leaving it out of the
+    // measured content made `justify-content` distribute the label's width as
+    // free space and push the whole row off its container.
+    if (ownTextW > 0)
+        used += ownTextW + (items.length > 0 ? gapPx : 0);
     foreach (i, ce; items)
         used += itemWidths[i] + ce.box.paddingLeft + ce.box.paddingRight +
             ce.box.borderLeft + ce.box.borderRight +
@@ -5302,6 +5610,11 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     int[] xs;
     foreach (i, ce; items)
     {
+        // The direct text precedes the generated `::after` box in CSS's box
+        // order (Flexbox 4.1 places the anonymous item where the run sits), so
+        // the item that follows the text starts after the label plus one `gap`.
+        if (ownTextW > 0 && element.pseudoAfter !is null && ce is element.pseudoAfter)
+            cursor += ownTextW + gapPx;
         // CSS places the item's border box after its own left/top margin, and
         // the cursor then advances by the item's outer size. Ignoring margins
         // made margined items sit too far left and overlap their neighbour -
@@ -5332,19 +5645,51 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         sub.lineEnd = sub.x + sub.width;
         const int subTop = sub.y;
         layoutContents(ce, sub, ce);
+        // min/max-width clamps the item's USED width whatever its content
+        // measured (CSS Flexbox 9.7). `layoutContents` can size the item to its
+        // own content first - that is the inline-flex auto-width case the growth
+        // below exists for - and that measurement ignores the clamp: boqsc.eu's
+        // grid+flex article panel declares `max-width:34rem`, yet this engine took
+        // its content's 779px, which widened the lead image to 779 (443 tall
+        // where Edge's is 306) and pushed the whole article 438px down. Clamp the
+        // used width, and re-lay the contents out when the clamp changed it, so
+        // wrapped text inside also uses the clamped width.
+        ce.style.containingWidth = innerW;
+        const int usedW = clampMinMaxWidth(ce, max(0, ce.box.width));
+        if (usedW != ce.box.width)
+        {
+            ce.box.width = usedW;
+            auto re = FlowContext();
+            re.x = ce.box.x + ce.box.paddingLeft + ce.box.borderLeft;
+            re.y = ce.box.y + ce.box.paddingTop + ce.box.borderTop;
+            re.width = max(0, usedW - ce.box.paddingLeft - ce.box.paddingRight -
+                ce.box.borderLeft - ce.box.borderRight);
+            re.lineEnd = re.x + re.width;
+            layoutContents(ce, re, ce);
+            sub = re;
+        }
         // Content height must include the flow ADVANCE as well as the painted
         // extent: an item whose content is inline ELEMENTS (not direct text) only
         // advances the flow, and measuring the extent alone collapsed those
         // items to zero height (the dock's flyout labels went 48px -> 0).
-        const int contentH = max(sub.contentBottom, sub.y - subTop);
+        // See the wrapped path above: the flow ends at the item's BORDER box
+        // bottom, so its own bottom padding and border are not content.
+        const int contentH = max(sub.contentBottom,
+            sub.y - subTop - ce.box.paddingBottom - ce.box.borderBottom);
         if (itemH < 0 && contentH > 0)
-            ce.box.height = max(0, contentH + ce.box.paddingTop + ce.box.paddingBottom);
+            ce.box.height = max(0, contentH);
         // An item's OUTER cross size is what a flex line measures (CSS Flexbox
-        // 9.4), so its cross-axis margins are part of the line. Counting the
-        // border box alone left djangoproject.com's header 20px short: the
-        // `header .logo{margin:10px 4px}` contributed nothing, so the container
-        // measured 36px where Edge makes it 56 and the header ended 20px high.
-        maxChildHeight = max(maxChildHeight, ce.box.height + ce.box.marginTop + ce.box.marginBottom);
+        // 9.4), so the line takes the item's content box plus its own padding,
+        // border and cross-axis margins. Storing content+padding in `box.height`
+        // and measuring that alone both inflated the item (boqsc.eu's toolbar
+        // pills reported 28 where the box model says 24) and dropped the border
+        // from the line. Counting only the border box alone had previously left
+        // djangoproject.com's header 20px short: the `header .logo{margin:10px 4px}`
+        // contributed nothing, so the container measured 36px where Edge makes
+        // it 56 and the header ended 20px high.
+        maxChildHeight = max(maxChildHeight, ce.box.height + ce.box.paddingTop +
+            ce.box.paddingBottom + ce.box.borderTop + ce.box.borderBottom +
+            ce.box.marginTop + ce.box.marginBottom);
         // An item's own layout may have made it WIDER than the pre-layout
         // estimate (an inline-flex item with auto width sizes to its content), so
         // every following item must advance by the actual width. Advancing by the
@@ -5502,27 +5847,71 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
         // `<summary>Tools</summary>` collapsed to its padding width (17px for a
         // 27px label), so every toolbar entry overflowed its own box and the
         // whole row was crammed against the viewport edge.
+        //
+        // A text child holding NOTHING BUT collapsible white space is not
+        // rendered at all (CSS Flexbox 4.1: an anonymous item of only white
+        // space is ignored), and the white space at either end of one that does
+        // hold text contributes nothing either. The indentation between two tags
+        // is exactly that run, and counting it made a container that
+        // shrink-wraps a 64px child measure 88px: a
+        // `.owner{display:inline-flex}` around `<button style="width:64px">`
+        // measured 64 while its markup sat on one line and 88 the moment it was
+        // indented across three. On boqsc.eu that same 24px landed in the
+        // toolbar's brand line, its owner pill and its identity box - which is
+        // what pushed the actions row onto a second line and the whole page 15px
+        // down against Edge. `intrinsicWidth` and `minContentWidth` already skip
+        // these runs; this loop did not, so an auto-width container disagreed
+        // with its own intrinsic width.
         int textW = 0;
         foreach (child; element.children)
         {
             auto tn = cast(TextNode) child;
             if (tn is null) continue;
+            if (isCollapsibleWhitespaceOnly(tn.data)) continue;
             const px = element.style.fontSizePx > 0 ? element.style.fontSizePx : 16;
-            auto lay = shapeText(tn.data, px, 0, 0.0, faceOf(&element.style));
+            // `text-transform` widens a run, and the inline layout shapes the
+            // transformed text; measuring the raw text under-sized the box.
+            const label = stripCollapsible(
+                transformed(element.style.textTransform, tn.data));
+            if (label.length == 0) continue;
+            auto lay = shapeText(label, px, 0, 0.0, faceOf(&element.style));
             textW = max(textW, measuredWidth(lay, 0));
         }
         // Sum the items' OUTER sizes (content + padding + border + margins): an
         // auto-width container was sized from content widths alone, so it came
         // out narrower than the boxes it held (80 instead of 110 in a test).
+        //
+        // The width used is the item's LAID width, not the pre-layout estimate:
+        // an item whose own layout made it wider than the basis estimated for it
+        // must still fit, and the placement loop above already advances by the
+        // actual width. The estimate stays as a floor so an item with no laid
+        // width cannot collapse the container. Summing the estimate left the
+        // caret of an `inline-flex` pill 3px outside its own content box, which
+        // the container's own padding used to hide by accident.
         int itemsW = textW;
         foreach (i, ce; items)
-            itemsW += itemWidths[i] + ce.box.paddingLeft + ce.box.paddingRight +
+        {
+            const actual = ce.box.width + ce.box.paddingLeft + ce.box.paddingRight +
                 ce.box.borderLeft + ce.box.borderRight +
                 ce.box.marginLeft + ce.box.marginRight;
-        itemsW += gapPx * cast(int)max(0, items.length - 1);
-        const totalW = itemsW + element.box.paddingLeft + element.box.paddingRight +
-            element.box.borderLeft + element.box.borderRight;
-        width = clampMinMaxWidth(element, max(0, totalW));
+            itemsW += max(itemWidths[i], actual);
+        }
+        // The FLEX ITEM count, not just the element count: a bare text child is
+        // an anonymous item (see above), so a container holding a label and a
+        // generated caret has two items and one gap between them. Counting the
+        // element items alone dropped that gap and left the pill's content box
+        // one gap narrower than the label and caret it actually held.
+        const itemCount = items.length + (textW > 0 && items.length > 0 ? 1 : 0);
+        itemsW += gapPx * cast(int)max(0, itemCount - 1);
+        // `box.width` is the CONTENT box (paint.d rebuilds the border box by
+        // adding padding and border), so the container's own padding and border
+        // must NOT be added here: doing it counted them twice and painted an
+        // auto-width `inline-flex` container one padding-and-border wider than
+        // its contents plus that padding. A probe over a `padding:3px` wrapper
+        // holding one 15px block painted 27px wide where the padding box can be
+        // no wider than 21, with the block correctly at the padding edge and the
+        // surplus 6px sitting inside the content box.
+        width = clampMinMaxWidth(element, max(0, itemsW));
         element.box.width = width;
     }
 
@@ -5551,7 +5940,10 @@ private void layoutFlex(Element element, ref FlowContext flow, Element positione
     // container's own padding and border are added by the painter, not here.
     element.box.height = hPx >= 0 ? hPx : clampedContentHeight(element, contentHeight);
 
-    layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
+    // The row path above lays the element's own text out before placing its
+    // items; only a container it did not touch needs it done here.
+    if (!ownTextLaid)
+        layOwnDirectText(element, innerX, innerY, innerW, style.containingHeight);
 
     // Lay out absolutely/fixed positioned children, which are not flex items.
     foreach (child; element.children)
@@ -6856,6 +7248,116 @@ unittest
             label.box.width.to!string);
     }
 
+    // --- a document's indentation must not widen an inline-flex box ---
+    // The white space between two tags is a text run of nothing but collapsible
+    // white space, which CSS Flexbox 4.1 does not render as an anonymous item.
+    // Counting it made the same markup measure 64px on one line and 88px once it
+    // was indented across three, and that 24px is what pushed boqsc.eu's toolbar
+    // actions onto a second line and its whole page 15px down against Edge.
+    {
+        int ownerWidth(string before, string after)
+        {
+            auto owner = new Element("div");
+            owner.style.display = "inline-flex";
+            if (before.length) owner.children ~= new TextNode(owner, before);
+            auto pill = new Element("button");
+            pill.style.display = "inline-flex";
+            pill.style.width = "64px";
+            pill.style.height = "10px";
+            owner.children ~= pill;
+            owner.elements ~= pill;
+            pill.parent = owner;
+            if (after.length) owner.children ~= new TextNode(owner, after);
+            auto f = FlowContext();
+            f.x = 0;
+            f.y = 0;
+            f.width = 600;
+            f.height = 100;
+            layoutFlex(owner, f, null);
+            return owner.box.width;
+        }
+        assert(ownerWidth("", "") == 64,
+            "an inline-flex box must size to its 64px child, got " ~
+            ownerWidth("", "").to!string);
+        assert(ownerWidth("\n      ", "\n    ") == 64,
+            "a document's indentation must not widen the box, got " ~
+            ownerWidth("\n      ", "\n    ").to!string);
+    }
+
+    // --- a flex item's own padding/border is not part of its content width ---
+    // `intrinsicWidth` reports a BORDER box so a shrink-to-fit ancestor can sum
+    // complete child boxes, but a flex item's `box.width` is its CONTENT box and
+    // the line advance adds the padding/border back. Taking the border box as the
+    // content width counted an item's own 20px of padding and 2px border twice,
+    // making it 22px wider than it paints, so a wrapping row that exactly held
+    // its items wrapped the last one onto a second line. That is boqsc.eu's
+    // toolbar actions row, and the 15px page shift that came with it.
+    {
+        auto row = new Element("div");
+        row.style.display = "flex";
+        row.style.flexWrap = "wrap";
+        row.style.gap = "8px";
+        // Each item paints 0px of content + 20px padding + 2px border = 22px, so
+        // 3 x 22 + 2 x 8 = 82px holds all three on one line and nothing may wrap.
+        row.style.width = "82px";
+        Element[] cells;
+        foreach (i; 0 .. 3)
+        {
+            auto cell = new Element("i");
+            cell.style.display = "block";
+            cell.style.paddingLeft = "10px";
+            cell.style.paddingRight = "10px";
+            cell.style.border = "1px solid";
+            cell.style.borderStyle = "solid";
+            cell.style.height = "10px";
+            cell.parent = row;
+            row.children ~= cell; row.elements ~= cell;
+            cells ~= cell;
+        }
+        auto f = FlowContext();
+        f.x = 0;
+        f.y = 0;
+        f.width = 600;
+        f.height = 100;
+        layoutFlex(row, f, null);
+        assert(cells[0].box.width == 0,
+            "an auto-width item with no content must measure 0 of content, got " ~
+            cells[0].box.width.to!string);
+        assert(cells[1].box.x == 30,
+            "the second item starts after 22px of painted box + 8px gap, got " ~
+            cells[1].box.x.to!string);
+        assert(cells[2].box.x == 60 && cells[2].box.y == cells[0].box.y,
+            "the row must keep all three items on one line, got x=" ~
+            cells[2].box.x.to!string ~ " y=" ~ cells[2].box.y.to!string ~
+            " (line two starts at y=" ~ cells[2].box.y.to!string ~ ")");
+    }
+
+    // --- leading and trailing white space around a text item does not count ---
+    {
+        int labelWidth(string data)
+        {
+            auto box = new Element("div");
+            box.style.display = "inline-flex";
+            box.children ~= new TextNode(box, data);
+            auto f = FlowContext();
+            f.x = 0;
+            f.y = 0;
+            f.width = 600;
+            f.height = 100;
+            layoutFlex(box, f, null);
+            return box.box.width;
+        }
+        const bare = labelWidth("Public Domain");
+        assert(bare > 0, "a bare text label must still size its box");
+        assert(labelWidth("\n      Public Domain\n    ") == bare,
+            "indentation around a label must not widen the box: bare=" ~
+            bare.to!string ~ " indented=" ~
+            labelWidth("\n      Public Domain\n    ").to!string);
+        assert(labelWidth("\n   \n") == 0,
+            "a white-space-only inline-flex box measures nothing, got " ~
+            labelWidth("\n   \n").to!string);
+    }
+
     // --- a flex container whose only content is its own direct text ---
     // --- auto margins take equal shares and never overlap their siblings ---
     // --- justify-content: space-between actually distributes the free space ---
@@ -7193,6 +7695,122 @@ unittest
             to!string(gen.pseudoAfter.box.height));
     }
 
+    // --- an auto-width inline-flex container keeps its padding OUT of its
+    //     content box ---
+    // `box.width`/`box.height` are content boxes: paint.d rebuilds the border
+    // box by adding padding and border, and a probe over exactly this shape
+    // painted a 3px-padded wrapper around one 15px block 27px wide where the
+    // padding box can be no wider than 21. The container's own padding and
+    // border were being folded into `box.width`, so `padding: 0 30px` on an
+    // auto-width inline-flex container would paint 60px wider than its items.
+    // No committed fixture exercised `inline-flex` at all, which is why the
+    // path kept the defect; the height side, still open, keeps a line box (a
+    // 15px child leaves a 24px content box), so this test pins the width only.
+    {
+        auto rulesPad = parseStylesheet(`
+            body { margin: 0; }
+            .wrap { display: inline-flex; padding: 3px; gap: 4px; }
+            .wrap .item { display: block; width: 15px; height: 15px; }
+        `, 200, 200);
+        auto docPad = new Element("body");
+        auto wrap = new Element("span");
+        wrap.attrs["class"] = "wrap";
+        docPad.children ~= wrap;
+        docPad.elements ~= wrap;
+        wrap.parent = docPad;
+        auto item = new Element("i");
+        item.attrs["class"] = "item";
+        wrap.children ~= item;
+        wrap.elements ~= item;
+        item.parent = wrap;
+        applyStylesAndLayout(docPad, rulesPad, 200, 200);
+
+        assert(wrap.box.width == 15,
+            "an auto-width inline-flex container's content box must hold its " ~
+            "item and not its own padding or border, got width " ~
+            to!string(wrap.box.width));
+        assert(item.box.x == wrap.box.x + 3,
+            "the item must start at the container's padding edge, got item x=" ~
+            to!string(item.box.x) ~ " with the container at " ~
+            to!string(wrap.box.x));
+        // The painted border box is the content box plus the padding, and the
+        // item and the container's padding together span it exactly.
+        const wrapRight = wrap.box.x + wrap.box.width + 6;
+        const itemRight = item.box.x + item.box.width + 3;
+        assert(wrapRight == itemRight,
+            "the painted border box must end where the item plus the trailing " ~
+            "padding ends, got " ~ to!string(wrapRight) ~ " against " ~
+            to!string(itemRight));
+    }
+
+    // --- a generated box is a flex ITEM of its inline-flex container ---
+    // boqsc.eu's toolbar pills are `display: inline-flex` with
+    // `.site-toolbar__menu-summary::after { content: "▾" }`. CSS generates the
+    // caret INSIDE the pill, so it is laid out as a flex item after the
+    // element's own text — but the generated box is deliberately not in
+    // `children`, so the flex item collection has to splice it in. Without that
+    // the caret had no box, no width, no placement and no paint: every pill came
+    // out narrow and the right-aligned actions row sat ~50px left of Edge's.
+    {
+        auto rulesFx = parseStylesheet(`
+            body { margin: 0; }
+            .pill { display: inline-flex; align-items: center; gap: 4px;
+                    padding: 2px 6px; }
+            .pill::after { content: "v"; font-size: 10px; }
+        `, 200, 200);
+        auto docFx = new Element("body");
+        auto pill = new Element("summary");
+        pill.attrs["class"] = "pill";
+        docFx.children ~= pill;
+        docFx.elements ~= pill;
+        pill.parent = docFx;
+        auto pillLabel = new TextNode(pill, "Tools");
+        pillLabel.parent = pill;
+        pill.children ~= pillLabel;
+        applyStylesAndLayout(docFx, rulesFx, 200, 200);
+
+        assert(pill.pseudoAfter !is null,
+            "a matching ::after rule with content must generate a box");
+        auto caret = pill.pseudoAfter.children.length
+            ? cast(TextNode) pill.pseudoAfter.children[0] : null;
+        assert(caret !is null && caret.layoutWidth > 0,
+            "the generated caret glyph must be laid out as a flex item, got " ~
+            (caret is null ? "<no text>" : to!string(caret.layoutWidth)));
+        assert(pill.pseudoAfter.box.width > 0,
+            "a generated box must take a flex slot with a nonzero width, got " ~
+            to!string(pill.pseudoAfter.box.width));
+        // It follows the label, because the label is an anonymous item ahead of it.
+        assert(pill.pseudoAfter.box.x >= pillLabel.layoutX + pillLabel.layoutWidth,
+            "the caret must be placed after the pill's own text, got x=" ~
+            to!string(pill.pseudoAfter.box.x) ~ " with the label at " ~
+            to!string(pillLabel.layoutX) ~ "+" ~ to!string(pillLabel.layoutWidth));
+        assert(pill.pseudoAfter.box.x + pill.pseudoAfter.box.width <=
+            pill.box.x + pill.box.paddingLeft + pill.box.width,
+            "the caret must stay inside the pill's content box: caret ends at " ~
+            to!string(pill.pseudoAfter.box.x + pill.pseudoAfter.box.width) ~
+            ", content ends at " ~
+            to!string(pill.box.x + pill.box.paddingLeft + pill.box.width));
+        // The caret's own width has to reach the container's measured size.
+        auto rulesNoFx = parseStylesheet(`
+            body { margin: 0; }
+            .pill { display: inline-flex; align-items: center; gap: 4px;
+                    padding: 2px 6px; }
+        `, 200, 200);
+        auto docNoFx = new Element("body");
+        auto bare = new Element("summary");
+        bare.attrs["class"] = "pill";
+        docNoFx.children ~= bare;
+        docNoFx.elements ~= bare;
+        bare.parent = docNoFx;
+        auto bareLabel = new TextNode(bare, "Tools");
+        bareLabel.parent = bare;
+        bare.children ~= bareLabel;
+        applyStylesAndLayout(docNoFx, rulesNoFx, 200, 200);
+        assert(pill.box.width > bare.box.width,
+            "a generated caret must widen its inline-flex pill: with caret " ~
+            to!string(pill.box.width) ~ ", text only " ~ to!string(bare.box.width));
+    }
+
     // --- a generated box inherits from the element it decorates ---
     // An icon face lives on the element (`i.icon{font-family:FontAwesome}`) and
     // the glyph comes from the pseudo's `content`, so the generated box must take
@@ -7468,10 +8086,12 @@ unittest
         cs.viewportHeight = 800;
         cs.rootFontSizePx = 16;
         cs.fontSizePx = 16;
-        // The exact inset a real page used for its dock bar: 11vw = 148px, which
-        // is inside [4rem, 11rem] = [64, 176], so clamp() yields 148.
-        assert(cs.resolveLength("clamp(4rem, 11vw, 11rem)", 0) == 148,
-            "clamp(4rem, 11vw, 11rem) at 1350 wide is 148, got " ~
+        // The exact inset a real page used for its dock bar: 11vw = 148.5px,
+        // which is inside [4rem, 11rem] = [64, 176]. CSS keeps the fraction and
+        // snaps it to the nearest pixel when painting, so the used inset is 149
+        // (truncating to 148 made every fractional length a pixel short).
+        assert(cs.resolveLength("clamp(4rem, 11vw, 11rem)", 0) == 149,
+            "clamp(4rem, 11vw, 11rem) at 1350 wide is 149, got " ~
             to!string(cs.resolveLength("clamp(4rem, 11vw, 11rem)", 0)));
         // Below the lower bound it clamps up to the min.
         assert(cs.resolveLength("clamp(100px, 10px, 200px)", 0) == 100,
@@ -7502,9 +8122,30 @@ unittest
         assert(fsPx == 112,
             "clamp(3.5rem, 11vw, 7rem) at 1080 wide must be 112, got " ~
             to!string(fsPx));
+        // A fractional percentage is not truncated the way `cssInt` read it:
+        // 11vw at 1080 is 118.8px, which rounds to 119.
         fs.fontSize = "11vw";
-        assert(resolveFontSize(fs, 16) == 118,
-            "a bare 11vw font-size at 1080 must be 118, got " ~
+        assert(resolveFontSize(fs, 16) == 119,
+            "a bare 11vw font-size at 1080 must be 119, got " ~
+            to!string(resolveFontSize(fs, 16)));
+        // boqsc.eu's hero heading: 5.8vw at 1280 is 74.24px, inside the clamp's
+        // [4rem, 5.1rem] bounds, so the middle value wins over the 64px floor.
+        fs.viewportWidth = 1280;
+        fs.fontSize = "clamp(4rem, 5.8vw, 5.1rem)";
+        assert(resolveFontSize(fs, 16) == 74,
+            "clamp(4rem, 5.8vw, 5.1rem) at 1280 wide must take 5.8vw = 74px, got " ~
+            to!string(resolveFontSize(fs, 16)));
+        // And boqsc.eu's hero body: `cssInt` read 1.15vw as 1vw = 12.8px, below
+        // the clamp's 0.98rem floor, so the floor is the used value - 15.68px in
+        // a browser, rounded to 16 here instead of truncated to 15.
+        fs.fontSize = "clamp(0.98rem, 1.15vw, 1.14rem)";
+        assert(resolveFontSize(fs, 16) == 16,
+            "clamp(0.98rem, 1.15vw, 1.14rem) at 1280 wide must use its rounded 0.98rem floor, got " ~
+            to!string(resolveFontSize(fs, 16)));
+        // A fractional rem keeps its fraction and rounds (1.3rem is 20.8px).
+        fs.fontSize = "1.3rem";
+        assert(resolveFontSize(fs, 16) == 21,
+            "a fractional rem font size rounds, got " ~
             to!string(resolveFontSize(fs, 16)));
     }
 

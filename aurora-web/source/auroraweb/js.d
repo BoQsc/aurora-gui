@@ -2481,7 +2481,9 @@ final class JsRuntime
             if (node.children.length >= 2)
             {
                 auto catchScope = new JsScope("catch", sc);
-                catchScope.declare(node.name, pendingException);
+                // A binding-less `catch` has no name to declare, and declaring
+                // "" would leave a nameless slot in the handler's scope.
+                if (node.name.length) catchScope.declare(node.name, pendingException);
                 execNode(node.children[1], catchScope, thisValue);
             }
             lastHadException = false;
@@ -3288,9 +3290,18 @@ private struct Parser
         node.children ~= parseBlock();
         if (matchKeyword("catch"))
         {
-            expect("(");
-            if (atIdentifier()) { node.name = current().text; advance(); }
-            expect(")");
+            // `catch (e) { ... }` and the binding-less `catch { ... }`: the
+            // binding is optional in JavaScript (ES2019) and a page writes the
+            // bare form whenever it has no use for the error value. Requiring
+            // the parentheses failed the parse of the WHOLE script, a parse
+            // failure is silent, and so every statement that script owned never
+            // ran. boqsc.eu's head script opens with one, and its hero
+            // photograph stayed invisible because of it.
+            if (match("("))
+            {
+                if (atIdentifier()) { node.name = current().text; advance(); }
+                expect(")");
+            }
             node.children ~= parseBlock();
         }
         return node;

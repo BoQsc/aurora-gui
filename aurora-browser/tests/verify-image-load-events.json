@@ -1,0 +1,53 @@
+{
+  "inputs": [
+    "aurora-web/source",
+    "aurora-browser/source",
+    "vendor/aurora-d-0.4.5/source",
+    "aurora-browser/tests/pageshot-probe.d",
+    "aurora-browser/tests/fixtures/image-reveal.html",
+    "aurora-browser/tests/check-image-reveal.py"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-version=AuroraHeadless",
+          "-i",
+          "-Iaurora-web/source",
+          "-Iaurora-browser/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/photoshot.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/photobuild",
+          "aurora-browser/tests/pageshot-probe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/check-image-reveal.py",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/photoshot.exe",
+          "aurora-browser/tests/fixtures/image-reveal.html",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/image-reveal.ppm"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    }
+  ]
+}

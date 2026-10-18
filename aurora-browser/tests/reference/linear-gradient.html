@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<!--
+  Reference fixture for linear-gradient direction, stop positions and the
+  fading-mask form. CLASS D with a recorded budget: a gradient ramp is
+  rasterised, so its per-pixel quantisation is engine-specific (docs/
+  pixel-compatibility.md section 1, class D) while the direction, the stop
+  positions and the interpolated values are not. Measured against the committed
+  Edge frame (aurora-browser/tests/reference/linear-gradient.edge.png) at
+  1280x638, device scale 1: 17,430 of the 57,600 ramp pixels differ by exactly
+  1 channel unit and **0 pixels differ by more than 1**, so
+  aurora-browser/tests/verify-linear-gradient.json compares at
+  channelTolerance 1 with maxDifferentPixels 0 - a budget applied to the ramp
+  cells only, never to geometry, which stays class A at tolerance 0. The
+  fading-mask cell (e1-mask-fade) is exact: 0 of its 14,400 pixels differ.
+
+  The bug this freezes: package.d rasterised a CSS gradient only inside its
+  `url(` background branch, so `background: linear-gradient(...)` carried
+  backgroundGradient but reached no rasteriser and every such box painted the
+  gradient's first stop flat through layout.d's fallback colour - boqsc.eu's
+  hero veil was one flat rgb(217,214,208) where Edge ramps 209,205,199 ->
+  207,202,195. Cases A, B and D also pinned svg.d's default direction, which
+  started the gradient line at the box centre instead of its top edge.
+
+  Each case is a solid rectangle in an absolutely positioned cell of fixed size
+  at integer insets, so it is viewport-independent and no glyph can decide a
+  pixel. Cases: (A) 180deg vertical black->white, (B) the default direction with
+  no angle, (C) 90deg horizontal, (D) three stops with an explicit 70% position,
+  (E) the page's own mask form - rgba(0,0,0,0.55), rgba(0,0,0,0.12) 70%,
+  transparent - fading a black box over white. The reference frame was rendered
+  by Microsoft Edge; see verify-linear-gradient.json for the exact command.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; }
+  .cell { position: absolute; width: 120px; height: 120px; }
+  .fade { position: absolute; left: 0; top: 0; width: 120px; height: 120px;
+          background: #000000;
+          -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.12) 70%, transparent);
+          mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.12) 70%, transparent); }
+</style>
+</head>
+<body>
+  <div class="cell" data-rect="a1-vertical-180deg" style="left: 100px; top: 60px;
+       background: linear-gradient(180deg, #000000 0%, #ffffff 100%);"></div>
+  <div class="cell" data-rect="b1-default-no-angle" style="left: 260px; top: 60px;
+       background: linear-gradient(#000000, #ffffff);"></div>
+  <div class="cell" data-rect="c1-horizontal-90deg" style="left: 420px; top: 60px;
+       background: linear-gradient(90deg, #000000 0%, #ffffff 100%);"></div>
+  <div class="cell" data-rect="d1-three-stops-at-70" style="left: 580px; top: 60px;
+       background: linear-gradient(180deg, #000000 0%, #ff0000 70%, #0000ff 100%);"></div>
+  <div class="cell" data-rect="e1-mask-fade" style="left: 740px; top: 60px;
+       background: #ffffff;"><div class="fade"></div></div>
+</body>
+</html>

@@ -27,6 +27,7 @@ import auroraweb.dom : ComputedStyle, Element, TextNode;
 import auroraweb.shaping : cssFaceOrStandard, shapeTextCached;
 
 import std.conv : to;
+import std.math : exp;
 import std.string : indexOf, lastIndexOf, split, startsWith, strip, toLower;
 import std.algorithm : max, min, sort;
 import std.math : abs;
@@ -424,20 +425,26 @@ private void paintElement(Element element, Canvas canvas)
     }
 
     // `mask-image`: paint the whole element through its mask instead of directly.
-    if (element.style.maskImage.length && element.style.maskImage != "none" &&
+    // A wrapping inline box is painted by the inline path, which builds no layer,
+    // so an inline display used to skip the mask entirely. A POSITIONED inline
+    // box paints as a block, so it must still go through the mask: boqsc.eu's
+    // generated `body::before` veil is `position: fixed` with a mask that fades
+    // it towards the page bottom, and it painted at full strength with no fade.
+    const bool layerCapable =
         element.style.display != "none" && element.style.visibility != "hidden" &&
         element.style.display != "inline-block" &&
-        element.style.display != "inline" && element.style.display != "inline-flex" &&
-        paintMaskedLayer(element, canvas))
+        element.style.display != "inline-flex" &&
+        (element.style.display != "inline" ||
+            element.style.position == "absolute" ||
+            element.style.position == "fixed");
+    if (element.style.maskImage.length && element.style.maskImage != "none" &&
+        layerCapable && paintMaskedLayer(element, canvas))
         return;
 
     // `filter`: same layering as the mask (it also covers the whole subtree), but
     // it transforms the layer's colours instead of its alpha.
     if (element.style.filter.length && element.style.filter != "none" &&
-        element.style.display != "none" && element.style.visibility != "hidden" &&
-        element.style.display != "inline-block" &&
-        element.style.display != "inline" && element.style.display != "inline-flex" &&
-        paintFilterLayer(element, canvas))
+        layerCapable && paintFilterLayer(element, canvas))
         return;
 
     // `visibility: hidden` hides the whole subtree. The engine does not inherit
@@ -511,7 +518,22 @@ private void paintElement(Element element, Canvas canvas)
             _canvasBg.present && bg.color.r == _canvasBg.color.r &&
             bg.color.g == _canvasBg.color.g && bg.color.b == _canvasBg.color.b &&
             bg.color.a == _canvasBg.color.a;
-        if (bg.present && !textClip && !redundantCanvasBg)
+        auto bgImage = cast(RgbaImage) element.backgroundImage;
+        // `solidColorFromBackground` FABRICATES a flat colour from a gradient's
+        // first stop, so that a box whose gradient could not be drawn at all
+        // still keeps its theme's contrast. Once the gradient IS rasterised as
+        // art, filling the whole box with that fabricated tone paints over the
+        // box and flattens the gradient: boqsc.eu's page background is a
+        // four-layer stack whose first layer is `radial-gradient(circle at 18%
+        // 14%, rgba(255,255,255,0.05), transparent 24%)`, and the fabricated 5%
+        // white became a uniform rgb(17,17,18) across the entire page where Edge
+        // ramps 5..17 - the washed-out tone. A `background` value with no
+        // gradient in it still paints its colour under the art, which is what
+        // CSS says for `background-color`, so only the fabricated case is
+        // suppressed, and only when there is art to paint instead.
+        const bool fabricatedGradientTone = bgImage !is null &&
+            element.style.backgroundGradient != "none";
+        if (bg.present && !textClip && !redundantCanvasBg && !fabricatedGradientTone)
         {
             // A wrapping inline box is fragmented across lines (CSS 9.4.2), and
             // its background belongs on every line it covers — painting only the
@@ -533,15 +555,27 @@ private void paintElement(Element element, Canvas canvas)
         }
 
         // CSS background-image (drawn over the solid background color).
-        auto bgImage = cast(RgbaImage) element.backgroundImage;
-        if (bgImage !is null)
+        // `opacity` composites the element as a whole, but only the solid
+        // background above honoured it: the background ART was drawn at its own
+        // alpha, so a translucent overlay painted at full strength. boqsc.eu's
+        // generated `body::before` veil (a 5% white gradient under `opacity:
+        // .24`) came out as rgb(17,17,18) over the page's rgb(5,5,6) - exactly
+        // the un-opacified value - where Edge gives 5..11.
+        const auto artTint = opacityTint(element.style.opacity);
+        // `background-clip: text` clips the background to the glyphs. The
+        // rasteriser cannot mask art to glyph shapes, so the box art is dropped
+        // and the glyphs keep the gradient's fallback colour painted below.
+        // Leaving the art in painted the gradient as a BOX: boqsc.eu's
+        // `.site-toolbar__brand` (blue-to-violet gradient text) appeared as a
+        // solid blue-violet pill where Edge shows blue "BoQsc".
+        if (bgImage !is null && !textClip)
         {
             auto dst = backgroundDestRect(element, bgImage);
             if (dst.width > 0 && dst.height > 0)
             {
                 const rep = element.style.backgroundRepeat;
                 if (rep == "no-repeat")
-                    canvas.drawImage(dst, bgImage);
+                    canvas.drawImage(dst, bgImage, bgImage.bounds(), artTint);
                 else
                 {
                     // CSS tiles background images by default, from the padding
@@ -562,7 +596,7 @@ private void paintElement(Element element, Canvas canvas)
                             auto tile = dst;
                             tile.x = x;
                             tile.y = y;
-                            canvas.drawImage(tile, bgImage);
+                            canvas.drawImage(tile, bgImage, bgImage.bounds(), artTint);
                         }
                     }
                 }
@@ -1161,7 +1195,8 @@ private const(FontFace) faceOf(const ComputedStyle* style)
 /// pixelSize) so paint and layout agree; `canvas.layoutText` takes a
 /// typographic *scale* (2 = body ~17px), not a pixel size.
 private void drawTextRun(Canvas canvas, string text, Point origin,
-    ComputedStyle style, int maxWidth, TextNode node, bool useBackgroundColor = false)
+    const ComputedStyle style, int maxWidth, TextNode node,
+    bool useBackgroundColor = false)
 {
     if (text.length == 0) return;
 
@@ -1303,9 +1338,47 @@ private bool drawAlignedLines(Canvas canvas, string runText,
 /// red` -> `red`), or "" when the shorthand declares no colour.
 private static string borderColorToken(string value)
 {
-    foreach (token; value.split())
+    auto parts = value.split();
+    foreach (i, raw; parts)
+    {
+        auto token = raw;
+        // A function-form colour carries its own spaces: `border-bottom: 1px
+        // solid rgba(255, 255, 255, 0.08)` splits into `rgba(255,`, `255,`,
+        // `255,` and `0.08)`, none of which parses as a colour, so the side fell
+        // through to the opaque black default. boqsc.eu's toolbar border is
+        // written that way, and it painted a solid black rule across the page
+        // where Edge paints rgba(255,255,255,0.08) over the toolbar's own
+        // rgb(10,10,12), i.e. rgb(30,30,31). Reassemble a torn-apart colour from
+        // its opening parenthesis to its closing one.
+        if (indexOf(token, "(") >= 0 && indexOf(token, ")") < 0)
+            foreach (j; i + 1 .. parts.length)
+            {
+                token ~= " " ~ parts[j];
+                if (indexOf(parts[j], ")") >= 0) break;
+            }
         if (looksLikeColorToken(token)) return token;
+    }
     return "";
+}
+
+unittest
+{
+    // A border shorthand's colour may contain spaces; the whole function form
+    // has to survive the split, or the side silently takes the black default.
+    const spaced = borderColorToken("1px solid rgba(255, 255, 255, 0.08)");
+    assert(spaced == "rgba(255, 255, 255, 0.08)",
+        "a spaced rgba() border colour must be reassembled, got `" ~ spaced ~ "`");
+    const c = parseColorOrDefault(spaced, Color.rgb(0, 0, 0));
+    assert(c.r == 255 && c.g == 255 && c.b == 255,
+        "the reassembled colour must be white, got rgb(" ~ c.r.to!string ~ "," ~
+        c.g.to!string ~ "," ~ c.b.to!string ~ ")");
+    assert(c.a > 15 && c.a < 26,
+        "its alpha must be 0.08 (about 20 of 255), got " ~ c.a.to!string);
+    // The unspaced form keeps working, and a width or a style is never a colour.
+    assert(borderColorToken("1px solid rgba(255,255,255,.08)") ==
+        "rgba(255,255,255,.08)", "the unspaced form must still be found");
+    assert(borderColorToken("2px dashed") == "",
+        "a shorthand with no colour must report none");
 }
 
 /// True when a border shorthand token is a colour rather than a width or a
@@ -1479,6 +1552,15 @@ private Color withOpacity(Color c, double opacity)
     return Color(c.r, c.g, c.b, cast(ubyte) (c.a * opacity));
 }
 
+/// The tint that carries an element's `opacity` into `drawImage` for background
+/// art, whose own alpha must be scaled the way `withOpacity` scales a colour.
+private Color opacityTint(double opacity)
+{
+    if (opacity >= 1.0) return Color(255, 255, 255, 255);
+    if (opacity <= 0.0) return Color(255, 255, 255, 0);
+    return Color(255, 255, 255, cast(ubyte) (opacity * 255.0 + 0.5));
+}
+
 /// Paint a simple box-shadow behind the element: a semi-transparent copy of
 /// the box offset by (H,V). A 3-rect approximation approximates a small blur.
 private void paintShadow(Element element, Canvas canvas,
@@ -1508,20 +1590,66 @@ private void paintShadow(Element element, Canvas canvas,
         radii.br += spread;
         radii.bl += spread;
     }
-    // 3-rect blur approximation: a soft core with two fainter outer rims.
-    if (blur > 0)
-    {
-        const core = withOpacity(color, 0.5);
-        const mid = withOpacity(color, 0.25);
-        const outer = withOpacity(color, 0.12);
-        fillRoundedBox(canvas, sx, sy, sw, sh, radii, outer);
-        fillRoundedBox(canvas, sx, sy, sw, sh, radii, mid);
-        fillRoundedBox(canvas, sx, sy, sw, sh, radii, core);
-    }
-    else
+    if (blur <= 0)
     {
         fillRoundedBox(canvas, sx, sy, sw, sh, radii, color);
+        return;
     }
+    // A blurred shadow fades along a Gaussian whose standard deviation is half
+    // the blur radius (CSS Backgrounds 3, 7.2), so the alpha runs from about
+    // half the shadow's own alpha at the shape edge to almost nothing a radius
+    // outside it. This used to paint the SAME rectangle three times at three
+    // opacities, which spreads nothing at all: every blurred shadow rendered
+    // as one hard-edged copy offset by (H,V), so a real card's 36px shadow
+    // came out as a flat 18px band with a visible seam under the card.
+    // Concentric rounded boxes, each carrying the Gaussian mass of its own
+    // shell, approximate the falloff. The shells are mirrored about the edge:
+    // the ones inside the box build the alpha back up to the shadow's full
+    // value, so a shadow is not just a half-strength ring around the shape.
+    enum int shadowRings = 10;
+    const sigma = blur / 2.0;
+    const step = blur / cast(double) shadowRings;
+    foreach (i; 1 .. shadowRings + 1)
+    {
+        const grow = cast(int) ((i - 0.5) * step + 0.5);
+        const outside = gaussTail((i - 1) * step / sigma)
+            - gaussTail(i * step / sigma);
+        const inside = gaussTail(-i * step / sigma)
+            - gaussTail(-(i - 1) * step / sigma);
+        foreach (sign; [-1, 1])
+        {
+            const mass = sign < 0 ? inside : outside;
+            if (mass <= 0.0) continue;
+            const e = sign * grow;
+            const w = sw + 2 * e;
+            const h = sh + 2 * e;
+            if (w < 1 || h < 1) continue;
+            auto grown = radii;
+            grown.tl = max(0, grown.tl + e);
+            grown.tr = max(0, grown.tr + e);
+            grown.br = max(0, grown.br + e);
+            grown.bl = max(0, grown.bl + e);
+            fillRoundedBox(canvas, sx - e, sy - e, w, h, grown,
+                withOpacity(color, mass));
+        }
+    }
+}
+
+/// Gaussian tail probability beyond `x` standard deviations: the fraction of a
+/// blurred shadow's alpha still visible `x` sigma outside the shape's edge.
+private double gaussTail(double x)
+{
+    // The tail of a normal distribution is symmetric about zero: the mirror
+    // argument is what makes the shells INSIDE the shape build the alpha back
+    // up, so it must not be clamped away.
+    if (x < 0.0) return 1.0 - gaussTail(-x);
+    // Abramowitz & Stegun 7.1.26, accurate to about 1e-7 — far finer than the
+    // 8-bit channels this ends up in.
+    const t = 1.0 / (1.0 + 0.3275911 * x);
+    const poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 +
+        t * (-1.453152027 + t * 1.061405429))));
+    const erf = 1.0 - poly * exp(-x * x);
+    return 0.5 * (1.0 - erf);
 }
 
 struct NullableColor
@@ -1980,6 +2108,60 @@ unittest
         assert(((cornerPx >> 24) & 0xff) < 60,
             "a radial mask must fade the corner; alpha " ~
             to!string((cornerPx >> 24) & 0xff));
+    }
+
+    // --- `background-clip: text` must not paint the background as a box ---
+    {
+        import aurora.surface : Surface;
+        import aurora.image : RgbaImage;
+
+        // The raster a `background: linear-gradient(...)` element gets from the
+        // image pass. A flat block is enough: the test only asks whether that
+        // art reaches the element's box.
+        static RgbaImage gradientBlock()
+        {
+            auto rgba = new ubyte[](4 * 4 * 4);
+            foreach (i; 0 .. 4 * 4)
+            {
+                rgba[i * 4 + 0] = 59;
+                rgba[i * 4 + 1] = 130;
+                rgba[i * 4 + 2] = 246;
+                rgba[i * 4 + 3] = 255;
+            }
+            return new RgbaImage(4, 4, rgba);
+        }
+
+        static uint boxSample(bool clipToText)
+        {
+            auto el = new Element("span");
+            el.style.display = "block";
+            // `background: linear-gradient(...)` keeps its first stop as the
+            // solid fallback colour, which is what gradient text paints with.
+            el.style.background = "#3b82f6";
+            el.style.backgroundGradient = "linear-gradient(135deg, #3b82f6, #8b5cf6)";
+            el.style.backgroundClip = clipToText ? "text" : "border-box";
+            el.backgroundImage = cast(Object) gradientBlock();
+            el.box.x = 0;
+            el.box.y = 0;
+            el.box.width = 40;
+            el.box.height = 20;
+
+            auto s = new Surface(40, 20);
+            s.clear(Color.rgb(255, 255, 255));
+            paintElement(el, Canvas(s));
+            return s.pixel(2, 2);
+        }
+
+        const boxPx = boxSample(false);
+        assert(((boxPx >> 16) & 0xff) == 59 && ((boxPx >> 8) & 0xff) == 130 &&
+            (boxPx & 0xff) == 246,
+            "without background-clip the raster paints the box; got " ~
+            to!string(boxPx));
+        const clipPx = boxSample(true);
+        assert(((clipPx >> 16) & 0xff) == 255 && ((clipPx >> 8) & 0xff) == 255 &&
+            (clipPx & 0xff) == 255,
+            "background-clip: text must leave the box unpainted (the art is the " ~
+            "glyph fill, not a rectangle); got " ~ to!string(clipPx));
     }
 
     // --- a wrapping inline box paints its background on every line fragment ---
@@ -2543,6 +2725,66 @@ unittest
         auto bodyPx = surface.pixel(10, 10);
         assert(((bodyPx & 0xff) & 0xff) >= 250,
             "element body must be blue, got " ~ bodyPx.to!string);
+    }
+
+    // --- box-shadow: a blur spreads the shadow instead of copying the box ---
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.background = "#ffffff";
+        el.style.boxShadowH = "0px";
+        el.style.boxShadowV = "0px";
+        el.style.boxShadowBlur = "20px";
+        el.style.boxShadowColor = "rgba(0, 0, 0, 1)";
+        el.box.x = 60; el.box.y = 60;
+        el.box.width = 40; el.box.height = 40;
+
+        auto surface = new Surface(160, 160);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        // sigma = blur / 2 = 10px: a pixel just outside the box is a bit less
+        // than half covered and the alpha falls from there. The approximation
+        // this replaces painted three copies of the SAME rectangle, so it put
+        // no shadow outside the offset rect at all and the edge pixel below
+        // stayed pure white.
+        auto atEdge = (surface.pixel(59, 80) >> 16) & 0xff;
+        auto farther = (surface.pixel(45, 80) >> 16) & 0xff;
+        assert(atEdge >= 110 && atEdge <= 170,
+            "a blurred shadow must darken the pixel outside the box; red=" ~
+            atEdge.to!string);
+        assert(farther > atEdge + 40,
+            "the shadow must fade with distance; " ~ atEdge.to!string ~
+            " -> " ~ farther.to!string);
+    }
+
+    // --- box-shadow: a blurred shadow is solid where the shadow overlaps the
+    // box grown by the spread, not half strength everywhere ---
+    {
+        auto el = new Element("div");
+        el.style.display = "block";
+        el.style.background = "#ffffff";
+        el.style.boxShadowH = "0px";
+        el.style.boxShadowV = "0px";
+        el.style.boxShadowBlur = "20px";
+        el.style.boxShadowSpread = "10px";
+        el.style.boxShadowColor = "rgba(0, 0, 0, 1)";
+        el.box.x = 60; el.box.y = 60;
+        el.box.width = 40; el.box.height = 40;
+
+        auto surface = new Surface(160, 160);
+        surface.clear(Color.rgb(255, 255, 255));
+        paintElement(el, Canvas(surface));
+
+        // The shadow rect is the box grown by 10, so it starts at x=50: x=55 is
+        // 5px inside that rect and x=59 is 9px inside it, so the DEEPER pixel
+        // must be the darker one. These two points used to be named the other
+        // way round, which made the assertion demand an inverted ramp.
+        auto nearerEdge = (surface.pixel(55, 80) >> 16) & 0xff;
+        auto deeper = (surface.pixel(59, 80) >> 16) & 0xff;
+        assert(deeper < nearerEdge - 8,
+            "a shadow is deeper inside its own rect; nearer-edge=" ~
+            nearerEdge.to!string ~ " deeper=" ~ deeper.to!string);
     }
 
     // --- text-decoration: underline draws a line under the run ---

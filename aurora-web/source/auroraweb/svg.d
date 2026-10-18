@@ -21,7 +21,7 @@ module auroraweb.svg;
 import aurora.image : RgbaImage;
 import std.math : cos, sin, tan, sqrt, atan2, fabs;
 import std.algorithm : min, max;
-import std.string : indexOf, lastIndexOf, strip, toLower;
+import std.string : indexOf, lastIndexOf, split, strip, toLower;
 import std.conv : to;
 
 /// An RGBA colour with a 0..255 alpha.
@@ -94,6 +94,61 @@ private string[] splitTopLevel(string s, char sep)
 /// Build a small SVG document that paints a CSS gradient, so the engine's own
 /// SVG gradient rasteriser can draw `linear-gradient(...)` and
 /// `radial-gradient(...)` backgrounds (which used to paint nothing at all).
+/**
+ * One colour stop as written: its colour plus the positions it declares, if
+ * any. A stop may carry two positions, which spans a hard colour band.
+ * Positions are fractions of the gradient line (`-1` means "not written").
+ */
+private struct RawStop
+{
+    string colour;
+    double pos1 = -1;
+    double pos2 = -1;
+}
+
+/// Parse `<colour> [<pos> [<pos>]]`, right to left: a trailing token is a
+/// position when it is a percentage (kept as a fraction) or a length (divided by
+/// the gradient line's length `len`, with a bare number read as px). A colour
+/// can contain spaces (`rgb(1, 2, 3)`) but never ends in either form, so this
+/// cannot eat the colour. A stop whose first position is omitted gets CSS's own
+/// default, which the caller fills in.
+private RawStop parseRawStop(string body, double len)
+{
+    RawStop s;
+    auto rest = body.strip();
+    double[2] pos;
+    int have = 0;
+    while (have < 2)
+    {
+        const sp = lastIndexOf(rest, ' ');
+        if (sp <= 0) break;
+        auto tail = rest[sp + 1 .. $].strip();
+        if (tail.length == 0) { rest = rest[0 .. sp].strip(); continue; }
+        double v = -1;
+        if (tail[$ - 1] == '%')
+        {
+            try v = to!double(tail[0 .. $ - 1]) / 100.0;
+            catch (Exception) break;
+        }
+        else
+        {
+            string num = tail;
+            const tl = tail.toLower();
+            if (tl.length >= 2 && tl[$ - 2 .. $] == "px") num = tail[0 .. $ - 2];
+            try v = to!double(num);
+            catch (Exception) break;
+            if (len > 0) v /= len;
+        }
+        pos[1 - have] = v;      // collected right to left
+        have++;
+        rest = rest[0 .. sp].strip();
+    }
+    s.colour = rest;
+    if (have >= 2) { s.pos1 = pos[0]; s.pos2 = pos[1]; }
+    else if (have == 1) s.pos1 = pos[1];
+    return s;
+}
+
 string gradientToSvg(string css, int w, int h)
 {
     import std.conv : to;
@@ -107,8 +162,16 @@ string gradientToSvg(string css, int w, int h)
     auto parts = splitTopLevel(css[open + 1 .. close], ',');
     if (parts.length < 2) return "";
 
-    double x1 = 0.5, y1 = 0.5, x2 = 0.5, y2 = 1.0;
+    // The default linear-gradient direction is `to bottom`: the gradient line
+    // runs from the box's top edge to its bottom edge. Starting it at the centre
+    // (y1 = 0.5) painted every `linear-gradient(a, b)` with the first stop flat
+    // over the top half, which this fixture's b1-default-no-angle case catches.
+    double x1 = 0.5, y1 = 0.0, x2 = 0.5, y2 = 1.0;
     size_t stopFrom = 0;
+    // Radial shape: its centre as box fractions, and (for a circle) its radius
+    // in pixels.
+    bool radialCircle = false;
+    double cx0 = 0.5, cy0 = 0.5, radialR = 0;
     if (!isRadial)
     {
         auto first = parts[0].toLower();
@@ -133,36 +196,201 @@ string gradientToSvg(string css, int w, int h)
             y2 = 0.5 + dy / 2;
         }
     }
-    else if (indexOf(parts[0].toLower(), "at ") >= 0)
-        stopFrom = 1; // `radial-gradient(circle at 30% 20%, ...)`: centre approximated
+    else
+    {
+        // A radial gradient's first part names its shape, size and centre:
+        // `circle at 18% 14%`, `ellipse farthest-corner`, or nothing at all.
+        // Only a part that is not one of those is a colour stop. Ignoring the
+        // centre left every glow at SVG's default 50% 50%: boqsc.eu's body glow
+        // is declared at `18% 14%` of a 1256x2224 body, so the engine painted it
+        // in the middle of the page instead of near the hero.
+        auto head = parts[0].toLower().strip();
+        const hasAt = indexOf(head, "at ") >= 0;
+        const isShape = hasAt || indexOf(head, "circle") >= 0 ||
+            indexOf(head, "ellipse") >= 0 || indexOf(head, "closest-") >= 0 ||
+            indexOf(head, "farthest-") >= 0;
+        if (isShape)
+        {
+            stopFrom = 1;
+            radialCircle = indexOf(head, "circle") >= 0;
+            if (hasAt)
+            {
+                // `at <x> <y>`: either may be a percentage, a length (a fraction
+                // of that axis) or a side keyword.
+                int seen = 0;
+                foreach (tok; split(head[indexOf(head, "at ") + 3 .. $], ' '))
+                {
+                    auto t = tok.strip();
+                    if (t.length == 0) continue;
+                    double v = -1;
+                    if (t == "center") v = 0.5;
+                    else if (t == "left" || t == "top") v = 0.0;
+                    else if (t == "right" || t == "bottom") v = 1.0;
+                    else if (t[$ - 1] == '%')
+                    {
+                        try v = to!double(t[0 .. $ - 1]) / 100.0;
+                        catch (Exception) v = -1;
+                    }
+                    else
+                    {
+                        auto lenTok = t;
+                        const tl = t.toLower();
+                        if (tl.length >= 2 && tl[$ - 2 .. $] == "px")
+                            lenTok = t[0 .. $ - 2];
+                        try v = to!double(lenTok);
+                        catch (Exception) v = -1;
+                        const axis = seen == 0 ? w : h;
+                        v = v >= 0 && axis > 0 ? v / axis : -1;
+                    }
+                    if (v < 0) continue;
+                    if (seen == 0) cx0 = v; else cy0 = v;
+                    if (++seen == 2) break;
+                }
+            }
+            if (radialCircle)
+            {
+                // CSS's default ending shape is `farthest-corner`, so the radius
+                // reaches the centre's farthest corner and the stop percentages
+                // are fractions of it. The other three keywords are one distance
+                // each from the same four corners and four sides.
+                const px = cx0 * w, py = cy0 * h;
+                double minCorner = double.max, maxCorner = 0;
+                foreach (cxx; [0.0, cast(double) w])
+                    foreach (cyy; [0.0, cast(double) h])
+                    {
+                        const d = sqrt((cxx - px) * (cxx - px) +
+                            (cyy - py) * (cyy - py));
+                        minCorner = min(minCorner, d);
+                        maxCorner = max(maxCorner, d);
+                    }
+                const minSide = min(min(min(px, w - px), py), h - py);
+                const maxSide = max(max(max(px, w - px), py), h - py);
+                radialR = maxCorner;
+                if (indexOf(head, "closest-corner") >= 0) radialR = minCorner;
+                else if (indexOf(head, "closest-side") >= 0) radialR = minSide;
+                else if (indexOf(head, "farthest-side") >= 0) radialR = maxSide;
+                // `circle <length>` gives the radius outright.
+                auto before = head[indexOf(head, "circle") + 6 .. $];
+                const at2 = indexOf(before, "at ");
+                if (at2 >= 0) before = before[0 .. at2];
+                foreach (tok; split(before, ' '))
+                {
+                    auto t = tok.strip();
+                    if (t.length == 0) continue;
+                    auto lenTok = t;
+                    const tl = t.toLower();
+                    if (tl.length >= 2 && tl[$ - 2 .. $] == "px")
+                        lenTok = t[0 .. $ - 2];
+                    double v = -1;
+                    try v = to!double(lenTok);
+                    catch (Exception) continue;
+                    if (v > 0) { radialR = v; break; }
+                }
+                if (radialR <= 0) radialR = 0.5 * h;
+            }
+        }
+    }
 
     auto stops = parts[stopFrom .. $];
     if (stops.length < 2) return "";
-    string outS = "<svg xmlns='http://www.w3.org/2000/svg' width='" ~ w.to!string ~
-        "' height='" ~ h.to!string ~ "'><defs>";
+    // `repeating-linear-gradient` repeats its stops along the line. Dropping the
+    // flag drew ONE ramp and left everything past the last stop flat: boqsc.eu's
+    // page-wide veil is `repeating-linear-gradient(90deg, transparent 0 399px,
+    // rgba(255,255,255,0.05) 399px 400px)` - a 1px grid of white lines - and the
+    // flat tail washed the whole page with 5% white (the washed-out tone).
+    const isRepeating = indexOf(lower, "repeating-") >= 0;
+
+    // Absolute stop positions (`399px`) are a length along the gradient line, so
+    // the line's extent is needed to turn them into offsets; a percentage needs
+    // no conversion.
+    double lineLen = h;
     if (isRadial)
-        outS ~= "<radialGradient id='g'>";
+        lineLen = radialR > 0 ? radialR : 0.5 * sqrt(cast(double) w * cast(double) w +
+            cast(double) h * cast(double) h);
     else
-        outS ~= "<linearGradient id='g' x1='" ~ x1.to!string ~ "' y1='" ~ y1.to!string ~
-            "' x2='" ~ x2.to!string ~ "' y2='" ~ y2.to!string ~ "'>";
-    foreach (idx, stop; stops)
+    {
+        const adx = x1 > x2 ? x1 - x2 : x2 - x1;
+        const ady = y1 > y2 ? y1 - y2 : y2 - y1;
+        lineLen = w * adx + h * ady;
+        if (lineLen <= 0) lineLen = w;
+    }
+
+    RawStop[] raws;
+    foreach (stop; stops)
     {
         auto body2 = stop.strip();
         if (body2.length == 0) continue;
-        string colour = body2;
-        double off = cast(double) idx / cast(double)(stops.length - 1);
-        const sp = lastIndexOf(body2, ' ');
-        if (sp > 0)
+        raws ~= parseRawStop(body2, lineLen);
+    }
+    if (raws.length < 2) return "";
+    // CSS fills in the positions a stop omits: the first stop starts at 0, the
+    // last ends at 1, and the rest sit evenly between their positioned
+    // neighbours. The old code gave every stop `i/(n-1)`, which is only the same
+    // when nothing declared a position.
+    if (raws[0].pos1 < 0) raws[0].pos1 = 0.0;
+    if (raws[$ - 1].pos1 < 0) raws[$ - 1].pos1 = 1.0;
+    {
+        size_t i = 0;
+        while (i < raws.length)
         {
-            auto tail = body2[sp + 1 .. $];
-            if (indexOf(tail, "%") >= 0)
-            {
-                colour = body2[0 .. sp].strip();
-                try off = to!double(tail[0 .. $ - 1]) / 100.0;
-                catch (Exception) { }
-            }
+            if (raws[i].pos1 >= 0) { i++; continue; }
+            size_t j = i;
+            while (raws[j].pos1 < 0) j++;
+            const before = raws[i - 1].pos1;
+            const after = raws[j].pos1;
+            const steps = cast(double)(j - i + 1);
+            foreach (m; i .. j)
+                raws[m].pos1 = before + (after - before) *
+                    cast(double)(m - i + 1) / steps;
+            i = j;
         }
-        outS ~= "<stop offset='" ~ off.to!string ~ "' stop-color='" ~ colour ~ "'/>";
+    }
+    // A repeating gradient's period is the last stop's position: tile the stops
+    // over the whole line so the rasteriser draws every repeat. Tiling here (not
+    // in the rasteriser) keeps one code path for both forms.
+    if (isRepeating)
+    {
+        double lastPos = raws[0].pos1;
+        foreach (r; raws)
+            lastPos = max(lastPos, r.pos2 >= 0 ? r.pos2 : r.pos1);
+        const period = lastPos - raws[0].pos1;
+        if (period > 1e-6)
+        {
+            RawStop[] tiled = raws.dup;
+            for (double shift = period; raws[0].pos1 + shift <= 1.0;
+                shift += period)
+                foreach (r; raws)
+                {
+                    RawStop t = r;
+                    t.pos1 = r.pos1 + shift;
+                    if (r.pos2 >= 0) t.pos2 = r.pos2 + shift;
+                    tiled ~= t;
+                }
+            raws = tiled;
+        }
+    }
+    string outS = "<svg xmlns='http://www.w3.org/2000/svg' width='" ~ w.to!string ~
+        "' height='" ~ h.to!string ~ "'><defs>";
+    if (isRadial && radialCircle && radialR > 0)
+        // User space, so the radius is one circle rather than an ellipse
+        // stretched to the box. `at` percentages are box fractions, so they are
+        // scaled by the box's own axis.
+        outS ~= "<radialGradient id='g' gradientUnits='userSpaceOnUse' cx='" ~
+            (cx0 * w).to!string ~ "' cy='" ~ (cy0 * h).to!string ~
+            "' r='" ~ radialR.to!string ~ "'>";
+    else if (isRadial)
+        outS ~= "<radialGradient id='g' cx='" ~ cx0.to!string ~
+            "' cy='" ~ cy0.to!string ~ "'>";
+    else
+        outS ~= "<linearGradient id='g' x1='" ~ x1.to!string ~ "' y1='" ~ y1.to!string ~
+            "' x2='" ~ x2.to!string ~ "' y2='" ~ y2.to!string ~ "'>";
+    foreach (r; raws)
+    {
+        outS ~= "<stop offset='" ~ r.pos1.to!string ~ "' stop-color='" ~ r.colour ~ "'/>";
+        // A stop written with two positions holds its colour across the span,
+        // which is how a hard colour band is spelled.
+        if (r.pos2 >= 0)
+            outS ~= "<stop offset='" ~ r.pos2.to!string ~ "' stop-color='" ~ r.colour ~ "'/>";
     }
     outS ~= isRadial ? "</radialGradient>" : "</linearGradient>";
     outS ~= "</defs><rect width='" ~ w.to!string ~ "' height='" ~ h.to!string ~

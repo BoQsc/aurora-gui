@@ -2,7 +2,7 @@ module app;
 
 import aurora;
 import auroraopencode.appicon : applicationIconPath;
-import auroraopencode.appui : OpenCodeRoot;
+import auroraopencode.appui : OpenCodeRoot, commandLineConversationsProjectName;
 import auroraopencode.core : opencodeTheme;
 import auroraopencode.crashguard : installCrashHandler, runGuarded,
     runResolveCrashMode;
@@ -293,10 +293,6 @@ private int runHeadless(string message)
     return 0;
 }
 
-/// Project name the command-line session files its conversations under, so
-/// console chats are kept apart from the GUI's conversations.
-private enum string consoleConversationProject = "Command Line Conversations";
-
 /// Model used by non-GUI (cmd/console) sessions by default, and whether thinking
 /// is on. Measured 2026-10-16 against this endpoint: the fast route answered in
 /// ~0.87 s to first token versus ~1.60 s for `deepseek/deepseek-v4.1-flash`
@@ -322,7 +318,8 @@ private void beginConsoleConversation(ref OffscreenUi ui)
     // Console sessions run the low-latency route without changing the user's
     // saved Settings, so the GUI is unaffected by a shell launch.
     ui.root.setConsoleDefaultModel(consoleDefaultModel, consoleDefaultThinking);
-    ui.root.startConversationInProject(consoleConversationProject, getcwd());
+    ui.root.startConversationInProject(commandLineConversationsProjectName,
+        getcwd());
 }
 
 /// Interactive automation: keep one offscreen UI alive and run one prompt per

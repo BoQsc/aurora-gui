@@ -1,0 +1,106 @@
+{
+  "inputs": [
+    "aurora-web/source",
+    "aurora-browser/source",
+    "vendor/aurora-d-0.4.5/source",
+    "aurora-browser/tests/pageshot-probe.d",
+    "aurora-browser/tests/png2ppm.py",
+    "aurora-browser/tests/reference/article-panel.html",
+    "aurora-browser/tests/reference/article-panel.edge.png"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-version=AuroraHeadless",
+          "-i",
+          "-Iaurora-web/source",
+          "-Iaurora-browser/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/panelshot.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/panelbuild",
+          "aurora-browser/tests/pageshot-probe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-unittest",
+          "-main",
+          "-i",
+          "-Iaurora-web/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/panel-layout-ut.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/panellayoutut",
+          "aurora-web/source/auroraweb/layout.d"
+        ],
+        "workdir": ".",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/panel-layout-ut.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/panelshot.exe",
+        "args": [
+          "--fixture",
+          "C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-browser/tests/reference/article-panel.html",
+          "1280",
+          "638",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/article-panel.actual.ppm",
+          "--rects",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/article-panel.actual.tsv"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/png2ppm.py",
+          "aurora-browser/tests/reference/article-panel.edge.png",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/article-panel.reference.ppm"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/article-panel.reference.ppm",
+      "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/article-panel.actual.ppm",
+      "maxDifferentPixels": 0,
+      "channelTolerance": 0,
+      "referenceSource": "INDEPENDENT ORACLE, NOT AN AURORA-TO-AURORA BASELINE: this frame is rendered by Microsoft Edge, captured on 2026-10-17 with `\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --headless=new --force-device-scale-factor=1 --window-size=1280,638 --hide-scrollbars --no-first-run --no-default-browser-check --user-data-dir=<scratch>\\edge-prof-panel2 --screenshot=aurora-browser/tests/reference/article-panel.edge.png file:///<repo>/aurora-browser/tests/reference/article-panel.html` (the rect-dump capture path returned an empty DOM for every fixture on this machine today, so this oracle is the frame plus Edge's own boundaries measured inside it, not a committed rect table). The fixture is class A (geometry): no script, no inking text, solid rectangles, every case inside an absolutely positioned cell of fixed width, so nothing depends on the viewport. It reproduces boqsc.eu's hero, whose right column is a grid item holding a flex row whose panel declares max-width while its content is far wider. Case A is the page's own 38%/1fr columns of a 1000px cell with a 544px clamp, case B a 300px/1fr split with a 480px clamp, case C the page's own minmax(0, calc(0.38 * 100%)) column form. Measured in this Edge frame: the A and C panels end at x=944 (dark at 930, background at 960) and the B panel at x=800 (dark at 780, background at 830), i.e. exactly the clamps. Before the fix this engine reported those panels as 1920px wide and painted them over the whole column, and it also left each grid item's background 40px tall instead of 120 (the fixture now declares the item height, which is why that separate finding lives in its own plan row rather than here). layout.d now re-applies min/max-width to a flex item's used width after its children are laid out and re-lays those children out when the clamp changed the width. With that fix the two frames differ in 0 of 816,640 pixels, and the engine's own rect dump reports 544, 480 and 544 with the two grid items 620 and 600 wide and all three cells/voids 120 tall."
+    }
+  ]
+}

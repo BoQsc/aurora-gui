@@ -37,6 +37,24 @@
      full 10px offset instead of being inset by a stray -1px. */
   .c5 { left: 480px; top: 20px; width: 120px; height: 60px;
         background: #f0c040; box-shadow: 10px 10px 0 0 #000000; }
+
+  /* 6. An auto-width flex item's content box is its CONTENT, so the box it
+     paints is that content plus its own padding and border: 0 + 20 + 4 = 24px.
+     Counting padding/border inside the content as well made the red box 48px
+     wide and shifted the blue item 24px right of where Edge puts it. */
+  .c6 { left: 480px; top: 100px; width: 300px; height: 60px;
+        display: flex; gap: 10px; background: #e8e8e8; }
+  .c6 > i { padding: 0 10px; border: 2px solid #ff0000; }
+  .c6 > u { flex: 1; height: 30px; background: #336699; }
+
+  /* 7. Three auto-width items that exactly fill their wrapping row stay on one
+     line: each paints 40px of content + 20px padding + 2px border = 62px, and
+     3 x 62 + 2 x 8 gaps = this row's 202px. Measuring an item's content as its
+     border box widened each to 84px and folded the last one onto line two. */
+  .c7 { left: 480px; top: 200px; width: 202px; height: 60px;
+        display: flex; flex-wrap: wrap; gap: 8px; background: #eeeeee; }
+  .c7 > i { padding: 0 10px; border: 1px solid #000000; background: #669933; }
+  .c7 > i > b { display: block; width: 40px; height: 20px; }
 </style>
 </head>
 <body>
@@ -45,5 +63,7 @@
   <div class="case c3"><i></i></div>
   <div class="case c4"><i></i><i></i></div>
   <div class="case c5"></div>
+  <div class="case c6"><i></i><u></u></div>
+  <div class="case c7"><i><b></b></i><i><b></b></i><i><b></b></i></div>
 </body>
 </html>

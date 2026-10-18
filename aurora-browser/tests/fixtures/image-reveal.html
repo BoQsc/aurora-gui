@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>image reveal</title>
+<style>
+	/* The boqsc.eu pattern, reduced to one box. The photo is invisible until a
+	   script sees the image settle, so the 120x120 area is the whole
+	   measurement: red pixels mean the reveal ran AND the decoded image was
+	   painted, white means the page was left waiting. */
+	html.img-fade .photo img { opacity: 0; }
+	html.img-fade .photo img.is-loaded { opacity: 1; }
+	html, body { margin: 0; padding: 0; background: #ffffff; }
+	.photo { margin: 0; width: 120px; height: 120px; }
+	.photo img { display: block; width: 120px; height: 120px; }
+	/* boqsc.eu's hero shape: a photograph with a percentage width and an
+	   automatic height, so its height comes from the file's ratio and only
+	   exists once the image has decoded. */
+	.lead { margin: 0; width: 80px; }
+	.lead img { display: block; width: 100%; height: auto; }
+	.after-lead { margin: 0; }
+</style>
+</head>
+<body>
+<figure class="photo">
+	<img class="shot" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAAB4CAIAAAC2BqGFAAAAtElEQVR42u3QMQ0AAAgDsEmZfxVIwwU8TaqgmZYDUSBaNKJFi7YgWjSiRYu2IFo0okWLRrRoRIsWjWjRiBYtGtGiES1aNKJFI1q0aESLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0YgWjWjRohEtWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUjWrRoRItG9H/0AsDHQ0k/4V25AAAAAElFTkSuQmCC" alt="">
+</figure>
+<figure class="lead" id="lead">
+	<img class="hero" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAABaCAIAAAD8YgW4AAAAkElEQVR42u3QQQ0AAAgEoItiNKMazRbOBxsJSPVwIApEi0a0aNEWRItGtGjRFkSLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUj+kv0Aipivw36tMc0AAAAAElFTkSuQmCC" alt="">
+</figure>
+<!-- Where this marker lands is the measurement: under the photograph, or over
+     the whole picture because the figure above it never grew. -->
+<p class="after-lead">AFTER</p>
+<script>
+	// Exactly boqsc.eu's reveal. The script runs while the document is still
+	// being parsed, so the image has not loaded yet: it is the element's own
+	// `load` event (or a later `complete` check) that has to tell the page.
+	//
+	// The binding-less `catch` below is boqsc.eu's own opening move: its head
+	// script wraps a storage probe in `try { ... } catch { ... }`, and a parser
+	// that insisted on `catch (e)` threw away that whole script - the reveal
+	// with it - without reporting anything.
+	try { sessionStorage.getItem('probe'); } catch { }
+	document.documentElement.classList.add('img-fade');
+	(function () {
+		var img = document.querySelector('.photo img');
+		function reveal() { img.classList.add('is-loaded'); }
+		if (img.complete && img.naturalWidth > 0) {
+			reveal();
+		} else {
+			img.addEventListener('load', reveal);
+			img.addEventListener('error', reveal);
+		}
+	})();
+</script>
+</body>
+</html>

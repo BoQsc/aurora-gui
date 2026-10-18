@@ -123,6 +123,56 @@ int reportMasked(Element element, ref string firstDesc, ref int count)
     return count;
 }
 
+/// True when a box covers a page point. Half-open on the far edges, so a point
+/// is reported once even where two boxes abut.
+bool coversBox(Element e, int x, int y)
+{
+    return x >= e.box.x && y >= e.box.y &&
+        x < e.box.x + e.box.width && y < e.box.y + e.box.height;
+}
+
+/// Describe one box for the point report: what it is, where it is, and the
+/// resolved style that decides what it paints over the point.
+string describeBox(Element e, string kind)
+{
+    auto cls = "class" in e.attrs;
+    auto id = "id" in e.attrs;
+    string what = e.tag;
+    if (id !is null && (*id).length) what ~= "#" ~ *id;
+    if (cls !is null && (*cls).length) what ~= "." ~ *cls;
+    string bg = e.style.backgroundGradient.length
+        ? "gradient(" ~ e.style.backgroundGradient ~ ")"
+        : (e.style.backgroundImage.length && e.style.backgroundImage != "none"
+            ? "url(" ~ e.style.backgroundImage ~ ")"
+            : e.style.background);
+    return kind ~ " " ~ what ~ " box=(" ~ e.box.x.to!string ~ "," ~
+        e.box.y.to!string ~ " " ~ e.box.width.to!string ~ "x" ~
+        e.box.height.to!string ~ ")" ~
+        " display=" ~ e.style.display ~
+        " position=" ~ e.style.position ~
+        " float=" ~ e.style.floatStyle ~
+        " opacity=" ~ e.style.opacity.to!string ~
+        " bg=" ~ bg ~
+        " mask=" ~ e.style.maskImage ~
+        " art=" ~ (e.backgroundImage !is null ? "yes" : "no");
+}
+
+/// Report every box covering a page point, in paint order: an element's own
+/// background first, then its ::before box, then its children, then its
+/// ::after box. The last line is therefore what paints on top at that point.
+void reportPointAt(Element element, int x, int y, ref string[] outLines)
+{
+    if (element is null) return;
+    if (coversBox(element, x, y))
+        outLines ~= describeBox(element, "fill");
+    if (element.pseudoBefore !is null && coversBox(element.pseudoBefore, x, y))
+        outLines ~= describeBox(element.pseudoBefore, "::before");
+    foreach (child; element.elements)
+        reportPointAt(child, x, y, outLines);
+    if (element.pseudoAfter !is null && coversBox(element.pseudoAfter, x, y))
+        outLines ~= describeBox(element.pseudoAfter, "::after");
+}
+
 /// True when the class attribute lists `needle` as a whole token, so "footer"
 /// matches `class="site-footer"` but not `class="subfooter"`.
 bool hasClassToken(string cls, string needle)
@@ -314,6 +364,17 @@ int main(string[] args)
     // Optional text needle: report the layout position of every run containing
     // it, so a footer overlap can be read from the engine's own numbers.
     const needle = args.length >= 7 ? args[6] : "have been testing";
+    // Optional page-point report (`--point <x> <y>`, page coordinates): every
+    // box covering that point in paint order, so a flat tone in the capture can
+    // be traced to the box that painted it instead of guessed at.
+    int pointX = -1;
+    int pointY = -1;
+    foreach (i, a; args)
+    {
+        if (a != "--point" || i + 2 >= args.length) continue;
+        pointX = to!int(args[i + 1]);
+        pointY = to!int(args[i + 2]);
+    }
 
     WindowOptions options;
     options.title = "Aurora Browser";
@@ -363,6 +424,14 @@ int main(string[] args)
                 const pseudoCount = countPseudos(page.root(), firstPseudo);
                 writeln("generated pseudo boxes: ", pseudoCount,
                     pseudoCount ? "  first: " ~ firstPseudo : "");
+            }
+            if (pointX >= 0)
+            {
+                string[] covering;
+                reportPointAt(page.root(), pointX, pointY, covering);
+                writeln("covering boxes at page (", pointX, ",", pointY, "): ",
+                    covering.length, " (paint order)");
+                foreach (line; covering) writeln("  ", line);
             }
         }
         else

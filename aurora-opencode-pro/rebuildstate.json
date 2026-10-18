@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "",
+  "reason": "Make the durable install report live: a real run now writes install-report.txt into the install folder (dinstall.d's installReportText + installReportFile, printed by cli.d), so a long folder install can be read back even if the app restarts and the terminal output is lost. Next action after relaunch: run the real folder install C:\\Users\\windows10\\Grand and read install-report.txt plus the captured output for the finished-install report naming the passed-over firmware step.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-17 18:52:45.083476 UTC",
-  "finishedAt": "2026-10-17 18:53:25.250044 UTC",
-  "durationMs": 40166,
+  "startedAt": "2026-10-18 05:52:09.2387311 UTC",
+  "finishedAt": "2026-10-18 05:52:57.4548627 UTC",
+  "durationMs": 48216,
   "exitCode": 0,
   "errors": []
 }

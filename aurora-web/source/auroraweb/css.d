@@ -11,7 +11,7 @@ module auroraweb.css;
  * declarations.
  */
 
-import auroraweb.dom : Element;
+import auroraweb.dom : Element, splitShorthand;
 
 import std.algorithm : min;
 import std.array : appender;
@@ -1456,7 +1456,14 @@ private string shorthandSideToken(string token, bool allowAuto)
     const t = token.strip();
     if (!t.length) return "";
     if (allowAuto && t.length == 4 && asciiLower(t) == "auto") return "auto";
-    if (t.length >= 5 && asciiLower(t[0 .. 5]) == "calc(") return t;
+    // A functional length counts: `clamp(1rem, 2vw, 2rem)` is one side value.
+    // Only `calc(` used to be accepted, so boqsc.eu's
+    // `padding: 0.25rem clamp(1rem, 2vw, 2rem)` failed validation, the whole
+    // shorthand fell back to the raw-property path, and the whitespace splitter
+    // there read the clamp as three more sides.
+    foreach (fn; ["calc(", "clamp(", "min(", "max("])
+        if (t.length > fn.length && asciiLower(t[0 .. fn.length]) == fn && t[$ - 1] == ')')
+            return t;
     if (t == "0") return t;
     foreach (unit; ["px", "rem", "em", "%", "vh", "vw", "pt", "pc", "ch", "ex"])
         if (t.length > unit.length && asciiLower(t[$ - unit.length .. $]) == unit)
@@ -1464,22 +1471,45 @@ private string shorthandSideToken(string token, bool allowAuto)
     return "";
 }
 
-/// Expand a 1-4 value `margin`/`padding` shorthand into its longhands, in the
-/// declaration's own position, so the cascade decides exactly as CSS 2.1
-/// 8.1/8.4 requires. A shorthand sets ALL of its longhands, so it must clear a
+/// Expand a positional box shorthand into its longhands, in the declaration's
+/// own position, so the cascade decides exactly as CSS 2.1 8.1/8.4 and CSS
+/// Logical 1 require. A shorthand sets ALL of its longhands, so it must clear a
 /// longhand an earlier lower-priority rule won. Returns false when the value is
 /// not such a shorthand - a CSS-wide keyword or a token that is not a length -
 /// letting the caller keep the original declaration and lose nothing.
+///
+/// `margin`/`padding` take one to four values (top, horizontal, bottom, left).
+/// Their logical `-inline`/`-block` forms take one or two (start, then end) and
+/// name the physical sides through the writing mode: in horizontal-tb the
+/// inline axis runs left to right and the block axis top to bottom, so
+/// `padding-inline` sets the left/right padding and `padding-block` the
+/// top/bottom one. boqsc.eu insets its toolbar with
+/// `padding-inline: clamp(4rem, 11vw, 11rem)` and centres several blocks with
+/// `margin-inline: auto`; with no logical support at all both were dropped, so
+/// the toolbar's contents sat flush against the left edge of the window.
 private bool expandBoxShorthand(ref Declaration[] result, string property,
     string value, bool important)
 {
-    string[4] sides;
-    if (property == "margin")
-        sides = ["margin-top", "margin-right", "margin-bottom", "margin-left"];
-    else if (property == "padding")
-        sides = ["padding-top", "padding-right", "padding-bottom", "padding-left"];
-    else
-        return false;
+    // The longhands the shorthand writes, in the shorthand's own value order.
+    string[] sides;
+    bool physical = false;
+    switch (property)
+    {
+        case "margin":
+            sides = ["margin-top", "margin-right", "margin-bottom", "margin-left"];
+            physical = true;
+            break;
+        case "padding":
+            sides = ["padding-top", "padding-right", "padding-bottom", "padding-left"];
+            physical = true;
+            break;
+        case "margin-inline": sides = ["margin-left", "margin-right"]; break;
+        case "margin-block": sides = ["margin-top", "margin-bottom"]; break;
+        case "padding-inline": sides = ["padding-left", "padding-right"]; break;
+        case "padding-block": sides = ["padding-top", "padding-bottom"]; break;
+        default:
+            return false;
+    }
 
     switch (asciiLower(value.strip()))
     {
@@ -1489,19 +1519,30 @@ private bool expandBoxShorthand(ref Declaration[] result, string property,
             break;
     }
 
-    const tokens = value.split();
-    if (!tokens.length || tokens.length > 4) return false;
-    const allowAuto = property == "margin";   // `auto` is margins only
+    const tokens = splitShorthand(value);
+    if (!tokens.length || tokens.length > (physical ? 4 : 2)) return false;
+    // `auto` is for margins only.
+    const allowAuto = property.length >= 6 && property[0 .. 6] == "margin";
     foreach (token; tokens)
         if (!shorthandSideToken(token, allowAuto).length) return false;
 
-    // 1 value = all sides; 2 = vertical horizontal; 3 = top horizontal bottom;
-    // 4 = top right bottom left.
-    const top = tokens[0];
-    const horizontal = tokens[tokens.length >= 2 ? 1 : 0];
-    const bottom = tokens[tokens.length >= 3 ? 2 : 0];
-    const left = tokens.length >= 4 ? tokens[3] : horizontal;
-    const picked = [top, horizontal, bottom, left];
+    string[] picked;
+    if (physical)
+    {
+        // 1 value = all sides; 2 = vertical horizontal; 3 = top horizontal
+        // bottom; 4 = top right bottom left.
+        const top = tokens[0];
+        const horizontal = tokens[tokens.length >= 2 ? 1 : 0];
+        const bottom = tokens[tokens.length >= 3 ? 2 : 0];
+        const left = tokens.length >= 4 ? tokens[3] : horizontal;
+        picked = [top, horizontal, bottom, left];
+    }
+    else
+    {
+        // 1 value = both sides; 2 = start, end.
+        picked ~= tokens[0];
+        picked ~= tokens.length >= 2 ? tokens[1] : tokens[0];
+    }
     foreach (i, side; sides)
         result ~= Declaration(side, picked[i], important);
     return true;
@@ -1952,6 +1993,67 @@ unittest
     auto c6 = cascadeFor(late, rules);
     assert(c6.get("margin-left", "") == "7px" && c6.get("margin-top", "") == "0",
         "a longhand after the shorthand in the same rule still wins");
+}
+
+unittest
+{
+    // --- A functional length is one shorthand value, and the logical
+    // shorthands write the physical sides (CSS Logical 1, horizontal-tb) ---
+    // boqsc.eu insets its toolbar with `padding-inline: clamp(4rem, 11vw,
+    // 11rem)` and centres blocks with `margin-inline: auto`. Neither property
+    // was read at all, so the toolbar had no inset (its brand sat at x=0 where
+    // Edge puts it 138px in) and the clamp() inside a plain `padding` failed
+    // validation as `clamp(1rem,` and was dropped to `0.25rem 0 0 0` by the
+    // whitespace split on the raw-property path.
+    auto rules = parseStylesheet(`
+        .fn { padding: 0.25rem clamp(1rem, 2vw, 2rem); }
+        .logical { padding-inline: clamp(4rem, 11vw, 11rem); margin-inline: auto; }
+        .blk { padding-block: 1px 2px; }
+        .reset { margin-inline: 3px; margin: 0; }
+        .bad { padding-inline: auto; }`, 1256, 800);
+
+    auto fnEl = new Element("div");
+    fnEl.attrs["class"] = "fn";
+    auto cf = cascadeFor(fnEl, rules);
+    assert(cf.get("padding-top", "") == "0.25rem" &&
+        cf.get("padding-bottom", "") == "0.25rem" &&
+        cf.get("padding-left", "") == "clamp(1rem, 2vw, 2rem)" &&
+        cf.get("padding-right", "") == "clamp(1rem, 2vw, 2rem)",
+        "`padding: 0.25rem clamp(...)` is a vertical/horizontal pair, got '" ~
+        cf.get("padding-top", "") ~ "' '" ~ cf.get("padding-left", "") ~ "'");
+
+    auto logicalEl = new Element("div");
+    logicalEl.attrs["class"] = "logical";
+    auto cl = cascadeFor(logicalEl, rules);
+    assert(cl.get("padding-left", "") == "clamp(4rem, 11vw, 11rem)" &&
+        cl.get("padding-right", "") == "clamp(4rem, 11vw, 11rem)",
+        "`padding-inline` sets the left and right padding, got '" ~
+        cl.get("padding-left", "") ~ "'");
+    assert(cl.get("margin-left", "") == "auto" && cl.get("margin-right", "") == "auto",
+        "`margin-inline: auto` must reach the horizontal margins so a block can centre");
+
+    auto blkEl = new Element("div");
+    blkEl.attrs["class"] = "blk";
+    auto cb = cascadeFor(blkEl, rules);
+    assert(cb.get("padding-top", "") == "1px" && cb.get("padding-bottom", "") == "2px",
+        "two logical values are start then end");
+
+    // A shorthand always sets all of its longhands, so the later `margin: 0`
+    // must clear the logical one that came before it in the same rule.
+    auto resetEl = new Element("div");
+    resetEl.attrs["class"] = "reset";
+    auto cr = cascadeFor(resetEl, rules);
+    assert(cr.get("margin-left", "") == "0" && cr.get("margin-right", "") == "0",
+        "`margin: 0` after `margin-inline` must reset both sides, got '" ~
+        cr.get("margin-left", "") ~ "'");
+
+    // `auto` is a margin value only: `padding-inline: auto` is invalid CSS.
+    auto badEl = new Element("div");
+    badEl.attrs["class"] = "bad";
+    auto cbad = cascadeFor(badEl, rules);
+    assert(cbad.get("padding-left", "") == "",
+        "`padding-inline: auto` must not become a padding, got '" ~
+        cbad.get("padding-left", "") ~ "'");
 }
 
 unittest

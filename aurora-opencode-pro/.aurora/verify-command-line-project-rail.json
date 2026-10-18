@@ -1,0 +1,42 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/tests/command_line_project_rail_contracts.d",
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-Iaurora-opencode-pro/source",
+          "-Iaurora-opencode-pro/shared",
+          "-Iaurora-opencode-core/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-Jaurora-opencode-pro/assets",
+          "-of=aurora-opencode-pro/build/command_line_project_rail_contracts.exe",
+          "aurora-opencode-pro/tests/command_line_project_rail_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib"
+        ],
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\command_line_project_rail_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 300000
+      }
+    }
+  ]
+}

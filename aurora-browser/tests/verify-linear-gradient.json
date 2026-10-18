@@ -1,0 +1,106 @@
+{
+  "inputs": [
+    "aurora-web/source",
+    "aurora-browser/source",
+    "vendor/aurora-d-0.4.5/source",
+    "aurora-browser/tests/pageshot-probe.d",
+    "aurora-browser/tests/png2ppm.py",
+    "aurora-browser/tests/reference/linear-gradient.html",
+    "aurora-browser/tests/reference/linear-gradient.edge.png"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-version=AuroraHeadless",
+          "-i",
+          "-Iaurora-web/source",
+          "-Iaurora-browser/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/gradientshot.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/gradientbuild",
+          "aurora-browser/tests/pageshot-probe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lws2_32.lib",
+          "-Ladvapi32.lib",
+          "-Lole32.lib"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-m64",
+          "-unittest",
+          "-main",
+          "-i",
+          "-Iaurora-web/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-of=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/gradient-layout-ut.exe",
+          "-od=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/gradientlayoutut",
+          "aurora-web/source/auroraweb/layout.d"
+        ],
+        "workdir": ".",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/gradient-layout-ut.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/gradientshot.exe",
+        "args": [
+          "--fixture",
+          "C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-browser/tests/reference/linear-gradient.html",
+          "1280",
+          "638",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/linear-gradient.actual.ppm",
+          "--rects",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/linear-gradient.actual.tsv"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/png2ppm.py",
+          "aurora-browser/tests/reference/linear-gradient.edge.png",
+          "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/linear-gradient.reference.ppm"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/linear-gradient.reference.ppm",
+      "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-evtest/linear-gradient.actual.ppm",
+      "maxDifferentPixels": 0,
+      "channelTolerance": 1,
+      "referenceSource": "INDEPENDENT ORACLE, NOT AN AURORA-TO-AURORA BASELINE: this frame is rendered by Microsoft Edge, captured on 2026-10-17 with `\"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe\" --headless=new --force-device-scale-factor=1 --window-size=1280,638 --hide-scrollbars --no-first-run --no-default-browser-check --user-data-dir=<scratch>\\edge-prof-grad --screenshot=C:/Users/windows10/AppData/Local/Temp/aurora-evtest/linear-gradient.edge.png file:///<repo>/aurora-browser/tests/reference/linear-gradient.html`, installed as aurora-browser/tests/reference/linear-gradient.edge.png. Same geometry as the engine's own frame: 1280x638 page viewport, device scale 1, no browser chrome, no scaling; scrollbar policy hidden; the platform colour scheme as served with no dark-mode override, which the fixture cannot observe because every case declares its own colours. CLASS D WITH A RECORDED BUDGET, which is why this recipe is the one corpus compared at channelTolerance 1: a gradient ramp is rasterised, so its per-pixel quantisation is engine-specific (docs/pixel-compatibility.md section 1, class D - 'per-case budget with the reason recorded (rasteriser differences), applied only to the affected channels/region and never to geometry'). The budget is exact and measured: 17,430 of the fixture's 57,600 ramp pixels differ by exactly 1 channel unit and 0 pixels differ by more than 1, so maxDifferentPixels 0 with channelTolerance 1 admits only the rounding and nothing else - a 2-unit divergence, a moved edge or a wrong colour still fails. The fading-mask case is exact at tolerance 0 as well: 0 of its 14,400 pixels differ. Geometry is not budgeted: the fixture's five cells are absolutely positioned at integer insets, and the engine's own rect dump reports them at x=100, 260, 420, 580 and 740, each 120x120 at y=60. THE BUG THIS FREEZES: package.d rasterised a CSS gradient only inside its `url(` background-image branch, so a plain `background: linear-gradient(...)` set backgroundGradient but reached no rasteriser, and every such box painted the gradient's first stop flat through layout.d's solidColorFromBackground fallback. On boqsc.eu that made the hero veil one flat rgb(217,214,208) at every y where Edge ramps rgb(209,205,199) -> rgb(207,202,195); in this fixture the engine painted case A rgb(0,0,0) at y=65, 120 and 175 where Edge paints rgb(12,12,12), rgb(128,128,128), rgb(246,246,246). Cases A, B and D additionally caught svg.d's default linear-gradient direction, which started the gradient line at the box centre (y1 = 0.5) instead of the top edge, painting `linear-gradient(a, b)`'s first stop flat over the top half. With both fixed, case A reports y=65 rgb(12,12,12), y=120 rgb(129,129,129), y=175 rgb(245,245,245) against Edge's 12, 128, 246; case D's three stops with an explicit 70% position report rgb(17,0,0), rgb(184,0,0) and rgb(32,0,223) against Edge's 17, 183 and 32,0,223 - every stop interpolated, none painted flat."
+    }
+  ]
+}

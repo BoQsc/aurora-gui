@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>article panel sizing</title>
+<!--
+  Pixel-compatibility fixture, class A (geometry). See
+  aurora-browser/docs/pixel-compatibility.md.
+
+  No script, no inking text, solid rectangles, integer insets, and every case
+  sits inside an absolutely positioned cell of fixed width, so nothing here
+  depends on the viewport or on the reference browser's window size.
+
+  What this reproduces: boqsc.eu's hero is a grid whose right column is a flex
+  row, and the panel in it declares max-width:34rem while its content's
+  max-content width is far larger (a 1920px-wide lead image). CSS Flexbox 9.7
+  clamps the item's hypothetical main size by max-width, so Edge paints a
+  544px-wide panel. The engine painted the whole 620px column instead, which
+  widened the lead image and the article text and pushed everything below it
+  down by the image's extra height.
+
+  Case A is that clamp on the page's own column widths. Case B moves both the
+  column width and the clamp so the clamp cannot be confused with the column.
+  Case C uses the page's own minmax(0, calc(0.38 * 100%)) column form, so a
+  ratio mistake cannot hide behind the plain percentage form. Each panel clips
+  its oversized child with overflow:hidden, so the only thing the frame can
+  show is the panel's own width.
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; font-size: 0; }
+  * { box-sizing: content-box; }
+
+  /* A. max-width clamps a flex item's main size (Flexbox 9.7). Column widths
+     match the page: 38% of 1000 is 380, the rest is 620. */
+  .a0 { position: absolute; left: 20px; top: 20px; width: 1000px; height: 120px;
+        display: grid; grid-template-columns: 38% 1fr; }
+  .a0 > .void { height: 120px; display: flex; align-items: flex-start;
+        background: #d9d6d0; }
+  .a0 .panel { max-width: 544px; background: #2c2d31; overflow: hidden; }
+  .a0 .panel > i { display: block; width: 1920px; height: 40px; }
+
+  /* B. the same rule with a different column width and clamp. */
+  .b0 { position: absolute; left: 20px; top: 200px; width: 900px; height: 120px;
+        display: grid; grid-template-columns: 300px 1fr; }
+  .b0 > .void { height: 120px; display: flex; align-items: flex-start;
+        background: #cccccf; }
+  .b0 .panel { max-width: 480px; background: #333a44; overflow: hidden; }
+  .b0 .panel > i { display: block; width: 1920px; height: 40px; }
+
+  /* C. the page's own column form: minmax(0, calc(0.38 * 100%)) | minmax(0,1fr). */
+  .c0 { position: absolute; left: 20px; top: 380px; width: 1000px; height: 120px;
+        display: grid;
+        grid-template-columns: minmax(0, calc(0.38 * 100%)) minmax(0, 1fr); }
+  .c0 > .void { height: 120px; display: flex; align-items: flex-start;
+        background: #c9c6c0; }
+  .c0 .panel { max-width: 544px; background: #1e1e22; overflow: hidden; }
+  .c0 .panel > i { display: block; width: 1920px; height: 40px; }
+</style>
+</head>
+<body>
+  <div class="a0" data-rect="a1-grid">
+    <div></div>
+    <div class="void" data-rect="a2-void-620"><div class="panel" data-rect="a3-panel-clamp-544"><i></i></div></div>
+  </div>
+  <div class="b0" data-rect="b1-grid">
+    <div></div>
+    <div class="void" data-rect="b2-void-600"><div class="panel" data-rect="b3-panel-clamp-480"><i></i></div></div>
+  </div>
+  <div class="c0" data-rect="c1-grid">
+    <div></div>
+    <div class="void" data-rect="c2-void-620"><div class="panel" data-rect="c3-panel-clamp-544"><i></i></div></div>
+  </div>
+</body>
+</html>

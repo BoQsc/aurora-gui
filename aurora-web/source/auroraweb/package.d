@@ -19,10 +19,14 @@ module auroraweb;
 import aurora.canvas : Canvas;
 import aurora.surface : Surface;
 import aurora.font : FontFace;
+// Module scope, not only the local imports inside the loaders: the
+// background-layer compositor takes and returns this type in its signature.
+import aurora.image : RgbaImage;
 import auroraweb.css : parseFontFaces, parseStylesheet, Rule, WebFontFace;
 import auroraweb.dom : Element, TextNode;
 import auroraweb.dombind : bindDocument, dispatchHostEvent, dispatchHostEventNoBubble,
-    dispatchDocumentEvent, evaluateIntersectionObservers, setDocumentScroll, setViewportSize;
+    dispatchDocumentEvent, evaluateIntersectionObservers, setDocumentScroll, setViewportSize,
+    setDocumentReadyState;
 import auroraweb.shaping : registerWebFace;
 import auroraweb.woff : isWoff, woffToSfnt;
 import auroraweb.woff2 : isWoff2, woff2ToSfnt;
@@ -1683,6 +1687,14 @@ final class WebPage
                 _width, _height);
             _documentBound = true;
         }
+        // The document is still being parsed while these scripts run, and a page
+        // branches on that: boqsc.eu's head script only registers its
+        // `DOMContentLoaded` handler when `document.readyState` is "loading",
+        // and without the property it took the other path, looked for an <img>
+        // that was still being parsed, found none and never waited for the
+        // image it was meant to reveal.
+        try setDocumentReadyState(_js, "loading");
+        catch (Exception exc) {}
         foreach (pending; _pendingScripts)
         {
             auto code = pending.code;
@@ -1710,7 +1722,11 @@ final class WebPage
         // The document is parsed and its classic scripts have run, so the
         // document's `DOMContentLoaded` listeners fire now: a script that waits
         // for the event before touching the DOM must not be left hanging.
+        try setDocumentReadyState(_js, "interactive");
+        catch (Exception exc) {}
         try dispatchDocumentEvent(_js, "DOMContentLoaded");
+        catch (Exception exc) {}
+        try setDocumentReadyState(_js, "complete");
         catch (Exception exc) {}
         _layoutDirty = true; // scripts may have mutated the DOM
     }
@@ -2150,12 +2166,23 @@ final class WebPage
             _laidOutHeight = _height;
             ++_layoutGen;
         }
+        // The pass below decides what work is still outstanding, so start from
+        // "nothing outstanding": this pass has already laid the document out.
+        // The flag is left standing while a pass runs, and `loadImages` marks
+        // it again the moment it settles something.
+        _layoutDirty = false;
         loadImages();
         // Images are fetched a few per pass, so a pass that deferred work leaves
         // the document dirty: the next paint loads more. Clearing this
         // unconditionally stranded every image after the first pass, which is
-        // why a live browser showed none of them.
-        _layoutDirty = _imagesPending || _webFontsPending ||
+        // why a live browser showed none of them. It also erased the mark a
+        // decode makes in `loadImages`: the last image to arrive wrote its own
+        // box (from the file's intrinsic size) and never reached a layout
+        // again, so a `width:100%; height:auto` photograph kept the pre-image
+        // geometry — boqsc.eu's hero figure stayed zero rows tall, the
+        // photograph was painted into a zero-height clip, and the article text
+        // under it sat a whole image too high.
+        _layoutDirty = _layoutDirty || _imagesPending || _webFontsPending ||
             _styleSheetsPending || _navPending;
         ++_docPasses;
         // `IntersectionObserver` callbacks describe the geometry this pass just
@@ -2338,6 +2365,131 @@ final class WebPage
                 collected[url] = responses[i];
         _imageBatchUrls.length = 0;
         return true;
+    }
+
+    /// Rasterise this element's CSS gradient background into its
+    /// `backgroundImage`, so paint.d draws the gradient as art.
+    ///
+    /// Called for every element AND for the generated `::before`/`::after` boxes
+    /// of each element: those boxes are absent from `children`/`elements` by
+    /// design, so a walk over `elements` alone leaves their gradients
+    /// un-rasterised, and an un-rasterised gradient background paints the flat
+    /// colour `layout.d`'s `solidColorFromBackground` fabricates from the
+    /// gradient's first stop - at the full size of the box.
+    private void rasteriseGradientBackground(Element e)
+    {
+        if (e.style.backgroundGradients.length == 0 &&
+            (e.style.backgroundGradient.length == 0 ||
+             e.style.backgroundGradient == "none"))
+            return;
+        // Rasterise only once the box has been laid out: the image is
+        // rendered at the element's own size and is drawn at its intrinsic
+        // size (`background-size: auto`), so a pass that runs before
+        // layout must not freeze a 1x1 image.
+        const int gw = e.box.width - e.box.paddingLeft - e.box.paddingRight;
+        const int gh = e.box.height - e.box.paddingTop - e.box.paddingBottom;
+        // A propagated body background is NOT positioned against the viewport:
+        // Edge sizes boqsc.eu's 5% white glow over the body's own 2224px box,
+        // which is what makes its lift a near-uniform 8 units down the left
+        // panel. Rendering it against the 638px viewport instead darkens that
+        // panel by 8-10 units (measured on a body-propagation fixture rendered
+        // by both engines), so the element's own box is the right one.
+        // ... and it must be RE-made when that box changes size. A
+        // gradient raster is drawn at its intrinsic size, so one taken
+        // during an early pass stays the wrong size forever: boqsc.eu's
+        // hero veil was rasterised before its lead image and article gave
+        // the column its height, so the beige ramp reached its last stop
+        // about half way down and the whole paper column painted far too
+        // dark. `backgroundGradientW/H` record the size that is cached.
+        const bool gradientSizeChanged = e.backgroundGradientW != gw ||
+            e.backgroundGradientH != gh;
+        if (gw <= 0 || gh <= 0) return;
+        if (e.backgroundLoadTried && !gradientSizeChanged) return;
+        import aurora.image : RgbaImage;
+        import auroraweb.svg : decodeSvg, gradientToSvg;
+        e.backgroundLoadTried = true;
+        e.backgroundGradientW = gw;
+        e.backgroundGradientH = gh;
+        // A box may declare a LIST of background images (CSS layers), and only
+        // the first was kept. That is what made boqsc.eu look washed out: its
+        // body layers three radial glows over a base
+        // `linear-gradient(180deg, #070708, #050506 48%, #040405)`, so the base
+        // ramp that sets the page's tone never painted at all and the tone came
+        // from the top 5% white glow. CSS paints the first listed layer on top,
+        // so rasterise the list from the bottom up, each layer composited over
+        // the ones already laid down.
+        auto layers = e.style.backgroundGradients;
+        if (layers.length == 0) layers = [e.style.backgroundGradient];
+        RgbaImage img;
+        foreach_reverse (g; layers)
+        {
+            auto gsvg = gradientToSvg(g, gw, gh);
+            if (!gsvg.length) continue;
+            // Untrusted markup rule: a gradient must not crash the
+            // engine.
+            RgbaImage layer;
+            try layer = decodeSvg(cast(const(ubyte)[]) gsvg, svgInkColor(e));
+            catch (Throwable) layer = null;
+            if (layer is null) continue;
+            img = img is null ? layer : compositeLayers(layer, img);
+        }
+        if (img !is null)
+        {
+            e.backgroundImage = img;
+            ++_contentGen;
+        }
+    }
+
+    /// Draw `src` over `dst` and return the combined straight-alpha raster.
+    ///
+    /// Used to flatten a box's background-image layers into the single raster
+    /// `backgroundImage` holds: gradients may be translucent (boqsc.eu's glows
+    /// and its hairline veils are), so the layers must be alpha-composited
+    /// rather than painted over one another, or a lower layer's own
+    /// transparency would be lost and a stacked background would go opaque.
+    /// Whole layers are the same size as the box, so no clipping is needed here.
+    private static RgbaImage compositeLayers(RgbaImage src, RgbaImage dst)
+    {
+        import aurora.image : RgbaImage;
+        const w = dst.width();
+        const h = dst.height();
+        // A layer whose raster does not match the box (a gradient SVG that
+        // failed to size, say) must not be guessed at: keep what is already
+        // painted rather than stretch it.
+        if (src.width() != w || src.height() != h) return dst;
+        const s = src.pixels();
+        const d = dst.pixels();
+        auto out_ = new ubyte[w * h * 4];
+        foreach (i; 0 .. w * h)
+        {
+            const o = i * 4;
+            const sa = s[o + 3];
+            if (sa == 0)
+            {
+                out_[o .. o + 4] = d[o .. o + 4];
+                continue;
+            }
+            if (sa == 255)
+            {
+                out_[o .. o + 4] = s[o .. o + 4];
+                continue;
+            }
+            const af = sa / 255.0;
+            const df = (d[o + 3] / 255.0) * (1 - af);
+            const oa = af + df;
+            if (oa <= 0)
+            {
+                out_[o .. o + 4] = 0;
+                continue;
+            }
+            foreach (c; 0 .. 3)
+            {
+                const v = (s[o + c] * af + d[o + c] * df) / oa;
+                out_[o + c] = cast(ubyte) (v + 0.5);
+            }
+            out_[o + 3] = cast(ubyte) (oa * 255 + 0.5);
+        }
+        return new RgbaImage(w, h, out_);
     }
 
     /// Find <img> elements without a decoded image and load them, and decode
@@ -2556,6 +2708,18 @@ final class WebPage
                                     e.box.width = img.width;
                                 if (e.style.height == "auto")
                                     e.box.height = img.height;
+                                // Tell the page the image settled. A page that
+                                // reveals a photo on `load` is never told
+                                // otherwise and keeps it at opacity 0, which is
+                                // what hid boqsc.eu's hero photograph. The
+                                // handler may restyle the element, so the next
+                                // pass has to re-resolve.
+                                try
+                                {
+                                    dispatchHostEvent(_js, e, "load");
+                                    _layoutDirty = true;
+                                }
+                                catch (Exception exc) {}
                             }
                         }
                     }
@@ -2563,8 +2727,47 @@ final class WebPage
                     {
                         // Leave the placeholder box; loading errors are non-fatal.
                     }
+                    // A crash inside the fetch/decode above is not the only way
+                    // an image settles as a failure: a 404 leaves `bytes` empty
+                    // and an undecodable file leaves `img` null, both without
+                    // throwing. Either way the page hears about it, because a
+                    // page that reveals on `load` OR `error` (boqsc.eu attaches
+                    // both) otherwise waits forever. `imageLoadTried` is still
+                    // true exactly when no retry with the plain `src` is pending.
+                    if (!_collectingUrls && e.image is null && e.imageLoadTried)
+                    {
+                        try dispatchHostEvent(_js, e, "error");
+                        catch (Exception inner) {}
+                    }
                 }
             }
+            // A CSS gradient background is real content. It used to be
+            // rasterised only inside the `url(` branch below, so a plain
+            // `background: linear-gradient(...)` - which sets backgroundGradient
+            // but carries no URL - never reached the rasteriser and every such box
+            // painted the gradient's first stop flat through the layout fallback
+            // colour. That is what made boqsc.eu's hero veil a single
+            // rgb(217,214,208) instead of Edge's 209,205,199 -> 207,202,195 ramp,
+            // and aurora-browser/tests/reference/linear-gradient.html pins it.
+            rasteriseGradientBackground(e);
+            // Generated `::before`/`::after` boxes have a background of their
+            // own but are deliberately NOT in `children`/`elements` (CSS 12), so
+            // this walk - which recurses over `elements` - never reached them and
+            // their gradients never became art. They then painted the FLAT tone
+            // `solidColorFromBackground` fabricates, at full box size: boqsc.eu's
+            // two viewport-sized veils are exactly this, and the flat 5% white
+            // each painted over #050506 is the page-wide rgb(17,17,18) that made
+            // the whole site look washed out, where Edge paints 5,5,6 with the
+            // veils' own soft glows. Giving them their real art also lets
+            // paint.d skip the fabricated fill, so the veils composite as Edge's
+            // do. Measured on the fetched page: engine 17,17,18 against Edge's
+            // 5,5,6 by engine column x=10 at window rows 300, 538 and 675
+            // (aurora-browser/tests/verify-linear-gradient.json rebuilds the probe
+            // this was measured with).
+            if (e.pseudoBefore !is null)
+                rasteriseGradientBackground(e.pseudoBefore);
+            if (e.pseudoAfter !is null)
+                rasteriseGradientBackground(e.pseudoAfter);
             // CSS background-image: url("...")
             if (e.backgroundImage is null && !e.backgroundLoadTried &&
                 e.style.backgroundImage.length > 4 &&
@@ -3474,6 +3677,104 @@ unittest
             bgsh.style.backgroundImage ~ "'");
     }
 
+    // A gradient background raster is drawn at its intrinsic size, so it must be
+    // re-made when the element's box changes size. It used to be cached from the
+    // first pass that saw a laid-out box and never re-made: on boqsc.eu that was
+    // the pass before the hero column's lead image and article gave it its
+    // height, so the beige ramp reached its last stop about half way down and
+    // the whole paper column painted far too dark.
+    {
+        import std.conv : to;
+        auto gg = new WebPage(200, 100);
+        gg.setHtml(`<html><body><div id="ggrow" style="width:40px;height:20px;` ~
+            `background: linear-gradient(180deg, #ffffff 0%, #000000 100%)">` ~
+            `</div></body></html>`);
+        gg.layout();
+        auto ggrow = findId(gg.root(), "ggrow");
+        assert(ggrow !is null, "gradient-grow fixture must exist");
+        gg.loadImages();
+        assert(ggrow.backgroundImage !is null,
+            "a CSS gradient background must rasterise");
+        assert(ggrow.backgroundGradientW == 40 && ggrow.backgroundGradientH == 20,
+            "the raster must record the box it was made for; got " ~
+            to!string(ggrow.backgroundGradientW) ~ "x" ~
+            to!string(ggrow.backgroundGradientH));
+        auto firstRaster = ggrow.backgroundImage;
+        // The page grows the box (an image or later content sizes it), so the
+        // gradient's geometry must follow it.
+        ggrow.box.height = 60;
+        gg.loadImages();
+        assert(ggrow.backgroundImage !is firstRaster,
+            "growing the box must re-make the gradient raster");
+        assert(ggrow.backgroundGradientH == 60,
+            "the re-made raster must use the new box height; got " ~
+            to!string(ggrow.backgroundGradientH));
+    }
+
+    // CSS lets one box declare a LIST of background images, painted first
+    // listed on top. Only the first gradient was kept, so boqsc.eu's four-layer
+    // body (three radial glows over the base
+    // `linear-gradient(180deg, #070708, #050506 48%, #040405)`) painted its top
+    // 5% white glow alone, which is what made the whole page look washed out.
+    {
+        import std.conv : to;
+        auto ml = new WebPage(200, 100);
+        ml.setHtml(`<html><body><div id="mlbg" style="width:8px;height:8px;` ~
+            `background: linear-gradient(90deg, rgb(255,0,0), rgb(255,0,0)),` ~
+            `linear-gradient(90deg, rgb(0,0,255), rgb(0,0,255))">` ~
+            `</div></body></html>`);
+        ml.layout();
+        auto mlbg = findId(ml.root(), "mlbg");
+        assert(mlbg !is null, "multi-layer fixture must exist");
+        assert(mlbg.style.backgroundGradients.length == 2,
+            "every gradient layer must be kept; got " ~
+            to!string(mlbg.style.backgroundGradients.length));
+        assert(mlbg.style.backgroundGradient ==
+            "linear-gradient(90deg, rgb(255,0,0), rgb(255,0,0))",
+            "the first layer must stay available as backgroundGradient; got " ~
+            mlbg.style.backgroundGradient);
+        ml.loadImages();
+        assert(mlbg.backgroundImage !is null,
+            "a multi-layer background must rasterise");
+        // `Element.backgroundImage` is declared as an Object; the composited
+        // layer is the engine's own raster type.
+        auto mimg = cast(RgbaImage) mlbg.backgroundImage;
+        assert(mimg.width() == 8 && mimg.height() == 8,
+            "the composited raster must be the box's size; got " ~
+            to!string(mimg.width()) ~ "x" ~ to!string(mimg.height()));
+        auto px = mimg.pixels();
+        // The first listed layer is opaque red, so it wins over the blue below.
+        assert(px[0] > 200 && px[1] < 60 && px[2] < 60 && px[3] == 255,
+            "the first listed layer must paint on top; got " ~
+            to!string(px[0]) ~ "," ~ to!string(px[1]) ~ "," ~
+            to!string(px[2]) ~ "," ~ to!string(px[3]));
+    }
+
+    // A translucent layer must composite, not replace: the top layer of
+    // boqsc.eu's veils is a 5% white hairline, and painting it over the lower
+    // layer would erase what is underneath.
+    {
+        import std.conv : to;
+        auto tl = new WebPage(200, 100);
+        tl.setHtml(`<html><body><div id="tlbg" style="width:8px;height:8px;` ~
+            `background: linear-gradient(90deg, rgba(255,255,255,0.5), rgba(255,255,255,0.5)),` ~
+            `linear-gradient(90deg, rgb(0,0,0), rgb(0,0,0))">` ~
+            `</div></body></html>`);
+        tl.layout();
+        auto tlbg = findId(tl.root(), "tlbg");
+        assert(tlbg !is null, "translucent-layer fixture must exist");
+        tl.loadImages();
+        assert(tlbg.backgroundImage !is null,
+            "a translucent layer list must rasterise");
+        auto timg = cast(RgbaImage) tlbg.backgroundImage;
+        auto px = timg.pixels();
+        // 50% white over black is mid grey, and the result is opaque again.
+        assert(px[0] > 120 && px[0] < 136 && px[3] == 255,
+            "a translucent top layer must blend with the layer below; got " ~
+            to!string(px[0]) ~ "," ~ to!string(px[1]) ~ "," ~
+            to!string(px[2]) ~ "," ~ to!string(px[3]));
+    }
+
     // An external stylesheet (link rel=stylesheet) must be fetched and applied,
     // not just inline <style> blocks.
     {
@@ -3809,6 +4110,58 @@ unittest
     wrapped.click(inner.box.x + 1, inner.box.y + 1);
     assert(("hit" in inner.attrs) !is null,
         "clicking through a wrapper must run the child's handler");
+}
+
+unittest
+{
+    import std.conv : to;
+
+    // A photograph that arrives after the first layout has to reach a layout
+    // again. boqsc.eu's hero is `width:100%; height:auto`: before its image
+    // decoded the figure was zero rows tall, and the decode then wrote the
+    // file's intrinsic height into the image's own box and marked the document
+    // dirty — a mark the pass went on to clear, so the host stopped with the
+    // pre-image geometry on screen: the hero figure zero rows tall, the
+    // photograph clipped away, and the article text a whole image too high.
+    // 120x90, so a 100px-wide box takes 100 * 90 / 120 = 75px from the ratio.
+    const string shot = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAABaCAIAAAD8YgW4AAAAkElEQVR42u3QQQ0AAAgEoItiNKMazRbOBxsJSPVwIApEi0a0aNEWRItGtGjRFkSLRrRo0YgWjWjRohEtGtGiRSNaNKJFi0a0aESLFo1o0YgWLRrRohEtWjSiRSNatGhEi0a0aNGIFo1o0aIRLRrRokUjWjSiRYtGtGhEixaNaNGIFi0a0aIRLVo0okUj+kv0Aipivw36tMc0AAAAAElFTkSuQmCC";
+    auto page = new WebPage(400, 400);
+    page.setHtml(
+        "<html><body>" ~
+        "<figure id=\"lead\" style=\"margin:0;width:100px\">" ~
+        "<img id=\"hero\" src=\"" ~ shot ~
+        "\" style=\"display:block;width:100%;height:auto\">" ~
+        "</figure>" ~
+        "<p id=\"after\">after</p>" ~
+        "</body></html>");
+    static Element byId(Element e, string id)
+    {
+        if (e is null) return null;
+        auto v = "id" in e.attrs;
+        if (v !is null && *v == id) return e;
+        foreach (child; e.elements)
+        {
+            auto hit = byId(child, id);
+            if (hit !is null) return hit;
+        }
+        return null;
+    }
+    page.layout();
+    auto figure = byId(page.root(), "lead");
+    assert(figure !is null, "the lead figure must exist");
+    assert(figure.box.height == 0,
+        "before the image decodes the figure has no height, got " ~
+        figure.box.height.to!string);
+    assert(page.layoutPending(),
+        "a decode during the pass must leave a layout pending");
+    page.layout();
+    assert(byId(page.root(), "hero").image !is null,
+        "the engine must attach the decoded image to the element");
+    assert(figure.box.height == 75,
+        "the figure must take the photograph's ratio height, got " ~
+        figure.box.height.to!string);
+    assert(byId(page.root(), "after").box.y >= figure.box.y + 75,
+        "the text after the photograph must sit below it");
 }
 
 unittest

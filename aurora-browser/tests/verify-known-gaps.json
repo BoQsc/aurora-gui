@@ -4,7 +4,9 @@
     "aurora-web/source/auroraweb/woff2.d",
     "aurora-web/source/auroraweb/brotli.d",
     "aurora-web/source/auroraweb/css.d",
-    "aurora-browser/docs/rendering-status.md"
+    "aurora-browser/docs/rendering-status.md",
+    "aurora-browser/docs/pixel-compatibility.md",
+    "aurora-browser/tests/check-pixel-compatibility.py"
   ],
   "steps": [
     {
@@ -69,6 +71,19 @@
           "-u",
           "-B",
           "aurora-browser/tests/check-rendering-status.py"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/check-pixel-compatibility.py"
         ],
         "workdir": ".",
         "timeout": 120000

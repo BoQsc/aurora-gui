@@ -7517,6 +7517,18 @@ private immutable string checkpointButtonTooltipText =
 private immutable string sendButtonTooltipText = "Send (Enter)";
 private immutable string stopButtonTooltipText = "Stop";
 
+/// Project name that command-line (cmd/console) sessions file their chats
+/// under. The rail gives this project its own row pinned directly above the New
+/// project button, so the console's conversations stay reachable without
+/// displacing the user's own projects. Shared with app.d's console entry path
+/// so the two never drift apart.
+public immutable string commandLineConversationsProjectName =
+    "Command Line Conversations";
+
+/// Row height shared by the projects rail and the pinned command-line row, so
+/// the pinned project reads as one more rail row.
+private enum int projectRailRowHeight = 40;
+
 /// A common button wired to a hover tooltip. The framework's Button reports no
 /// hover event, so onTick watches the anchor's hovered() state and applies the
 /// same hover-intent delay the context meter uses.
@@ -10485,6 +10497,7 @@ public final class OpenCodeRoot : VBox
 
     private ProjectState _projectState;
     private ProjectListView _projectRail;
+    private ProjectListView _commandLineRail;
     private VBox _projectsColumn;
     private Label _projectsHeader;
     private Button _newProjectButton;
@@ -10728,6 +10741,10 @@ private string _suggestExcludeId;
     // tick-driven calls are not deferred or re-entered.
     private bool _messageColumnRebuildQueued;
     private bool _buildingMessageColumn;
+    // A finished tool round commits its result in the execution service and
+    // prepares the next model request on a later tick, so no single service pass
+    // both commits a result and builds a request.
+    private int _pendingContinuationSession = -1;
 
     // Tool loop: the model may request tool calls, the app executes them, and
     // the enriched history is re-sent until the model answers with text.
@@ -13478,7 +13495,7 @@ private string _suggestExcludeId;
         _projectRail = projectsColumn.add(new ProjectListView());
         _projectRail.setId("oc-projects");
         _projectRail.layoutHints().flex = 1.0;
-        _projectRail.setRowHeight(40);
+        _projectRail.setRowHeight(projectRailRowHeight);
         _projectRail.onSelectionChanged = delegate(int index)
         {
             selectProject(index);
@@ -13490,6 +13507,26 @@ private string _suggestExcludeId;
         _projectRail.onReorderRequested = delegate(int from, int to)
         {
             moveProject(from, to);
+        };
+        // The command-line project owns its own row directly above the New
+        // project button. The rail list above is top-anchored inside a flex row,
+        // so a last list row leaves a wide empty gap above the button and the
+        // console's project reads as missing from the bottom of the rail.
+        _commandLineRail = projectsColumn.add(new ProjectListView());
+        _commandLineRail.setId("oc-command-line-project");
+        _commandLineRail.layoutHints().flex = 0.0;
+        _commandLineRail.layoutHints().minWidth = 0;
+        _commandLineRail.layoutHints().minHeight = projectRailRowHeight;
+        _commandLineRail.layoutHints().preferredHeight = projectRailRowHeight;
+        _commandLineRail.setRowHeight(projectRailRowHeight);
+        _commandLineRail.setVisible(false);
+        _commandLineRail.onSelectionChanged = delegate(int index)
+        {
+            if (index == 0) selectProject(commandLineProjectIndex());
+        };
+        _commandLineRail.onContextMenuRequested = delegate(int row, Point point)
+        {
+            showProjectContextMenu(commandLineProjectIndex(), point);
         };
         _newProjectButton = projectsColumn.add(
             new Button("New project", IconKind.newDocument));
@@ -13849,13 +13886,23 @@ private string _suggestExcludeId;
         // callback maps the visible row to its session and moves it.
         _sessionList.projectIndexAtGlobal = delegate(Point globalPosition)
         {
-            if (_projectRail is null) return -1;
             // ListView row math only looks at Y, so a point over the sidebar
             // would otherwise match a project at the same height. Require the
             // pointer to actually sit inside the rail's rectangle first.
-            const local = _projectRail.globalToLocal(globalPosition);
-            if (!_projectRail.containsLocal(local)) return -1;
-            return _projectRail.indexAt(local);
+            if (_projectRail !is null)
+            {
+                const local = _projectRail.globalToLocal(globalPosition);
+                if (_projectRail.containsLocal(local))
+                    return _projectRail.indexAt(local);
+            }
+            // The command-line project's pinned row is a second drop target.
+            if (_commandLineRail !is null && _commandLineRail.visible())
+            {
+                const local = _commandLineRail.globalToLocal(globalPosition);
+                if (_commandLineRail.containsLocal(local))
+                    return commandLineProjectIndex();
+            }
+            return -1;
         };
         _sessionList.projectNameAt = delegate(int projectIndex)
         {
@@ -14103,12 +14150,57 @@ private string _suggestExcludeId;
         return name.length > 0 ? name : path;
     }
 
+    /// Index of the command-line project in the stored list, or -1 when no
+    /// console session has created it yet.
+    private int commandLineProjectIndex()
+    {
+        foreach (i, project; _projectState.projects)
+            if (project.name == commandLineConversationsProjectName)
+                return cast(int) i;
+        return -1;
+    }
+
+    /// Keep the command-line project last in the stored list: move it to the end
+    /// whenever something else left it elsewhere (a new project, a drag, an
+    /// older saved file). Storing it last is what lets the list rows above keep
+    /// mapping straight onto the stored list (selection, context menu,
+    /// drag-drop) while the command-line project has its own pinned row.
+    private void pinCommandLineProjectLast()
+    {
+        const count = cast(int) _projectState.projects.length;
+        if (count < 2) return;
+        const index = commandLineProjectIndex();
+        if (index < 0 || index + 1 == count) return;
+        auto pinned = _projectState.projects[cast(size_t) index];
+        _projectState.projects = _projectState.projects[0 .. cast(size_t) index]
+            ~ _projectState.projects[cast(size_t) index + 1 .. $] ~ [pinned];
+        _projectsWriter.save(_projectState);
+    }
+
+    /// Mirror the active project into both rail widgets: the scrollable list
+    /// holds every project but the command-line one, which has the pinned row,
+    /// so exactly one of the two shows the selection.
+    private void syncProjectSelection()
+    {
+        const commandLineIndex = commandLineProjectIndex();
+        const index = activeProjectIndex();
+        if (_projectRail !is null)
+            _projectRail.setSelectedIndex(
+                index >= 0 && index != commandLineIndex ? index : -1, false);
+        if (_commandLineRail !is null)
+            _commandLineRail.setSelectedIndex(
+                index >= 0 && index == commandLineIndex ? 0 : -1, false);
+    }
+
     private void updateProjectRail()
     {
         if (_projectRail is null) return;
+        pinCommandLineProjectLast();
+        const commandLineIndex = commandLineProjectIndex();
         ListItem[] items;
-        foreach (project; _projectState.projects)
-            items ~= ListItem(project.name, IconKind.none, "");
+        foreach (i, project; _projectState.projects)
+            if (cast(int) i != commandLineIndex)
+                items ~= ListItem(project.name, IconKind.none, "");
         _projectRail.setItems(items);
         // experimental: project manager - mark enabled projects with a dot.
         _projectRail.onManagedQuery = delegate(int i)
@@ -14116,8 +14208,15 @@ private string _suggestExcludeId;
             return _settings.experimentalProjectManager &&
                 projectManagerEnabledForIndex(i);
         };
-        const index = activeProjectIndex();
-        if (index >= 0) _projectRail.setSelectedIndex(index, false);
+        if (_commandLineRail !is null)
+        {
+            _commandLineRail.setVisible(commandLineIndex >= 0);
+            if (commandLineIndex >= 0)
+                _commandLineRail.setItems([
+                    ListItem(commandLineConversationsProjectName,
+                        IconKind.none, "")]);
+        }
+        syncProjectSelection();
     }
 
     private void updateSessionsHeader()
@@ -14163,11 +14262,12 @@ private string _suggestExcludeId;
         const id = _projectState.projects[cast(size_t) index].id;
         if (id == _projectState.activeId)
         {
-            if (_projectRail !is null) _projectRail.setSelectedIndex(index, false);
+            syncProjectSelection();
             return;
         }
         _projectState.activeId = id;
         _projectsWriter.save(_projectState);
+        syncProjectSelection();
         updateSessionsHeader();
         syncCurrentToActiveProject();
         updateSessionList(false);
@@ -19760,7 +19860,7 @@ private void pollButtonSuggestionRequest()
                     explorationCheckpointCalls &&
                     !hasExplorationCheckpoint(*session))
                     appendExplorationCheckpoint(*session);
-                startChatRequest(sessionIndex, false);
+                _pendingContinuationSession = sessionIndex;
             }
         }
     }
@@ -30181,6 +30281,23 @@ private void pollButtonSuggestionRequest()
             _messageColumnRebuildQueued = false;
             if (_current >= 0)
                 rebuildMessageColumnNow();
+        }
+        // Run a finished tool round's continuation in its own tick.
+        if (_pendingContinuationSession >= 0)
+        {
+            const continuation = _pendingContinuationSession;
+            _pendingContinuationSession = -1;
+            if (!_turnCancelled && !_toolContinuationPaused &&
+                continuation < cast(int) _sessions.length &&
+                !hasPendingSubagents(_sessions[continuation].id) &&
+                _sessions[continuation].turnStatus == "running")
+            {
+                const restore = _current;
+                if (continuation != restore) loadRuntime(continuation);
+                startChatRequest(continuation, false);
+                if (continuation != restore && restore >= 0)
+                    loadRuntime(restore);
+            }
         }
         // Load the persisted conversations on demand: the window is already on
         // screen by the time a tick runs, so the multi-megabyte snapshot read

@@ -44,6 +44,13 @@ final class Element
     Box box;               /// Filled by the layout pass.
     Object image;          /// Loaded image (aurora.image.RgbaImage) for <img>, if any.
     Object backgroundImage; /// Decoded image for `background-image`, if any.
+    /// The gradient box size the current gradient raster was made for. A
+    /// gradient raster fills its element at its intrinsic size
+    /// (`background-size: auto`), so it must be re-made whenever that box
+    /// changes size: caching the first one froze boqsc.eu's hero veil at its
+    /// pre-article height and painted the whole paper column's ramp compressed.
+    int backgroundGradientW;
+    int backgroundGradientH;
     bool imageLoadTried;
     /// Set once an inline SVG's rasterisation has been retried, so a genuinely
     /// unreadable SVG cannot keep the document permanently dirty. Without the
@@ -187,6 +194,15 @@ struct ComputedStyle
     string backgroundImage = "none";
     string backgroundSize = "auto";
     string backgroundGradient = "none"; /// A CSS gradient token, rasterised to backgroundImage.
+    /// Every gradient layer of `background`/`background-image`, in CSS paint
+    /// order (the first listed layer paints on top). CSS allows a
+    /// comma-separated list of images per box, and only the first gradient was
+    /// kept: boqsc.eu's body layers three radial glows over its base
+    /// `linear-gradient(180deg, #070708, #050506 48%, #040405)`, so the base
+    /// ramp never painted and the page's tone came from the top 5% white glow
+    /// alone - the washed-out look. `backgroundGradient` stays the first layer
+    /// so existing callers and tests keep their meaning.
+    string[] backgroundGradients;
     string backgroundRepeat = "repeat"; /// CSS initial value: background images tile.
     string transform = "none"; /// CSS `transform` (translate() supported so far).
     string objectFit = "fill";   /// `object-fit` for <img>: fill/contain/cover/none/scale-down
@@ -381,9 +397,25 @@ struct ComputedStyle
     {
         const s = prop.strip();
         if (s.length == 0) return -1;
+        // Round a fractional length to whole pixels, ties away from zero.
+        // Chrome lays lengths out as fractions of a pixel (LayoutUnit is
+        // 1/64px) and only snaps when painting, so a declared length is never
+        // systematically shortened. This resolver truncated every fractional
+        // result instead, which made each rem/em/percent/vw length up to a
+        // pixel short and let the error accumulate down a page: boqsc.eu's
+        // toolbar inner box (`padding: 0.25rem clamp(1rem, 2vw, 2rem)`, 29px
+        // of content) came out 37px tall where Edge renders 40, its
+        // `font-size: 0.72rem` resolved to 11px instead of 11.52 and narrowed
+        // every text run by ~4%, and the whole page then sat 3-4px higher than
+        // the reference frame.
+        int roundPx(double v)
+        {
+            if (v != v) return 0;                 // NaN
+            return cast(int) (v < 0 ? v - 0.5 : v + 0.5);
+        }
         // calc( <expr> ): evaluate over lengths/percentages/numbers.
         if (s.length > 6 && s[0 .. 5] == "calc(" && s[$ - 1] == ')')
-            return cast(int) calcEval(s[5 .. $ - 1], base).px;
+            return roundPx(calcEval(s[5 .. $ - 1], base).px);
         // clamp()/min()/max(): each argument is itself a length (often a calc).
         // CSS picks clamp(min, val, max) = the value clamped between the bounds,
         // min() the smallest argument and max() the largest. The resolver used
@@ -429,28 +461,28 @@ struct ComputedStyle
         if (s.length >= 2 && s[$ - 2 .. $] == "px")
             return cssInt(s[0 .. $ - 2].strip());
         if (s.length >= 2 && s[$ - 1] == '%')
-            return (base * cssInt(s[0 .. $ - 1].strip())) / 100;
+            return roundPx(base * (cssDouble(s[0 .. $ - 1].strip()) / 100.0));
         if (s.length >= 3 && s[$ - 3 .. $] == "rem")
-            return cast(int)(cssDouble(s[0 .. $ - 3].strip()) * rootFontSizePx);
+            return roundPx(cssDouble(s[0 .. $ - 3].strip()) * rootFontSizePx);
         if (s.length >= 2 && s[$ - 2 .. $] == "em")
-            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * fontSizePx);
+            return roundPx(cssDouble(s[0 .. $ - 2].strip()) * fontSizePx);
         if (s.length >= 2 && s[$ - 2 .. $] == "vh")
-            return (viewportHeight * cssInt(s[0 .. $ - 2].strip())) / 100;
+            return roundPx(viewportHeight * (cssDouble(s[0 .. $ - 2].strip()) / 100.0));
         if (s.length >= 2 && s[$ - 2 .. $] == "vw")
-            return (viewportWidth * cssInt(s[0 .. $ - 2].strip())) / 100;
+            return roundPx(viewportWidth * (cssDouble(s[0 .. $ - 2].strip()) / 100.0));
 
         // Physical and typographic units: without these the value was reported
         // as "not a length" (-1) and a margin resolver stored that as a real
         // -1px margin (the same trap unitless `0` fell into). 1pt = 96/72px,
         // 1pc = 12pt = 16px, and `ch`/`ex` are approximated at half an em.
         if (s.length >= 2 && s[$ - 2 .. $] == "pt")
-            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * (96.0 / 72.0));
+            return roundPx(cssDouble(s[0 .. $ - 2].strip()) * (96.0 / 72.0));
         if (s.length >= 2 && s[$ - 2 .. $] == "pc")
-            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * 16.0);
+            return roundPx(cssDouble(s[0 .. $ - 2].strip()) * 16.0);
         if (s.length >= 2 && s[$ - 2 .. $] == "ch")
-            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * (fontSizePx * 0.5));
+            return roundPx(cssDouble(s[0 .. $ - 2].strip()) * (fontSizePx * 0.5));
         if (s.length >= 2 && s[$ - 2 .. $] == "ex")
-            return cast(int)(cssDouble(s[0 .. $ - 2].strip()) * (fontSizePx * 0.5));
+            return roundPx(cssDouble(s[0 .. $ - 2].strip()) * (fontSizePx * 0.5));
 
         // A unitless zero is a valid length in CSS (`margin: 0`, `top: 0`,
         // `left: 0`). Without this the value was reported as "not a length"
@@ -617,6 +649,41 @@ struct Box
     bool marginBottomAuto;
 }
 
+/// Split a shorthand value on the whitespace that separates its values, but
+/// never inside parentheses.
+///
+/// A functional argument carries spaces of its own, so `padding: 0.25rem
+/// clamp(1rem, 2vw, 2rem)` is TWO values - a vertical and a horizontal one -
+/// while a bare `split()` saw four and read `clamp(1rem,` / `2vw,` / `2rem)` as
+/// the right, bottom and left sides. boqsc.eu's toolbar declares exactly that,
+/// so it resolved to `0.25rem 0 0 0` and its brand sat at the window's left
+/// edge instead of 138px in. Shared by the cascade's shorthand expansion and by
+/// the layout/paint shorthand readers so both agree on what a value list is.
+string[] splitShorthand(string value)
+{
+    string[] parts;
+    int depth = 0;
+    size_t start = 0;
+    foreach (i, c; value)
+    {
+        if (c == '(')
+            ++depth;
+        else if (c == ')')
+        {
+            if (depth > 0) --depth;
+        }
+        else if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' ||
+            c == '\v')
+        {
+            if (depth > 0) continue;
+            if (i > start) parts ~= value[start .. i];
+            start = i + 1;
+        }
+    }
+    if (start < value.length) parts ~= value[start .. $];
+    return parts;
+}
+
 unittest
 {
     // CSS keyword values must never throw when parsed as numbers (this crashed
@@ -633,4 +700,18 @@ unittest
     assert(cssDouble("1.5") == 1.5);
     assert(cssDouble("bold") == 0.0);
     assert(cssDouble("2.5em") == 2.5);
+
+    // A shorthand's values are separated by whitespace OUTSIDE parentheses: a
+    // functional length is one value however many spaces its arguments hold.
+    {
+        auto two = splitShorthand("0.25rem clamp(1rem, 2vw, 2rem)");
+        assert(two.length == 2, "clamp() is one shorthand value, got " ~
+            two.length.to!string);
+        assert(two[1] == "clamp(1rem, 2vw, 2rem)", "the whole argument is kept: " ~ two[1]);
+        auto four = splitShorthand("1px 2px 3px 4px");
+        assert(four.length == 4 && four[3] == "4px", "plain lists still split");
+        auto nested = splitShorthand("calc(min(1px, 2vw) + 3px) 4px");
+        assert(nested.length == 2 && nested[0] == "calc(min(1px, 2vw) + 3px)",
+            "nested functions keep their spaces");
+    }
 }

@@ -1,0 +1,42 @@
+{
+  "inputs": [
+    "aurora-browser/docs/pixel-compatibility.md",
+    "aurora-browser/docs/rendering-status.md",
+    "aurora-browser/tests/check-pixel-compatibility.py",
+    "aurora-browser/tests/check-rendering-status.py",
+    "aurora-browser/tests/reference",
+    "aurora-browser/tests/verify-box-geometry.json",
+    "aurora-browser/tests/verify-flex-geometry.json",
+    "aurora-browser/tests/verify-flow-sizing.json",
+    "aurora-browser/tests/verify-article-panel.json",
+    "aurora-browser/tests/verify-linear-gradient.json"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/check-pixel-compatibility.py"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "aurora-browser/tests/check-rendering-status.py"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    }
+  ]
+}

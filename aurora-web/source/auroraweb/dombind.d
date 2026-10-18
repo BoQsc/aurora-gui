@@ -85,6 +85,20 @@ bool dispatchDocumentEvent(JsRuntime rt, string type)
     return false;
 }
 
+/// Publish the document's load state (`document.readyState`). The host moves it
+/// from `"loading"` while the document is being parsed, to `"interactive"` when
+/// the document's own scripts have run, and to `"complete"` once they are done -
+/// the order a page sees. A head script branches on it, so answering nothing
+/// (the property did not exist) made a page take its "already ready" path, look
+/// for elements that were still being parsed, find none, and never wait for the
+/// event it had just decided it did not need.
+void setDocumentReadyState(JsRuntime rt, string state)
+{
+    if (rt is null || state.length == 0) return;
+    if (auto b = rt in _hostBinders)
+        (*b).setReadyState(state);
+}
+
 /// Expose the viewport scroll offset to the page (`window.scrollY`,
 /// `window.pageYOffset`, `document.documentElement.scrollTop`), which is what
 /// scrolling pages actually read.
@@ -443,6 +457,9 @@ private final class DocumentBinder
         if (bodyEl is null) bodyEl = root;
         docObj.set("body", wrap(bodyEl));
         docObj.set("documentElement", wrap(root));
+        docObj.set("__get_readyState", rt.makeNativeFunc((thisValue, args, rt2) {
+            return rt2.makeString(readyState);
+        }));
 
         // document.addEventListener: store under the same `__event_<name>` slot
         // the host fires when it dispatches a document-level event (`scroll`,
@@ -1096,6 +1113,33 @@ private final class DocumentBinder
             borderBoxInViewport(target, x, y, w, h);
             return rt2.makeNumber(h - target.box.borderTop - target.box.borderBottom);
         }));
+
+        // An `<img>`'s loaded state. Real pages gate a reveal on it — boqsc.eu
+        // fades its hero photo in with `if (img.complete && img.naturalWidth > 0)
+        // reveal()` and otherwise waits for a `load` listener — so an engine
+        // that answers neither leaves a decoded photograph at `opacity: 0`
+        // forever. `complete` is a settled image: decoded, or a fetch that is
+        // finished failing and will not be retried.
+        if (el.tag == "img")
+        {
+            obj.set("__get_complete", rt.makeNativeFunc((thisValue, args, rt2) {
+                auto target = unwrap(thisValue);
+                if (target is null) return rt2.makeBoolean(false);
+                return rt2.makeBoolean(target.image !is null || target.imageLoadTried);
+            }));
+            obj.set("__get_naturalWidth", rt.makeNativeFunc((thisValue, args, rt2) {
+                import aurora.image : RgbaImage;
+                auto target = unwrap(thisValue);
+                auto decoded = target is null ? null : cast(RgbaImage) target.image;
+                return rt2.makeNumber(decoded is null ? 0 : decoded.width);
+            }));
+            obj.set("__get_naturalHeight", rt.makeNativeFunc((thisValue, args, rt2) {
+                import aurora.image : RgbaImage;
+                auto target = unwrap(thisValue);
+                auto decoded = target is null ? null : cast(RgbaImage) target.image;
+                return rt2.makeNumber(decoded is null ? 0 : decoded.height);
+            }));
+        }
 
         // Inline event-handler attributes (`onclick`, `oninput`, `onchange`,
         // ...): compile the attribute source into a handler function and
@@ -2484,6 +2528,17 @@ private final class DocumentBinder
             catch (Exception) { rt.lastHadException = true; }
         }
         return true;
+    }
+
+    /// `document.readyState`, as the host publishes it through
+    /// `setDocumentReadyState`. It starts at the state a document is in while
+    /// its own scripts run.
+    string readyState = "loading";
+
+    /// Move `document.readyState` to the state the host reports.
+    void setReadyState(string state)
+    {
+        if (state.length) readyState = state;
     }
 
     /// Publish the viewport scroll offset to the page's globals.
