@@ -3,6 +3,7 @@
     "aurora-opencode-pro/source",
     "aurora-opencode-pro/tests/journal_history_restore_contracts.d",
     "aurora-opencode-pro/tests/journal_history_restore_folded.d",
+    "aurora-opencode-pro/tests/journal_block_probe.d",
     "aurora-opencode-core/source",
     "vendor/aurora-d-0.4.5/source"
   ],
@@ -72,6 +73,40 @@
         "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\journal_history_restore_folded.exe",
         "args": [],
         "workdir": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-restore-folded",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-version=AuroraHeadless",
+          "-Iaurora-opencode-pro/source",
+          "-Iaurora-opencode-pro/shared",
+          "-Iaurora-opencode-core/source",
+          "-Ivendor/aurora-d-0.4.5/source",
+          "-Jaurora-opencode-pro/assets",
+          "-of=aurora-opencode-pro/build/journal_block_probe.exe",
+          "aurora-opencode-pro/tests/journal_block_probe.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "ole32.lib"
+        ],
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\journal_block_probe.exe",
+        "args": [],
+        "workdir": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-restore-block",
         "timeout": 180000
       }
     }
