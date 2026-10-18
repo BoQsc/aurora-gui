@@ -29802,49 +29802,34 @@ private void pollButtonSuggestionRequest()
     }
 
     /**
-     * The bounded journal tail the parent-link repair scans, or null while it is
-     * still being read off the UI thread.
+     * The cached bounded journal tail the parent-link repair scans, or null
+     * while it is still being read off the UI thread.
      *
-     * The startup restore needs a complete transcript graph before the first
-     * frame is drawn and no turn can be appending yet, so it takes one bounded
-     * read here and caches it for every later conversation. Every other caller
-     * queues the read and is served by `drainJournalTailRepairs`, so loading a
-     * conversation never waits on the journal.
+     * The journal is never read here: this runs on the UI thread both while a
+     * conversation is loaded and during the startup restore, and a bounded read
+     * is still a read that waits on the repository owner. The tail is queued on
+     * the snapshot owner instead and applied by `drainJournalTailRepairs` on a
+     * later tick, so no restore or load ever waits on the journal.
      */
     private AgentRuntimeEvent[] journalTailForRepair()
     {
         if (_runtime is null) return null;
-        const bytes = _runtime.journalSize();
+        ulong bytes;
+        try bytes = _runtime.journalSize();
+        catch (Throwable) return null;
         synchronized (this)
             if (_journalTailReady && _journalTailBytes == bytes)
                 return _journalTailEvents;
-        if (_restoringSessions)
-        {
-            AgentRuntimeEvent[] events;
-            try events = _runtime.eventsFrom(bytes > parentRepairLookupBytes
-                ? bytes - parentRepairLookupBytes : 0);
-            catch (Throwable) return null;
-            synchronized (this)
-            {
-                _journalTailEvents = events;
-                _journalTailBytes = bytes;
-                _journalTailReady = true;
-            }
-            return events;
-        }
-        requestJournalTail();
+        requestJournalTail(bytes);
         synchronized (this) _journalTailRepairQueued = true;
         return null;
     }
 
     /// Read the bounded journal tail on the snapshot owner. Never blocks the UI
     /// thread: the events are applied when they land.
-    private void requestJournalTail()
+    private void requestJournalTail(ulong bytes)
     {
         if (_runtime is null) return;
-        ulong bytes;
-        try bytes = _runtime.journalSize();
-        catch (Throwable) return;
         synchronized (this)
         {
             if (_journalTailInFlight || (_journalTailReady && _journalTailBytes == bytes))

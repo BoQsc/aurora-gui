@@ -51,8 +51,13 @@ int main()
     void pump() { window.onNativeTick(0.02); root.projectTranscriptForTesting(); assert(driver.paint()); Thread.sleep(5.msecs); }
     const deadline = MonoTime.currTime + 10.seconds;
     while (root.startupPendingForTesting() && MonoTime.currTime < deadline) pump();
-    assert(!root.startupPendingForTesting()); pump();
+    assert(!root.startupPendingForTesting());
     const expected = to!int(environment.get("AURORA_HISTORY_EXPECTED_ACTIVE", "3"));
+    // The missing parent link comes from the journal tail, which the restore
+    // path reads on the snapshot owner rather than on the UI thread, so keep
+    // ticking until the deferred repair lands instead of assuming the graph was
+    // complete before the first frame.
+    while (root.messageCountForTesting() != expected && MonoTime.currTime < deadline) pump();
     writeln("RESTORE folded active=",root.messageCountForTesting()," total=",root.totalMessageCountForTesting(),
         " visuals=",root.messageColumnVisualCountForTesting());
     assert(root.messageCountForTesting() == expected,
