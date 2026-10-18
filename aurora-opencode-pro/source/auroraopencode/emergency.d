@@ -46,6 +46,14 @@ import std.path : buildPath;
 /// UI ticks are expected within this many seconds; a longer gap is a freeze.
 public enum double emergencyFreezeSeconds = 6.0;
 
+/// If this watchdog's own wake is later than this, the process - and so the
+/// machine - was starved. A missed UI beat is then system load, not an app hang.
+public enum double watchdogStalledSeconds = 2.5;
+
+/// Consecutive stalled samples required before reporting, so a single slow frame
+/// or a transient scheduling hiccup does not open a diagnostic chat.
+public enum int freezeConfirmSamples = 2;
+
 /// How long the watchdog sleeps between samples. One wake per second while the
 /// app is running is immeasurable next to a frame.
 private enum int watchdogPollMs = 1_000;
@@ -59,6 +67,17 @@ public enum double emergencyRepeatCooldownSeconds = 120.0;
 /// overseer calls it a runaway turn. Generous, so a genuinely long generation
 /// is not mistaken for a hang.
 public enum double overseerStallSeconds = 900.0;
+
+/// Title marker for the autonomous freeze-investigation conversation. It also
+/// acts as the recovery key: after a restart, the next freeze reuses the chat
+/// carrying this title instead of opening another one.
+public enum string freezeInvestigationTitle = "Freeze diagnostics";
+
+/// While a freeze-investigation conversation was touched within this many
+/// seconds, a later freeze appends to it instead of opening yet another chat.
+/// Repeated freezes are one incident to investigate, not a new conversation
+/// every time.
+public enum double freezeInvestigationReuseSeconds = 900.0;
 
 /// True when freeze detection + emergency reports are enabled (Settings).
 private __gshared bool _reportEnabled = true;
@@ -88,6 +107,11 @@ private __gshared bool _freezeLogged;
 /// freeze.
 private __gshared bool _haveWake;
 private __gshared SysTime _lastWake;
+// Freeze corroboration: how many consecutive samples the UI has been stalled,
+// and the worst lateness of this thread's own wake over that stall. A late wake
+// means the process was starved, so the gap is load rather than a UI hang.
+private __gshared int _uiStallSamples;
+private __gshared double _uiStallMaxWakeGap;
 private __gshared bool _haveTrigger;
 private __gshared SysTime _lastTriggerTime;
 private __gshared bool _pending;
@@ -240,18 +264,21 @@ private void watchdogMain()
                 continue;
             }
             const now = nowTime();
+            const sinceWake = _haveWake
+                ? (now - _lastWake).total!"seconds" : 0.0;
             // A gap between our own wakes that already exceeds the freeze
             // threshold cannot be a UI-thread hang: a hung UI still leaves this
             // loop waking every second. It means the process (and this thread)
             // was suspended - system sleep or hibernate - so the stale heartbeat
             // is expected. Re-baseline and do not report a freeze.
-            if (_haveWake &&
-                (now - _lastWake).total!"seconds" > emergencyFreezeSeconds)
+            if (_haveWake && sinceWake > emergencyFreezeSeconds)
             {
                 _lastWake = now;
                 _lastBeatTime = now;
                 _haveBeat = true;
                 _freezeLogged = false;
+                _uiStallSamples = 0;
+                _uiStallMaxWakeGap = 0;
                 continue;
             }
             _lastWake = now;
@@ -259,19 +286,83 @@ private void watchdogMain()
             const stalled = (now - _lastBeatTime).total!"seconds";
             if (stalled >= emergencyFreezeSeconds)
             {
-                if (!_freezeLogged)
+                ++_uiStallSamples;
+                if (sinceWake > _uiStallMaxWakeGap)
+                    _uiStallMaxWakeGap = sinceWake;
+                // Report only a hang the app itself caused: when this thread was
+                // starved too, an overloaded machine starved the UI, so the
+                // missed beat is load, not a freeze.
+                if (!_freezeLogged &&
+                    emergencyIsConfirmedHang(stalled, _uiStallMaxWakeGap,
+                        _uiStallSamples))
                 {
                     _freezeLogged = true;
-                    emergencyTrigger("UI froze for " ~ to!string(stalled) ~
-                        " s (last tick " ~ _lastBeatTime.toISOString() ~
+                    emergencyTrigger("UI stopped ticking for " ~
+                        to!string(stalled) ~ " s while the app kept being " ~
+                        "scheduled (last tick " ~
+                        _lastBeatTime.toISOString() ~
                         "); last activity: " ~ lastActivity());
                 }
             }
             else
+            {
                 _freezeLogged = false;
+                _uiStallSamples = 0;
+                _uiStallMaxWakeGap = 0;
+            }
         }
         catch (Throwable) {}
     }
+}
+
+/// The conversation fields the freeze-reuse decision needs.
+public struct FreezeConversation
+{
+    string id;
+    string title;
+    string parentId; // non-empty for a nested subagent chat
+    long touchedAt;  // Unix seconds of the last activity; <= 0 means unknown
+}
+
+/// Index of the freeze-investigation conversation to reuse for a new freeze, or
+/// -1 when none is recent enough. Prefers the conversation this run opened
+/// (`rememberedId`), then any candidate carrying `freezeInvestigationTitle`, so
+/// a restart still lands in the same chat. Only the most recently touched match
+/// within `windowSeconds` counts; a nested subagent chat is never a candidate.
+public int freezeInvestigationReuseIndex(const FreezeConversation[] conversations,
+    string rememberedId, long nowUnix, double windowSeconds)
+{
+    const window = cast(long) windowSeconds;
+    int best = -1;
+    long bestAt = long.min;
+    foreach (i, conversation; conversations)
+    {
+        if (conversation.parentId.length > 0) continue;
+        const remembered = rememberedId.length > 0 &&
+            conversation.id == rememberedId;
+        if (!remembered && conversation.title != freezeInvestigationTitle) continue;
+        if (conversation.touchedAt <= 0) continue;
+        if (nowUnix - conversation.touchedAt > window) continue;
+        if (conversation.touchedAt > bestAt)
+        {
+            bestAt = conversation.touchedAt;
+            best = cast(int) i;
+        }
+    }
+    return best;
+}
+
+/// True when a missed UI heartbeat is a real hang worth reporting: the beat has
+/// been gone long enough, this watchdog kept being scheduled (so the machine did
+/// not starve the process), and the stall persisted across samples. A late wake
+/// of our own means the UI thread simply was not scheduled - system load, not an
+/// app hang - so it is not reported.
+public bool emergencyIsConfirmedHang(double uiGapSeconds,
+    double maxWatchdogWakeGapSeconds, int consecutiveSamples)
+{
+    if (uiGapSeconds < emergencyFreezeSeconds) return false;
+    if (maxWatchdogWakeGapSeconds >= watchdogStalledSeconds) return false;
+    return consecutiveSamples >= freezeConfirmSamples;
 }
 
 version (unittest)
@@ -287,6 +378,8 @@ version (unittest)
     {
         _haveBeat = false;
         _freezeLogged = false;
+        _uiStallSamples = 0;
+        _uiStallMaxWakeGap = 0;
         _haveTrigger = false;
         _pending = false;
         _pendingReason = "";
@@ -309,4 +402,47 @@ unittest
     setOverseerEnabled(true);
     assert(overseerEnabled());
     setOverseerEnabled(false);
+}
+
+unittest
+{
+    // A fresh freeze reuses a recent freeze-investigation conversation instead
+    // of opening another chat, and only within the reuse window.
+    FreezeConversation[] chats;
+    chats ~= FreezeConversation("t-1", "Ordinary chat", "", 1_000);
+    chats ~= FreezeConversation("t-2", freezeInvestigationTitle, "", 1_000);
+    // A nested subagent chat wearing the marker title is still not a candidate.
+    chats ~= FreezeConversation("t-3", freezeInvestigationTitle, "t-1", 1_000);
+
+    // The marked chat is reused while it is recent.
+    assert(freezeInvestigationReuseIndex(chats, "", 1_400, 900) == 1);
+    // Past the window, nothing is reused and a new chat is opened instead.
+    assert(freezeInvestigationReuseIndex(chats, "", 2_000, 900) == -1);
+    // The conversation this run opened wins even if the user renamed it.
+    auto renamed = chats.dup;
+    renamed[0].title = "Renamed by the user";
+    assert(freezeInvestigationReuseIndex(renamed, "t-1", 1_400, 900) == 0);
+    // Among several matches the most recently touched one wins.
+    auto two = chats.dup;
+    two[0].title = freezeInvestigationTitle;
+    two[0].touchedAt = 1_850;
+    assert(freezeInvestigationReuseIndex(two, "", 1_900, 900) == 0);
+    // A subagent chat is never chosen as the freeze investigation.
+    assert(freezeInvestigationReuseIndex(
+        [FreezeConversation("t-9", freezeInvestigationTitle, "t-1", 1_899)],
+        "", 1_900, 900) == -1);
+}
+
+unittest
+{
+    // A missed heartbeat is only a confirmed hang once the stall has persisted
+    // and this watchdog kept being scheduled.
+    assert(!emergencyIsConfirmedHang(5.9, 1.0, 5),
+        "a sub-threshold gap was reported as a hang");
+    assert(!emergencyIsConfirmedHang(7.0, 1.0, 1),
+        "a single stalled sample was reported as a hang");
+    assert(!emergencyIsConfirmedHang(7.0, 3.0, 5),
+        "a starved process (late watchdog wake) was reported as a UI hang");
+    assert(emergencyIsConfirmedHang(7.0, 1.0, 2),
+        "a confirmed stall was not reported");
 }

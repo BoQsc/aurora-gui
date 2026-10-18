@@ -130,7 +130,9 @@ import auroraopencode.pet : PetHost, petFailureObservation,
 // Emergency freeze detection + optional overseer (see emergency.d).
 import auroraopencode.emergency : emergencyHeartbeat,
     emergencyLastReportPath, emergencySetContext, emergencyTakePendingFreeze,
-    emergencyTrigger, overseerStallSeconds, setEmergencyReportEnabled,
+    emergencyTrigger, freezeInvestigationReuseIndex,
+    freezeInvestigationReuseSeconds, freezeInvestigationTitle,
+    FreezeConversation, overseerStallSeconds, setEmergencyReportEnabled,
     setOverseerEnabled, startEmergencyWatchdog;
 // Optional per-project project manager (see docs/project-driver.md).
 import auroraopencode.projectdriver : buildProjectReviewPrompt;
@@ -4721,16 +4723,29 @@ private ActionKind actionKindOf(string toolName)
 /// a legacy turn whose call has left the graph), so a summary can still name
 /// the action instead of calling every orphan "Worked".
 private string toolNameForResult(const ref ChatSession session,
-    const ref ChatMessage result)
+    const ref ChatMessage result,
+    ref string[string] cache, ref string cacheSession, ref size_t cacheCount)
 {
     if (result.toolCallId.length == 0)
         return result.toolName;
-    foreach (message; session.messages)
+    // Build the call id -> tool name map once per transcript revision instead
+    // of rescanning the whole conversation for every result. On a long
+    // transcript the per-result scan is O(results x messages) per rebuild: the
+    // exact synchronous work that overran the freeze watchdog while a turn was
+    // streaming its tool rounds.
+    if (session.messages.length != cacheCount || session.id != cacheSession)
     {
-        foreach (call; message.toolCalls)
-            if (call.id == result.toolCallId && call.name.length > 0)
-                return call.name;
+        cache = null;
+        foreach (message; session.messages)
+            foreach (call; message.toolCalls)
+                if (call.id.length > 0 && call.name.length > 0 &&
+                    call.id !in cache)
+                    cache[call.id] = call.name;
+        cacheSession = session.id;
+        cacheCount = session.messages.length;
     }
+    if (auto found = result.toolCallId in cache)
+        return *found;
     return result.toolName;
 }
 
@@ -10586,6 +10601,11 @@ public final class OpenCodeRoot : VBox
     private int _emergencyContextOwner = -2;
     private bool _emergencyStarting;
     private long _emergencyChatsFired;
+    // Id of the freeze-investigation conversation this run opened or reused, so
+    // a later freeze within the reuse window appends to it instead of opening
+    // another chat. It is empty after a restart, where the title marker
+    // (`freezeInvestigationTitle`) recovers the same conversation instead.
+    private string _emergencySessionId;
     // Per-conversation time a turn has been continuously busy, so a conversation
     // that never stops can be reported by the overseer.
     private SysTime[string] _overseerBusySince;
@@ -10741,6 +10761,11 @@ private string _suggestExcludeId;
     // tick-driven calls are not deferred or re-entered.
     private bool _messageColumnRebuildQueued;
     private bool _buildingMessageColumn;
+    // Call id -> tool name, rebuilt at most once per transcript revision, so a
+    // result's name is an O(1) lookup instead of a whole-transcript rescan.
+    private string[string] _toolNameByCallId;
+    private string _toolNameScanSession;
+    private size_t _toolNameScanCount = size_t.max;
     // A finished tool round commits its result in the execution service and
     // prepares the next model request on a later tick, so no single service pass
     // both commits a result and builds a request.
@@ -10866,10 +10891,21 @@ private string _suggestExcludeId;
     private MonoTime _draftPersistDue;
     private MonoTime _persistDue;
     private static immutable int persistDebounceMs = 5_000;
+    private static immutable ulong parentRepairLookupBytes = 8 * 1024 * 1024;
     // True while the debounced snapshot is being serialized and written on a
     // worker thread. Guarded by `synchronized (this)`; a change that arrives
     // during the write leaves `_stateDirty` set so the next tick queues another.
     private bool _persistWriteInFlight;
+    // The parent-link repair scans the tail of the append-only journal. That
+    // read parses up to `parentRepairLookupBytes` of JSON and waits on the
+    // repository owner, so it must never run on the UI thread: the tail is read
+    // once per journal size on the snapshot owner and the UI thread only scans
+    // the events it already has.
+    private AgentRuntimeEvent[] _journalTailEvents;
+    private ulong _journalTailBytes = ulong.max;
+    private bool _journalTailReady;
+    private bool _journalTailInFlight;
+    private bool _journalTailRepairQueued;
     // Settings writes are debounced off the click path for the same reason as
     // the session snapshot: a synchronous file write inside an input handler
     // delays the frame that shows the result of the click.
@@ -14570,7 +14606,13 @@ private string _suggestExcludeId;
             _projectState.activeId = sandboxProjectId;
         removeEmptySandboxFolder(project);
         _projectsWriter.save(_projectState);
-        persistState();
+        // Removing a project only changes the session index, and the background
+        // snapshot writer rewrites that in full. Writing the whole conversation
+        // store on this click blocked the UI thread for seconds on a large
+        // install; queue it instead and keep `_stateDirty` set so a refused
+        // queue is retried by the debounced save.
+        markDirty();
+        persistStateAsync();
         updateProjectRail();
         updateSessionsHeader();
         syncCurrentToActiveProject();
@@ -16006,7 +16048,8 @@ private string _suggestExcludeId;
                 foreach (member; slot .. end)
                 {
                     auto resolved = toolNameForResult(*session,
-                        session.messages[path[member]]);
+                        session.messages[path[member]], _toolNameByCallId,
+                        _toolNameScanSession, _toolNameScanCount);
                     orphanNames ~= resolved;
                 }
                 size_t run = slot;
@@ -16748,7 +16791,8 @@ private void pollButtonSuggestionRequest()
             if (message.role == "user") turn = message.id;
             if (message.role != "tool" || message.toolArgs.length == 0) continue;
             const name = message.toolName.length > 0 ? message.toolName :
-                toolNameForResult(session, message);
+                toolNameForResult(session, message, _toolNameByCallId,
+                    _toolNameScanSession, _toolNameScanCount);
             const targetKey = turn ~ ":" ~ name ~ ":" ~ message.toolArgs;
             if (message.failed) failedTargets[targetKey] ~= message.id;
             else if (auto earlier = targetKey in failedTargets)
@@ -20280,21 +20324,84 @@ private void pollButtonSuggestionRequest()
         fireEmergencyChat(reason);
     }
 
-    /// Open a new conversation and ask the model to diagnose the emergency.
+    /// Index of the freeze-investigation conversation to reuse, or -1. Prefers
+    /// the chat this run opened; falls back to the title marker so a restart
+    /// reuses the same chat. Only a candidate touched within the reuse window
+    /// counts, and a nested subagent chat is never a candidate.
+    private int recentEmergencySessionIndex()
+    {
+        FreezeConversation[] conversations;
+        conversations.reserve(_sessions.length);
+        foreach (ref session; _sessions)
+        {
+            FreezeConversation conversation;
+            conversation.id = session.id;
+            conversation.title = session.title;
+            conversation.parentId = session.parentSessionId;
+            conversation.touchedAt = session.updatedAt;
+            conversations ~= conversation;
+        }
+        return freezeInvestigationReuseIndex(conversations, _emergencySessionId,
+            Clock.currTime.toUnixTime(), freezeInvestigationReuseSeconds);
+    }
+
+    /// Open or reuse a conversation and ask the model to diagnose the emergency.
+    ///
+    /// Repeated freezes are one incident to investigate: while the
+    /// freeze-investigation conversation was touched within
+    /// `freezeInvestigationReuseSeconds`, the new report is appended to it, so
+    /// a burst of freezes yields one investigation thread instead of a new chat
+    /// every time. A freeze after the window expires, or with no prior
+    /// investigation chat, still opens a fresh conversation.
     private void fireEmergencyChat(string reason)
     {
-        // The restored history must be in place before a new chat is meaningful.
+        // The restored history must be in place before a chat is meaningful.
         if (_startupLoadPending) return;
         _emergencyStarting = true;
         scope (exit) _emergencyStarting = false;
-        ++_emergencyChatsFired;
-        newChat();
+
+        // A reused chat's stored history must be present before the follow-up
+        // is sent; otherwise the send is deferred as "history loading" and the
+        // autonomous diagnosis never runs. Fall back to a new chat if the
+        // history cannot be loaded.
+        auto reuse = recentEmergencySessionIndex();
+        if (reuse >= 0 && !ensureThreadLoaded(reuse)) reuse = -1;
+
+        if (reuse >= 0)
+        {
+            if (reuse != _current)
+                selectSession(reuse);
+            else
+                syncComposerDraft();
+        }
+        else
+        {
+            ++_emergencyChatsFired;
+            newChat();
+        }
         if (_current < 0 || _current >= cast(int) _sessions.length) return;
+
+        auto session = &_sessions[_current];
+        // A stable marker title identifies the chat on the next freeze - and
+        // after a restart - and keeps the model's title rewrite from renaming
+        // it out of recognition.
+        if (session.title.length == 0 || session.title == "New chat")
+            session.title = freezeInvestigationTitle;
+        _emergencySessionId = session.id;
+
         const report = emergencyLastReportPath();
         auto prompt = appender!string();
-        prompt.put("Automatic emergency report.\n\n");
-        prompt.put("Aurora OpenCode detected a problem and started this chat on ");
-        prompt.put("its own so we can find out what happened.\n\n");
+        if (reuse >= 0)
+        {
+            prompt.put("Aurora OpenCode froze again in the same session.\n");
+            prompt.put("This continues the investigation already in this chat.\n\n");
+        }
+        else
+        {
+            prompt.put("Automatic emergency report.\n\n");
+            prompt.put("Aurora OpenCode detected a problem and started this chat on ");
+            prompt.put("its own so we can find out what happened.\n\n");
+        }
         prompt.put("Reason: ");
         prompt.put(reason);
         prompt.put("\n");
@@ -20311,8 +20418,11 @@ private void pollButtonSuggestionRequest()
         prompt.put("concrete fix (file and change). Be concise and specific.");
         _input.setText(prompt.data);
         sendMessage();
-        updateStatus("Emergency diagnostic chat started.");
-        logInfo("emergency: diagnostic chat started — " ~ reason);
+        updateStatus(reuse >= 0
+            ? "Freeze follow-up added to the investigation chat."
+            : "Emergency diagnostic chat started.");
+        logInfo("emergency: diagnostic " ~ (reuse >= 0 ? "follow-up" : "chat") ~
+            " — " ~ reason);
     }
 
     /// Optional overseer: report a conversation that has stayed busy for
@@ -29618,6 +29728,32 @@ private void pollButtonSuggestionRequest()
     private bool repairRestoredParentLinks(ref ChatSession session)
     {
         if (_runtime is null || session.messages.length < 2) return false;
+        // A transcript whose links are complete needs no repair, so the
+        // expensive lookup is skipped entirely for the common case.
+        if (!hasParentlessMessages(session)) return false;
+        auto events = journalTailForRepair();
+        if (events is null) return false;
+        return applyRestoredParentLinks(session, events);
+    }
+
+    private static bool hasParentlessMessages(in ChatSession session)
+    {
+        foreach (i, message; session.messages)
+            if (i > 0 && message.id.length && !message.parentId.length)
+                return true;
+        return false;
+    }
+
+    /**
+     * Restore parent links held by the durable record but missing from a
+     * snapshot. Repair only links supported by the original durable record, and
+     * do it purely in memory: the journal is never read here, so this is safe on
+     * the UI thread no matter how large the journal is.
+     */
+    private bool applyRestoredParentLinks(ref ChatSession session,
+        AgentRuntimeEvent[] events)
+    {
+        if (!events.length || session.messages.length < 2) return false;
         size_t[string] roots, positions;
         foreach (i, message; session.messages)
         {
@@ -29626,12 +29762,8 @@ private void pollButtonSuggestionRequest()
                 roots[message.id] = i;
         }
         if (!roots.length) return false;
-        // Repair only links supported by the original durable record. A bounded
-        // tail lookup avoids replaying a large image journal on every launch.
-        enum ulong recoveryBytes = 8 * 1024 * 1024;
-        const bytes = _runtime.journalSize();
         string[string] parents;
-        foreach (event; _runtime.eventsFrom(bytes > recoveryBytes ? bytes - recoveryBytes : 0))
+        foreach (event; events)
         {
             if (event.threadId != session.id || event.itemId !in roots ||
                 (event.kind != AgentEventKind.itemAdded && event.kind != AgentEventKind.itemUpdated)) continue;
@@ -29667,6 +29799,102 @@ private void pollButtonSuggestionRequest()
         JSONValue details; details["messageCount"] = cast(long) restored;
         logAgentLifecycle(session.id, 0, "history.parent_links_restored", details);
         return true;
+    }
+
+    /**
+     * The bounded journal tail the parent-link repair scans, or null while it is
+     * still being read off the UI thread.
+     *
+     * The startup restore needs a complete transcript graph before the first
+     * frame is drawn and no turn can be appending yet, so it takes one bounded
+     * read here and caches it for every later conversation. Every other caller
+     * queues the read and is served by `drainJournalTailRepairs`, so loading a
+     * conversation never waits on the journal.
+     */
+    private AgentRuntimeEvent[] journalTailForRepair()
+    {
+        if (_runtime is null) return null;
+        const bytes = _runtime.journalSize();
+        synchronized (this)
+            if (_journalTailReady && _journalTailBytes == bytes)
+                return _journalTailEvents;
+        if (_restoringSessions)
+        {
+            AgentRuntimeEvent[] events;
+            try events = _runtime.eventsFrom(bytes > parentRepairLookupBytes
+                ? bytes - parentRepairLookupBytes : 0);
+            catch (Throwable) return null;
+            synchronized (this)
+            {
+                _journalTailEvents = events;
+                _journalTailBytes = bytes;
+                _journalTailReady = true;
+            }
+            return events;
+        }
+        requestJournalTail();
+        synchronized (this) _journalTailRepairQueued = true;
+        return null;
+    }
+
+    /// Read the bounded journal tail on the snapshot owner. Never blocks the UI
+    /// thread: the events are applied when they land.
+    private void requestJournalTail()
+    {
+        if (_runtime is null) return;
+        ulong bytes;
+        try bytes = _runtime.journalSize();
+        catch (Throwable) return;
+        synchronized (this)
+        {
+            if (_journalTailInFlight || (_journalTailReady && _journalTailBytes == bytes))
+                return;
+            _journalTailInFlight = true;
+        }
+        const offset = bytes > parentRepairLookupBytes
+            ? bytes - parentRepairLookupBytes : 0;
+        const accepted = _snapshotRepository.submit(delegate() {
+            AgentRuntimeEvent[] events;
+            try events = _runtime.eventsFrom(offset);
+            catch (Throwable) {}
+            synchronized (this)
+            {
+                _journalTailEvents = events;
+                _journalTailBytes = bytes;
+                _journalTailReady = events !is null;
+                _journalTailInFlight = false;
+            }
+        });
+        if (!accepted)
+            synchronized (this) _journalTailInFlight = false;
+    }
+
+    /// Apply a repair that was queued while the journal tail was still being
+    /// read. Runs on the tick, where a rebuild is already coalesced, so no
+    /// conversation load ever pays for the journal read.
+    private void drainJournalTailRepairs()
+    {
+        AgentRuntimeEvent[] events;
+        synchronized (this)
+        {
+            if (!_journalTailReady || !_journalTailRepairQueued) return;
+            _journalTailRepairQueued = false;
+            events = _journalTailEvents;
+        }
+        if (events is null || !events.length) return;
+        bool changed, currentChanged;
+        foreach (i, ref session; _sessions)
+        {
+            auto flag = session.id in _threadLoaded;
+            if (flag !is null && !*flag) continue;
+            if (applyRestoredParentLinks(session, events))
+            {
+                changed = true;
+                if (cast(int) i == _current) currentChanged = true;
+            }
+        }
+        if (currentChanged) rebuildMessageColumn();
+        if (changed) markDirty();
     }
 
     private void mergeJournalSession(ChatSession recovered)
@@ -30263,6 +30491,10 @@ private void pollButtonSuggestionRequest()
     protected override void onTick(double deltaSeconds)
     {
         drainHistoryResults();
+        // Apply a parent-link repair whose journal read landed after the
+        // conversation was loaded. The read runs on the snapshot owner, so the
+        // load itself never waits for the journal.
+        drainJournalTailRepairs();
         // Emergency freeze detection: stamp the frame, publish what the UI is
         // doing, service any stall the watchdog reported while the UI was stuck,
         // and (when enabled) let the overseer look for a runaway conversation.
@@ -32347,6 +32579,31 @@ private void pollButtonSuggestionRequest()
     public void newChatForTesting()
     {
         newChat();
+    }
+
+    /// Test-only: run the freeze-diagnostic path synchronously.
+    public void fireEmergencyChatForTesting(string reason)
+    {
+        fireEmergencyChat(reason);
+    }
+
+    /// Test-only: chats the emergency path opened itself (reuse is not counted).
+    public long emergencyChatsFiredForTesting() const
+    {
+        return _emergencyChatsFired;
+    }
+
+    /// Test-only: the conversation a new freeze would reuse, or -1 for none.
+    public int emergencyReuseIndexForTesting()
+    {
+        return recentEmergencySessionIndex();
+    }
+
+    /// Test-only: age a conversation so the reuse window can be made to expire.
+    public void setSessionUpdatedAtForTesting(int index, long unixSeconds)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return;
+        _sessions[index].updatedAt = unixSeconds;
     }
 
     /// Test-only: persist the current sessions to disk immediately.
