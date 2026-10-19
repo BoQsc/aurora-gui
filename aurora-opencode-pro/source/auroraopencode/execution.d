@@ -120,6 +120,8 @@ public class ThreadEngine
     bool stopPending;
     MonoTime stopRequestedAt;
     bool turnInFlight;
+    bool toolContinuationPending;
+    MonoTime missingWorkSince;
 
     MonoTime preparingSince;
     long preparingLastBytes;
@@ -194,6 +196,7 @@ public class ThreadEngine
 
     void stop()
     {
+        toolContinuationPending = false;
         if (turnInFlight || pendingToolResults > 0 || _queuedEffect !is null)
             logAgentLifecycle(threadId, activeRequestId, "execution.cancelled");
         _protocol = reduceExecution(_protocol, ExecutionCommand(ExecutionCommandKind.stop)).state;
@@ -249,6 +252,13 @@ public class ThreadEngine
         return expired;
     }
 
+    bool effectPending()
+    {
+        if (_queuedEffect is null) return false;
+        synchronized (_queuedEffect.mutex)
+            return _queuedEffect.pending && !_queuedEffect.cancellation.cancelled();
+    }
+
     struct ResultAdmission { bool accepted; string arguments; }
     ResultAdmission admitToolResult(string id)
     {
@@ -289,7 +299,7 @@ public class ThreadEngine
 
     bool busy()
     {
-        return stopPending || turnInFlight || turnTiming || client.busy() ||
+        return stopPending || turnInFlight || turnTiming || toolContinuationPending || client.busy() ||
             compactionClient !is null || pendingToolCalls.length > 0 || pendingToolResults > 0;
     }
 }

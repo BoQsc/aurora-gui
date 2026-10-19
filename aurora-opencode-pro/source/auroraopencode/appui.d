@@ -10794,7 +10794,6 @@ private string _suggestExcludeId;
     // A finished tool round commits its result in the execution service and
     // prepares the next model request on a later tick, so no single service pass
     // both commits a result and builds a request.
-    private int _pendingContinuationSession = -1;
 
     // Tool loop: the model may request tool calls, the app executes them, and
     // the enriched history is re-sent until the model answers with text.
@@ -18773,8 +18772,10 @@ private void pollButtonSuggestionRequest()
     /// though the turn is still running.
     private bool liveProgressVisible()
     {
-        if (_activityRow !is null && _activityRow.parent() !is null &&
-            _activityRow.hasLabel())
+        // A service pass can queue the transcript rebuild until the next UI
+        // frame. The new label already describes that pending row; replacing
+        // it because it is not attached yet erased precise wait diagnostics.
+        if (activityRowWanted())
             return true;
         // In-flight tool rows speak for themselves; they are rebuilt for every
         // view of the live host (or appended at the end when there is no host).
@@ -19996,7 +19997,7 @@ private void pollButtonSuggestionRequest()
                     explorationCheckpointCalls &&
                     !hasExplorationCheckpoint(*session))
                     appendExplorationCheckpoint(*session);
-                _pendingContinuationSession = sessionIndex;
+                _execution.toolContinuationPending = true;
             }
         }
     }
@@ -20174,7 +20175,8 @@ private void pollButtonSuggestionRequest()
 
     private bool turnIsBusy()
     {
-        return _stopPending || _turnInFlight || _turnTiming || _client.busy() ||
+        return _stopPending || _turnInFlight || _turnTiming ||
+            _execution.toolContinuationPending || _client.busy() ||
             _pendingToolCalls.length > 0 || _pendingToolResults > 0;
     }
 
@@ -22405,6 +22407,8 @@ private void pollButtonSuggestionRequest()
     private void startChatRequest(int sessionIndex, bool userTurn = true,
         long submittedTicks = 0)
     {
+        _execution.toolContinuationPending = false;
+        _execution.missingWorkSince = MonoTime.init;
         const preparationStartedTicks = submittedTicks ? submittedTicks : MonoTime.currTime.ticks;
         // Any new request supersedes a scheduled re-send. A request the user
         // started (or a manual Retry) also starts the attempt budget over; an
@@ -30198,6 +30202,86 @@ private void pollButtonSuggestionRequest()
         }
     }
 
+    /// One admission per frame keeps request preparation bounded. Ownership is
+    /// per runtime: another chat finishing tools cannot replace this work.
+    private void pumpToolContinuation()
+    {
+        const restore = _current;
+        scope(exit) { if (restore >= 0) loadRuntime(restore); }
+        foreach (index, session; _sessions)
+        {
+            auto found = session.id in _conversationRuntimes;
+            if (found is null || !(*found).toolContinuationPending) continue;
+            loadRuntime(cast(int) index);
+            if (_turnCancelled || _toolContinuationPaused ||
+                session.turnStatus != "running" || hasPendingSubagents(session.id))
+            {
+                _execution.toolContinuationPending = false;
+                continue;
+            }
+            if (_client.busy() || _pendingToolResults > 0 ||
+                _execution.compactionClient !is null) continue;
+            logAgentLifecycle(session.id, _activeRequestId, "tools.continuing");
+            startChatRequest(cast(int) index, false);
+            return;
+        }
+    }
+
+    private void refreshExecutionActivity()
+    {
+        const ownedWork = _stopPending || _client.busy() ||
+            _execution.compactionClient !is null || _pendingToolResults > 0 ||
+            _pendingToolCalls.length > 0 || _execution.toolContinuationPending ||
+            _execution.effectPending() || _eventScratch.length > 0 ||
+            _client.hasPendingEvents() || hasPendingSubagents(_loadedRuntimeId) ||
+            _toolContinuationPaused;
+        // This detects a missing operation, not a slow operation. Never expire
+        // a provider, tool, queued commit or child agent because of its age.
+        if (turnIsBusy() && !ownedWork)
+        {
+            if (_execution.missingWorkSince == MonoTime.init)
+                _execution.missingWorkSince = MonoTime.currTime;
+            else if ((MonoTime.currTime - _execution.missingWorkSince).total!"seconds" >= 5)
+            {
+                JSONValue details;
+                details["phase"] = to!string(_execution.phase);
+                details["turnInFlight"] = _turnInFlight;
+                details["turnTiming"] = _turnTiming;
+                logAgentLifecycle(_loadedRuntimeId, _activeRequestId,
+                    "execution.missing_operation", details);
+                failAssistantMessage("Execution stalled: no active operation remains for this turn. " ~
+                    "Your messages and completed tool results were preserved. Retry to continue.");
+                _activeRequestId = 0;
+                _activeRequestSession = -1;
+                refreshBubbleActions();
+                updateSendButton();
+                return;
+            }
+        }
+        else _execution.missingWorkSince = MonoTime.init;
+
+        if (!turnIsBusy())
+        {
+            clearActivity();
+            return;
+        }
+        if (!viewingTurnOwner()) return;
+        if (_execution.toolContinuationPending)
+            setActivity("Continuing after tools…");
+        else if (!ownedWork)
+            setActivity("No active operation · checking turn…");
+        else if (!liveProgressVisible())
+        {
+            const label = _stopPending ? "Stopping…"
+                : _execution.compactionClient !is null ? "Summarizing earlier work…"
+                : hasPendingSubagents(_loadedRuntimeId) ? "Waiting for agents…"
+                : _execution.effectPending() ? "Saving request before sending…"
+                : _client.busy() ? "Waiting for model output…"
+                : "Applying model response…";
+            setActivity(label);
+        }
+    }
+
     /// Serialized application service, independent of layout/paint ticks.
     /// Native timers keep it running during Win32's modal border resize loop.
     private void serviceExecution(double deltaSeconds)
@@ -30592,7 +30676,11 @@ private void pollButtonSuggestionRequest()
                     stage = " — response headers received, waiting for output";
                 updateStatus("Waiting for the model… " ~
                     to!string(seconds) ~ "s" ~ stage);
-                setActivity("Waiting for the model · " ~ to!string(seconds) ~ "s", false);
+                const phase = !wait.valid ? "Preparing model request"
+                    : wait.sent < 0 ? "Connecting / uploading request"
+                    : wait.headers < 0 ? "Waiting for provider response"
+                    : "Waiting for model output";
+                setActivity(phase ~ " · " ~ to!string(seconds) ~ "s · Stop is available", false);
             }
         }
 
@@ -30627,15 +30715,7 @@ private void pollButtonSuggestionRequest()
             }
         }
 
-        // Invariant: while the viewed conversation owns a busy turn, the
-        // transcript must always show at least one line of "what is
-        // happening". Some phase transitions (the first streamed fragment, a
-        // tool round) clear the phase row and hide the live reply; if a stall,
-        // a late event, or crash recovery leaves nothing in their place, the
-        // chat reads as frozen behind the Stop button. Re-arm a generic row so
-        // the reader is never left guessing what the turn is doing.
-        if (viewingTurnOwner() && turnIsBusy() && !liveProgressVisible())
-            setActivity("Working…");
+        refreshExecutionActivity();
 
         // Animate the pulsing "Thinking…" indicator while reasoning streams.
         if (_streamBubble !is null)
@@ -30685,23 +30765,7 @@ private void pollButtonSuggestionRequest()
             if (_current >= 0)
                 rebuildMessageColumnNow();
         }
-        // Run a finished tool round's continuation in its own tick.
-        if (_pendingContinuationSession >= 0)
-        {
-            const continuation = _pendingContinuationSession;
-            _pendingContinuationSession = -1;
-            if (!_turnCancelled && !_toolContinuationPaused &&
-                continuation < cast(int) _sessions.length &&
-                !hasPendingSubagents(_sessions[continuation].id) &&
-                _sessions[continuation].turnStatus == "running")
-            {
-                const restore = _current;
-                if (continuation != restore) loadRuntime(continuation);
-                startChatRequest(continuation, false);
-                if (continuation != restore && restore >= 0)
-                    loadRuntime(restore);
-            }
-        }
+        pumpToolContinuation();
         // Load the persisted conversations on demand: the window is already on
         // screen by the time a tick runs, so the multi-megabyte snapshot read
         // no longer holds up the first frame.
@@ -33101,6 +33165,16 @@ private void pollButtonSuggestionRequest()
     public void ageStreamOutputForTesting(int seconds)
     {
         _lastStreamOutputAt = MonoTime.currTime - msecs(seconds * 1000);
+    }
+
+    public bool toolContinuationPendingForTesting(int sessionIndex)
+    {
+        return runtimeForSession(sessionIndex).toolContinuationPending;
+    }
+
+    public void ageMissingOperationForTesting()
+    {
+        _execution.missingWorkSince = MonoTime.currTime - msecs(6000);
     }
 
     /// Test-only: the live activity row's rendered text including the elapsed

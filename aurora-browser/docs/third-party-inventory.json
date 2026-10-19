@@ -52,7 +52,7 @@
       "component": "Aurora-D GUI, text and raster toolkit (vendored)",
       "versionOrCommit": "0.4.5 (vendor/aurora-d-0.4.5/PACKAGE-METADATA.json, MANIFEST.sha256)",
       "paths": ["vendor/aurora-d-0.4.5/source/**", "vendor/aurora-d-0.4.5/LICENSE"],
-      "origin": "upstream source, vendored; this repository patches it, with every patch recorded in vendor/aurora-d-0.4.5/AURORA-PATCHES.md and MANIFEST.sha256",
+      "origin": "upstream source, vendored; this repository patches it, with every patch recorded in AURORA-PATCHES.md at the repository root and MANIFEST.sha256",
       "rightsEvidence": "vendor/aurora-d-0.4.5/LICENSE contains the Boost Software License 1.0 text",
       "licenseExpression": "BSL-1.0",
       "role": "runtime-source",
