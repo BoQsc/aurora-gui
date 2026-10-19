@@ -168,8 +168,10 @@ int main()
     auto admissionGate = new Gate();
     assert(repository.submit(&admissionGate.wait));
     assert(engine.dispatchAfterCommit(journal, 103, delegate() { atomicOp!"+="(effects, 1); }));
+    assert(engine.effectPending(), "Queued provider/tool admission lost its owner");
     Thread.sleep(5.msecs);
     assert(engine.expireQueuedEffect(1), "Unstarted durable dispatch has no deadline");
+    assert(!engine.effectPending(), "Expired admission still appears to own active work");
     admissionGate.release(); repository.flush();
     assert(atomicLoad(effects) == 1, "A timed-out admission executed later");
     assert(engine.dispatchAfterCommit(journal, 104, delegate() { atomicOp!"+="(effects, 1); }));

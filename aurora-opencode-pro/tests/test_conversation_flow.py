@@ -73,7 +73,12 @@ class Provider(http.server.BaseHTTPRequestHandler):
             if not any(p.startswith("CORRECTION:") for p in prompts):
                 failures.append("Lost corrected constraints")
         tools, content, delay = [], "", 0.0
-        if scenario == "CHAT":
+        handoff = any(m["role"] == "system" and isinstance(m.get("content"), str)
+                      and "Completion handoff requested:\n" in m["content"] for m in messages)
+        if handoff:
+            finals["handoff"] += 1
+            content = "Result: Fixed the guest count to four.\nChecks: unittest passed.\nRemaining: None."
+        elif scenario == "CHAT":
             content = "Two easy vegetarian dinners without mushrooms: a taco bar or pasta. Both fit 45 minutes."
         elif scenario == "CORRECTION":
             content = "For four people, choose gluten-free corn tortillas, black beans, rice, salsa and avocado."
@@ -159,8 +164,9 @@ try:
                     "conversation_flow_contracts"], cwd=package.parent, env=env, check=True, timeout=180)
     assert not failures, failures
     assert finals["save"] == 1, "Static document verification manufactured an extra model turn"
-    assert len(requests) == 16, f"Unexpected request/continuation count: {len(requests)}"
-    print("PASS 16 HTTP rounds: casual context, correction, document readback, failed tool recovery, steering, queued follow-up, Stop/resend, background chat and reload")
+    assert finals["handoff"] == 1, f"Substantial repair did not receive exactly one closing summary: {finals}"
+    assert len(requests) == 17, f"Unexpected request/continuation count: {len(requests)}"
+    print("PASS 17 HTTP rounds: casual context, correction, document readback, failed tool recovery, closing summary, steering, queued follow-up, Stop/resend, background chat and reload")
 finally:
     server.shutdown()
     server.server_close()

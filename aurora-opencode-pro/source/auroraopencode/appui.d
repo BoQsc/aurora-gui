@@ -10791,10 +10791,6 @@ private string _suggestExcludeId;
     private string[string] _toolNameByCallId;
     private string _toolNameScanSession;
     private size_t _toolNameScanCount = size_t.max;
-    // A finished tool round commits its result in the execution service and
-    // prepares the next model request on a later tick, so no single service pass
-    // both commits a result and builds a request.
-
     // Tool loop: the model may request tool calls, the app executes them, and
     // the enriched history is re-sent until the model answers with text.
     // `view_image` results wait here until the entire tool batch is complete.
@@ -18699,6 +18695,7 @@ private void pollButtonSuggestionRequest()
             }
         refreshTurnActiveMarker(settled);
         setTurnInFlight(false);
+        _execution.toolContinuationPending = false;
         const hadLiveRows = _preparingToolCalls.length > 0 ||
             _liveToolCalls.length > 0;
         _liveToolOutputs = null;
@@ -19673,9 +19670,19 @@ private void pollButtonSuggestionRequest()
         scheduleToolBatch(client, requestId, calls, workspace, cancellation, changeContext);
     }
 
-    private void checkToolDispatchAdmission()
+    private void checkDispatchAdmission()
     {
-        if (_pendingToolCalls.length == 0 || !_execution.expireQueuedEffect()) return;
+        if (!_execution.expireQueuedEffect()) return;
+        if (_pendingToolCalls.length == 0)
+        {
+            failAssistantMessage("Request did not start within 30 seconds while waiting for conversation storage. " ~
+                "Its queued admission was revoked. Retry after storage recovers.");
+            _activeRequestId = 0;
+            _activeRequestSession = -1;
+            refreshBubbleActions();
+            updateSendButton();
+            return;
+        }
         const requestId = _activeRequestId;
         const calls = _pendingToolCalls.dup;
         foreach (call; calls)
@@ -30581,7 +30588,7 @@ private void pollButtonSuggestionRequest()
             }
         }
         _eventScratch = _eventScratch[eventIndex .. $];
-        checkToolDispatchAdmission();
+        checkDispatchAdmission();
         _batchingToolResults = false;
         flushToolTranscriptChanges();
         const partialOwner = turnOwnerSessionIndex();

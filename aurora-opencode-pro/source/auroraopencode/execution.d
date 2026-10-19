@@ -120,6 +120,8 @@ public class ThreadEngine
     bool stopPending;
     MonoTime stopRequestedAt;
     bool turnInFlight;
+    // A finished tool round commits now and prepares its next request on a
+    // later frame. Keep that continuation with this conversation's runtime.
     bool toolContinuationPending;
     MonoTime missingWorkSince;
 
