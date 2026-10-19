@@ -32,12 +32,10 @@ SOFTWARE_SHOT = Path(tempfile.gettempdir()) / "aurora-software-check.ppm"
 LOG = Path(os.environ.get("APPDATA", "")) / "Aurora OpenCode" / "logs" / "errors.log"
 
 
-def log_tail(limit=262144):
-    size = LOG.stat().st_size
-    with LOG.open("rb") as stream:
-        if size > limit:
-            stream.seek(size - limit)
-        return stream.read().decode("utf-8", "replace")
+def startup_log():
+    # A long-running session outgrows any fixed tail, so search the whole log;
+    # the frame diagnostics are written once per launch.
+    return LOG.read_text(encoding="utf-8", errors="replace")
 
 
 class RebuiltBinaryRenders(unittest.TestCase):
@@ -74,9 +72,9 @@ class RebuiltBinaryRenders(unittest.TestCase):
         self.assertEqual(state["exe"], str(EXE))
 
     def test_running_build_logged_its_renderer_and_framebuffer(self):
-        tail = log_tail()
-        self.assertRegex(tail, r"renderer: (Vulkan|Software) \((hardware|software)\)")
-        match = re.search(r"window: (\d+)x(\d+) framebuffer", tail)
+        log = startup_log()
+        self.assertRegex(log, r"renderer: (Vulkan|Software) \((hardware|software)\)")
+        match = re.search(r"window: (\d+)x(\d+) framebuffer", log)
         self.assertIsNotNone(match, "new build's framebuffer diagnostic is missing")
         self.assertGreater(int(match.group(1)), 0)
         self.assertGreater(int(match.group(2)), 0)

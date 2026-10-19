@@ -3,6 +3,7 @@
     "verification/compile_probe.d",
     "verification/crop_ui_region.py",
     "verification/reference/software-ui.png",
+    "verification/software_gui_probe.py",
     "verification/test_render_evidence.py",
     "aurora-opencode-pro/source/app.d",
     "vendor/aurora-d-0.4.5/source/aurora/window.d",
@@ -53,6 +54,16 @@
       "reference": "verification/reference/software-ui.png",
       "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-verify-ui.png",
       "referenceSource": "Header buttons from the known-good software-renderer screenshot; static region excludes clock and conversation content."
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "verification/software_gui_probe.py",
+                 "aurora-opencode-pro/aurora-opencode-pro.exe"],
+        "workdir": ".",
+        "timeout": 180000
+      }
     }
   ]
 }
