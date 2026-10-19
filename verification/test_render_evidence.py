@@ -51,7 +51,17 @@ class RebuiltBinaryRenders(unittest.TestCase):
             (APP / "build-source-aurora-opencode-pro.exe.json").read_text())
         head = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        self.assertEqual(provenance["source_commit"], head)
+        commit = provenance["source_commit"]
+        self.assertEqual(len(commit), 40)
+        # Verification-only commits may follow the build; the binary is current
+        # as long as its commit is in this history and no app source changed.
+        subprocess.run(["git", "merge-base", "--is-ancestor", commit, head],
+                       cwd=ROOT, check=True)
+        changed = subprocess.check_output(
+            ["git", "diff", "--name-only", commit, head, "--",
+             "aurora-opencode-pro/source", "vendor/aurora-d-0.4.5/source"],
+            cwd=ROOT, text=True).strip()
+        self.assertEqual(changed, "")
         self.assertFalse(provenance["source_dirty"])
         digest = hashlib.sha256(EXE.read_bytes()).hexdigest()
         self.assertEqual(provenance["binary_sha256"], digest)
