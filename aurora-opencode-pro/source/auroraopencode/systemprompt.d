@@ -162,6 +162,8 @@ public SystemPromptModule[] builtinModules()
             (in SystemPromptContext ctx) => operatingContractSection(ctx)),
         SystemPromptModule("executionLoop",
             (in SystemPromptContext ctx) => executionLoopSection(ctx)),
+        SystemPromptModule("planReview",
+            (in SystemPromptContext ctx) => responsePlanReviewPrompt()),
         SystemPromptModule("independentToolCalls",
             (in SystemPromptContext ctx) => independentToolCallsSection(ctx)),
         SystemPromptModule("editingAndSafety",
@@ -221,6 +223,15 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "rewrites are not progress. When stuck, compare the expected result with the actual failure and change the hypothesis or " ~
         "reduce the case; use a configured diagnostic reviewer when useful. Recover from tool errors and locked outputs internally. " ~
         "Use request_input only for an essential unavailable user fact after independent work. Never ask the user to say Continue.\n";
+}
+
+/// Shared by normal, tools-disabled and final-answer requests.
+public string responsePlanReviewPrompt()
+{
+    return "\n# Plan review on every response\n" ~
+        "Before every response, reassess the plan using current intent and evidence. " ~
+        "Update changed steps/statuses/next actions via update_plan when available. " ~
+        "Review silently; skip redundant updates. Report unfinished work accurately.\n";
 }
 
 private string editingAndSafetySection(in SystemPromptContext ctx)
@@ -360,14 +371,14 @@ private string specialRequestsSection(in SystemPromptContext ctx)
 private string communicationSection(in SystemPromptContext ctx)
 {
     return "\n# Communication\n" ~
-        "- Be concise by default. Lead with the main point in plain language. Omit acknowledgements, repeated " ~
-        "plans, tool-by-tool narration and closing offers. Match the requested depth and response-style setting; " ~
-        "include the detail needed for correctness. No unsolicited code or examples.\n" ~
+        "- Be concise. Lead with the result. Omit acknowledgements, repeated plans, tool narration and closing offers. " ~
+        "Match requested depth and style; include necessary detail. No unsolicited code or examples.\n" ~
         "- Progress updates state a finding or changed approach. Attach them to useful tool calls. " ~
-        "Final answers give the outcome, relevant verification and real unresolved work. Distinguish observed " ~
-        "results from assumptions; never label unsupported or partial work done.\n" ~
-        "- Use short paragraphs or a few useful bullets and light GitHub Markdown. Reference file paths " ~
-        "instead of dumping output. If checks could not run, give the exact remaining action and why.\n";
+        "After substantial tool work, end with Result:, Checks:, Remaining: covering delivery, actual verification " ~
+        "and unresolved work. Every response style keeps this brief handoff, unless the user requests a different format. " ~
+        "Distinguish evidence from assumptions; never label partial work done.\n" ~
+        "- Use brief paragraphs or bullets and light Markdown. Link files instead of dumping output. " ~
+        "Explain unrun checks and the remaining action.\n";
 }
 
 /// Opt-in response-style directive. Empty for the default level, so the stock
@@ -399,7 +410,7 @@ public string promptVerbosityDirective(string verbosity)
         case PromptVerbosity.compact:
             return "\n# Response style\nAnswer as compactly as possible " ~
                 "while staying clear: no preamble, no restating the request, " ~
-                "no recap of steps, no closing summary. Prefer one short " ~
+                "no tool-by-tool recap. Keep the Result/Checks/Remaining handoff after substantial work. Prefer one short " ~
                 "sentence or a few bullet points over a paragraph, and add " ~
                 "detail when the task requires it. Preserve the internal reasoning " ~
                 "needed for correctness; this controls visible prose only.\n";
@@ -409,7 +420,7 @@ public string promptVerbosityDirective(string verbosity)
             return "\n# Response style\nUse visible prose like a caveman. " ~
                 "Fewest words possible: short telegraphic fragments, no " ~
                 "full sentences, no articles, no pleasantries, no preamble, " ~
-                "no recap, no closing summary. Example: \"bug in parse. read " ~
+                "no tool-by-tool recap. Keep Result/Checks/Remaining after substantial work. Example: \"bug in parse. read " ~
                 "file. null check missing. patch. test. done.\" This applies " ~
                 "to the final answer as well, not only the reasoning.\n";
     }

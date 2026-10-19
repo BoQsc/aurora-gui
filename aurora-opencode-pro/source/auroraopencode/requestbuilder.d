@@ -9,6 +9,7 @@ import auroraopencode.outputguard : outputFailurePrefix;
 import std.string : startsWith;
 import auroraopencode.grepformat : compactGrepHistory;
 import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState;
+import auroraopencode.completionhandoff : completionHandoffMarker;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
 public ChatRequestMessage[] projectRequestMessages(
@@ -18,10 +19,17 @@ public ChatRequestMessage[] projectRequestMessages(
         ChatRequestMessage[] messages;
         const path = activeMessagePath(session);
         size_t controlBoundary;
+        size_t instructionBoundary;
         foreach (i, index; path)
+        {
+            const ref message = session.messages[index];
+            if (message.role == "user" && (!message.internal ||
+                (session.parentSessionId.length && session.subagentId.length && message.authorId == session.subagentId)))
+                instructionBoundary = i;
             if (session.messages[index].internal &&
                 session.messages[index].content.startsWith(controlHistoryBoundary))
                 controlBoundary = i;
+        }
         size_t slot = 0;
         if (afterMessageId.length > 0)
             foreach (i, index; path)
@@ -36,6 +44,14 @@ public ChatRequestMessage[] projectRequestMessages(
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
+            // A summary-only repair belongs to its original instruction. Keep
+            // it saved, without disabling tools on a later human/agent task.
+            if (slot < instructionBoundary && message.internal &&
+                message.content.startsWith(completionHandoffMarker))
+            {
+                ++slot;
+                continue;
+            }
             // History remains in the durable graph. Only superseded internal
             // control state before a recorded turn boundary leaves the wire.
             if ((slot < controlBoundary && supersededControlState(message)) ||

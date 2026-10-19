@@ -47,6 +47,113 @@ private int runScreenshot(string path, string startUrl)
     return 0;
 }
 
+/**
+ * Print what the running browser holds, split into collector memory (live and
+ * committed-free) and the rest of what the process touches, then exit.
+ *
+ * The window is built exactly as the interactive browser builds it, because the
+ * renderer and window path are precisely where a probe and the shipped app
+ * disagree: a headless probe reports ~170 MiB while the app's Task Manager shows
+ * ~350 MiB for the same page.
+ */
+private int runMemReport(string startUrl, int seconds)
+{
+    import std.datetime.stopwatch : AutoStart, StopWatch;
+    import std.stdio : writeln;
+    import core.memory : GC;
+
+    WindowOptions options;
+    options.title = "Aurora Browser";
+    options.width = 1080;
+    options.height = 680;
+    options.resizable = true;
+    options.decorated = false;
+    options.darkTitleBar = false;
+    options.lowLatency = true;
+    options.vsync = true;
+    options.synchronizedDragPointer = false;
+    auto window = new GuiWindow(options, browserTheme());
+    auto root = new BrowserRoot(window);
+    window.setRoot(root);
+    if (startUrl.length > 0)
+        root.openUrlAtStartup(startUrl);
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(options.width, options.height));
+    auto clock = StopWatch(AutoStart.yes);
+    while (clock.peek.total!"seconds" < seconds)
+    {
+        root.tickTree(0.016);
+        driver.paint();
+        Thread.sleep(16.msecs);
+    }
+    GC.collect();
+    auto stats = GC.stats;
+    writeln("gc used ", stats.usedSize / 1048576.0, " MiB, free ",
+        stats.freeSize / 1048576.0, " MiB");
+    writeln("resident ", workingSetMiB(), " MiB (peak ", peakWorkingSetMiB(),
+        " MiB)");
+    // What the collector can actually hand back in this state: the idle trim
+    // calls `minimize` every 120 ticks, so the gap between these two lines is
+    // pool the trim never manages to release while the browser keeps painting.
+    GC.minimize();
+    auto after = GC.stats;
+    writeln("after minimize: gc used ", after.usedSize / 1048576.0, " MiB, free ",
+        after.freeSize / 1048576.0, " MiB, resident ", workingSetMiB(), " MiB");
+    window.close();
+    return 0;
+}
+
+version (Windows)
+{
+    private struct ProcessMemoryCounters
+    {
+        uint cb;
+        uint pageFaultCount;
+        size_t peakWorkingSetSize;
+        size_t workingSetSize;
+        size_t quotaPeakPagedPoolUsage;
+        size_t quotaPagedPoolUsage;
+        size_t quotaPeakNonPagedPoolUsage;
+        size_t quotaNonPagedPoolUsage;
+        size_t pagefileUsage;
+        size_t peakPagefileUsage;
+        size_t privateUsage;
+    }
+
+    private extern (Windows) int K32GetProcessMemoryInfo(void* process,
+        ProcessMemoryCounters* counters, uint cb);
+    private extern (Windows) void* GetCurrentProcess();
+}
+
+/// This process's resident set in MiB, the number a task manager shows.
+private double workingSetMiB()
+{
+    version (Windows)
+    {
+        ProcessMemoryCounters counters;
+        counters.cb = ProcessMemoryCounters.sizeof;
+        if (K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, counters.cb) == 0)
+            return -1;
+        return counters.workingSetSize / 1048576.0;
+    }
+    else
+        return -1;
+}
+
+private double peakWorkingSetMiB()
+{
+    version (Windows)
+    {
+        ProcessMemoryCounters counters;
+        counters.cb = ProcessMemoryCounters.sizeof;
+        if (K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, counters.cb) == 0)
+            return -1;
+        return counters.peakWorkingSetSize / 1048576.0;
+    }
+    else
+        return -1;
+}
+
 /// Extract `--url <target>` from the command line ("" when absent).
 private string urlArg(string[] args)
 {
@@ -67,6 +174,24 @@ private string screenshotArg(string[] args)
             return args[i + 1];
     }
     return "";
+}
+
+/// Seconds requested by `--memreport[=<seconds>]`, or 0 when absent. The
+/// duration is what tells a footprint that is merely large apart from one that
+/// keeps growing while the browser sits idle.
+private int memReportArg(string[] args)
+{
+    import std.algorithm : startsWith;
+    foreach (arg; args[1 .. $])
+    {
+        if (arg == "--memreport") return 6;
+        if (arg.startsWith("--memreport="))
+        {
+            import std.conv : to;
+            return to!int(arg["--memreport=".length .. $]);
+        }
+    }
+    return 0;
 }
 
 /// Open a browser window. When `startUrl` is non-empty it is opened in the
@@ -98,5 +223,8 @@ int main(string[] args)
     const screenshot = screenshotArg(args);
     if (screenshot.length > 0)
         return runScreenshot(screenshot, urlArg(args));
+    const memSeconds = memReportArg(args);
+    if (memSeconds > 0)
+        return runMemReport(urlArg(args), memSeconds);
     return runBrowser(urlArg(args));
 }

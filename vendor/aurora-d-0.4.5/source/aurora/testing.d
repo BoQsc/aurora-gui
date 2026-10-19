@@ -46,6 +46,18 @@ final class UiTestDriver
         _window.onNativeEvent(event);
     }
 
+    /**
+     * Signal that the pointer left the native client area, mirroring the
+     * WM_MOUSELEAVE path instead of synthesizing another mouse-move point.
+     */
+    void leaveWindow()
+    {
+        Event event;
+        event.type = EventType.mouseLeave;
+        event.timestampMs = nextTimestamp();
+        _window.onNativeEvent(event);
+    }
+
     void mouseDown(MouseButton button = MouseButton.left)
     {
         auto event = pointerEvent(EventType.mouseDown, button);

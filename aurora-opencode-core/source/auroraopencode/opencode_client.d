@@ -1006,6 +1006,7 @@ final class OpenCodeClient
             _pending[$ - 1].kind == event.kind &&
             _pending[$ - 1].requestId == event.requestId)
         {
+            event.toolStarted |= _pending[$ - 1].toolStarted;
             _pendingBytes -= eventBytes(_pending[$ - 1]);
             _pending[$ - 1] = event;
             _pendingBytes += cost;

@@ -32,6 +32,7 @@ import std.conv : to;
 import std.file : exists, getcwd, readText, write;
 import std.path : baseName, buildPath;
 import std.string : indexOf, lastIndexOf, strip, toLower;
+import core.memory : GC;
 import std.utf : toUTF32;
 
 // ---------------------------------------------------------------------------
@@ -615,7 +616,14 @@ final class WebPageView : Widget
         {
             _viewportWidth = maxInt(1, size().width);
             _viewportHeight = maxInt(1, size().height);
-            loadIntoPage(currentUrl());
+            // Load only what this view was actually given. `currentUrl` falls
+            // back to the home page, so loading here made every caller that
+            // constructs a view and then navigates pay for the home page TWICE:
+            // `newTab` built a view (which loaded the home page), then loaded
+            // the same page again - one complete document, its JS realm and its
+            // first layout built and thrown away per tab, 77 MiB of live engine
+            // state at startup for a document nobody ever saw.
+            if (_url.length) loadIntoPage(_url);
         }
         invalidate();
     }
@@ -1487,6 +1495,12 @@ final class BrowserRoot : Widget
     private string _homeUrl;       /// configured home page (persisted)
     private bool _loading;         /// page currently loading (status/button state)
     private PendingLoad _pendingLoad; /// network load still in flight (see onTick)
+    /// A running browser keeps owing the OS the collector pages it frees: the
+    /// D collector grows its pools to a multiple of the live heap and hands
+    /// pages back only on `GC.minimize`, which nothing called. A blank window
+    /// holding 127 MiB live kept 268 MiB resident, and one that had painted
+    /// kept 672 MiB.
+    private int _trimTicks;           /// ticks since the last idle trim
 
     this(GuiWindow window)
     {
@@ -1728,6 +1742,7 @@ final class BrowserRoot : Widget
     protected override void onTick(double deltaSeconds)
     {
         super.onTick(deltaSeconds);
+        serviceSettledTrim();
         if (!_pendingLoad.active) return;
         if (_pendingLoad.tabIndex < 0 ||
             _pendingLoad.tabIndex >= cast(int) _tabs.length) return;
@@ -1736,6 +1751,33 @@ final class BrowserRoot : Widget
             invalidate();
         else
             finishNetworkLoad();
+    }
+
+    /**
+     * Give the allocator's unused pages back to the OS while the browser idles.
+     *
+     * The D collector grows its pools to a multiple of the live heap and frees
+     * pages only when `GC.minimize` is called - nothing called it, so a window
+     * with 127 MiB live sat at 268 MiB resident, and one that had painted a
+     * page sat at 672 MiB. Chrome paints allocate and drop far more than they
+     * retain, so this repeats: trimming once is not enough, because the pool
+     * grows again on the next repaint and then stays grown.
+     *
+     * It only runs when no load is in flight (a collection mid-load would stall
+     * the very frames the user is waiting for) and only pays for `minimize`
+     * when the collector is actually holding a pool it is not using.
+     */
+    private void serviceSettledTrim()
+    {
+        if (_pendingLoad.active)
+        {
+            _trimTicks = 0;
+            return;
+        }
+        if (++_trimTicks < 120) return;
+        _trimTicks = 0;
+        GC.collect();
+        if (GC.stats.freeSize > 32 * 1024 * 1024) GC.minimize();
     }
 
     private void navigateTo(string url)

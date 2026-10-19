@@ -227,6 +227,10 @@ class ListView : Widget
 
     private int rowAt(Point position) const @safe pure nothrow @nogc
     {
+        // Rows span the content width, not the whole widget. Without the
+        // horizontal check a captured pointer (or a click forwarded from a
+        // parent) resolves to a row for any x, including the chat pane.
+        if (position.x < 1 || position.x >= rowHitWidth()) return -1;
         const row = (position.y + _scrollOffset) / _rowHeight;
         return row >= 0 && row < cast(int) _items.length ? row : -1;
     }
@@ -256,6 +260,15 @@ class ListView : Widget
     private bool showScrollbar() const @safe pure nothrow @nogc
     {
         return contentHeight() > bounds().height;
+    }
+
+    /// Horizontal extent of a row, excluding a visible scrollbar. Subclasses
+    /// with custom row geometry use this for the same hit-test bounds.
+    protected int rowHitWidth() const @safe pure nothrow @nogc
+    {
+        const scrollbar = showScrollbar()
+            ? _scrollbarWidth + _scrollbarInset : 0;
+        return maxInt(0, bounds().width - scrollbar);
     }
 
     private void synchronizeScrollbar()

@@ -134,6 +134,18 @@ public final class ToolBatch
             remaining = end - first;
             cursor = end;
         }
+        if (first == 0)
+            foreach (call; calls[end .. $])
+            {
+                OpenCodeEvent waiting;
+                waiting.kind = OpenCodeEventKind.toolResult;
+                waiting.toolRunning = true;
+                waiting.text = "Queued: waiting for earlier tools in this batch.";
+                waiting.toolName = call.name;
+                waiting.toolCallId = call.id;
+                waiting.requestId = requestId;
+                client.pushLocalEvent(waiting);
+            }
         foreach (i; first .. end)
         {
             // Each receiver owns its call. No reused loop delegate captures.
@@ -230,6 +242,9 @@ private final class ToolJob : WorkItem
             changed = false;
             return;
         }
+        publishProgress(call.name == "run" || call.name == "bash"
+            ? "Running command. Waiting for output…"
+            : "Running tool. Waiting for output…", true);
         // A failed exclusive effect may have changed files before reporting
         // failure. Keep earlier evidence invalidated in that case.
         changed = mutationCandidate();
@@ -260,6 +275,11 @@ private final class ToolJob : WorkItem
     }
 
     private void progress(string output)
+    {
+        publishProgress(output, false);
+    }
+
+    private void publishProgress(string output, bool started)
     {
         SearchProgress search;
         const decoded = decodeSearchProgress(output, search);
@@ -301,6 +321,9 @@ private final class ToolJob : WorkItem
         OpenCodeEvent event;
         event.kind = OpenCodeEventKind.toolResult;
         event.toolRunning = true;
+        event.toolStarted = started;
+        event.elapsedMs = startedAt == MonoTime.init ? 0 :
+            (MonoTime.currTime - startedAt).total!"msecs";
         event.text = output;
         event.toolName = call.name;
         event.toolCallId = call.id;

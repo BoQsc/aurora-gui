@@ -64,6 +64,16 @@ final class Element
     int maskedLayerW;         /// Box width the cached layer was rasterised at.
     int maskedLayerH;         /// Box height the cached layer was rasterised at.
     long maskedLayerGen;      /// Paint generation the cached layer belongs to.
+    /// The composited `filter`/`opacity` layer this box's subtree was last
+    /// rasterised into, with the box size and paint generation it was built for.
+    /// The layer is a function of the subtree and the generation, so an
+    /// unchanged document may blit it: rebuilding it repainted the subtree,
+    /// ran the filter over every pixel, converted back to straight alpha and
+    /// copied the result - 58 ms of a 131 ms frame on boqsc.eu.
+    Object filterLayer;
+    int filterLayerW;
+    int filterLayerH;
+    long filterLayerGen;
     bool imageLoadTried;
     /// Set once an inline SVG's rasterisation has been retried, so a genuinely
     /// unreadable SVG cannot keep the document permanently dirty. Without the

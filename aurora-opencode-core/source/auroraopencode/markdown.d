@@ -1064,6 +1064,44 @@ MarkdownBlock[] parseMarkdown(dstring text)
     return blocks;
 }
 
+// TextLayoutEngine caches unwrapped runs only up to 256 chars. Streaming a
+// long unbroken token (a URL, hash or code identifier) therefore re-shapes the
+// whole token, and each split prefix, on every frame. Keep a tiny bounded ring
+// for those tokens only; normal runs continue to use the engine's own cache.
+private static immutable size_t longLayoutCacheEntries = 8;
+private static immutable size_t longLayoutCacheMaxText = 1024;
+private struct LongLayoutEntry
+{
+    dstring text;
+    int pixelSize;
+    bool mono;
+    bool bold;
+    const(void)* face;
+    TextLayout layout;
+}
+private LongLayoutEntry[longLayoutCacheEntries] longLayoutCache;
+private size_t longLayoutCount;
+private size_t longLayoutNext;
+
+private TextLayout layoutLongCached(dstring text, TextLayoutOptions options,
+    bool mono, bool bold, const(void)* face)
+{
+    foreach (ref entry; longLayoutCache[0 .. longLayoutCount])
+        if (entry.pixelSize == options.pixelSize && entry.mono == mono &&
+            entry.bold == bold && entry.face is face && entry.text == text)
+            return entry.layout;
+    auto layout = FontSystem.sharedInstance().textEngine.layout(text, options);
+    ref entry = longLayoutCache[longLayoutCount < longLayoutCache.length
+        ? longLayoutCount : longLayoutNext];
+    if (longLayoutCount < longLayoutCache.length)
+        ++longLayoutCount;
+    else
+        longLayoutNext = (longLayoutNext + 1) % longLayoutCache.length;
+    entry = LongLayoutEntry(text.idup, options.pixelSize, mono, bold, face,
+        layout);
+    return layout;
+}
+
 private TextLayout shapeOne(dstring text, int pixelSize, bool mono, bool bold)
 {
     TextLayoutOptions options;
@@ -1085,6 +1123,12 @@ private TextLayout shapeOne(dstring text, int pixelSize, bool mono, bool bold)
     // width. Cache these word/style layouts so resizing only performs cheap
     // flow placement instead of invoking the Unicode shaper again for every
     // width visited by the window border.
+    const face = mono
+        ? cast(const(void)*) fonts.collection(FontRole.monospace)
+        : cast(const(void)*) options.overrideFace;
+    // The engine's limit is private; keep the two thresholds in sync.
+    if (text.length > 256 && text.length <= longLayoutCacheMaxText)
+        return layoutLongCached(text, options, mono, bold, face);
     return fonts.textEngine.layoutCached(text, options);
 }
 
@@ -1112,6 +1156,25 @@ private struct PendingText
     dstring target;
     bool strike;
     double ascent;
+}
+
+version (MarkdownGcProbe)
+{
+    size_t gcProbePrepareAlloc;
+    size_t gcProbeRunsAlloc;
+    size_t gcProbeShapeAlloc;
+    size_t gcProbeShapeTotal;
+    size_t gcProbeShapeMax;
+    size_t gcProbeShapeCalls;
+    size_t gcProbeItemAlloc;
+    size_t gcProbeItemTotal;
+    size_t gcProbeItemMax;
+    size_t gcProbePendingAlloc;
+    private size_t gcProbeNow()
+    {
+        import core.memory : GC;
+        return GC.stats.allocatedInCurrentThread;
+    }
 }
 
 private Color styleColor(InlineStyle style, Color baseColor)
@@ -1171,7 +1234,17 @@ private void addTextItem(ref MdComposition c, PendingText p, double lineTop,
     item.target = p.target;
     if (p.layout.lines.length > 0)
         item.h = p.layout.lines[0].height;
-    c.items ~= item;
+    version (MarkdownGcProbe)
+    {
+        const itemMark = gcProbeNow();
+        c.items ~= item;
+        gcProbeItemAlloc = gcProbeNow() - itemMark;
+        gcProbeItemTotal += gcProbeItemAlloc;
+        if (gcProbeItemAlloc > gcProbeItemMax)
+            gcProbeItemMax = gcProbeItemAlloc;
+    }
+    else
+        c.items ~= item;
     c.cursorX = item.x + item.w;
     c.cursorY = item.y;
     c.cursorPx = pixelSize;
@@ -1204,10 +1277,19 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
         const whitespace = isSpace(run.text[0]);
         if (whitespace && pending.length == 0)
             continue;
+        version (MarkdownGcProbe) const shapeMark = gcProbeNow();
         auto layout = shapeOne(run.text, pixelSize,
             run.style == InlineStyle.code,
             run.style == InlineStyle.bold ||
             run.style == InlineStyle.boldItalic);
+        version (MarkdownGcProbe)
+        {
+            gcProbeShapeAlloc = gcProbeNow() - shapeMark;
+            gcProbeShapeTotal += gcProbeShapeAlloc;
+            if (gcProbeShapeAlloc > gcProbeShapeMax)
+                gcProbeShapeMax = gcProbeShapeAlloc;
+            ++gcProbeShapeCalls;
+        }
         // `shapeOne` returns whatever the shaper produced, and a null layout
         // dereferenced here took the whole process down mid-repaint (a native
         // access violation resolving to this function). The widget tree is
@@ -1273,8 +1355,11 @@ private double composeRuns(ref MdComposition c, InlineRun[] runs, int lineWidth,
             continue;
         }
 
+        version (MarkdownGcProbe) const pendingMark = gcProbeNow();
         pending ~= PendingText(layout, run.style, x, w, run.target, run.strike,
             line.ascent);
+        version (MarkdownGcProbe)
+            gcProbePendingAlloc = gcProbeNow() - pendingMark;
         lineAscent = max(lineAscent, line.ascent);
         lineDescent = max(lineDescent, line.descent);
         x += w;
@@ -1326,8 +1411,20 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
     int lineWidth,
     bool streaming)
 {
+    version (MarkdownGcProbe)
+    {
+        size_t gcMark = gcProbeNow();
+        gcProbeShapeTotal = 0;
+        gcProbeShapeMax = 0;
+        gcProbeShapeCalls = 0;
+        gcProbeItemTotal = 0;
+        gcProbeItemMax = 0;
+    }
     // Reuse retained output storage. Live resize used to leave thousands of
     // short-lived MdItems per width for a later stop-the-world GC pass.
+    // Drop the old references first: reusing the array must not keep the
+    // previous tail's text and layouts alive after it has been replaced.
+    c.items[] = MdItem.init;
     c.items.length = 0;
     c.height = 0;
     c.cursorX = 0;
@@ -1346,6 +1443,11 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
     {
         const isLast = blockIndex + 1 == blocks.length;
         prepareFlowPieces(block);
+        version (MarkdownGcProbe)
+        {
+            gcProbePrepareAlloc = gcProbeNow() - gcMark;
+            gcMark = gcProbeNow();
+        }
         switch (block.type)
         {
             case BlockType.paragraph:
@@ -1721,6 +1823,11 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
             default:
                 break;
         }
+        version (MarkdownGcProbe)
+        {
+            gcProbeRunsAlloc = gcProbeNow() - gcMark;
+            gcMark = gcProbeNow();
+        }
     }
     // Do not paint an inline block cursor after the final glyph. It used the
     // exact glyph advance as its x coordinate, so letters with a right-side
@@ -1760,25 +1867,80 @@ struct MarkdownComposer
     int width = -1;
     private size_t committedLen;
     private double committedHeight;
+    // The committed prefix and the live tail share this buffer. `committedItems`
+    // used to hold only the prefix and `compose` duplicated all of it into the
+    // output on every streamed delta; a long reply therefore allocated and
+    // copied its whole composed item list per frame.
     private MdItem[] committedItems;
+    private size_t committedItemCount;
+    private MdComposition partScratch;
+    private MdComposition tailScratch;
+    // Headroom for the growing tail. `committedItems.length` is the physical
+    // buffer; only `committedItemCount` and the returned slice define the live
+    // items. Growing a D array with `.length` after truncating it reallocates
+    // even with spare capacity, which copied the whole prefix every frame.
+    private static immutable size_t itemCapacitySlack = 1024;
+
+    version (MarkdownGcProbe)
+    {
+        import core.memory : GC;
+        size_t probeCapacity() const { return committedItems.capacity; }
+        size_t probeCommitted() const { return committedItemCount; }
+        size_t probeTail() const { return tailScratch.items.length; }
+        size_t probeCommitAlloc;
+        size_t probeTailAlloc;
+        size_t probeParseAlloc;
+        size_t probeComposeAlloc;
+        size_t probeBufferAlloc;
+        size_t probeAssignAlloc;
+        size_t probeTailChars;
+        size_t probeTailBlocks;
+        size_t probeMaxTailAlloc;
+        size_t probeBigTailCalls;
+        size_t probeCommitCalls;
+        private static size_t probeAllocNow()
+        {
+            return GC.stats.allocatedInCurrentThread;
+        }
+    }
+
+    private void ensureItemCapacity(size_t needed)
+    {
+        if (committedItems.length >= needed) return;
+        auto grown = needed + itemCapacitySlack;
+        const halfAgain = committedItems.length + committedItems.length / 2;
+        if (grown < halfAgain) grown = halfAgain;
+        committedItems.length = grown;
+    }
+
+    // Drop references without releasing the reusable backing buffer.
+    private void clearItemBuffer()
+    {
+        committedItems[] = MdItem.init;
+    }
 
     void reset()
     {
         width = -1;
         committedLen = 0;
         committedHeight = 0;
-        committedItems.length = 0;
+        committedItemCount = 0;
+        clearItemBuffer();
+        partScratch.items.length = 0;
+        tailScratch.items.length = 0;
     }
 
     void compose(ref MdComposition c, dstring text, int lineWidth,
         bool streaming)
     {
+        version (MarkdownGcProbe) size_t probeMark = probeAllocNow();
         if (width != lineWidth)
         {
             width = lineWidth;
             committedLen = 0;
             committedHeight = 0;
-            committedItems.length = 0;
+            committedItemCount = 0;
+            clearItemBuffer();
         }
 
         // Fold every complete block into the committed prefix exactly once.
@@ -1786,28 +1948,79 @@ struct MarkdownComposer
         if (commit > committedLen)
         {
             auto committedBlocks = parseMarkdown(text[committedLen .. commit]);
-            MdComposition part;
-            composeMarkdownInto(part, committedBlocks, lineWidth, false);
-            foreach (ref item; part.items) item.y += committedHeight;
-            committedItems ~= part.items;
+            composeMarkdownInto(partScratch, committedBlocks, lineWidth, false);
+            foreach (ref item; partScratch.items) item.y += committedHeight;
+            // Drop the previous tail, then extend the stable prefix in place.
+            const prefixLength = committedItemCount + partScratch.items.length;
+            ensureItemCapacity(prefixLength);
+            committedItems[committedItemCount .. prefixLength] =
+                partScratch.items[];
+            committedItemCount = prefixLength;
             // Restore the gap the committed chunk omitted, because it is still
             // followed by the tail.
-            committedHeight += part.height + part.trailingGap;
+            committedHeight += partScratch.height + partScratch.trailingGap;
             committedLen = commit;
+        }
+        version (MarkdownGcProbe)
+        {
+            probeCommitAlloc = probeAllocNow() - probeMark;
+            probeMark = probeAllocNow();
         }
 
         // Compose only the still-growing tail and place it below the prefix.
+        version (MarkdownGcProbe) size_t parseMark = probeAllocNow();
         auto tailBlocks = parseMarkdown(text[committedLen .. $]);
-        MdComposition tail;
-        composeMarkdownInto(tail, tailBlocks, lineWidth, streaming);
-        foreach (ref item; tail.items) item.y += committedHeight;
-        c.items = committedItems.dup;
-        c.items ~= tail.items;
-        c.height = committedHeight + tail.height;
-        c.cursorX = tail.cursorX;
-        c.cursorY = tail.cursorY + committedHeight;
-        c.cursorPx = tail.cursorPx;
-        c.trailingGap = tail.trailingGap;
+        version (MarkdownGcProbe)
+        {
+            probeParseAlloc = probeAllocNow() - parseMark;
+            parseMark = probeAllocNow();
+        }
+        composeMarkdownInto(tailScratch, tailBlocks, lineWidth, streaming);
+        version (MarkdownGcProbe)
+            probeComposeAlloc = probeAllocNow() - parseMark;
+        foreach (ref item; tailScratch.items) item.y += committedHeight;
+        const outputHeight = committedHeight + tailScratch.height;
+        const outputCursorY = tailScratch.cursorY + committedHeight;
+        version (MarkdownGcProbe)
+        {
+            probeTailAlloc = probeAllocNow() - probeMark;
+            probeTailChars = text.length - committedLen;
+            probeTailBlocks = tailBlocks.length;
+            if (probeTailAlloc > probeMaxTailAlloc)
+                probeMaxTailAlloc = probeTailAlloc;
+            if (probeTailAlloc > 65536)
+                ++probeBigTailCalls;
+            if (commit > committedLen)
+                ++probeCommitCalls;
+            probeMark = probeAllocNow();
+        }
+        const totalLength = committedItemCount + tailScratch.items.length;
+        ensureItemCapacity(totalLength);
+        committedItems[committedItemCount .. totalLength] = tailScratch.items[];
+        version (MarkdownGcProbe)
+        {
+            probeBufferAlloc = probeAllocNow() - probeMark;
+            probeMark = probeAllocNow();
+        }
+        // Live streaming owns the buffer until its next delta. A settled
+        // composition may be retained by the shared layout cache, so hand the
+        // buffer over and detach: copying it instead made every settled
+        // composition duplicate its whole item array.
+        c.items = committedItems[0 .. totalLength];
+        if (!streaming)
+        {
+            committedItems = null;
+            committedItemCount = 0;
+            committedLen = 0;
+            committedHeight = 0;
+        }
+        version (MarkdownGcProbe)
+            probeAssignAlloc = probeAllocNow() - probeMark;
+        c.height = outputHeight;
+        c.cursorX = tailScratch.cursorX;
+        c.cursorY = outputCursorY;
+        c.cursorPx = tailScratch.cursorPx;
+        c.trailingGap = tailScratch.trailingGap;
     }
 }
 

@@ -109,6 +109,31 @@ private enum size_t MaxMaskedLayerCachePixels = 8_000_000;
 /// Record that the document changed in a way that affects painting (`layout`).
 void notePaintInvalidation() { ++_paintGeneration; }
 
+/// Where one paint's time went, in milliseconds, with the counts that explain it.
+/// A frame that re-rasterises a gradient every time, or rebuilds a masked layer it
+/// already had, shows up in the counts before the times are even read - which is
+/// what tells a cache that misses apart from a cache that was never consulted.
+struct PaintProfile
+{
+    // Zeroed explicitly: D initialises a float field to NaN, and a NaN total
+    // would print as a number that never adds up.
+    double maskedBuildMs = 0;   /// building a masked layer (surface, subtree, mask)
+    double maskedBlitMs = 0;    /// re-drawing a masked layer this generation had
+    double filterMs = 0;        /// whole filtered-layer passes
+    double filterBlitMs = 0;    /// re-drawing a filtered layer already built
+    double gradientMs = 0;      /// rasterising a gradient that was not cached
+    long maskedBuilds = 0;
+    long maskedBlits = 0;
+    long filterLayers = 0;
+    long filterBlits = 0;
+    long gradientRasters = 0;
+}
+
+__gshared PaintProfile paintProfile;
+
+/// Clear the profile; the next paint then describes itself in it.
+void resetPaintProfile() { paintProfile = PaintProfile.init; }
+
 /// Whether the element's cached masked layer can be painted as-is: same box, and
 /// built for the current paint generation.
 private bool maskedLayerFresh(const Element element)
@@ -199,7 +224,11 @@ private RgbaImage gradientMaskImage(string css, int w, int h)
     import std.format : format;
     const key = format("%d x %d %s", w, h, css);
     if (auto hit = key in _gradientCache) return *hit;
+    import std.datetime.stopwatch : StopWatch, AutoStart;
+    auto raster = StopWatch(AutoStart.yes);
     auto image = rasteriseGradient(css, w, h);
+    paintProfile.gradientMs += raster.peek.total!"nsecs" / 1.0e6;
+    ++paintProfile.gradientRasters;
     // Bounded by total pixels rather than by entry count: a full-viewport mask
     // is megabytes, and a page with many large gradients must not grow this
     // without limit. Clearing wholesale is what the other per-paint caches in
@@ -268,6 +297,51 @@ private Surface filterLayerSurface(int w, int h)
     return _filterLayerSurface;
 }
 
+/// Whether the element's cached filtered layer can be painted as-is: same box,
+/// and built for the current paint generation.
+private bool filterLayerFresh(const Element element)
+{
+    return element.filterLayer !is null &&
+        element.filterLayerW == element.box.width &&
+        element.filterLayerH == element.box.height &&
+        element.filterLayerGen == _paintGeneration;
+}
+
+/// Whether a filtered layer may be kept for the next frame. A box that pins
+/// itself to the viewport - or contains anything that does - cannot be baked:
+/// `position: sticky` is applied at paint time from the scroll offset, which no
+/// generation records, so the layer would freeze it mid-scroll.
+private bool filterLayerCacheable(const Element element)
+{
+    if (element is null) return true;
+    if (element.style.isSticky) return false;
+    if (!filterLayerCacheable(element.pseudoBefore)) return false;
+    if (!filterLayerCacheable(element.pseudoAfter)) return false;
+    foreach (child; element.elements)
+        if (!filterLayerCacheable(child)) return false;
+    return true;
+}
+
+/// Keep a filtered layer within the same pixel budget the masked layers use.
+private void keepFilterLayer(Element element, RgbaImage image)
+{
+    if (!filterLayerCacheable(element)) return;
+    const size_t previous = element.filterLayer is null ? 0
+        : cast(size_t) element.filterLayerW * element.filterLayerH;
+    const size_t wanted = cast(size_t) element.box.width * element.box.height;
+    if (_maskedLayerCachePixels - previous + wanted > MaxMaskedLayerCachePixels)
+    {
+        _maskedLayerCachePixels -= previous;
+        element.filterLayer = null;
+        return;
+    }
+    _maskedLayerCachePixels = _maskedLayerCachePixels - previous + wanted;
+    element.filterLayer = cast(Object) image;
+    element.filterLayerW = element.box.width;
+    element.filterLayerH = element.box.height;
+    element.filterLayerGen = _paintGeneration;
+}
+
 private ubyte[] filterLayerBytes(size_t needed)
 {
     import core.stdc.stdlib : free, malloc;
@@ -287,6 +361,108 @@ private ubyte[] filterLayerBytes(size_t needed)
     return _filterLayerBytes[0 .. needed];
 }
 
+/// `x / 255` for `x` up to 130177 (four 8-bit terms plus rounding), by one
+/// multiply-shift. Exact over that whole range - `div255`'s unit test proves it.
+private uint div255(uint x) @safe pure nothrow @nogc
+{
+    return cast(uint) ((cast(ulong) x * 65794UL) >> 24);
+}
+
+/// `aurora.surface.blendArgb` with its four divisions by 255 replaced by
+/// multiply-shifts.
+///
+/// The blits this file does are over a million pixels each, and four integer
+/// divisions a pixel were the single largest cost of a boqsc.eu frame: 19.4 ms
+/// of 44.4 ms. The arithmetic is otherwise the vendor's own, term for term, and
+/// `blendLayer's unit test` checks the two agree over the whole eight-bit input
+/// domain.
+private uint blendLayer(uint destination, uint r, uint g, uint b, uint a)
+    @safe pure nothrow @nogc
+{
+    const uint inv = 255u - a;
+    const uint dr = (destination >> 16) & 0xffu;
+    const uint dg = (destination >> 8) & 0xffu;
+    const uint db = destination & 0xffu;
+    const uint da = (destination >> 24) & 0xffu;
+    const uint rr = div255(r * a + dr * inv + 127u);
+    const uint rg = div255(g * a + dg * inv + 127u);
+    const uint rb = div255(b * a + db * inv + 127u);
+    const uint ra = a + div255(da * inv + 127u);
+    return (ra << 24) | (rr << 16) | (rg << 8) | rb;
+}
+
+unittest
+{
+    // The input domain is finite, so this is checked rather than sampled: one
+    // arithmetic slip would shift every translucent pixel in the browser.
+    import aurora.surface : blendArgb;
+
+    foreach (uint x; 0u .. 130178u)
+        assert(div255(x) == x / 255u, "div255 must match /255 exactly");
+
+    foreach (uint a; 0u .. 256u)
+        foreach (uint src; 0u .. 256u)
+            foreach (uint dstCh; 0u .. 256u)
+                foreach (uint dstA; [0u, 255u])
+                {
+                    const uint dst = (dstA << 24) | (dstCh << 16) |
+                        (dstCh << 8) | (255u - dstCh);
+                    assert(blendLayer(dst, src, dstCh, 255u - dstCh, a) ==
+                        blendArgb(dst, Color(src, dstCh, 255u - dstCh, a)));
+                }
+}
+
+/// Draw a cached layer image at exactly its own size.
+///
+/// `Canvas.drawImage` is built for scaling: every destination pixel recomputes a
+/// clamped source column and bounds-checks its `setPixel`, about 13 ns a pixel.
+/// A cached mask or filter layer is always drawn at the size it was built for, so
+/// its source index is a row offset and that per-pixel division is pure overhead.
+/// On boqsc.eu two masked layers and one filtered layer cost ~48 ms of a 93 ms
+/// frame this way. The blend stays the vendor's own `blendArgb`, so the pixels
+/// are identical to the vendor blit's - only the bookkeeping is skipped.
+private void blitLayerImage(Canvas canvas, Rect dst, RgbaImage img)
+{
+    if (img is null) return;
+    auto surf = canvas.surface();
+    if (surf is null || dst.width != img.width() || dst.height != img.height())
+    {
+        // A draw-list canvas, or a layer drawn at another size: the vendor walk
+        // is the only correct thing to do.
+        canvas.drawImage(dst, img, false);
+        return;
+    }
+    // A translated canvas (a CSS `transform`) still has to land where the vendor
+    // blit would, so the offset comes from the same mapping `drawImage` uses.
+    const at = canvas.toSurface(Rect(dst.x, dst.y, 1, 1));
+    const int iw = img.width();
+    auto area = Rect(at.x, at.y, iw, img.height()).intersection(canvas.clipRect())
+        .intersection(Rect(0, 0, surf.width(), surf.height()));
+    if (area.empty()) return;
+    const src = img.pixels();
+    auto dstPixels = surf.pixels();
+    const size_t stride = cast(size_t) surf.width();
+    foreach (int row; area.y .. area.bottom())
+    {
+        const int sy = row - at.y;
+        // Walked with pointers: a full-viewport layer is ~1.2 Mpx, and a bounds
+        // check on each of its four bytes dominated what was left of the blit.
+        const(ubyte)* sp = src.ptr + (cast(size_t) sy * iw + (area.x - at.x)) * 4;
+        uint* dp = dstPixels.ptr + cast(size_t) row * stride + cast(size_t) area.x;
+        foreach (int col; 0 .. area.width)
+        {
+            const uint a = sp[3];
+            if (a == 255)
+                *dp = (a << 24) | (cast(uint) sp[0] << 16) |
+                    (cast(uint) sp[1] << 8) | sp[2];
+            else if (a != 0)
+                *dp = blendLayer(*dp, sp[0], sp[1], sp[2], a);
+            sp += 4;
+            ++dp;
+        }
+    }
+}
+
 /// Paint `element` (and its subtree) through its `filter` (CSS Filter Effects 1).
 /// Layering works exactly like `paintMaskedLayer` — the subtree goes into a layer
 /// surface and is drawn back — but the layer's colours are transformed rather
@@ -300,6 +476,18 @@ private bool paintFilterLayer(Element element, Canvas canvas)
     if (w <= 0 || h <= 0) return false;
 
     import aurora.surface : Surface;
+    import std.datetime.stopwatch : StopWatch, AutoStart;
+    // A layer this subtree already has for this generation paints as one blit.
+    if (filterLayerFresh(element))
+    {
+        auto blit = StopWatch(AutoStart.yes);
+        blitLayerImage(canvas, Rect(element.box.x, element.box.y, w, h),
+            cast(RgbaImage) element.filterLayer);
+        paintProfile.filterBlitMs += blit.peek.total!"nsecs" / 1.0e6;
+        ++paintProfile.filterBlits;
+        return true;
+    }
+    auto build = StopWatch(AutoStart.yes);
     const bool borrow = _filterLayerDepth == 0;
     auto layerSurface = borrow ? filterLayerSurface(w, h) : new Surface(w, h);
     if (!borrow) layerSurface.clear(Color(0, 0, 0, 0));
@@ -345,7 +533,11 @@ private bool paintFilterLayer(Element element, Canvas canvas)
             rgba[i + 2] = cast(ubyte) b;
             rgba[i + 3] = cast(ubyte) a;
         }
-    canvas.drawImage(Rect(bx, by, w, h), new RgbaImage(w, h, rgba), false);
+    auto image = new RgbaImage(w, h, rgba);
+    keepFilterLayer(element, image);
+    blitLayerImage(canvas, Rect(bx, by, w, h), image);
+    paintProfile.filterMs += build.peek.total!"nsecs" / 1.0e6;
+    ++paintProfile.filterLayers;
     return true;
 }
 
@@ -510,10 +702,17 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
     // either - it cannot have changed without a new generation.
     if (maskedLayerFresh(element))
     {
-        canvas.drawImage(Rect(element.box.x, element.box.y, element.box.width,
-            element.box.height), cast(RgbaImage) element.maskedLayer, false);
+        import std.datetime.stopwatch : StopWatch, AutoStart;
+        auto blit = StopWatch(AutoStart.yes);
+        blitLayerImage(canvas, Rect(element.box.x, element.box.y,
+            element.box.width, element.box.height),
+            cast(RgbaImage) element.maskedLayer);
+        paintProfile.maskedBlitMs += blit.peek.total!"nsecs" / 1.0e6;
+        ++paintProfile.maskedBlits;
         return true;
     }
+    import std.datetime.stopwatch : StopWatch, AutoStart;
+    auto build = StopWatch(AutoStart.yes);
     auto mask = gradientMaskImage(element.style.maskImage, element.box.width,
         element.box.height);
     if (mask is null) return false;
@@ -592,7 +791,9 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
     }
     auto image = new RgbaImage(w, h, rgba);
     keepMaskedLayer(element, image);
-    canvas.drawImage(Rect(bx, by, w, h), image, false);
+    blitLayerImage(canvas, Rect(bx, by, w, h), image);
+    paintProfile.maskedBuildMs += build.peek.total!"nsecs" / 1.0e6;
+    ++paintProfile.maskedBuilds;
     return true;
 }
 
@@ -800,9 +1001,25 @@ private void paintElement(Element element, Canvas canvas)
             auto dst = backgroundDestRect(element, bgImage);
             if (dst.width > 0 && dst.height > 0)
             {
+                // Bilinear sampling is only needed when the image is drawn at a
+                // size it was not rasterised at. A one-to-one blit through the
+                // filtered path samples four texels per pixel for the same
+                // answer - and a page's full-viewport veil gradients are drawn
+                // this way on every frame of a scroll.
+                const bool scaled = dst.width != bgImage.width() ||
+                    dst.height != bgImage.height();
+                // An opaque, unscaled background is the same 1:1 blit the layer
+                // cache uses: a full-page veil art would otherwise pay the
+                // vendor walk's per-pixel source division on every frame, over
+                // the whole box rather than the visible rows.
+                const bool plain = !scaled && artTint.r == 255 &&
+                    artTint.g == 255 && artTint.b == 255 && artTint.a == 255;
                 const rep = element.style.backgroundRepeat;
                 if (rep == "no-repeat")
-                    canvas.drawImage(dst, bgImage, bgImage.bounds(), artTint);
+                {
+                    if (plain) blitLayerImage(canvas, dst, bgImage);
+                    else canvas.drawImage(dst, bgImage, bgImage.bounds(), artTint, scaled);
+                }
                 else
                 {
                     // CSS tiles background images by default, from the padding
@@ -823,7 +1040,9 @@ private void paintElement(Element element, Canvas canvas)
                             auto tile = dst;
                             tile.x = x;
                             tile.y = y;
-                            canvas.drawImage(tile, bgImage, bgImage.bounds(), artTint);
+                            if (plain) blitLayerImage(canvas, tile, bgImage);
+                            else canvas.drawImage(tile, bgImage, bgImage.bounds(),
+                                artTint, scaled);
                         }
                     }
                 }
@@ -1007,11 +1226,17 @@ private void paintElement(Element element, Canvas canvas)
             auto dst = objectFitRect(element, image, box);
             if (dst.width > 0 && dst.height > 0)
             {
+                // As with a background image: filter only a scaled draw, so an
+                // image painted at its own size costs one memory read per pixel.
+                const bool scaled = dst.width != image.width() ||
+                    dst.height != image.height();
                 if (element.style.objectFit == "fill" ||
                     element.style.objectFit.length == 0)
-                    contentCanvas.drawImage(dst, image);
+                    contentCanvas.drawImage(dst, image, image.bounds(),
+                        opacityTint(1.0), scaled);
                 else
-                    contentCanvas.clipped(box).drawImage(dst, image);
+                    contentCanvas.clipped(box).drawImage(dst, image, image.bounds(),
+                        opacityTint(1.0), scaled);
             }
         }
         else

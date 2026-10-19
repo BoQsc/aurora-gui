@@ -65,5 +65,8 @@ struct OpenCodeEvent
     bool workspaceChanged;
     // A decoder-detected output loop, distinct from a network/provider outage.
     string outputIssue;
+    // Local progress crossed the worker-start boundary. Retained when queued
+    // output snapshots coalesce, so presentation can stop counting queue time.
+    bool toolStarted;
 }
 

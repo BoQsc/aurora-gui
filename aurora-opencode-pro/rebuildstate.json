@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply 0.66.24 planning intent, resume evidence and agent handoff fixes",
+  "reason": "Apply the conversation-list hit-area and capture fixes to the running Aurora OpenCode app.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-19 13:23:51.4024734 UTC",
-  "finishedAt": "2026-10-19 13:25:23.7660872 UTC",
-  "durationMs": 92364,
+  "startedAt": "2026-10-19 17:57:40.8134941 UTC",
+  "finishedAt": "2026-10-19 17:58:36.9000017 UTC",
+  "durationMs": 56086,
   "exitCode": 0,
   "errors": []
 }

@@ -879,6 +879,9 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             case EventType.mouseMove:
                 handleMouseMove(event);
                 break;
+            case EventType.mouseLeave:
+                handleMouseLeave();
+                break;
             case EventType.mouseDown:
                 handleMouseDown(event);
                 break;
@@ -1581,6 +1584,20 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         auto target = _captured !is null ? _captured : _hovered;
         if (target !is null)
             dispatchToBubble(target, event);
+    }
+
+    private void handleMouseLeave()
+    {
+        // Windows stops sending mouse-move messages once the pointer crosses
+        // the client edge, so hover must be cleared from WM_MOUSELEAVE or the
+        // last hovered widget keeps its highlight and hover tooltip open.
+        if (_hovered !is null)
+        {
+            _hovered.setHoveredInternal(false);
+            _hovered = null;
+        }
+        synchronizeNativeScrollTarget(null, Point.init);
+        setActiveCursor(CursorKind.arrow);
     }
 
     private void handleMouseDown(ref Event event)

@@ -1,3 +1,18 @@
+## Vendor patch: native mouse leave clears hover (`platform/win32.d`, `window.d`)
+
+- Windows stops delivering `WM_MOUSEMOVE` once the pointer crosses the client
+  edge, so the last hovered widget kept its hover state. In the OpenCode
+  conversation list that left the delayed full-title tooltip open after the
+  pointer moved out of the window.
+- `Win32Window` now arms `TrackMouseEvent(TME_LEAVE)` on client-area entry and
+  reports `WM_MOUSELEAVE` as `EventType.mouseLeave`. `Window` handles that event
+  by clearing the hovered widget, firing its normal `onMouseLeave`, and resetting
+  the cursor/scroll target, so existing list and tooltip cleanup runs.
+- `aurora.testing.UiTestDriver.leaveWindow()` injects the same event through
+  `GuiWindow.onNativeEvent` for the regression in `headless_pro_smoke.d`.
+- `vendor/aurora-d-0.4.5/MANIFEST.sha256` is re-digested for `platform/win32.d`,
+  `window.d`, and `testing.d`.
+
 ## Vendor patch: `Tab` reaches the focused widget first (`aurora/window.d`)
 
 - `Window.handleKey` intercepted `Tab`/`Shift+Tab` and called `cycleFocus`

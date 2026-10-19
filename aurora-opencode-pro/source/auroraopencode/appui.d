@@ -47,7 +47,7 @@ import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     planRevertRecords, ChangeRestorePath, ChangeContext, ChangeRecord,
     ToolCancellation, ToolExecution, pendingNativeMutationIntents;
 import auroraopencode.systemprompt : promptVerbosityDirective,
-    promptVerbosityLabel, promptVerbosityNames, rebuildModule,
+    promptVerbosityLabel, promptVerbosityNames, rebuildModule, responsePlanReviewPrompt,
     setSystemPromptModules, systemPromptGeneration;
 // experimental: computer use - delete with source/auroraopencode/computeruse.d
 import auroraopencode.computeruse :
@@ -85,6 +85,8 @@ import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.agentresult : subagentResult;
+import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
+    completionHandoffMarker, completionHandoffInstruction, recordedCompletionHandoff;
 import auroraopencode.requestbuilder : projectRequestMessages;
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
@@ -9503,6 +9505,10 @@ public final class SessionListView : ListView
 
     override int indexAt(Point position) const @safe pure nothrow @nogc
     {
+        // A row hit must land on the row's horizontal extent. Checking only y
+        // let a captured pointer over the chat pane keep resolving to the last
+        // conversation row, which pinned the delayed title tooltip open.
+        if (position.x < 1 || position.x >= rowHitWidth()) return -1;
         const scrolled = position.y + scrollOffset() - listTopPad();
         if (scrolled < 0) return -1;
         const count = cast(int) items().length;
@@ -9637,6 +9643,11 @@ public final class SessionListView : ListView
     // so an idle list costs nothing.
     protected override void onTick(double deltaSeconds)
     {
+        // A capture can keep move events away from the normal hover owner.
+        // Once this list is no longer hovered, do not let a cached row keep a
+        // title or archive panel anchored beside it.
+        if (!hovered() && (_hoverRow >= 0 || _titleTipOpen || _archiveTipOpen))
+            onMouseLeave();
         updateTitleTooltip(deltaSeconds);
         if (!_activityAnimating) return;
         const before = activityPulseStep();
@@ -9850,7 +9861,13 @@ public final class SessionListView : ListView
             if (dx < 0) dx = -dx;
             if (dy < 0) dy = -dy;
             if (!_dragging && maxInt(dx, dy) >= dragThreshold)
+            {
                 _dragging = true;
+                // Capture only once a drag really starts. Capturing every plain
+                // click left the list owning the pointer if the release was
+                // lost, so later moves over the chat kept the row hovered.
+                captureMouse();
+            }
             if (_dragging)
             {
                 // A drop over the project rail moves the conversation into that
@@ -10085,6 +10102,14 @@ public final class SessionListView : ListView
 
     override void onMouseLeave()
     {
+        // A press that never became a drag has no reason to keep capture; if
+        // its release was lost, holding it pins the row hover forever.
+        if (_pressing && !_dragging)
+        {
+            _pressing = false;
+            _pressRow = -1;
+            releaseMouse();
+        }
         _hoverRow = -1;
         _hoverArchive = false;
         _titleTipSeconds = 0;
@@ -10126,8 +10151,8 @@ public final class SessionListView : ListView
             if (event.clickCount >= 2 && onActivated !is null)
                 onActivated(row);
         }
-        // Arm a drag-to-pin. Capturing the pointer keeps the drop landing here
-        // even if the pointer leaves the sidebar before the release.
+        // Arm a drag-to-pin. Capture is taken once the pointer actually moves
+        // past the drag threshold, not on every plain click.
         _pressing = true;
         _dragging = false;
         _dragIntent = DragIntent.none;
@@ -10135,7 +10160,6 @@ public final class SessionListView : ListView
         _pressRow = row;
         _pressRowPinned = row >= 0 && row < _pinnedRows;
         _pressPosition = event.position;
-        captureMouse();
         return true;
     }
 
@@ -17352,7 +17376,7 @@ private void pollButtonSuggestionRequest()
 
     /// Build the in-flight row for one tool call: name/subtitle, a provisional
     /// `+N -M`, and the streamed body preview. `running` means the arguments
-    /// have fully arrived (the tool is executing) so the title is past tense.
+    /// have arrived; progress distinguishes queued calls from executing tools.
     private LiveToolRow buildLiveToolRow(const(OpenCodeToolCall) call,
         bool running)
     {
@@ -18402,6 +18426,34 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
+        if (taskContinuation(*session, _settings.toolsEnabled).action == TaskContinuationAction.settle &&
+            completionHandoffNeeded(*session))
+        {
+            ChatMessage handoff;
+            handoff.time = currentTimestamp();
+            if (completionHandoffPending(*session))
+            {
+                handoff.role = "assistant";
+                handoff.content = recordedCompletionHandoff(*session);
+                appendMessage(*session, handoff);
+                rebuildMessageColumn();
+            }
+            else
+            {
+                handoff.role = "user";
+                handoff.internal = true;
+                handoff.content = completionHandoffMarker ~ completionHandoffInstruction;
+                appendMessage(*session, handoff);
+                session.turnStatus = "running";
+                publishThreadUpdated(*session);
+                markDirty();
+                setTurnActiveMarker(true, session.id);
+                setTurnInFlight(true);
+                updateStatus("Summarizing completed work…");
+                startChatRequest(sessionIndex, false);
+                return;
+            }
+        }
         // experimental: orchestrator - each participant works in its own chat. A
         // subagent's chat reports back to its parent; the parent waits while a
         // dispatched round is still running and resumes once it reports back.
@@ -18533,15 +18585,15 @@ private void pollButtonSuggestionRequest()
         startNextQueuedFollowUp(sessionIndex);
     }
 
-    private bool taskContinuesAfterDone(bool cancelled) const
+    private bool taskContinuesAfterDone(bool cancelled, string finishReason = "") const
     {
         const sessionIndex = turnOwnerSessionIndex();
         if (cancelled || sessionIndex < 0 ||
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
         if (session.queuedGuidance.length > 0) return true;
-        return taskContinuation(session, _settings.toolsEnabled).action !=
-            TaskContinuationAction.settle;
+        return taskContinuation(session, _settings.toolsEnabled).action != TaskContinuationAction.settle ||
+            (!completionHandoffPending(session) && completionHandoffNeeded(session, finishReason));
     }
 
     private string clarifyProviderRequestError(string error) const
@@ -19000,6 +19052,33 @@ private void pollButtonSuggestionRequest()
         return false;
     }
 
+    /// A failed summary request cannot restart tool work or repeat the repair.
+    private bool finishCompletionHandoffAfterFailure(string error)
+    {
+        const sessionIndex = turnOwnerSessionIndex();
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length ||
+            _stopPending || computerUseAbortActive() ||
+            !completionHandoffPending(_sessions[sessionIndex])) return false;
+        const previousStatus = _sessions[sessionIndex].taskStatus;
+        const requestId = _activeRequestId;
+        failAssistantMessage(error);
+        auto session = &_sessions[sessionIndex];
+        session.taskStatus = previousStatus;
+        ChatMessage handoff;
+        handoff.role = "assistant";
+        handoff.time = currentTimestamp();
+        handoff.content = recordedCompletionHandoff(*session);
+        appendMessage(*session, handoff);
+        finishAssistantMessage(false);
+        continueOrCompleteTask(false);
+        if (_activeRequestId == requestId)
+        {
+            _activeRequestId = 0;
+            _activeRequestSession = -1;
+        }
+        return true;
+    }
+
     /// Recover unusable output without requiring the user to restart the task.
     /// Exact repeated calls remain suppressed. Never execute printed calls.
     private void handleOutputFailure(const ref OpenCodeEvent event)
@@ -19009,6 +19088,7 @@ private void pollButtonSuggestionRequest()
         auto session = &_sessions[sessionIndex];
         recordRequestTokenUsage(event.requestId, event.totalTokens,
             event.promptTokens, event.completionTokens);
+        if (finishCompletionHandoffAfterFailure(outputFailurePrefix ~ outputIssueDescription(event.outputIssue))) return;
         const path = activeMessagePath(*session);
         if (path.length > 0 && session.messages[path[$ - 1]].role == "assistant")
         {
@@ -19369,6 +19449,25 @@ private void pollButtonSuggestionRequest()
         }
         markDirty();
 
+        if (completionHandoffPending(*session))
+        {
+            const completedRequestId = _activeRequestId;
+            appendSkippedToolResults(*session, calls,
+                "Tool call deferred: the completion handoff uses existing evidence only. No tool ran.");
+            ChatMessage handoff;
+            handoff.role = "assistant";
+            handoff.time = currentTimestamp();
+            handoff.content = recordedCompletionHandoff(*session);
+            appendMessage(*session, handoff);
+            finishAssistantMessage(false);
+            continueOrCompleteTask(false);
+            if (_activeRequestId == completedRequestId)
+            {
+                _activeRequestId = 0;
+                _activeRequestSession = -1;
+            }
+            return;
+        }
         // A provider can occasionally emit a structured tool request even when
         // a recovery request offered no tools. Pair that request with skipped
         // results, restore tools, and continue in the same active turn. This is
@@ -19504,9 +19603,9 @@ private void pollButtonSuggestionRequest()
         _reportedToolCallIds = null;
         _liveToolCalls = calls.dup;
         foreach (call; calls)
-            _liveToolOutputs[call.id] = "Waiting for conversation storage before starting this tool. No file activity yet.";
+            _liveToolOutputs[call.id] = "Queued.";
         _pendingToolResults = cast(int) calls.length;
-        updateStatus("Running " ~ to!string(toolCount) ~ " tool call(s)…");
+        updateStatus("Preparing " ~ to!string(toolCount) ~ " tool call(s)…");
         // Each running call already gets its own live row (or the aggregated
         // "Exploring" row for context tools), so the generic phase row is
         // redundant; hide it while the tool rows speak for themselves.
@@ -19600,6 +19699,8 @@ private void pollButtonSuggestionRequest()
             if (call.id == event.toolCallId) { recognized = true; break; }
         if (!recognized) return;
         _liveToolOutputs[event.toolCallId] = event.text;
+        if (event.toolStarted)
+            _liveToolStartedAt[event.toolCallId] = MonoTime.currTime - event.elapsedMs.msecs;
         if (!viewingTurnOwner()) return;
         // The live row for this call was registered when the column was built,
         // so the update is a single lookup instead of a full walk of the
@@ -19607,9 +19708,11 @@ private void pollButtonSuggestionRequest()
         if (auto found = event.toolCallId in _liveToolRows)
         {
             auto row = *found;
+            if (event.toolStarted) row._started = _liveToolStartedAt[event.toolCallId];
             row._outputPreview = true;
             row.setDetail(event.text);
         }
+        if (event.toolStarted) updateStatus("Running tools…");
         _messagesScroll.invalidate();
     }
 
@@ -22387,7 +22490,8 @@ private void pollButtonSuggestionRequest()
             if (modelOverride.length > 0)
                 orchestratorModel = resolveAvailableModel(modelOverride);
         }
-        const diagnosticReview = _execution.diagnosticRequestsRemaining > 0 &&
+        const summaryOnly = completionHandoffPending(*session);
+        const diagnosticReview = !summaryOnly && _execution.diagnosticRequestsRemaining > 0 &&
             _settings.diagnosticModel.length > 0;
         _execution.diagnosticActive = diagnosticReview;
         if (diagnosticReview)
@@ -22408,11 +22512,13 @@ private void pollButtonSuggestionRequest()
                 const platform = "posix";
             else
                 const platform = "unknown";
-            if (_finalAnswerRequested)
+            if (_finalAnswerRequested || summaryOnly)
                 systemPrompt.content = "Produce the final response now from " ~
                     "the evidence already gathered. No tools are available in " ~
                     "this request. Give the concise useful result and accurately state " ~
                     "any remaining outcome. Do not ask permission to call tools." ~
+                    (summaryOnly ? "\n" ~ completionHandoffInstruction : "") ~
+                    responsePlanReviewPrompt() ~
                     // The final-answer round builds its own minimal prompt, so
                     // it must re-apply the selected response style; otherwise
                     // the answer the user reads would ignore verbosity.
@@ -22447,6 +22553,7 @@ private void pollButtonSuggestionRequest()
             // selected response style in it.
             const taskPrompt = durableTaskPrompt(*session,
                 _settings.experimentalNestedPlans) ~
+                responsePlanReviewPrompt() ~
                 trackedPlanPromptBlock() ~
                 promptVerbosityDirective(_settings.verbosity);
             if (taskPrompt.length > 0)
@@ -22468,7 +22575,7 @@ private void pollButtonSuggestionRequest()
                 "Use at most four focused tool rounds. Source and screenshots are evidence; prior claims are not proof.";
             messages ~= review;
         }
-        if (_settings.toolsEnabled && !_finalAnswerRequested)
+        if (_settings.toolsEnabled && !_finalAnswerRequested && !summaryOnly)
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
@@ -30320,6 +30427,7 @@ private void pollButtonSuggestionRequest()
                     break;
                 case OpenCodeEventKind.done:
                     if (!event.cancelled && _settings.toolsEnabled &&
+                        !completionHandoffPending(_sessions[runtimeIndex]) &&
                         !explanationOnlyRequest(latestActualUserRequest(_sessions[runtimeIndex])) &&
                         answerReplayed(_sessions[runtimeIndex]))
                     {
@@ -30330,7 +30438,7 @@ private void pollButtonSuggestionRequest()
                     }
                     if (!event.cancelled) _autoResendCount = 0;
                     const completedRequestId = event.requestId;
-                    const taskContinues = taskContinuesAfterDone(event.cancelled);
+                    const taskContinues = taskContinuesAfterDone(event.cancelled, event.finishReason);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
                         event.completionTokens, event.totalTokens,
                         !taskContinues, event.finishReason, event.requestId);
@@ -30350,6 +30458,7 @@ private void pollButtonSuggestionRequest()
                         break;
                     }
                     _requestTokenKeyIds.remove(event.requestId);
+                    if (finishCompletionHandoffAfterFailure(event.text)) break;
                     failAssistantMessage(event.text);
                     if (!scheduleContextOverflowRetry(event.text))
                         scheduleAutoResend(event.text);
@@ -32845,6 +32954,11 @@ private void pollButtonSuggestionRequest()
     {
         auto row = callId in _liveToolRows;
         return row is null ? null : *row;
+    }
+    public string liveToolDetailForTesting(string callId)
+    {
+        auto row = callId in _liveToolRows;
+        return row is null ? "" : (*row)._detail;
     }
     public bool liveSearchCollapsedForTesting(string callId)
     {

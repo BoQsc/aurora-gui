@@ -197,6 +197,22 @@ private void verifyIncrementalMarkdownCompose()
             "the last markdown block still reserved a trailing gap");
         writeln("No trailing gap below the last markdown block");
     }
+
+    // A settled composition is retained by the shared cache, so composing
+    // different text through the same incremental composer must not overwrite
+    // its items. The composer hands its buffer to a settled result and starts
+    // fresh instead of duplicating the whole array.
+    {
+        MarkdownComposer settledComposer;
+        MdComposition settled;
+        settledComposer.compose(settled, "first paragraph\n\n"d, width, false);
+        auto retained = settled;
+        auto retainedLayout = retained.items[0].layout;
+        settledComposer.compose(settled, "second paragraph\n\n"d, width, false);
+        assert(retained.items[0].layout is retainedLayout,
+            "a settled composition was overwritten by a later compose");
+        writeln("Settled markdown compositions keep their own items");
+    }
 }
 
 /// Regression: `std.string.indexOf` returns `ptrdiff_t`, and -1 means "not
@@ -532,6 +548,133 @@ private bool paintProjection(OpenCodeRoot root, UiTestDriver driver)
     return driver.paint();
 }
 
+private void verifyTitleTooltipLeavesWindow(OpenCodeRoot root, UiTestDriver driver,
+    SessionListView sessions)
+{
+    // A clipped conversation title opens the delayed full-title tooltip. When
+    // the pointer leaves the native window Windows stops sending move events,
+    // so the window's mouse-leave event must clear the list hover and close the
+    // panel instead of leaving it pinned beside the last hovered row.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Long title fixture"]);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Title tooltip fixture did not paint");
+    const titleCurrent = root.currentSessionForTesting();
+    int titleRow = -1;
+    foreach (row; 0 .. root.visibleSessionCountForTesting())
+        if (root.visibleSessionIndexAtRowForTesting(row) == titleCurrent)
+        {
+            titleRow = row;
+            break;
+        }
+    assert(titleRow >= 0, "Could not find the row of the long-titled conversation");
+    const longTitle = "a very very long conversation title that will definitely " ~
+        "be clipped in the narrow sidebar for sure yes";
+    sessions.onContextMenuRequested(titleRow, Point(10, 10));
+    root.tickTree(0.02);
+    auto titleMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(titleMenu !is null, "Long-title rename menu did not open");
+    bool titleRename;
+    foreach (item; titleMenu.items())
+        if (item.label == toUTF32("Rename…"))
+        {
+            item.action();
+            titleRename = true;
+            break;
+        }
+    assert(titleRename, "Rename item missing from the long-title menu");
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Long-title rename dialog did not paint");
+    auto titleField = requireWidget!TextField(root, "oc-rename-field");
+    titleField.setText(longTitle);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Long-title edit did not paint");
+    driver.click(globalCenter(requireWidget!Button(root, "oc-rename-save")));
+    root.tickTree(0.02);
+    assert(root.sessionTitleForTesting(titleCurrent) == longTitle,
+        "Long-title rename did not apply");
+    dismissTransientPopups(root);
+    root.tickTree(0.02);
+    driver.moveTo(sessions.rowCenterForTesting(titleRow));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Title tooltip hover did not paint");
+    root.tickTree(0.5);
+    assert(paintProjection(root, driver), "Title tooltip delay did not paint");
+    assert(sessions.titleTooltipOpenForTesting(),
+        "Hovering a clipped conversation title did not open its tooltip");
+    // The pointer normally leaves the row by moving to another part of the app,
+    // not by exiting the native window. Exercise the chat pane first: a stale
+    // hover owner there was enough to keep the panel pinned open.
+    // Keep the same y as the hovered row so this specifically proves the
+    // horizontal hit area, not just that the pointer moved to another row.
+    driver.moveTo(Point(600, sessions.rowCenterForTesting(titleRow).y));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Chat-pane move did not repaint");
+    assert(!sessions.titleTooltipOpenForTesting(),
+        "Title tooltip stayed open after moving into the chat pane");
+    // A plain press on the selected row must not capture the pointer. If the
+    // release is lost, moving right into the chat at the same y must still
+    // clear the row hover and close the panel.
+    driver.moveTo(sessions.rowCenterForTesting(titleRow));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Pressed-row tooltip reopen did not paint");
+    root.tickTree(0.5);
+    assert(paintProjection(root, driver), "Pressed-row tooltip delay did not paint");
+    assert(sessions.titleTooltipOpenForTesting(),
+        "Title tooltip did not reopen for the pressed-row check");
+    driver.mouseDown();
+    driver.moveTo(Point(600, sessions.rowCenterForTesting(titleRow).y));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Pressed chat-pane move did not repaint");
+    assert(!sessions.titleTooltipOpenForTesting(),
+        "Title tooltip stayed open when a pressed row moved into the chat pane");
+    driver.mouseUp();
+    root.tickTree(0.02);
+    // Reopen, then move up into the sidebar header above the list.
+    driver.moveTo(sessions.rowCenterForTesting(titleRow));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Title tooltip reopen did not paint");
+    root.tickTree(0.5);
+    assert(paintProjection(root, driver), "Title tooltip reopen delay did not paint");
+    assert(sessions.titleTooltipOpenForTesting(),
+        "Title tooltip did not reopen after returning to the row");
+    driver.moveTo(Point(100, 110));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Header move did not repaint");
+    assert(!sessions.titleTooltipOpenForTesting(),
+        "Title tooltip stayed open after moving into the sidebar header");
+    // Reopen, then move into empty space below the last row but still inside
+    // the list's bounds.
+    driver.moveTo(sessions.rowCenterForTesting(titleRow));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Title tooltip second reopen did not paint");
+    root.tickTree(0.5);
+    assert(paintProjection(root, driver),
+        "Title tooltip second reopen delay did not paint");
+    assert(sessions.titleTooltipOpenForTesting(),
+        "Title tooltip did not reopen for the empty-space check");
+    driver.moveTo(Point(100, 700));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Empty-list move did not repaint");
+    assert(!sessions.titleTooltipOpenForTesting(),
+        "Title tooltip stayed open after moving into empty list space");
+    // Reopen once more and verify the native window-leave path still clears it.
+    driver.moveTo(sessions.rowCenterForTesting(titleRow));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Title tooltip third reopen did not paint");
+    root.tickTree(0.5);
+    assert(paintProjection(root, driver),
+        "Title tooltip third reopen delay did not paint");
+    assert(sessions.titleTooltipOpenForTesting(),
+        "Title tooltip did not reopen for the window-leave check");
+    driver.leaveWindow();
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Window leave did not repaint");
+    assert(!sessions.titleTooltipOpenForTesting(),
+        "Title tooltip stayed open after the pointer left the window");
+    writeln("Title tooltip closes when the pointer leaves the window");
+}
+
 int main(string[] args)
 {
     import auroraopencode.tools : runFilesystemHelperMode;
@@ -617,6 +760,23 @@ int main(string[] args)
         // Focused run for the tool-header context-menu fix: run alone so the
         // regression can be exercised without the rest of the suite.
         verifyToolHeaderContextMenu(root, driver, stateDir);
+        return 0;
+    }
+    if (args.length > 1 && args[$ - 1] == "--title-tooltip-only")
+    {
+        // The focused run has not spent the normal suite's ticks letting the
+        // background snapshot parse finish; wait for it so the fixture chat is
+        // not created while startup still owns the session list.
+        foreach (attempt; 0 .. 1_000)
+        {
+            if (!root.startupPendingForTesting()) break;
+            root.tickTree(0.02);
+            Thread.sleep(5.msecs);
+        }
+        assert(!root.startupPendingForTesting(),
+            "Startup restore did not finish for the focused tooltip run");
+        verifyTitleTooltipLeavesWindow(root, driver,
+            requireWidget!SessionListView(root, "oc-sessions"));
         return 0;
     }
     if (args.length > 1 && args[$ - 1] == "--restart-resume-only")
@@ -793,6 +953,8 @@ int main(string[] args)
     requireWidget!Button(root, "oc-archived-toggle").onClick();
     root.tickTree(0.02);
     writeln("Hover archive button archives and unarchives with a naming tooltip");
+
+    verifyTitleTooltipLeavesWindow(root, driver, sessions);
 
     // Duplicate a conversation via the sidebar context menu: the copy keeps the
     // transcript but is an independent conversation placed below its source.

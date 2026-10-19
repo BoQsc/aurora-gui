@@ -1026,6 +1026,9 @@ else version (Windows)
         private HBRUSH _startupBrush;
         private bool _startupBackgroundPending;
         private bool _pointerVisible = true;
+        // TrackMouseEvent is armed once per client-area entry; WM_MOUSELEAVE
+        // clears it so the next move rearms the request.
+        private bool _mouseLeaveTracking;
         private int _wheelRemainderX;
         private int _wheelRemainderY;
         private bool _gesturePanActive;
@@ -2205,8 +2208,21 @@ else version (Windows)
                     return 0;
                 case WM_MOUSEMOVE:
                     if (!_pointerVisible) SetCursor(null);
+                    if (!_mouseLeaveTracking)
+                    {
+                        TRACKMOUSEEVENT track;
+                        track.cbSize = TRACKMOUSEEVENT.sizeof;
+                        track.dwFlags = TME_LEAVE;
+                        track.hwndTrack = _hwnd;
+                        _mouseLeaveTracking = TrackMouseEvent(&track) != FALSE;
+                    }
                     event.type = EventType.mouseMove;
                     fillMouseEvent(event, lParam);
+                    sink.onNativeEvent(event);
+                    return 0;
+                case WM_MOUSELEAVE:
+                    _mouseLeaveTracking = false;
+                    event.type = EventType.mouseLeave;
                     sink.onNativeEvent(event);
                     return 0;
                 case WM_LBUTTONDOWN:

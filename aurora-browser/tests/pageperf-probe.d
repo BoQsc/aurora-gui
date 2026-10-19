@@ -19,10 +19,11 @@ module pageperf;
  *
  * usage: pageperf <url> <width> <height> [maxPasses] [paints]
  *        pageperf --fixture <file.html> <width> <height> [paints]
+ *        pageperf --windowmem <width> <height>
  */
 
 import aurora;
-import aurorabrowser.appui : BrowserRoot, browserTheme, WebPageView;
+import aurorabrowser.appui : BrowserRoot, BrowserTitleBar, browserTheme, WebPageView;
 import auroraweb : WebPage;
 import auroraweb.dom : Element;
 import auroraweb.net : loadTraceEnabled;
@@ -48,6 +49,14 @@ string heap()
     auto stats = GC.stats;
     return format("heap %.1f MiB used / %.1f MiB free; %s", stats.usedSize / 1048576.0,
         stats.freeSize / 1048576.0, resident());
+}
+
+/// The heap after a full collection: what the process actually keeps, rather
+/// than what the collector has allocated and not yet returned.
+string collected()
+{
+    GC.collect();
+    return heap();
 }
 
 version (Windows)
@@ -240,13 +249,30 @@ double lap(ref StopWatch sw)
 
 /// Time `paints` full paints of the page alone - no browser chrome, no window
 /// compositing - so the engine's own render cost is readable on its own.
+///
+/// Each frame is timed separately as well as in total: an average hides the
+/// shape that decides whether painting feels instant. A document whose first
+/// frame is expensive and whose later frames are cheap is resolving its
+/// gradients and masks once; every frame at the first frame's cost means the
+/// per-frame work is being redone, which is what a scroll or a repaint pays.
 double timePagePaint(WebPage page, int paints)
 {
     auto surface = new Surface(page.width(), page.height());
     surface.clear(Color.rgb(255, 255, 255));
     page.paint(surface);            // warm any per-frame setup out of the average
     auto sw = StopWatch(AutoStart.yes);
-    foreach (i; 0 .. paints) page.paint(surface);
+    double fastest = double.max;
+    double slowest = 0;
+    foreach (i; 0 .. paints)
+    {
+        auto frame = StopWatch(AutoStart.yes);
+        page.paint(surface);
+        const ms = frame.peek.total!"nsecs" / 1.0e6;
+        if (ms < fastest) fastest = ms;
+        if (ms > slowest) slowest = ms;
+        if (paints <= 8) writeln("  frame ", i + 1, ": ", ms, " ms");
+    }
+    writeln("  frame range: ", fastest, " .. ", slowest, " ms");
     return sw.peek.total!"nsecs" / 1.0e6;
 }
 
@@ -466,6 +492,90 @@ void runPageLoadCase(string url, int w, int h, int maxPasses, int hostStage = 0,
     Thread.sleep(6000.msecs);
 }
 
+/// `mask-image`, background gradients and images off for every box.
+void disableBackdrops(Element e, bool masks, bool gradients, bool images)
+{
+    if (e is null) return;
+    if (masks) e.style.maskImage = "none";
+    if (gradients)
+    {
+        e.style.backgroundGradient = "none";
+        e.style.backgroundGradients = null;
+    }
+    if (images && e.style.backgroundImage != "none" && e.style.backgroundImage.length)
+        e.style.backgroundImage = "none";
+    if (e.pseudoBefore !is null)
+        disableBackdrops(e.pseudoBefore, masks, gradients, images);
+    if (e.pseudoAfter !is null)
+        disableBackdrops(e.pseudoAfter, masks, gradients, images);
+    foreach (child; e.elements) disableBackdrops(child, masks, gradients, images);
+}
+
+/// Stage mode: which paint stage costs the frame time. Each stage switches one
+/// more feature off and repaints the same document, so the drop between two
+/// stages is that feature's own cost - unlike stripping CSS from the file, which
+/// changes the layout the other stages run on.
+void runPaintStagesCase(string path, int w, int h, int frames)
+{
+    auto page = new WebPage(w, h);
+    page.setHtml(readText(path));
+    page.executeScripts();
+    page.layout();
+    int settle = 0;
+    while (page.layoutPending() && settle < 8)
+    {
+        page.layout();
+        ++settle;
+    }
+    auto surface = new Surface(page.width(), page.height());
+    surface.clear(Color.rgb(255, 255, 255));
+    writeln("stages ", path, "  ", page.width(), "x", page.height(), ", ",
+        countNodes(page.root()), " elements, ", frames, " frame(s) per stage");
+    void stage(string name)
+    {
+        import auroraweb.paint : paintProfile, resetPaintProfile;
+        page.paint(surface);
+        auto sw = StopWatch(AutoStart.yes);
+        double fastest = double.max;
+        double gradMs = 0, buildMs = 0, blitMs = 0, filterMs = 0, filterBlitMs = 0;
+        long gradN, buildN, blitN, filterN, filterBlitN;
+        foreach (i; 0 .. frames)
+        {
+            resetPaintProfile();
+            auto frame = StopWatch(AutoStart.yes);
+            page.paint(surface);
+            const ms = frame.peek.total!"nsecs" / 1.0e6;
+            if (ms < fastest) fastest = ms;
+            gradMs += paintProfile.gradientMs;
+            gradN += paintProfile.gradientRasters;
+            buildMs += paintProfile.maskedBuildMs;
+            buildN += paintProfile.maskedBuilds;
+            blitMs += paintProfile.maskedBlitMs;
+            blitN += paintProfile.maskedBlits;
+            filterMs += paintProfile.filterMs;
+            filterN += paintProfile.filterLayers;
+            filterBlitMs += paintProfile.filterBlitMs;
+            filterBlitN += paintProfile.filterBlits;
+        }
+        writeln("  ", name, ": ", sw.peek.total!"nsecs" / 1.0e6 / frames,
+            " ms/frame (fastest ", fastest, " ms)");
+        writeln("    gradient rasters ", gradN / frames, "/frame (",
+            gradMs / frames, " ms), masked builds ", buildN / frames, "/frame (",
+            buildMs / frames, " ms), masked blits ", blitN / frames, "/frame (",
+            blitMs / frames, " ms), filtered layers ", filterN / frames, "/frame (",
+            filterMs / frames, " ms)");
+        writeln("    filtered blits ", filterBlitN / frames, "/frame (",
+            filterBlitMs / frames, " ms)");
+    }
+    stage("everything on");
+    disableBackdrops(page.root(), true, false, false);
+    stage("masks off");
+    disableBackdrops(page.root(), false, true, false);
+    stage("masks and background gradients off");
+    disableBackdrops(page.root(), false, false, true);
+    stage("masks, gradients and background images off");
+}
+
 /// Fixture mode: one local file, no network, no host. Reports the cost of a
 /// first layout (parse + style + geometry), of a re-layout, and of one paint.
 void runFixtureCase(string path, int w, int h, int paints)
@@ -473,8 +583,11 @@ void runFixtureCase(string path, int w, int h, int paints)
     auto page = new WebPage(w, h);
     auto sw = StopWatch(AutoStart.yes);
     page.setHtml(readText(path));
+    const parseMs = lap(sw);
     page.executeScripts();
+    const scriptMs = lap(sw);
     page.layout();
+    const layoutMs = lap(sw);
     const firstMs = lap(sw);
     const nodes = countNodes(page.root());
     // Let the work a document defers land the way the host's frame loop does -
@@ -495,7 +608,8 @@ void runFixtureCase(string path, int w, int h, int paints)
     const paintMs = timePagePaint(page, paints);
     writeln("fixture ", path, "  ", page.width(), "x", page.height(), ", ",
         nodes, " elements");
-    writeln("  parse+style+layout: ", firstMs, " ms");
+    writeln("  parse+style+layout: ", firstMs, " ms (parse ", parseMs,
+        ", scripts ", scriptMs, ", first layout ", layoutMs, ")");
     writeln("  settle: ", settlePasses, " further pass(es) in ", settleMs, " ms");
     writeln("  re-layout: ", relayoutMs, " ms");
     writeln("  paint: ", paints, " frame(s) in ", paintMs, " ms => ",
@@ -574,6 +688,87 @@ void reportDropAndHog()
     reportHogFreed();
 }
 
+/// Window-baseline mode: what the app holds the instant its window exists and
+/// no page has been opened - the number a user reads in Task Manager right
+/// after launch. Splits that number into garbage the collector has not returned
+/// and state the window really keeps, then builds a second window to tell a
+/// per-window cost apart from a one-time process cost.
+void runWindowBaselineCase(int w, int h)
+{
+    writeln("start: ", heap());
+    WindowOptions options;
+    options.title = "Aurora Browser";
+    options.width = w;
+    options.height = h;
+    options.decorated = false;
+    options.darkTitleBar = false;
+    options.renderer = RendererPreference.software;
+    // Each step is collected before the next begins, so a step's own retained
+    // cost is visible instead of being mixed into the following step's.
+    writeln("process, collected: ", collected());
+    auto theme = browserTheme();
+    writeln("theme: ", collected());
+    // The interpreter's own fixed cost: every page pays it once, before it has
+    // parsed anything, so it has to be measured before any document exists.
+    {
+        import auroraweb.js : JsRuntime;
+        auto runtime = new JsRuntime();
+        writeln("js runtime: ", collected());
+    }
+    auto window = new GuiWindow(options, theme);
+    writeln("window: ", collected());
+    // A page of its own, before any browser chrome: the engine's document plus
+    // its JavaScript realm, which the shell is expected to hold once per tab.
+    auto barePage = new WebPage(w, h);
+    writeln("bare page: ", collected());
+    // The chrome is built piece by piece here so the shell's fixed cost can be
+    // attributed: a titlebar, the two full-window overlays, and a page view.
+    auto titleBar = new BrowserTitleBar(window);
+    writeln("titlebar: ", collected());
+    auto snapPreview = new TitleBarSnapPreview();
+    writeln("snap preview: ", collected());
+    auto bareView = new WebPageView(barePage);
+    writeln("page view: ", collected());
+    // What a page view's document costs, split into its two halves: the
+    // document the engine parses and lays out, and the JavaScript realm it
+    // creates for it.
+    auto docPage = new WebPage(w, h);
+    docPage.setHtml("<html><body><p>hello</p></body></html>");
+    writeln("setHtml: ", collected());
+    docPage.executeScripts();
+    writeln("executeScripts: ", collected());
+    // Per-tab cost after the engine has warmed up, which is what the user pays
+    // for every further tab rather than on the first one.
+    auto viewB = new WebPageView(new WebPage(w, h));
+    writeln("second page view: ", collected());
+    auto viewC = new WebPageView(new WebPage(w, h));
+    writeln("third page view: ", collected());
+    auto root = new BrowserRoot(window);
+    writeln("browser root: ", collected());
+    window.setRoot(root);
+    // Drive the host's own loop for a moment: the shell's idle trim runs from
+    // its tick, so this is what tells a trim that never fires apart from one
+    // that fires and releases nothing.
+    foreach (i; 0 .. 1200) root.tickTree(0.016);
+    writeln("after settled ticks: ", heap());
+    auto driver = new UiTestDriver(window);
+    driver.resize(Size(w, h));
+    writeln("resize: ", collected());
+    auto view = findView(root);
+    if (view !is null)
+    {
+        view.invalidate();
+        driver.paint();
+        writeln("first frame: ", collected());
+    }
+    auto second = new GuiWindow(options, browserTheme());
+    auto root2 = new BrowserRoot(second);
+    second.setRoot(root2);
+    auto driver2 = new UiTestDriver(second);
+    driver2.resize(Size(w, h));
+    writeln("second window: ", collected());
+}
+
 void main(string[] args)
 {
     if (args.length < 4)
@@ -581,6 +776,7 @@ void main(string[] args)
         stderr.writeln("usage: pageperf <url> <width> <height> [maxPasses] [paints]");
         stderr.writeln("       pageperf --fixture <file.html> <width> <height> [paints]");
         stderr.writeln("       pageperf --fixtures <width> <height> <paints> <file.html>...");
+        stderr.writeln("       pageperf --windowmem <width> <height>");
         return;
     }
     if (args[1] == "--pageload")
@@ -626,6 +822,87 @@ void main(string[] args)
         runPageLoadCase(args[2], to!int(args[3]), to!int(args[4]),
             args.length >= 7 ? to!int(args[6]) : 200, to!int(args[5]));
         reportDropAndHog();
+        return;
+    }
+/// Pseudo-box census: every generated box, with the box it occupies and the art
+/// it paints. A page whose `::before` rule leaked onto every descendant shows up
+/// here as many boxes sharing one viewport-sized rectangle.
+void runPseudoCensusCase(string path, int w, int h)
+{
+    auto page = new WebPage(w, h);
+    page.setHtml(readText(path));
+    page.executeScripts();
+    page.layout();
+    int settle = 0;
+    while (page.layoutPending() && settle < 8)
+    {
+        page.layout();
+        ++settle;
+    }
+    int maskCount, gradientCount, imageCount, fullViewport;
+    long area;
+    void visit(Element e)
+    {
+        if (e is null) return;
+        foreach (pseudo; [e.pseudoBefore, e.pseudoAfter])
+        {
+            if (pseudo is null) continue;
+            const hasMask = pseudo.style.maskImage != "none";
+            const hasGradient = pseudo.style.backgroundGradient != "none" &&
+                pseudo.style.backgroundGradient.length;
+            const hasImage = pseudo.backgroundImage !is null;
+            if (!hasMask && !hasGradient && !hasImage) continue;
+            if (hasMask) ++maskCount;
+            if (hasGradient) ++gradientCount;
+            if (hasImage) ++imageCount;
+            area += cast(long) pseudo.box.width * pseudo.box.height;
+            const full = pseudo.box.x == 0 && pseudo.box.y == 0 &&
+                pseudo.box.width >= w && pseudo.box.height >= h / 2;
+            if (full) ++fullViewport;
+            writeln("  ", e.tag, " ", pseudo.box.x, ",", pseudo.box.y, " ",
+                pseudo.box.width, "x", pseudo.box.height,
+                hasMask ? " mask" : "", hasGradient ? " gradient" : "",
+                hasImage ? " image" : "",
+                pseudo.style.backgroundRepeat == "no-repeat" ? " no-repeat" : "",
+                pseudo.style.opacity < 1.0 ? " opacity" : "");
+        }
+        foreach (child; e.elements) visit(child);
+    }
+    visit(page.root());
+    writeln("pseudo boxes: ", maskCount, " masked, ", gradientCount,
+        " gradient, ", imageCount, " image, ", fullViewport,
+        " viewport-sized; total painted area ", area / 1048576.0, " Mpx");
+}
+
+    if (args[1] == "--pseudoboxes")
+    {
+        if (args.length < 5)
+        {
+            stderr.writeln("usage: pageperf --pseudoboxes <file.html> <width> <height>");
+            return;
+        }
+        runPseudoCensusCase(args[2], to!int(args[3]), to!int(args[4]));
+        return;
+    }
+    if (args[1] == "--paintstages")
+    {
+        if (args.length < 5)
+        {
+            stderr.writeln("usage: pageperf --paintstages <file.html> <width> <height> [frames]");
+            return;
+        }
+        runPaintStagesCase(args[2], to!int(args[3]), to!int(args[4]),
+            args.length >= 6 ? to!int(args[5]) : 4);
+        return;
+    }
+    if (args[1] == "--windowmem")
+    {
+        if (args.length < 4)
+        {
+            stderr.writeln("usage: pageperf --windowmem <width> <height>");
+            return;
+        }
+        runWindowBaselineCase(to!int(args[2]), to!int(args[3]));
         return;
     }
     if (args[1] == "--fixture")
@@ -769,6 +1046,11 @@ void main(string[] args)
     // is dominated by the first.
     GC.collect();
     writeln("  after a collection: ", heap());
+    // Whether the settled browser would still report outstanding work: the
+    // host's idle-trim waits for that flag to clear, so a page that never clears
+    // it would silently keep the collector's free pools.
+    writeln("  settled state: layoutPending=", page.layoutPending(),
+        " pendingTasks=", page.hasPendingTasks());
     // Control: hide the page view. Its document stays loaded and laid out; only
     // the host stops compositing it into the window. A settle that collapses
     // here was held by that compositing, not by the document.
