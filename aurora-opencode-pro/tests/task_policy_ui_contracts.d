@@ -146,5 +146,24 @@ int main(string[] arguments)
     assert(ownerGotReason && otherGotNeutral, "Actual multi-chat restart did not append scoped notices");
     writeln("PASS actual restart resumes both chats with owner-scoped diagnostics");
     root.clearPendingResumeForTesting(); window.close();
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"], ["Implement the package and run its conformance checks.", ""]);
+    void receipt(string id, string name, string arguments, string check = "")
+    {
+        root.seedPendingToolBatchForTesting([OpenCodeToolCall(id, name, arguments)]);
+        root.injectToolResultForTesting(name, "OK", false, arguments, 0, 0, "", null, check);
+    }
+    receipt("plan-start", "update_plan", `{"plan":[{"id":"check-package","step":"Run package conformance checks","status":"in_progress"}]}`);
+    receipt("package-write", "write", `{"filePath":"package.d","content":"module package_fixture;"}`);
+    receipt("package-check", "run", `{"program":"python","args":["-m","unittest"]}`, "unittest");
+    receipt("plan-finish", "update_plan", `{"plan":[{"id":"check-package","step":"Run package conformance checks","status":"completed","evidence":["package-write","package-check"]}]}`);
+    assert(root.lastToolResultForTesting().indexOf("Plan updated") == 0,
+        "UI validation rejected a current check receipt: " ~ root.lastToolResultForTesting());
+    assert(root.taskStepStatusForTesting(0) == "completed");
+    assert(parseJSON(root.taskStateJsonForTesting())["taskSteps"][0]["kind"].str == "verify");
+    pump();
+    root.persistForTesting(); root.reloadSessionsForTesting();
+    assert(root.taskStepStatusForTesting(0) == "completed");
+    writeln("PASS real plan-result application, mixed evidence, verification classification, rendered status and persisted reload");
     return 0;
 }

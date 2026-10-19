@@ -367,7 +367,8 @@ bool compatibleEvidence(string kind, string proof, bool allowHistorical)
     if (kind == "verify") return (proof.startsWith("verify-current|") && proof.length > 15) ||
         (allowHistorical && proof.startsWith("verify|") && proof.length > 7);
     if (kind == "edit") return proof == "edit" || proof == "action";
-    if (kind == "research") return proof == "research" || proof.startsWith("verify|") || proof.startsWith("verify-current|");
+    if (kind == "research") return proof == "research" || proof == "action" ||
+        proof.startsWith("verify|") || proof.startsWith("verify-current|");
     return true;
 }
 
@@ -393,6 +394,80 @@ bool supportedStep(const ref ChatSession session, const ref TaskStep step)
 {
     auto index = taskEvidenceIndex(session);
     return supportedStep(session, step, index);
+}
+
+/// A receipt list can contain observations, edits and checks together. Every
+/// reference must be real and successful; at least one must prove this outcome.
+/// Current completion must not borrow the historical allowance used for
+/// already-completed outcomes.
+string planCompletionError(const ref ChatSession session, const ref TaskStep step,
+    const ref string[string] evidence)
+{
+    bool compatible;
+    foreach (id; step.evidence)
+    {
+        auto proof = id in evidence;
+        if (proof is null)
+        {
+            string reason = "unknown tool-call ID";
+            foreach (message; session.messages)
+                if (message.id == id || message.toolCallId == id)
+                {
+                    reason = message.failed ? "the tool failed" :
+                        "outside the active task or not an evidence-producing tool";
+                    break;
+                }
+            return "Error: outcome '" ~ step.id ~ "' cannot use evidence '" ~ id ~ "': " ~ reason ~
+                ". Use actual successful toolCallId receipts, not filenames or descriptions. " ~
+                "Omit evidence to select a compatible recorded receipt automatically.";
+        }
+        if (compatibleEvidence(step, *proof, false)) compatible = true;
+    }
+    if (compatible) return "";
+    const expected = step.kind == "verify" ? "an accepted current check (a file write is not a check)"
+        : step.kind == "edit" ? "a successful file change or executed action"
+        : "a successful observation or action";
+    string candidates;
+    size_t count;
+    foreach_reverse (slot; taskMessagePath(session))
+    {
+        const ref message = session.messages[slot];
+        const id = message.toolCallId.length ? message.toolCallId : message.id;
+        if (auto proof = id in evidence)
+            if (compatibleEvidence(step, *proof, false))
+            {
+                candidates ~= (candidates.length ? ", " : "") ~ id;
+                if (++count == 3) break;
+            }
+    }
+    return "Error: completion needs successful evidence for '" ~ step.text ~ "' (id " ~ step.id ~
+        ", kind " ~ step.kind ~ "): " ~ expected ~ ". " ~
+        (candidates.length ? "Compatible recorded toolCallId receipts: " ~ candidates ~ "."
+            : "No compatible receipt is recorded for this task. Keep the outcome unfinished and perform the needed work/check.");
+}
+
+private string legacyPlanKind(string text)
+{
+    text = text.toLower();
+    if (text.startsWith("verify") || text.startsWith("test") || text.startsWith("check")) return "verify";
+    if (requestIntent(text) == RequestIntent.implementation) return "edit";
+    if (requestIntent(text) == RequestIntent.analysis) return "research";
+    return "other";
+}
+
+string inferredPlanKind(string text)
+{
+    text = text.strip().toLower();
+    if (matchFirst(text, `^(test|check|verify)\s+(whether|if)\b`)) return "research";
+    if (matchFirst(text, `^(run|execute|perform)\b.*\b(tests?|checks?|checkers?|suites?|conformance|validation|regressions?|benchmarks?|compilation)\b`) ||
+        matchFirst(text, `^(compile|validate|benchmark)\b`)) return "verify";
+    return legacyPlanKind(text);
+}
+
+string reconciledPlanKind(const ref TaskStep old)
+{
+    return old.status != "completed" && old.kind == legacyPlanKind(old.text)
+        ? inferredPlanKind(old.text) : old.kind;
 }
 
 bool taskHasActionEvidence(const ref ChatSession session, bool includeResearch = false)
@@ -471,7 +546,8 @@ private PlanRevision inspectPlanRevision(const(TaskStep)[] previous, const(TaskS
                 found = true;
                 if (matched && j < last) result.reordered = true;
                 matched = true; last = j;
-                if ((old.done.length && old.done != step.done) || (old.kind.length && old.kind != step.kind))
+                if ((old.done.length && old.done != step.done) ||
+                    (old.kind.length && old.kind != step.kind && reconciledPlanKind(old) != step.kind))
                     result.changedAcceptance = true;
                 if (old.status == "completed" && step.status != "completed") result.reopened ~= step.id;
                 if (old.status == "in_progress" && step.status == "pending") result.interrupted = true;
@@ -527,21 +603,14 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
             if ((step.id.length && old.id == step.id) || (!step.id.length && old.text == step.text))
             {
                 if (!step.id.length) step.id = old.id;
-                if (!step.kind.length) step.kind = old.kind;
+                if (!step.kind.length) step.kind = reconciledPlanKind(old);
                 if (!step.done.length) step.done = old.done;
                 if (old.status == "completed" && step.status != "completed") step.evidence = null;
                 else if (!step.evidence.length) step.evidence = old.evidence.dup;
                 break;
             }
         if (!step.id.length) step.id = "step-" ~ sha256Of(session.contract.id ~ "\n" ~ step.text).toHexString()[0 .. 16].idup;
-        if (!step.kind.length)
-        {
-            const text = step.text.toLower();
-            if (text.startsWith("verify") || text.startsWith("test") || text.startsWith("check")) step.kind = "verify";
-            else if (requestIntent(step.text) == RequestIntent.implementation) step.kind = "edit";
-            else if (requestIntent(step.text) == RequestIntent.analysis) step.kind = "research";
-            else step.kind = "other";
-        }
+        if (!step.kind.length) step.kind = inferredPlanKind(step.text);
         if (!step.done.length) step.done = step.text;
         if (step.status == "completed" && !step.evidence.length)
         {
@@ -834,14 +903,8 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         }
         if (unchangedCompleted || step.status != "completed") continue;
         if (!indexed) { evidenceIndex = taskEvidenceIndex(session); indexed = true; }
-        foreach (id; step.evidence)
-        {
-            auto proof = id in evidenceIndex;
-            if (proof is null || !compatibleEvidence(step, *proof, unchangedCompleted))
-                return "Error: evidence is missing, failed, stale or incompatible: " ~ id;
-        }
-        if (step.status == "completed" && !unchangedCompleted && !supportedStep(session, step, evidenceIndex))
-            return "Error: completion needs successful evidence for '" ~ step.text ~ "'. Cite tool-call IDs; run the relevant check for verification outcomes.";
+        const completionError = planCompletionError(session, step, evidenceIndex);
+        if (completionError.length) return completionError;
     }
     import auroraopencode.worktracking : workItemsError;
     return workItemsError(session, root, steps);

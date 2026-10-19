@@ -21,7 +21,12 @@ def call(identity, name, arguments):
 
 def plan(status):
     return {"objective": "Write and verify a fixture",
-            "plan": [{"step": "Write and verify out.txt", "status": status}]}
+            "plan": [{"id": "write", "step": "Write out.txt and its test",
+                      "status": "in_progress" if status == "in_progress" else "completed",
+                      **({"evidence": ["write-output", "check"]} if status == "completed" else {})},
+                     {"id": "verify", "step": "Run unittest checks for out.txt",
+                      "status": "pending" if status == "in_progress" else "in_progress" if status == "checking" else "completed",
+                      **({"evidence": ["write-output", "check"]} if status == "completed" else {})}]}
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -55,6 +60,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             if instruction not in system:
                 failures.append("Missing instruction: " + instruction)
         tools = []
+        for message in request["messages"]:
+            if message["role"] == "tool" and message.get("content", "").startswith("Error:"):
+                failures.append("Tool result rejected: " + message["content"])
         if request.get("tools"):
             number = sum(bool(previous.get("tools")) for previous in requests)
             if number == 1:
@@ -65,7 +73,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
                          call("write-output", "write", {"filePath": "out.txt", "content": "success"}),
                          call("write-check", "write", {"filePath": "test_fixture.py", "content": test})]
             elif number == 2:
-                tools = [call("check", "run", {"program": "python", "args": ["-m", "unittest", "test_fixture"]})]
+                tools = [call("advance-plan", "update_plan", plan("checking")),
+                         call("check", "run", {"program": "python", "args": ["-m", "unittest", "test_fixture"]})]
             elif number == 3:
                 tools = [call("complete-plan", "update_plan", plan("completed"))]
         delta = {"tool_calls": [dict(tool, index=i) for i, tool in enumerate(tools)]} if tools else {"content": "READY"}
@@ -78,8 +87,7 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     directory = Path(tempfile.mkdtemp(prefix="plan-review-", dir=package / "build"))
     print("ARTIFACTS", directory, flush=True)
-    workspace = directory / "workspace"
-    workspace.mkdir()
+    workspace = Path(tempfile.mkdtemp(prefix="aurora-plan-review-workspace-"))
     state = directory / "appdata" / "Aurora OpenCode"
     state.mkdir(parents=True)
     settings = {"baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "apiKey": "local-fixture",
@@ -110,6 +118,12 @@ try:
         "Plan-review hint invalidated the cached system prefix"
     assert (workspace / "out.txt").read_text() == "success"
     histories = [json.loads(path.read_text(encoding="utf-8")) for path in (state / "threads").glob("*.json")]
+    updates = [message for history in histories for message in history["messages"]
+               if message.get("toolName") == "update_plan"]
+    assert len(updates) == 3 and not any(message.get("failed") for message in updates), \
+        "Plan progress was rejected in the production tool loop"
+    assert "2. [>] Run unittest checks" in updates[1]["content"]
+    assert "2. [x] Run unittest checks" in updates[2]["content"]
     assert sum(any(message.get("content") == "READY" for message in history["messages"])
                for history in histories) == 2, "Responses did not complete and persist"
     assert not any("# Plan review on every response" in message.get("content", "")
@@ -118,7 +132,7 @@ try:
     (directory / "result.json").write_text(json.dumps({"status": "passed", "requests": len(requests),
         "binarySha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
         "localProviderSeconds": durations}, indent=2), encoding="utf-8")
-    print("PASS plan-review hints on every tool round, final answer and tools-disabled reply; stable prefix; no extra requests")
+    print("PASS plan-review hints on every response; actual phase updates and mixed check receipts accepted; stable prefix; no extra requests")
 finally:
     server.shutdown()
     server.server_close()

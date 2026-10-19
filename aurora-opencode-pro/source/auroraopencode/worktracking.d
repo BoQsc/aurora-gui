@@ -1,13 +1,13 @@
 module auroraopencode.worktracking;
 
 import auroraopencode.core;
-import auroraopencode.taskflow : taskEvidenceIndex, compatibleEvidence, supportedStep;
+import auroraopencode.taskflow : taskEvidenceIndex, compatibleEvidence,
+    inferredPlanKind, reconciledPlanKind, planCompletionError;
 import std.algorithm : canFind;
 import std.digest : toHexString;
 import std.digest.sha : sha256Of;
 import std.json : JSONValue, JSONType, parseJSON;
-import std.string : strip, toLower, startsWith;
-import auroraopencode.requestintent : requestIntent, RequestIntent;
+import std.string : strip;
 
 TaskWorkItem[] normalizedWorkItems(const ref ChatSession session, JSONValue root, const(TaskStep)[] parents)
 {
@@ -59,13 +59,8 @@ TaskWorkItem[] normalizedWorkItems(const ref ChatSession session, JSONValue root
                 }
             }
         if (auto required = "required" in row.object) item.required = required.type != JSONType.false_;
-        if (at == items.length && !("kind" in row.object))
-        {
-            const text = item.step.text.toLower();
-            if (text.startsWith("verify") || text.startsWith("test") || text.startsWith("check")) item.step.kind = "verify";
-            else if (requestIntent(item.step.text) == RequestIntent.implementation) item.step.kind = "edit";
-            else if (requestIntent(item.step.text) == RequestIntent.analysis) item.step.kind = "research";
-        }
+        if (!("kind" in row.object))
+            item.step.kind = at == items.length ? inferredPlanKind(item.step.text) : reconciledPlanKind(items[at].step);
         if (!item.step.done.length) item.step.done = item.step.text;
         if (!id.length) id = at < items.length ? items[at].step.id : "work-" ~
             sha256Of(session.contract.id ~ "\n" ~ item.parentId ~ "\n" ~ item.step.text).toHexString()[0 .. 16].idup;
@@ -176,11 +171,8 @@ string workItemsError(const ref ChatSession session, JSONValue root, const(TaskS
         if (item.step.status == "completed" && !unchangedCompleted)
         {
             if (!indexed) { evidence = taskEvidenceIndex(session); indexed = true; }
-            foreach (id; item.step.evidence)
-                if (auto proof = id in evidence)
-                { if (!compatibleEvidence(item.step, *proof, false)) return "Error: work item completion needs compatible current evidence."; }
-                else return "Error: work item evidence is missing or failed: " ~ id;
-            if (!supportedStep(session, item.step, evidence)) return "Error: cite successful tool-call IDs before completing a work item.";
+            const completionError = planCompletionError(session, item.step, evidence);
+            if (completionError.length) return completionError;
         }
     }
     return "";
