@@ -9,6 +9,9 @@ captured window is the rebuilt application's own 1500x1000 client area.
 
 import os
 import re
+import hashlib
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,11 +46,20 @@ class RebuiltBinaryRenders(unittest.TestCase):
                 EXE.stat().st_mtime, source.stat().st_mtime,
                 f"{EXE.name} predates {source}")
 
-    def test_rebuild_report_records_success_and_relaunch(self):
-        report = (APP / "rebuild-report.txt").read_text(errors="replace")
-        self.assertIn("build succeeded", report)
-        self.assertIn("running ", report)
-        self.assertIn(str(EXE), report)
+    def test_build_provenance_matches_head_and_binary(self):
+        provenance = json.loads(
+            (APP / "build-source-aurora-opencode-pro.exe.json").read_text())
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        self.assertEqual(provenance["source_commit"], head)
+        self.assertFalse(provenance["source_dirty"])
+        digest = hashlib.sha256(EXE.read_bytes()).hexdigest()
+        self.assertEqual(provenance["binary_sha256"], digest)
+
+        state = json.loads((APP / "rebuildstate.json").read_text())
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["exitCode"], 0)
+        self.assertEqual(state["exe"], str(EXE))
 
     def test_running_build_logged_its_renderer_and_framebuffer(self):
         tail = log_tail()
