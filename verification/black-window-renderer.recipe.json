@@ -1,5 +1,8 @@
 {
   "inputs": [
+    "verification/compile_probe.d",
+    "verification/crop_ui_region.py",
+    "verification/reference/software-ui.png",
     "verification/test_render_evidence.py",
     "aurora-opencode-pro/source/app.d",
     "vendor/aurora-d-0.4.5/source/aurora/window.d",
@@ -8,6 +11,15 @@
   ],
   "steps": [
     {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": ["-c", "-o-", "-Ivendor/aurora-d-0.4.5/source", "-i", "verification/compile_probe.d"],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
       "kind": "tests",
       "command": {
         "program": "python",
@@ -15,6 +27,32 @@
         "workdir": ".",
         "timeout": 120000
       }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "aurora-opencode-pro/aurora-opencode-pro.exe",
+        "args": ["--screenshot", "C:/Users/windows10/AppData/Local/Temp/aurora-verify.ppm"],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": ["-B", "verification/crop_ui_region.py",
+                 "C:/Users/windows10/AppData/Local/Temp/aurora-verify.ppm",
+                 "C:/Users/windows10/AppData/Local/Temp/aurora-verify-ui.png"],
+        "workdir": ".",
+        "timeout": 60000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "verification/reference/software-ui.png",
+      "actual": "C:/Users/windows10/AppData/Local/Temp/aurora-verify-ui.png",
+      "referenceSource": "Header buttons from the known-good software-renderer screenshot; static region excludes clock and conversation content."
     }
   ]
 }
