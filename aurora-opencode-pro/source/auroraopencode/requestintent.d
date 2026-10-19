@@ -50,7 +50,7 @@ RequestIntent requestIntent(string text)
                 "redesign", "generate", "code", "rewrite", "integrate", "upgrade", "migrate", "enable", "disable",
                 "extract", "convert", "configure", "connect", "download", "open", "copy"].canFind(word))
             return RequestIntent.implementation;
-        if (["analyze", "analyse", "review", "inspect", "check", "compare", "evaluate", "diagnose",
+        if (["plan", "analyze", "analyse", "review", "inspect", "check", "compare", "evaluate", "diagnose",
                 "investigate", "research", "audit", "find", "look", "examine"].canFind(word)) analysis = true;
     }
     if (continuation) return RequestIntent.continuation;

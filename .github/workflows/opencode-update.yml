@@ -40,6 +40,8 @@ jobs:
         run: python -X utf8 -m unittest discover -s aurora-opencode-pro/tests -p test_forge_publish.py
       - name: Test unfinished task continuation
         run: python -X utf8 -B aurora-opencode-pro/tests/test_task_continuation.py
+      - name: Test task evidence and delegated handoffs
+        run: python -X utf8 aurora-opencode-pro/tests/run_architecture_checks.py agent_workflow_contracts agent_handoff_contracts
       - name: Test Developer Update and source recovery
         run: python -X utf8 aurora-opencode-pro/tests/run_architecture_checks.py updater_contracts developer_ui_contracts developer_safety_contracts developer_workflow_contracts rebuild_handoff_contracts
       - name: Build update
@@ -47,6 +49,8 @@ jobs:
         env:
           FORGE_PUBLISH_SKIP: '1'
         run: dub build --build=release
+      - name: Test planning and resume in built application
+        run: python -X utf8 aurora-opencode-pro/tests/test_resume_evidence.py
       - name: Publish and verify public download
         env:
           FORGE_PUBLISHER_KEY: ${{ secrets.OPENCODE_FORGE_PUBLISHER_KEY }}

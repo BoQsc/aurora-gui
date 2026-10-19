@@ -13,10 +13,16 @@ import std.json : JSONValue, JSONType, parseJSON;
 import std.string : strip, startsWith, toLower;
 import std.regex : matchFirst;
 
+bool taskInstruction(const ref ChatSession session, const ref ChatMessage message)
+{
+    return message.role == "user" && (!message.internal ||
+        (session.parentSessionId.length && session.subagentId.length && message.authorId == session.subagentId));
+}
+
 string latestTaskRequest(const ref ChatSession session)
 {
     foreach_reverse (index; activeMessagePath(session))
-        if (session.messages[index].role == "user" && !session.messages[index].internal)
+        if (taskInstruction(session, session.messages[index]))
             return session.messages[index].content;
     return "";
 }
@@ -32,6 +38,23 @@ size_t[] taskMessagePath(const ref ChatSession session)
     foreach_reverse (i, index; path)
         if (session.messages[index].role == "user" && !session.messages[index].internal) return path[i .. $];
     return path;
+}
+
+/// Resume and question turns retain the task's work. A corrective action asks
+/// for new evidence, including assignments delivered inside a nested chat.
+size_t[] taskActionPath(const ref ChatSession session)
+{
+    auto path = taskMessagePath(session);
+    size_t begin;
+    foreach (i, index; path)
+    {
+        const ref message = session.messages[index];
+        if (!taskInstruction(session, message)) continue;
+        const intent = requestIntent(message.content);
+        if (intent == RequestIntent.implementation ||
+            (intent == RequestIntent.analysis && session.contract.intent == "analysis")) begin = i + 1;
+    }
+    return path[begin .. $];
 }
 
 bool initializeLegacyTask(ref ChatSession session)
@@ -274,17 +297,19 @@ void restoreBranchTask(ref ChatSession session)
 
 string evidenceKind(const ref ChatMessage message)
 {
+    if (message.failed) return "";
     if (message.internal && message.taskStateJson.length)
         try
         {
             const state = parseJSON(message.taskStateJson);
             if (auto proof = "taskActionEvidence" in state.object)
-                if (proof.type == JSONType.true_ && state["taskStatus"].str == "completed")
+                if (proof.type == JSONType.true_ && state["taskStatus"].str == "completed" &&
+                    !["required", "failed"].canFind(state["verificationStatus"].str))
                     return state["taskContract"]["intent"].str == "analysis" ? "research" : "action";
         }
         catch (Exception) {}
-    if (message.role != "tool" || message.failed) return "";
-    if (["read", "read_plan", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
+    if (message.role != "tool") return "";
+    if (["read", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
     if (message.toolName == "dshell") return message.toolArgs.canFind("\"list\"") || message.toolArgs.canFind("\"info\"") ? "research" : "";
     if (["write", "edit", "apply_patch", "copy", "move", "rename", "remove", "download", "create_folder"].canFind(message.toolName)) return "edit";
     if (message.toolName == "verify") return "verify";
@@ -377,13 +402,9 @@ bool taskHasActionEvidence(const ref ChatSession session, bool includeResearch =
     const current = latestTaskRequest(session);
     const intent = requestIntent(current);
     const changedArtifact = artifactChangeRequested(current) ||
-        ((!current.length || intent == RequestIntent.continuation || intent == RequestIntent.conversation) &&
+        ((!current.length || intent == RequestIntent.continuation || intent == RequestIntent.conversation || intent == RequestIntent.clarification) &&
             artifactChangeRequested(session.contract.requestedOutcome));
-    auto path = taskMessagePath(session);
-    size_t begin;
-    foreach (i, index; path)
-        if (session.messages[index].role == "user" && !session.messages[index].internal) begin = i + 1;
-    foreach (index; path[begin .. $])
+    foreach (index; taskActionPath(session))
     {
         const ref message = session.messages[index];
         const kind = evidenceKind(message);

@@ -84,6 +84,7 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
+import auroraopencode.agentresult : subagentResult;
 import auroraopencode.requestbuilder : projectRequestMessages;
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
@@ -11235,7 +11236,10 @@ private string _suggestExcludeId;
         const index = subagentSessionIndex(hubId, agentId);
         if (index < 0) return "idle";
         if (sessionIsBusy(index)) return "working";
-        return _sessions[index].messages.length > 0 ? "done" : "idle";
+        if (!_sessions[index].messages.length) return "idle";
+        if (_sessions[index].turnStatus == "interrupted") return "interrupted";
+        const status = _sessions[index].taskStatus;
+        return status == "completed" ? "done" : status;
     }
 
     private bool hasPendingSubagents(string hubId)
@@ -11319,31 +11323,13 @@ private string _suggestExcludeId;
         if (childIndex < 0 || childIndex >= cast(int) _sessions.length) return;
         const hubId = _sessions[childIndex].parentSessionId;
         if (hubId.length == 0) return;
-        const agentId = _sessions[childIndex].subagentId;
         const childId = _sessions[childIndex].id;
-        const childName = _sessions[childIndex].title;
-        const summary = lastAssistantText(_sessions[childIndex]);
-        if (_sessions[childIndex].taskStatus != "blocked" && _sessions[childIndex].taskStatus != "waiting_input")
-            _sessions[childIndex].taskStatus = "completed";
         int hubIndex = -1;
         foreach (i, ref session; _sessions)
             if (session.id == hubId) { hubIndex = cast(int) i; break; }
         if (hubIndex < 0) return;
-        ChatMessage note;
-        note.role = "user";
-        note.internal = true;
+        auto note = subagentResult(_sessions[childIndex]);
         note.time = currentTimestamp();
-        note.authorId = agentId;
-        note.failed = _sessions[childIndex].taskStatus != "completed";
-        foreach (childMessage; _sessions[childIndex].messages)
-            if (childMessage.workspaceChanged) note.workspaceChanged = true;
-        auto receipt = parseJSON(activeTaskStateJson(_sessions[childIndex]));
-        receipt["taskActionEvidence"] = taskHasActionEvidence(_sessions[childIndex],
-            _sessions[childIndex].contract.intent == "analysis");
-        note.taskStateJson = receipt.toString();
-        note.content = "Subagent \"" ~ childName ~ "\" (" ~ agentId ~
-            ") reported " ~ _sessions[childIndex].taskStatus ~ "." ~
-            (summary.length > 0 ? "\n" ~ summary : " (no output)");
         appendMessage(_sessions[hubIndex], note);
         publishThreadUpdated(_sessions[hubIndex]);
         markDirty();
@@ -11391,15 +11377,6 @@ private string _suggestExcludeId;
             loadRuntime(hubIndex);
             startChatRequest(hubIndex, false);
         }
-    }
-
-    private static string lastAssistantText(const ref ChatSession session)
-    {
-        foreach_reverse (message; session.messages)
-            if (message.role == "assistant" && !message.internal &&
-                message.content.length > 0)
-                return message.content;
-        return "";
     }
 
     /// Start rounds the orchestrator queued, on the service pass, so creating
