@@ -20,6 +20,16 @@ RenderBackend createRenderBackend(WindowOptions options, NativeWindow window,
     {
         if (options.renderer == RendererPreference.software)
             return new SoftwareRenderer(size);
+        version (Windows)
+        {
+            // Remote and virtual displays can expose a Vulkan surface that
+            // initializes but never shows a frame, which looks like a black
+            // window with working input. Prefer the reliable software path
+            // there; an explicit vulkan preference still overrides this.
+            import core.sys.windows.winuser : GetSystemMetrics, SM_REMOTESESSION;
+            if (GetSystemMetrics(SM_REMOTESESSION) != 0)
+                return new SoftwareRenderer(size);
+        }
         try
         {
             import aurora.render.vulkan : VulkanRenderer;

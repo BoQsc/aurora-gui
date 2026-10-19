@@ -25,6 +25,7 @@ SOURCES = [
     APP / "source" / "app.d",
     ROOT / "vendor" / "aurora-d-0.4.5" / "source" / "aurora" / "window.d",
     ROOT / "vendor" / "aurora-d-0.4.5" / "source" / "aurora" / "render" / "vulkan.d",
+    ROOT / "vendor" / "aurora-d-0.4.5" / "source" / "aurora" / "render" / "select.d",
 ]
 SCREENSHOT = Path(tempfile.gettempdir()) / "aurora-pro-app-window.png"
 SOFTWARE_SHOT = Path(tempfile.gettempdir()) / "aurora-software-check.ppm"
