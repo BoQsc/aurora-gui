@@ -1,7 +1,7 @@
 module experiment.aurorahost.control;
 
 import experiment.aurorahost.protocol : ProtocolVersion;
-import experiment.aurorahost.scene : NodeInfo, NodeRegistry;
+import experiment.aurorahost.scene : NodeInfo, NodeRegistry, parseCanvasCommands;
 import aurora : FileDialogMode, FileDialogOptions, GuiWindow, TextEditor, Theme,
     runFileDialogWindow;
 import core.sync.mutex : Mutex;
@@ -185,6 +185,9 @@ class ControlServer
                 case "setWordWrap":
                     setWordWrap(requestId, document);
                     break;
+                case "setCanvas":
+                    setCanvas(requestId, document);
+                    break;
                 case "fileDialog":
                     fileDialog(requestId, document);
                     break;
@@ -299,6 +302,23 @@ class ControlServer
         JSONValue[string] extra;
         extra["node"] = JSONValue(node);
         extra["wrap"] = JSONValue((*wrap).boolean);
+        respond(id, true, null, extra);
+    }
+
+    private void setCanvas(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto commands = "commands" in document.object;
+        enforce(commands !is null, "commands is required");
+        auto parsed = parseCanvasCommands(*commands, "commands");
+        if (!_registry.setCanvasCommands(node, parsed))
+        {
+            respond(id, false, "node is not a canvas: " ~ node);
+            return;
+        }
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["commands"] = JSONValue(cast(long) parsed.length);
         respond(id, true, null, extra);
     }
 

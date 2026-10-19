@@ -7,11 +7,13 @@
 - Schema version: `1`
 - Max scene depth: `16`
 - Max scene nodes: `256`
+- Max canvas commands: `4096`
 
 ## Capabilities
 
 - `window`
 - `scene`
+- `canvas`
 - `label`
 - `button`
 - `row`
@@ -39,6 +41,7 @@
 | `label` | no | yes | yes | no |
 | `button` | no | yes | no | no |
 | `textArea` | no | yes | no | no |
+| `canvas` | no | no | no | no |
 | `spacer` | no | no | no | no |
 
 ## Common node fields
@@ -68,6 +71,7 @@ Transport: stdin/stdout JSON lines; launch --run <scene> --control
 | `setText` | Set label, button, or editor text by node ID. |
 | `getText` | Read text from a text-editor node by ID. |
 | `setWordWrap` | Set word wrapping on a text-editor node. |
+| `setCanvas` | Replace a canvas node's command list by node ID. |
 | `fileDialog` | Open Aurora's generic open/save file dialog and return a path. |
 | `click` | Activate a button by node ID. |
 | `screenshot` | Save the current surface as a PPM. |

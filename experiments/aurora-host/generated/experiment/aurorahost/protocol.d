@@ -12,6 +12,7 @@ enum SchemaVersion = 1;
 immutable string[] Capabilities = [
     "window",
     "scene",
+    "canvas",
     "label",
     "button",
     "row",
@@ -28,8 +29,10 @@ immutable string[] NodeTypes = [
     "label",
     "button",
     "textArea",
+    "canvas",
     "spacer",
 ];
 
 enum MaxSceneDepth = 16;
 enum MaxSceneNodes = 256;
+enum MaxCanvasCommands = 4096;

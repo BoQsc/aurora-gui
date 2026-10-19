@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "window": {
+    "title": "Aurora Canvas",
+    "width": 320,
+    "height": 240,
+    "theme": "dark"
+  },
+  "root": {
+    "id": "canvas",
+    "type": "canvas",
+    "background": "#101820",
+    "commands": [
+      {
+        "op": "rect",
+        "x": 20,
+        "y": 20,
+        "width": 100,
+        "height": 60,
+        "color": "#e63946"
+      },
+      {
+        "op": "roundedRect",
+        "x": 140,
+        "y": 20,
+        "width": 100,
+        "height": 60,
+        "radius": 12,
+        "color": "#457b9d"
+      },
+      {
+        "op": "line",
+        "x": 20,
+        "y": 100,
+        "x2": 300,
+        "y2": 100,
+        "color": "#f1faee",
+        "thickness": 3
+      },
+      {
+        "op": "circle",
+        "x": 70,
+        "y": 160,
+        "radius": 25,
+        "color": "#f4a261"
+      },
+      {
+        "op": "ring",
+        "x": 140,
+        "y": 160,
+        "radius": 25,
+        "color": "#2a9d8f",
+        "thickness": 5
+      },
+      {
+        "op": "text",
+        "x": 200,
+        "y": 145,
+        "text": "Aurora",
+        "color": "#f1faee",
+        "scale": 2
+      }
+    ]
+  }
+}

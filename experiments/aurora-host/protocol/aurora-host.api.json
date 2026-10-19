@@ -7,6 +7,7 @@
   "capabilities": [
     "window",
     "scene",
+    "canvas",
     "label",
     "button",
     "row",
@@ -18,7 +19,8 @@
   ],
   "limits": {
     "maxSceneDepth": 16,
-    "maxSceneNodes": 256
+    "maxSceneNodes": 256,
+    "maxCanvasCommands": 4096
   },
   "common": {
     "id": "optional unique string; derived from the node path when omitted",
@@ -61,6 +63,17 @@
       "scale": false,
       "spacing": false
     },
+    "canvas": {
+      "children": false,
+      "text": false,
+      "scale": false,
+      "spacing": false,
+      "background": "#RRGGBB or #RRGGBBAA",
+      "width": "optional preferred width",
+      "height": "optional preferred height",
+      "flex": "optional layout flex",
+      "commands": "rect, roundedRect, line, circle, ring, text"
+    },
     "spacer": {
       "children": false,
       "text": false,
@@ -84,6 +97,7 @@
       "setText": "Set label, button, or editor text by node ID.",
       "getText": "Read text from a text-editor node by ID.",
       "setWordWrap": "Set word wrapping on a text-editor node.",
+      "setCanvas": "Replace a canvas node's command list by node ID.",
       "fileDialog": "Open Aurora's generic open/save file dialog and return a path.",
       "click": "Activate a button by node ID.",
       "screenshot": "Save the current surface as a PPM.",

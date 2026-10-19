@@ -104,7 +104,8 @@ def main() -> int:
 
             capabilities = run([str(headless), "--capabilities"]).stdout
             if ("headless-render" not in capabilities
-                    or "textArea" not in capabilities):
+                    or "textArea" not in capabilities
+                    or "canvas" not in capabilities):
                 raise VerificationError("capabilities output is incomplete\n" + capabilities)
 
             checked = run([str(headless), "--check", "samples/hello.scene.json"]).stdout
@@ -117,6 +118,14 @@ def main() -> int:
             if "scene OK" not in editor_checked:
                 raise VerificationError(
                     "editor scene was not accepted\n" + editor_checked
+                )
+
+            canvas_checked = run(
+                [str(headless), "--check", "samples/canvas.scene.json"]
+            ).stdout
+            if "scene OK" not in canvas_checked:
+                raise VerificationError(
+                    "canvas scene was not accepted\n" + canvas_checked
                 )
 
             invalid = run(
@@ -180,6 +189,44 @@ def main() -> int:
                     "editor control test did not report success\n" + editor.stdout
                 )
             verify_ppm(editor_image)
+
+            canvas_image = temp / "canvas.ppm"
+            canvas = run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "tools" / "canvas_test.py"),
+                    "--host",
+                    str(headless),
+                    "--scene",
+                    str(ROOT / "samples" / "canvas.scene.json"),
+                    "--out",
+                    str(canvas_image),
+                ]
+            )
+            if "canvas pixel test passed" not in canvas.stdout:
+                raise VerificationError(
+                    "canvas test did not report success\n" + canvas.stdout
+                )
+
+            canvas_live_image = temp / "canvas-live.ppm"
+            canvas_live = run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "tools" / "canvas_control_test.py"),
+                    "--host",
+                    str(gui),
+                    "--out",
+                    str(canvas_live_image),
+                ],
+                env=control_env,
+            )
+            if "canvas control passed" not in canvas_live.stdout:
+                raise VerificationError(
+                    "canvas control test did not report success\n"
+                    + canvas_live.stdout
+                )
     except VerificationError as error:
         print(f"aurora-host verification failed: {error}", file=sys.stderr)
         return 1
@@ -192,6 +239,8 @@ def main() -> int:
     print("headless render: binary PPM produced")
     print("control demo: click, tree update, and live screenshot verified")
     print("editor control: textArea, getText, wrap, action, and screenshot verified")
+    print("canvas: retained shapes, colors, and text pixels verified")
+    print("canvas control: live setCanvas redraw verified")
     print("aurora-host experiment verification passed")
     return 0
 

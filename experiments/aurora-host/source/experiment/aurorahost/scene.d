@@ -1,7 +1,9 @@
 module experiment.aurorahost.scene;
 
+import experiment.aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
+    parseCanvasColor;
 import experiment.aurorahost.protocol : MaxSceneDepth, MaxSceneNodes, NodeTypes,
-    SchemaVersion;
+    MaxCanvasCommands, SchemaVersion;
 import std.algorithm : canFind;
 import std.exception : enforce;
 import std.file : readText;
@@ -27,6 +29,7 @@ struct SceneNode
     string action;
     int scale = 2;
     int spacing = 8;
+    CanvasSpec canvas;
     SceneNode[] children;
 }
 
@@ -101,6 +104,16 @@ class NodeRegistry
             onAction(node, action);
     }
 
+    bool setCanvasCommands(string id, CanvasCommand[] commands)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return false;
+        auto canvas = cast(CanvasWidget) *widget;
+        if (canvas is null) return false;
+        canvas.setCommands(commands);
+        return true;
+    }
+
     NodeInfo[] tree()
     {
         NodeInfo[] result;
@@ -163,6 +176,72 @@ private int readInt(JSONValue object, string key, int fallback, string label)
     return cast(int) value;
 }
 
+private int readRange(JSONValue object, string key, int fallback, int minimum,
+    int maximum, string label)
+{
+    const value = readInt(object, key, fallback, label);
+    enforce(value >= minimum && value <= maximum,
+        format("%s.%s must be between %d and %d", label, key, minimum, maximum));
+    return value;
+}
+
+private CanvasCommand parseCanvasCommand(JSONValue value, int index, string label)
+{
+    enforce(value.type == JSONType.object, label ~ " must be an object");
+    CanvasCommand command;
+    command.op = readString(value, "op", "", label);
+    enforce(command.op == "rect" || command.op == "roundedRect" ||
+        command.op == "line" || command.op == "circle" ||
+        command.op == "ring" || command.op == "text",
+        format("%s.op is unknown: '%s'", label, command.op));
+    command.color = parseCanvasColor(
+        readString(value, "color", "", label), label ~ ".color");
+    command.x = readRange(value, "x", 0, -100000, 100000, label);
+    command.y = readRange(value, "y", 0, -100000, 100000, label);
+    command.x2 = readRange(value, "x2", 0, -100000, 100000, label);
+    command.y2 = readRange(value, "y2", 0, -100000, 100000, label);
+    command.width = readRange(value, "width", 0, 0, 100000, label);
+    command.height = readRange(value, "height", 0, 0, 100000, label);
+    command.radius = readRange(value, "radius", 0, 0, 100000, label);
+    command.thickness = readRange(value, "thickness", 1, 1, 64, label);
+    command.scale = readRange(value, "scale", 2, 1, 8, label);
+    command.text = readString(value, "text", "", label);
+    return command;
+}
+
+CanvasCommand[] parseCanvasCommands(JSONValue value, string label)
+{
+    enforce(value.type == JSONType.array,
+        label ~ " must be an array");
+    enforce(value.array.length <= MaxCanvasCommands,
+        format("%s exceeds max canvas command count %d", label,
+            MaxCanvasCommands));
+    CanvasCommand[] commands;
+    foreach (index, command; value.array)
+        commands ~= parseCanvasCommand(command, cast(int) index,
+            format("%s[%d]", label, index));
+    return commands;
+}
+
+private CanvasSpec parseCanvas(JSONValue value, string label)
+{
+    CanvasSpec canvas;
+    canvas.width = readRange(value, "width", 0, 0, 10000, label);
+    canvas.height = readRange(value, "height", 0, 0, 10000, label);
+    canvas.flex = readRange(value, "flex", 0, 0, 1000, label);
+    if (auto background = "background" in value.object)
+    {
+        enforce((*background).type == JSONType.string,
+            label ~ ".background must be a string");
+        canvas.hasBackground = true;
+        canvas.background = parseCanvasColor(
+            (*background).str, label ~ ".background");
+    }
+    if (auto commands = "commands" in value.object)
+        canvas.commands = parseCanvasCommands(*commands, label ~ ".commands");
+    return canvas;
+}
+
 private SceneNode[] parseChildren(JSONValue object, ref int count, int depth,
     string label, string parentId)
 {
@@ -220,6 +299,10 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
         case "textArea":
             requireNoChildren(value, label);
             node.text = readString(value, "text", "", label);
+            break;
+        case "canvas":
+            requireNoChildren(value, label);
+            node.canvas = parseCanvas(value, label);
             break;
         case "spacer":
             requireNoChildren(value, label);
@@ -328,6 +411,12 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             editor.layoutHints().flex = 1.0;
             registry.registerNode(node.id, node.type, editor, node.text);
             return editor;
+        }
+        case "canvas":
+        {
+            auto canvas = new CanvasWidget(node.canvas);
+            registry.registerNode(node.id, node.type, canvas, "");
+            return canvas;
         }
         case "spacer":
         {

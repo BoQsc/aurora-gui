@@ -46,6 +46,7 @@ def render_d(schema: dict) -> str:
         "",
         f'enum MaxSceneDepth = {schema["limits"]["maxSceneDepth"]};',
         f'enum MaxSceneNodes = {schema["limits"]["maxSceneNodes"]};',
+        f'enum MaxCanvasCommands = {schema["limits"]["maxCanvasCommands"]};',
         "",
     ]
     return "\n".join(lines)
@@ -62,6 +63,7 @@ def render_markdown(schema: dict) -> str:
         f"- Schema version: `{schema['schemaVersion']}`",
         f"- Max scene depth: `{schema['limits']['maxSceneDepth']}`",
         f"- Max scene nodes: `{schema['limits']['maxSceneNodes']}`",
+        f"- Max canvas commands: `{schema['limits']['maxCanvasCommands']}`",
         "",
         "## Capabilities",
         "",
