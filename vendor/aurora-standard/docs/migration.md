@@ -23,8 +23,8 @@ Only the namespace and package ownership change.
 
 ## Migration steps
 
-1. Add `standard/aurora-standard` as a DUB path dependency or add
-   `standard/aurora-standard/source` to the build include path.
+1. Add `vendor/aurora-standard` as a DUB path dependency or add
+   `vendor/aurora-standard/source` to the build include path.
 2. Replace the four Unicode imports with the `aurora.standard.*` imports.
 3. Update type references that came from those modules. `BidiResult`,
    `ParagraphDirection`, `GraphemeBreak`, `BidiClass`, `LineBreakClass`,
@@ -40,7 +40,7 @@ Only the namespace and package ownership change.
 
 - Do not copy the implementation back into an application.
 - Do not keep both namespaces in one module to avoid changing a type.
-- Do not edit files under `standard/aurora-standard` to suit one consumer.
+- Do not edit files under `vendor/aurora-standard` to suit one consumer.
   Propose a versioned standard change instead.
 - Do not treat the vendor Unicode modules as the standard after migration.
   They remain part of the mutable framework until they are removed or made

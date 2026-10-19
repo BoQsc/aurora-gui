@@ -1,6 +1,6 @@
 {
   "inputs": [
-    "standard/aurora-standard"
+    "vendor/aurora-standard"
   ],
   "steps": [
     {
@@ -8,7 +8,7 @@
       "command": {
         "program": "python",
         "args": [
-          "standard/aurora-standard/tools/verify_standard.py"
+          "vendor/aurora-standard/tools/verify_standard.py"
         ],
         "workdir": ".",
         "timeout": 300000

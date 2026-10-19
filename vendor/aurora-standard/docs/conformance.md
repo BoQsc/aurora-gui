@@ -60,8 +60,8 @@ The verifier performs, in order:
 The individual conformance executable can also be built and run directly:
 
 ```text
-dmd -Istandard/aurora-standard/source -i -of=<temp>/aurora-standard-conformance.exe standard/aurora-standard/tests/unicode_conformance.d
-<temp>/aurora-standard-conformance.exe standard/aurora-standard/spec/unicode/17.0.0
+dmd -Ivendor/aurora-standard/source -i -of=<temp>/aurora-standard-conformance.exe vendor/aurora-standard/tests/unicode_conformance.d
+<temp>/aurora-standard-conformance.exe vendor/aurora-standard/spec/unicode/17.0.0
 ```
 
 ## Determinism note

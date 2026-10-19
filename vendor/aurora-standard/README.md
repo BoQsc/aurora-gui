@@ -36,7 +36,7 @@ Add the package to a DUB recipe:
 ```json
 "dependencies": {
   "aurora-standard": {
-    "path": "../standard/aurora-standard"
+    "path": "../vendor/aurora-standard"
   }
 }
 ```
