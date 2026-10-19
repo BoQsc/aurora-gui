@@ -252,6 +252,13 @@ final class JsRuntime
 {
     JsScope globalScope;
     JsObject globalObject;      /// Global object (for `globalThis`).
+    /// Host-owned state for this runtime: the DOM binder while a document is
+    /// bound (`auroraweb.dombind`). It is held here rather than in a module-level
+    /// map keyed by the runtime, because such a map outlives the page: after one
+    /// boqsc.eu document was dropped, ~150 MiB of its realm and DOM wrapper cache
+    /// was still reachable and a second load would add to it. Here it dies with
+    /// the runtime, which is what a closed page releases.
+    void* hostState;
     Node[] nodes;      /// All AST nodes created during parsing.
     bool lastHadException;
     JsValue pendingException;

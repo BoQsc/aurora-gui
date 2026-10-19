@@ -32,7 +32,7 @@ JsValue bindDocument(Element root, JsRuntime rt, ref JsScope jsScope,
     string documentUrl = "", int viewportWidth = 0, int viewportHeight = 0)
 {
     auto binder = new DocumentBinder(rt);
-    _hostBinders[rt] = binder;
+    rt.hostState = cast(void*) binder;
     return binder.bind(root, jsScope, resourceLoader, documentUrl,
         viewportWidth, viewportHeight);
 }
@@ -41,15 +41,24 @@ JsValue bindDocument(Element root, JsRuntime rt, ref JsScope jsScope,
 /// dispatch real user interactions — clicks, key presses, text input — into a
 /// page's DOM handlers. Without this, only page-script-initiated
 /// `element.dispatchEvent(...)` could ever fire a listener.
-private DocumentBinder[JsRuntime] _hostBinders;
+///
+/// The binder hangs off the runtime (`JsRuntime.hostState`) instead of a
+/// module-level map keyed by it. A map kept every document ever loaded: after
+/// one boqsc.eu load was dropped, ~150 MiB of its realm and DOM wrapper cache
+/// was still reachable, and the next load added another. On the runtime, the
+/// binder dies with the page.
+private DocumentBinder binderFor(JsRuntime rt)
+{
+    if (rt is null) return null;
+    return cast(DocumentBinder) rt.hostState;
+}
 
 /// Fire a NON-bubbling host event (`mouseenter`/`mouseleave`) on one element.
 bool dispatchHostEventNoBubble(JsRuntime rt, Element element, string type)
 {
-    if (rt is null || element is null || type.length == 0) return false;
-    if (auto b = rt in _hostBinders)
-        return (*b).dispatchForHost(element, type, "", 0, false);
-    return false;
+    auto b = binderFor(rt);
+    if (b is null || element is null || type.length == 0) return false;
+    return b.dispatchForHost(element, type, "", 0, false);
 }
 
 /// Fire a host-initiated DOM event (`click`, `mousedown`, `mouseup`, `input`,
@@ -58,19 +67,17 @@ bool dispatchHostEventNoBubble(JsRuntime rt, Element element, string type)
 /// when a handler called `preventDefault()`.
 bool dispatchHostEvent(JsRuntime rt, Element element, string type, string key = "")
 {
-    if (rt is null || element is null || type.length == 0) return false;
-    if (auto b = rt in _hostBinders)
-        return (*b).dispatchForHost(element, type, key, 0);
-    return false;
+    auto b = binderFor(rt);
+    if (b is null || element is null || type.length == 0) return false;
+    return b.dispatchForHost(element, type, key, 0);
 }
 
 /// Same as above, with a numeric detail (used by `wheel` for `event.deltaY`).
 bool dispatchHostEvent(JsRuntime rt, Element element, string type, int deltaY)
 {
-    if (rt is null || element is null || type.length == 0) return false;
-    if (auto b = rt in _hostBinders)
-        return (*b).dispatchForHost(element, type, "", deltaY);
-    return false;
+    auto b = binderFor(rt);
+    if (b is null || element is null || type.length == 0) return false;
+    return b.dispatchForHost(element, type, "", deltaY);
 }
 
 /// Internal binder state: the wrapper cache and the runtime.
@@ -79,10 +86,9 @@ bool dispatchHostEvent(JsRuntime rt, Element element, string type, int deltaY)
 /// handler called `preventDefault()`.
 bool dispatchDocumentEvent(JsRuntime rt, string type)
 {
-    if (rt is null || type.length == 0) return false;
-    if (auto b = rt in _hostBinders)
-        return (*b).dispatchOnDocument(type);
-    return false;
+    auto b = binderFor(rt);
+    if (b is null || type.length == 0) return false;
+    return b.dispatchOnDocument(type);
 }
 
 /// Publish the document's load state (`document.readyState`). The host moves it
@@ -94,9 +100,9 @@ bool dispatchDocumentEvent(JsRuntime rt, string type)
 /// event it had just decided it did not need.
 void setDocumentReadyState(JsRuntime rt, string state)
 {
-    if (rt is null || state.length == 0) return;
-    if (auto b = rt in _hostBinders)
-        (*b).setReadyState(state);
+    auto b = binderFor(rt);
+    if (b is null || state.length == 0) return;
+    b.setReadyState(state);
 }
 
 /// Expose the viewport scroll offset to the page (`window.scrollY`,
@@ -104,9 +110,9 @@ void setDocumentReadyState(JsRuntime rt, string state)
 /// scrolling pages actually read.
 void setDocumentScroll(JsRuntime rt, int scrollY)
 {
-    if (rt is null) return;
-    if (auto b = rt in _hostBinders)
-        (*b).setViewportScroll(scrollY);
+    auto b = binderFor(rt);
+    if (b is null) return;
+    b.setViewportScroll(scrollY);
 }
 
 /// Publish the layout viewport size to the page (`window.innerWidth`,
@@ -115,9 +121,9 @@ void setDocumentScroll(JsRuntime rt, int scrollY)
 /// instead of leaving it with the size the document was first bound at.
 void setViewportSize(JsRuntime rt, int width, int height)
 {
-    if (rt is null) return;
-    if (auto b = rt in _hostBinders)
-        (*b).setViewportSize(width, height);
+    auto b = binderFor(rt);
+    if (b is null) return;
+    b.setViewportSize(width, height);
 }
 
 /// Deliver the `IntersectionObserver` callbacks the geometry of the last layout
@@ -128,10 +134,9 @@ void setViewportSize(JsRuntime rt, int width, int height)
 /// again.
 bool evaluateIntersectionObservers(JsRuntime rt)
 {
-    if (rt is null) return false;
-    if (auto b = rt in _hostBinders)
-        return (*b).evaluateIntersectionObservers();
-    return false;
+    auto b = binderFor(rt);
+    if (b is null) return false;
+    return b.evaluateIntersectionObservers();
 }
 
 /// One stored cookie: its value and the epoch second it expires at. `0` means a

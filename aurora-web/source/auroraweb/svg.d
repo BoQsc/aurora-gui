@@ -412,6 +412,33 @@ Rgba svgCssColor(string css)
 /// fills — the form nearly every icon file uses.
 RgbaImage decodeSvg(const(ubyte)[] bytes, Rgba currentColor = Rgba(0, 0, 0, 255))
 {
+    ubyte[] target;
+    int outW;
+    int outH;
+    if (!renderSvgInto(bytes, currentColor, target, outW, outH)) return null;
+    return new RgbaImage(outW, outH, target);
+}
+
+/// Render SVG bytes over `target`, which the caller owns and passes back in on
+/// the next call. Every shape blends source-over into what is already there, so
+/// a stack of layers composited one after another looks exactly like the same
+/// shapes rendered into one buffer in that order.
+///
+/// That is what keeps a layered background cheap: the box's layers are
+/// rasterised into one buffer instead of an image per layer plus a full-size
+/// copy for each composite. Those are megabyte-sized buffers that druntime's
+/// large-object pools never hand back to the OS, so re-rasterising art while a
+/// page loads held ~1 GB resident long after the load had settled.
+///
+/// `target` is replaced (zeroed) when its length is not the markup's device
+/// size; `outW`/`outH` report that size so the caller can tell whether the
+/// pixels it just blended into are the ones it wanted.
+/// When `wantW`/`wantH` are given, the markup must ask for exactly that size:
+/// anything else returns false with `target` untouched, so a caller blending a
+/// stack of layers keeps the ones it already has.
+bool renderSvgInto(const(ubyte)[] bytes, Rgba currentColor,
+    ref ubyte[] target, out int outW, out int outH, int wantW = 0, int wantH = 0)
+{
     // Tag and attribute markup is ASCII; drop any high bytes before it reaches
     // case-folding. std.uni.toLower overran on malformed UTF-8 and crashed the
     // browser on a real page's SVG.
@@ -421,14 +448,16 @@ RgbaImage decodeSvg(const(ubyte)[] bytes, Rgba currentColor = Rgba(0, 0, 0, 255)
         clean[k] = c < 0x80 ? c : cast(ubyte) ' ';
     auto text = cast(string) clean;
     auto tags = parseTags(text);
-    if (!tags.length) return null;
+    outW = 0;
+    outH = 0;
+    if (!tags.length) return false;
 
     // Find the root <svg>.
     Tag root;
     bool haveRoot = false;
     foreach (t; tags)
         if (t.name == "svg" && !t.closing) { root = t; haveRoot = true; break; }
-    if (!haveRoot) return null;
+    if (!haveRoot) return false;
 
     const vb = parseViewBox(root);
     const attrW = attrLen(root, "width", 0);
@@ -446,14 +475,18 @@ RgbaImage decodeSvg(const(ubyte)[] bytes, Rgba currentColor = Rgba(0, 0, 0, 255)
         boxX = 0;
         boxY = 0;
     }
-    int outW = attrW > 0 ? attrW : cast(int) (vw + 0.5);
-    int outH = attrH > 0 ? attrH : cast(int) (vh + 0.5);
+    outW = attrW > 0 ? attrW : cast(int) (vw + 0.5);
+    outH = attrH > 0 ? attrH : cast(int) (vh + 0.5);
     outW = min(outW, 4096);
     outH = min(outH, 4096);
-    if (outW <= 0 || outH <= 0) return null;
+    if (outW <= 0 || outH <= 0) return false;
+    if (wantW > 0 && wantH > 0 && (outW != wantW || outH != wantH)) return false;
 
-    auto pixels = new ubyte[](outW * outH * 4);
-    if (outW <= 0 || outH <= 0) return null;
+    // A buffer of the wrong size cannot hold these pixels; a fresh one starts
+    // cleared, while a reused one keeps what earlier layers blended into it.
+    const size_t needed = cast(size_t) outW * outH * 4;
+    if (target.length != needed) target = new ubyte[](needed);
+    auto pixels = target;
 
     // viewBox(-> viewport) transform, then the render scale.
     Mat base;
@@ -477,7 +510,7 @@ RgbaImage decodeSvg(const(ubyte)[] bytes, Rgba currentColor = Rgba(0, 0, 0, 255)
 
 
     renderChildren(tags, 0, pixels, outW, outH, base, ctx);
-    return new RgbaImage(outW, outH, pixels);
+    return true;
 }
 
 /// Collect every <linearGradient>/<radialGradient> with its <stop> children.

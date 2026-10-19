@@ -2165,6 +2165,15 @@ final class WebPage
             _laidOutWidth = _width;
             _laidOutHeight = _height;
             ++_layoutGen;
+            // Painting caches rasters that are only valid for one document
+            // generation (a masked box's composited layer), so the generation
+            // has to be visible from the paint pass. This is the one place a new
+            // one is committed: a style change, new content or a viewport change
+            // all arrive here.
+            {
+                import auroraweb.paint : notePaintInvalidation;
+                notePaintInvalidation();
+            }
         }
         // The pass below decides what work is still outstanding, so start from
         // "nothing outstanding": this pass has already laid the document out.
@@ -2376,6 +2385,39 @@ final class WebPage
     /// un-rasterised, and an un-rasterised gradient background paints the flat
     /// colour `layout.d`'s `solidColorFromBackground` fabricates from the
     /// gradient's first stop - at the full size of the box.
+    ///
+    /// The raster buffer is malloc'd and reused: a page's gradient boxes are
+    /// re-rasterised every time their height changes, and one full-page buffer
+    /// per box was 11 MB of large-object allocation per generation at
+    /// 1280x2271. druntime never returns those blocks to the OS, so the load
+    /// ended up holding the whole history of them.
+    private static ubyte[] artScratch(size_t needed)
+    {
+        import core.stdc.stdlib : free, malloc;
+        if (needed == 0) return null;
+        if (_artScratchLength != needed)
+        {
+            free(_artScratch);
+            auto fresh = cast(ubyte*) malloc(needed);
+            if (fresh is null)
+            {
+                _artScratch = null;
+                _artScratchLength = 0;
+                return null;
+            }
+            _artScratch = fresh;
+            _artScratchLength = needed;
+        }
+        // Every layer blends over what earlier layers left, so each box starts
+        // from a cleared buffer - the same memset a fresh allocation would do.
+        auto buf = _artScratch[0 .. needed];
+        buf[] = 0;
+        return buf;
+    }
+
+    private __gshared ubyte* _artScratch;
+    private __gshared size_t _artScratchLength;
+
     private void rasteriseGradientBackground(Element e)
     {
         if (e.style.backgroundGradients.length == 0 &&
@@ -2406,7 +2448,7 @@ final class WebPage
         if (gw <= 0 || gh <= 0) return;
         if (e.backgroundLoadTried && !gradientSizeChanged) return;
         import aurora.image : RgbaImage;
-        import auroraweb.svg : decodeSvg, gradientToSvg;
+        import auroraweb.svg : gradientToSvg, renderSvgInto;
         e.backgroundLoadTried = true;
         e.backgroundGradientW = gw;
         e.backgroundGradientH = gh;
@@ -2420,77 +2462,37 @@ final class WebPage
         // the ones already laid down.
         auto layers = e.style.backgroundGradients;
         if (layers.length == 0) layers = [e.style.backgroundGradient];
-        RgbaImage img;
+        // All of the box's layers blend into one reused buffer. Rasterising
+        // each layer to its own image and compositing them needed a full-size
+        // buffer for the layer and another for every composite, and druntime
+        // never returns those megabyte-sized blocks to the OS.
+        auto flat = artScratch(cast(size_t) gw * gh * 4);
+        if (flat is null) return;
+        bool haveLayer;
         foreach_reverse (g; layers)
         {
             auto gsvg = gradientToSvg(g, gw, gh);
             if (!gsvg.length) continue;
             // Untrusted markup rule: a gradient must not crash the
             // engine.
-            RgbaImage layer;
-            try layer = decodeSvg(cast(const(ubyte)[]) gsvg, svgInkColor(e));
-            catch (Throwable) layer = null;
-            if (layer is null) continue;
-            img = img is null ? layer : compositeLayers(layer, img);
+            int lw;
+            int lh;
+            bool drawn = false;
+            try drawn = renderSvgInto(cast(const(ubyte)[]) gsvg, svgInkColor(e),
+                flat, lw, lh, gw, gh);
+            catch (Throwable) drawn = false;
+            // A layer scaled to another size is not guessed at: keep the stack
+            // that is already blended rather than stretch it over the box.
+            if (!drawn) continue;
+            haveLayer = true;
         }
-        if (img !is null)
+        if (haveLayer)
         {
-            e.backgroundImage = img;
+            e.backgroundImage = new RgbaImage(gw, gh, flat);
             ++_contentGen;
         }
     }
 
-    /// Draw `src` over `dst` and return the combined straight-alpha raster.
-    ///
-    /// Used to flatten a box's background-image layers into the single raster
-    /// `backgroundImage` holds: gradients may be translucent (boqsc.eu's glows
-    /// and its hairline veils are), so the layers must be alpha-composited
-    /// rather than painted over one another, or a lower layer's own
-    /// transparency would be lost and a stacked background would go opaque.
-    /// Whole layers are the same size as the box, so no clipping is needed here.
-    private static RgbaImage compositeLayers(RgbaImage src, RgbaImage dst)
-    {
-        import aurora.image : RgbaImage;
-        const w = dst.width();
-        const h = dst.height();
-        // A layer whose raster does not match the box (a gradient SVG that
-        // failed to size, say) must not be guessed at: keep what is already
-        // painted rather than stretch it.
-        if (src.width() != w || src.height() != h) return dst;
-        const s = src.pixels();
-        const d = dst.pixels();
-        auto out_ = new ubyte[w * h * 4];
-        foreach (i; 0 .. w * h)
-        {
-            const o = i * 4;
-            const sa = s[o + 3];
-            if (sa == 0)
-            {
-                out_[o .. o + 4] = d[o .. o + 4];
-                continue;
-            }
-            if (sa == 255)
-            {
-                out_[o .. o + 4] = s[o .. o + 4];
-                continue;
-            }
-            const af = sa / 255.0;
-            const df = (d[o + 3] / 255.0) * (1 - af);
-            const oa = af + df;
-            if (oa <= 0)
-            {
-                out_[o .. o + 4] = 0;
-                continue;
-            }
-            foreach (c; 0 .. 3)
-            {
-                const v = (s[o + c] * af + d[o + c] * df) / oa;
-                out_[o + c] = cast(ubyte) (v + 0.5);
-            }
-            out_[o + 3] = cast(ubyte) (oa * 255 + 0.5);
-        }
-        return new RgbaImage(w, h, out_);
-    }
 
     /// Find <img> elements without a decoded image and load them, and decode
     /// any CSS `background-image: url("...")` references.

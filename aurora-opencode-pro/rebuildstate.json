@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the startup journal replay fix (commit cd39492) so the UI thread no longer parses the journal during restore.",
+  "reason": "Apply 0.66.24 planning intent, resume evidence and agent handoff fixes",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-18 19:22:54.351589 UTC",
-  "finishedAt": "2026-10-18 19:23:44.4120154 UTC",
-  "durationMs": 50059,
+  "startedAt": "2026-10-19 13:23:51.4024734 UTC",
+  "finishedAt": "2026-10-19 13:25:23.7660872 UTC",
+  "durationMs": 92364,
   "exitCode": 0,
   "errors": []
 }

@@ -51,6 +51,19 @@ final class Element
     /// pre-article height and painted the whole paper column's ramp compressed.
     int backgroundGradientW;
     int backgroundGradientH;
+    /// The composited `mask-image` layer (`aurora.image.RgbaImage`) this box's own
+    /// painting was last rasterised into through its mask, with the box size and
+    /// the paint generation it was built for. Rebuilding one every frame cost a
+    /// layer surface, the subtree paint, the mask multiply and a second full RGBA
+    /// copy for each masked box: about 21 MB of allocation per painted frame on a
+    /// page with two full-viewport masked layers, which the collector turns into
+    /// the browser's resident footprint (measured on boqsc.eu at 1280x700 with
+    /// aurora-browser/tests/pageperf-probe.d: 1.4 GiB held after one page load,
+    /// +226 MiB over ten repaints, RSS 1.8 GB during the load).
+    Object maskedLayer;
+    int maskedLayerW;         /// Box width the cached layer was rasterised at.
+    int maskedLayerH;         /// Box height the cached layer was rasterised at.
+    long maskedLayerGen;      /// Paint generation the cached layer belongs to.
     bool imageLoadTried;
     /// Set once an inline SVG's rasterisation has been retried, so a genuinely
     /// unreadable SVG cannot keep the document permanently dirty. Without the

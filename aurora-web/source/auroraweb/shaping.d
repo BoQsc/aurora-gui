@@ -129,6 +129,33 @@ const(FontFace) cssFace(string fontFamily, string fontWeight = "400",
 }
 
 /**
+ * The CSS *standard* font (the face a page with no `font-family` is set in),
+ * memoized per weight/style.
+ *
+ * `SystemFontInventory.loadBest` parses an sfnt file and returns a NEW
+ * `FontFace` instance, and `FontFace.identity` is a per-instance counter. Every
+ * consumer that keys on a face saw a different face on every call: this module's
+ * shaping cache, the vendor's per-face shaper map, and the glyph atlas - which
+ * is keyed by face identity and grow-only. A page whose text names no installed
+ * family therefore re-parsed the font, re-shaped every run and re-rasterised
+ * every glyph on every layout and every paint frame, and each of those steps
+ * left the previous generation behind. boqsc.eu is exactly this page: its body
+ * text declares no family, so its fallback face was rebuilt per text run.
+ * Memoizing the face here is what lets those caches hit.
+ */
+private FontFace standardFace(ushort weight, bool italic)
+{
+    const key = cast(ushort) ((weight << 1) | (italic ? 1 : 0));
+    if (auto hit = key in _standardFaces) return *hit;
+    auto face = SystemFontInventory.loadBest("Times New Roman", weight, italic);
+    _standardFaces[key] = face;
+    return face;
+}
+
+/// `standardFace` results, keyed by weight and slant.
+private FontFace[ushort] _standardFaces;
+
+/**
  * `cssFace`, with the browser's *standard* font as the fallback.
  *
  * A style that names no family — or names none that is installed — does not get
@@ -148,7 +175,7 @@ const(FontFace) cssFaceOrStandard(string fontFamily, string fontWeight = "400",
     if (auto face = cssFace(fontFamily, fontWeight, fontStyle))
         return face;
     const italic = fontStyle == "italic" || fontStyle == "oblique";
-    return SystemFontInventory.loadBest("Times New Roman", weightClass(fontWeight), italic);
+    return standardFace(weightClass(fontWeight), italic);
 }
 
 private TextLayout[string] _cache;

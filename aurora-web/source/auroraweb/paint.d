@@ -21,6 +21,7 @@ import aurora.canvas : Canvas;
 import aurora.color : Color;
 import aurora.font : FontFace, FontRole;
 import aurora.image : RgbaImage;
+import aurora.surface : Surface;
 import aurora.text.layout : TextLayout, TextLayoutOptions;
 import aurora.types : Point, Rect, maxInt, minInt;
 import auroraweb.dom : ComputedStyle, Element, TextNode;
@@ -91,6 +92,67 @@ bool bodyPaintsBackground(Element root)
 /// translating the canvas, so the offset is invisible in element coordinates; a
 /// `position: sticky` box needs it to know where its containing block sits.
 private int _paintScrollY;
+
+/// A monotonically increasing count of document changes that affect painting.
+/// `layout` bumps it whenever it commits a new layout or new content, so a
+/// cached raster can be reused for every repaint of an unchanged document and is
+/// rebuilt after a change. It only ever increases, so a raster cached by one
+/// document (one tab) can never be mistaken for current after another has moved
+/// the counter on.
+private __gshared long _paintGeneration;
+
+/// Pixels held by cached masked layers, and the budget they may hold. A layer is
+/// a full box raster, so this is bounded in pixels rather than in entries.
+private __gshared size_t _maskedLayerCachePixels;
+private enum size_t MaxMaskedLayerCachePixels = 8_000_000;
+
+/// Record that the document changed in a way that affects painting (`layout`).
+void notePaintInvalidation() { ++_paintGeneration; }
+
+/// Whether the element's cached masked layer can be painted as-is: same box, and
+/// built for the current paint generation.
+private bool maskedLayerFresh(const Element element)
+{
+    return element.maskedLayer !is null &&
+        element.maskedLayerW == element.box.width &&
+        element.maskedLayerH == element.box.height &&
+        element.maskedLayerGen == _paintGeneration;
+}
+
+/// Whether a layer built for this element may be kept for the next frame. Only a
+/// box whose whole content is its own painting - no element children and no text
+/// - is eligible: the layer is then a function of the box, its own resolved style
+/// and the document generation, and every one of those changes through `layout`.
+/// A box that pins itself to the viewport is excluded: `position: sticky` is
+/// applied at paint time from the scroll offset, which `layout` never sees, so a
+/// cached layer would freeze it mid-scroll. Generated boxes are excluded for the
+/// same reason, as they paint inside this layer.
+private bool maskedLayerCacheable(const Element element)
+{
+    if (element.elements.length || element.textNodes.length) return false;
+    if (element.style.isSticky) return false;
+    if (element.pseudoBefore !is null && element.pseudoBefore.style.isSticky)
+        return false;
+    if (element.pseudoAfter !is null && element.pseudoAfter.style.isSticky)
+        return false;
+    return true;
+}
+
+/// Keep a composited layer for the frames that follow, within the budget.
+private void keepMaskedLayer(Element element, RgbaImage image)
+{
+    if (!maskedLayerCacheable(element)) return;
+    const size_t previous = element.maskedLayer is null ? 0
+        : cast(size_t) element.maskedLayerW * element.maskedLayerH;
+    const size_t wanted = cast(size_t) element.box.width * element.box.height;
+    if (_maskedLayerCachePixels - previous + wanted > MaxMaskedLayerCachePixels)
+        return;
+    element.maskedLayer = image;
+    element.maskedLayerW = element.box.width;
+    element.maskedLayerH = element.box.height;
+    element.maskedLayerGen = _paintGeneration;
+    _maskedLayerCachePixels += wanted - previous;
+}
 
 /// Paint a full tree into a surface's canvas. `scrollY` is the viewport's scroll
 /// offset in px (0 for an unscrolled paint).
@@ -173,6 +235,58 @@ private RgbaImage[string] _gradientCache;
 private size_t _gradientCachePixels;
 private enum size_t MaxGradientCachePixels = 4_000_000;
 
+/// Scratch buffers for filtered layers, reused across boxes and paint passes.
+///
+/// Same reasoning as the masked layers below: a filtered box is usually the
+/// whole page. boqsc.eu filters full-height sections, so one element's layer is
+/// ~1280x2271 = 11 MB, and this path allocated its layer surface, a straight-
+/// alpha buffer AND `RgbaImage`'s copy of that buffer on every filtered element
+/// of every paint generation - three page-sized buffers per box per frame, all
+/// on the GC heap. Measured on that page, removing the `filter` declarations
+/// dropped the settled heap by 77 MiB even after a collection, so the churn was
+/// being retained, not merely churned.
+///
+/// The surface is reused while the box size is unchanged and the bytes are
+/// malloc'd, so the cost is one allocation per size rather than per box. Only the
+/// outermost filtered box borrows them: a filtered descendant paints into the
+/// surface its ancestor is filling.
+private __gshared Surface _filterLayerSurface;
+private __gshared int _filterLayerWidth, _filterLayerHeight;
+private __gshared ubyte* _filterLayerBytes;
+private __gshared size_t _filterLayerBytesLength;
+private __gshared int _filterLayerDepth;
+
+private Surface filterLayerSurface(int w, int h)
+{
+    if (_filterLayerSurface is null || _filterLayerWidth != w || _filterLayerHeight != h)
+    {
+        _filterLayerSurface = new Surface(w, h);
+        _filterLayerWidth = w;
+        _filterLayerHeight = h;
+    }
+    _filterLayerSurface.clear(Color(0, 0, 0, 0));
+    return _filterLayerSurface;
+}
+
+private ubyte[] filterLayerBytes(size_t needed)
+{
+    import core.stdc.stdlib : free, malloc;
+    if (_filterLayerBytesLength != needed)
+    {
+        free(_filterLayerBytes);
+        auto fresh = cast(ubyte*) malloc(needed);
+        if (fresh is null)
+        {
+            _filterLayerBytes = null;
+            _filterLayerBytesLength = 0;
+            return null;
+        }
+        _filterLayerBytes = fresh;
+        _filterLayerBytesLength = needed;
+    }
+    return _filterLayerBytes[0 .. needed];
+}
+
 /// Paint `element` (and its subtree) through its `filter` (CSS Filter Effects 1).
 /// Layering works exactly like `paintMaskedLayer` — the subtree goes into a layer
 /// surface and is drawn back — but the layer's colours are transformed rather
@@ -186,8 +300,9 @@ private bool paintFilterLayer(Element element, Canvas canvas)
     if (w <= 0 || h <= 0) return false;
 
     import aurora.surface : Surface;
-    auto layerSurface = new Surface(w, h);
-    layerSurface.clear(Color(0, 0, 0, 0));
+    const bool borrow = _filterLayerDepth == 0;
+    auto layerSurface = borrow ? filterLayerSurface(w, h) : new Surface(w, h);
+    if (!borrow) layerSurface.clear(Color(0, 0, 0, 0));
 
     // Paint the subtree into the layer with the element's own filter disabled so
     // this cannot recurse.
@@ -196,8 +311,10 @@ private bool paintFilterLayer(Element element, Canvas canvas)
     const string savedFilter = element.style.filter;
     element.style.filter = "none";
     translateBoxTree(element, -bx, -by);
+    ++_filterLayerDepth;
     try paintElement(element, Canvas(layerSurface));
     catch (Throwable) { }
+    finally --_filterLayerDepth;
     translateBoxTree(element, bx, by);
     element.style.filter = savedFilter;
 
@@ -205,7 +322,9 @@ private bool paintFilterLayer(Element element, Canvas canvas)
     applyColourFilterChain(lp, spec);
 
     // Back to straight-alpha RGBA8 for the canvas (Surface is premultiplied).
-    auto rgba = new ubyte[](cast(size_t) w * h * 4);
+    auto rgba = borrow ? filterLayerBytes(cast(size_t) w * h * 4)
+        : new ubyte[](cast(size_t) w * h * 4);
+    if (rgba is null) return false;
     foreach (y; 0 .. h)
         foreach (x; 0 .. w)
         {
@@ -322,6 +441,60 @@ private void applyColourFilterChain(uint[] layer, string spec)
     }
 }
 
+/// Scratch buffers for masked layers, reused across boxes and paint passes.
+///
+/// Every generation that moves layout repaints each masked veil, and each one
+/// used to allocate its own layer surface, column map and full-box RGBA buffer.
+/// boqsc.eu's hero veil is 1120x1224, so those are 5 MB each and, being on the GC
+/// heap, they were still resident long after the pass that made them: a single
+/// load kept ~90 MB of them. The surface is reused for as long as the box size is
+/// unchanged and the bytes are malloc'd, so the churn is one allocation per size.
+/// A masked box nested inside another takes the private path below, because the
+/// inner paint would otherwise overwrite the outer layer it is being painted into.
+private __gshared Surface _maskLayerSurface;
+private __gshared int _maskLayerWidth, _maskLayerHeight;
+private __gshared ubyte* _maskLayerBytes;
+private __gshared size_t _maskLayerBytesLength;
+private __gshared int[] _maskLayerColumns;
+private __gshared int _maskLayerDepth;
+
+private Surface maskLayerSurface(int w, int h)
+{
+    if (_maskLayerSurface is null || _maskLayerWidth != w || _maskLayerHeight != h)
+    {
+        _maskLayerSurface = new Surface(w, h);
+        _maskLayerWidth = w;
+        _maskLayerHeight = h;
+    }
+    _maskLayerSurface.clear(Color(0, 0, 0, 0));
+    return _maskLayerSurface;
+}
+
+private ubyte[] maskLayerBytes(size_t needed)
+{
+    import core.stdc.stdlib : free, malloc;
+    if (_maskLayerBytesLength != needed)
+    {
+        free(_maskLayerBytes);
+        auto fresh = cast(ubyte*) malloc(needed);
+        if (fresh is null)
+        {
+            _maskLayerBytes = null;
+            _maskLayerBytesLength = 0;
+            return null;
+        }
+        _maskLayerBytes = fresh;
+        _maskLayerBytesLength = needed;
+    }
+    return _maskLayerBytes[0 .. needed];
+}
+
+private int[] maskLayerColumns(int w)
+{
+    if (_maskLayerColumns.length < w) _maskLayerColumns.length = w;
+    return _maskLayerColumns[0 .. w];
+}
+
 /// Paint `element` (and its subtree) through its `mask-image`.
 ///
 /// A mask cannot be applied to the shared canvas directly: `Canvas` is a vendor
@@ -331,6 +504,16 @@ private void applyColourFilterChain(uint[] layer, string spec)
 /// Returns false when there is nothing to mask (the caller then paints normally).
 private bool paintMaskedLayer(Element element, Canvas canvas)
 {
+    // A layer this box already has for the current paint generation: painting it
+    // is one blit, where rebuilding it costs a layer surface, the subtree paint,
+    // the mask multiply and a second full RGBA copy. The mask is not re-read
+    // either - it cannot have changed without a new generation.
+    if (maskedLayerFresh(element))
+    {
+        canvas.drawImage(Rect(element.box.x, element.box.y, element.box.width,
+            element.box.height), cast(RgbaImage) element.maskedLayer, false);
+        return true;
+    }
     auto mask = gradientMaskImage(element.style.maskImage, element.box.width,
         element.box.height);
     if (mask is null) return false;
@@ -338,9 +521,12 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
     const int h = element.box.height;
     if (w <= 0 || h <= 0) return false;
 
-    import aurora.surface : Surface;
-    auto layerSurface = new Surface(w, h);
-    layerSurface.clear(Color(0, 0, 0, 0));
+    // Only the outermost masked box may borrow the shared scratch buffers: a
+    // masked descendant paints into the surface its ancestor is filling.
+    const bool borrow = _maskLayerDepth == 0;
+    auto layerSurface = borrow ? maskLayerSurface(w, h) : new Surface(w, h);
+    if (!borrow) layerSurface.clear(Color(0, 0, 0, 0));
+    if (layerSurface is null) return false;
 
     // Paint the subtree into the layer at the layer's origin, with the element's
     // own mask disabled so this cannot recurse.
@@ -349,8 +535,10 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
     const string savedMask = element.style.maskImage;
     element.style.maskImage = "none";
     translateBoxTree(element, -bx, -by);
+    ++_maskLayerDepth;
     try paintElement(element, Canvas(layerSurface));
     catch (Throwable) { }
+    finally --_maskLayerDepth;
     translateBoxTree(element, bx, by);
     element.style.maskImage = savedMask;
 
@@ -365,10 +553,10 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
     const int mw = mask.width();
     const int mh = mask.height();
     // Which mask column each destination column reads: the same for every row.
-    int[] maskX;
-    maskX.length = w;
+    int[] maskX = borrow ? maskLayerColumns(w) : new int[w];
     foreach (x; 0 .. w) maskX[x] = (x * mw) / w;
-    auto rgba = new ubyte[](cast(size_t) w * h * 4);
+    auto rgba = borrow ? maskLayerBytes(cast(size_t) w * h * 4) : new ubyte[](cast(size_t) w * h * 4);
+    if (rgba is null) return false;
     foreach (y; 0 .. h)
     {
         const size_t maskRow = (cast(size_t) ((y * mh) / h)) * mw;
@@ -402,7 +590,9 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
             rgba[i + 3] = cast(ubyte) a;
         }
     }
-    canvas.drawImage(Rect(bx, by, w, h), new RgbaImage(w, h, rgba), false);
+    auto image = new RgbaImage(w, h, rgba);
+    keepMaskedLayer(element, image);
+    canvas.drawImage(Rect(bx, by, w, h), image, false);
     return true;
 }
 
