@@ -1612,6 +1612,24 @@ int main(string[] args)
         writeln("A rebuild resumes the conversation that requested it");
     }
 
+    // An external application update can resume a working chat without owning
+    // that chat's compile/check outcomes.
+    {
+        root.newChatForTesting();
+        const externalTarget = root.currentSessionForTesting();
+        root.addConversationForTesting(["user"], ["Build and verify the parser"]);
+        root.applyPlanForTesting(`{"plan":[{"step":"Compile the parser","status":"in_progress"},{"step":"Verify parser behavior","status":"pending"}]}`);
+        root.setTaskStateForTesting("Build and verify the parser", "active", "required");
+        write(buildPath(stateDir, "turn-active"), root.sessionIdForTesting(externalTarget) ~ "\n");
+        write(buildPath(stateDir, "restart-resume.json"), `{"cause":"rebuild","reason":"external application maintenance","session":""}`);
+        root.prepareResumeForTesting();
+        assert(root.currentSessionForTesting() == externalTarget && root.taskStepStatusForTesting(0) == "in_progress",
+            "an external application rebuild completed an unrelated compile outcome");
+        assert(root.verificationStatusForTesting() == "required");
+        root.clearPendingResumeForTesting();
+        writeln("External rebuild resume preserves another task's unfinished compile/check outcomes");
+    }
+
     // Several chats can run at once, and a rebuild or unexpected close must
     // resume all of them. The supervisor writes its crash note only while the
     // shared `turn-active` marker exists, so one of several running chats
@@ -3627,12 +3645,10 @@ int main(string[] args)
     window.saveScreenshot(buildPath(promptShots, "system-prompt.ppm"));
     root.dismissPopupForTesting();
 
-    // Optional verbosity selector. The picker opens on "Default" (the stock
-    // prompt); choosing Concise adds the response-style section to the exact
-    // system message, and the choice is persisted. Restored at the end so the
-    // rest of the suite sees the stock prompt.
-    assert(root.verbosityPickerLabelForTesting() == "Default",
-        "The verbosity picker must default to Default");
+    // New settings start Concise. Verify the persisted style, then explicitly
+    // select Default so the rest of the suite sees the stock prompt.
+    assert(root.verbosityPickerLabelForTesting() == "Concise",
+        "New settings must default to Concise");
     root.dismissPopupForTesting();
     assert(root.selectVerbosityForTesting("concise") == "concise",
         "Selecting a verbosity must store the chosen level");
@@ -5361,10 +5377,8 @@ int main(string[] args)
         writeln("Tracked plan mode gates exploration that ran without a plan");
     }
 
-    // A recorded plan the model stops refreshing must not silently drift: the
-    // checklist would keep showing finished work as pending/in_progress. Once a
-    // plan with unfinished steps goes unrefreshed for enough tool results, the
-    // runtime queues a hidden reminder to call update_plan again.
+    // Healthy inspection does not require checklist maintenance solely because
+    // a tool count grew. Actual completed outcomes still need action evidence.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Refactor and verify"]);
     root.applyPlanForTesting(
@@ -5374,8 +5388,7 @@ int main(string[] args)
         "a freshly recorded plan was treated as stale");
     root.addConversationForTesting(["assistant"], [""]);
     const stalePlanToolBase = root.toolMessageCountForTesting();
-    // The runtime nudges once tool results since the last update_plan reach
-    // planRefreshNudgeCalls (16 in appui.d), so the fixture must run that many.
+    const beforePlanInspection = root.userMessageCountForTesting();
     foreach (i; 0 .. 16)
         root.injectToolResultForTesting("read", "file " ~ to!string(i), false,
             `{"filePath":"src/file` ~ to!string(i) ~ `.d"}`);
@@ -5384,11 +5397,10 @@ int main(string[] args)
     assert(root.toolResultsSincePlanUpdateForTesting() == 16,
         "tool results since the last update_plan were miscounted: " ~
         to!string(root.toolResultsSincePlanUpdateForTesting()));
-    assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0 &&
-        root.lastUserMessageForTesting().indexOf("checklist") >= 0,
-        "a stale plan did not queue a refresh reminder: " ~
-        root.lastUserMessageForTesting());
-    // Refreshing the plan clears the staleness and stops the reminders.
+    assert(root.userMessageCountForTesting() == beforePlanInspection && !root.planNeedsUpdateForTesting(),
+        "healthy inspection forced checklist maintenance");
+    root.injectToolResultForTesting("edit", "Change implemented", false,
+        `{"filePath":"app.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
         `{"plan":[{"step":"Implement the change","status":"completed"},` ~
         `{"step":"Verify it","status":"in_progress"}]}`);
@@ -5396,7 +5408,7 @@ int main(string[] args)
         "an update_plan call did not clear plan staleness");
     assert(root.taskStepStatusForTesting(0) == "completed",
         "update_plan did not update the durable checklist");
-    writeln("Stale plans receive a hidden refresh reminder");
+    writeln("Healthy inspection avoids count-based plan maintenance; completion retains action evidence");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Make and verify a change"]);
@@ -6373,6 +6385,8 @@ int main(string[] args)
         assert(paintProjection(root, driver), "baseline plan did not paint");
         const simpleHeight = root.detachedPlanRectForTesting().height;
         root.setExperimentalNestedPlansForTesting(true);
+        root.injectToolResultForTesting("read", "Inspected first outcome source", false,
+            `{"filePath":"first.d"}`);
         root.injectToolResultForTesting("update_subplan", "Subplan updated",
             false, `{"parent_step":1,"plan":[` ~
             `{"step":"Inspect","status":"completed"},` ~
@@ -6429,9 +6443,9 @@ int main(string[] args)
         root.injectToolResultForTesting("update_plan", "Plan updated", false,
             shortPlan);
         assert(root.taskStepCountForTesting() == 50 &&
-            root.lastToolResultForTesting().indexOf(
-                "replace the existing 50-step plan") >= 0,
+            root.lastToolResultForTesting().indexOf("Error:") >= 0,
             "a nine-step subplan erased the fifty-step plan");
+        root.addConversationForTesting(["user"], ["Replace the entire plan with the nine replacement outcomes."]);
         root.injectToolResultForTesting("update_plan", "Plan updated", false,
             `{"replace_entire_plan":true,` ~ shortPlan[1 .. $]);
         assert(root.taskStepCountForTesting() == 9,
@@ -6561,6 +6575,10 @@ int main(string[] args)
             "not_required");
         root.addConversationForTesting(["assistant"], [""]);
         root.startTurnClockForTesting();
+        root.injectToolResultForTesting("edit", "Recovery state persisted", false,
+            `{"filePath":"recovery.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
+        root.injectToolResultForTesting("run", "Recovery assertions passed", false,
+            `{"program":"dub","args":["test"]}`, 0, 0, "", null, "dub test");
         root.applyPlanForTesting(
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"completed"}]}`);

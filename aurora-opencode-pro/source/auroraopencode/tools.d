@@ -105,7 +105,7 @@ private bool filesystemTool(string name)
 /// another process's rewrite is re-runnable.
 private bool checkoutObserver(string name)
 {
-    return filesystemTool(name) || name == "checksum" ||
+    return filesystemTool(name) || name == "calculate" || name == "checksum" ||
         name == "webfetch" || name == "websearch";
 }
 
@@ -511,6 +511,16 @@ private OpenCodeToolDef applyPatchToolDefinition()
     );
 }
 
+private OpenCodeToolDef calculateToolDefinition()
+{
+    return OpenCodeToolDef("calculate",
+        "Verify arithmetic and numerical examples without running code or changing files. " ~
+        "Batch 1 to 16 expressions. Supports + - * / % ^, parentheses, decimal and scientific numbers; " ~
+        "^ means exponentiation. Uses finite double precision, not exact financial accounting. " ~
+        "Use the returned values when reporting calculations; do not claim a mental estimate was verified.",
+        `{"type":"object","properties":{"expressions":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"string","maxLength":512}}},"required":["expressions"]}`);
+}
+
 private OpenCodeToolDef taskBlockerToolDefinition()
 {
     return OpenCodeToolDef("request_input",
@@ -803,6 +813,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         processToolDefinition(),
         toolStatusDefinition(),
         verificationToolDefinition(),
+        calculateToolDefinition(),
         webFetchToolDefinition(),
         downloadToolDefinition(),
         checksumToolDefinition(),
@@ -873,6 +884,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         processToolDefinition(),
         toolStatusDefinition(),
         verificationToolDefinition(),
+        calculateToolDefinition(),
         webFetchToolDefinition(),
         downloadToolDefinition(),
         checksumToolDefinition(),
@@ -5736,7 +5748,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         const developerSource = developerToolSourceDirectory();
         auto targets = mutationTargetPaths(call, workspace);
         auto leasePaths = targets.dup;
-        const control = call.name == "process" || call.name == "tool_status" ||
+        const control = call.name == "calculate" || call.name == "process" || call.name == "tool_status" ||
             call.name == "update_plan" || call.name == "update_subplan" || call.name == "open" ||
             call.name == "retire_images" || call.name == "task_blocker" || call.name == "request_input";
         JSONValue input;
@@ -6313,6 +6325,10 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
 {
     switch (call.name)
     {
+        case "calculate":
+            import auroraopencode.calculator : calculateExpressions;
+            try return ToolExecution(call.name, calculateExpressions(call.arguments), false);
+            catch (Exception error) return ToolExecution(call.name, "Error: " ~ error.msg, true);
         case "verify":
             import auroraopencode.verificationrecipe : runVerificationRecipe, VerificationRun;
             auto recipe = runVerificationRecipe(call.arguments, workspace,

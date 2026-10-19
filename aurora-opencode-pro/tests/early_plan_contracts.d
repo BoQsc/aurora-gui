@@ -8,7 +8,7 @@ import auroraopencode.tools : buildSystemPrompt;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
-import std.file : mkdirRecurse, write, readText;
+import std.file : mkdirRecurse, write, readText, tempDir;
 import std.json : JSONValue, parseJSON;
 import std.path : absolutePath, buildPath;
 import std.process : environment;
@@ -18,7 +18,7 @@ import std.string : indexOf;
 int main()
 {
     environment["AURORA_STRICT_PLAN"] = "0";
-    const state = absolutePath("early-plan-" ~ to!string(MonoTime.currTime.ticks));
+    const state = buildPath(tempDir(), "aurora-early-plan-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(state);
     const evidence = buildPath(state, "evidence.txt");
     write(evidence, "actual evidence\n");

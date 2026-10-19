@@ -48,7 +48,7 @@ private string toolStatus()
 
 private bool controlTool(string name)
 {
-    return name == "process" || name == "tool_status" || name == "read_plan" || name == "update_plan" ||
+    return name == "calculate" || name == "process" || name == "tool_status" || name == "read_plan" || name == "update_plan" ||
         name == "update_subplan" || name == "open" || name == "retire_images" ||
         name == "task_blocker" || name == "request_input";
 }
@@ -76,7 +76,7 @@ public void invalidateToolWorkspace(string workspace) { scheduler().invalidate(w
 
 public bool parallelTool(const ref OpenCodeToolCall call)
 {
-    return call.name == "read" || call.name == "glob" || call.name == "grep" ||
+    return call.name == "calculate" || call.name == "read" || call.name == "glob" || call.name == "grep" ||
         call.name == "dshell" || call.name == "view_image" || call.name == "process" ||
         call.name == "checksum" ||
         // Pure network I/O never touches the workspace, so it must not hold the
@@ -216,10 +216,9 @@ private final class ToolJob : WorkItem
             result = ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
             return;
         }
-        import auroraopencode.taskpolicy : diagnosticToolAllowed;
+        import auroraopencode.taskpolicy : diagnosticToolAllowed, analysisToolAllowed;
         import std.algorithm : canFind;
-        if (batch.context.analysisOnly && ["write", "edit", "apply_patch", "copy", "move",
-                "rename", "create_folder", "remove", "download", "rebuild", "sync"].canFind(call.name))
+        if (batch.context.analysisOnly && !analysisToolAllowed(call.name))
         {
             result = ToolExecution(call.name, "Error: the current request asks for analysis. Gather evidence and report findings; implementation requires a user action request.", true);
             changed = false;

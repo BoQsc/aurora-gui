@@ -81,7 +81,7 @@ import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateEr
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError, taskInputError, taskAwaitingInput;
-import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
+import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed, analysisToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.agentresult : subagentResult;
@@ -11783,7 +11783,8 @@ private string _suggestExcludeId;
             else
                 buildStamp = rebuildSuccessStamp();
         }
-        if (target >= 0 && cause == "rebuild" && rebuildReport.length == 0 &&
+        if (target >= 0 && noteSession.length && _sessions[target].id == noteSession &&
+            cause == "rebuild" && rebuildReport.length == 0 &&
             buildStamp.length > 0)
         {
             auto session = &_sessions[target];
@@ -15193,12 +15194,9 @@ private string _suggestExcludeId;
     private bool ensureDurableTaskCheckpoint(ref ChatSession session,
         bool nestedEnabled)
     {
-        const state = durableTaskPrompt(session, nestedEnabled) ~
-            (_settings.verbosity == "concise"
-                ? "\nVisible reply: at most three short sentences, target 40 words and no more than 80 unless detail was requested. " ~
-                  "State the result and verification once. No unsolicited code or examples. Resolve uncertainty and check calculations before answering; do not narrate self-corrections.\n"
-                : "");
-        if (state.length == 0) return false;
+        const taskState = durableTaskPrompt(session, nestedEnabled);
+        if (taskState.length == 0) return false;
+        const state = taskState ~ promptVerbosityDirective(_settings.verbosity);
         if (controlHistoryCompactionNeeded(session))
         {
             ChatMessage boundary;
@@ -19523,7 +19521,7 @@ private void pollButtonSuggestionRequest()
         changeContext.turnId = to!string(requestId);
         changeContext.diagnosticReadOnly = _execution.diagnosticActive;
         changeContext.analysisOnly = session.contract.currentIntent == "analysis" ||
-            explanationOnlyRequest(latestActualUserRequest(*session));
+            answerOnlyRequest(latestActualUserRequest(*session));
         changeContext.computer = ComputerUseContext(true,
             sessionRoutingKey(*session), _client.baseUrl(), _client.apiKey(),
             session.model, changeContext.analysisOnly,
@@ -19534,7 +19532,7 @@ private void pollButtonSuggestionRequest()
         // The UI may clear/replace its live arrays as soon as the user cancels
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
-        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)) || session.contract.currentIntent == "analysis");
+        setComputerUseExplanationOnly(changeContext.analysisOnly);
         if (_durabilityBlocked)
         {
             stopActiveTurn();
@@ -22474,10 +22472,11 @@ private void pollButtonSuggestionRequest()
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
-        if (diagnosticReview)
+        if (diagnosticReview || session.contract.currentIntent == "analysis" || answerOnlyRequest(latestActualUserRequest(*session)))
         {
             OpenCodeToolDef[] inspection;
-            foreach (tool; tools) if (diagnosticToolAllowed(tool.name)) inspection ~= tool;
+            foreach (tool; tools)
+                if (diagnosticReview ? diagnosticToolAllowed(tool.name) : analysisToolAllowed(tool.name)) inspection ~= tool;
             tools = inspection;
         }
         if (!_settings.experimentalNestedPlans)

@@ -4,6 +4,7 @@ import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.taskcontext : taskExcerpt;
 import auroraopencode.requestintent : answerOnlyRequest;
 import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
+import auroraopencode.workevidence : observedResultKey;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.json : JSONValue, JSONType, parseJSON;
@@ -38,35 +39,24 @@ struct TaskContinuation
         state["evidence"] = JSONValue(evidence);
         if (action == TaskContinuationAction.replan)
             return taskContinuationMarker ~ state.toString() ~ "\n" ~
-                "The last attempts produced no completed outcome or accepted verification. " ~
-                "Change the diagnostic approach now. Record the exact remaining defect, " ~
-                "expected behavior, strongest contradictory evidence and rejected hypotheses. " ~
-                "Reduce it to a failing case or inspect a different subsystem before editing. " ~
-                "Use an independent reference for rendering. New query strings, repeated " ~
-                "builds and plan rewrites are not proof of improvement. Continue the user's " ~
-                "authorized work without asking permission. Recover from tool errors, inspect local " ~
-                "configuration and try available alternatives. Finish independent outcomes first. " ~
+                "No supported outcome advanced. Change the diagnosis: compare expected behavior with the " ~
+                "recorded failure, reject the unsupported hypothesis, and test a smaller case or different source. " ~
+                "Do useful tool work now; avoid another summary or permission question. " ~
                 remaining ~ verificationGuidance();
         return taskContinuationMarker ~ state.toString() ~ "\n" ~
-            "The user's authorized task still has unfinished work or verification. " ~
-            "Continue the remaining outcomes with the available tools now. " ~
-            "Keep update_plan accurate and verify completed changes. Do not repeat " ~
-            "successful checks without a new reason, merely summarize the remaining " ~
-            "work, or ask permission to continue work already requested. A successful " ~
-            "check of a partial change does not complete the task. Recover from obstacles " ~
-            "using recorded evidence and available alternatives. Never ask the user to say Continue. " ~
+            "Continue the specific unfinished outcomes below with tools. Use existing successful evidence; " ~
+            "do not repeat passing checks without a new reason or ask permission to continue. " ~
+            "Report delivery only when the requested outcomes and required checks are complete. " ~
             remaining ~ verificationGuidance();
     }
 
     private string verificationGuidance() const
     {
         return verificationRequired
-            ? "Verification is authorized and still required. Keep useful regression tests and run a " ~
-              "recognized checker from this checkout (Python: python -u -B -m unittest or pytest). " ~
-              "For a custom checker, write a verify recipe with a tests step and run verify. " ~
-              "Do not delete passing tests or ask the user which checker to use."
-            : "Ask request_input only for an essential user-owned fact unavailable from local sources, " ~
-              "after completing independent work. Otherwise finish the remaining outcomes.";
+            ? "Verification remains required: preserve useful tests and run a checkout checker " ~
+              "(Python: python -u -B -m unittest or pytest), or a verify recipe with a tests step. " ~
+              "Resolve routine checking choices internally."
+            : "Use request_input only for an essential unavailable user fact, after finishing independent work.";
     }
 }
 
@@ -144,10 +134,8 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
         if (message.toolName == "dshell" &&
             (message.toolArgs.indexOf("\"sleep\"") >= 0 ||
              message.toolArgs.indexOf("\"wait\"") >= 0)) continue;
-        // Command timing/output alone is not new progress for an identical run.
-        const detail = message.toolName == "run" ? "" : message.content ~ message.toolDiff;
-        const key = sha256Of(message.toolName ~ "\n" ~ message.toolArgs ~ "\n" ~ detail).toHexString().idup;
-        evidence[key] = true;
+        const key = observedResultKey(message);
+        if (key.length) evidence[key] = true;
     }
     result.tools = cast(int) evidence.length;
     bool[string] completedEvidence;

@@ -25,6 +25,8 @@ private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
     if (!sentenceStart && i >= 2 && words[i - 2] == "do" && words[i - 1] == "not") return false;
     if (i == 0 || sentenceStart || clauseStart || (i && ["and", "then", "please", "let's"].canFind(words[i - 1]))) return true;
     if (i >= 2 && words[i - 1] == "you" && ["can", "could", "would", "will"].canFind(words[i - 2])) return true;
+    if (i >= 2 && words[i - 1] == "we" && ["can", "could", "would", "will"].canFind(words[i - 2]) &&
+        (i == 2 || (i >= 3 && raw[i - 3].length && ".!?:;".canFind(raw[i - 3][$ - 1])))) return true;
     if (i >= 2 && words[i - 1] == "to" && ["me", "you", "need", "want"].canFind(words[i - 2])) return true;
     if (i >= 2 && words[i - 1] == "me" && words[i - 2] == "help") return true;
     if (i >= 2 && words[0] == "i" && ["want", "need"].canFind(words[1])) return true;
@@ -38,14 +40,17 @@ RequestIntent requestIntent(string text)
 {
     const words = requestWords(text);
     const raw = text.toLower().split();
-    bool analysis, continuation;
+    bool analysis, continuation, completion, clarification;
     foreach (i, word; words)
     {
         if (!requestedVerb(words, raw, i)) continue;
         if (["continue", "resume", "retry"].canFind(word)) { continuation = true; continue; }
+        if (["finish", "complete"].canFind(word)) { completion = true; continue; }
+        if (["explain", "describe", "summarize", "summarise", "recap"].canFind(word))
+        { clarification = true; continue; }
         if (["fix", "repair", "implement", "apply", "change", "refactor", "optimize", "optimise",
                 "create", "add", "remove", "delete", "replace", "rename", "move", "save", "commit",
-                "publish", "deploy", "install", "launch", "play", "run", "try", "finish", "complete",
+                "publish", "deploy", "install", "launch", "play", "run", "try",
                 "select", "update", "build", "resolve", "improve", "make", "write", "rebuild", "test", "verify",
                 "redesign", "generate", "code", "rewrite", "integrate", "upgrade", "migrate", "enable", "disable",
                 "extract", "convert", "configure", "connect", "download", "open", "copy"].canFind(word))
@@ -54,9 +59,11 @@ RequestIntent requestIntent(string text)
                 "investigate", "research", "audit", "find", "look", "examine"].canFind(word)) analysis = true;
     }
     if (continuation) return RequestIntent.continuation;
+    if (completion) return RequestIntent.implementation;
     if (analysis) return RequestIntent.analysis;
+    if (clarification) return RequestIntent.clarification;
     if (words.length && (["what", "how", "why", "when", "where", "who", "which", "is", "are",
-            "does", "did", "do", "can", "could", "would", "explain", "describe", "summarize",
+            "does", "did", "do", "can", "could", "would", "should", "shall", "will", "may", "might", "explain", "describe", "summarize",
             "summarise", "status", "recap", "hello", "hi", "thanks"].canFind(words[0]) ||
             words.canFind("explanation"))) return RequestIntent.clarification;
     return RequestIntent.conversation;

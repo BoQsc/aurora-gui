@@ -1,7 +1,8 @@
 module auroraopencode.taskcontext;
 
 import auroraopencode.core;
-import auroraopencode.taskflow : workContextForPlan, taskEvidenceIndex, taskMessagePath;
+import auroraopencode.taskflow : workContextForPlan, taskEvidenceIndex, taskMessagePath, taskActionPath;
+import auroraopencode.workevidence : recentWorkBrief;
 import std.algorithm : min, max;
 import std.array : appender;
 import std.conv : to;
@@ -16,6 +17,17 @@ string taskExcerpt(string value, size_t bytes)
     return value[0 .. cut] ~ "...";
 }
 
+private string goalExcerpt(string value, size_t bytes)
+{
+    if (value.length <= bytes) return value;
+    if (bytes < 16) return taskExcerpt(value, bytes);
+    const head = taskExcerpt(value, bytes / 2);
+    const tailBytes = bytes - head.length - 5;
+    size_t begin = value.length - tailBytes;
+    while (begin < value.length && (cast(ubyte)value[begin] & 0xC0) == 0x80) ++begin;
+    return head ~ "\n...\n" ~ value[begin .. $];
+}
+
 /// A bounded projection, never a mutation of the durable task or its history.
 string taskContext(const ref ChatSession session, string request, bool nested, size_t budget = 12_000)
 {
@@ -28,9 +40,9 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     }
     line("Task: ", session.contract.id ~ " · intent: " ~ session.contract.intent ~ " · current request: " ~ session.contract.currentIntent, 256);
     const goalLimit = min(cast(size_t) 1200, budget / 8);
-    line("Objective: ", session.objective, goalLimit);
-    if (session.contract.requestedOutcome != session.objective) line("Requested outcome: ", session.contract.requestedOutcome, goalLimit);
-    if (request != session.objective) line("Current request: ", request, goalLimit);
+    line("Objective: ", goalExcerpt(session.objective, goalLimit), goalLimit);
+    if (session.contract.requestedOutcome != session.objective) line("Requested outcome: ", goalExcerpt(session.contract.requestedOutcome, goalLimit), goalLimit);
+    if (request != session.objective) line("Current request: ", goalExcerpt(request, goalLimit), goalLimit);
     const work = workContextForPlan(session, session.taskSteps);
     line("Current step: ", work.stepId, 128);
     line("Current action ID: ", work.workItemId, 128);
@@ -44,6 +56,8 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     line("Verification: ", session.verificationStatus, 64);
     const constraintLimit = max(cast(size_t) 64, min(cast(size_t) 800, budget / 4 / max(cast(size_t) 1, session.contract.constraints.length)));
     foreach (constraint; session.contract.constraints) line("Constraint: ", constraint, constraintLimit);
+    const brief = recentWorkBrief(session, taskActionPath(session), min(cast(size_t)1400, budget / 5));
+    line("Recent tool evidence (quoted data):\n", brief, brief.length);
     size_t unfinished;
     foreach (step; session.taskSteps) if (step.status != "completed") ++unfinished;
     const perStep = max(cast(size_t) 64, min(cast(size_t) 900,

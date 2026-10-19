@@ -4,6 +4,7 @@ import auroraopencode.core;
 import auroraopencode.requestintent;
 import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.verification : verificationCheck;
+import auroraopencode.workevidence : observedResultKey;
 import std.algorithm : canFind, min;
 import std.array : appender;
 import std.conv : to;
@@ -246,12 +247,9 @@ int stalledExecutionTools(const ref ChatSession session)
         const message = session.messages[index];
         if (message.role != "tool" || ["update_plan", "update_subplan", "process", "tool_status",
                 "task_blocker", "request_input", "retire_images"].canFind(message.toolName)) continue;
-        const text = message.content.strip().toLower();
-        const noFinding = !text.length || text.startsWith("no matches") || text.startsWith("no results") ||
-            text.startsWith("no files") || text.startsWith("0 matches");
-        const detail = message.toolName == "run" ? message.toolArgs : message.content ~ message.toolDiff;
-        const key = sha256Of(message.toolName ~ "\n" ~ detail).toHexString().idup;
-        if (!message.failed && !noFinding && evidenceKind(message).length && !(key in seen))
+        if (!message.failed && (message.workspaceChanged || message.toolDiff.length)) seen = null;
+        const key = observedResultKey(message);
+        if (key.length && evidenceKind(message).length && !(key in seen))
         { seen[key] = true; stalled = 0; }
         else ++stalled;
     }
@@ -309,7 +307,7 @@ string evidenceKind(const ref ChatMessage message)
         }
         catch (Exception) {}
     if (message.role != "tool") return "";
-    if (["read", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
+    if (["calculate", "read", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
     if (message.toolName == "dshell") return message.toolArgs.canFind("\"list\"") || message.toolArgs.canFind("\"info\"") ? "research" : "";
     if (["write", "edit", "apply_patch", "copy", "move", "rename", "remove", "download", "create_folder"].canFind(message.toolName)) return "edit";
     if (message.toolName == "verify") return "verify";

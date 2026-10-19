@@ -1,0 +1,280 @@
+{
+  "scope": "Synthetic five-scenario hosted-provider evaluation. End-to-end timings include model/network wait; this is not a client latency benchmark or a general intelligence score.",
+  "runs": [
+    {
+      "status": "passed",
+      "binarySha256": "e0579d4580b1702106edf59cb74405b2146df9805b5bcaf6c5a53db0eb5c1a78",
+      "models": [
+        "deepseek/deepseek-v4.1-flash"
+      ],
+      "modelRequests": 17,
+      "toolCalls": 12,
+      "totalTokens": 247728,
+      "resolvedScenarios": 5,
+      "completionStateMismatches": 0,
+      "endToEndSeconds": 60.192154099997424,
+      "expectedScenarios": 5,
+      "stage": "isolated baseline 0.66.24",
+      "scenarios": [
+        {
+          "name": "analysis",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 32,
+          "seconds": 6.2800309999984165,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "not_required",
+          "independentCheck": "Read-only request preserved source"
+        },
+        {
+          "name": "calculation",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 1,
+          "seconds": 5.004067500001838,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "not_required",
+          "independentCheck": "Read-only request preserved source; independently checked actual=44.1, expected=49.1"
+        },
+        {
+          "name": "implementation",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 21,
+          "seconds": 26.694883899999695,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": ""
+        },
+        {
+          "name": "question",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 37,
+          "seconds": 6.414542399998027,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": "Read-only request preserved source"
+        },
+        {
+          "name": "correction",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 21,
+          "seconds": 15.798629299999448,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": ""
+        }
+      ]
+    },
+    {
+      "status": "failed",
+      "binarySha256": "c03671a4585c2408b672f55e3824725496cda0cf5d54ff8a72496d7561d986e3",
+      "models": null,
+      "modelRequests": null,
+      "toolCalls": null,
+      "totalTokens": null,
+      "resolvedScenarios": null,
+      "completionStateMismatches": null,
+      "endToEndSeconds": null,
+      "expectedScenarios": 5,
+      "stage": "intermediate candidate: wrong branch caught",
+      "scenarios": [
+        {
+          "name": "analysis",
+          "passed": true,
+          "artifactPassed": null,
+          "answerWords": 87,
+          "seconds": 12.558115200001339,
+          "completed": null,
+          "verified": null,
+          "taskStatus": null,
+          "verificationStatus": null,
+          "independentCheck": "Read-only request preserved source"
+        },
+        {
+          "name": "calculation",
+          "passed": false,
+          "artifactPassed": null,
+          "answerWords": 1,
+          "seconds": 3.4100667999991856,
+          "completed": null,
+          "verified": null,
+          "taskStatus": null,
+          "verificationStatus": null,
+          "independentCheck": "Read-only request preserved source; independently checked actual=44.1, expected=49.1"
+        }
+      ]
+    },
+    {
+      "status": "passed",
+      "binarySha256": "cc0721572cffb60052211686f51d9ef6b88107e195e2a95d36d2e914e5792a6b",
+      "models": [
+        "deepseek/deepseek-v4.1-flash"
+      ],
+      "modelRequests": 18,
+      "toolCalls": 13,
+      "totalTokens": 254350,
+      "resolvedScenarios": 5,
+      "completionStateMismatches": 0,
+      "endToEndSeconds": 56.86853079999855,
+      "expectedScenarios": 5,
+      "stage": "actual-code probe candidate",
+      "scenarios": [
+        {
+          "name": "analysis",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 93,
+          "seconds": 13.790606999999,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "not_required",
+          "independentCheck": "Read-only request preserved source"
+        },
+        {
+          "name": "calculation",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 1,
+          "seconds": 3.7246577000005345,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "not_required",
+          "independentCheck": "Read-only request preserved source; independently checked actual=44.1, expected=49.1"
+        },
+        {
+          "name": "implementation",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 17,
+          "seconds": 23.30468960000144,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": ""
+        },
+        {
+          "name": "question",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 67,
+          "seconds": 2.9525020999972185,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": "Read-only request preserved source"
+        },
+        {
+          "name": "correction",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 21,
+          "seconds": 13.096074400000361,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": ""
+        }
+      ]
+    },
+    {
+      "status": "passed",
+      "binarySha256": "77d77ffa0ffa71dcdc0b422c35cbb963ac88b5a07ba918d3194ce1b861311b12",
+      "models": [
+        "deepseek/deepseek-v4.1-flash"
+      ],
+      "modelRequests": 18,
+      "toolCalls": 14,
+      "totalTokens": 274459,
+      "resolvedScenarios": 5,
+      "completionStateMismatches": 0,
+      "endToEndSeconds": 77.34394979999342,
+      "expectedScenarios": 5,
+      "stage": "final 0.66.25 candidate",
+      "scenarios": [
+        {
+          "name": "analysis",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 74,
+          "seconds": 12.605379399999947,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "not_required",
+          "independentCheck": "Read-only request preserved source"
+        },
+        {
+          "name": "calculation",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 1,
+          "seconds": 4.763101900000038,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "not_required",
+          "independentCheck": "Read-only request preserved source; independently checked actual=44.1, expected=49.1"
+        },
+        {
+          "name": "implementation",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 29,
+          "seconds": 42.41720079999868,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": ""
+        },
+        {
+          "name": "question",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 41,
+          "seconds": 4.004366499997559,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": "Read-only request preserved source"
+        },
+        {
+          "name": "correction",
+          "passed": true,
+          "artifactPassed": true,
+          "answerWords": 28,
+          "seconds": 13.553901199997199,
+          "completed": true,
+          "verified": true,
+          "taskStatus": "completed",
+          "verificationStatus": "passed",
+          "independentCheck": ""
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "One isolated baseline, one failed intermediate, and two passes at different candidate revisions. Not enough to establish a success-rate or speed advantage.",
+    "The original shorter suite did not grade unsolicited numerical claims. The extended suite independently checks explicit numerical output.",
+    "These use isolated compiled images. The release image and native delivery performance are verified separately."
+  ]
+}

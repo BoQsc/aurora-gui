@@ -37,7 +37,7 @@ def grade(report, directory):
         row["verified"] = row["name"] not in ("implementation", "correction") or row["verificationStatus"] == "passed"
         row["passed"] = row["artifactPassed"] and row["concise"] and not row["turnFailed"] and row["completed"] and row["verified"]
     resolved = sum(row["passed"] for row in report["scenarios"])
-    report.update(status="passed" if resolved == len(prompts) else "failed",
+    report.update(status="passed" if resolved == len(report["scenarios"]) and resolved == report.get("expectedScenarios", len(prompts)) else "failed",
         models=sorted({header.get("model", "") for header in headers if header.get("model")}),
         modelRequests=len(assistants), toolCalls=sum(len(m.get("toolCalls", [])) for m in assistants),
         totalTokens=(sum(m["totalTokens"] for m in assistants)
@@ -58,7 +58,10 @@ parser.add_argument("--live", action="store_true",
 parser.add_argument("--regrade", type=Path, help="Recheck saved artifacts, completion state and concision without model calls")
 parser.add_argument("--exe", type=Path, default=package / "aurora-opencode-pro.exe")
 parser.add_argument("--output", type=Path)
+parser.add_argument("--extended", action="store_true", help="Also grade a numerical claim against independently computed values")
 args = parser.parse_args()
+if args.extended:
+    prompts.insert(1, ("calculation", "Analyze invoice.py without editing it. For subtotal 49 with the coupon enabled, calculate the current return value and the required return value under the original rules: delivery costs 5 below 50 and coupons discount only merchandise. Return one JSON object with numeric keys actual and expected."))
 if args.regrade:
     report = json.loads((args.regrade / "result.json").read_text(encoding="utf-8"))
     grade(report, args.regrade)
@@ -67,7 +70,9 @@ if args.regrade:
     raise SystemExit(0 if report["status"] == "passed" else 1)
 if not args.live:
     parser.error("Use --live to authorize model requests, or --regrade with saved artifacts")
-directory = args.output or Path(tempfile.mkdtemp(prefix="conversation-quality-", dir=package / "build"))
+# A workspace inside the application checkout competes for its source lease
+# with real development/builds, contaminating quality and latency measurements.
+directory = args.output or Path(tempfile.mkdtemp(prefix="aurora-conversation-quality-"))
 directory.mkdir(parents=True, exist_ok=True)
 workspace = directory / "workspace"
 workspace.mkdir(exist_ok=True)
@@ -83,6 +88,7 @@ source = workspace / "invoice.py"
 source.write_text("def total(subtotal, coupon=False):\n    return (subtotal + (0 if subtotal >= 20 else 5)) * (0.9 if coupon else 1)\n", encoding="utf-8")
 report = {"binarySha256": hashlib.sha256(args.exe.read_bytes()).hexdigest(),
           "framing": "jsonl",
+          "expectedScenarios": len(prompts),
           "route": "Actual console model is recorded from saved history; GUI preferences remain unchanged.",
           "scenarios": [], "status": "failed"}
 lines = queue.Queue()
@@ -129,8 +135,15 @@ try:
                     if process.poll() is not None:
                         raise RuntimeError(f"App exited during {name}: {process.returncode}")
             response = response.strip()
-            if name in ("analysis", "question"):
+            if name in ("analysis", "question", "calculation"):
                 passed, detail = source.read_bytes() == initial, "Read-only request preserved source"
+                if name == "calculation":
+                    try:
+                        value = json.loads(response.removeprefix("```json").removesuffix("```").strip())
+                        passed = passed and isinstance(value.get("actual"), (int, float)) and isinstance(value.get("expected"), (int, float)) and abs(value["actual"] - 44.1) < 1e-8 and abs(value["expected"] - 49.1) < 1e-8
+                        detail += "; independently checked actual=44.1, expected=49.1"
+                    except (ValueError, TypeError, AttributeError):
+                        passed, detail = False, "Numerical answer did not satisfy the requested JSON contract"
             else:
                 passed, detail = check_behavior(75 if name == "correction" else 50)
             row = {"name": name, "passed": passed, "seconds": time.monotonic()-started,

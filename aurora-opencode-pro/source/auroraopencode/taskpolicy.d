@@ -178,9 +178,15 @@ string verificationCoverage(const ref ChatSession session, string extraCheck = "
     return "verify:" ~ kinds.join(",");
 }
 
+bool analysisToolAllowed(string name)
+{
+    return !["write", "edit", "apply_patch", "copy", "move", "rename", "create_folder", "remove", "download",
+        "rebuild", "sync", "assign"].canFind(name);
+}
+
 bool diagnosticToolAllowed(string name)
 {
-    return ["read", "read_plan", "grep", "glob", "view_image", "checksum", "tool_status"].canFind(name);
+    return ["calculate", "read", "read_plan", "grep", "glob", "view_image", "checksum", "tool_status"].canFind(name);
 }
 
 /// The primary rebuild owner gets its reason/diagnostics. Other chats resume
