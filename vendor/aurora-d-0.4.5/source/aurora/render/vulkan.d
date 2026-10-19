@@ -333,7 +333,7 @@ final class VulkanRenderer : RenderBackend
     override bool renderScene(RenderScene scene)
     {
         if (_closed || scene is null || scene.base is null) return true;
-        if (_requestedSize.width <= 0 || _requestedSize.height <= 0) return true;
+        if (_requestedSize.width <= 0 || _requestedSize.height <= 0) return false;
         bool recreatedSwapchain;
         if (_swapchainDirty || _swapchain == VK_NULL_HANDLE)
         {
@@ -341,7 +341,14 @@ final class VulkanRenderer : RenderBackend
             recreatedSwapchain = true;
         }
         if (_swapchain == VK_NULL_HANDLE || _extent.width == 0 || _extent.height == 0)
-            return true;
+        {
+            // Claiming this frame was presented clears the window's paint-pending
+            // flag, leaving a black client area that only input can wake. Keep the
+            // frame pending and retry once the surface has a usable extent.
+            _swapchainDirty = true;
+            ++_stats.frameDeferrals;
+            return false;
+        }
         reclaimRetiredSwapchains(false);
 
         // Content changes may rewrite or destroy retained buffers and atlas
@@ -468,9 +475,15 @@ final class VulkanRenderer : RenderBackend
         present.pSwapchains = &_swapchain;
         present.pImageIndices = &imageIndex;
         const presented = _vk.vkQueuePresentKHR(_presentQueue, &present);
-        if (presented == VK_ERROR_OUT_OF_DATE_KHR ||
-            (presented == VK_SUBOPTIMAL_KHR &&
-             !(_liveResizeActive && _presentScalingEnabled)))
+        if (presented == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            // The surface rejected the image, so nothing reached the screen.
+            _swapchainDirty = true;
+            ++_stats.frameDeferrals;
+            return false;
+        }
+        if (presented == VK_SUBOPTIMAL_KHR &&
+            !(_liveResizeActive && _presentScalingEnabled))
             _swapchainDirty = true;
         else if (presented != VK_SUCCESS && presented != VK_SUBOPTIMAL_KHR)
             check(presented, "presenting the Vulkan frame");
@@ -1052,15 +1065,24 @@ final class VulkanRenderer : RenderBackend
             destroyFormatResources();
         }
         _swapchainFormat = nextFormat;
-        if (capabilities.currentExtent.width != uint.max)
-            _extent = capabilities.currentExtent;
+        const currentExtent = capabilities.currentExtent;
+        if (currentExtent.width != uint.max && currentExtent.width != 0 &&
+            currentExtent.height != 0)
+            _extent = currentExtent;
         else
         {
+            // A hidden or otherwise non-displayable surface reports (0, 0).
+            // The window and this swapchain are created before the first show,
+            // so size from the requested client area instead of creating a
+            // swapchain that cannot present; the real surface extent arrives
+            // through OUT_OF_DATE or a resize after the window is shown.
             _extent.width = clampUInt(cast(uint) maxInt(1, _requestedSize.width),
                 capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
             _extent.height = clampUInt(cast(uint) maxInt(1, _requestedSize.height),
                 capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
         }
+        if (_extent.width == 0 || _extent.height == 0)
+            throw new Exception("The Vulkan surface has no drawable extent");
         _presentMode = choosePresentMode(modes, _options.vsync,
             _options.lowLatency);
         VkSwapchainPresentScalingCreateInfoEXT scaling;

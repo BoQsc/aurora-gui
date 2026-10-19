@@ -259,6 +259,10 @@ private int printUsage()
     writeln("  aurora-opencode-pro --headless-loop-json settled replies as JSON lines");
     writeln("  aurora-opencode-pro --screenshot <path>");
     writeln(`  aurora-opencode-pro --screenshot-chat <path> "prompt"`);
+    writeln("  aurora-opencode-pro --software-renderer  draw with the CPU; kept for");
+    writeln("                                           later starts (GPU recovery)");
+    writeln("  aurora-opencode-pro --renderer=<mode>    auto, software or vulkan for");
+    writeln("                                           this launch only");
     return 0;
 }
 
@@ -409,6 +413,49 @@ private Widget findById(Widget widget, string requestedId)
     return null;
 }
 
+private enum string rendererPreferenceFile = "renderer.txt";
+
+/// The renderer saved by a recovery launch. Anything else means "let Aurora
+/// choose", so a broken or replaced GPU driver gets attempted again.
+private RendererPreference savedRendererPreference()
+{
+    import auroraopencode.core : opencodeStateDirectory;
+    import std.file : exists, readText;
+    import std.path : buildPath;
+    try
+    {
+        const path = buildPath(opencodeStateDirectory(), rendererPreferenceFile);
+        if (!exists(path)) return RendererPreference.automatic;
+        const saved = strip(readText(path));
+        if (saved == "software") return RendererPreference.software;
+        if (saved == "vulkan") return RendererPreference.vulkan;
+    }
+    catch (Exception) {}
+    return RendererPreference.automatic;
+}
+
+/// `value` is "software", "vulkan", or "" to clear the saved choice.
+private void saveRendererPreference(string value)
+{
+    import auroraopencode.core : opencodeStateDirectory;
+    import std.file : exists, mkdirRecurse, remove, write;
+    import std.path : buildPath;
+    try
+    {
+        const directory = opencodeStateDirectory();
+        const path = buildPath(directory, rendererPreferenceFile);
+        if (value.length == 0)
+        {
+            if (exists(path)) remove(path);
+            return;
+        }
+        if (!exists(directory)) mkdirRecurse(directory);
+        write(path, value ~ "\n");
+    }
+    catch (Exception error)
+        logInfo("renderer: could not save the preference: " ~ error.msg);
+}
+
 int main(string[] args)
 {
     // Tool hosts dispatch before GUI, settings, restore, or crash supervision.
@@ -444,6 +491,46 @@ private int runApp(string[] args)
     // Explorer for this process alone (desktop window).
     version (Windows)
         startedFromShell = launchedFromShell();
+
+    // Renderer recovery is consumed before mode dispatch, so a shortcut can
+    // open the desktop window with `--software-renderer` when a GPU driver
+    // presents an empty window. That choice is remembered for later starts;
+    // `--renderer=...` applies to this launch only.
+    RendererPreference requestedRenderer = savedRendererPreference();
+    bool rendererFlag;
+    bool forceGui;
+    if (args.length == 2)
+    {
+        const flag = args[1];
+        if (flag == "--software-renderer" || flag == "--safe-mode")
+        {
+            requestedRenderer = RendererPreference.software;
+            saveRendererPreference("software");
+            rendererFlag = true;
+        }
+        else if (flag == "--renderer=software")
+        {
+            requestedRenderer = RendererPreference.software;
+            rendererFlag = true;
+        }
+        else if (flag == "--renderer=vulkan")
+        {
+            requestedRenderer = RendererPreference.vulkan;
+            rendererFlag = true;
+        }
+        else if (flag == "--renderer=auto")
+        {
+            requestedRenderer = RendererPreference.automatic;
+            saveRendererPreference("");
+            rendererFlag = true;
+        }
+        if (rendererFlag)
+        {
+            // A GUI launch mode, not an argument for the mode dispatcher.
+            args = args[0 .. 1];
+            forceGui = true;
+        }
+    }
 
     const bool hasArg = args.length >= 2;
     const string arg1 = hasArg ? args[1] : "";
@@ -510,7 +597,7 @@ private int runApp(string[] args)
     }
     // No arguments: launched from a shell, start the interactive console;
     // launched from Explorer (no console), open the desktop window.
-    if (startedFromShell)
+    if (startedFromShell && !forceGui)
     {
         ensureInteractiveConsole();
         return runHeadlessLoop();
@@ -528,6 +615,7 @@ private int runApp(string[] args)
     options.title = "Aurora OpenCode";
     options.width = 1200;
     options.height = 800;
+    options.renderer = requestedRenderer;
     options.decorated = false;
     options.darkTitleBar = true;
     options.iconPath = applicationIconPath();
@@ -540,6 +628,15 @@ private int runApp(string[] args)
     // the OpenCodeRoot constructor.
     const startupBegan = MonoTime.currTime;
     auto window = new GuiWindow(options, opencodeTheme());
+    // Record what the driver actually produced. A machine whose window is
+    // black has this line (and the framebuffer size below) in errors.log,
+    // which separates "Vulkan initialized" from "Vulkan presented a frame".
+    logInfo("renderer: " ~ window.rendererName() ~
+        (window.hardwareAccelerated() ? " (hardware)" : " (software)") ~
+        "; preference " ~ (requestedRenderer == RendererPreference.software ? "software" :
+            requestedRenderer == RendererPreference.vulkan ? "vulkan" : "automatic"));
+    if (window.rendererFallbackReason().length > 0)
+        logInfo("renderer fallback: " ~ window.rendererFallbackReason());
     // `GuiWindow.run()` is the only place that shows the window, and it is not
     // reached until the OpenCodeRoot constructor has finished restoring the
     // conversation - which parses a multi-megabyte sessions.json and can take
@@ -551,6 +648,10 @@ private int runApp(string[] args)
     {
         native.prepareFirstFrame(opencodeTheme().windowBackground);
         native.show();
+        const framebuffer = native.framebufferSize();
+        logInfo("window: " ~ framebuffer.width.to!string ~ "x" ~
+            framebuffer.height.to!string ~ " framebuffer, dpi " ~
+            native.displayScale().dpiX.to!string);
     }
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);

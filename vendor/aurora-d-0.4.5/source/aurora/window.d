@@ -120,6 +120,12 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     private CompositorStats _compositorStats;
     private RenderBackend _renderer;
     private string _rendererFallbackReason;
+    // A hardware renderer that cannot hand over any frame for this many paints
+    // is not merely vsync-limited. Recover like an initialization failure so a
+    // driver that never presents cannot leave a permanently blank window.
+    private enum uint hardwareFallbackDeferredFrames = 180;
+    private uint _consecutiveDeferredFrames;
+    private bool _windowShown;
     private Widget _root;
     private Widget _focused;
     private Widget _hovered;
@@ -432,6 +438,7 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         // false and continue through their existing first-paint path.
         _native.prepareFirstFrame(_theme.windowBackground);
         _native.show();
+        _windowShown = true;
         invalidate();
         return _native.run();
     }
@@ -798,9 +805,17 @@ final class GuiWindow : WidgetHost, NativeWindowSink
             if (_options.renderer != RendererPreference.automatic ||
                 _renderer is null || !_renderer.hardwareAccelerated())
                 throw error;
-            _renderer.shutdown();
-            _rendererFallbackReason = error.msg;
-            _renderer = new SoftwareRenderer(_framebufferSize);
+            switchToSoftwareRenderer(error.msg);
+            completed = _renderer.renderScene(scene);
+        }
+        if (completed)
+            _consecutiveDeferredFrames = 0;
+        else if (_windowShown && _options.renderer == RendererPreference.automatic &&
+            _renderer !is null && _renderer.hardwareAccelerated() &&
+            ++_consecutiveDeferredFrames >= hardwareFallbackDeferredFrames)
+        {
+            switchToSoftwareRenderer("the hardware renderer produced no frame for " ~
+                hardwareFallbackDeferredFrames.to!string ~ " paints");
             completed = _renderer.renderScene(scene);
         }
         if (!completed) return false;
@@ -808,6 +823,14 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         if (software !is null)
             _native.present(software.pixels(), software.width(), software.height());
         return true;
+    }
+
+    private void switchToSoftwareRenderer(string reason)
+    {
+        if (_renderer !is null) _renderer.shutdown();
+        _rendererFallbackReason = reason;
+        _renderer = new SoftwareRenderer(_framebufferSize);
+        _consecutiveDeferredFrames = 0;
     }
 
     override void onNativeTick(double deltaSeconds)

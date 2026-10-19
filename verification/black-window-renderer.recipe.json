@@ -1,0 +1,19 @@
+{
+  "inputs": [
+    "verification/test_render_evidence.py",
+    "aurora-opencode-pro/source/app.d",
+    "vendor/aurora-d-0.4.5/source/aurora/window.d",
+    "vendor/aurora-d-0.4.5/source/aurora/render/vulkan.d"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "verification/test_render_evidence.py", "-v"],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    }
+  ]
+}
