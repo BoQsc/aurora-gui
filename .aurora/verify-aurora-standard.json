@@ -1,0 +1,18 @@
+{
+  "inputs": [
+    "standard/aurora-standard"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "standard/aurora-standard/tools/verify_standard.py"
+        ],
+        "workdir": ".",
+        "timeout": 300000
+      }
+    }
+  ]
+}

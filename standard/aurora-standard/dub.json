@@ -1,0 +1,34 @@
+{
+  "name": "aurora-standard",
+  "description": "Frozen Unicode 17.0.0 text standard for Aurora programs",
+  "authors": [
+    "Aurora project"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "sourcePaths": [
+    "source"
+  ],
+  "targetName": "aurora-standard",
+  "targetType": "library",
+  "version": "1.0.0",
+  "configurations": [
+    {
+      "name": "library",
+      "targetType": "library",
+      "targetName": "aurora-standard"
+    },
+    {
+      "name": "consumer",
+      "targetType": "executable",
+      "targetName": "aurora-standard-consumer",
+      "mainSourceFile": "tests/consumer.d"
+    },
+    {
+      "name": "unicode-conformance",
+      "targetType": "executable",
+      "targetName": "aurora-standard-unicode-conformance",
+      "mainSourceFile": "tests/unicode_conformance.d"
+    }
+  ]
+}

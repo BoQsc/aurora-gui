@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Apply the conversation-list hit-area and capture fixes to the running Aurora OpenCode app.",
+  "reason": "Fix lost concurrent chat continuations and explain stalled execution",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-19 17:57:40.8134941 UTC",
-  "finishedAt": "2026-10-19 17:58:36.9000017 UTC",
-  "durationMs": 56086,
+  "startedAt": "2026-10-19 18:40:15.1873853 UTC",
+  "finishedAt": "2026-10-19 18:40:56.4982633 UTC",
+  "durationMs": 41310,
   "exitCode": 0,
   "errors": []
 }

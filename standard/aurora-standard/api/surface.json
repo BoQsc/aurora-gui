@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "package": "aurora-standard",
+  "version": "1.0.0",
+  "unicodeVersion": "17.0.0",
+  "stability": "standard",
+  "modules": [
+    {
+      "name": "aurora.standard.text.unicode.properties",
+      "symbols": [
+        { "name": "UnicodeDataVersion", "kind": "variable", "signature": "immutable string UnicodeDataVersion" },
+        { "name": "GraphemeBreak", "kind": "enum", "signature": "enum GraphemeBreak : ubyte" },
+        { "name": "IndicConjunctBreak", "kind": "enum", "signature": "enum IndicConjunctBreak : ubyte" },
+        { "name": "BidiClass", "kind": "enum", "signature": "enum BidiClass : ubyte" },
+        { "name": "LineBreakClass", "kind": "enum", "signature": "enum LineBreakClass : ubyte" },
+        { "name": "Script", "kind": "enum", "signature": "enum Script : ushort" },
+        { "name": "JoiningType", "kind": "enum", "signature": "enum JoiningType : ubyte" },
+        { "name": "GeneralCategory", "kind": "enum", "signature": "enum GeneralCategory : ubyte" },
+        { "name": "EastAsianWidth", "kind": "enum", "signature": "enum EastAsianWidth : ubyte" },
+        { "name": "BidiBracketType", "kind": "enum", "signature": "enum BidiBracketType : ubyte" },
+        { "name": "BidiBracket", "kind": "struct", "signature": "struct BidiBracket { dchar pair; BidiBracketType kind; }" },
+        { "name": "graphemeBreak", "kind": "function", "signature": "GraphemeBreak graphemeBreak(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "isExtendedPictographic", "kind": "function", "signature": "bool isExtendedPictographic(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "indicConjunctBreak", "kind": "function", "signature": "IndicConjunctBreak indicConjunctBreak(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "bidiClass", "kind": "function", "signature": "BidiClass bidiClass(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "lineBreakClass", "kind": "function", "signature": "LineBreakClass lineBreakClass(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "script", "kind": "function", "signature": "Script script(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "joiningType", "kind": "function", "signature": "JoiningType joiningType(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "generalCategory", "kind": "function", "signature": "GeneralCategory generalCategory(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "eastAsianWidth", "kind": "function", "signature": "EastAsianWidth eastAsianWidth(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "isDefaultIgnorable", "kind": "function", "signature": "bool isDefaultIgnorable(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "openTypeScriptTag", "kind": "function", "signature": "uint openTypeScriptTag(Script value) @safe pure nothrow @nogc" },
+        { "name": "scriptName", "kind": "function", "signature": "string scriptName(Script value) @safe pure nothrow" },
+        { "name": "bidiMirror", "kind": "function", "signature": "dchar bidiMirror(dchar codepoint) @safe pure nothrow @nogc" },
+        { "name": "bidiBracket", "kind": "function", "signature": "BidiBracket bidiBracket(dchar codepoint) @safe pure nothrow @nogc" }
+      ]
+    },
+    {
+      "name": "aurora.standard.text.unicode.bidi",
+      "symbols": [
+        { "name": "ParagraphDirection", "kind": "enum", "signature": "enum ParagraphDirection : ubyte { automatic, leftToRight, rightToLeft }" },
+        { "name": "BidiVisualRun", "kind": "struct", "signature": "struct BidiVisualRun { size_t visualStart; size_t visualEnd; ubyte level; bool rightToLeft() const; }" },
+        { "name": "BidiResult", "kind": "struct", "signature": "struct BidiResult { ubyte paragraphLevel; ubyte[] levels; BidiClass[] resolvedTypes; size_t[] visualOrder; size_t[] logicalToVisual; BidiVisualRun[] visualRuns; bool removed(size_t) const; }" },
+        { "name": "resolveBidi", "kind": "function", "signature": "BidiResult resolveBidi(const(dchar)[] text, ParagraphDirection direction = ParagraphDirection.automatic)" }
+      ]
+    },
+    {
+      "name": "aurora.standard.text.unicode.grapheme",
+      "symbols": [
+        { "name": "graphemeBoundaries", "kind": "function", "signature": "size_t[] graphemeBoundaries(const(dchar)[] text)" },
+        { "name": "isGraphemeBoundary", "kind": "function", "signature": "bool isGraphemeBoundary(const(dchar)[] text, size_t index) @safe pure nothrow @nogc" },
+        { "name": "previousGraphemeBoundary", "kind": "function", "signature": "size_t previousGraphemeBoundary(const(dchar)[] text, size_t index) @safe pure nothrow @nogc" },
+        { "name": "nextGraphemeBoundary", "kind": "function", "signature": "size_t nextGraphemeBoundary(const(dchar)[] text, size_t index) @safe pure nothrow @nogc" },
+        { "name": "floorGraphemeBoundary", "kind": "function", "signature": "size_t floorGraphemeBoundary(const(dchar)[] text, size_t index) @safe pure nothrow @nogc" },
+        { "name": "ceilGraphemeBoundary", "kind": "function", "signature": "size_t ceilGraphemeBoundary(const(dchar)[] text, size_t index) @safe pure nothrow @nogc" }
+      ]
+    },
+    {
+      "name": "aurora.standard.text.unicode.linebreak",
+      "symbols": [
+        { "name": "lineBreakOpportunities", "kind": "function", "signature": "bool[] lineBreakOpportunities(const(dchar)[] text) @safe pure" },
+        { "name": "mandatoryBreakAfter", "kind": "function", "signature": "bool mandatoryBreakAfter(const(dchar)[] text, size_t boundary) @safe pure nothrow @nogc" }
+      ]
+    }
+  ]
+}
