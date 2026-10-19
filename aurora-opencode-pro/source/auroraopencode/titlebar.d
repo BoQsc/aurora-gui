@@ -1,16 +1,16 @@
 module auroraopencode.titlebar;
 
 import aurora;
-import auroraopencode.core : opencodeBackground, opencodeMuted,
+import auroraopencode.core : opencodeAccent, opencodeBackground, opencodeMuted,
     opencodePressed, opencodeSelection, opencodeText, opencodeTitleBarHeight;
 import std.datetime : SysTime, UTC;
 import std.file : thisExePath, timeLastModified;
 import std.format : format;
 import std.stdio : File;
 
-/// `YYYY-MM-DD HH:MM UTC`, when the running executable was linked, rendered in
-/// UTC so the same binary shows the identical stamp on any machine regardless
-/// of the viewing computer's timezone.
+/// `YYYY.MM.DD`, when the running executable was linked, rendered in UTC so the
+/// same binary shows the identical stamp on any machine regardless of the
+/// viewing computer's timezone.
 ///
 /// The time comes from the PE header's link timestamp that the toolchain bakes
 /// into the binary, not from the file's last-write time. An update installs a
@@ -27,9 +27,8 @@ private string executableBuildStamp()
         try built = timeLastModified(exe).toUTC();
         catch (Exception) return "";
     }
-    return format("%04d-%02d-%02d %02d:%02d UTC",
-        built.year, cast(int) built.month, built.day,
-        built.hour, built.minute);
+    return format("%04d.%02d.%02d", built.year, cast(int) built.month,
+        built.day);
 }
 
 /// The link time recorded in `path`'s PE header, in UTC. False when the file is
@@ -80,6 +79,11 @@ private uint readU32le(const(ubyte)[] bytes, size_t offset)
 public final class OpenCodeTitleBar : FramelessWindowTitleBar
 {
     public static immutable int titleBarHeight = opencodeTitleBarHeight;
+    // The release-edition mark drawn right of the product name, as in the
+    // release artwork.
+    private enum int proChipWidth = 34;
+    private enum int proChipHeight = 16;
+    private enum int proChipGap = 8;
     private int _preferredTitleWidth;
 
     this(GuiWindow window)
@@ -90,7 +94,10 @@ public final class OpenCodeTitleBar : FramelessWindowTitleBar
             ? "Aurora OpenCode  " ~ stamp
             : "Aurora OpenCode";
         setTitle(title);
-        _preferredTitleWidth = measuredTitleWidth(title);
+        // Reserve the chip inside the same band, so the toolbar content that
+        // follows always starts after it instead of overlapping.
+        _preferredTitleWidth = measuredTitleWidth(title) + proChipGap +
+            proChipWidth;
         setTitleMinWidth(1);
         setTitleWidth(_preferredTitleWidth);
         setIcon(IconKind.terminal);
@@ -101,6 +108,21 @@ public final class OpenCodeTitleBar : FramelessWindowTitleBar
         setTitleAlign(HorizontalAlign.left);
         setCaptionButtonWidth(46);
         applyPalette();
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        super.onPaint(canvas);
+        const band = titleRect();
+        if (band.width < proChipWidth + 4 || band.height <= 0) return;
+        // The base titlebar paints plain title text only, so the "Pro" chip is
+        // drawn here, inside the room the constructor reserved for it.
+        const rect = Rect(band.right() - proChipWidth - 2,
+            (bounds().height - proChipHeight) / 2, proChipWidth, proChipHeight);
+        canvas.drawRoundedRect(rect, proChipHeight / 2,
+            opencodeAccent.withAlpha(38), opencodeAccent.withAlpha(140), 1);
+        canvas.drawTextInRect(rect, "Pro"d, opencodeAccent, 1,
+            HorizontalAlign.center, VerticalAlign.middle, false);
     }
 
     protected override void onLayout()

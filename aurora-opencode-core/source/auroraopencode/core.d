@@ -539,6 +539,10 @@ public immutable Color opencodeDiffDelete = Color.fromHex(0xff6b6b);
 public immutable Color opencodeDiffAddBg = Color.fromHex(0x16281e);
 public immutable Color opencodeDiffDeleteBg = Color.fromHex(0x2c1a1d);
 public immutable Color opencodeDiffGutter = Color.fromHex(0x5c5c68);
+// Background of a raised card in the right-hand context column (the plan
+// summary and the "Current run" block): one step above the panel so the blocks
+// read as surfaces rather than flat bands.
+public immutable Color opencodeCard = Color.fromHex(0x1b1b24);
 
 // ---------------------------------------------------------------------------
 // Typography and control metrics
@@ -563,8 +567,13 @@ public enum int opencodeFontTitle = 16;
 public enum int opencodeFontDisplay = 20;
 /// Height of buttons, inputs and toolbar controls.
 public enum int opencodeControlHeight = 28;
-/// Height of a single session list row.
-public enum int opencodeSessionRowHeight = 32;
+/// Height of a single session list row. Tall enough for the two-line rows the
+/// Pro sidebar uses: the conversation title with its last-activity time on the
+/// top line, a muted subtitle underneath.
+public enum int opencodeSessionRowHeight = 56;
+/// Height of a date band ("Today", "Yesterday") above the first conversation
+/// row of each day group.
+public enum int opencodeListGroupHeight = 30;
 /// Height of the merged titlebar/toolbar band.
 public enum int opencodeTitleBarHeight = 40;
 /// Maximum width of the centered conversation/composer column. Kept under

@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the startup journal replay fix (commit cd39492) so the UI thread no longer parses the journal during restore.",
+  "reason": "Ship the rewritten Aurora OpenCode Pro UI: dark three-pane layout with the right-hand Plan/Current run pane, two-line session rows with date bands, and the composer's leading action pills.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-18 19:22:54.351589 UTC",
-  "finishedAt": "2026-10-18 19:23:44.4120154 UTC",
-  "durationMs": 50059,
+  "startedAt": "2026-10-19 10:07:50.7904653 UTC",
+  "finishedAt": "2026-10-19 10:08:48.953983 UTC",
+  "durationMs": 58162,
   "exitCode": 0,
   "errors": []
 }

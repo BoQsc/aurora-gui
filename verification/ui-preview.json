@@ -1,0 +1,57 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/source/auroraopencode/titlebar.d",
+    "aurora-opencode-pro/tests/ui_review_probe.d",
+    "aurora-opencode-core/source/auroraopencode/core.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-Isource",
+          "-Ishared",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-I../aurora-opencode-core/source",
+          "-i",
+          "-Jassets",
+          "-of=build/ui-preview/ui-review-probe.exe",
+          "tests/ui_review_probe.d",
+          "-Luser32.lib",
+          "-Lgdi32.lib",
+          "-Lshell32.lib",
+          "-Lwininet.lib",
+          "-L/SUBSYSTEM:CONSOLE",
+          "-L/ENTRY:mainCRTStartup"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 1800000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "build/ui-preview/ui-review-probe.exe",
+        "args": [
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-ui-review\\probe.ppm"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-ui-review\\ppm2png.py",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-ui-review\\probe.ppm",
+          "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-ui-review\\probe.png"
+        ],
+        "timeout": 120000
+      }
+    }
+  ]
+}

@@ -6300,6 +6300,615 @@ private final class DetachedPlanPanel : Widget
     }
 }
 
+// ---------------------------------------------------------------------------
+// Insight pane (Pro): the plan and this run's live state, in a third column
+// ---------------------------------------------------------------------------
+
+/// Width of the insight pane once the window has room for a third column.
+private enum int insightPaneWidth = 334;
+/// Below this window width the transcript needs the room more than a third
+/// column does, so the pane collapses to nothing and the chat keeps the middle.
+private enum int insightMinWindowWidth = 1180;
+private enum int insightTabPlan = 0;
+private enum int insightTabFiles = 1;
+private enum int insightTabReferences = 2;
+/// Plan steps and file rows drawn at most; the remainder is reported as a count
+/// instead of overrunning the card.
+private enum int insightStepMaxRows = 12;
+private enum int insightListMaxRows = 8;
+/// The status mark on the plan card's header.
+private immutable Color insightTickColor = Color.rgba(46, 160, 82, 255);
+/// Newest messages scanned for the pane's run state and file lists. The scan
+/// reads the conversation's own records, so it is bounded to keep a long
+/// conversation from costing more than the rows it draws.
+private enum size_t insightReferenceScan = 400;
+
+/// The third column of the wide layout: a Plan / Files / References tab strip
+/// over the conversation's durable plan (or the files it touched) and a
+/// "Current run" card reporting the live model, context usage and switches.
+///
+/// Every row is painted here instead of being assembled from child widgets:
+/// the pane is a short vertical stack, and the app's root VBox sizes children
+/// from `layoutHints` alone, so a nested stack would have to publish its height
+/// explicitly to gain nothing.
+private final class InsightPanel : Widget
+{
+    /// The selected tab changed, so the host can refresh the file lists.
+    void delegate() onTabChanged;
+    /// The model row was pressed; opens the composer's model picker.
+    void delegate() onModelClicked;
+
+    private static immutable int padH = 14;
+    private static immutable int padV = 12;
+    private static immutable int tabHeight = 28;
+    private static immutable int tabPadX = 14;
+    private static immutable int tabGap = 6;
+    private static immutable int sectionGap = 14;
+    private static immutable int cardPad = 16;
+    private static immutable int cardRadius = 12;
+    private static immutable int headerHeight = 22;
+    private static immutable int gapAfterHeader = 12;
+    private static immutable int progressHeight = 8;
+    private static immutable int gapAfterProgress = 12;
+    private static immutable int gapAfterObjective = 12;
+    private static immutable int objectiveLineHeight = 20;
+    private static immutable int objectiveMaxLines = 2;
+    private static immutable int stepRowHeight = 34;
+    private static immutable int stepBoxSize = 22;
+    private static immutable int modelRowHeight = 34;
+    private static immutable int gapAfterModelRow = 8;
+    private static immutable int usageRowHeight = 26;
+    private static immutable int gapAfterUsageRow = 8;
+    private static immutable int runRowHeight = 26;
+    private static immutable int listRowHeight = 26;
+    private static immutable int emptyRowHeight = 22;
+    private static immutable string[] tabLabels = ["Plan", "Files", "References"];
+
+    private bool _wide;
+    private int _tab = insightTabPlan;
+    private int _hotTab = -1;
+    private bool _modelHot;
+
+    // Geometry recorded by the last paint, reused for hit testing.
+    private Rect[3] _tabRects;
+    private Rect _modelRowRect;
+
+    // Live state published by the host.
+    private string _model;
+    private int _usagePercent;
+    private string _peakLabel;
+    private string _thinkingLabel = "Thinking: Off";
+    private bool _thinkingOn;
+    private bool _toolsOn;
+    private bool _codeAnalysisOn;
+    private bool _fileOpsOn;
+    private bool _webSearchOn;
+    private string[] _toolFiles;
+    private string[] _mentionFiles;
+    private string _objective;
+    private string[] _stepTexts;
+    private bool[] _stepDone;
+    private bool _planStale;
+
+    this()
+    {
+        setId("oc-insight");
+        // Collapsed until the root's layout pass reports a wide window; see
+        // `OpenCodeRoot.updateInsightPaneWidth`.
+        layoutHints().preferredWidth = 0;
+        layoutHints().minWidth = 0;
+    }
+
+    /// Whether the third column is part of the layout at this window width.
+    bool wide() const
+    {
+        return _wide;
+    }
+
+    int tab() const
+    {
+        return _tab;
+    }
+
+    /// Join the layout, or collapse to nothing while the window is narrow. The
+    /// pane stays `visible` either way: this toolkit's layout skips invisible
+    /// children outright, so a hidden pane could never be laid out again and
+    /// could never come back when the window grew.
+    void setWide(bool value)
+    {
+        if (_wide == value) return;
+        _wide = value;
+        layoutHints().preferredWidth = value ? insightPaneWidth : 0;
+        layoutHints().minWidth = 0;
+        invalidate();
+    }
+
+    void setModel(string model)
+    {
+        if (_model == model) return;
+        _model = model;
+        invalidate();
+    }
+
+    void setUsage(int percent)
+    {
+        percent = clampInt(percent, 0, 100);
+        if (_usagePercent == percent) return;
+        _usagePercent = percent;
+        invalidate();
+    }
+
+    /// DeepSeek's billing window, or an empty string when it does not apply.
+    void setPeakLabel(string label)
+    {
+        if (label == "—") label = "";
+        if (_peakLabel == label) return;
+        _peakLabel = label;
+        invalidate();
+    }
+
+    /// Publish the live switches the "Current run" card reports.
+    void setRun(string thinkingLabel, bool thinkingOn, bool toolsOn,
+        bool codeAnalysisOn, bool fileOpsOn, bool webSearchOn)
+    {
+        if (_thinkingLabel == thinkingLabel && _thinkingOn == thinkingOn &&
+            _toolsOn == toolsOn && _codeAnalysisOn == codeAnalysisOn &&
+            _fileOpsOn == fileOpsOn && _webSearchOn == webSearchOn)
+            return;
+        _thinkingLabel = thinkingLabel;
+        _thinkingOn = thinkingOn;
+        _toolsOn = toolsOn;
+        _codeAnalysisOn = codeAnalysisOn;
+        _fileOpsOn = fileOpsOn;
+        _webSearchOn = webSearchOn;
+        invalidate();
+    }
+
+    /// The files the conversation's tool calls touched and the ones its
+    /// messages mention, as absolute paths.
+    void setFileLists(string[] toolFiles, string[] mentionFiles)
+    {
+        if (_toolFiles == toolFiles && _mentionFiles == mentionFiles) return;
+        _toolFiles = toolFiles;
+        _mentionFiles = mentionFiles;
+        invalidate();
+    }
+
+    void setPlan(string objective, string[] stepTexts, bool[] stepDone,
+        bool stale)
+    {
+        if (_objective == objective && _stepTexts == stepTexts &&
+            _stepDone == stepDone && _planStale == stale)
+            return;
+        _objective = objective;
+        _stepTexts = stepTexts;
+        _stepDone = stepDone;
+        _planStale = stale;
+        invalidate();
+    }
+
+    private int doneCount() const
+    {
+        int count;
+        foreach (done; _stepDone)
+            if (done) ++count;
+        return count;
+    }
+
+    /// Lines the objective reserves. The shaper decides where it breaks, so the
+    /// count the card measures and the count it draws cannot disagree.
+    private int objectiveLines(Canvas canvas, int textWidth)
+    {
+        if (_objective.length == 0) return 0;
+        const layout = canvas.layoutText(toUTF32(_objective), 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, textWidth, true);
+        return clampInt(cast(int) layout.lines.length, 1, objectiveMaxLines);
+    }
+
+    private int planCardHeight(Canvas canvas, int cardWidth)
+    {
+        const innerWidth = maxInt(1, cardWidth - cardPad * 2);
+        int height = cardPad * 2;
+        if (_tab == insightTabPlan)
+        {
+            height += headerHeight + gapAfterHeader + progressHeight +
+                gapAfterProgress;
+            const lines = objectiveLines(canvas, innerWidth);
+            height += lines * objectiveLineHeight +
+                (lines > 0 ? gapAfterObjective : 0);
+            const total = cast(int) _stepTexts.length;
+            if (total == 0)
+                height += emptyRowHeight;
+            else
+            {
+                const rows = minInt(total, insightStepMaxRows);
+                height += rows * stepRowHeight +
+                    (total > rows ? emptyRowHeight : 0);
+            }
+        }
+        else
+        {
+            height += headerHeight + gapAfterHeader;
+            const files = listRows();
+            if (files.length == 0)
+                height += emptyRowHeight;
+            else
+            {
+                const rows = minInt(cast(int) files.length, insightListMaxRows);
+                height += rows * listRowHeight +
+                    (cast(int) files.length > rows ? emptyRowHeight : 0);
+            }
+        }
+        return height;
+    }
+
+    private int runCardHeight()
+    {
+        return cardPad * 2 + headerHeight + gapAfterHeader + modelRowHeight +
+            gapAfterModelRow + usageRowHeight + gapAfterUsageRow +
+            cast(int) runRows().length * runRowHeight;
+    }
+
+    private string[] listRows()
+    {
+        return _tab == insightTabFiles ? _toolFiles : _mentionFiles;
+    }
+
+    /// One "Current run" row: an icon, a label and whether it is switched on.
+    private struct RunRow
+    {
+        IconKind icon;
+        string label;
+        bool on;
+    }
+
+    private RunRow[] runRows() const
+    {
+        return [
+            RunRow(IconKind.settings, _thinkingLabel.length > 0 ?
+                _thinkingLabel : "Thinking: Off", _thinkingOn),
+            RunRow(IconKind.terminal, _toolsOn ? "Tools enabled" :
+                "Tools disabled", _toolsOn),
+            RunRow(IconKind.search, _codeAnalysisOn ? "Code analysis" :
+                "Code analysis off", _codeAnalysisOn),
+            RunRow(IconKind.file, _fileOpsOn ? "File operations" :
+                "File operations off", _fileOpsOn),
+            RunRow(IconKind.wifi, _webSearchOn ? "Web search (optional)" :
+                "Web search off", _webSearchOn)
+        ];
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const rect = bounds();
+        const width = rect.width;
+        const height = rect.height;
+        if (width <= 0 || height <= 0) return;
+        const palette = theme();
+        canvas.fillRect(Rect(0, 0, width, height), opencodePanel);
+        // A hairline edge, so the column reads as its own surface.
+        canvas.fillRect(Rect(0, 0, 1, height), opencodeBorder);
+
+        const contentWidth = maxInt(1, width - padH * 2);
+        int x = padH;
+        foreach (index; 0 .. tabLabels.length)
+        {
+            const tabWidth = measureWidth(canvas,
+                toUTF32(tabLabels[index])) + tabPadX * 2;
+            _tabRects[index] = Rect(x, padV, tabWidth, tabHeight);
+            x += tabWidth + tabGap;
+        }
+        foreach (index; 0 .. tabLabels.length)
+        {
+            const selected = index == _tab;
+            const hot = index == _hotTab;
+            if (selected)
+                canvas.fillRoundedRect(_tabRects[index], tabHeight / 2,
+                    opencodeAccent.withAlpha(48));
+            else if (hot)
+                canvas.fillRoundedRect(_tabRects[index], tabHeight / 2,
+                    opencodeField);
+            canvas.drawTextInRect(_tabRects[index], toUTF32(tabLabels[index]),
+                selected || hot ? palette.text : palette.textMuted, 1,
+                HorizontalAlign.center, VerticalAlign.middle, false);
+        }
+
+        const planTop = padV + tabHeight + sectionGap;
+        const planHeight = planCardHeight(canvas, contentWidth);
+        drawPlanCard(canvas, palette,
+            Rect(padH, planTop, contentWidth, planHeight));
+        drawRunCard(canvas, palette,
+            Rect(padH, planTop + planHeight + sectionGap, contentWidth,
+                runCardHeight()));
+    }
+
+    private void drawPlanCard(ref Canvas canvas, const(Theme) palette, Rect card)
+    {
+        canvas.fillRoundedRect(card, cardRadius, opencodeCard);
+        const inner = innerRect(card);
+        int y = inner.y;
+        if (_tab == insightTabPlan)
+        {
+            const total = cast(int) _stepTexts.length;
+            const done = doneCount();
+            drawTick(canvas, Rect(inner.x, y + 1, 20, 20));
+            auto head = appender!string();
+            head.put(to!string(done));
+            head.put("/");
+            head.put(to!string(total));
+            head.put(" completed");
+            if (_planStale) head.put(" · needs update");
+            canvas.drawTextInRect(Rect(inner.x + 28, y, inner.width - 28,
+                    headerHeight), toUTF32(head.data),
+                _planStale ? peakSegmentColor : palette.text, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+            y += headerHeight + gapAfterHeader;
+            canvas.fillRoundedRect(Rect(inner.x, y, inner.width, progressHeight),
+                progressHeight / 2, opencodeField);
+            const filled = total <= 0 ? 0 :
+                cast(int) (cast(long) inner.width * done / total);
+            if (filled > 0)
+                canvas.fillRoundedRect(Rect(inner.x, y, filled, progressHeight),
+                    progressHeight / 2, opencodeAccent);
+            y += progressHeight + gapAfterProgress;
+            const lines = objectiveLines(canvas, inner.width);
+            if (lines > 0)
+            {
+                auto wrapped = canvas.layoutText(
+                    clampObjective(canvas, inner.width), 1, FontRole.ui,
+                    cast(FontFace) palette.uiFont, inner.width, true);
+                canvas.drawLayout(Point(inner.x, y + 2), wrapped,
+                    palette.textMuted);
+                y += lines * objectiveLineHeight + gapAfterObjective;
+            }
+            if (total == 0)
+            {
+                drawEmptyRow(canvas, palette, inner, y, "No plan steps yet");
+                return;
+            }
+            const rows = minInt(total, insightStepMaxRows);
+            foreach (index; 0 .. rows)
+                drawStepRow(canvas, palette, inner,
+                    y + index * stepRowHeight, index);
+            y += rows * stepRowHeight;
+            if (total > rows)
+                drawEmptyRow(canvas, palette, inner, y,
+                    "+" ~ to!string(total - rows) ~ " more steps");
+            return;
+        }
+
+        // Files and References: what this conversation looked at.
+        const files = listRows();
+        canvas.drawTextInRect(Rect(inner.x, y, inner.width, headerHeight),
+            toUTF32(_tab == insightTabFiles ? "Read or written by tools" :
+                "Mentioned in messages"), palette.text, 1,
+            HorizontalAlign.left, VerticalAlign.middle, true);
+        y += headerHeight + gapAfterHeader;
+        if (files.length == 0)
+        {
+            drawEmptyRow(canvas, palette, inner, y,
+                _tab == insightTabFiles ? "No files touched yet" :
+                    "No files mentioned yet");
+            return;
+        }
+        const rows = minInt(cast(int) files.length, insightListMaxRows);
+        foreach (index; 0 .. rows)
+        {
+            const row = Rect(inner.x, y + index * listRowHeight, inner.width,
+                listRowHeight);
+            drawIcon(canvas, IconKind.file,
+                Rect(row.x + 2, row.y + 5, 15, 15), opencodeAccent);
+            canvas.drawTextInRect(Rect(row.x + 28, row.y, row.width - 28,
+                    row.height), toUTF32(basenameOf(files[index])), palette.text, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+        }
+        y += rows * listRowHeight;
+        if (cast(int) files.length > rows)
+            drawEmptyRow(canvas, palette, inner, y,
+                "+" ~ to!string(cast(int) files.length - rows) ~ " more files");
+    }
+
+    private void drawRunCard(ref Canvas canvas, const(Theme) palette, Rect card)
+    {
+        canvas.fillRoundedRect(card, cardRadius, opencodeCard);
+        const inner = innerRect(card);
+        int y = inner.y;
+        drawSparkle(canvas, Rect(inner.x, y + 2, 16, 16), opencodeAccent);
+        canvas.drawTextInRect(Rect(inner.x + 24, y, inner.width - 24,
+                headerHeight), toUTF32("Current run"), palette.text, 1,
+            HorizontalAlign.left, VerticalAlign.middle, true);
+        y += headerHeight + gapAfterHeader;
+
+        // The model this conversation routes to; clicking opens the picker.
+        _modelRowRect = Rect(inner.x, y, inner.width, modelRowHeight);
+        canvas.fillRoundedRect(_modelRowRect, 8,
+            _modelHot ? opencodeElevated : opencodeField);
+        canvas.drawTextInRect(Rect(inner.x + 12, y, inner.width - 44,
+                modelRowHeight), toUTF32(_model.length > 0 ? _model :
+                "No model selected"), palette.text, 1, HorizontalAlign.left,
+            VerticalAlign.middle, true);
+        drawIcon(canvas, IconKind.chevronDown,
+            Rect(_modelRowRect.right() - 26, y + 8, 14, 14), palette.textMuted);
+        y += modelRowHeight + gapAfterModelRow;
+
+        // Context usage, and DeepSeek's billing window when it applies.
+        drawIcon(canvas, IconKind.battery, Rect(inner.x, y + 4, 16, 16),
+            opencodeAccent);
+        canvas.drawTextInRect(Rect(inner.x + 22, y, 66, usageRowHeight),
+            toUTF32(to!string(_usagePercent) ~ "%"), palette.text, 1,
+            HorizontalAlign.left, VerticalAlign.middle, false);
+        if (_peakLabel.length > 0)
+        {
+            const peak = _peakLabel.length >= 4 && _peakLabel[0 .. 4] == "Peak";
+            const dotX = inner.x + 96;
+            canvas.fillCircle(Point(dotX + 5, y + usageRowHeight / 2), 4,
+                peak ? peakSegmentColor : offPeakSegmentColor);
+            canvas.drawTextInRect(Rect(dotX + 14, y, inner.width - 110,
+                    usageRowHeight), toUTF32(_peakLabel),
+                peak ? peakSegmentColor : offPeakSegmentColor, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+        }
+        y += usageRowHeight + gapAfterUsageRow;
+
+        foreach (row; runRows())
+        {
+            drawIcon(canvas, row.icon, Rect(inner.x + 2, y + 5, 15, 15),
+                row.on ? opencodeAccent : palette.textMuted);
+            canvas.drawTextInRect(Rect(inner.x + 30, y, inner.width - 30,
+                    runRowHeight), toUTF32(row.label),
+                row.on ? palette.text : palette.textMuted, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+            y += runRowHeight;
+        }
+    }
+
+    private Rect innerRect(Rect card) const
+    {
+        return Rect(card.x + cardPad, card.y + cardPad,
+            maxInt(1, card.width - cardPad * 2),
+            maxInt(1, card.height - cardPad * 2));
+    }
+
+    private void drawStepRow(ref Canvas canvas, const(Theme) palette, Rect inner,
+        int y, int index)
+    {
+        const done = index < cast(int) _stepDone.length && _stepDone[index];
+        const box = Rect(inner.x, y + (stepRowHeight - stepBoxSize) / 2,
+            stepBoxSize, stepBoxSize);
+        if (done)
+        {
+            canvas.fillRoundedRect(box, 5, opencodeAccent);
+            canvas.drawLine(Point(box.x + 5, box.y + 11),
+                Point(box.x + 9, box.y + 15), Color.rgb(255, 255, 255), 2);
+            canvas.drawLine(Point(box.x + 9, box.y + 15),
+                Point(box.x + 16, box.y + 8), Color.rgb(255, 255, 255), 2);
+        }
+        else
+            canvas.drawRoundedRect(box, 5, Color.rgba(0, 0, 0, 0),
+                palette.border, 1);
+        canvas.drawTextInRect(Rect(inner.x + stepBoxSize + 12, y,
+                maxInt(1, inner.width - stepBoxSize - 12), stepRowHeight),
+            toUTF32(_stepTexts[index]), done ? palette.text : palette.textMuted,
+            1, HorizontalAlign.left, VerticalAlign.middle, true);
+    }
+
+    private void drawEmptyRow(ref Canvas canvas, const(Theme) palette, Rect inner,
+        int y, string text)
+    {
+        canvas.drawTextInRect(Rect(inner.x, y, inner.width, emptyRowHeight),
+            toUTF32(text), palette.textMuted, 1, HorizontalAlign.left,
+            VerticalAlign.middle, true);
+    }
+
+    /// The header mark: a filled disc with a check, standing in for the
+    /// toolkit CheckBox indicator the way the plan card draws its glyphs.
+    private void drawTick(ref Canvas canvas, Rect rect)
+    {
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        canvas.fillCircle(Point(cx, cy), rect.width / 2, insightTickColor);
+        canvas.drawLine(Point(cx - 4, cy), Point(cx - 1, cy + 3),
+            Color.rgb(255, 255, 255), 2);
+        canvas.drawLine(Point(cx - 1, cy + 3), Point(cx + 4, cy - 3),
+            Color.rgb(255, 255, 255), 2);
+    }
+
+    /// A four-ray star, standing in for the sparkle that opens the card.
+    private void drawSparkle(ref Canvas canvas, Rect rect, Color color)
+    {
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        canvas.drawLine(Point(cx - 7, cy), Point(cx + 7, cy), color, 2);
+        canvas.drawLine(Point(cx, cy - 7), Point(cx, cy + 7), color, 2);
+        canvas.drawLine(Point(cx - 4, cy - 4), Point(cx + 4, cy + 4), color, 1);
+        canvas.drawLine(Point(cx - 4, cy + 4), Point(cx + 4, cy - 4), color, 1);
+    }
+
+    private int measureWidth(ref Canvas canvas, const(dchar)[] text)
+    {
+        const layout = canvas.layoutText(text, 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, 4096, false);
+        return cast(int) layout.width;
+    }
+
+    /// The objective as the card draws it: at most `objectiveMaxLines` wrapped
+    /// lines, the last one ellipsized. The shared shaper supplies the break
+    /// points, so what the card measures is what it draws.
+    private dchar[] clampObjective(ref Canvas canvas, int textWidth)
+    {
+        const chars = toUTF32(_objective);
+        auto layout = canvas.layoutText(chars, 1, FontRole.ui,
+            cast(FontFace) theme().uiFont, textWidth, true);
+        if (layout.lines.length <= objectiveMaxLines) return chars.dup;
+        auto truncated =
+            chars[0 .. layout.lines[objectiveMaxLines - 1].paragraphEnd].dup;
+        while (truncated.length > 0 &&
+            (truncated[$ - 1] == ' ' || truncated[$ - 1] == '\n' ||
+                truncated[$ - 1] == '\r'))
+            truncated = truncated[0 .. $ - 1];
+        return truncated ~ "…"d;
+    }
+
+    private int tabAt(Point position) const
+    {
+        foreach (index; 0 .. tabLabels.length)
+            if (_tabRects[index].width > 0 &&
+                _tabRects[index].contains(position))
+                return cast(int) index;
+        return -1;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        bool changed;
+        const hot = tabAt(event.position);
+        if (hot != _hotTab)
+        {
+            _hotTab = hot;
+            changed = true;
+        }
+        const modelHot = _modelRowRect.width > 0 &&
+            _modelRowRect.contains(event.position);
+        if (modelHot != _modelHot)
+        {
+            _modelHot = modelHot;
+            changed = true;
+        }
+        if (changed) invalidate();
+        return hot >= 0 || modelHot;
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (_hotTab < 0 && !_modelHot) return;
+        _hotTab = -1;
+        _modelHot = false;
+        invalidate();
+    }
+
+    protected override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        const hot = tabAt(event.position);
+        if (hot >= 0)
+        {
+            if (hot != _tab)
+            {
+                _tab = hot;
+                if (onTabChanged !is null) onTabChanged();
+                invalidate();
+            }
+            return true;
+        }
+        if (_modelRowRect.width > 0 && _modelRowRect.contains(event.position))
+        {
+            if (onModelClicked !is null) onModelClicked();
+            return true;
+        }
+        return false;
+    }
+}
+
 // Settings section body (Pro)
 // ---------------------------------------------------------------------------
 
@@ -9377,6 +9986,16 @@ public final class SessionListView : ListView
     // search field / header.
     private enum int pinnedTopPad = 12;
 
+    // -- Two-line rows and day bands -------------------------------------
+    // The Pro sidebar lists conversations under "Today"/"Yesterday" date bands
+    // and prints a muted one-line summary under each title. Both are optional:
+    // a list that never sets them lays out exactly as it did before.
+    private dstring[] _subtitles;
+    // Row index that opens each date band (ascending) and its label.
+    private int[] _groupStartRows;
+    private string[] _groupLabels;
+    private enum int groupBandHeight = opencodeListGroupHeight;
+
     // What a drop would do to the dragged row. There is no reordering: a drop
     // only ever toggles the pin state, and leaves it alone when the pointer is
     // over the group the row already belongs to.
@@ -9469,6 +10088,78 @@ public final class SessionListView : ListView
         invalidate();
     }
 
+    /// Attach a one-line summary to each row, aligned with the items. Rows past
+    /// the end of the list (or with an empty summary) keep the compact
+    /// single-line layout.
+    void setRowSubtitles(string[] subtitles)
+    {
+        dstring[] converted;
+        converted.reserve(subtitles.length);
+        foreach (value; subtitles)
+            converted ~= toUTF32(value);
+        if (_subtitles == converted) return;
+        _subtitles = converted;
+        invalidate();
+    }
+
+    /// Group the rows under date bands. `starts` are ascending row indices, one
+    /// per band, with `labels` aligned to them.
+    void setRowGroups(string[] labels, int[] starts)
+    {
+        const count = cast(int) items().length;
+        int[] acceptedStarts;
+        string[] acceptedLabels;
+        foreach (i, start; starts)
+        {
+            if (start < 0 || start >= count) continue;
+            if (acceptedStarts.length > 0 && acceptedStarts[$ - 1] >= start)
+                continue;
+            acceptedStarts ~= start;
+            acceptedLabels ~= i < labels.length ? labels[i] : "";
+        }
+        if (_groupStartRows == acceptedStarts && _groupLabels == acceptedLabels)
+            return;
+        _groupStartRows = acceptedStarts;
+        _groupLabels = acceptedLabels;
+        // Bands make the content taller, so the scroll range and thumb change
+        // even though no row moved.
+        synchronizeScrollRange();
+        invalidate();
+    }
+
+    // Re-clamp and resync the scrollbar after a content-height change. The base
+    // only does that from setRowHeight/setItems and its scroll offset setter is
+    // module-private, so re-applying the current height is the supported way to
+    // refresh the range.
+    private void synchronizeScrollRange()
+    {
+        setRowHeight(rowHeight());
+    }
+
+    // Position in `_groupStartRows` of the band opening row `row`, or -1.
+    private int groupIndexAt(int row) const @safe pure nothrow @nogc
+    {
+        foreach (i, start; _groupStartRows)
+            if (start == row) return cast(int) i;
+        return -1;
+    }
+
+    // True when row `row` opens a date band.
+    private bool isGroupStart(int row) const @safe pure nothrow @nogc
+    {
+        return groupIndexAt(row) >= 0;
+    }
+
+    // Number of date bands that sit above row `row`. A band opening this very
+    // row is not counted here; rowTop adds it separately.
+    private int groupBandsAbove(int row) const @safe pure nothrow @nogc
+    {
+        int count;
+        foreach (start; _groupStartRows)
+            if (start < row) ++count;
+        return count;
+    }
+
     // True when the pinned/unpinned divider is showing: something pinned and
     // something unpinned. When false the list lays out as plain rows.
     private bool pinnedDividerVisible() const @safe pure nothrow @nogc
@@ -9489,33 +10180,48 @@ public final class SessionListView : ListView
         return pinnedDividerPadAbove + pinnedDividerPadBelow;
     }
 
-    // The list opens the divider span between the pinned group and the rest, so
-    // the content is taller than rows * rowHeight and hit-testing has to account
-    // for it. Both overrides fall back to the base behavior when no divider
-    // shows.
+    // Content-space y of a row's top, folding in the pinned top padding, the
+    // pinned/unpinned divider band and every date band above it. Painting and
+    // hit-testing both go through this, so bands and rows can never disagree
+    // about where a row lives.
+    private int rowTop(int index) const @safe pure nothrow @nogc
+    {
+        int y = listTopPad() + index * rowHeight() +
+            (groupBandsAbove(index) +
+                (isGroupStart(index) ? 1 : 0)) * groupBandHeight;
+        if (pinnedDividerVisible() && index >= _pinnedRows)
+            y += pinnedDividerSpan();
+        return y;
+    }
+
+    // The list opens the divider span between the pinned group and the rest and
+    // a band above each date group, so the content is taller than
+    // rows * rowHeight and both overrides have to account for it.
     override int contentHeight() const @safe pure nothrow @nogc
     {
-        const base = super.contentHeight();
-        return base + listTopPad() +
-            (pinnedDividerVisible() ? pinnedDividerSpan() : 0);
+        const count = cast(int) items().length;
+        int bands;
+        foreach (start; _groupStartRows)
+            if (start >= 0 && start < count) ++bands;
+        return super.contentHeight() + listTopPad() +
+            (pinnedDividerVisible() ? pinnedDividerSpan() : 0) +
+            bands * groupBandHeight;
     }
 
     override int indexAt(Point position) const @safe pure nothrow @nogc
     {
-        const scrolled = position.y + scrollOffset() - listTopPad();
-        if (scrolled < 0) return -1;
+        const scrolled = position.y + scrollOffset();
         const count = cast(int) items().length;
         const rh = rowHeight();
-        if (!pinnedDividerVisible())
+        // Walk the rows: bands and the divider insert gaps, so this is no
+        // longer a plain divide. A position inside a band belongs to no row.
+        foreach (index; 0 .. count)
         {
-            const row = scrolled / rh;
-            return row < count ? row : -1;
+            const top = rowTop(index);
+            if (scrolled < top) return -1;
+            if (scrolled < top + rh) return index;
         }
-        const boundary = _pinnedRows * rh;
-        if (scrolled < boundary) return scrolled / rh;
-        if (scrolled < boundary + pinnedDividerSpan()) return -1;
-        const row = (scrolled - pinnedDividerSpan()) / rh;
-        return row < count ? row : -1;
+        return -1;
     }
 
     /// The row index the pinned/unpinned divider is drawn above, or -1 when no
@@ -9527,18 +10233,19 @@ public final class SessionListView : ListView
             ? _pinnedRows : -1;
     }
 
-    // Content-space y of the bottom of the pin drop zone. With something pinned
-    // the whole pinned group is the target; with nothing pinned the first row's
-    // slot stands in so a drag still has a place to land.
+    // Content-space y of the boundary between the pinned group and the rest
+    // (top padding included). With something pinned the whole pinned group is
+    // the target; with nothing pinned the first row's slot stands in so a drag
+    // still has a place to land.
     private int pinDropZoneBottom() const @safe pure nothrow @nogc
     {
-        return _pinnedRows > 0 ? _pinnedRows * rowHeight() : rowHeight();
+        return rowTop(_pinnedRows > 0 ? _pinnedRows : 1);
     }
 
     // Decide what a drop at `position` would do, given the row being dragged.
     private DragIntent dropIntentAt(Point position) const @safe pure nothrow @nogc
     {
-        const contentY = position.y + scrollOffset() - listTopPad();
+        const contentY = position.y + scrollOffset();
         const boundary = pinDropZoneBottom();
         if (_pressRowPinned)
             return contentY >= boundary ? DragIntent.unpin : DragIntent.none;
@@ -9593,10 +10300,7 @@ public final class SessionListView : ListView
     private Rect archiveButtonRect(int index)
     {
         const rh = rowHeight();
-        const topPad = listTopPad();
-        const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
-        const y = topPad + index * rh - scrollOffset() +
-            (index >= _pinnedRows ? gap : 0);
+        const y = rowTop(index) - scrollOffset();
         const size = archiveButtonSize;
         return Rect(bounds().width - rowRightPad - size, y + (rh - size) / 2,
             size, size);
@@ -9643,9 +10347,11 @@ public final class SessionListView : ListView
         if (activityPulseStep() != before) invalidate();
     }
 
-    // Single-line conversation rows: a highlighted capsule for the active chat,
-    // the title, and a right-aligned last-activity time. No repeated model name,
-    // message count, or per-row icon (every row shared the same one).
+    // Conversation rows: the title with a right-aligned last-activity time, and
+    // - when the caller supplies one - a muted one-line summary underneath,
+    // under the "Today"/"Yesterday" date band that opens each group. The active
+    // chat gets a highlighted capsule. No per-row icon (every row shared the
+    // same one).
     protected override void onPaint(ref Canvas canvas)
     {
         _hoverTitleClipped = false;
@@ -9654,24 +10360,37 @@ public final class SessionListView : ListView
         if (width <= 0 || height <= 0) return;
         const rowHeight = rowHeight();
         if (rowHeight <= 0) return;
+        // A row carries a second line only when it has a summary and is tall
+        // enough for one; otherwise it stays exactly as compact as before.
+        const twoLineRows = rowHeight >= 44 && _subtitles.length > 0;
 
         auto content = canvas.clipped(Rect(0, 0, width, height));
         const offset = scrollOffset();
         const selected = selectedIndex();
         const count = cast(int) items().length;
         // The pinned group gets top padding, and the divider opens extra room
-        // between it and the rest, so rows shift down by those amounts.
-        const topPad = listTopPad();
+        // between it and the rest, so rows shift down by those amounts (all
+        // folded into rowTop along with the date bands).
         const gap = pinnedDividerVisible() ? pinnedDividerSpan() : 0;
         const first = maxInt(0, offset / rowHeight - 2);
-        const last = clampInt((offset + height) / rowHeight + 3, 0, count);
+        const last = clampInt((offset + height) / rowHeight + 4, 0, count);
 
         foreach (index; first .. last)
         {
             const item = items()[cast(size_t) index];
-            const y = topPad + index * rowHeight - offset +
-                (index >= _pinnedRows ? gap : 0);
+            const y = rowTop(index) - offset;
             const row = Rect(2, y + 1, maxInt(0, width - 4), rowHeight - 2);
+            // With a summary the title sits on the upper line and everything
+            // right-aligned (time, status dots, activity bar) lines up with the
+            // title instead of the whole row.
+            const subtitle = index < cast(int) _subtitles.length
+                ? _subtitles[cast(size_t) index] : cast(dstring) "";
+            const showSummary = twoLineRows && subtitle.length > 0;
+            const titleTop = showSummary ? y + 6 : y;
+            const titleHeight = showSummary ? 20 : rowHeight;
+            const bandIndex = groupIndexAt(index);
+            if (bandIndex >= 0)
+                paintDateBand(content, width, y, bandIndex);
 
             if (index == selected)
             {
@@ -9686,7 +10405,7 @@ public final class SessionListView : ListView
             if (_activityAnimating && _activityRows.canFind(index))
             {
                 static immutable int[4] pulseAlphas = [70, 130, 210, 130];
-                const bar = Rect(8, y + (rowHeight - 10) / 2, 3, 10);
+                const bar = Rect(8, titleTop + (titleHeight - 10) / 2, 3, 10);
                 content.fillRect(bar,
                     opencodeAccent.withAlpha(pulseAlphas[activityPulseStep()]));
             }
@@ -9724,20 +10443,22 @@ public final class SessionListView : ListView
             {
                 trailWidth = content.measureText(item.secondary, 1).width;
                 content.drawTextInRect(
-                    Rect(timeRight - trailWidth, y, trailWidth, rowHeight),
+                    Rect(timeRight - trailWidth, titleTop, trailWidth,
+                        titleHeight),
                     item.secondary, opencodeMuted, 1,
                     HorizontalAlign.right, VerticalAlign.middle, true);
             }
             if (incomplete)
                 content.fillCircle(
-                    Point(statusLeft + warnDotSize / 2, y + rowHeight / 2),
+                    Point(statusLeft + warnDotSize / 2,
+                        titleTop + titleHeight / 2),
                     warnDotSize / 2, opencodeWarning);
             if (unread)
             {
                 const dotLeft = statusLeft +
                     (incomplete ? warnDotSize + statusGap : 0);
                 content.fillCircle(
-                    Point(dotLeft + dotSize / 2, y + rowHeight / 2),
+                    Point(dotLeft + dotSize / 2, titleTop + titleHeight / 2),
                     dotSize / 2, opencodeAccent);
             }
 
@@ -9763,9 +10484,15 @@ public final class SessionListView : ListView
             const textWidth = maxInt(0, width - textLeft -
                 (trailWidth > 0 ? trailWidth + rightPad + titleGap : rightPad) -
                 (statusWidth > 0 ? statusWidth + statusGap : 0));
-            content.drawTextInRect(Rect(textLeft, y, textWidth, rowHeight),
-                item.text, titleColor, theme().fontScale,
+            content.drawTextInRect(Rect(textLeft, titleTop, textWidth,
+                titleHeight), item.text, titleColor, theme().fontScale,
                 HorizontalAlign.left, VerticalAlign.middle, true);
+            if (showSummary)
+                content.drawTextInRect(
+                    Rect(textLeft, y + 28, maxInt(0, width - textLeft - 14),
+                        maxInt(0, rowHeight - 34)),
+                    subtitle, opencodeMuted, 1, HorizontalAlign.left,
+                    VerticalAlign.middle, true);
             if (index == _hoverRow)
                 _hoverTitleClipped = item.text.length > 0 &&
                     content.measureText(item.text, theme().fontScale).width >
@@ -9777,7 +10504,8 @@ public final class SessionListView : ListView
         // inset from the edges so it reads as a section break, not a row rule.
         if (gap > 0)
         {
-            const separatorY = topPad + _pinnedRows * rowHeight - offset +
+            const separatorY = listTopPad() + _pinnedRows * rowHeight +
+                groupBandsAbove(_pinnedRows) * groupBandHeight - offset +
                 pinnedDividerPadAbove;
             const inset = 18;
             content.fillRect(Rect(inset, separatorY,
@@ -9787,6 +10515,20 @@ public final class SessionListView : ListView
 
         if (_dragging && _dragIntent != DragIntent.none)
             paintDropIndicator(content, width, offset, rowHeight, gap);
+    }
+
+    // The small "Today"/"Yesterday" date label that opens a group, painted in
+    // the band directly above that group's first row.
+    private void paintDateBand(Canvas canvas, int width, int rowY, int bandIndex)
+    {
+        if (bandIndex < 0 || bandIndex >= cast(int) _groupLabels.length) return;
+        const label = _groupLabels[cast(size_t) bandIndex];
+        if (label.length == 0) return;
+        canvas.drawTextInRect(
+            Rect(14, rowY - groupBandHeight, maxInt(0, width - 22),
+                groupBandHeight - 6),
+            toUTF32(label), opencodeMuted, 1, HorizontalAlign.left,
+            VerticalAlign.bottom, true);
     }
 
     // While a drag is in flight, tint the zone the drop would apply to so the
@@ -9807,7 +10549,7 @@ public final class SessionListView : ListView
         }
         else
         {
-            const top = pinDropZoneBottom() + gap - offset;
+            const top = pinDropZoneBottom() - offset;
             band = Rect(2, top, maxInt(0, width - 4), rowHeight);
             label = "Unpin conversation"d;
         }
@@ -10549,6 +11291,22 @@ public final class OpenCodeRoot : VBox
     private string _introInserted;
     private DetachedPlanPanel _planPanel;
     private FollowPill _followPill;
+    // Right-hand insight pane (Pro): the plan and this run's live state, laid
+    // out as a third column while the window is wide enough for one. See
+    // `updateInsightPaneWidth` and `refreshInsightPane`.
+    private InsightPanel _insightPane;
+    // `_insightAccum` throttles the pane to the once-a-second cadence the peak
+    // badge already runs on: context usage moves that fast, and the file scan
+    // is not worth doing per frame.
+    private double _insightAccum = 0.0;
+    // The conversation the pane's plan currently belongs to, so a switch (or
+    // the deferred startup restore) repaints it at once instead of a second
+    // later.
+    private int _insightSession = -1;
+    // Whether the newest messages show file-mutating or web tool calls, for the
+    // pane's "Current run" rows.
+    private bool _runUsedFileOps;
+    private bool _runUsedWeb;
     // Quick search over the open conversation (Ctrl+F).
     private ChatSearchBar _searchBar;
     private bool _searchOpen;
@@ -13399,6 +14157,51 @@ private string _suggestExcludeId;
         auto composerControls = new HBox(8);
         composerControls.setId("oc-composer-controls");
 
+        // Leading action pill, as in the release artwork: Search opens the
+        // quick-search bar over the transcript (the same bar Ctrl+F toggles).
+        auto searchPill = composerControls.add(
+            new Button("Search", IconKind.search));
+        searchPill.setId("oc-composer-search");
+        searchPill.onClick = delegate() { openChatSearch(); };
+        addButtonTooltip(searchPill, "Search this conversation (Ctrl+F)");
+
+        // The action pills lead the row, as in the release artwork: the
+        // reasoning-level and tool switches sit beside Search, ahead of the
+        // model picker and the meters.
+        auto thinkingControl = new ThinkingControl(thinkingModeLabel());
+        _thinkingBox = composerControls.add(thinkingControl);
+        _thinkingBox.setId("oc-thinking");
+        // A left click opens the same Off/Low/Medium/High menu a right click
+        // does, so the control reads as a dropdown instead of a bare toggle.
+        _thinkingBox.onClick = delegate() { showReasoningControlMenu(); };
+        // The tooltip hangs off the Thinking control itself rather than a
+        // separate "?" badge, so hovering the control explains it.
+        thinkingControl.onHoverChanged = delegate(bool open)
+        {
+            if (_thinkingTooltip is null)
+                _thinkingTooltip = new HoverTooltip(_thinkingBox);
+            setTooltipOpen(_thinkingBox, thinkingToggleTooltipText,
+                _thinkingTooltip, _thinkingTooltipOpen, open, true);
+        };
+        thinkingControl.onContextMenuRequested =
+            delegate(Point) { showReasoningControlMenu(); };
+
+        _toolsBox = composerControls.add(new CheckBox("Tools"));
+        _toolsBox.setId("oc-tools");
+        hugCheckBoxLabel(_toolsBox, "Tools");
+        _toolsBox.setChecked(_settings.toolsEnabled, false);
+        _toolsBox.onChanged = delegate(bool value)
+        {
+            _settings.toolsEnabled = value;
+            saveSettingsNow();
+            updateStatus(value
+                ? "Tools enabled — the model uses the D-native " ~
+                  "run/read/write/copy/move/rename/create_folder/remove/" ~
+                  "glob/grep/dshell tools."
+                : "Tools disabled.");
+        };
+
+
         auto modelButton = new ModelContextButton(_settings.model);
         _modelButton = composerControls.add(modelButton);
         _modelButton.setId("oc-model");
@@ -13434,38 +14237,7 @@ private string _suggestExcludeId;
         };
         refreshPeakBadge(true);
 
-        auto thinkingControl = new ThinkingControl(thinkingModeLabel());
-        _thinkingBox = composerControls.add(thinkingControl);
-        _thinkingBox.setId("oc-thinking");
-        // A left click opens the same Off/Low/Medium/High menu a right click
-        // does, so the control reads as a dropdown instead of a bare toggle.
-        _thinkingBox.onClick = delegate() { showReasoningControlMenu(); };
-        // The tooltip hangs off the Thinking control itself rather than a
-        // separate "?" badge, so hovering the control explains it.
-        thinkingControl.onHoverChanged = delegate(bool open)
-        {
-            if (_thinkingTooltip is null)
-                _thinkingTooltip = new HoverTooltip(_thinkingBox);
-            setTooltipOpen(_thinkingBox, thinkingToggleTooltipText,
-                _thinkingTooltip, _thinkingTooltipOpen, open, true);
-        };
-        thinkingControl.onContextMenuRequested =
-            delegate(Point) { showReasoningControlMenu(); };
 
-        _toolsBox = composerControls.add(new CheckBox("Tools"));
-        _toolsBox.setId("oc-tools");
-        hugCheckBoxLabel(_toolsBox, "Tools");
-        _toolsBox.setChecked(_settings.toolsEnabled, false);
-        _toolsBox.onChanged = delegate(bool value)
-        {
-            _settings.toolsEnabled = value;
-            saveSettingsNow();
-            updateStatus(value
-                ? "Tools enabled — the model uses the D-native " ~
-                  "run/read/write/copy/move/rename/create_folder/remove/" ~
-                  "glob/grep/dshell tools."
-                : "Tools disabled.");
-        };
 
         // Push the conversation timer to the right edge of the footer so it is
         // always visible, even when a long model name and the toggles fill the
@@ -13613,10 +14385,8 @@ private string _suggestExcludeId;
         // control height so it matches the row's tallest child.
         titleRow.layoutHints().minHeight = opencodeControlHeight;
         titleRow.layoutHints().preferredHeight = opencodeControlHeight;
-        _sessionsHeader = titleRow.add(new Label("Sandbox"));
-        _sessionsHeader.setId("oc-project-title");
-        _sessionsHeader.setScale(1);
-        _sessionsHeader.setColor(opencodeText);
+        // Folder glyph first, then the workspace name: the release artwork opens
+        // the header with the project's folder and its title after it.
         _openFolderButton = titleRow.add(new IconButton(IconKind.folder));
         _openFolderButton.setId("oc-open-folder");
         _openFolderButton.setFlat(true);
@@ -13626,6 +14396,10 @@ private string _suggestExcludeId;
             openFolderInExplorer(workspace.length > 0 ? workspace : ".");
         };
         addButtonTooltip(_openFolderButton, openFolderTooltipText);
+        _sessionsHeader = titleRow.add(new Label("Sandbox"));
+        _sessionsHeader.setId("oc-project-title");
+        _sessionsHeader.setScale(1);
+        _sessionsHeader.setColor(opencodeText);
         auto archiveToggle = titleRow.add(new IconButton(IconKind.drive));
         archiveToggle.setId("oc-archived-toggle");
         archiveToggle.setFlat(true);
@@ -13658,6 +14432,9 @@ private string _suggestExcludeId;
         };
         _newChatButton = headerColumn.add(new Button("New chat", IconKind.newDocument));
         _newChatButton.setId("oc-new");
+        // The primary action of the sidebar carries the accent fill, as in the
+        // release artwork, so it reads as the one obvious thing to press.
+        _newChatButton.setAccent(true);
         // Match the search field's height so the two controls read as a pair.
         // Pin minHeight too: the nested VBox lays a child out at
         // max(minHeight, preferredHeight); leaving them mismatched once made
@@ -13807,7 +14584,8 @@ private string _suggestExcludeId;
         _input.setFocusDecoration(false);
         _input.setPadding(6);
         _input.setWordWrap(true);
-        _input.setPlaceholder("Ask anything…  @file · /btw · /review");
+        _input.setPlaceholder(
+            "Type a message, ask a question, or describe a task…");
         _input.onSendRequested = delegate()
         {
             if (_input.textUtf8().strip().length == 0 &&
@@ -13890,6 +14668,19 @@ private string _suggestExcludeId;
 
         body.add(projectsColumn);
         body.add(_sessionsSplit);
+        // Right-hand insight pane, added after the chat so the transcript keeps
+        // the middle of the window. It starts collapsed and joins the layout
+        // once the root's layout pass sees a window wide enough for it.
+        _insightPane = new InsightPanel();
+        _insightPane.onTabChanged = delegate()
+        {
+            refreshInsightPane(_insightPane.tab() != insightTabPlan);
+        };
+        _insightPane.onModelClicked = delegate()
+        {
+            showModelPicker();
+        };
+        body.add(_insightPane);
 
         _status = add(new Label("Ready"));
         _status.setId("oc-status");
@@ -16256,6 +17047,14 @@ private string _suggestExcludeId;
     private void updatePlanPanel()
     {
         if (_planPanel is null) return;
+        // The insight pane's Plan tab already shows this checklist in its own
+        // column; the floating card would only repeat it there.
+        if (_insightPane !is null && _insightPane.wide() &&
+            _insightPane.tab() == insightTabPlan)
+        {
+            _planPanel.setVisible(false);
+            return;
+        }
         if (!_settings.detachedPlan || _current < 0)
         {
             _planPanel.setVisible(false);
@@ -16266,6 +17065,127 @@ private string _suggestExcludeId;
             session.taskStatus, session.nestedPlans,
             _settings.experimentalNestedPlans, checklistStale(*session),
             subagentEntriesFor(*session));
+    }
+
+    // -- insight pane (Pro) ------------------------------------------------
+
+    /// The insight pane takes part in the layout only while the window is wide
+    /// enough for a third column beside the sidebar and a readable transcript.
+    /// The pane is collapsed to zero width rather than hidden: this toolkit's
+    /// layout skips invisible children outright, so a hidden pane would never
+    /// be laid out again and could never return when the window grew.
+    ///
+    /// The hook is the root's own layout pass: the root's bounds are the client
+    /// size, and it lays out before the row that holds the pane, so the hints
+    /// written here are the ones the row uses in the same frame.
+    protected override void onLayout()
+    {
+        updateInsightPaneWidth(bounds().width);
+        super.onLayout();
+    }
+
+    private void updateInsightPaneWidth(int windowWidth)
+    {
+        if (_insightPane is null) return;
+        const expanded = windowWidth >= insightMinWindowWidth;
+        if (_insightPane.wide() == expanded) return;
+        _insightPane.setWide(expanded);
+        if (expanded) refreshInsightPane();
+        updatePlanPanel();
+    }
+
+    /// Push the live state the insight pane renders. `forceFiles` re-reads the
+    /// reference lists for a tab that was just opened.
+    private void refreshInsightPane(bool forceFiles = false)
+    {
+        if (_insightPane is null || !_insightPane.wide()) return;
+        _insightPane.setModel(_settings.model);
+        _insightPane.setUsage(_usageBadge !is null && _usageBadge.hasUsage() ?
+            _usageBadge.usagePercent() : 0);
+        _insightPane.setPeakLabel(_peakBadge !is null && _peakBadge.visible() ?
+            _peakBadge.labelForTesting() : "");
+        scanRunToolUse();
+        _insightPane.setRun(thinkingModeLabel(),
+            effectiveThinkingForRoute(activeSessionThinking(), _settings.model),
+            _settings.toolsEnabled, _settings.smartFileContext, _runUsedFileOps,
+            experimentalWebSearchEnabled() || _runUsedWeb);
+        if (_current >= 0)
+        {
+            const session = &_sessions[_current];
+            string[] texts;
+            bool[] done;
+            foreach (ref step; session.taskSteps)
+            {
+                texts ~= step.text;
+                done ~= step.status == "completed";
+            }
+            _insightPane.setPlan(session.objective, texts, done,
+                checklistStale(*session));
+        }
+        else
+            _insightPane.setPlan("", null, null, false);
+        if (forceFiles || _insightPane.tab() != insightTabPlan)
+            collectInsightFiles();
+    }
+
+    /// Whether the newest messages show file-mutating or web tool calls. The
+    /// "Current run" rows report what the run actually used, so this reads the
+    /// recorded tool results rather than a setting the user may have toggled
+    /// since the run started.
+    private void scanRunToolUse()
+    {
+        _runUsedFileOps = false;
+        _runUsedWeb = false;
+        if (_current < 0) return;
+        const session = &_sessions[_current];
+        const begin = session.messages.length > insightReferenceScan ?
+            session.messages.length - insightReferenceScan : 0;
+        foreach (ref message; session.messages[begin .. $])
+        {
+            switch (message.toolName)
+            {
+                case "write":
+                case "edit":
+                case "apply_patch":
+                case "remove":
+                case "download":
+                    _runUsedFileOps = true;
+                    break;
+                default:
+                    break;
+            }
+            if (message.toolName == "fetch" ||
+                message.toolName.canFind("web"))
+                _runUsedWeb = true;
+        }
+    }
+
+    /// The files the newest messages referenced, split by how they were
+    /// reached: the tool calls' own arguments and the prose mentions. Only the
+    /// Files and References tabs draw these, so the scan runs while one of them
+    /// is showing instead of on every tick.
+    private void collectInsightFiles()
+    {
+        if (_insightPane is null || _current < 0) return;
+        const session = &_sessions[_current];
+        const id = session.id;
+        const workspace = workspaceForSession(_current);
+        const begin = session.messages.length > insightReferenceScan ?
+            session.messages.length - insightReferenceScan : 0;
+        string[] toolFiles;
+        string[] mentionFiles;
+        // Newest first: the list is capped, so the files this run just touched
+        // are the ones that stay visible.
+        foreach_reverse (ref message; session.messages[begin .. $])
+        {
+            foreach (reference; _fileContext.references(id, message, workspace))
+            {
+                if (reference.target.length == 0) continue;
+                if (reference.tool) appendUniquePath(toolFiles, reference.target);
+                else appendUniquePath(mentionFiles, reference.target);
+            }
+        }
+        _insightPane.setFileLists(toolFiles, mentionFiles);
     }
 
     private void toggleNestedPlan(size_t parent)
@@ -27093,6 +28013,27 @@ private void pollButtonSuggestionRequest()
         // scrollbar range) already accounts for the divider gap.
         _sessionList.setPinnedCount(pinnedCount);
         _sessionList.setItems(items);
+        // Two-line rows and date bands, both derived from the same ordered
+        // `indices` the items were built from so the list and the data cannot
+        // drift apart.
+        string[] subtitles;
+        subtitles.reserve(items.length);
+        foreach (sessionIndex; indices)
+            subtitles ~= sessionRowSubtitle(_sessions[sessionIndex]);
+        string[] groupLabels;
+        int[] groupStarts;
+        const today = sessionDayBucket(Clock.currTime.toUnixTime());
+        long previousBucket = long.min;
+        foreach (i, sessionIndex; indices)
+        {
+            const bucket = sessionDayBucket(_sessions[sessionIndex].updatedAt);
+            if (bucket == previousBucket) continue;
+            previousBucket = bucket;
+            groupStarts ~= cast(int) i;
+            groupLabels ~= dayBucketLabel(bucket, today);
+        }
+        _sessionList.setRowSubtitles(subtitles);
+        _sessionList.setRowGroups(groupLabels, groupStarts);
         _sessionList.setActivityRows(activeSessionRows());
         refreshSessionRowStatus();
         int row = -1;
@@ -27105,6 +28046,63 @@ private void pollButtonSuggestionRequest()
     }
 
     // -- Pro session management ------------------------------------------
+
+    /// One-line summary printed under a conversation's title in the sidebar:
+    /// where its plan stands, else the session objective, else the model. Kept
+    /// deliberately terse so the row reads as a caption, not a second title.
+    private string sessionRowSubtitle(const ref ChatSession session)
+    {
+        string summary;
+        if (session.taskSteps.length > 0)
+        {
+            int done;
+            foreach (step; session.taskSteps)
+                if (step.status == "completed") ++done;
+            summary = "Plan " ~ to!string(done) ~ "/" ~
+                to!string(session.taskSteps.length) ~ " done";
+            const detail = session.objective.strip;
+            if (detail.length > 0) summary ~= " · " ~ detail;
+        }
+        else
+        {
+            summary = session.objective.strip;
+            if (summary.length == 0) summary = session.model;
+        }
+        return elideSummary(oneLine(summary));
+    }
+
+    /// Collapse a summary that carries line breaks onto a single line.
+    private static string oneLine(string text)
+    {
+        return text.replace("\n", " ").replace("\t", " ").strip;
+    }
+
+    /// Cap a summary to the row's measure. The row clips anyway, but a hard cap
+    /// keeps a long objective out of the paint path entirely.
+    private static string elideSummary(string text)
+    {
+        enum size_t maxUnits = 64;
+        const units = toUTF32(text);
+        if (units.length <= maxUnits) return text;
+        return toUTF8(units[0 .. maxUnits - 1]) ~ "…";
+    }
+
+    /// Day number a unix timestamp falls in, used to group the sidebar rows.
+    private static long sessionDayBucket(long stamp)
+    {
+        return stamp > 0 ? stamp / 86400 : 0;
+    }
+
+    /// Relative label for a day bucket, given today's bucket.
+    private static string dayBucketLabel(long bucket, long today)
+    {
+        const days = today - bucket;
+        if (days <= 0) return "Today";
+        if (days == 1) return "Yesterday";
+        if (days < 7) return "This week";
+        if (days < 31) return "This month";
+        return "Older";
+    }
 
     private void deleteSessionAtRow(int row)
     {
@@ -30631,6 +31629,14 @@ private void pollButtonSuggestionRequest()
             // from disk, including ones created before auto-pin existed.
             reconcileProjectManagerPins();
         }
+        // Follow the active conversation: the pane's plan belongs to the
+        // conversation on screen, so a switch (including the deferred startup
+        // restore above) repaints it now rather than on the next refresh tick.
+        if (_current != _insightSession)
+        {
+            _insightSession = _current;
+            refreshInsightPane(true);
+        }
         drainUpdateResult();
         drainSourceFetch();
         drainDeveloperPush();
@@ -30757,6 +31763,16 @@ private void pollButtonSuggestionRequest()
         {
             _peakBadgeAccum = 0;
             refreshPeakBadge();
+        }
+
+        // Insight pane: context usage and the peak window move once a second,
+        // and the plan's step states arrive with the agent's own reports, so the
+        // pane rides the same cadence as the badge above.
+        _insightAccum += deltaSeconds;
+        if (_insightAccum >= 1.0)
+        {
+            _insightAccum = 0;
+            refreshInsightPane();
         }
 
         // Perform an agent-requested rebuild on the UI thread, a few ticks after

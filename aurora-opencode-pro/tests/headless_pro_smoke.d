@@ -2765,12 +2765,12 @@ int main(string[] args)
     assert(titleText.indexOf("Aurora OpenCode") == 0,
         "The titlebar should show 'Aurora OpenCode' at its left, got '" ~
         titleText ~ "'");
-    // ...followed by the exe's build date/time in UTC, e.g.
-    // "2026-09-14 16:40 UTC" (UTC so the stamp is machine-independent).
+    // ...followed by the exe's build date in UTC, e.g. "2026.10.18"
+    // (UTC so the stamp is machine-independent).
     import std.regex : matchFirst, regex;
     assert(!matchFirst(titleText,
-        regex(r"^Aurora OpenCode  \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$")).empty,
-        "The titlebar should append the exe build date/time (UTC), got '" ~
+        regex(r"^Aurora OpenCode  \d{4}\.\d{2}\.\d{2}$")).empty,
+        "The titlebar should append the exe build date (UTC), got '" ~
         titleText ~ "'");
     // The title region is sized to its measured content, not the default 2/5 of
     // the band, so the merged toolbar keeps its room. The bound covers the
