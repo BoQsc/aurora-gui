@@ -124,7 +124,36 @@ private void translateBoxTree(Element el, int dx, int dy)
 /// Rasterise a `linear-gradient(...)` mask at a box size (null when the value is
 /// not a supported gradient). Straight-alpha RGBA8, so the alpha channel is the
 /// mask's coverage.
+///
+/// The result is a pure function of the gradient's text and the size it is
+/// rasterised at, so it is memoized: a mask is rasterised by building SVG markup
+/// and running it through the SVG rasteriser, and a repaint cannot pay that for
+/// every frame. Measured with aurora-browser/tests/pageperf-probe.d on a fixture
+/// whose only content is one fixed, masked, full-viewport pseudo-element
+/// (f-veil.html): 121 ms/frame against 1.6 ms for an empty page and 22 ms for the
+/// same box painted with a gradient background and no mask.
 private RgbaImage gradientMaskImage(string css, int w, int h)
+{
+    import std.format : format;
+    const key = format("%d x %d %s", w, h, css);
+    if (auto hit = key in _gradientCache) return *hit;
+    auto image = rasteriseGradient(css, w, h);
+    // Bounded by total pixels rather than by entry count: a full-viewport mask
+    // is megabytes, and a page with many large gradients must not grow this
+    // without limit. Clearing wholesale is what the other per-paint caches in
+    // this file do.
+    if (_gradientCachePixels + cast(size_t) w * h > MaxGradientCachePixels)
+    {
+        _gradientCache = null;
+        _gradientCachePixels = 0;
+    }
+    _gradientCache[key] = image;
+    _gradientCachePixels += cast(size_t) w * h;
+    return image;
+}
+
+/// The rasterisation behind `gradientMaskImage`, without the memoization.
+private RgbaImage rasteriseGradient(string css, int w, int h)
 {
     import auroraweb.svg : gradientToSvg, decodeSvg;
     const g = css.strip();
@@ -138,6 +167,11 @@ private RgbaImage gradientMaskImage(string css, int w, int h)
     try return decodeSvg(cast(const(ubyte)[]) svg);
     catch (Throwable) return null;
 }
+
+/// Rasterised gradients, keyed by CSS text and size (see `gradientMaskImage`).
+private RgbaImage[string] _gradientCache;
+private size_t _gradientCachePixels;
+private enum size_t MaxGradientCachePixels = 4_000_000;
 
 /// Paint `element` (and its subtree) through its `filter` (CSS Filter Effects 1).
 /// Layering works exactly like `paintMaskedLayer` — the subtree goes into a layer
@@ -320,51 +354,54 @@ private bool paintMaskedLayer(Element element, Canvas canvas)
     translateBoxTree(element, bx, by);
     element.style.maskImage = savedMask;
 
-    // Multiply the layer's premultiplied ARGB by the mask's alpha.
+    // Multiply the layer's premultiplied ARGB by the mask's alpha and hand the
+    // canvas straight-alpha RGBA8 (Surface is premultiplied). That used to be two
+    // whole traversals of the layer - one to multiply, one to unpremultiply - with
+    // an integer division per pixel in the first; a full-viewport layer is what a
+    // page's veil is, so both passes and the division are worth removing. The
+    // arithmetic per pixel is unchanged, so the pixels are too.
     auto lp = layerSurface.pixels();
     auto mp = mask.pixels();
     const int mw = mask.width();
     const int mh = mask.height();
-    foreach (y; 0 .. h)
-    {
-        const int my = (y * mh) / h;
-        foreach (x; 0 .. w)
-        {
-            const int mx = (x * mw) / w;
-            const size_t mi = (cast(size_t) my * mw + mx) * 4 + 3;
-            const uint ma = mi < mp.length ? cast(uint) mp[mi] : 0;
-            if (ma == 255) continue;
-            const size_t li = cast(size_t) y * w + x;
-            const uint p = lp[li];
-            lp[li] = ((((p >> 24) & 0xff) * ma / 255) << 24 |
-                      (((p >> 16) & 0xff) * ma / 255) << 16 |
-                      (((p >> 8) & 0xff) * ma / 255) << 8 |
-                      ((p & 0xff) * ma / 255));
-        }
-    }
-
-    // Back to straight-alpha RGBA8 for the canvas (Surface is premultiplied).
+    // Which mask column each destination column reads: the same for every row.
+    int[] maskX;
+    maskX.length = w;
+    foreach (x; 0 .. w) maskX[x] = (x * mw) / w;
     auto rgba = new ubyte[](cast(size_t) w * h * 4);
     foreach (y; 0 .. h)
+    {
+        const size_t maskRow = (cast(size_t) ((y * mh) / h)) * mw;
+        const size_t row = cast(size_t) y * w;
         foreach (x; 0 .. w)
         {
-            const uint p = lp[cast(size_t) y * w + x];
-            const uint a = (p >> 24) & 0xff;
+            const uint p = lp[row + x];
+            const size_t mi = (maskRow + maskX[x]) * 4 + 3;
+            const uint ma = mi < mp.length ? cast(uint) mp[mi] : 0;
+            uint a = (p >> 24) & 0xff;
             uint r = (p >> 16) & 0xff;
             uint g = (p >> 8) & 0xff;
             uint b2 = p & 0xff;
+            if (ma != 255)
+            {
+                a = a * ma / 255;
+                r = r * ma / 255;
+                g = g * ma / 255;
+                b2 = b2 * ma / 255;
+            }
             if (a > 0 && a < 255)
             {
                 r = min(255, (r * 255 + a / 2) / a);
                 g = min(255, (g * 255 + a / 2) / a);
                 b2 = min(255, (b2 * 255 + a / 2) / a);
             }
-            const size_t i = (cast(size_t) y * w + x) * 4;
+            const size_t i = (row + x) * 4;
             rgba[i] = cast(ubyte) r;
             rgba[i + 1] = cast(ubyte) g;
             rgba[i + 2] = cast(ubyte) b2;
             rgba[i + 3] = cast(ubyte) a;
         }
+    }
     canvas.drawImage(Rect(bx, by, w, h), new RgbaImage(w, h, rgba), false);
     return true;
 }

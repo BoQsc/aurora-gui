@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Make the durable install report live: a real run now writes install-report.txt into the install folder (dinstall.d's installReportText + installReportFile, printed by cli.d), so a long folder install can be read back even if the app restarts and the terminal output is lost. Next action after relaunch: run the real folder install C:\\Users\\windows10\\Grand and read install-report.txt plus the captured output for the finished-install report naming the passed-over firmware step.",
+  "reason": "Deploy the startup journal replay fix (commit cd39492) so the UI thread no longer parses the journal during restore.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-18 05:52:09.2387311 UTC",
-  "finishedAt": "2026-10-18 05:52:57.4548627 UTC",
-  "durationMs": 48216,
+  "startedAt": "2026-10-18 19:22:54.351589 UTC",
+  "finishedAt": "2026-10-18 19:23:44.4120154 UTC",
+  "durationMs": 50059,
   "exitCode": 0,
   "errors": []
 }
