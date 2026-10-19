@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Host — Shared Surface",
+    "width": 420,
+    "height": 340,
+    "theme": "dark"
+  },
+  "root": {
+    "type": "column",
+    "spacing": 8,
+    "children": [
+      {
+        "id": "caption",
+        "type": "label",
+        "text": "shared memory RGBA surface + input ring",
+        "scale": 2
+      },
+      {
+        "id": "live",
+        "type": "surface",
+        "path": "../build/live.surface",
+        "width": 320,
+        "height": 240,
+        "events": ["pointer", "key"]
+      }
+    ]
+  }
+}

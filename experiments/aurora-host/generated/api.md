@@ -2,18 +2,22 @@
 
 **Generated from `protocol/aurora-host.api.json`.** Do not edit manually.
 
-- Experiment version: `0.1.0`
-- Protocol version: `1`
-- Schema version: `1`
+- Experiment version: `0.2.0`
+- Protocol version: `2`
+- Schema version: `2`
 - Max scene depth: `16`
 - Max scene nodes: `256`
 - Max canvas commands: `4096`
+- Max surface pixels: `4000000`
+- Max input events: `4096`
 
 ## Capabilities
 
 - `window`
 - `scene`
 - `canvas`
+- `image`
+- `surface`
 - `label`
 - `button`
 - `row`
@@ -22,6 +26,11 @@
 - `headless-render`
 - `control-stdin`
 - `text-editor`
+- `assets`
+- `pointer-events`
+- `key-events`
+- `frame-events`
+- `shared-surface`
 
 ## Window
 
@@ -42,12 +51,16 @@
 | `button` | no | yes | no | no |
 | `textArea` | no | yes | no | no |
 | `canvas` | no | no | no | no |
+| `image` | no | no | no | no |
+| `surface` | no | no | no | no |
 | `spacer` | no | no | no | no |
 
 ## Common node fields
 
 - `id`: optional unique string; derived from the node path when omitted
 - `action`: optional button action name; emits an action event instead of the default activation event
+- `events`: optional array of pointer, key, tick for canvas/surface event delivery
+- `tickHz`: optional canvas tick rate from 1 to 240; defaults to 0 (disabled)
 
 ## Commands
 
@@ -72,7 +85,41 @@ Transport: stdin/stdout JSON lines; launch --run <scene> --control
 | `getText` | Read text from a text-editor node by ID. |
 | `setWordWrap` | Set word wrapping on a text-editor node. |
 | `setCanvas` | Replace a canvas node's command list by node ID. |
+| `setTick` | Set a canvas tick rate by node ID. |
+| `pointer` | Inject a pointer event into a canvas or surface. |
+| `key` | Inject a keyboard event into a canvas or surface. |
+| `surface` | Report surface mapping, frame sequence, and input ring position. |
 | `fileDialog` | Open Aurora's generic open/save file dialog and return a path. |
 | `click` | Activate a button by node ID. |
 | `screenshot` | Save the current surface as a PPM. |
 | `close` | Close the host window. |
+
+## Shared surface
+
+- Magic: `AURSFACE`
+- Version: `2`
+- Header size: `80`
+- Input event size: `24`
+- Frame buffers: `2`
+- Input layout: kind:u8, button:u8, key:u16, modifiers:u32, x:i32, y:i32, wheelX:i32, wheelY:i32
+- Frame layout: two consecutive width*height*4 RGBA8 buffers after header and input ring; active selects the readable buffer
+- frame: the writer fills an inactive buffer, sets active, then increments frameSeq; the host copies the active buffer and writes the copied sequence to hostReadSeq; writers may reuse a buffer after hostReadSeq catches up with the frame that used it
+- input: the host appends events at inputTail and the external consumer reads from inputHead, advancing inputHead after consuming; head == tail means empty and tail - head == inputCapacity means full
+- wheel: kind 4 records pointer position in x/y and wheel deltas in wheelX/wheelY
+
+| Header offset | Field |
+|---|---|
+| `0` | `magic` |
+| `8` | `version` |
+| `12` | `headerSize` |
+| `16` | `width` |
+| `20` | `height` |
+| `24` | `active` |
+| `28` | `inputCapacity` |
+| `32` | `frameSeq` |
+| `40` | `hostReadSeq` |
+| `48` | `inputHead` |
+| `52` | `inputTail` |
+| `56` | `inputEventSize` |
+| `60` | `bufferCount` |
+| `64` | `frameBytes` |

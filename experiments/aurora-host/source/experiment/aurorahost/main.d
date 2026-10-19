@@ -1,6 +1,7 @@
 module experiment.aurorahost.main;
 
 import experiment.aurorahost.control : ControlServer;
+import experiment.aurorahost.events : HostEvent;
 import experiment.aurorahost.protocol : Capabilities, ExperimentVersion,
     NodeTypes, ProtocolVersion, SchemaVersion;
 import experiment.aurorahost.scene : createWindow, describeScene, loadScene,
@@ -38,6 +39,7 @@ private int renderScene(const Scene scene, string outputPath)
 {
     auto registry = new NodeRegistry();
     auto window = createWindow(scene, registry);
+    registry.refreshSurfaces();
     const parent = dirName(outputPath);
     if (parent.length > 0 && parent != ".")
         mkdirRecurse(parent);
@@ -58,6 +60,10 @@ private int runWindowed(GuiWindow window, NodeRegistry registry, bool control)
         registry.onAction = delegate(string node, string action)
         {
             server.eventAction(node, action);
+        };
+        registry.onEvent = delegate(HostEvent event)
+        {
+            server.eventInput(event);
         };
         window.applicationService = delegate(double delta)
         {

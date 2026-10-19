@@ -1,0 +1,31 @@
+{
+  "inputs": [
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/samples/surface.scene.json",
+    "experiments/aurora-host/tools/drive_surface.py",
+    "experiments/aurora-host/tools/host_session.py",
+    "experiments/aurora-host/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tools/drive_surface.py"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 180000
+      }
+    }
+  ]
+}

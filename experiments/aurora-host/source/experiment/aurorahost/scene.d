@@ -2,13 +2,17 @@ module experiment.aurorahost.scene;
 
 import experiment.aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
     parseCanvasColor;
+import experiment.aurorahost.events : HostEvent;
+import experiment.aurorahost.image_widget : ImageWidget;
+import experiment.aurorahost.surface : SurfaceInfo, SurfaceSpec, SurfaceWidget;
 import experiment.aurorahost.protocol : MaxSceneDepth, MaxSceneNodes, NodeTypes,
-    MaxCanvasCommands, SchemaVersion;
+    MaxCanvasCommands, MaxInputEvents, MaxSurfacePixels, SchemaVersion;
 import std.algorithm : canFind;
 import std.exception : enforce;
 import std.file : readText;
 import std.format : format;
 import std.json : JSONType, JSONValue, parseJSON;
+import std.path : absolutePath, buildPath, dirName, isAbsolute;
 import std.utf : toUTF8;
 
 import aurora;
@@ -29,7 +33,17 @@ struct SceneNode
     string action;
     int scale = 2;
     int spacing = 8;
+    string src;
+    int width;
+    int height;
+    int flex;
+    bool hasBackground;
+    Color background;
+    RgbaImage image;
+    string[] events;
+    int tickHz;
     CanvasSpec canvas;
+    SurfaceSpec surface;
     SceneNode[] children;
 }
 
@@ -46,9 +60,13 @@ class NodeRegistry
     private string[string] _types;
     private string[string] _texts;
     private string[] _order;
+    private SurfaceWidget[] _surfaces;
+
+    string assetBase;
 
     void delegate(string) onActivate;
     void delegate(string node, string action) onAction;
+    void delegate(HostEvent) onEvent;
 
     void registerNode(string id, string type, Widget widget, string text)
     {
@@ -58,6 +76,8 @@ class NodeRegistry
         _types[id] = type;
         _texts[id] = text;
         _order ~= id;
+        if (auto surface = cast(SurfaceWidget) widget)
+            _surfaces ~= surface;
     }
 
     bool setText(string id, string text)
@@ -114,6 +134,67 @@ class NodeRegistry
         return true;
     }
 
+    bool setTick(string id, int hz)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return false;
+        auto canvas = cast(CanvasWidget) *widget;
+        if (canvas is null) return false;
+        canvas.setTick(hz);
+        return true;
+    }
+
+    bool injectPointer(string id, string kind, int x, int y,
+        MouseButton button, uint modifiers, int wheelX = 0, int wheelY = 0)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return false;
+        if (auto canvas = cast(CanvasWidget) *widget)
+        {
+            canvas.injectPointer(kind, x, y, button, modifiers, wheelX, wheelY);
+            return true;
+        }
+        if (auto surface = cast(SurfaceWidget) *widget)
+        {
+            surface.injectPointer(kind, x, y, button, modifiers, wheelX, wheelY);
+            return true;
+        }
+        return false;
+    }
+
+    bool injectKey(string id, string kind, Key key, uint modifiers)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return false;
+        if (auto canvas = cast(CanvasWidget) *widget)
+        {
+            canvas.injectKey(kind, key, modifiers);
+            return true;
+        }
+        if (auto surface = cast(SurfaceWidget) *widget)
+        {
+            surface.injectKey(kind, key, modifiers);
+            return true;
+        }
+        return false;
+    }
+
+    bool surfaceInfo(string id, out SurfaceInfo info)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return false;
+        auto surface = cast(SurfaceWidget) *widget;
+        if (surface is null) return false;
+        info = surface.info();
+        return true;
+    }
+
+    void refreshSurfaces()
+    {
+        foreach (surface; _surfaces)
+            surface.refresh(0.0);
+    }
+
     NodeInfo[] tree()
     {
         NodeInfo[] result;
@@ -140,6 +221,7 @@ class NodeRegistry
 struct Scene
 {
     int schemaVersion;
+    string assetBase;
     SceneWindow window;
     SceneNode root;
 }
@@ -185,17 +267,39 @@ private int readRange(JSONValue object, string key, int fallback, int minimum,
     return value;
 }
 
-private CanvasCommand parseCanvasCommand(JSONValue value, int index, string label)
+private string resolveAssetPath(string assetBase, string path)
+{
+    return isAbsolute(path) ? path : buildPath(assetBase, path);
+}
+
+private string[] parseEvents(JSONValue value, string label)
+{
+    enforce(value.type == JSONType.array, label ~ " must be an array");
+    string[] events;
+    foreach (index, event; value.array)
+    {
+        enforce(event.type == JSONType.string,
+            format("%s[%d] must be a string", label, index));
+        const name = event.str;
+        enforce(name == "pointer" || name == "key" || name == "tick",
+            format("%s[%d] has unknown event '%s'", label, index, name));
+        if (!events.canFind(name))
+            events ~= name;
+    }
+    return events;
+}
+
+private CanvasCommand parseCanvasCommand(JSONValue value, int index,
+    string label, string assetBase)
 {
     enforce(value.type == JSONType.object, label ~ " must be an object");
     CanvasCommand command;
     command.op = readString(value, "op", "", label);
     enforce(command.op == "rect" || command.op == "roundedRect" ||
         command.op == "line" || command.op == "circle" ||
-        command.op == "ring" || command.op == "text",
+        command.op == "ring" || command.op == "text" ||
+        command.op == "image",
         format("%s.op is unknown: '%s'", label, command.op));
-    command.color = parseCanvasColor(
-        readString(value, "color", "", label), label ~ ".color");
     command.x = readRange(value, "x", 0, -100000, 100000, label);
     command.y = readRange(value, "y", 0, -100000, 100000, label);
     command.x2 = readRange(value, "x2", 0, -100000, 100000, label);
@@ -206,10 +310,25 @@ private CanvasCommand parseCanvasCommand(JSONValue value, int index, string labe
     command.thickness = readRange(value, "thickness", 1, 1, 64, label);
     command.scale = readRange(value, "scale", 2, 1, 8, label);
     command.text = readString(value, "text", "", label);
+    if (command.op == "image")
+    {
+        command.src = readString(value, "src", "", label);
+        enforce(command.src.length > 0, label ~ ".src is required for image");
+        command.image = loadImage(resolveAssetPath(assetBase, command.src));
+        if (command.width == 0)
+            command.width = command.image.width();
+        if (command.height == 0)
+            command.height = command.image.height();
+        command.color = Color(255, 255, 255, 255);
+    }
+    else
+        command.color = parseCanvasColor(
+            readString(value, "color", "", label), label ~ ".color");
     return command;
 }
 
-CanvasCommand[] parseCanvasCommands(JSONValue value, string label)
+CanvasCommand[] parseCanvasCommands(JSONValue value, string label,
+    string assetBase = "")
 {
     enforce(value.type == JSONType.array,
         label ~ " must be an array");
@@ -219,11 +338,11 @@ CanvasCommand[] parseCanvasCommands(JSONValue value, string label)
     CanvasCommand[] commands;
     foreach (index, command; value.array)
         commands ~= parseCanvasCommand(command, cast(int) index,
-            format("%s[%d]", label, index));
+            format("%s[%d]", label, index), assetBase);
     return commands;
 }
 
-private CanvasSpec parseCanvas(JSONValue value, string label)
+private CanvasSpec parseCanvas(JSONValue value, string label, string assetBase)
 {
     CanvasSpec canvas;
     canvas.width = readRange(value, "width", 0, 0, 10000, label);
@@ -237,13 +356,67 @@ private CanvasSpec parseCanvas(JSONValue value, string label)
         canvas.background = parseCanvasColor(
             (*background).str, label ~ ".background");
     }
+    if (auto events = "events" in value.object)
+        canvas.events = parseEvents(*events, label ~ ".events");
+    canvas.tickHz = readRange(value, "tickHz", 0, 0, 240, label);
     if (auto commands = "commands" in value.object)
-        canvas.commands = parseCanvasCommands(*commands, label ~ ".commands");
+        canvas.commands = parseCanvasCommands(*commands,
+            label ~ ".commands", assetBase);
     return canvas;
 }
 
+private void parseBackground(JSONValue value, string label, ref bool hasBackground,
+    ref Color background)
+{
+    if (auto found = "background" in value.object)
+    {
+        enforce((*found).type == JSONType.string,
+            label ~ ".background must be a string");
+        hasBackground = true;
+        background = parseCanvasColor((*found).str, label ~ ".background");
+    }
+}
+
+private void parseImageNode(JSONValue value, string label, string assetBase,
+    ref SceneNode node)
+{
+    node.src = readString(value, "src", "", label);
+    enforce(node.src.length > 0, label ~ ".src is required for image");
+    node.image = loadImage(resolveAssetPath(assetBase, node.src));
+    const sourceWidth = node.image.width();
+    const sourceHeight = node.image.height();
+    enforce(sourceWidth > 0 && sourceHeight > 0,
+        label ~ " image has no pixels");
+    enforce(cast(ulong) sourceWidth * sourceHeight <= MaxSurfacePixels,
+        format("%s image exceeds max pixel count %d", label,
+            MaxSurfacePixels));
+    node.width = readRange(value, "width", sourceWidth, 1, 10000, label);
+    node.height = readRange(value, "height", sourceHeight, 1, 10000, label);
+    node.flex = readRange(value, "flex", 0, 0, 1000, label);
+    parseBackground(value, label, node.hasBackground, node.background);
+}
+
+private SurfaceSpec parseSurface(JSONValue value, string label,
+    string assetBase)
+{
+    SurfaceSpec surface;
+    const path = readString(value, "path", "", label);
+    enforce(path.length > 0, label ~ ".path is required for surface");
+    surface.path = resolveAssetPath(assetBase, path);
+    surface.width = readRange(value, "width", 320, 1, 10000, label);
+    surface.height = readRange(value, "height", 240, 1, 10000, label);
+    enforce(cast(ulong) surface.width * surface.height <= MaxSurfacePixels,
+        format("%s surface exceeds max pixel count %d", label,
+            MaxSurfacePixels));
+    surface.flex = readRange(value, "flex", 0, 0, 1000, label);
+    parseBackground(value, label, surface.hasBackground, surface.background);
+    if (auto events = "events" in value.object)
+        surface.events = parseEvents(*events, label ~ ".events");
+    return surface;
+}
+
 private SceneNode[] parseChildren(JSONValue object, ref int count, int depth,
-    string label, string parentId)
+    string label, string parentId, string assetBase)
 {
     auto found = "children" in object.object;
     if (found is null) return [];
@@ -253,12 +426,12 @@ private SceneNode[] parseChildren(JSONValue object, ref int count, int depth,
     foreach (index, child; (*found).array)
         children ~= parseNode(child, count, depth + 1,
             format("%s.children[%d]", label, index),
-            format("%s.%d", parentId, index));
+            format("%s.%d", parentId, index), assetBase);
     return children;
 }
 
 private SceneNode parseNode(JSONValue value, ref int count, int depth,
-    string label, string fallbackId)
+    string label, string fallbackId, string assetBase)
 {
     enforce(depth <= MaxSceneDepth,
         format("%s exceeds max scene depth %d", label, MaxSceneDepth));
@@ -282,7 +455,8 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
             node.spacing = readInt(value, "spacing", 8, label);
             enforce(node.spacing >= 0 && node.spacing <= 64,
                 format("%s.spacing must be between 0 and 64", label));
-            node.children = parseChildren(value, count, depth, label, node.id);
+            node.children = parseChildren(value, count, depth, label, node.id,
+                assetBase);
             break;
         case "label":
             requireNoChildren(value, label);
@@ -302,7 +476,15 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
             break;
         case "canvas":
             requireNoChildren(value, label);
-            node.canvas = parseCanvas(value, label);
+            node.canvas = parseCanvas(value, label, assetBase);
+            break;
+        case "image":
+            requireNoChildren(value, label);
+            parseImageNode(value, label, assetBase, node);
+            break;
+        case "surface":
+            requireNoChildren(value, label);
+            node.surface = parseSurface(value, label, assetBase);
             break;
         case "spacer":
             requireNoChildren(value, label);
@@ -323,6 +505,7 @@ Scene loadScene(string path)
     enforce(scene.schemaVersion == SchemaVersion,
         format("unsupported schemaVersion %d (expected %d)",
             scene.schemaVersion, SchemaVersion));
+    scene.assetBase = dirName(absolutePath(path));
 
     auto windowValue = "window" in document.object;
     if (windowValue !is null)
@@ -346,7 +529,8 @@ Scene loadScene(string path)
     auto rootValue = "root" in document.object;
     enforce(rootValue !is null, "scene is missing field 'root'");
     int count;
-    scene.root = parseNode(*rootValue, count, 0, "scene.root", "root");
+    scene.root = parseNode(*rootValue, count, 0, "scene.root", "root",
+        scene.assetBase);
     return scene;
 }
 
@@ -415,8 +599,39 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
         case "canvas":
         {
             auto canvas = new CanvasWidget(node.canvas);
+            const eventNode = node.id;
+            canvas.onInput = delegate(HostEvent event)
+            {
+                event.node = eventNode;
+                if (registry.onEvent !is null)
+                    registry.onEvent(event);
+            };
             registry.registerNode(node.id, node.type, canvas, "");
             return canvas;
+        }
+        case "image":
+        {
+            auto source = cast(SceneNode) node;
+            auto image = new ImageWidget(source.image, source.width,
+                source.height, source.flex, source.hasBackground,
+                source.background);
+            registry.registerNode(source.id, source.type, image, source.src);
+            return image;
+        }
+        case "surface":
+        {
+            auto source = cast(SceneNode) node;
+            auto surface = new SurfaceWidget(source.surface);
+            const eventNode = source.id;
+            surface.onInput = delegate(HostEvent event)
+            {
+                event.node = eventNode;
+                if (registry.onEvent !is null)
+                    registry.onEvent(event);
+            };
+            registry.registerNode(source.id, source.type, surface,
+                source.surface.path);
+            return surface;
         }
         case "spacer":
         {
@@ -431,6 +646,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
 
 GuiWindow createWindow(const Scene scene, NodeRegistry registry)
 {
+    registry.assetBase = scene.assetBase;
     WindowOptions options;
     options.title = scene.window.title;
     options.width = scene.window.width;

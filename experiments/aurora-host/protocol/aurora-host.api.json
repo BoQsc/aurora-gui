@@ -1,13 +1,15 @@
 {
   "name": "aurora-host-experiment",
-  "experimentVersion": "0.1.0",
-  "protocolVersion": 1,
-  "schemaVersion": 1,
+  "experimentVersion": "0.2.0",
+  "protocolVersion": 2,
+  "schemaVersion": 2,
   "description": "A small retained-scene host experiment for Aurora.",
   "capabilities": [
     "window",
     "scene",
     "canvas",
+    "image",
+    "surface",
     "label",
     "button",
     "row",
@@ -15,16 +17,25 @@
     "spacer",
     "headless-render",
     "control-stdin",
-    "text-editor"
+    "text-editor",
+    "assets",
+    "pointer-events",
+    "key-events",
+    "frame-events",
+    "shared-surface"
   ],
   "limits": {
     "maxSceneDepth": 16,
     "maxSceneNodes": 256,
-    "maxCanvasCommands": 4096
+    "maxCanvasCommands": 4096,
+    "maxSurfacePixels": 4000000,
+    "maxInputEvents": 4096
   },
   "common": {
     "id": "optional unique string; derived from the node path when omitted",
-    "action": "optional button action name; emits an action event instead of the default activation event"
+    "action": "optional button action name; emits an action event instead of the default activation event",
+    "events": "optional array of pointer, key, tick for canvas/surface event delivery",
+    "tickHz": "optional canvas tick rate from 1 to 240; defaults to 0 (disabled)"
   },
   "window": {
     "title": "string",
@@ -72,13 +83,76 @@
       "width": "optional preferred width",
       "height": "optional preferred height",
       "flex": "optional layout flex",
-      "commands": "rect, roundedRect, line, circle, ring, text"
+      "events": "optional pointer, key, tick event list",
+      "tickHz": "optional tick rate 1..240",
+      "commands": "rect, roundedRect, line, circle, ring, text, image"
+    },
+    "image": {
+      "children": false,
+      "text": false,
+      "scale": false,
+      "spacing": false,
+      "src": "image path relative to the scene file or absolute",
+      "width": "optional preferred width; defaults to source width",
+      "height": "optional preferred height; defaults to source height",
+      "flex": "optional layout flex",
+      "background": "#RRGGBB or #RRGGBBAA"
+    },
+    "surface": {
+      "children": false,
+      "text": false,
+      "scale": false,
+      "spacing": false,
+      "path": "shared-surface file path relative to the scene file or absolute",
+      "width": "RGBA surface width",
+      "height": "RGBA surface height",
+      "flex": "optional layout flex",
+      "events": "optional pointer,key event list",
+      "background": "#RRGGBB or #RRGGBBAA"
     },
     "spacer": {
       "children": false,
       "text": false,
       "scale": false,
       "spacing": false
+    }
+  },
+  "surface": {
+    "magic": "AURSFACE",
+    "version": 2,
+    "headerSize": 80,
+    "inputEventSize": 24,
+    "bufferCount": 2,
+    "offsets": {
+      "magic": 0,
+      "version": 8,
+      "headerSize": 12,
+      "width": 16,
+      "height": 20,
+      "active": 24,
+      "inputCapacity": 28,
+      "frameSeq": 32,
+      "hostReadSeq": 40,
+      "inputHead": 48,
+      "inputTail": 52,
+      "inputEventSize": 56,
+      "bufferCount": 60,
+      "frameBytes": 64
+    },
+    "inputKinds": {
+      "pointerDown": 1,
+      "pointerMove": 2,
+      "pointerUp": 3,
+      "wheel": 4,
+      "keyDown": 5,
+      "keyUp": 6
+    },
+    "inputEventLayout": "kind:u8, button:u8, key:u16, modifiers:u32, x:i32, y:i32, wheelX:i32, wheelY:i32",
+    "frameLayout": "two consecutive width*height*4 RGBA8 buffers after header and input ring; active selects the readable buffer",
+    "semantics": {
+      "frame": "the writer fills an inactive buffer, sets active, then increments frameSeq; the host copies the active buffer and writes the copied sequence to hostReadSeq; writers may reuse a buffer after hostReadSeq catches up with the frame that used it",
+      "input": "the host appends events at inputTail and the external consumer reads from inputHead, advancing inputHead after consuming; head == tail means empty and tail - head == inputCapacity means full",
+      "wheel": "kind 4 records pointer position in x/y and wheel deltas in wheelX/wheelY"
     }
   },
   "commands": {
@@ -98,6 +172,10 @@
       "getText": "Read text from a text-editor node by ID.",
       "setWordWrap": "Set word wrapping on a text-editor node.",
       "setCanvas": "Replace a canvas node's command list by node ID.",
+      "setTick": "Set a canvas tick rate by node ID.",
+      "pointer": "Inject a pointer event into a canvas or surface.",
+      "key": "Inject a keyboard event into a canvas or surface.",
+      "surface": "Report surface mapping, frame sequence, and input ring position.",
       "fileDialog": "Open Aurora's generic open/save file dialog and return a path.",
       "click": "Activate a button by node ID.",
       "screenshot": "Save the current surface as a PPM.",

@@ -47,6 +47,14 @@ def render_d(schema: dict) -> str:
         f'enum MaxSceneDepth = {schema["limits"]["maxSceneDepth"]};',
         f'enum MaxSceneNodes = {schema["limits"]["maxSceneNodes"]};',
         f'enum MaxCanvasCommands = {schema["limits"]["maxCanvasCommands"]};',
+        f'enum MaxSurfacePixels = {schema["limits"]["maxSurfacePixels"]};',
+        f'enum MaxInputEvents = {schema["limits"]["maxInputEvents"]};',
+        "",
+        f'enum SurfaceMagic = {d_string(schema["surface"]["magic"])};',
+        f'enum SurfaceVersion = {schema["surface"]["version"]};',
+        f'enum SurfaceHeaderSize = {schema["surface"]["headerSize"]};',
+        f'enum SurfaceInputEventSize = {schema["surface"]["inputEventSize"]};',
+        f'enum SurfaceBufferCount = {schema["surface"]["bufferCount"]};',
         "",
     ]
     return "\n".join(lines)
@@ -64,6 +72,8 @@ def render_markdown(schema: dict) -> str:
         f"- Max scene depth: `{schema['limits']['maxSceneDepth']}`",
         f"- Max scene nodes: `{schema['limits']['maxSceneNodes']}`",
         f"- Max canvas commands: `{schema['limits']['maxCanvasCommands']}`",
+        f"- Max surface pixels: `{schema['limits']['maxSurfacePixels']}`",
+        f"- Max input events: `{schema['limits']['maxInputEvents']}`",
         "",
         "## Capabilities",
         "",
@@ -125,6 +135,29 @@ def render_markdown(schema: dict) -> str:
         ]
         for command, description in schema["control"]["commands"].items():
             lines.append(f"| `{command}` | {description} |")
+    if "surface" in schema:
+        surface = schema["surface"]
+        lines += [
+            "",
+            "## Shared surface",
+            "",
+            f"- Magic: `{surface['magic']}`",
+            f"- Version: `{surface['version']}`",
+            f"- Header size: `{surface['headerSize']}`",
+            f"- Input event size: `{surface['inputEventSize']}`",
+            f"- Frame buffers: `{surface['bufferCount']}`",
+            f"- Input layout: {surface['inputEventLayout']}",
+            f"- Frame layout: {surface['frameLayout']}",
+        ]
+        for name, description in surface.get("semantics", {}).items():
+            lines.append(f"- {name}: {description}")
+        lines += [
+            "",
+            "| Header offset | Field |",
+            "|---|---|",
+        ]
+        for field, offset in surface["offsets"].items():
+            lines.append(f"| `{offset}` | `{field}` |")
     lines.append("")
     return "\n".join(lines)
 

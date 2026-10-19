@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Host — Live Input",
+    "width": 640,
+    "height": 380,
+    "theme": "dark"
+  },
+  "root": {
+    "type": "column",
+    "spacing": 8,
+    "children": [
+      {
+        "id": "status",
+        "type": "label",
+        "text": "waiting for input/tick events",
+        "scale": 2
+      },
+      {
+        "id": "live",
+        "type": "canvas",
+        "width": 600,
+        "height": 280,
+        "background": "#101820",
+        "events": ["pointer", "key", "tick"],
+        "tickHz": 30,
+        "commands": [
+          {
+            "op": "text",
+            "x": 24,
+            "y": 24,
+            "text": "pointer + keyboard + retained redraw",
+            "color": "#f1faee",
+            "scale": 2
+          },
+          {
+            "op": "rect",
+            "x": 24,
+            "y": 80,
+            "width": 552,
+            "height": 150,
+            "color": "#1d3557"
+          },
+          {
+            "op": "ring",
+            "x": 300,
+            "y": 155,
+            "radius": 70,
+            "color": "#e63946",
+            "thickness": 4
+          }
+        ]
+      }
+    ]
+  }
+}

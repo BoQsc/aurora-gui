@@ -1,0 +1,42 @@
+{
+  "inputs": [
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/samples/image.scene.json",
+    "experiments/aurora-host/samples/assets/checker.ppm",
+    "experiments/aurora-host/tools/drive_image.py",
+    "experiments/aurora-host/tools/verify_image_pixels.py",
+    "experiments/aurora-host/tools/host_session.py",
+    "experiments/aurora-host/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tools/verify_image_pixels.py"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tools/drive_image.py"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    }
+  ]
+}

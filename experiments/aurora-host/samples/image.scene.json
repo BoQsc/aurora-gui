@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Host — Image Asset",
+    "width": 380,
+    "height": 300,
+    "theme": "dark"
+  },
+  "root": {
+    "type": "column",
+    "spacing": 10,
+    "children": [
+      {
+        "id": "caption",
+        "type": "label",
+        "text": "Relative image asset decoded by Aurora",
+        "scale": 2
+      },
+      {
+        "id": "checker",
+        "type": "image",
+        "src": "assets/checker.ppm",
+        "width": 200,
+        "height": 200
+      }
+    ]
+  }
+}

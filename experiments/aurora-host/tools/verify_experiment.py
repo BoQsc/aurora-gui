@@ -99,13 +99,15 @@ def main() -> int:
             gui = build(dmd, temp, "host", headless=False)
 
             version = run([str(headless), "--version"]).stdout
-            if "protocol 1" not in version or "Unicode 17.0.0" not in version:
+            if "protocol 2" not in version or "Unicode 17.0.0" not in version:
                 raise VerificationError("version output is missing protocol or Unicode version\n" + version)
 
             capabilities = run([str(headless), "--capabilities"]).stdout
             if ("headless-render" not in capabilities
                     or "textArea" not in capabilities
-                    or "canvas" not in capabilities):
+                    or "canvas" not in capabilities
+                    or "surface" not in capabilities
+                    or "shared-surface" not in capabilities):
                 raise VerificationError("capabilities output is incomplete\n" + capabilities)
 
             checked = run([str(headless), "--check", "samples/hello.scene.json"]).stdout
@@ -126,6 +128,30 @@ def main() -> int:
             if "scene OK" not in canvas_checked:
                 raise VerificationError(
                     "canvas scene was not accepted\n" + canvas_checked
+                )
+
+            image_checked = run(
+                [str(headless), "--check", "samples/image.scene.json"]
+            ).stdout
+            if "scene OK" not in image_checked:
+                raise VerificationError(
+                    "image scene was not accepted\n" + image_checked
+                )
+
+            surface_checked = run(
+                [str(headless), "--check", "samples/surface.scene.json"]
+            ).stdout
+            if "scene OK" not in surface_checked:
+                raise VerificationError(
+                    "surface scene was not accepted\n" + surface_checked
+                )
+
+            animation_checked = run(
+                [str(headless), "--check", "samples/animation.scene.json"]
+            ).stdout
+            if "scene OK" not in animation_checked:
+                raise VerificationError(
+                    "animation scene was not accepted\n" + animation_checked
                 )
 
             invalid = run(
