@@ -27,6 +27,7 @@ SOURCES = [
     ROOT / "vendor" / "aurora-d-0.4.5" / "source" / "aurora" / "render" / "vulkan.d",
 ]
 SCREENSHOT = Path(tempfile.gettempdir()) / "aurora-pro-app-window.png"
+SOFTWARE_SHOT = Path(tempfile.gettempdir()) / "aurora-software-check.ppm"
 LOG = Path(os.environ.get("APPDATA", "")) / "Aurora OpenCode" / "logs" / "errors.log"
 
 
@@ -92,6 +93,20 @@ class RebuiltBinaryRenders(unittest.TestCase):
         self.assertGreater(mean, 8.0, "captured window is essentially black")
         self.assertGreater(bright, 0.05, "too few visible pixels")
         self.assertGreater(colors, 50, "captured window has no rendered detail")
+
+    def test_software_renderer_output_is_not_black(self):
+        self.assertTrue(SOFTWARE_SHOT.exists(), SOFTWARE_SHOT)
+        image = Image.open(SOFTWARE_SHOT).convert("RGB")
+        self.assertGreaterEqual(image.width, 1000)
+        self.assertGreaterEqual(image.height, 800)
+        small = image.resize((150, 100))
+        data = list(small.getdata())
+        mean = sum(sum(pixel) for pixel in data) / (len(data) * 3)
+        bright = sum(1 for pixel in data if max(pixel) > 40) / len(data)
+        colors = len(small.getcolors(maxcolors=15000))
+        self.assertGreater(mean, 8.0, "software frame is essentially black")
+        self.assertGreater(bright, 0.02, "software frame has too few visible pixels")
+        self.assertGreater(colors, 50, "software frame has no rendered detail")
 
 
 if __name__ == "__main__":
