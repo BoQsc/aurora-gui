@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "window": {
+    "title": "Aurora Host Experiment",
+    "width": 760,
+    "height": 520,
+    "theme": "dark"
+  },
+  "root": {
+    "type": "column",
+    "spacing": 12,
+    "children": [
+      {
+        "id": "heading",
+        "type": "label",
+        "text": "Aurora Host Experiment",
+        "scale": 3
+      },
+      {
+        "id": "subtitle",
+        "type": "label",
+        "text": "One scene, one generated reference, one host.",
+        "scale": 1
+      },
+      {
+        "type": "row",
+        "spacing": 8,
+        "children": [
+          {
+            "id": "hello",
+            "type": "button",
+            "text": "Hello"
+          },
+          {
+            "id": "world",
+            "type": "button",
+            "text": "World"
+          },
+          {
+            "id": "grow",
+            "type": "spacer"
+          }
+        ]
+      },
+      {
+        "id": "status",
+        "type": "label",
+        "text": "Ready",
+        "scale": 1
+      },
+      {
+        "id": "tail",
+        "type": "spacer"
+      }
+    ]
+  }
+}

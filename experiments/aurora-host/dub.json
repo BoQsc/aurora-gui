@@ -1,0 +1,65 @@
+{
+  "name": "aurora-host-experiment",
+  "description": "Isolated retained-scene host experiment for Aurora",
+  "authors": [
+    "Aurora experiment"
+  ],
+  "copyright": "Copyright \u00a9 2026 OpenAI",
+  "license": "BSL-1.0",
+  "sourcePaths": [
+    "source",
+    "generated"
+  ],
+  "targetName": "aurora-host-experiment",
+  "targetType": "executable",
+  "mainSourceFile": "source/experiment/aurorahost/main.d",
+  "version": "0.1.0",
+  "dependencies": {
+    "aurora-d": {
+      "path": "../../vendor/aurora-d-0.4.5"
+    },
+    "aurora-standard": {
+      "path": "../../vendor/aurora-standard"
+    }
+  },
+  "configurations": [
+    {
+      "name": "host",
+      "targetType": "executable",
+      "targetName": "aurora-host-experiment",
+      "mainSourceFile": "source/experiment/aurorahost/main.d",
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ],
+      "libs-linux": [
+        "X11",
+        "dl"
+      ],
+      "lflags-osx": [
+        "-framework",
+        "AppKit",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "CoreFoundation",
+        "-framework",
+        "QuartzCore",
+        "-lobjc"
+      ]
+    },
+    {
+      "name": "host-headless",
+      "targetType": "executable",
+      "targetName": "aurora-host-experiment-headless",
+      "mainSourceFile": "source/experiment/aurorahost/main.d",
+      "versions": [
+        "AuroraHeadless"
+      ],
+      "libs-windows": [
+        "user32",
+        "gdi32"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "inputs": [
+    "experiments/aurora-host-notepad/notepad.py",
+    "experiments/aurora-host-notepad/notepad.scene.json",
+    "experiments/aurora-host-notepad/README.md",
+    "experiments/aurora-host-notepad/tools",
+    "experiments/aurora-host-notepad/tests",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/tools",
+    "experiments/aurora-host/samples",
+    "experiments/aurora-host/dub.json",
+    "vendor/aurora-d-0.4.5/source",
+    "vendor/aurora-standard/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "experiments/aurora-host-notepad/tools/verify_notepad.py"
+        ],
+        "workdir": ".",
+        "timeout": 600000
+      }
+    }
+  ]
+}

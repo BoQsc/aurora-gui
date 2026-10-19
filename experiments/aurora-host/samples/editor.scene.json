@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "window": {
+    "title": "Editor Primitive Test",
+    "width": 640,
+    "height": 420,
+    "theme": "light"
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 8,
+    "children": [
+      {
+        "id": "editor",
+        "type": "textArea",
+        "text": "Initial editor text"
+      },
+      {
+        "id": "apply",
+        "type": "button",
+        "text": "Apply",
+        "action": "apply"
+      },
+      {
+        "id": "status",
+        "type": "label",
+        "text": "Ready",
+        "scale": 1
+      }
+    ]
+  }
+}

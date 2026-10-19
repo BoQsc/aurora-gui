@@ -1,0 +1,93 @@
+{
+  "name": "aurora-host-experiment",
+  "experimentVersion": "0.1.0",
+  "protocolVersion": 1,
+  "schemaVersion": 1,
+  "description": "A small retained-scene host experiment for Aurora.",
+  "capabilities": [
+    "window",
+    "scene",
+    "label",
+    "button",
+    "row",
+    "column",
+    "spacer",
+    "headless-render",
+    "control-stdin",
+    "text-editor"
+  ],
+  "limits": {
+    "maxSceneDepth": 16,
+    "maxSceneNodes": 256
+  },
+  "common": {
+    "id": "optional unique string; derived from the node path when omitted",
+    "action": "optional button action name; emits an action event instead of the default activation event"
+  },
+  "window": {
+    "title": "string",
+    "width": "int",
+    "height": "int",
+    "theme": "light|dark"
+  },
+  "nodeTypes": {
+    "column": {
+      "children": true,
+      "text": false,
+      "scale": false,
+      "spacing": true
+    },
+    "row": {
+      "children": true,
+      "text": false,
+      "scale": false,
+      "spacing": true
+    },
+    "label": {
+      "children": false,
+      "text": true,
+      "scale": true,
+      "spacing": false
+    },
+    "button": {
+      "children": false,
+      "text": true,
+      "scale": false,
+      "spacing": false
+    },
+    "textArea": {
+      "children": false,
+      "text": true,
+      "scale": false,
+      "spacing": false
+    },
+    "spacer": {
+      "children": false,
+      "text": false,
+      "scale": false,
+      "spacing": false
+    }
+  },
+  "commands": {
+    "--version": "Print experiment, protocol, and Unicode versions.",
+    "--capabilities": "Print supported capabilities and scene node types.",
+    "--check <scene>": "Validate a scene without creating a window.",
+    "--render <scene> --out <file.ppm>": "Render headlessly to a PPM file.",
+    "--run <scene>": "Open an Aurora window and run the scene."
+  },
+  "control": {
+    "transport": "stdin/stdout JSON lines; launch --run <scene> --control",
+    "commands": {
+      "ping": "Liveness check.",
+      "status": "Window size, renderer, and node count.",
+      "tree": "List node IDs, types, and text.",
+      "setText": "Set label, button, or editor text by node ID.",
+      "getText": "Read text from a text-editor node by ID.",
+      "setWordWrap": "Set word wrapping on a text-editor node.",
+      "fileDialog": "Open Aurora's generic open/save file dialog and return a path.",
+      "click": "Activate a button by node ID.",
+      "screenshot": "Save the current surface as a PPM.",
+      "close": "Close the host window."
+    }
+  }
+}

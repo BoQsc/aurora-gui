@@ -1,0 +1,28 @@
+{
+  "inputs": [
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/tools",
+    "experiments/aurora-host/samples",
+    "experiments/aurora-host/tests",
+    "experiments/aurora-host/dub.json",
+    "experiments/aurora-host/README.md",
+    "experiments/aurora-host/.gitignore",
+    "vendor/aurora-d-0.4.5/source",
+    "vendor/aurora-standard/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "experiments/aurora-host/tools/verify_experiment.py"
+        ],
+        "workdir": ".",
+        "timeout": 600000
+      }
+    }
+  ]
+}

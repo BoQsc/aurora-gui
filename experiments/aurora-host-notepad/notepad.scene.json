@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "window": {
+    "title": "Host Notepad",
+    "width": 900,
+    "height": 640,
+    "theme": "light"
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 8,
+    "children": [
+      {
+        "id": "header",
+        "type": "row",
+        "spacing": 10,
+        "children": [
+          {
+            "id": "title",
+            "type": "label",
+            "text": "Host Notepad",
+            "scale": 2
+          },
+          {
+            "id": "path",
+            "type": "label",
+            "text": "Untitled",
+            "scale": 1
+          }
+        ]
+      },
+      {
+        "id": "toolbar",
+        "type": "row",
+        "spacing": 8,
+        "children": [
+          {
+            "id": "new",
+            "type": "button",
+            "text": "New",
+            "action": "new"
+          },
+          {
+            "id": "open",
+            "type": "button",
+            "text": "Open...",
+            "action": "open"
+          },
+          {
+            "id": "save",
+            "type": "button",
+            "text": "Save",
+            "action": "save"
+          },
+          {
+            "id": "saveAs",
+            "type": "button",
+            "text": "Save As...",
+            "action": "saveAs"
+          },
+          {
+            "id": "wrap",
+            "type": "button",
+            "text": "Word Wrap",
+            "action": "wrap"
+          },
+          {
+            "id": "close",
+            "type": "button",
+            "text": "Close",
+            "action": "close"
+          }
+        ]
+      },
+      {
+        "id": "editor",
+        "type": "textArea",
+        "text": ""
+      },
+      {
+        "id": "status",
+        "type": "label",
+        "text": "Ready",
+        "scale": 1
+      }
+    ]
+  }
+}

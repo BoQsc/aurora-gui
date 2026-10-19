@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "window": {
+    "title": "Invalid Scene",
+    "width": 640,
+    "height": 480,
+    "theme": "light"
+  },
+  "root": {
+    "type": "textfield",
+    "text": "not a supported node"
+  }
+}
