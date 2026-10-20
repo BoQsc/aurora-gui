@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Pad++",
+    "width": 1180,
+    "height": 760,
+    "theme": "light"
+  },
+  "themeOverrides": {
+    "windowBackground": "#eef1f5",
+    "panelBackground": "#f8fafc",
+    "panelElevated": "#ffffff",
+    "text": "#1f2328",
+    "textMuted": "#5b6573",
+    "border": "#c9ced6",
+    "accent": "#2f7d32",
+    "selection": "#dbeafe",
+    "fieldBackground": "#ffffff",
+    "buttonBackground": "#eef1f5",
+    "buttonHover": "#e2e8f0",
+    "buttonPressed": "#d5dce6",
+    "cornerRadius": 2,
+    "borderWidth": 1,
+    "controlHeight": 26,
+    "fontScale": 1,
+    "spacing": 4
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "background": "#eef1f5",
+    "children": [
+      {
+        "id": "menubar",
+        "type": "row",
+        "height": 30,
+        "spacing": 0,
+        "padding": 2,
+        "background": "#f0f2f5",
+        "border": "#d0d5db",
+        "children": [
+          {
+            "id": "file-menu",
+            "type": "menu",
+            "text": "File",
+            "items": [
+              {"label": "New", "shortcut": "Ctrl+N", "action": "new"},
+              {"label": "Open...", "shortcut": "Ctrl+O", "action": "open"},
+              {"separator": true},
+              {"label": "Save", "shortcut": "Ctrl+S", "action": "save"},
+              {"label": "Save As...", "shortcut": "Ctrl+Shift+S", "action": "saveAs"},
+              {"separator": true},
+              {"label": "Close Tab", "shortcut": "Ctrl+W", "action": "closeTab"},
+              {"label": "Exit", "shortcut": "Alt+F4", "action": "exit"}
+            ]
+          },
+          {
+            "id": "edit-menu",
+            "type": "menu",
+            "text": "Edit",
+            "items": [
+              {"label": "Select All", "shortcut": "Ctrl+A", "action": "selectAll"},
+              {"separator": true},
+              {"label": "Find...", "shortcut": "Ctrl+F", "action": "search.find"},
+              {"label": "Find Next", "shortcut": "F3", "action": "findNext"},
+              {"label": "Replace...", "shortcut": "Ctrl+H", "action": "search.replace"},
+              {"label": "Replace All", "shortcut": "Ctrl+Shift+H", "action": "replaceAll"},
+              {"separator": true},
+              {"label": "Word wrap", "action": "toggleWrap"},
+              {"label": "Match case", "action": "toggleCase"}
+            ]
+          },
+          {
+            "id": "view-menu",
+            "type": "menu",
+            "text": "View",
+            "items": [
+              {"label": "Word wrap", "action": "toggleWrap"},
+              {"label": "Match case", "action": "toggleCase"},
+              {"separator": true},
+              {"label": "Zoom", "children": [
+                {"label": "Zoom in", "shortcut": "Ctrl++", "action": "view.zoomIn"},
+                {"label": "Zoom out", "shortcut": "Ctrl+-", "action": "view.zoomOut"},
+                {"label": "Restore default zoom", "shortcut": "Ctrl+0", "action": "view.zoomReset"}
+              ]},
+              {"separator": true},
+              {"label": "Summary", "action": "help.about"}
+            ]
+          },
+          {
+            "id": "language-menu",
+            "type": "menu",
+            "text": "Language",
+            "items": [
+              {"label": "Plain Text", "action": "lang:Plain Text"},
+              {"label": "Python", "action": "lang:Python"},
+              {"label": "C++", "action": "lang:C++"},
+              {"label": "D", "action": "lang:D"},
+              {"label": "JSON", "action": "lang:JSON"},
+              {"label": "Markdown", "action": "lang:Markdown"},
+              {"separator": true},
+              {"label": "Next language", "action": "cycleMode"}
+            ]
+          },
+          {
+            "id": "tools-menu",
+            "type": "menu",
+            "text": "Tools",
+            "items": [
+              {"label": "Large document benchmark", "action": "benchmark"},
+              {"separator": true},
+              {"label": "Document statistics", "action": "help.about"},
+              {"label": "About Aurora Pad++", "action": "help.about"}
+            ]
+          },
+          {
+            "id": "help-menu",
+            "type": "menu",
+            "text": "Help",
+            "items": [
+              {"label": "About Aurora Pad++", "action": "help.about"},
+              {"label": "Host capabilities", "action": "help.capabilities"}
+            ]
+          }
+        ]
+      },
+      {
+        "id": "toolbar",
+        "type": "row",
+        "height": 42,
+        "spacing": 2,
+        "padding": 4,
+        "background": "#f7f9fb",
+        "border": "#d7dce2",
+        "children": [
+          {"id": "tb-new", "type": "button", "text": "New", "style": "toolbar", "width": 62, "icon": "new", "action": "new"},
+          {"id": "tb-open", "type": "button", "text": "Open", "style": "toolbar", "width": 70, "icon": "open", "action": "open"},
+          {"id": "tb-save", "type": "button", "text": "Save", "style": "toolbar", "width": 64, "icon": "save", "action": "save"},
+          {"id": "tb-save-as", "type": "button", "text": "Save As", "style": "toolbar", "width": 82, "action": "saveAs"},
+          {"id": "tb-sep-1", "type": "separator", "orientation": "vertical"},
+          {"id": "tb-find", "type": "button", "text": "Find", "style": "toolbar", "width": 62, "icon": "search", "action": "search.find"},
+          {"id": "tb-find-next", "type": "button", "text": "Find Next", "style": "toolbar", "width": 84, "action": "findNext"},
+          {"id": "tb-replace", "type": "button", "text": "Replace", "style": "toolbar", "width": 76, "action": "replace"},
+          {"id": "tb-sep-2", "type": "separator", "orientation": "vertical"},
+          {"id": "tb-wrap", "type": "button", "text": "Wrap", "style": "toolbar", "width": 62, "action": "toggleWrap"},
+          {"id": "tb-case", "type": "button", "text": "Aa", "style": "toolbar", "width": 38, "action": "toggleCase"},
+          {"id": "tb-sep-3", "type": "separator", "orientation": "vertical"},
+          {"id": "tb-bench", "type": "button", "text": "Benchmark", "style": "toolbar", "width": 96, "action": "benchmark"},
+          {"id": "tb-spacer", "type": "spacer", "flex": 1},
+          {"id": "tb-close", "type": "button", "text": "Close Tab", "style": "toolbar", "width": 92, "icon": "close", "action": "closeTab"}
+        ]
+      },
+      {
+        "id": "docs",
+        "type": "tabs",
+        "height": 34,
+        "items": []
+      },
+      {
+        "id": "findbar",
+        "type": "row",
+        "height": 38,
+        "spacing": 5,
+        "padding": 5,
+        "background": "#eef2f6",
+        "border": "#d0d5db",
+        "children": [
+          {"id": "find-label", "type": "label", "text": "Find:", "scale": 1, "fontSize": 12, "textColor": "#4b5563"},
+          {"id": "find", "type": "textField", "text": "", "width": 220, "height": 26, "events": ["change", "cursor"]},
+          {"id": "replace-label", "type": "label", "text": "Replace:", "scale": 1, "fontSize": 12, "textColor": "#4b5563"},
+          {"id": "replace", "type": "textField", "text": "", "width": 180, "height": 26, "events": ["change", "cursor"]},
+          {"id": "find-next", "type": "button", "text": "Find Next", "style": "flat", "width": 84, "height": 26, "action": "findNext"},
+          {"id": "replace-one", "type": "button", "text": "Replace", "style": "flat", "width": 78, "height": 26, "action": "replace"},
+          {"id": "replace-all", "type": "button", "text": "Replace All", "style": "flat", "width": 88, "height": 26, "action": "replaceAll"},
+          {"id": "find-case", "type": "button", "text": "Aa", "style": "flat", "width": 38, "height": 26, "action": "toggleCase"},
+          {"id": "find-spacer", "type": "spacer", "flex": 1},
+          {"id": "find-hint", "type": "label", "text": "Right-click the editor for commands", "scale": 1, "fontSize": 11, "textColor": "#5b6573"}
+        ]
+      },
+      {
+        "id": "editor-frame",
+        "type": "row",
+        "spacing": 0,
+        "padding": 0,
+        "flex": 1,
+        "background": "#ffffff",
+        "border": "#c9ced6",
+        "children": [
+          {
+            "id": "editor",
+            "type": "textArea",
+            "flex": 1,
+            "events": ["change", "cursor"],
+            "text": "Aurora Pad++\n============\n\nA Notepad++-style workbench built on the generic aurora-host.\n\nHost owns: window, widgets, layout, text editing, selection, painting.\nApp owns: tabs, files, dirty state, language modes, find/replace, status.\n\nTry File > New, the toolbar, the document tabs, or right-click here.\nThe Language menu changes the document mode. Tools > Large document benchmark\nruns the measured workload.\n",
+            "menu": [
+              {"label": "Find...", "shortcut": "Ctrl+F", "action": "search.find"},
+              {"label": "Find Next", "shortcut": "F3", "action": "findNext"},
+              {"label": "Replace All", "shortcut": "Ctrl+Shift+H", "action": "replaceAll"},
+              {"separator": true},
+              {"label": "Select All", "shortcut": "Ctrl+A", "action": "selectAll"},
+              {"separator": true},
+              {"label": "Word wrap", "action": "toggleWrap"},
+              {"label": "Match case", "action": "toggleCase"}
+            ]
+          }
+        ]
+      },
+      {
+        "id": "statusbar",
+        "type": "row",
+        "height": 26,
+        "spacing": 10,
+        "padding": 3,
+        "background": "#e8edf2",
+        "border": "#c9ced6",
+        "children": [
+          {"id": "status-position", "type": "label", "text": "Ln 1, Col 1", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
+          {"id": "status-selection", "type": "label", "text": "Sel 0", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
+          {"id": "status-document", "type": "label", "text": "1 line", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
+          {"id": "status-spacer", "type": "spacer", "flex": 1},
+          {"id": "status-language", "type": "label", "text": "Plain Text", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
+          {"id": "status-encoding", "type": "label", "text": "UTF-8", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
+          {"id": "status-eol", "type": "label", "text": "Windows (CRLF)", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
+          {"id": "status-message", "type": "label", "text": "Ready", "scale": 1, "fontSize": 11, "textColor": "#2f7d32"}
+        ]
+      }
+    ]
+  }
+}

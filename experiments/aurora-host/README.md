@@ -13,6 +13,9 @@ repository depends on it. Delete this folder and Aurora is unaffected.
 - The same executable can open a real Aurora window with `--run`.
 - A stdin/stdout control channel can inspect and change the live scene.
 - Scenes can contain real editable text areas and named button actions.
+- Single-line text fields feed application search and command workflows.
+- Editor text, cursor, anchor, and line/column changes are readable and
+  observable without the host owning document policy.
 - Scenes can contain retained custom-drawn canvases using portable primitives.
 - Pointer, keyboard, and frame-tick events reach the scene without a second
   event loop.
@@ -77,13 +80,16 @@ The host prints `READY`. Send one JSON object per line:
 {"id":3,"command":"setText","node":"status","text":"Changed by client"}
 {"id":4,"command":"getText","node":"editor"}
 {"id":5,"command":"setWordWrap","node":"editor","wrap":true}
-{"id":6,"command":"setCanvas","node":"plot","commands":[{"op":"rect","x":0,"y":0,"width":10,"height":10,"color":"#00ff00"}]}
-{"id":7,"command":"setTick","node":"plot","hz":60}
-{"id":8,"command":"pointer","node":"plot","kind":"down","x":40,"y":30,"button":"left"}
-{"id":9,"command":"key","node":"plot","kind":"down","key":"a","modifiers":1}
-{"id":10,"command":"fileDialog","mode":"open","title":"Open file"}
-{"id":11,"command":"screenshot","path":"build/control-shot.ppm"}
-{"id":12,"command":"close"}
+{"id":6,"command":"getEditorState","node":"editor"}
+{"id":7,"command":"setSelection","node":"editor","start":0,"end":4}
+{"id":8,"command":"setText","node":"editor","text":"Silent","notify":false}
+{"id":9,"command":"setCanvas","node":"plot","commands":[{"op":"rect","x":0,"y":0,"width":10,"height":10,"color":"#00ff00"}]}
+{"id":10,"command":"setTick","node":"plot","hz":60}
+{"id":11,"command":"pointer","node":"plot","kind":"down","x":40,"y":30,"button":"left"}
+{"id":12,"command":"key","node":"plot","kind":"down","key":"a","modifiers":1}
+{"id":13,"command":"fileDialog","mode":"open","title":"Open file"}
+{"id":14,"command":"screenshot","path":"build/control-shot.ppm"}
+{"id":15,"command":"close"}
 ```
 
 Responses are `RESPONSE {json}`; button events are `EVENT {json}`. A button
@@ -97,6 +103,28 @@ report `wheelX`/`wheelY`. Key events report `key` and `modifiers`. `setTick`
 emits `tick` events with a `delta` in seconds, and the client must change its own
 labels in response. Injected `pointer` and `key` commands exercise the same
 scene path as real window input and are useful for deterministic tests.
+
+## Editor state and events
+
+`textArea` nodes support reading and replacing text, word wrapping, editor state,
+and logical selections. `textField` nodes are the same editor widget in
+single-line mode and are useful for search boxes and command inputs.
+
+`setText` notifies editor listeners by default. Pass `"notify":false` when a
+client is restoring a document or setting a field programmatically and does not
+want a change event.
+
+`getEditorState` returns the text length, cursor, anchor, line, and column.
+`setSelection` takes Unicode code-point offsets, sets a logical selection, and
+focuses the editor. A node that opts into `change` and/or `cursor` events emits:
+
+```text
+EVENT {"event":"editor","node":"editor","kind":"change","cursor":12,
+       "anchor":12,"length":12,"line":0,"column":12}
+```
+
+The host reports state; the application decides what it means. It does not
+maintain a document model, dirty flags, file paths, or tab state.
 
 The demo client launches the window, pings it, prints the tree, clicks
 `hello`, verifies that the `status` label changed, captures the surface, and
@@ -233,6 +261,15 @@ The host does not contain application-specific notepad code. A separate
 document policy, while the host supplies the editable UI, actions, rendering,
 and control channel.
 
+[aurora-host-notepadpp](../aurora-host-notepadpp/) goes further: an eight-slot
+tabbed workbench with file dialogs, dirty state, find/replace, language
+metadata, editor events, and a measured large-document benchmark. Its self-test
+also exposes the current scaling limit: the first full layout of a 214 KB
+document takes roughly 1.5-2.4 s on a release host build, a 5,000-line document
+stalls during end-of-document selection, and a 100,000-line stress run is not
+viable because retained editor layout and memory grow steeply with document
+size. Normal small-document editing remains responsive.
+
 ## Layout
 
 ```text
@@ -255,8 +292,8 @@ This is an experiment, not a standard:
 - no built-in browser, JavaScript runtime, audio pipeline, or 3D engine; those
   integrate through an application-owned offscreen target and the shared surface;
 - no client library or language bindings yet;
-- no widget protocol beyond labels, buttons, text areas, canvases, images,
-  surfaces, rows, columns, and spacers;
+- no widget protocol beyond labels, buttons, text areas, text fields, canvases,
+  images, surfaces, rows, columns, and spacers;
 - no promise of API stability.
 
 The next experiment can add a native C/plugin ABI, GPU-shared textures, or a

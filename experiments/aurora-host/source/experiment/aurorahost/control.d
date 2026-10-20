@@ -1,11 +1,14 @@
 module experiment.aurorahost.control;
 
 import experiment.aurorahost.events : HostEvent, buttonName, keyName;
+import experiment.aurorahost.host_ui : TabItem, TabStrip;
 import experiment.aurorahost.protocol : ProtocolVersion;
-import experiment.aurorahost.scene : NodeInfo, NodeRegistry, parseCanvasCommands;
+import experiment.aurorahost.scene : NodeInfo, NodeRegistry,
+    parseCanvasCommands, parseTabItems;
 import experiment.aurorahost.surface : SurfaceInfo;
-import aurora : FileDialogMode, FileDialogOptions, GuiWindow, Key, MouseButton,
-    TextEditor, Theme, runFileDialogWindow;
+import aurora : ContextMenu, FileDialogMode, FileDialogOptions, GuiWindow, Key,
+    MouseButton, Point, Rect, TextEditor, Theme, UiTestDriver, Widget,
+    runFileDialogWindow;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import std.conv : to;
@@ -15,6 +18,7 @@ import std.json : JSONType, JSONValue, parseJSON, toJSON;
 import std.path : dirName;
 import std.stdio : stdin, stdout;
 import std.string : toLower;
+import std.utf : toUTF8;
 
 private struct ControlCommand
 {
@@ -110,6 +114,15 @@ class ControlServer
         }
         else if (input.name == "tick")
             event["delta"] = JSONValue(input.delta);
+        else if (input.name == "editor")
+        {
+            event["kind"] = JSONValue(input.kind);
+            event["cursor"] = JSONValue(cast(long) input.cursor);
+            event["anchor"] = JSONValue(cast(long) input.anchor);
+            event["length"] = JSONValue(cast(long) input.length);
+            event["line"] = JSONValue(cast(long) input.line);
+            event["column"] = JSONValue(cast(long) input.column);
+        }
         emit("EVENT", event);
     }
 
@@ -295,6 +308,12 @@ class ControlServer
                 case "getText":
                     getText(requestId, document);
                     break;
+                case "getEditorState":
+                    getEditorState(requestId, document);
+                    break;
+                case "setSelection":
+                    setSelection(requestId, document);
+                    break;
                 case "setWordWrap":
                     setWordWrap(requestId, document);
                     break;
@@ -303,6 +322,33 @@ class ControlServer
                     break;
                 case "setTick":
                     setTick(requestId, document);
+                    break;
+                case "setTabs":
+                    setTabs(requestId, document);
+                    break;
+                case "setChrome":
+                    setChrome(requestId, document);
+                    break;
+                case "getBounds":
+                    getBounds(requestId, document);
+                    break;
+                case "getTabs":
+                    getTabs(requestId, document);
+                    break;
+                case "uiClick":
+                    uiClick(requestId, document);
+                    break;
+                case "uiMove":
+                    uiMove(requestId, document);
+                    break;
+                case "menu":
+                    openMenu(requestId, document);
+                    break;
+                case "menuState":
+                    menuState(requestId, document);
+                    break;
+                case "menuClick":
+                    menuClick(requestId, document);
                     break;
                 case "pointer":
                     pointer(requestId, document);
@@ -371,7 +417,14 @@ class ControlServer
     {
         const node = requireString(document, "node");
         const text = requireString(document, "text");
-        if (!_registry.setText(node, text))
+        bool notify = true;
+        if (auto value = "notify" in document.object)
+        {
+            enforce((*value).type == JSONType.true_ ||
+                (*value).type == JSONType.false_, "notify must be a boolean");
+            notify = (*value).boolean;
+        }
+        if (!_registry.setText(node, text, notify))
         {
             respond(id, false, "node does not support text: " ~ node);
             return;
@@ -400,6 +453,63 @@ class ControlServer
         JSONValue[string] extra;
         extra["node"] = JSONValue(node);
         extra["text"] = JSONValue(editor.textUtf8());
+        respond(id, true, null, extra);
+    }
+
+    private void getEditorState(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto widget = _registry.widget(node);
+        if (widget is null)
+        {
+            respond(id, false, "unknown node: " ~ node);
+            return;
+        }
+        auto editor = cast(TextEditor) widget;
+        if (editor is null)
+        {
+            respond(id, false, "node is not a text editor: " ~ node);
+            return;
+        }
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["length"] = JSONValue(cast(long) editor.textView.length);
+        extra["cursor"] = JSONValue(cast(long) editor.cursorIndex());
+        extra["anchor"] = JSONValue(cast(long) editor.selectionAnchor());
+        extra["line"] = JSONValue(cast(long) editor.cursorLine());
+        extra["column"] = JSONValue(cast(long) editor.cursorColumn());
+        extra["hasSelection"] = JSONValue(editor.hasSelection());
+        respond(id, true, null, extra);
+    }
+
+    private void setSelection(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto widget = _registry.widget(node);
+        if (widget is null)
+        {
+            respond(id, false, "unknown node: " ~ node);
+            return;
+        }
+        auto editor = cast(TextEditor) widget;
+        if (editor is null)
+        {
+            respond(id, false, "node is not a text editor: " ~ node);
+            return;
+        }
+        const start = optionalInt(document, "start", -1);
+        const end = optionalInt(document, "end", -1);
+        enforce(start >= 0 && end >= 0,
+            "start and end are required and must be non-negative");
+        enforce(start <= editor.textView.length &&
+            end <= editor.textView.length,
+            "selection range is outside the document");
+        editor.setSelection(cast(size_t) start, cast(size_t) end);
+        editor.requestFocus();
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["start"] = JSONValue(start);
+        extra["end"] = JSONValue(end);
         respond(id, true, null, extra);
     }
 
@@ -462,6 +572,237 @@ class ControlServer
         JSONValue[string] extra;
         extra["node"] = JSONValue(node);
         extra["hz"] = JSONValue(hz);
+        respond(id, true, null, extra);
+    }
+
+    private Widget requireWidget(JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto widget = _registry.widget(node);
+        enforce(widget !is null, "unknown node: " ~ node);
+        return widget;
+    }
+
+    private JSONValue rectValue(Rect rect)
+    {
+        JSONValue[string] object;
+        object["x"] = JSONValue(cast(long) rect.x);
+        object["y"] = JSONValue(cast(long) rect.y);
+        object["width"] = JSONValue(cast(long) rect.width);
+        object["height"] = JSONValue(cast(long) rect.height);
+        return JSONValue(object);
+    }
+
+    private void setTabs(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto tabs = "items" in document.object;
+        enforce(tabs !is null, "items is required");
+        auto parsed = parseTabItems(*tabs, "items");
+        if (!_registry.setTabs(node, parsed))
+        {
+            respond(id, false, "node is not a tab strip: " ~ node);
+            return;
+        }
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["count"] = JSONValue(cast(long) parsed.length);
+        respond(id, true, null, extra);
+    }
+
+    private void setChrome(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        const style = optionalString(document, "style", "");
+        const icon = optionalString(document, "icon", "");
+        const textColor = optionalString(document, "textColor", "");
+        const fontSize = optionalInt(document, "fontSize", -1);
+        enforce(fontSize == -1 || (fontSize >= 8 && fontSize <= 96),
+            "fontSize must be -1 or between 8 and 96");
+        int active = -1;
+        if (auto value = "active" in document.object)
+        {
+            enforce((*value).type == JSONType.true_ ||
+                (*value).type == JSONType.false_,
+                "active must be a boolean");
+            active = (*value).boolean ? 1 : 0;
+        }
+        if (!_registry.setChrome(node, style, icon, active, textColor,
+            cast(int) fontSize))
+        {
+            respond(id, false, "node has no updatable chrome: " ~ node);
+            return;
+        }
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        respond(id, true, null, extra);
+    }
+
+    private void getBounds(long id, JSONValue document)
+    {
+        auto widget = requireWidget(document);
+        const origin = widget.globalOrigin();
+        // globalOrigin already includes this widget's position; only the size
+        // comes from bounds(), which is parent-relative.
+        const bounds = widget.bounds();
+        const rect = Rect(origin.x, origin.y, bounds.width, bounds.height);
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(requireString(document, "node"));
+        extra["rect"] = rectValue(rect);
+        respond(id, true, null, extra);
+    }
+
+    private void getTabs(long id, JSONValue document)
+    {
+        auto widget = requireWidget(document);
+        auto strip = cast(TabStrip) widget;
+        enforce(strip !is null, "node is not a tab strip");
+        const origin = strip.globalOrigin();
+        JSONValue[] tabs;
+        foreach (index, tab; strip.items)
+        {
+            const rect = strip.itemRect(cast(int) index)
+                .translated(origin.x, origin.y);
+            JSONValue[string] item;
+            item["index"] = JSONValue(cast(long) index);
+            item["label"] = JSONValue(toUTF8(tab.label));
+            item["action"] = JSONValue(toUTF8(tab.action));
+            item["active"] = JSONValue(tab.active);
+            item["dirty"] = JSONValue(tab.dirty);
+            item["rect"] = rectValue(rect);
+            tabs ~= JSONValue(item);
+        }
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(requireString(document, "node"));
+        extra["count"] = JSONValue(cast(long) tabs.length);
+        extra["tabs"] = JSONValue(tabs);
+        respond(id, true, null, extra);
+    }
+
+    private void uiClick(long id, JSONValue document)
+    {
+        const x = optionalInt(document, "x", 0);
+        const y = optionalInt(document, "y", 0);
+        enforce(x >= -100000 && x <= 100000 &&
+            y >= -100000 && y <= 100000,
+            "click coordinates must be between -100000 and 100000");
+        const button = parseButton(optionalString(document, "button", "left"));
+        auto driver = new UiTestDriver(_window);
+        driver.click(Point(cast(int) x, cast(int) y), button);
+        JSONValue[string] extra;
+        extra["x"] = JSONValue(x);
+        extra["y"] = JSONValue(y);
+        respond(id, true, null, extra);
+    }
+
+    private void uiMove(long id, JSONValue document)
+    {
+        const x = optionalInt(document, "x", 0);
+        const y = optionalInt(document, "y", 0);
+        enforce(x >= -100000 && x <= 100000 &&
+            y >= -100000 && y <= 100000,
+            "move coordinates must be between -100000 and 100000");
+        auto driver = new UiTestDriver(_window);
+        driver.moveTo(Point(cast(int) x, cast(int) y));
+        JSONValue[string] extra;
+        extra["x"] = JSONValue(x);
+        extra["y"] = JSONValue(y);
+        respond(id, true, null, extra);
+    }
+
+    private JSONValue menuPayload(ContextMenu menu)
+    {
+        const origin = menu.globalOrigin();
+        const localRect = menu.menuRect();
+        const menuRect = localRect.translated(origin.x, origin.y);
+        JSONValue[] items;
+        int y = localRect.y + 3;
+        foreach (index, item; menu.items)
+        {
+            const height = item.separator ? 4 : menu.rowHeightForTesting();
+            const itemRect = Rect(localRect.x + 3, y,
+                localRect.width - 6, height).translated(origin.x, origin.y);
+            JSONValue[string] value;
+            value["index"] = JSONValue(cast(long) index);
+            value["label"] = JSONValue(toUTF8(item.label));
+            value["shortcut"] = JSONValue(toUTF8(item.shortcut));
+            value["separator"] = JSONValue(item.separator);
+            value["enabled"] = JSONValue(item.enabled);
+            value["checked"] = JSONValue(item.checked);
+            value["rect"] = rectValue(itemRect);
+            items ~= JSONValue(value);
+            y += height;
+        }
+        JSONValue[string] object;
+        object["rect"] = rectValue(menuRect);
+        object["count"] = JSONValue(cast(long) items.length);
+        object["items"] = JSONValue(items);
+        return JSONValue(object);
+    }
+
+    private ContextMenu openContextMenu()
+    {
+        auto popup = _window.root.topmostPopupSurface();
+        auto menu = cast(ContextMenu) popup;
+        enforce(menu !is null, "no menu is open");
+        return menu;
+    }
+
+    private void openMenu(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        if (!_registry.activate(node))
+        {
+            respond(id, false, "node is not an activatable menu: " ~ node);
+            return;
+        }
+        auto menu = openContextMenu();
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["menu"] = menuPayload(menu);
+        respond(id, true, null, extra);
+    }
+
+    private void menuState(long id, JSONValue document)
+    {
+        auto menu = openContextMenu();
+        JSONValue[string] extra;
+        extra["menu"] = menuPayload(menu);
+        respond(id, true, null, extra);
+    }
+
+    private void menuClick(long id, JSONValue document)
+    {
+        auto menu = openContextMenu();
+        const index = optionalInt(document, "index", -1);
+        enforce(index >= 0 && index < cast(long) menu.items.length,
+            "menu index is outside the open menu");
+        const origin = menu.globalOrigin();
+        const localRect = menu.menuRect();
+        int y = localRect.y + 3;
+        Point point;
+        bool found;
+        foreach (itemIndex, item; menu.items)
+        {
+            const height = item.separator ? 4 : menu.rowHeightForTesting();
+            if (cast(long) itemIndex == index)
+            {
+                point = Point(origin.x + localRect.x + 3 +
+                    (localRect.width - 6) / 2,
+                    origin.y + y + height / 2);
+                found = !item.separator;
+                break;
+            }
+            y += height;
+        }
+        enforce(found, "cannot click a separator");
+        auto driver = new UiTestDriver(_window);
+        driver.click(point);
+        const closed = _window.root.topmostPopupSurface() is null;
+        enforce(closed, "menu did not close after item click");
+        JSONValue[string] extra;
+        extra["index"] = JSONValue(index);
+        extra["closed"] = JSONValue(closed);
         respond(id, true, null, extra);
     }
 

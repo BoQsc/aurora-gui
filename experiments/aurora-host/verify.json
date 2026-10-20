@@ -14,6 +14,17 @@
   ],
   "steps": [
     {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": [
+          "build"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
       "kind": "tests",
       "command": {
         "program": "python",
@@ -23,6 +34,26 @@
         "workdir": ".",
         "timeout": 600000
       }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/ui_depth_test.py",
+          "--out-dir",
+          "build"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "experiments/aurora-host/samples/ui-depth-reference.png",
+      "actual": "experiments/aurora-host/build/ui-depth.png",
+      "referenceSource": "Reviewed baseline of the host workbench: menu bar, icon toolbar, document tabs, editor, and status bar at 1.25x DPI."
     }
   ]
 }

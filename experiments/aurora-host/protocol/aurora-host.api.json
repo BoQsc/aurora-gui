@@ -1,7 +1,7 @@
 {
   "name": "aurora-host-experiment",
-  "experimentVersion": "0.2.0",
-  "protocolVersion": 2,
+  "experimentVersion": "0.4.1",
+  "protocolVersion": 5,
   "schemaVersion": 2,
   "description": "A small retained-scene host experiment for Aurora.",
   "capabilities": [
@@ -18,11 +18,20 @@
     "headless-render",
     "control-stdin",
     "text-editor",
+    "text-field",
+    "text-selection",
+    "editor-events",
     "assets",
     "pointer-events",
     "key-events",
     "frame-events",
-    "shared-surface"
+    "shared-surface",
+    "menu",
+    "tabs",
+    "separator",
+    "popup-menu",
+    "context-menu",
+    "ui-test-driver"
   ],
   "limits": {
     "maxSceneDepth": 16,
@@ -34,7 +43,7 @@
   "common": {
     "id": "optional unique string; derived from the node path when omitted",
     "action": "optional button action name; emits an action event instead of the default activation event",
-    "events": "optional array of pointer, key, tick for canvas/surface event delivery",
+    "events": "optional canvas/surface events (pointer, key, tick) or editor events (change, cursor)",
     "tickHz": "optional canvas tick rate from 1 to 240; defaults to 0 (disabled)"
   },
   "window": {
@@ -60,19 +69,56 @@
       "children": false,
       "text": true,
       "scale": true,
-      "spacing": false
+      "spacing": false,
+      "fontSize": "optional pixel size override",
+      "textColor": "optional #RRGGBB color",
+      "align": "left|center|right"
     },
     "button": {
       "children": false,
       "text": true,
       "scale": false,
-      "spacing": false
+      "spacing": false,
+      "style": "standard|toolbar|menu|flat|status",
+      "icon": "portable icon name",
+      "active": "optional selected state",
+      "fontSize": "optional pixel size override",
+      "textColor": "optional #RRGGBB color"
+    },
+    "menu": {
+      "children": false,
+      "text": true,
+      "scale": false,
+      "spacing": false,
+      "items": "menu item array with label, shortcut, action, icon, enabled, checked, separator, and children (nested submenu)"
+    },
+    "tabs": {
+      "children": false,
+      "text": false,
+      "scale": false,
+      "spacing": false,
+      "items": "tab array with label, action, active, and dirty"
+    },
+    "separator": {
+      "children": false,
+      "text": false,
+      "scale": false,
+      "spacing": false,
+      "orientation": "horizontal|vertical"
     },
     "textArea": {
       "children": false,
       "text": true,
       "scale": false,
-      "spacing": false
+      "spacing": false,
+      "events": "optional change/cursor event list"
+    },
+    "textField": {
+      "children": false,
+      "text": true,
+      "scale": false,
+      "spacing": false,
+      "events": "optional change/cursor event list"
     },
     "canvas": {
       "children": false,
@@ -116,6 +162,12 @@
       "scale": false,
       "spacing": false
     }
+  },
+  "styling": {
+    "common": "id, width, height, flex, padding, background, border, radius, style, icon, active, fontSize, textColor, and align apply to the node types that support them",
+    "themeOverrides": "optional scene object overriding palette colors, cornerRadius, borderWidth, controlHeight, fontScale, and spacing",
+    "themeColors": "windowBackground, panelBackground, panelElevated, text, textMuted, border, accent, accentHover, accentPressed, selection, selectionText, fieldBackground, buttonBackground, buttonHover, buttonPressed, disabled, danger, taskbar, taskbarHover, shadow",
+    "contextMenu": "textArea and textField accept a menu item array used as their right-click context menu"
   },
   "surface": {
     "magic": "AURSFACE",
@@ -168,11 +220,22 @@
       "ping": "Liveness check.",
       "status": "Window size, renderer, and node count.",
       "tree": "List node IDs, types, and text.",
-      "setText": "Set label, button, or editor text by node ID.",
+      "setText": "Set label, button, or editor text by node ID; notify:false suppresses editor change events.",
       "getText": "Read text from a text-editor node by ID.",
+      "getEditorState": "Read text length, cursor, anchor, line, and column from an editor.",
+      "setSelection": "Select a Unicode code-point range in an editor and focus it.",
       "setWordWrap": "Set word wrapping on a text-editor node.",
       "setCanvas": "Replace a canvas node's command list by node ID.",
       "setTick": "Set a canvas tick rate by node ID.",
+      "setTabs": "Replace the tab list on a tabs node by node ID.",
+      "setChrome": "Update button style, icon, active state, text color, or font size by node ID.",
+      "getBounds": "Return a node's global rectangle.",
+      "getTabs": "Return tab labels, actions, active/dirty flags, and global rectangles.",
+      "uiClick": "Route a real pointer click through the UI input pipeline at global coordinates.",
+      "uiMove": "Route a real pointer move through the UI input pipeline at global coordinates.",
+      "menu": "Open a menu node's popup menu by node ID.",
+      "menuState": "Report the open popup menu rectangle, item geometry, and item state.",
+      "menuClick": "Click a popup menu item by index and verify that the popup closed.",
       "pointer": "Inject a pointer event into a canvas or surface.",
       "key": "Inject a keyboard event into a canvas or surface.",
       "surface": "Report surface mapping, frame sequence, and input ring position.",

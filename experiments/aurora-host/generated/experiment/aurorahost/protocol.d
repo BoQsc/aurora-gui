@@ -5,8 +5,8 @@ module experiment.aurorahost.protocol;
  * Do not edit manually; run tools/generate_reference.py.
  */
 
-enum ExperimentVersion = "0.2.0";
-enum ProtocolVersion = 2;
+enum ExperimentVersion = "0.4.1";
+enum ProtocolVersion = 5;
 enum SchemaVersion = 2;
 
 immutable string[] Capabilities = [
@@ -23,11 +23,20 @@ immutable string[] Capabilities = [
     "headless-render",
     "control-stdin",
     "text-editor",
+    "text-field",
+    "text-selection",
+    "editor-events",
     "assets",
     "pointer-events",
     "key-events",
     "frame-events",
     "shared-surface",
+    "menu",
+    "tabs",
+    "separator",
+    "popup-menu",
+    "context-menu",
+    "ui-test-driver",
 ];
 
 immutable string[] NodeTypes = [
@@ -35,7 +44,11 @@ immutable string[] NodeTypes = [
     "row",
     "label",
     "button",
+    "menu",
+    "tabs",
+    "separator",
     "textArea",
+    "textField",
     "canvas",
     "image",
     "surface",

@@ -1,0 +1,52 @@
+{
+  "inputs": [
+    "experiments/aurora-host-notepadpp/padpp.py",
+    "experiments/aurora-host-notepadpp/padpp.scene.json",
+    "experiments/aurora-host-notepadpp/README.md",
+    "experiments/aurora-host-notepadpp/samples",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/samples",
+    "experiments/aurora-host/tests",
+    "experiments/aurora-host/tools",
+    "experiments/aurora-host/dub.json",
+    "vendor/aurora-d-0.4.5/source",
+    "vendor/aurora-standard/source"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build", "-b", "release"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["experiments/aurora-host/tools/verify_experiment.py"],
+        "workdir": ".",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "padpp.py", "--self-test"],
+        "workdir": "experiments/aurora-host-notepadpp",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "render",
+      "reference": "experiments/aurora-host-notepadpp/samples/padpp-reference.png",
+      "actual": "experiments/aurora-host-notepadpp/build/padpp.png",
+      "referenceSource": "Reviewed baseline of Aurora Pad++ at 1.25x DPI: menu bar, icon toolbar, four document tabs, find bar, editor, and segmented status bar."
+    }
+  ]
+}

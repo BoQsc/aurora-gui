@@ -17,6 +17,11 @@ struct HostEvent
     Key key;
     uint modifiers;
     double delta;
+    size_t cursor;
+    size_t anchor;
+    size_t length;
+    int line;
+    int column;
 }
 
 string buttonName(MouseButton button)

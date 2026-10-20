@@ -2,8 +2,8 @@
 
 **Generated from `protocol/aurora-host.api.json`.** Do not edit manually.
 
-- Experiment version: `0.2.0`
-- Protocol version: `2`
+- Experiment version: `0.4.1`
+- Protocol version: `5`
 - Schema version: `2`
 - Max scene depth: `16`
 - Max scene nodes: `256`
@@ -26,11 +26,20 @@
 - `headless-render`
 - `control-stdin`
 - `text-editor`
+- `text-field`
+- `text-selection`
+- `editor-events`
 - `assets`
 - `pointer-events`
 - `key-events`
 - `frame-events`
 - `shared-surface`
+- `menu`
+- `tabs`
+- `separator`
+- `popup-menu`
+- `context-menu`
+- `ui-test-driver`
 
 ## Window
 
@@ -49,7 +58,11 @@
 | `row` | yes | no | no | yes |
 | `label` | no | yes | yes | no |
 | `button` | no | yes | no | no |
+| `menu` | no | yes | no | no |
+| `tabs` | no | no | no | no |
+| `separator` | no | no | no | no |
 | `textArea` | no | yes | no | no |
+| `textField` | no | yes | no | no |
 | `canvas` | no | no | no | no |
 | `image` | no | no | no | no |
 | `surface` | no | no | no | no |
@@ -59,7 +72,7 @@
 
 - `id`: optional unique string; derived from the node path when omitted
 - `action`: optional button action name; emits an action event instead of the default activation event
-- `events`: optional array of pointer, key, tick for canvas/surface event delivery
+- `events`: optional canvas/surface events (pointer, key, tick) or editor events (change, cursor)
 - `tickHz`: optional canvas tick rate from 1 to 240; defaults to 0 (disabled)
 
 ## Commands
@@ -81,11 +94,22 @@ Transport: stdin/stdout JSON lines; launch --run <scene> --control
 | `ping` | Liveness check. |
 | `status` | Window size, renderer, and node count. |
 | `tree` | List node IDs, types, and text. |
-| `setText` | Set label, button, or editor text by node ID. |
+| `setText` | Set label, button, or editor text by node ID; notify:false suppresses editor change events. |
 | `getText` | Read text from a text-editor node by ID. |
+| `getEditorState` | Read text length, cursor, anchor, line, and column from an editor. |
+| `setSelection` | Select a Unicode code-point range in an editor and focus it. |
 | `setWordWrap` | Set word wrapping on a text-editor node. |
 | `setCanvas` | Replace a canvas node's command list by node ID. |
 | `setTick` | Set a canvas tick rate by node ID. |
+| `setTabs` | Replace the tab list on a tabs node by node ID. |
+| `setChrome` | Update button style, icon, active state, text color, or font size by node ID. |
+| `getBounds` | Return a node's global rectangle. |
+| `getTabs` | Return tab labels, actions, active/dirty flags, and global rectangles. |
+| `uiClick` | Route a real pointer click through the UI input pipeline at global coordinates. |
+| `uiMove` | Route a real pointer move through the UI input pipeline at global coordinates. |
+| `menu` | Open a menu node's popup menu by node ID. |
+| `menuState` | Report the open popup menu rectangle, item geometry, and item state. |
+| `menuClick` | Click a popup menu item by index and verify that the popup closed. |
 | `pointer` | Inject a pointer event into a canvas or surface. |
 | `key` | Inject a keyboard event into a canvas or surface. |
 | `surface` | Report surface mapping, frame sequence, and input ring position. |

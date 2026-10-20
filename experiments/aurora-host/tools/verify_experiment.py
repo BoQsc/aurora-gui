@@ -99,12 +99,15 @@ def main() -> int:
             gui = build(dmd, temp, "host", headless=False)
 
             version = run([str(headless), "--version"]).stdout
-            if "protocol 2" not in version or "Unicode 17.0.0" not in version:
+            if "protocol 5" not in version or "Unicode 17.0.0" not in version:
                 raise VerificationError("version output is missing protocol or Unicode version\n" + version)
 
             capabilities = run([str(headless), "--capabilities"]).stdout
             if ("headless-render" not in capabilities
                     or "textArea" not in capabilities
+                    or "text-field" not in capabilities
+                    or "text-selection" not in capabilities
+                    or "editor-events" not in capabilities
                     or "canvas" not in capabilities
                     or "surface" not in capabilities
                     or "shared-surface" not in capabilities):
@@ -216,6 +219,24 @@ def main() -> int:
                 )
             verify_ppm(editor_image)
 
+            ui = run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "tools" / "ui_depth_test.py"),
+                    "--out-dir",
+                    str(temp),
+                ],
+                env=control_env,
+            )
+            if "ui depth test passed" not in ui.stdout:
+                raise VerificationError(
+                    "UI depth test did not report success\n" + ui.stdout
+                )
+            for name in ("ui-depth.ppm", "ui-depth-menu.ppm",
+                         "ui-depth-context.ppm"):
+                verify_ppm(temp / name)
+
             canvas_image = temp / "canvas.ppm"
             canvas = run(
                 [
@@ -264,7 +285,8 @@ def main() -> int:
     print("scene check: valid accepted, invalid rejected")
     print("headless render: binary PPM produced")
     print("control demo: click, tree update, and live screenshot verified")
-    print("editor control: textArea, getText, wrap, action, and screenshot verified")
+    print("editor control: text, state, selection, events, wrap, action, and screenshot verified")
+    print("UI depth: menus, cascade submenu, tabs, toolbar, context menu, and pixels verified")
     print("canvas: retained shapes, colors, and text pixels verified")
     print("canvas control: live setCanvas redraw verified")
     print("aurora-host experiment verification passed")

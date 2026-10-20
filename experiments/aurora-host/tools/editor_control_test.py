@@ -26,10 +26,59 @@ def main() -> int:
         if initial.get("text") != "Initial editor text":
             raise RuntimeError(f"unexpected initial editor text: {initial}")
 
+        session.send("setText", node="search", text="needle")
+        field = session.send("getText", node="search")
+        if field.get("text") != "needle" or "\n" in field.get("text", ""):
+            raise RuntimeError(f"unexpected text-field content: {field}")
+        if not any(
+            event.get("event") == "editor" and event.get("node") == "search"
+            and event.get("kind") == "change"
+            for event in session.events
+        ):
+            raise RuntimeError("text-field setText did not emit a change event")
+
         session.send("setText", node="editor", text="Edited by host control")
         edited = session.send("getText", node="editor")
         if edited.get("text") != "Edited by host control":
             raise RuntimeError(f"setText/getText mismatch: {edited}")
+
+        state = session.send("getEditorState", node="editor")
+        if (state.get("length") != len("Edited by host control")
+                or state.get("cursor") != state.get("length")):
+            raise RuntimeError(f"unexpected editor state: {state}")
+        if not any(
+            event.get("event") == "editor" and event.get("kind") == "change"
+            for event in session.events
+        ):
+            raise RuntimeError("setText did not emit a change event")
+
+        session.send("setSelection", node="editor", start=22, end=6)
+        state = session.send("getEditorState", node="editor")
+        if (state.get("cursor") != 6 or state.get("anchor") != 22
+                or not state.get("hasSelection")):
+            raise RuntimeError(f"setSelection did not set the range: {state}")
+        if not any(
+            event.get("event") == "editor" and event.get("kind") == "cursor"
+            and event.get("cursor") == 6 and event.get("anchor") == 22
+            for event in session.events
+        ):
+            raise RuntimeError("setSelection did not emit a cursor event")
+
+        changes = sum(
+            event.get("event") == "editor" and event.get("kind") == "change"
+            for event in session.events
+        )
+        session.send(
+            "setText", node="editor", text="Silent update", notify=False,
+        )
+        silent = session.send("getText", node="editor")
+        if silent.get("text") != "Silent update":
+            raise RuntimeError(f"silent setText mismatch: {silent}")
+        if sum(
+            event.get("event") == "editor" and event.get("kind") == "change"
+            for event in session.events
+        ) != changes:
+            raise RuntimeError("setText notify=false emitted a change event")
 
         wrapped = session.send("setWordWrap", node="editor", wrap=True)
         if wrapped.get("wrap") is not True:

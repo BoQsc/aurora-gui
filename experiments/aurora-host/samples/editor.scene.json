@@ -12,9 +12,16 @@
     "spacing": 8,
     "children": [
       {
+        "id": "search",
+        "type": "textField",
+        "text": "",
+        "events": ["change"]
+      },
+      {
         "id": "editor",
         "type": "textArea",
-        "text": "Initial editor text"
+        "text": "Initial editor text",
+        "events": ["change", "cursor"]
       },
       {
         "id": "apply",

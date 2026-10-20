@@ -3,11 +3,13 @@ module experiment.aurorahost.scene;
 import experiment.aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
     parseCanvasColor;
 import experiment.aurorahost.events : HostEvent;
+import experiment.aurorahost.host_ui : ChromeButton, ChromeStyle, ContextTextArea,
+    ContextTextField, TabItem, TabStrip, iconForName, parseChromeStyle;
 import experiment.aurorahost.image_widget : ImageWidget;
 import experiment.aurorahost.surface : SurfaceInfo, SurfaceSpec, SurfaceWidget;
 import experiment.aurorahost.protocol : MaxSceneDepth, MaxSceneNodes, NodeTypes,
     MaxCanvasCommands, MaxInputEvents, MaxSurfacePixels, SchemaVersion;
-import std.algorithm : canFind;
+import std.algorithm : canFind, max;
 import std.exception : enforce;
 import std.file : readText;
 import std.format : format;
@@ -37,14 +39,51 @@ struct SceneNode
     int width;
     int height;
     int flex;
+    int padding;
+    bool hasPadding;
     bool hasBackground;
     Color background;
+    bool hasBorder;
+    Color border;
+    int radius;
+    string style;
+    string icon;
+    string orientation = "horizontal";
+    bool active;
+    int fontSize;
+    string textAlign;
+    bool hasTextColor;
+    Color textColor;
     RgbaImage image;
     string[] events;
     int tickHz;
     CanvasSpec canvas;
     SurfaceSpec surface;
+    MenuItemSpec[] menuItems;
+    TabItem[] tabItems;
     SceneNode[] children;
+}
+
+struct MenuItemSpec
+{
+    string label;
+    string shortcut;
+    string action;
+    string icon;
+    bool separator;
+    bool enabled = true;
+    bool checked;
+    MenuItemSpec[] children;
+}
+
+struct SceneThemeOverrides
+{
+    Color[string] colors;
+    int cornerRadius = -1;
+    int borderWidth = -1;
+    int controlHeight = -1;
+    int fontScale = -1;
+    int spacing = -1;
 }
 
 struct NodeInfo
@@ -80,12 +119,12 @@ class NodeRegistry
             _surfaces ~= surface;
     }
 
-    bool setText(string id, string text)
+    bool setText(string id, string text, bool notify = true)
     {
         auto widget = id in _widgets;
         if (widget is null) return false;
         if (auto editor = cast(TextEditor) *widget)
-            editor.setText(text);
+            editor.setText(text, notify);
         else if (auto label = cast(Label) *widget)
             label.setText(text);
         else if (auto button = cast(Button) *widget)
@@ -142,6 +181,78 @@ class NodeRegistry
         if (canvas is null) return false;
         canvas.setTick(hz);
         return true;
+    }
+
+    bool setTabs(string id, TabItem[] tabs)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return false;
+        auto strip = cast(TabStrip) *widget;
+        if (strip is null) return false;
+        strip.setItems(tabs);
+        return true;
+    }
+
+    /**
+     * Update portable chrome state without exposing Aurora widget classes to
+     * the control protocol. Empty strings and -1 mean "leave unchanged".
+     */
+    bool setChrome(string id, string styleName = "", string iconName = "",
+        int active = -1, string textColor = "", int fontSize = -1)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return false;
+        bool changed;
+        auto chrome = cast(ChromeButton) *widget;
+        auto button = cast(Button) *widget;
+        if (chrome !is null && styleName.length > 0)
+        {
+            chrome.setChromeStyle(parseChromeStyle(styleName,
+                ChromeStyle.standard));
+            changed = true;
+        }
+        if (button !is null && iconName.length > 0)
+        {
+            const icon = iconForName(iconName);
+            if (chrome !is null)
+                chrome.setChromeIcon(icon);
+            else
+                button.setIcon(icon);
+            changed = true;
+        }
+        if (chrome !is null && active >= 0)
+        {
+            chrome.setActive(active != 0);
+            changed = true;
+        }
+        if (textColor.length > 0)
+        {
+            const color = parseCanvasColor(textColor, "textColor");
+            if (auto label = cast(Label) *widget)
+            {
+                label.setColor(color);
+                changed = true;
+            }
+            else if (chrome !is null)
+            {
+                chrome.setTextColor(color);
+                changed = true;
+            }
+        }
+        if (fontSize > 0)
+        {
+            if (auto label = cast(Label) *widget)
+            {
+                label.setPixelSize(fontSize);
+                changed = true;
+            }
+            else if (chrome !is null)
+            {
+                chrome.setPixelSize(fontSize);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     bool injectPointer(string id, string kind, int x, int y,
@@ -223,6 +334,7 @@ struct Scene
     int schemaVersion;
     string assetBase;
     SceneWindow window;
+    SceneThemeOverrides themeOverrides;
     SceneNode root;
 }
 
@@ -287,6 +399,157 @@ private string[] parseEvents(JSONValue value, string label)
             events ~= name;
     }
     return events;
+}
+
+private string[] parseEditorEvents(JSONValue value, string label)
+{
+    enforce(value.type == JSONType.array, label ~ " must be an array");
+    string[] events;
+    foreach (index, event; value.array)
+    {
+        enforce(event.type == JSONType.string,
+            format("%s[%d] must be a string", label, index));
+        const name = event.str;
+        enforce(name == "change" || name == "cursor",
+            format("%s[%d] has unknown editor event '%s'", label, index, name));
+        if (!events.canFind(name))
+            events ~= name;
+    }
+    return events;
+}
+
+private bool readBool(JSONValue object, string key, bool fallback, string label)
+{
+    auto found = key in object.object;
+    if (found is null) return fallback;
+    enforce((*found).type == JSONType.true_ || (*found).type == JSONType.false_,
+        format("%s.%s must be a boolean", label, key));
+    return (*found).boolean;
+}
+
+private MenuItemSpec[] parseMenuItems(JSONValue value, string label, int depth = 0)
+{
+    enforce(depth <= 4, label ~ " exceeds max menu depth 4");
+    enforce(value.type == JSONType.array, label ~ " must be an array");
+    enforce(value.array.length <= 64,
+        format("%s exceeds max menu item count 64", label));
+    MenuItemSpec[] items;
+    foreach (index, item; value.array)
+    {
+        const itemLabel = format("%s[%d]", label, index);
+        enforce(item.type == JSONType.object, itemLabel ~ " must be an object");
+        MenuItemSpec spec;
+        spec.label = readString(item, "label", "", itemLabel);
+        spec.shortcut = readString(item, "shortcut", "", itemLabel);
+        spec.action = readString(item, "action", "", itemLabel);
+        spec.icon = readString(item, "icon", "", itemLabel);
+        spec.separator = readBool(item, "separator", false, itemLabel);
+        spec.enabled = readBool(item, "enabled", true, itemLabel);
+        spec.checked = readBool(item, "checked", false, itemLabel);
+        if (spec.separator)
+            enforce(spec.label.length == 0 && spec.action.length == 0,
+                itemLabel ~ ": a separator cannot have a label or action");
+        else
+            enforce(spec.label.length > 0, itemLabel ~ ".label is required");
+        if (auto children = "children" in item.object)
+            spec.children = parseMenuItems(*children, itemLabel ~ ".children",
+                depth + 1);
+        items ~= spec;
+    }
+    return items;
+}
+
+TabItem[] parseTabItems(JSONValue value, string label)
+{
+    enforce(value.type == JSONType.array, label ~ " must be an array");
+    enforce(value.array.length <= 64,
+        format("%s exceeds max tab count 64", label));
+    TabItem[] items;
+    foreach (index, item; value.array)
+    {
+        const itemLabel = format("%s[%d]", label, index);
+        enforce(item.type == JSONType.object, itemLabel ~ " must be an object");
+        TabItem tab;
+        tab.label = readString(item, "label", "", itemLabel);
+        enforce(tab.label.length > 0, itemLabel ~ ".label is required");
+        tab.action = readString(item, "action", "", itemLabel);
+        tab.active = readBool(item, "active", false, itemLabel);
+        tab.dirty = readBool(item, "dirty", false, itemLabel);
+        items ~= tab;
+    }
+    return items;
+}
+
+private bool isThemeColor(string name)
+{
+    switch (name)
+    {
+        case "windowBackground":
+        case "panelBackground":
+        case "panelElevated":
+        case "text":
+        case "textMuted":
+        case "border":
+        case "accent":
+        case "accentHover":
+        case "accentPressed":
+        case "selection":
+        case "selectionText":
+        case "fieldBackground":
+        case "buttonBackground":
+        case "buttonHover":
+        case "buttonPressed":
+        case "disabled":
+        case "danger":
+        case "taskbar":
+        case "taskbarHover":
+        case "shadow":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private void parseThemeOverrides(JSONValue value, string label,
+    ref SceneThemeOverrides overrides)
+{
+    enforce(value.type == JSONType.object, label ~ " must be an object");
+    foreach (name, item; value.object)
+    {
+        const itemLabel = label ~ "." ~ name;
+        if (name == "cornerRadius")
+        {
+            overrides.cornerRadius = readRange(value, name, -1, 0, 64,
+                label);
+            continue;
+        }
+        if (name == "borderWidth")
+        {
+            overrides.borderWidth = readRange(value, name, -1, 0, 8, label);
+            continue;
+        }
+        if (name == "controlHeight")
+        {
+            overrides.controlHeight = readRange(value, name, -1, 18, 120,
+                label);
+            continue;
+        }
+        if (name == "fontScale")
+        {
+            overrides.fontScale = readRange(value, name, -1, 1, 8, label);
+            continue;
+        }
+        if (name == "spacing")
+        {
+            overrides.spacing = readRange(value, name, -1, 0, 64, label);
+            continue;
+        }
+        enforce(isThemeColor(name),
+            format("%s has unknown theme field '%s'", label, name));
+        enforce(item.type == JSONType.string,
+            itemLabel ~ " must be a color string");
+        overrides.colors[name] = parseCanvasColor(item.str, itemLabel);
+    }
 }
 
 private CanvasCommand parseCanvasCommand(JSONValue value, int index,
@@ -473,6 +736,38 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
         case "textArea":
             requireNoChildren(value, label);
             node.text = readString(value, "text", "", label);
+            if (auto events = "events" in value.object)
+                node.events = parseEditorEvents(*events, label ~ ".events");
+            if (auto menu = "menu" in value.object)
+                node.menuItems = parseMenuItems(*menu, label ~ ".menu");
+            break;
+        case "textField":
+            requireNoChildren(value, label);
+            node.text = readString(value, "text", "", label);
+            if (auto events = "events" in value.object)
+                node.events = parseEditorEvents(*events, label ~ ".events");
+            if (auto menu = "menu" in value.object)
+                node.menuItems = parseMenuItems(*menu, label ~ ".menu");
+            break;
+        case "menu":
+            requireNoChildren(value, label);
+            node.text = readString(value, "text", "", label);
+            enforce(node.text.length > 0, label ~ ".text is required");
+            if (auto items = "items" in value.object)
+                node.menuItems = parseMenuItems(*items, label ~ ".items");
+            break;
+        case "tabs":
+            requireNoChildren(value, label);
+            if (auto items = "items" in value.object)
+                node.tabItems = parseTabItems(*items, label ~ ".items");
+            break;
+        case "separator":
+            requireNoChildren(value, label);
+            node.orientation = readString(value, "orientation",
+                "horizontal", label);
+            enforce(node.orientation == "horizontal" ||
+                node.orientation == "vertical",
+                label ~ ".orientation must be horizontal or vertical");
             break;
         case "canvas":
             requireNoChildren(value, label);
@@ -492,6 +787,55 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
         default:
             enforce(false, "unsupported node type: " ~ node.type);
     }
+
+    if (auto width = "width" in value.object)
+        node.width = readRange(value, "width", 0, 0, 10000, label);
+    if (auto height = "height" in value.object)
+        node.height = readRange(value, "height", 0, 0, 10000, label);
+    if (auto flex = "flex" in value.object)
+        node.flex = readRange(value, "flex", 0, 0, 1000, label);
+    if (auto padding = "padding" in value.object)
+    {
+        node.padding = readRange(value, "padding", 0, 0, 64, label);
+        node.hasPadding = true;
+    }
+    if (auto background = "background" in value.object)
+        node.hasBackground = true;
+    parseBackground(value, label, node.hasBackground, node.background);
+    if (auto border = "border" in value.object)
+    {
+        enforce((*border).type == JSONType.string,
+            label ~ ".border must be a color string");
+        node.border = parseCanvasColor((*border).str, label ~ ".border");
+        node.hasBorder = true;
+    }
+    if (auto radius = "radius" in value.object)
+        node.radius = readRange(value, "radius", 0, 0, 64, label);
+    if (auto style = "style" in value.object)
+        node.style = readString(value, "style", "", label);
+    if (auto icon = "icon" in value.object)
+        node.icon = readString(value, "icon", "", label);
+    if (auto active = "active" in value.object)
+        node.active = readBool(value, "active", false, label);
+    if (auto fontSize = "fontSize" in value.object)
+        node.fontSize = readRange(value, "fontSize", 0, 8, 96, label);
+    if (auto textColor = "textColor" in value.object)
+    {
+        enforce((*textColor).type == JSONType.string,
+            label ~ ".textColor must be a color string");
+        node.textColor = parseCanvasColor((*textColor).str,
+            label ~ ".textColor");
+        node.hasTextColor = true;
+    }
+    if (auto alignValue = "align" in value.object)
+    {
+        node.textAlign = readString(value, "align", "left", label);
+        enforce(node.textAlign == "left" || node.textAlign == "center" ||
+            node.textAlign == "right",
+            label ~ ".align must be left, center, or right");
+    }
+    if (!node.hasPadding)
+        node.padding = node.type == "column" ? 12 : 0;
     return node;
 }
 
@@ -525,6 +869,9 @@ Scene loadScene(string path)
         enforce(scene.window.theme == "light" || scene.window.theme == "dark",
             "scene.window.theme must be 'light' or 'dark'");
     }
+    if (auto themeOverrides = "themeOverrides" in document.object)
+        parseThemeOverrides(*themeOverrides, "scene.themeOverrides",
+            scene.themeOverrides);
 
     auto rootValue = "root" in document.object;
     enforce(rootValue !is null, "scene is missing field 'root'");
@@ -541,9 +888,157 @@ string describeScene(const Scene scene)
         scene.window.theme, scene.root.type);
 }
 
+private void emitEditorEvent(TextEditor editor, string node, string kind,
+    NodeRegistry registry)
+{
+    if (registry.onEvent is null)
+        return;
+    HostEvent event;
+    event.node = node;
+    event.name = "editor";
+    event.kind = kind;
+    event.cursor = editor.cursorIndex();
+    event.anchor = editor.selectionAnchor();
+    event.length = editor.textView.length;
+    event.line = editor.cursorLine();
+    event.column = editor.cursorColumn();
+    registry.onEvent(event);
+}
+
+private void wireEditorEvents(TextEditor editor, const SceneNode node,
+    NodeRegistry registry)
+{
+    if (node.events.canFind("change"))
+        editor.onChanged = delegate()
+        {
+            emitEditorEvent(editor, node.id, "change", registry);
+        };
+    if (node.events.canFind("cursor"))
+        editor.onCursorMoved = delegate()
+        {
+            emitEditorEvent(editor, node.id, "cursor", registry);
+        };
+}
+
 Theme themeFor(string name)
 {
     return name == "dark" ? Theme.dark() : Theme.light();
+}
+
+private Theme themeWithOverrides(const Scene scene)
+{
+    auto palette = themeFor(scene.window.theme);
+    const overrides = scene.themeOverrides;
+    if (overrides.cornerRadius >= 0)
+        palette.cornerRadius = overrides.cornerRadius;
+    if (overrides.borderWidth >= 0)
+        palette.borderWidth = overrides.borderWidth;
+    if (overrides.controlHeight >= 0)
+        palette.controlHeight = overrides.controlHeight;
+    if (overrides.fontScale >= 0)
+        palette.fontScale = overrides.fontScale;
+    if (overrides.spacing >= 0)
+        palette.spacing = overrides.spacing;
+    if (auto value = "windowBackground" in overrides.colors)
+        palette.windowBackground = *value;
+    if (auto value = "panelBackground" in overrides.colors)
+        palette.panelBackground = *value;
+    if (auto value = "panelElevated" in overrides.colors)
+        palette.panelElevated = *value;
+    if (auto value = "text" in overrides.colors)
+        palette.text = *value;
+    if (auto value = "textMuted" in overrides.colors)
+        palette.textMuted = *value;
+    if (auto value = "border" in overrides.colors)
+        palette.border = *value;
+    if (auto value = "accent" in overrides.colors)
+        palette.accent = *value;
+    if (auto value = "accentHover" in overrides.colors)
+        palette.accentHover = *value;
+    if (auto value = "accentPressed" in overrides.colors)
+        palette.accentPressed = *value;
+    if (auto value = "selection" in overrides.colors)
+        palette.selection = *value;
+    if (auto value = "selectionText" in overrides.colors)
+        palette.selectionText = *value;
+    if (auto value = "fieldBackground" in overrides.colors)
+        palette.fieldBackground = *value;
+    if (auto value = "buttonBackground" in overrides.colors)
+        palette.buttonBackground = *value;
+    if (auto value = "buttonHover" in overrides.colors)
+        palette.buttonHover = *value;
+    if (auto value = "buttonPressed" in overrides.colors)
+        palette.buttonPressed = *value;
+    if (auto value = "disabled" in overrides.colors)
+        palette.disabled = *value;
+    if (auto value = "danger" in overrides.colors)
+        palette.danger = *value;
+    if (auto value = "taskbar" in overrides.colors)
+        palette.taskbar = *value;
+    if (auto value = "taskbarHover" in overrides.colors)
+        palette.taskbarHover = *value;
+    if (auto value = "shadow" in overrides.colors)
+        palette.shadow = *value;
+    return palette;
+}
+
+private void applyHints(Widget widget, const SceneNode node)
+{
+    if (node.width > 0)
+        widget.layoutHints().preferredWidth = node.width;
+    if (node.height > 0)
+        widget.layoutHints().preferredHeight = node.height;
+    if (node.flex > 0)
+        widget.layoutHints().flex = cast(double) node.flex;
+}
+
+private void applyPanelChrome(Widget widget, const SceneNode node)
+{
+    auto panel = cast(Panel) widget;
+    if (panel is null) return;
+    if (node.hasBackground)
+        panel.setBackground(node.background);
+    if (node.hasBorder)
+        panel.setBorder(node.border, node.radius);
+}
+
+private void delegate() menuAction(NodeRegistry registry, string nodeId,
+    string action)
+{
+    return delegate()
+    {
+        registry.dispatchAction(nodeId, action);
+    };
+}
+
+private ContextMenuItem[] buildMenuItems(const(MenuItemSpec)[] specs,
+    NodeRegistry registry, string nodeId)
+{
+    ContextMenuItem[] items;
+    foreach (spec; specs)
+    {
+        if (spec.separator)
+        {
+            items ~= ContextMenuItem.separatorItem();
+            continue;
+        }
+        auto icon = iconForName(spec.icon);
+        if (spec.children.length > 0)
+        {
+            auto childItems = buildMenuItems(spec.children, registry, nodeId);
+            items ~= ContextMenuItem.submenuItem(toUTF8(spec.label), icon,
+                childItems, spec.enabled);
+            continue;
+        }
+        void delegate() action;
+        if (spec.action.length > 0)
+            action = menuAction(registry, nodeId, toUTF8(spec.action));
+        auto item = ContextMenuItem.command(toUTF8(spec.label), icon, action,
+            toUTF8(spec.shortcut), spec.enabled);
+        item.checked = spec.checked;
+        items ~= item;
+    }
+    return items;
 }
 
 Widget buildWidget(const SceneNode node, NodeRegistry registry)
@@ -552,7 +1047,9 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
     {
         case "column":
         {
-            auto column = new VBox(node.spacing, Insets(12));
+            auto column = new VBox(node.spacing, Insets(node.padding));
+            applyPanelChrome(column, node);
+            applyHints(column, node);
             registry.registerNode(node.id, node.type, column, node.text);
             foreach (child; node.children)
                 column.add(buildWidget(child, registry));
@@ -560,8 +1057,11 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
         }
         case "row":
         {
-            auto row = new HBox(node.spacing);
-            row.layoutHints().preferredHeight = 44;
+            auto row = new HBox(node.spacing, Insets(node.padding));
+            if (node.height == 0)
+                row.layoutHints().preferredHeight = 44;
+            applyPanelChrome(row, node);
+            applyHints(row, node);
             registry.registerNode(node.id, node.type, row, node.text);
             foreach (child; node.children)
                 row.add(buildWidget(child, registry));
@@ -570,15 +1070,35 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
         case "label":
         {
             auto label = new Label(node.text);
-            label.setScale(node.scale);
+            if (node.fontSize > 0)
+                label.setPixelSize(node.fontSize);
+            else
+                label.setScale(node.scale);
+            if (node.hasTextColor)
+                label.setColor(node.textColor);
+            if (node.textAlign == "center")
+                label.setAlignment(HorizontalAlign.center);
+            else if (node.textAlign == "right")
+                label.setAlignment(HorizontalAlign.right);
+            applyHints(label, node);
             registry.registerNode(node.id, node.type, label, node.text);
             return label;
         }
         case "button":
         {
-            auto button = new Button(node.text);
-            button.layoutHints().preferredWidth = 96;
-            button.layoutHints().preferredHeight = 36;
+            auto button = new ChromeButton(node.text, iconForName(node.icon),
+                parseChromeStyle(node.style));
+            if (node.fontSize > 0)
+                button.setPixelSize(node.fontSize);
+            if (node.active)
+                button.setActive(true);
+            if (node.hasTextColor)
+                button.setTextColor(node.textColor);
+            if (node.width == 0)
+                button.layoutHints().preferredWidth = 96;
+            if (node.height == 0)
+                button.layoutHints().preferredHeight = 36;
+            applyHints(button, node);
             registry.registerNode(node.id, node.type, button, node.text);
             if (node.action.length > 0)
                 button.onClick = delegate()
@@ -589,12 +1109,77 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
                 button.onClick = delegate() { registry.notifyActivated(node.id); };
             return button;
         }
+        case "menu":
+        {
+            auto button = new ChromeButton(node.text, iconForName(node.icon),
+                ChromeStyle.menu);
+            if (node.fontSize > 0)
+                button.setPixelSize(node.fontSize);
+            if (node.hasTextColor)
+                button.setTextColor(node.textColor);
+            applyHints(button, node);
+            registry.registerNode(node.id, node.type, button, node.text);
+            auto items = buildMenuItems(node.menuItems, registry, node.id);
+            if (items.length > 0)
+                button.onClick = delegate()
+                {
+                    showContextMenuBelow(button, items);
+                };
+            else
+                button.onClick = delegate() { registry.notifyActivated(node.id); };
+            return button;
+        }
+        case "tabs":
+        {
+            TabItem[] tabs;
+            foreach (item; node.tabItems)
+                tabs ~= TabItem(toUTF8(item.label), toUTF8(item.action),
+                    item.active, item.dirty);
+            auto strip = new TabStrip(tabs);
+            applyHints(strip, node);
+            registry.registerNode(node.id, node.type, strip, "");
+            strip.onAction = delegate(string action)
+            {
+                registry.dispatchAction(node.id, action);
+            };
+            return strip;
+        }
+        case "separator":
+        {
+            auto separator = new Separator(node.orientation == "vertical" ?
+                Orientation.vertical : Orientation.horizontal);
+            applyHints(separator, node);
+            registry.registerNode(node.id, node.type, separator, "");
+            return separator;
+        }
         case "textArea":
         {
-            auto editor = new TextArea(node.text);
+            TextEditor editor = node.menuItems.length > 0 ?
+                new ContextTextArea(node.text,
+                    buildMenuItems(node.menuItems, registry, node.id)) :
+                new TextArea(node.text);
+            if (node.hasTextColor)
+                editor.setTextColor(node.textColor);
             editor.layoutHints().flex = 1.0;
+            applyHints(editor, node);
             registry.registerNode(node.id, node.type, editor, node.text);
+            wireEditorEvents(editor, node, registry);
             return editor;
+        }
+        case "textField":
+        {
+            TextEditor field = node.menuItems.length > 0 ?
+                new ContextTextField(node.text,
+                    buildMenuItems(node.menuItems, registry, node.id)) :
+                new TextField(node.text);
+            if (node.hasTextColor)
+                field.setTextColor(node.textColor);
+            if (node.width == 0)
+                field.layoutHints().preferredWidth = 180;
+            applyHints(field, node);
+            registry.registerNode(node.id, node.type, field, node.text);
+            wireEditorEvents(field, node, registry);
+            return field;
         }
         case "canvas":
         {
@@ -606,6 +1191,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
                 if (registry.onEvent !is null)
                     registry.onEvent(event);
             };
+            applyHints(canvas, node);
             registry.registerNode(node.id, node.type, canvas, "");
             return canvas;
         }
@@ -615,6 +1201,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             auto image = new ImageWidget(source.image, source.width,
                 source.height, source.flex, source.hasBackground,
                 source.background);
+            applyHints(image, node);
             registry.registerNode(source.id, source.type, image, source.src);
             return image;
         }
@@ -629,6 +1216,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
                 if (registry.onEvent !is null)
                     registry.onEvent(event);
             };
+            applyHints(surface, node);
             registry.registerNode(source.id, source.type, surface,
                 source.surface.path);
             return surface;
@@ -636,6 +1224,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
         case "spacer":
         {
             auto spacer = new Spacer();
+            applyHints(spacer, node);
             registry.registerNode(node.id, node.type, spacer, node.text);
             return spacer;
         }
@@ -651,7 +1240,7 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry)
     options.title = scene.window.title;
     options.width = scene.window.width;
     options.height = scene.window.height;
-    auto window = new GuiWindow(options, themeFor(scene.window.theme));
+    auto window = new GuiWindow(options, themeWithOverrides(scene));
     window.setRoot(buildWidget(scene.root, registry));
     return window;
 }
