@@ -2687,7 +2687,6 @@ public struct ChangeContext
     string conversationId;
     string turnId;
     bool diagnosticReadOnly;
-    bool analysisOnly;
 }
 
 /// One filesystem path in Aurora's append-only mutation journal. File contents

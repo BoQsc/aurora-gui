@@ -48,6 +48,11 @@ RequestIntent requestIntent(string text)
         if (["finish", "complete"].canFind(word)) { completion = true; continue; }
         if (["explain", "describe", "summarize", "summarise", "recap"].canFind(word))
         { clarification = true; continue; }
+        // "Do it/that/this" is an instruction to act. Elsewhere "do" is an
+        // auxiliary verb ("How do I fix it?") and must not imply action.
+        if (word == "do" && i + 1 < words.length &&
+            ["it", "that", "this", "so"].canFind(words[i + 1]))
+            return RequestIntent.implementation;
         if (["fix", "repair", "implement", "apply", "change", "refactor", "optimize", "optimise",
                 "create", "add", "remove", "delete", "replace", "rename", "move", "save", "commit",
                 "publish", "deploy", "install", "launch", "play", "run", "try",

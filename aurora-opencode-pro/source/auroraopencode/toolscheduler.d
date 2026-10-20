@@ -228,14 +228,7 @@ private final class ToolJob : WorkItem
             result = ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
             return;
         }
-        import auroraopencode.taskpolicy : diagnosticToolAllowed, analysisToolAllowed;
-        import std.algorithm : canFind;
-        if (batch.context.analysisOnly && !analysisToolAllowed(call.name))
-        {
-            result = ToolExecution(call.name, "Error: the current request asks for analysis. Gather evidence and report findings; implementation requires a user action request.", true);
-            changed = false;
-            return;
-        }
+        import auroraopencode.taskpolicy : diagnosticToolAllowed;
         if (batch.context.diagnosticReadOnly && !diagnosticToolAllowed(call.name))
         {
             result = ToolExecution(call.name, "Diagnostic review is read-only. Report the diagnosis so the task's main model can apply it.", true);

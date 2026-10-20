@@ -81,7 +81,7 @@ import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateEr
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError, taskInputError, taskAwaitingInput;
-import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed, analysisToolAllowed;
+import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.agentresult : subagentResult;
@@ -19617,11 +19617,9 @@ private void pollButtonSuggestionRequest()
         changeContext.conversationId = _sessions[sessionIndex].id;
         changeContext.turnId = to!string(requestId);
         changeContext.diagnosticReadOnly = _execution.diagnosticActive;
-        changeContext.analysisOnly = session.contract.currentIntent == "analysis" ||
-            answerOnlyRequest(latestActualUserRequest(*session));
         changeContext.computer = ComputerUseContext(true,
             sessionRoutingKey(*session), _client.baseUrl(), _client.apiKey(),
-            session.model, changeContext.analysisOnly,
+            session.model, false,
             cast(uint) requestId);
         // Never reset a token held by an abandoned worker. Stop remains latched
         // for that batch even when the user immediately starts another turn.
@@ -19629,7 +19627,7 @@ private void pollButtonSuggestionRequest()
         // The UI may clear/replace its live arrays as soon as the user cancels
         // or navigates. Give the worker an immutable batch it exclusively owns.
         auto workerCalls = _pendingToolCalls.dup;
-        setComputerUseExplanationOnly(changeContext.analysisOnly);
+        setComputerUseExplanationOnly(false);
         if (_durabilityBlocked)
         {
             stopActiveTurn();
@@ -20156,6 +20154,7 @@ private void pollButtonSuggestionRequest()
             guidance.content = text;
             guidance.time = currentTimestamp();
             appendMessage(session, guidance);
+            acceptTaskRequest(session, text, guidance.id);
         }
         session.queuedGuidance.length = 0;
         session.taskStatus = "active";
@@ -21049,6 +21048,7 @@ private void pollButtonSuggestionRequest()
         userMessage.content = text;
         userMessage.time = currentTimestamp();
         appendMessage(*session, userMessage);
+        acceptTaskRequest(*session, text, userMessage.id);
         appendComposerContext(*session, text, workspaceForSession(sessionIndex));
         session.taskStatus = "active";
         session.turnStatus = "running";
@@ -22590,11 +22590,11 @@ private void pollButtonSuggestionRequest()
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
-        if (diagnosticReview || session.contract.currentIntent == "analysis" || answerOnlyRequest(latestActualUserRequest(*session)))
+        if (diagnosticReview)
         {
             OpenCodeToolDef[] inspection;
             foreach (tool; tools)
-                if (diagnosticReview ? diagnosticToolAllowed(tool.name) : analysisToolAllowed(tool.name)) inspection ~= tool;
+                if (diagnosticToolAllowed(tool.name)) inspection ~= tool;
             tools = inspection;
         }
         if (!_settings.experimentalNestedPlans)
@@ -22713,7 +22713,7 @@ private void pollButtonSuggestionRequest()
         // conversation route id so its frames hit the gateway's cache instead
         // of a cold, slow route on every step.
         setComputerUseSession(sessionRoutingKey(*session));
-        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)) || session.contract.currentIntent == "analysis");
+        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)));
         // A user-initiated request opens the turn before a possible summary
         // request, so Stop and queued guidance work while compaction runs.
         if (userTurn)
@@ -31323,6 +31323,20 @@ private void pollButtonSuggestionRequest()
         _sessions[_current].verificationStatus = verification;
         publishThreadUpdated(_sessions[_current]);
         markDirty();
+    }
+
+    public void setTaskIntentForTesting(string intent, string currentIntent)
+    {
+        if (_current < 0) return;
+        _sessions[_current].contract.intent = intent;
+        _sessions[_current].contract.currentIntent = currentIntent;
+        publishThreadUpdated(_sessions[_current]);
+        markDirty();
+    }
+
+    public string taskCurrentIntentForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].contract.currentIntent;
     }
 
     public void setLastFinishReasonForTesting(string reason)

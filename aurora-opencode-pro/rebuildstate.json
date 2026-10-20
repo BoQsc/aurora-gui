@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Build and relaunch with the Remote Desktop software-renderer default so the black-window machine recovers automatically after updating.",
+  "reason": "Remove the analysis-only tool gate and approval word list so a request after analysis can implement immediately.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-19 21:16:38.41638 UTC",
-  "finishedAt": "2026-10-19 21:17:37.5100515 UTC",
-  "durationMs": 59093,
+  "startedAt": "2026-10-20 19:45:54.9927364 UTC",
+  "finishedAt": "2026-10-20 19:46:49.8730441 UTC",
+  "durationMs": 54880,
   "exitCode": 0,
   "errors": []
 }

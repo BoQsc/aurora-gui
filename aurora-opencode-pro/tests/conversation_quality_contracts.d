@@ -47,6 +47,10 @@ int main()
     foreach (text; ["What is left?", "How would we fix it?", "Why did it stop?",
             "Explain why, and don't implement anything."])
         assert(answerOnlyRequest(text), text);
+    foreach (text; ["do it", "Do that.", "Please do it.", "Yes, do it."])
+        assert(requestIntent(text) == RequestIntent.implementation, text);
+    assert(!answerOnlyRequest("do it"), "An action approval was treated as an answer-only question");
+    assert(!answerOnlyRequest("go ahead"));
     assert(requestIntent("Analyze the conversation flow.") == RequestIntent.analysis);
     assert(requestIntent("Continue the task.") == RequestIntent.continuation);
     ChatSession casual;
@@ -110,6 +114,10 @@ int main()
     assert(s.contract.intent == "analysis");
     assert(explorationGuidance(s).indexOf("supported findings") >= 0);
     assert(explorationGuidance(s).indexOf("Prefer the smallest correct edit") < 0);
+    request(s, "do it");
+    assert(s.contract.intent == "implementation" && s.contract.currentIntent == "implementation",
+        "Approving the analysis did not authorize implementation");
+    assert(!taskInvestigation(s));
 
     request(s, "Now implement and verify the parser.");
     const initial = parseJSON(`[{"id":"fix","step":"Fix parser","kind":"edit","done":"Reject invalid input","status":"in_progress"},{"id":"verify","step":"Verify parser","kind":"verify","done":"Regression tests pass","status":"pending"}]`);
@@ -208,10 +216,10 @@ int main()
     write(fixture, "available evidence");
     auto client = new OpenCodeClient("", "");
     scope(exit) client.closeSession();
-    ChangeContext context; context.analysisOnly = true;
+    ChangeContext context;
     auto batch = scheduleToolBatch(client, 1, [
-        OpenCodeToolCall("forbidden", "write", `{"filePath":` ~ JSONValue(forbidden).toString() ~ `,"content":"not authorized"}`),
-        OpenCodeToolCall("allowed", "read", `{"filePath":` ~ JSONValue(fixture).toString() ~ `}`)],
+        OpenCodeToolCall("write_allowed", "write", `{"filePath":` ~ JSONValue(forbidden).toString() ~ `,"content":"authorized"}`),
+        OpenCodeToolCall("read_allowed", "read", `{"filePath":` ~ JSONValue(fixture).toString() ~ `}`)],
         sandbox, new ToolCancellation(), context);
     int toolResults;
     const deadline = MonoTime.currTime + 5.seconds;
@@ -222,12 +230,12 @@ int main()
             if (toolEvent.kind == OpenCodeEventKind.toolResult && !toolEvent.toolRunning)
             {
                 ++toolResults;
-                if (toolEvent.toolCallId == "forbidden") assert(toolEvent.toolFailed && !toolEvent.workspaceChanged);
-                if (toolEvent.toolCallId == "allowed") assert(!toolEvent.toolFailed && toolEvent.text.indexOf("available evidence") >= 0, toolEvent.text);
+                if (toolEvent.toolCallId == "write_allowed") assert(!toolEvent.toolFailed && toolEvent.workspaceChanged, toolEvent.text);
+                if (toolEvent.toolCallId == "read_allowed") assert(!toolEvent.toolFailed && toolEvent.text.indexOf("available evidence") >= 0, toolEvent.text);
             }
         Thread.sleep(1.msecs);
     }
-    assert(toolResults == 2 && !exists(forbidden), "Analysis crossed the native mutation boundary");
+    assert(toolResults == 2 && exists(forbidden), "Analysis intent still blocked a mutation");
     foreach (_; 0 .. 5000) append(branch, "assistant", "Preserved earlier conversation");
     const evaluationStarted = MonoTime.currTime;
     foreach (_; 0 .. 100) taskContinuation(branch, true);
