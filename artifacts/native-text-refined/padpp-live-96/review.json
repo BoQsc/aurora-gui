@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "Pad++ live 96 DPI: approved C / refined D (experimental)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-refined\\padpp-live-C.png",
+    "sha256": "84d4165950cbcf321044b6039f3ef535438c0aa2757362a01c2022f81e9620f2"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-refined\\padpp-live-refined-D.png",
+    "sha256": "71bf2da7df1b69998f3f993b5392eff41c4fa2809c9aeb4ead9ee72a28365d5b"
+  },
+  "difference": null,
+  "decision": null
+}

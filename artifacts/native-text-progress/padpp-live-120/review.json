@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "Pad++ live 125% DPI: previous B / approved C",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-selftest-120dpi.png",
+    "sha256": "42c1672fd6b753d45dcabcb59260bd3edd87af21b2df215902da5c62dc245eae"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-natural-selftest-120dpi.png",
+    "sha256": "559c20a8aa2a78f3ea1bf739f75fd075fda99e7df94e6cbf700e63af67357eeb"
+  },
+  "difference": null,
+  "decision": "candidate",
+  "project_candidate": "C",
+  "approved_on": "2026-10-20",
+  "authorization": "Make C the default (Recommended)"
+}

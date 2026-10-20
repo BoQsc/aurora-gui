@@ -4,7 +4,9 @@ import aurora;
 import aurora.text.atlas : glyphOriginX, GlyphHorizontalPhases;
 import aurora.text.opentype : fontTag;
 import std.math : abs;
+import std.format : format;
 import std.stdio : writeln;
+import std.process : environment;
 
 private uint u16(const(ubyte)[] bytes, size_t offset)
 {
@@ -33,6 +35,10 @@ int main(string[] args)
     auto layout = fonts.textEngine.layout(text, options);
     assert(abs(layout.width - expected * text.length) < 1e-7,
         "Repeated fractional advances must not accumulate rounding error");
+    assert(glyphOriginX(0.125, true, 13, 4).phase == 2);
+    assert(glyphOriginX(0.125, true, 26, 8).phase == 1);
+    const carry = glyphOriginX(0.875, true, 13, 4);
+    assert(carry.pixel == 1 && carry.phase == 0, "Raster-phase rounding must retain a pixel carry");
 
     auto atlas = new GlyphAtlas();
     auto original = atlas.glyphByIndex(face, glyphIndex, 13, FontRenderMode.smooth, 0);
@@ -63,12 +69,30 @@ int main(string[] args)
                 "A supported visible glyph disappeared");
             assert(abs(cast(double) smoothInk - referenceInk) <=
                 reference.alpha.length + smooth.alpha.length,
-                "Horizontal phase must conserve ink within A8 rounding error");
+                format("Horizontal phase must conserve ink: U+%04X size=%s phase=%s ink=%s -> %s; pixel counts=%s/%s",
+                    cast(uint) ch, size, phase, referenceInk, smoothInk,
+                    reference.alpha.length, smooth.alpha.length));
             assert(smooth.advance == sharp.advance && smooth.advance == reference.advance);
             if (size > 24) assert(smooth.alpha == sharp.alpha,
                 "Display sizes must preserve unmodified outline coverage");
             ++tested;
         }
+    }
+    if (environment.get("AURORA_HINTING", "0") == "natural" && face.rasterPhases(21) == 4)
+    {
+        // Native phase probes show that off-grid eighths round onto quarters.
+        const glyph = face.glyphIndex('l');
+        foreach (phase; [1, 3, 5])
+        {
+            const a = face.rasterizeGlyph(glyph, 21, 8, phase / 8.0);
+            const b = face.rasterizeGlyph(glyph, 21, 8, (phase + 1) / 8.0);
+            assert(a.alpha == b.alpha && a.bearingX == b.bearingX && a.bearingY == b.bearingY,
+                "Natural off-grid phases must match native nearest-quarter behavior");
+        }
+        const last = face.rasterizeGlyph(glyph, 21, 8, 0.875);
+        const first = face.rasterizeGlyph(glyph, 21, 8, 0);
+        assert(last.alpha == first.alpha && last.bearingX == first.bearingX + 1 &&
+            last.bearingY == first.bearingY, "A rounded phase carry must translate the glyph intact");
     }
     writeln("Fractional layout, phase caching, and ", tested, " glyph/size/phase checks passed.");
     return 0;

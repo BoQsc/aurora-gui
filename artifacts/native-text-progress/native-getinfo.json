@@ -1,0 +1,834 @@
+[
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": null,
+    "size": 13,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": null,
+    "size": 20,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 13,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 3,
+    "size": 20,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 7,
+    "size": 13,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 7,
+    "size": 20,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 1,
+    "result_bit": 0,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 32,
+    "result_bit": 12,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 64,
+    "result_bit": 13,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 128,
+    "result_bit": 14,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      19,
+      15,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 256,
+    "result_bit": 15,
+    "bounds": [
+      8,
+      12,
+      18,
+      32
+    ],
+    "bit_set": false
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 1024,
+    "result_bit": 17,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 2048,
+    "result_bit": 18,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 13,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      18,
+      15,
+      31
+    ],
+    "bit_set": true
+  },
+  {
+    "gasp": 15,
+    "size": 20,
+    "selector": 4096,
+    "result_bit": 19,
+    "bounds": [
+      8,
+      11,
+      18,
+      31
+    ],
+    "bit_set": true
+  }
+]

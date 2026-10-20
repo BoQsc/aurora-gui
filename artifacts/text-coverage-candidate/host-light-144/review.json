@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "title": "host-light-144: A legacy / B foreground coverage",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\host-light-144-legacy.png",
+    "sha256": "eaff6adb1de3adadd6084009ddb8654380a416aba739b921ee44773bf0ff1ff1"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\host-light-144-foreground.png",
+    "sha256": "067e2a53f08b7d047717ffdc8ef664cf393d4b866c27b32459b49dbfc93c875b"
+  },
+  "difference": {
+    "file": "difference.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\text-coverage-candidate\\review\\host-light-144-difference.png",
+    "sha256": "7d4a1e4d5f1f09f7502c3e917e2f51807f1e4cedb6ba34cc2305ec8f42765e7a"
+  },
+  "decision": "B",
+  "decision_date": "2026-10-20",
+  "decision_source": "../decision.json"
+}

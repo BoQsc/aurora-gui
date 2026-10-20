@@ -1,0 +1,26 @@
+{
+  "status": "keep-C-and-refine-D",
+  "baseline": "C",
+  "candidate": "D",
+  "default_changed": false,
+  "changes": [
+    "Closing-edge sample inclusion",
+    "Native half-alpha quantization",
+    "Recognized post-IUP VacuFormRound compatibility"
+  ],
+  "coverage_default": "foreground",
+  "contrast_default": 0.5,
+  "ink_guard": 0.039,
+  "summary": {
+    "improved": 134,
+    "regressed": 0,
+    "equal": 10,
+    "C_mean": 12.861946934093417,
+    "D_mean": 11.688842034771758
+  },
+  "review": "index.html",
+  "live_application_review": "padpp-live-120/review.html",
+  "decision": "C",
+  "authorization": "Keep C; continue improving D",
+  "decision_date": "2026-10-20"
+}

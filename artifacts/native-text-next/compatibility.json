@@ -1,0 +1,22 @@
+[
+  {
+    "font": "segoeui.ttf",
+    "theme": "light",
+    "unhinted_pixels_unchanged_with_experiment": true
+  },
+  {
+    "font": "segoeui.ttf",
+    "theme": "dark",
+    "unhinted_pixels_unchanged_with_experiment": true
+  },
+  {
+    "font": "cour.ttf",
+    "theme": "light",
+    "unhinted_pixels_unchanged_with_experiment": true
+  },
+  {
+    "font": "cour.ttf",
+    "theme": "dark",
+    "unhinted_pixels_unchanged_with_experiment": true
+  }
+]

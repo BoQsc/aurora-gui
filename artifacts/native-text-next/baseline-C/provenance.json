@@ -1,0 +1,22 @@
+{
+  "role": "Immutable C reference sources for isolated hypotheses; not application source paths.",
+  "date": "2026-10-20",
+  "note": "Research compilation normalized source newlines through Python read_text/write_text. Hinter is the exact compiled C fixture module; rasterizer is the unchanged C implementation from Git HEAD; truetype reconstruction matches its original vendor byte hash. Mixed vendor newline encodings can differ from normalized copies. Production C pixel equivalence is separately verified for every corpus image.",
+  "sources": {
+    "hinter.d": {
+      "snapshot_sha256": "9c9a8c3c6da7bae65ac579fa7ef1237db695b4afe7b12ad409b221a1a8ad5610",
+      "normalized_LF_sha256": "d682159d113922d2a027d4a3739421d41713b3f73ce3bcc39935a86916d400be",
+      "original_vendor_sha256": "a58c9118a80cbd3471ac46d937f279ecef6e5c6fab8ec4bc28018956f16aa5c8"
+    },
+    "rasterizer.d": {
+      "snapshot_sha256": "a3eb949e16d298c6b5369b515b6253a7a26eaae8444720f27bb0bd0cb66c1917",
+      "normalized_LF_sha256": "a3eb949e16d298c6b5369b515b6253a7a26eaae8444720f27bb0bd0cb66c1917",
+      "original_vendor_sha256": "c92eeab4c992791d9e0db1f85e6913cf2d9c68a86d043585c4fdcd431badc10b"
+    },
+    "truetype.d": {
+      "snapshot_sha256": "28a82bef093f0ab6c2d10c4107a2ef0779161b6d637f231a8b7acedc91694701",
+      "normalized_LF_sha256": "bdc6c071ca754d11bc84518c76e406b821635a96b1a5145af7f135a71ba1210a",
+      "original_vendor_sha256": "28a82bef093f0ab6c2d10c4107a2ef0779161b6d637f231a8b7acedc91694701"
+    }
+  }
+}

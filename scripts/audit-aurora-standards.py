@@ -16,6 +16,9 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = ROOT / "vendor" / "aurora-d-0.4.5" / "source"
+# These intentionally independent programs do not use the Aurora-D toolkit.
+# Keep the exceptions explicit so a new GUI package cannot silently evade audit.
+NON_AURORA_PACKAGES = {"aurora-fan-control", "aurora-music"}
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,8 @@ def read(path: Path) -> str:
 def discover_packages(errors: list[Finding]) -> list[dict[str, object]]:
     packages: list[dict[str, object]] = []
     canonical = CORE_SOURCE.resolve()
-    for manifest in sorted(ROOT.glob("aurora-*/dub.json")):
+    manifests = [*ROOT.glob("aurora-*/dub.json"), *ROOT.glob("experiments/aurora-*/dub.json")]
+    for manifest in sorted(manifests):
         try:
             data = json.loads(read(manifest))
         except (OSError, json.JSONDecodeError) as error:
@@ -55,7 +59,13 @@ def discover_packages(errors: list[Finding]) -> list[dict[str, object]]:
         for raw in source_paths:
             normalized = str(raw).replace("\\", "/")
             resolved.append((manifest.parent / normalized).resolve())
-        uses_core = canonical in resolved
+        dependency = data.get("dependencies", {}).get("aurora-d", {})
+        dependency_path = dependency.get("path") if isinstance(dependency, dict) else None
+        dependency_core = ((manifest.parent / dependency_path / "source").resolve()
+                           if dependency_path else None)
+        uses_core = canonical in resolved or dependency_core == canonical
+        if data.get("name") in NON_AURORA_PACKAGES and not uses_core:
+            continue
         stale_core_paths = [
             str(raw) for raw in source_paths
             if "aurora-d-" in str(raw) and
@@ -92,6 +102,14 @@ def verify_core_contracts(errors: list[Finding]) -> list[str]:
         "native-weight grayscale contrast is the atlas default": (
             CORE_SOURCE / "aurora" / "text" / "atlas.d",
             'environment.get("AURORA_TEXT_CONTRAST", "0.5")',
+        ),
+        "foreground-aware text coverage is the atlas default": (
+            CORE_SOURCE / "aurora" / "text" / "atlas.d",
+            'environment.get("AURORA_TEXT_COVERAGE", "foreground")',
+        ),
+        "natural grayscale hinting is the shared font default": (
+            CORE_SOURCE / "aurora" / "text" / "truetype.d",
+            'environment.get("AURORA_HINTING", "natural")',
         ),
         "invalid frame deltas are sanitized before widget ticks": (
             CORE_SOURCE / "aurora" / "window.d",
@@ -134,7 +152,7 @@ def downstream_debt(errors: list[Finding]) -> list[Finding]:
             "downstream-render-policy",
             "font rendering policy is duplicated below Aurora-D",
             re.compile(
-                r'environment\s*\[\s*"AURORA_(?:TEXT_CONTRAST|FONT_RENDER_MODE|HINTING)"'
+                r'environment\s*\[\s*"AURORA_(?:TEXT_CONTRAST|TEXT_COVERAGE|FONT_RENDER_MODE|HINTING)"'
                 r"|\benableNativeTextRendering\b"
             ),
         ),
@@ -148,7 +166,8 @@ def downstream_debt(errors: list[Finding]) -> list[Finding]:
         ),
     ]
     found: list[Finding] = []
-    for source_root in sorted(ROOT.glob("aurora-*/source")):
+    source_roots = [*ROOT.glob("aurora-*/source"), *ROOT.glob("experiments/aurora-*/source")]
+    for source_root in sorted(source_roots):
         for path in sorted(source_root.rglob("*.d")):
             text = read(path)
             for code, message, pattern in policies:

@@ -1,0 +1,25 @@
+{
+  "status": "approved",
+  "candidate": "C: repaired natural hinting and font-selected sampling",
+  "guard_basis": "Reviewed natural workbench ink at 96/120/144/192 DPI is 0.047829/0.041597/0.056870/0.049141. Approved minimum 0.039 retains about 6% margin below the lowest fixture.",
+  "native_comparison": "144 of 144 font/size/theme cases improve; average grayscale error 30.56 -> 12.86. Native pixel parity is not achieved.",
+  "runtime_checks": "Font and phase regression, Windows glyph sweep, window DPI, software/Vulkan parity, full host verification with approved 0.039 guard, and Pad++ interactions pass. Older Notepad drag/restore smoke failure remains in both modes.",
+  "compatibility": "AURORA_HINTING=0 restores unhinted B; AURORA_TEXT_COVERAGE=legacy restores the earlier coverage transfer.",
+  "review": "index.html",
+  "live_application_review": "padpp-live-120/review.html",
+  "decision": "C",
+  "date": "2026-10-20",
+  "authorization": "Make C the default (Recommended)",
+  "previous_default": {
+    "coverage": "foreground",
+    "hinting": "off",
+    "maximum_contrast": 0.5,
+    "ink_guard": 0.045
+  },
+  "approved_default": {
+    "coverage": "foreground",
+    "hinting": "natural",
+    "maximum_contrast": 0.5,
+    "ink_guard": 0.039
+  }
+}

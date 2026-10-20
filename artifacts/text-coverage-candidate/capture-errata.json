@@ -1,0 +1,10 @@
+{
+  "date": "2026-10-20",
+  "affected_evidence": "The original software application images labeled 144 DPI were actually rendered at 96 DPI.",
+  "cause": "GuiWindow read authoritative metrics from the headless platform, discarding the UiTestDriver event's requested scale. The test platform did not retain injected client/DPI metrics.",
+  "preserved": "Original approved image bytes and hashes are retained; the owner's B weight decision is not rewritten.",
+  "unaffected": "Direct physical-pixel font corpus, DrawList DPI regression, and actual-screen native GPU captures.",
+  "correction": "The headless platform now retains logical client size and display scale. UiTestDriver synchronizes those before resize dispatch; captures assert actual scale/framebuffer dimensions.",
+  "corrected_application_matrix": "../native-text-progress/index.html",
+  "corrected_default_and_experimental_density": "../native-text-progress/workbench-density.json"
+}

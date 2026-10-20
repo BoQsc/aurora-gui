@@ -1,0 +1,117 @@
+{
+  "note": "Neutral DirectWrite output retains internal thin-family contrast. Applying that 0.5 boost to Aurora masks isolates the remaining difference more fairly; not proof of a particular instruction/dropout cause.",
+  "comparisons": [
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "raw_error": 34.35526315789474,
+      "thin_boosted_error": 32.50717703349282
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "raw_error": 29.089712918660286,
+      "thin_boosted_error": 27.544258373205743
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "raw_error": 36.03423236514523,
+      "thin_boosted_error": 35.78319502074689
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "raw_error": 30.480290456431536,
+      "thin_boosted_error": 30.33609958506224
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "raw_error": 30.659287776708375,
+      "thin_boosted_error": 30.390760346487006
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "raw_error": 25.948989412897017,
+      "thin_boosted_error": 25.734359961501443
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "raw_error": 35.277548209366394,
+      "thin_boosted_error": 34.565426997245176
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "raw_error": 29.873966942148762,
+      "thin_boosted_error": 29.285123966942148
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "raw_error": 30.909685863874344,
+      "thin_boosted_error": 30.134816753926703
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "raw_error": 26.151832460732983,
+      "thin_boosted_error": 25.532722513089006
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "raw_error": 31.646637265711135,
+      "thin_boosted_error": 29.917861080485117
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "raw_error": 26.79988974641676,
+      "thin_boosted_error": 25.37265711135612
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "raw_error": 28.384491763760547,
+      "thin_boosted_error": 27.701084773001206
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "raw_error": 23.9750903977501,
+      "thin_boosted_error": 23.468461229409403
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "raw_error": 32.05516871987145,
+      "thin_boosted_error": 30.90171397964649
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "raw_error": 27.082485270487414,
+      "thin_boosted_error": 26.185859667916443
+    }
+  ]
+}

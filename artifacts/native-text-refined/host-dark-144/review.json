@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "host-dark-144: approved C / refined D (experimental)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-refined\\host-dark-144-C.png",
+    "sha256": "b4ec4e5be03a1a1f6b3b2d4094b13e90277b3e467ee4df1ec62e6ea8475fb2fe"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-refined\\host-dark-144-refined-D.png",
+    "sha256": "15e7d2c06e907a18f54c356120f4d3532b6a0028e42e7c69966726780c64c747"
+  },
+  "difference": null,
+  "decision": null
+}

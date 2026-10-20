@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "Host workbench 96 DPI: former host weight / approved shared default",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-workbench-legacy-96.png",
+    "sha256": "3667c8fdb91cd27743ba3243128ad6d8e960b0f5da259a3992b90c45a7aa138a"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-workbench-default-96.png",
+    "sha256": "8f3354d05d25adc99724399f3b0d78a453e36ccab50d8c0296264e076acc563c"
+  },
+  "difference": null,
+  "decision": null
+}

@@ -1,0 +1,52 @@
+{
+  "large_file": {
+    "name": "large-2000.txt",
+    "bytes": 214000,
+    "lines": 2001,
+    "load_seconds": 0.09903400001348928,
+    "roundtrip_seconds": 0.008430100002442487,
+    "switch_seconds": 0.08895049999409821,
+    "find_seconds": 0.0399390999955358,
+    "load_mib_per_second": 2.060770075763265,
+    "roundtrip_mib_per_second": 24.209238757761682
+  },
+  "host_working_set_mb": 247.66015625,
+  "screenshot_pixels": {
+    "width": 1180,
+    "height": 760,
+    "samples": 52753,
+    "dark_fraction": 0.020131556499156447,
+    "bright_fraction": 0.9202320247189734,
+    "mean_luminance": 234.63537112581275,
+    "quantized_colors": 77
+  },
+  "chrome_heights": {
+    "menubar": 30,
+    "toolbar": 42,
+    "docs": 34,
+    "findbar": 38,
+    "statusbar": 26
+  },
+  "editor_gutter": {
+    "dark_pixels": 495,
+    "sample_width": 36
+  },
+  "file_menu": {
+    "width": 209,
+    "height": 146,
+    "items": 8
+  },
+  "editor_context_menu": {
+    "width": 216,
+    "height": 216,
+    "items": 12
+  },
+  "tabs": 4,
+  "dirty_after_save": false,
+  "screenshot": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host-notepadpp\\build\\padpp.png",
+  "screenshots": [
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host-notepadpp\\build\\padpp.png",
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host-notepadpp\\build\\padpp-menu.png",
+    "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host-notepadpp\\build\\padpp-context.png"
+  ]
+}

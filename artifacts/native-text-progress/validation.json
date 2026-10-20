@@ -1,0 +1,351 @@
+{
+  "date": "2026-10-20",
+  "coverage_default": "foreground",
+  "hinting_default": "natural",
+  "hinting_under_test": "shared default natural, with unhinted compatibility regressions",
+  "weight_profile": "owner-approved C (0.039)",
+  "source_sha256": {
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\hinter.d": "a58c9118a80cbd3471ac46d937f279ecef6e5c6fab8ec4bc28018956f16aa5c8",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\truetype.d": "28a82bef093f0ab6c2d10c4107a2ef0779161b6d637f231a8b7acedc91694701",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\font.d": "3fc5204c76af3b4302a5dae57572968141d44c66a087736b937a9cab8c9f8f61",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\canvas.d": "9751b508f56de0a87f7f0c5be15ac7d5c4f399375b816ec5cc71a0fbe4885795",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\atlas.d": "ad2dd048ca03178d65af40867fb9222b911caac06a9bd2f0295078ecf6e60378",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83"
+  },
+  "checks": [
+    {
+      "name": "coverage",
+      "records": [
+        {
+          "command": [
+            "dmd",
+            "-i",
+            "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+            "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\coverage",
+            "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\coverage\\coverage.exe",
+            "-version=AuroraHeadless",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\tests\\text_coverage.d",
+            "user32.lib",
+            "gdi32.lib"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\coverage\\coverage.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Foreground coverage: 64 size/phase/mode cases; bounded color cache, growth, opacity, mixed surfaces and compatibility passed.\n",
+          "coverage_override": null,
+          "hinting_override": null
+        }
+      ]
+    },
+    {
+      "name": "font-quality",
+      "records": [
+        {
+          "command": [
+            "dmd",
+            "-i",
+            "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+            "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\font-quality",
+            "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\font-quality\\font-quality.exe",
+            "-version=AuroraHeadless",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\tests\\font_quality_regression.d",
+            "user32.lib",
+            "gdi32.lib"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\font-quality\\font-quality.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Fractional layout, phase caching, and 1872 glyph/size/phase checks passed.\n",
+          "coverage_override": "legacy",
+          "hinting_override": null
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\font-quality\\font-quality.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Fractional layout, phase caching, and 1872 glyph/size/phase checks passed.\n",
+          "coverage_override": "foreground",
+          "hinting_override": null
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\font-quality\\font-quality.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Fractional layout, phase caching, and 1872 glyph/size/phase checks passed.\n",
+          "coverage_override": "legacy",
+          "hinting_override": "0"
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\font-quality\\font-quality.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Fractional layout, phase caching, and 1872 glyph/size/phase checks passed.\n",
+          "coverage_override": "foreground",
+          "hinting_override": "0"
+        }
+      ]
+    },
+    {
+      "name": "dpi",
+      "records": [
+        {
+          "command": [
+            "dmd",
+            "-i",
+            "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+            "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\dpi",
+            "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\dpi\\dpi.exe",
+            "-version=AuroraHeadless",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\tests\\dpi_rendering.d",
+            "user32.lib",
+            "gdi32.lib"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\dpi\\dpi.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "DPI 120: logical 120x80 -> framebuffer 150x100; font 21px\nDPI 144: logical 120x80 -> framebuffer 180x120; font 26px\nDPI 192: logical 120x80 -> framebuffer 240x160; font 34px\nHigh-DPI geometry, physical glyphs, and sharp grayscale mode passed.\n",
+          "coverage_override": "legacy",
+          "hinting_override": null
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\dpi\\dpi.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "DPI 120: logical 120x80 -> framebuffer 150x100; font 21px\nDPI 144: logical 120x80 -> framebuffer 180x120; font 26px\nDPI 192: logical 120x80 -> framebuffer 240x160; font 34px\nHigh-DPI geometry, physical glyphs, and sharp grayscale mode passed.\n",
+          "coverage_override": "foreground",
+          "hinting_override": null
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\dpi\\dpi.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "DPI 120: logical 120x80 -> framebuffer 150x100; font 21px\nDPI 144: logical 120x80 -> framebuffer 180x120; font 26px\nDPI 192: logical 120x80 -> framebuffer 240x160; font 34px\nHigh-DPI geometry, physical glyphs, and sharp grayscale mode passed.\n",
+          "coverage_override": "legacy",
+          "hinting_override": "0"
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\dpi\\dpi.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "DPI 120: logical 120x80 -> framebuffer 150x100; font 21px\nDPI 144: logical 120x80 -> framebuffer 180x120; font 26px\nDPI 192: logical 120x80 -> framebuffer 240x160; font 34px\nHigh-DPI geometry, physical glyphs, and sharp grayscale mode passed.\n",
+          "coverage_override": "foreground",
+          "hinting_override": "0"
+        }
+      ]
+    },
+    {
+      "name": "window-dpi",
+      "records": [
+        {
+          "command": [
+            "dmd",
+            "-i",
+            "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+            "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\window-dpi",
+            "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\window-dpi\\window-dpi.exe",
+            "-version=AuroraHeadless",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\tests\\window_dpi_regression.d",
+            "user32.lib",
+            "gdi32.lib"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\window-dpi\\window-dpi.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Window DPI 96/120/144/192, physical frames, logical sizes and return-frame equality passed.\n",
+          "coverage_override": null,
+          "hinting_override": null
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\window-dpi\\window-dpi.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Window DPI 96/120/144/192, physical frames, logical sizes and return-frame equality passed.\n",
+          "coverage_override": null,
+          "hinting_override": "0"
+        }
+      ]
+    },
+    {
+      "name": "hinter-unit",
+      "records": [
+        {
+          "command": [
+            "dmd",
+            "-i",
+            "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+            "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\hinter-unit",
+            "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\hinter-unit\\hinter-unit.exe",
+            "-unittest",
+            "-main",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source\\aurora\\text\\hinter.d",
+            "user32.lib",
+            "gdi32.lib"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\hinter-unit\\hinter-unit.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "1 modules passed unittests\n",
+          "coverage_override": null,
+          "hinting_override": null
+        }
+      ]
+    },
+    {
+      "name": "hinting-windows",
+      "records": [
+        {
+          "command": [
+            "dmd",
+            "-i",
+            "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+            "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\hinting-windows",
+            "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\hinting-windows\\hinting-windows.exe",
+            "-version=AuroraHeadless",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\tests\\hinting_windows_regression.d",
+            "user32.lib",
+            "gdi32.lib"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": ""
+        },
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\hinting-windows\\hinting-windows.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "Font completed: C:\\Windows\\Fonts\\segoeui.ttf; hint attempts=2673 successes=2673 fallbacks=0\nFont completed: C:\\Windows\\Fonts\\consola.ttf; hint attempts=2619 successes=2619 fallbacks=0\nFont completed: C:\\Windows\\Fonts\\arial.ttf; hint attempts=2700 successes=2700 fallbacks=0\nFont completed: C:\\Windows\\Fonts\\calibri.ttf; hint attempts=2538 successes=2538 fallbacks=0\nFont completed: C:\\Windows\\Fonts\\tahoma.ttf; hint attempts=2673 successes=2673 fallbacks=0\nFont completed: C:\\Windows\\Fonts\\verdana.ttf; hint attempts=2700 successes=2700 fallbacks=0\nFont completed: C:\\Windows\\Fonts\\cour.ttf; hint attempts=2700 successes=2700 fallbacks=0\nFont completed: C:\\Windows\\Fonts\\times.ttf; hint attempts=2700 successes=2700 fallbacks=0\nNatural hinting: 8 fonts, 7200 glyph/size checks plus default equivalence and reverse-order replay, 0 blanks.\n",
+          "coverage_override": null,
+          "hinting_override": null
+        }
+      ]
+    },
+    {
+      "name": "standards",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "scripts/audit-aurora-standards.py"
+          ],
+          "workdir": ".",
+          "exit_code": 0,
+          "output": "Aurora standards: 18 packages use one core source\nCore contracts verified: 7\n"
+        }
+      ]
+    },
+    {
+      "name": "python",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "-W",
+            "ignore",
+            "-m",
+            "unittest",
+            "scripts.tests.test_font_comparison",
+            "scripts.tests.test_aurora_standards_audit"
+          ],
+          "workdir": ".",
+          "exit_code": 0,
+          "output": "..............\n----------------------------------------------------------------------\nRan 14 tests in 0.664s\n\nOK\n"
+        }
+      ]
+    },
+    {
+      "name": "host-verifier",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "experiments/aurora-host/tools/verify_experiment.py"
+          ],
+          "workdir": ".",
+          "exit_code": 0,
+          "output": "generated reference: current\nheadless host: built\nwindowed host: built\nversion/capabilities: verified\nscene check: valid accepted, invalid rejected\nheadless render: binary PPM produced\ncontrol demo: click, tree update, and live screenshot verified\neditor control: text, state, selection, events, wrap, action, and screenshot verified\nUI depth: menus, cascade submenu, tabs, toolbar, context menu, and pixels verified\ntext weight: approved natural hinting C; minimum ink 0.039\ncanvas: retained shapes, colors, and text pixels verified\ncanvas control: live setCanvas redraw verified\naurora-host experiment verification passed\n"
+        }
+      ]
+    },
+    {
+      "name": "padpp-self-test",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "-u",
+            "-B",
+            "padpp.py",
+            "--self-test",
+            "--host",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\host-release\\aurora-host-experiment.exe"
+          ],
+          "workdir": "experiments\\aurora-host-notepadpp",
+          "exit_code": 0,
+          "output": "{\n  \"large_file\": {\n    \"name\": \"large-2000.txt\",\n    \"bytes\": 214000,\n    \"lines\": 2001,\n    \"load_seconds\": 0.4050337000080617,\n    \"roundtrip_seconds\": 0.012878599998657592,\n    \"switch_seconds\": 0.22143610000784975,\n    \"find_seconds\": 0.1183236999931978,\n    \"load_mib_per_second\": 0.5038748719103506,\n    \"roundtrip_mib_per_second\": 15.846932409750327\n  },\n  \"host_working_set_mb\": 276.86328125,\n  \"screenshot_pixels\": {\n    \"width\": 1475,\n    \"height\": 950,\n    \"samples\": 82427,\n    \"dark_fraction\": 0.029601950817086633,\n    \"bright_fraction\": 0.9293192764506776,\n    \"mean_luminance\": 236.84535477452778,\n    \"quantized_colors\": 47\n  },\n  \"chrome_heights\": {\n    \"menubar\": 30,\n    \"toolbar\": 42,\n    \"docs\": 34,\n    \"findbar\": 38,\n    \"statusbar\": 26\n  },\n  \"editor_gutter\": {\n    \"dark_pixels\": 572,\n    \"sample_width\": 45\n  },\n  \"file_menu\": {\n    \"width\": 209,\n    \"height\": 146,\n    \"items\": 8\n  },\n  \"editor_context_menu\": {\n    \"width\": 216,\n    \"height\": 216,\n    \"items\": 12\n  },\n  \"tabs\": 4,\n  \"dirty_after_save\": false,\n  \"screenshot\": \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n  \"screenshots\": [\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-menu.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-context.png\"\n  ]\n}\naurora pad++ self-test passed\nself-test: startup\nself-test: File menu and new tab\nself-test: document tab clicks\nself-test: menu screenshot\nself-test: language menu\nself-test: editor context menu and find\nself-test: delayed hover hints\nself-test: find-bar replace and view toggles\nself-test: live find counts, whole word, and find previous\nself-test: checked menu state and zoom\nself-test: save and open\nself-test: large document benchmark\nbenchmark: capture current editor (214000 chars target)\nbenchmark: setText\nbenchmark: loaded in 0.41s {'setText': 0.011957599999732338, 'setSelection': 0.39307199999166187}; getText\nbenchmark: round trip in 0.01s; switch\nbenchmark: switch in 0.22s; find\nbenchmark: find in 0.118s\nself-test: screenshot\n"
+        }
+      ]
+    }
+  ],
+  "release_binaries": {
+    "build-validation\\native-text-progress\\host-release\\aurora-host-experiment.exe": {
+      "bytes": 3169280,
+      "sha256": "2eb206ae7fbae87237a643c6b17959e5acac09191dfda84400883f633404ada6"
+    },
+    "build-validation\\native-text-progress\\notepad-release\\aurora-notepad.exe": {
+      "bytes": 2750464,
+      "sha256": "3e4fc935c05449384f808734cea5f4d30c305414c14053178d2498a0683266ba"
+    }
+  },
+  "known_failure": "Older Notepad tests/headless_smoke.d:120 drag/restore assertion; reproduced in both coverage modes in original validation."
+}

@@ -118,9 +118,14 @@ scheduled work still ran (see `headless_smoke` `notificationRefreshCountForTesti
 - Aurora's `GlyphAtlas` owns the default grayscale coverage contrast (`0.5`).
   Applications must not copy that policy into startup helpers or set
   `AURORA_TEXT_CONTRAST` merely to reproduce the framework default.
-- Keep hinting off by default. `AURORA_HINTING` and `AURORA_TEXT_CONTRAST` are
-  explicit compatibility and diagnostic overrides; `AURORA_TEXT_CONTRAST=0`
-  restores linear coverage.
+- Foreground-aware coverage is the shared default: correction strength follows
+  the text's luminance, retaining the established near-white transfer.
+  `AURORA_TEXT_COVERAGE=legacy` restores the prior color-independent transfer.
+  Applications must inherit this policy rather than copy a private override.
+- Inherit natural grayscale hinting from Aurora-D. The shared renderer follows
+  the font's smoothing grid and uses matching Canvas phases. `AURORA_HINTING=0`
+  restores unhinted B behavior; `1` selects the older diagnostic interpreter.
+  `AURORA_TEXT_CONTRAST=0` restores linear coverage.
 - Change the framework default only with framework regression tests, matched
   application A/B captures, and explicit owner approval.
 

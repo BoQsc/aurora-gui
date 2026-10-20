@@ -1,0 +1,283 @@
+[
+  {
+    "command": [
+      "dmd",
+      "-i",
+      "-O",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\generated",
+      "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless-obj",
+      "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\capture.d",
+      "user32.lib",
+      "gdi32.lib",
+      "shell32.lib",
+      "wininet.lib",
+      "-version=AuroraHeadless"
+    ],
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "dmd",
+      "-i",
+      "-O",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\generated",
+      "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\native-obj",
+      "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\native.exe",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\capture.d",
+      "user32.lib",
+      "gdi32.lib",
+      "shell32.lib",
+      "wininet.lib"
+    ],
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-light-96-baseline",
+      "light",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "notepad light 96 DPI; atlas=512x512; rasterizations=255\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-light-144-baseline",
+      "light",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "notepad light 144 DPI; atlas=512x512; rasterizations=210\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-dark-96-baseline",
+      "dark",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "notepad dark 96 DPI; atlas=512x512; rasterizations=255\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-dark-144-baseline",
+      "dark",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "notepad dark 144 DPI; atlas=512x512; rasterizations=210\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-light-96-baseline",
+      "light",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "host light 96 DPI; atlas=512x512; rasterizations=191\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-light-144-baseline",
+      "light",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "host light 144 DPI; atlas=512x512; rasterizations=154\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-dark-96-baseline",
+      "dark",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "host dark 96 DPI; atlas=512x512; rasterizations=191\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-dark-144-baseline",
+      "dark",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "host dark 144 DPI; atlas=512x512; rasterizations=154\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "padpp",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\padpp-light-96-baseline",
+      "light",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "padpp light 96 DPI; atlas=512x512; rasterizations=368\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "padpp",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\padpp-light-144-baseline",
+      "light",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "padpp light 144 DPI; atlas=512x512; rasterizations=327\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\native.exe",
+      "native",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\gpu-baseline"
+    ],
+    "exit_code": 0,
+    "output": "Vulkan screen capture: two validated live states; DPI=120; differing pixels=28; maximum channel error=1; rejected frames=0\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-light-96-natural",
+      "light",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "notepad light 96 DPI; atlas=512x512; rasterizations=255\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-light-144-natural",
+      "light",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "notepad light 144 DPI; atlas=512x512; rasterizations=210\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-dark-96-natural",
+      "dark",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "notepad dark 96 DPI; atlas=512x512; rasterizations=255\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "notepad",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\notepad-dark-144-natural",
+      "dark",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "notepad dark 144 DPI; atlas=512x512; rasterizations=210\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-light-96-natural",
+      "light",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "host light 96 DPI; atlas=512x512; rasterizations=191\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-light-144-natural",
+      "light",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "host light 144 DPI; atlas=512x512; rasterizations=154\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-dark-96-natural",
+      "dark",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "host dark 96 DPI; atlas=512x512; rasterizations=191\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "host",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\host-dark-144-natural",
+      "dark",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "host dark 144 DPI; atlas=512x512; rasterizations=154\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "padpp",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\padpp-light-96-natural",
+      "light",
+      "96"
+    ],
+    "exit_code": 0,
+    "output": "padpp light 96 DPI; atlas=512x512; rasterizations=368\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\headless.exe",
+      "padpp",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\padpp-light-144-natural",
+      "light",
+      "144"
+    ],
+    "exit_code": 0,
+    "output": "padpp light 144 DPI; atlas=512x512; rasterizations=327\n"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\native.exe",
+      "native",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\capture\\gpu-natural"
+    ],
+    "exit_code": 0,
+    "output": "Vulkan screen capture: two validated live states; DPI=120; differing pixels=0; maximum channel error=0; rejected frames=0\n"
+  }
+]

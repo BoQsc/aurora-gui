@@ -399,9 +399,10 @@ struct Canvas
                     continue;
                 }
                 const origin = glyphOriginX((position.x + _offsetX + positioned.x) *
-                    _drawList.displayScale.x(), positioned.font.isOpenType(), pixelSize);
+                    _drawList.displayScale.x(), positioned.font.isOpenType(), pixelSize,
+                    positioned.font.rasterPhases(pixelSize));
                 const glyph = _fonts.atlas.glyphByIndex(positioned.font,
-                    positioned.glyphIndex, pixelSize, _fonts.renderMode, origin.phase);
+                    positioned.glyphIndex, pixelSize, _fonts.renderMode, origin.phase, color);
                 if (!glyph.hasPixels()) continue;
                 const x = origin.pixel + glyph.bearingX;
                 const y = _drawList.logicalToDeviceY(
@@ -419,9 +420,10 @@ struct Canvas
                     continue;
                 }
                 const origin = glyphOriginX(position.x + positioned.x,
-                    positioned.font.isOpenType(), layout.pixelSize);
+                    positioned.font.isOpenType(), layout.pixelSize,
+                    positioned.font.rasterPhases(layout.pixelSize));
                 const glyph = _fonts.atlas.glyphByIndex(positioned.font,
-                    positioned.glyphIndex, layout.pixelSize, _fonts.renderMode, origin.phase);
+                    positioned.glyphIndex, layout.pixelSize, _fonts.renderMode, origin.phase, color);
                 if (!glyph.hasPixels()) continue;
                 const x = origin.pixel + glyph.bearingX;
                 const y = position.y + cast(int) floor(positioned.y + 0.5) - glyph.bearingY;

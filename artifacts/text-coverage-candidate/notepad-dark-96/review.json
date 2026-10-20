@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "title": "notepad-dark-96: A legacy / B foreground coverage",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\notepad-dark-96-legacy.png",
+    "sha256": "a93555b6134c70a8d11e8ff43c05bb43fe2a1ed32ac4199cae0e5b4b2e4293d6"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\notepad-dark-96-foreground.png",
+    "sha256": "a93555b6134c70a8d11e8ff43c05bb43fe2a1ed32ac4199cae0e5b4b2e4293d6"
+  },
+  "difference": {
+    "file": "difference.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\text-coverage-candidate\\review\\notepad-dark-96-difference.png",
+    "sha256": "ea1c4a1975bd6f2241d6ecf7f1ca40cd58f37c6f6267328efc9e72d3d1baf1c5"
+  },
+  "decision": "B",
+  "decision_date": "2026-10-20",
+  "decision_source": "../decision.json"
+}

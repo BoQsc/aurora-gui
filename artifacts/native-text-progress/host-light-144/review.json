@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "host-light-144: previous B / approved C",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-light-144-baseline.png",
+    "sha256": "b614bb13dcdd89103ea1988ba6244de0b0ca2a7a994b5ecb6bda86586cbcbde5"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-light-144-natural.png",
+    "sha256": "fd584c80735dd552790bb446c41b06ea292b432029d4f1786f9fbfd3132f2296"
+  },
+  "difference": null,
+  "decision": "candidate",
+  "project_candidate": "C",
+  "approved_on": "2026-10-20",
+  "authorization": "Make C the default (Recommended)"
+}

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "title": "notepad-light-144: A legacy / B foreground coverage",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\notepad-light-144-legacy.png",
+    "sha256": "1c72136b98e27b9cc6868469c1f7f3750ce5e24e1bb2831f7fae1c053f398cac"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\notepad-light-144-foreground.png",
+    "sha256": "67e92669a7547ea978d792e3d539c46c5923638c6437c04074733cbb4242f5fa"
+  },
+  "difference": {
+    "file": "difference.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\text-coverage-candidate\\review\\notepad-light-144-difference.png",
+    "sha256": "c72f9b8ab53c1370e3e62b4849fc6d73be4e6b35450735cf218b9bb519013ae2"
+  },
+  "decision": "B",
+  "decision_date": "2026-10-20",
+  "decision_source": "../decision.json"
+}

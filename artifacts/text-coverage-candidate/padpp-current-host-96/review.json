@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "title": "Pad++ 96 DPI: A current host 0.75 / B foreground candidate 0.5",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\padpp-light-96-current-host.png",
+    "sha256": "a0c5366f64aee2f0d397cfbc50b9c54798cad285bce715bd6b3f7fbbac7343c8"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\padpp-light-96-foreground.png",
+    "sha256": "c44b16fa393ae2df4b956615722ebc1647679e6f5ca6da4c0d0c3280c4450688"
+  },
+  "difference": null,
+  "decision": "B",
+  "decision_date": "2026-10-20",
+  "decision_source": "../decision.json"
+}

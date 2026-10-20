@@ -1,0 +1,2162 @@
+[
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": false,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 0,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 0,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": true,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 1021,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": false,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 0,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 0,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": true,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": false,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 0,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 0,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": true,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": false,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 512,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 512,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": true,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": false,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 1024,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 1024,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": true,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": false,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 1024,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 1024,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": true,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": false,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": true,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 4080,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": false,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      24,
+      10,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": true,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      24,
+      10,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 5104,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": false,
+    "native_ink": 6120,
+    "native_bounds": [
+      8,
+      24,
+      11,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 6120,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 6120,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "x",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": true,
+    "native_ink": 6120,
+    "native_bounds": [
+      8,
+      24,
+      11,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 8160,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": false,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": true,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": false,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": true,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": false,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": true,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": false,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": true,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": false,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": true,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": false,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": true,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": false,
+    "native_ink": 4080,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 4080,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": true,
+    "native_ink": 4080,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 4080,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": false,
+    "native_ink": 5096,
+    "native_bounds": [
+      8,
+      29,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 5104,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": true,
+    "native_ink": 5096,
+    "native_bounds": [
+      8,
+      29,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 5104,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": false,
+    "native_ink": 8160,
+    "native_bounds": [
+      8,
+      28,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 8160,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "mirp",
+    "axis": "y",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": true,
+    "native_ink": 8160,
+    "native_bounds": [
+      8,
+      28,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 8160,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": false,
+    "native_ink": 1083,
+    "native_bounds": [
+      7,
+      24,
+      8,
+      32
+    ],
+    "C": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 1021,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": true,
+    "native_ink": 1083,
+    "native_bounds": [
+      7,
+      24,
+      8,
+      32
+    ],
+    "C": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 1021,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 1021,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": false,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": true,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": false,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": true,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": false,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": true,
+    "native_ink": 512,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": false,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": true,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": false,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 1024,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": true,
+    "native_ink": 1016,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": false,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 4080,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": true,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      24,
+      9,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 4080,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 4080,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": false,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      24,
+      10,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 5104,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": true,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      24,
+      10,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 5104,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": false,
+    "native_ink": 6120,
+    "native_bounds": [
+      8,
+      24,
+      11,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 6120,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 8160,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "x",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": true,
+    "native_ink": 6120,
+    "native_bounds": [
+      8,
+      24,
+      11,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 8160,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 8160,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": false,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 0,
+    "requested_26dot6": 64,
+    "native_instruction_opt_out": true,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": false,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 4,
+    "requested_26dot6": 68,
+    "native_instruction_opt_out": true,
+    "native_ink": 2040,
+    "native_bounds": [
+      8,
+      31,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2040,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2040,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": false,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 8,
+    "requested_26dot6": 72,
+    "native_instruction_opt_out": true,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": false,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 16,
+    "requested_26dot6": 80,
+    "native_instruction_opt_out": true,
+    "native_ink": 2552,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 2552,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 2552,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": false,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 31,
+    "requested_26dot6": 95,
+    "native_instruction_opt_out": true,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": false,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 32,
+    "requested_26dot6": 96,
+    "native_instruction_opt_out": true,
+    "native_ink": 3056,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 3064,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 3064,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": false,
+    "native_ink": 4080,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 4080,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 64,
+    "requested_26dot6": 128,
+    "native_instruction_opt_out": true,
+    "native_ink": 4080,
+    "native_bounds": [
+      8,
+      30,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 4080,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 4080,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": false,
+    "native_ink": 5096,
+    "native_bounds": [
+      8,
+      29,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 5104,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 96,
+    "requested_26dot6": 160,
+    "native_instruction_opt_out": true,
+    "native_ink": 5096,
+    "native_bounds": [
+      8,
+      29,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "msirp-cutin": {
+      "ink": 5104,
+      "native_equal": false
+    },
+    "mirp-x": {
+      "ink": 5104,
+      "native_equal": false
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": false,
+    "native_ink": 8160,
+    "native_bounds": [
+      8,
+      28,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 8160,
+      "native_equal": true
+    }
+  },
+  {
+    "opcode": "msirp",
+    "axis": "y",
+    "original_26dot6": 192,
+    "requested_26dot6": 256,
+    "native_instruction_opt_out": true,
+    "native_ink": 8160,
+    "native_bounds": [
+      8,
+      28,
+      16,
+      32
+    ],
+    "C": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "msirp-cutin": {
+      "ink": 8160,
+      "native_equal": true
+    },
+    "mirp-x": {
+      "ink": 8160,
+      "native_equal": true
+    }
+  }
+]

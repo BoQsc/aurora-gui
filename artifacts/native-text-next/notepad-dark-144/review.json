@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "notepad-dark-144: approved C / experimental D",
+  "status": "reviewed-keep-C",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\notepad-dark-144-C.png",
+    "sha256": "45a179f981aedddb02eb19f7b57f98b0fde34ef565d25006a9983a08c1320cfe"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\notepad-dark-144-D.png",
+    "sha256": "772ec213b1e584fe54d41ecf9e94c6f7f9e26b5241e8f5edec8bb7fb0dfd679c"
+  },
+  "difference": null,
+  "decision": "baseline",
+  "project_choice": "C",
+  "authorization": "Keep C; continue improving D",
+  "reviewed_on": "2026-10-20"
+}

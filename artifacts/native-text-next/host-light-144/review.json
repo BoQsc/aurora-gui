@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "host-light-144: approved C / experimental D",
+  "status": "reviewed-keep-C",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\host-light-144-C.png",
+    "sha256": "fd584c80735dd552790bb446c41b06ea292b432029d4f1786f9fbfd3132f2296"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\host-light-144-D.png",
+    "sha256": "e27486218bf8f353ac9519acfb170cba7c2e5ca80aa091e9cd622515269ec9a1"
+  },
+  "difference": null,
+  "decision": "baseline",
+  "project_choice": "C",
+  "authorization": "Keep C; continue improving D",
+  "reviewed_on": "2026-10-20"
+}

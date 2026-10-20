@@ -30,6 +30,13 @@ final class UiTestDriver
 
     void resize(Size logicalSize, DisplayScale scale = DisplayScale.init)
     {
+        version (AuroraHeadless)
+        {
+            // GuiWindow treats the platform's readback as authoritative, just
+            // as Win32 does. Keep the headless native metrics in sync first.
+            auto native = nativePlatformWindow();
+            if (native !is null) native.setTestClientMetrics(logicalSize, scale);
+        }
         Event event;
         event.type = EventType.resized;
         event.size = logicalSize;
@@ -293,5 +300,17 @@ unittest
         auto driver = new UiTestDriver(window);
         driver.resize(Size(320, 200));
         assert(root.bounds() == Rect(0, 0, 320, 200));
+        foreach (dpi; [96u, 120u, 144u, 192u])
+        {
+            const scale = DisplayScale.fromDpi(dpi);
+            driver.resize(Size(320, 200), scale);
+            driver.paint();
+            assert(window.displayScale() == scale, "Test DPI must survive native readback");
+            assert(window.framebufferSize() == scale.logicalToPhysical(Size(320, 200)));
+            assert(window.surface().size() == window.framebufferSize());
+            assert(window.nativeWindow().clientSize() == Size(320, 200),
+                "Presenting a physical frame must preserve logical client size");
+            assert(root.bounds() == Rect(0, 0, 320, 200));
+        }
     }
 }

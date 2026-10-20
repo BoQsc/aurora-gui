@@ -6,6 +6,7 @@ import aurora.types : CursorKind, DisplayScale, Point, PointF, Rect, Size;
 final class PlatformWindow : NativeWindow
 {
     private Size _size;
+    private DisplayScale _displayScale;
     private bool _closed;
     private bool _invalidated = true;
     private bool _fullscreen;
@@ -56,14 +57,21 @@ final class PlatformWindow : NativeWindow
         return _boundsSet;
     }
 
+    /** Set the native metrics read back by GuiWindow during a test resize. */
+    void setTestClientMetrics(Size logicalSize, DisplayScale scale)
+    {
+        _size = logicalSize;
+        _displayScale = scale;
+    }
+
     override void show()
     {
         import aurora.event : Event, EventType;
         Event event;
         event.type = EventType.resized;
         event.size = _size;
-        event.framebufferSize = _size;
-        event.displayScale = DisplayScale.init;
+        event.framebufferSize = framebufferSize();
+        event.displayScale = _displayScale;
         sink.onNativeEvent(event);
     }
 
@@ -82,10 +90,8 @@ final class PlatformWindow : NativeWindow
         _invalidated = true;
     }
 
-    override void present(const(uint)[] pixels, int width, int height)
-    {
-        _size = Size(width, height);
-    }
+    // Presenting physical pixels must not replace the logical client metrics.
+    override void present(const(uint)[] pixels, int width, int height) {}
 
     override void setTitle(string title) {}
     override void setCursor(CursorKind cursor) {}
@@ -166,5 +172,15 @@ final class PlatformWindow : NativeWindow
     override Size clientSize() const
     {
         return _size;
+    }
+
+    override Size framebufferSize() const
+    {
+        return _displayScale.logicalToPhysical(_size);
+    }
+
+    override DisplayScale displayScale() const
+    {
+        return _displayScale;
     }
 }

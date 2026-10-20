@@ -1,0 +1,14 @@
+{
+  "build-validation\\native-text-next\\host-release\\aurora-host-experiment.exe": {
+    "build": "dub build -b release --force --dest=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-next\\host-release",
+    "exit_code": 0,
+    "bytes": 3172352,
+    "sha256": "14a845286b38f040adc2ac46363c145c4e7686fc93878cbad1bd0693369684d8"
+  },
+  "build-validation\\native-text-next\\notepad-release\\aurora-notepad.exe": {
+    "build": "dub build -b release --force --dest=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-next\\notepad-release",
+    "exit_code": 0,
+    "bytes": 2754048,
+    "sha256": "c9c7b793f42402eaef7fb0a6464999682bf1bba9b7e2d2af2804592af487b906"
+  }
+}

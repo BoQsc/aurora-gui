@@ -1,12 +1,16 @@
 module aurora.text.atlas;
 
 import aurora.font : FontFace, FontRenderMode, FontRole, SystemFonts;
+import aurora.color : Color;
+import aurora.text.coverage : TextCoverageClasses, textCoverageClass, transferTextCoverage;
+import aurora.text.alphacorrection : NativeCoverageClasses, nativeCoverageClass,
+    nativeTextCoverage, gammaRatios;
 import aurora.text.glyph : GlyphBitmap;
 import aurora.text.fontcollection : FontCollection;
 import aurora.text.layout : TextLayoutEngine;
 import aurora.types : Rect, maxInt;
 import std.conv : to;
-import std.math : floor;
+import std.math : floor, isFinite;
 import std.process : environment;
 
 enum GlyphHorizontalPhases = 8;
@@ -17,13 +21,17 @@ struct GlyphOrigin
     ubyte phase;
 }
 
-/// Small text uses eighth pixels below 20px, quarters at larger sizes.
-/// Phase indices always represent eighths; larger text uses only even indices.
-GlyphOrigin glyphOriginX(double x, bool outline = true, int pixelSize = 13)
+/// The baseline uses eighth pixels below 20px, quarters at larger sizes.
+/// An explicit raster grid follows natural-mode font smoothing choices.
+/// Phase indices always represent eighths; quarter grids use even indices.
+GlyphOrigin glyphOriginX(double x, bool outline = true, int pixelSize = 13,
+    ubyte rasterPhases = 0)
     @safe pure nothrow @nogc
 {
     if (!outline) return GlyphOrigin(cast(int) floor(x + 0.5), 0);
-    const phases = pixelSize < 20 ? GlyphHorizontalPhases : GlyphHorizontalPhases / 2;
+    assert(rasterPhases == 0 || rasterPhases == 4 || rasterPhases == 8);
+    const phases = rasterPhases > 0 ? rasterPhases :
+        pixelSize < 20 ? GlyphHorizontalPhases : GlyphHorizontalPhases / 2;
     const quantized = floor(x * phases + 0.5);
     const pixel = cast(int) floor(quantized / phases);
     return GlyphOrigin(pixel, cast(ubyte) ((quantized - cast(double) pixel * phases) *
@@ -51,6 +59,7 @@ private struct GlyphKey
     ushort pixelSize;
     ushort renderFlags;   // Render mode plus horizontal coverage phase.
     uint variationHash;   // Reserved for future variable-font instances.
+    ubyte coverageClass;  // 0: legacy, 1: raw, 2+: bounded foreground class.
 }
 
 /** Grow-only A8 glyph atlas shared by the software and Vulkan renderers. */
@@ -73,16 +82,32 @@ final class GlyphAtlas
     // native output. Set AURORA_TEXT_CONTRAST=0 to restore linear coverage.
     private ubyte[256] _coverageTransfer;
     private float _coverageContrast = 0.5f;
+    private bool _foregroundCoverage;
+    private ubyte[256][] _foregroundTransfers;
+    private bool _nativeAlpha;
+    private float _nativeGamma = 1.8f;
+    private ulong _rasterizations;
 
     private void rebuildCoverageTransfer()
     {
-        const k = 1.0f - _coverageContrast;
+        const gamma = gammaRatios(_nativeGamma);
         foreach (value; 0 .. 256)
         {
-            const a = cast(float) value / 255.0f;
-            const denominator = a + (1.0f - a) * k;
-            const enhanced = denominator > 0.0f ? a / denominator : a;
-            _coverageTransfer[value] = cast(ubyte) (enhanced * 255.0f + 0.5f);
+            _coverageTransfer[value] = transferTextCoverage(cast(ubyte) value,
+                _coverageContrast);
+            if (_nativeAlpha)
+            {
+                foreach (level; 0 .. NativeCoverageClasses)
+                foreach (thin; [false, true])
+                    _foregroundTransfers[level + (thin ? NativeCoverageClasses : 0)][value] =
+                        nativeTextCoverage(cast(ubyte) value, cast(ubyte) level,
+                            _coverageContrast, gamma, thin);
+            }
+            else if (_foregroundCoverage)
+                foreach (level; 0 .. TextCoverageClasses)
+                    _foregroundTransfers[level][value] = transferTextCoverage(
+                        cast(ubyte) value, _coverageContrast * level /
+                            (TextCoverageClasses - 1));
         }
     }
 
@@ -96,8 +121,26 @@ final class GlyphAtlas
             _coverageContrast = to!float(environment.get("AURORA_TEXT_CONTRAST", "0.5"));
         catch (Exception)
             _coverageContrast = 0.5f;
+        if (!isFinite(_coverageContrast)) _coverageContrast = 0.5f;
         if (_coverageContrast < 0.0f) _coverageContrast = 0.0f;
         if (_coverageContrast > 0.95f) _coverageContrast = 0.95f;
+        // Foreground-aware coverage approved after matched A/B review.
+        // The prior transfer remains available as an explicit compatibility mode.
+        _foregroundCoverage = environment.get("AURORA_TEXT_COVERAGE", "foreground") ==
+            "foreground";
+        _nativeAlpha = _foregroundCoverage &&
+            environment.get("AURORA_HINTING", "natural") == "natural" &&
+            environment.get("AURORA_TEXT_EXPERIMENT", "") == "native-refined";
+        if (_nativeAlpha)
+        {
+            try _nativeGamma = to!float(environment.get("AURORA_TEXT_GAMMA", "1.8"));
+            catch (Exception) _nativeGamma = 1.8f;
+            if (!isFinite(_nativeGamma)) _nativeGamma = 1.8f;
+            if (_nativeGamma < 1.0f) _nativeGamma = 1.0f;
+            if (_nativeGamma > 2.2f) _nativeGamma = 2.2f;
+            _foregroundTransfers.length = NativeCoverageClasses * 2;
+        }
+        else if (_foregroundCoverage) _foregroundTransfers.length = TextCoverageClasses;
         rebuildCoverageTransfer();
     }
 
@@ -109,27 +152,77 @@ final class GlyphAtlas
         return _coverageContrast;
     }
     const(ubyte)[] pixels() const @safe pure nothrow @nogc { return _pixels; }
+    bool foregroundCoverage() const @safe pure nothrow @nogc { return _foregroundCoverage; }
+    bool nativeAlphaCorrection() const @safe pure nothrow @nogc { return _nativeAlpha; }
+    float nativeGamma() const @safe pure nothrow @nogc { return _nativeGamma; }
+    ulong rasterizations() const @safe pure nothrow @nogc { return _rasterizations; }
 
     AtlasGlyph glyph(const(FontFace) face, dchar codepoint, int pixelSize,
-        FontRenderMode renderMode = FontRenderMode.sharp)
+        FontRenderMode renderMode = FontRenderMode.sharp,
+        Color foreground = Color(255, 255, 255, 255))
     {
         auto selected = face is null ? cast(const(FontFace)) SystemFonts.sans() : face;
-        return glyphByIndex(selected, selected.glyphIndex(codepoint), pixelSize, renderMode);
+        return glyphByIndex(selected, selected.glyphIndex(codepoint), pixelSize, renderMode, 0, foreground);
     }
 
     /** Rasterize/cache a glyph already selected by the shaping engine. */
     AtlasGlyph glyphByIndex(const(FontFace) face, uint glyphIndex, int pixelSize,
-        FontRenderMode renderMode = FontRenderMode.sharp, ubyte phaseX = 0)
+        FontRenderMode renderMode = FontRenderMode.sharp, ubyte phaseX = 0,
+        Color foreground = Color(255, 255, 255, 255))
     {
         assert(phaseX < GlyphHorizontalPhases);
         auto selected = face is null ? cast(const(FontFace)) SystemFonts.sans() : face;
         pixelSize = maxInt(1, pixelSize);
         if (pixelSize > ushort.max) pixelSize = ushort.max;
+        const level = _nativeAlpha ? nativeCoverageClass(foreground) :
+            _foregroundCoverage ? textCoverageClass(foreground) : 0;
         const key = GlyphKey(selected.identity(), glyphIndex, cast(ushort) pixelSize,
             cast(ushort) (cast(ushort) renderMode | (cast(ushort) phaseX << 8)),
-            selected.variationHash());
+            selected.variationHash(), _foregroundCoverage ? cast(ubyte) (level + 2) : 0);
         if (auto cached = key in _glyphs)
             return *cached;
+
+        if (_foregroundCoverage)
+        {
+            GlyphKey rawKey = key;
+            rawKey.coverageClass = 1;
+            AtlasGlyph raw;
+            if (auto cached = rawKey in _glyphs)
+                raw = *cached;
+            else
+            {
+                const samples = pixelSize <= 16 ? 8 : 4;
+                raw = insert(selected.rasterizeGlyph(glyphIndex, pixelSize, samples,
+                    cast(double) phaseX / GlyphHorizontalPhases,
+                    renderMode == FontRenderMode.sharp));
+                ++_rasterizations;
+                _glyphs[rawKey] = raw;
+            }
+            // C/D dark foreground and explicit linear coverage reuse the raw mask.
+            // No outline is rasterized again when a glyph changes paint color.
+            auto result = raw;
+            if (raw.hasPixels() && (_nativeAlpha || level > 0) && _coverageContrast > 0.0f)
+            {
+                GlyphBitmap bitmap;
+                bitmap.glyphIndex = raw.glyphIndex;
+                bitmap.width = raw.region.width;
+                bitmap.height = raw.region.height;
+                bitmap.bearingX = raw.bearingX;
+                bitmap.bearingY = raw.bearingY;
+                bitmap.advance = raw.advance;
+                bitmap.alpha.length = cast(size_t) bitmap.width * bitmap.height;
+                const transfer = _nativeAlpha && selected.needsThinCoverageBoost() ?
+                    level + NativeCoverageClasses : level;
+                foreach (y; 0 .. bitmap.height)
+                    foreach (x; 0 .. bitmap.width)
+                        bitmap.alpha[cast(size_t) y * bitmap.width + x] =
+                            _foregroundTransfers[transfer][_pixels[
+                                cast(size_t) (raw.region.y + y) * _width + raw.region.x + x]];
+                result = insert(bitmap);
+            }
+            _glyphs[key] = result;
+            return result;
+        }
 
         // Use 16 vertical samples per row at small UI sizes and 8 for larger
         // text, with exact horizontal span coverage in both outline formats.
@@ -139,6 +232,7 @@ final class GlyphAtlas
         const coverageSamples = pixelSize <= 16 ? 8 : 4;
         auto bitmap = selected.rasterizeGlyph(glyphIndex, pixelSize, coverageSamples,
             cast(double) phaseX / GlyphHorizontalPhases, renderMode == FontRenderMode.sharp);
+        ++_rasterizations;
         if (_coverageContrast > 0.0f)
             foreach (ref value; bitmap.alpha)
                 value = _coverageTransfer[value];

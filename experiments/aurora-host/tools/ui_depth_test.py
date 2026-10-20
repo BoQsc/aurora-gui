@@ -411,7 +411,10 @@ def main() -> int:
             editor_x + round(450 * scale),
             editor_y + round(150 * scale),
         )
-        require(ink >= 0.061,
+        # Owner-approved C measures 0.0416 at 125% DPI. Keep a 6% margin
+        # below that fixture to catch missing or substantially weaker text.
+        minimum_ink = 0.039
+        require(ink >= minimum_ink,
                 f"light-surface text is washing out (ink={ink:.4f})")
 
         try:
@@ -429,6 +432,7 @@ def main() -> int:
               f"editor={bounds['editor']['height']} "
               f"status={bounds['statusbar']['height']}")
         print(f"editor text ink: {ink:.4f}")
+        print(f"text weight profile: approved C; minimum={minimum_ink}")
         print(f"actions: {sorted(set(action_events(session)))}")
         print(f"screenshots: {shot}, {menu_shot}, {context_shot}")
     finally:

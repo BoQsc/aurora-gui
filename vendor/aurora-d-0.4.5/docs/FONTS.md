@@ -188,15 +188,46 @@ Both modes use the glyph atlas's shared grayscale contrast curve. Its default
 value is `0.5`, measured against DirectWrite grayscale output so small text does
 not look thin when composited. Set `AURORA_TEXT_CONTRAST=0` for linear coverage,
 or a value from `0` through `0.95` to tune it. Aurora does not use RGB LCD
-filtering or a native font rasterizer. The experimental bytecode interpreter is
-still opt-in via `AURORA_HINTING=1`.
+filtering or a native font rasterizer. Natural grayscale bytecode hinting is
+now the owner-approved shared default. `AURORA_HINTING=0` restores unhinted B
+rendering; `1` selects the older diagnostic interpreter mode.
+
+### Foreground-aware coverage (default)
+
+`AURORA_TEXT_COVERAGE=foreground` is the approved foreground-luminance
+coverage policy. `AURORA_TEXT_COVERAGE=legacy` restores the previous transfer.
+Choose the policy before creating
+a window/font system; applications should not install this environment override
+in startup code.
+
+The atlas retains raw coverage and selects a corrected mask when Canvas
+draws text. Dark foregrounds receive less of the contrast boost; near-white
+foregrounds retain the existing transfer. Sixteen encoded-luminance classes
+bound the additional cache entries. Opacity is applied after mask correction,
+so changing only opacity reuses the same coverage. Layout, glyph metrics, color
+glyphs, and image/geometry blending are unchanged. Both renderers consume the
+same corrected A8 masks, without a shader or native-library dependency.
+
+`AURORA_TEXT_CONTRAST` remains the maximum transfer strength, and `0` remains
+linear for all colors. To compare with the framework baseline, explicitly use
+`AURORA_TEXT_CONTRAST=0.5`; the host now inherits this default without an
+application override. The policy uses foreground color, not the sampled target
+background; this is not full native gamma correction or a hinting fix. It may
+allocate raw coverage plus up to fifteen additional masks per glyph/size/phase, and still
+shares the atlas's 4096x4096 limit. No extra outline rasterization is needed for
+a color change. Further policy changes require quality, atlas-growth and
+application-weight review. Tests: `dub run --config=text-coverage-test`.
+
+The review and owner approval are recorded in
+`artifacts/text-coverage-candidate/README.md` at the repository root.
 
 ## Glyph atlas
 
 The shared A8 atlas grows from 512x512 to at most 4096x4096. Its key contains face
-identity, glyph index, physical size, render mode, horizontal phase, and variation
-hash. At most eight horizontal phase entries are needed for a glyph/size/mode;
-normal painting at 20px and larger requests only four of them;
+identity, glyph index, physical size, render mode, horizontal phase, variation
+hash, and coverage class. At most eight horizontal phase entries are needed for a glyph/size/mode;
+unhinted painting at 20px and larger requests only four of them; default
+natural rendering follows the font's asymmetric/symmetric smoothing grid;
 only requested phases are allocated. Software and Vulkan consume the same
 coverage bytes with 1:1 bitmap quads and nearest sampling.
 
@@ -207,6 +238,57 @@ measured differences, commands, and remaining limitations. The Windows-only
 comparison script uses DirectWrite solely to produce reference images, never in
 Aurora's production renderer. Identical glyph IDs and origins isolate
 rasterization differences; this does not establish native shaping parity.
+
+The 2026-10-20 native-fidelity experiment repairs instruction operand order,
+overlapping MINDEX stack movement, point-zone bounds and hinted phantom origin.
+Natural DELTAP/SHPIX compatibility now avoids legacy outline dents while
+preserving composite accent placement and INSTCTRL native-mode opt-outs.
+Version-1 gasp ranges select natural grid-fitting and symmetric smoothing.
+Natural grayscale uses a font-selected 8×1 asymmetric or 4×4 symmetric sample
+grid. Canvas and direct glyph rasterization snap to that same grid, including
+pixel carries; this avoids phase-dependent ink loss at off-grid requests.
+`dub run --config=hinting-windows-test` exercises installed Windows fonts and
+checks glyph-order independence, default/natural equivalence and nonblank output.
+The owner approved C on 2026-10-20 after visual review: the nine-font corpus
+improves in all 144 cases against B, including the bundled Inter font.
+The repository-root `artifacts/native-text-progress/README.md` records the full
+comparison and historical regressions. Exact native pixel parity remains unachieved.
+
+## Native compatibility candidate D (opt-in)
+
+Set `AURORA_TEXT_EXPERIMENT=native-next` before creating fonts/atlases to review
+closing-edge sample inclusion, native half-alpha quantization and recognized
+post-IUP VacuFormRound compatibility. C remains the approved default with this
+variable unset. The experiment only applies with natural hinting, and leaves
+the coverage policy, contrast, metrics, layout and atlas color classes intact.
+The repository-root `artifacts/native-text-next/README.md` records the C/D
+comparison, regressions and limits. It is not an exact native-parity claim.
+
+## Refined native color candidate (opt-in)
+
+The owner's choice after D review was to keep C and continue refinement.
+`AURORA_TEXT_EXPERIMENT=native-refined` is a separate experiment with D's masks
+and a pure-D adaptation of Microsoft Terminal's grayscale alpha correction.
+It requires natural hinting and foreground coverage. Set the override before
+creating fonts, atlases or renderers; switching profiles on a live cache is
+unsupported. `native-next` retains its reviewed pixels and correction policy.
+
+The refined model uses foreground intensity and brightness classes, plus
+OpenType family metadata for the six known legacy thin families. It excludes
+opacity from the key and reuses raw outlines across colors. The upper bound is
+136 corrected variants per glyph/size/phase, allocated only when requested;
+the two thin/normal lookup banks occupy 68 KiB per experimental atlas. The
+approved C atlas still uses its existing 16 classes and 4 KiB lookup bank.
+`AURORA_TEXT_GAMMA` is experimental, defaults to 1.8, rounds to 0.1 steps and
+clamps to 1.0–2.2. Invalid values use 1.8; contrast zero still gives raw masks.
+This does not read system monitor settings or promise parity on other machines.
+
+The refined Vulkan glyph shader rounds opacity to A8 before blending, matching
+software. C/D retain the original shader; RGBA image rendering is unchanged.
+Run `dub run --config=native-alpha-test` for cache/growth/profile/Canvas checks.
+The repository-root `artifacts/native-text-refined/README.md` records the native
+RGB corpus, live GPU tests and remaining Courier New regressions. The adapted
+model's license is in `licenses/Microsoft-Terminal-MIT.txt`.
 
 ## Current font boundaries
 

@@ -178,14 +178,20 @@ class NativeReference:
         self.objects.append(out)
         return out
 
-    def render(self, info, dark=False, cleartype=False, neutral=False):
+    def render(self, info, dark=False, cleartype=False, neutral=False, *, foreground=None, background=None):
         w, h = info["width"], info["height"]
         target = self.create(self.interop, 7, [W.HDC, W.UINT, W.UINT], None, w, h)
         target1 = self.create(target, 0, [C.POINTER(GUID)], C.byref(GUID("791e8298-3ef3-4230-9880-c9bdecc42064")))
         checked(method(target1, 12, C.c_long, W.UINT)(target1, 0 if cleartype else 1))
         checked(method(target, 6, C.c_long, C.c_float)(target, 1.0))
         dc = method(target, 4, W.HDC)(target)
-        brush = self.gdi.CreateSolidBrush(0x181818 if dark else 0xffffff)
+        def colorref(rgb):
+            if len(rgb) != 3 or any(not 0 <= value <= 255 for value in rgb):
+                raise ValueError("RGB channels must be in 0..255")
+            return rgb[0] | (rgb[1] << 8) | (rgb[2] << 16)
+        foreground = foreground if foreground is not None else ((240,) * 3 if dark else (0,) * 3)
+        background = background if background is not None else ((24,) * 3 if dark else (255,) * 3)
+        brush = self.gdi.CreateSolidBrush(colorref(background))
         previous = self.gdi.SelectObject(dc, brush)
         self.gdi.PatBlt(dc, 0, 0, w, h, 0x00F00021)  # PATCOPY
         self.gdi.SelectObject(dc, previous)
@@ -199,7 +205,7 @@ class NativeReference:
             run = GlyphRun(self.face, info["pixel_size"], 1, indices, advances, offsets, 0, 0)
             checked(draw(target, glyph["x"], glyph["y"], 0, C.byref(run),
                          self.neutral_params if neutral else self.params,
-                         0xf0f0f0 if dark else 0, None))
+                         colorref(foreground), None))
         self.gdi.GdiFlush()
         section = DibSection()
         bitmap = self.gdi.GetCurrentObject(dc, 7)
@@ -308,10 +314,16 @@ def main():
             montage.paste(sheet, (0, y))
             y += sheet.height + 12
         montage.save(out / "comparison.png")
+        hinting_mode = os.environ.get("AURORA_HINTING", "natural")
+        text_experiment = os.environ.get("AURORA_TEXT_EXPERIMENT", "")
         manifest = {"font": str(Path(args.font).resolve()), "font_sha256": hashlib.sha256(Path(args.font).read_bytes()).hexdigest(),
                     "native": native.settings, "sizes": args.sizes, "text": args.text, "aurora_mode": args.mode,
-                    "aurora_experimental_hinting": os.environ.get("AURORA_HINTING", "0") in ("1", "natural"),
-                    "aurora_hinting_mode": os.environ.get("AURORA_HINTING", "0"),
+                    "aurora_hinting_enabled": hinting_mode in ("1", "natural"),
+                    "aurora_experimental_hinting": hinting_mode == "1" or (hinting_mode == "natural" and text_experiment in ("native-next", "native-refined")),
+                    "aurora_hinting_mode": hinting_mode,
+                    "aurora_text_experiment": text_experiment,
+                    "aurora_coverage_policy": info["coverage_policy"],
+                    "aurora_coverage_contrast": info["coverage_contrast"],
                     "grayscale_comparison": measurements,
                     "exact_grayscale_match": all(case["exact"] for case in parity),
                     "pixel_equality": parity,

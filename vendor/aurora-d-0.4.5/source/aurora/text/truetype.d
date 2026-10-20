@@ -10,7 +10,7 @@ module aurora.text.truetype;
  */
 
 import aurora.text.cff : CffFace;
-import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph;
+import aurora.text.hinter : TrueTypeHinter, HintInput, HintedGlyph, naturalGaspFlags;
 import aurora.text.variations : FontVariations;
 import aurora.text.colr : ColrRenderer, ColorSurface, RgbaColor;
 import std.algorithm : min, max;
@@ -20,6 +20,20 @@ import std.exception : enforce;
 import std.file : read;
 import std.math : abs, ceil, floor, sqrt;
 import std.process : environment;
+
+// One policy for face initialization, glyph hinting, and subpixel sampling.
+// AURORA_HINTING=0 retains the previous unhinted renderer; =1 is diagnostic.
+private string configuredHintingMode()
+{
+    return environment.get("AURORA_HINTING", "natural");
+}
+
+private bool nativeTextExperiment()
+{
+    const experiment = environment.get("AURORA_TEXT_EXPERIMENT", "");
+    return configuredHintingMode() == "natural" &&
+        (experiment == "native-next" || experiment == "native-refined");
+}
 
 private enum uint tag(string value) =
     (cast(uint) value[0] << 24) | (cast(uint) value[1] << 16) |
@@ -92,6 +106,7 @@ final class TrueTypeFace
     private TrueTypeHinter _hinter;
     private FontVariations _variations;
     private ColrRenderer _colr;
+    private bool _thinCoverageBoost;
 
     static TrueTypeFace load(string path, uint faceIndex = 0)
     {
@@ -116,6 +131,18 @@ final class TrueTypeFace
     int glyphCount() const @safe pure nothrow @nogc { return _numGlyphs; }
     bool hasTrueTypeOutlines() const @safe pure nothrow @nogc { return _glyfOutlines; }
     bool hasCffOutlines() const @safe pure nothrow @nogc { return _cff !is null; }
+    bool needsThinCoverageBoost() const @safe pure nothrow @nogc { return _thinCoverageBoost; }
+
+    /// Match natural asymmetric/symmetric grayscale grids selected by gasp.
+    ubyte rasterPhases(int pixelSize) const
+    {
+        if (_cff is null && configuredHintingMode() == "natural")
+        {
+            try return (naturalGaspFlags(tableData(tag!"gasp"), pixelSize) & 8) != 0 ? 4 : 8;
+            catch (Exception) return 4;
+        }
+        return pixelSize < 20 ? 8 : 4;
+    }
 
     /** Return an sfnt table by its big-endian four-byte tag, or an empty slice. */
     const(ubyte)[] tableData(uint tableTag) const
@@ -198,6 +225,15 @@ final class TrueTypeFace
         if (_cff !is null)
             return _cff.rasterize(glyph, pixelSize, bitmap.advance, supersample,
                 shiftX, fitVertical ? verticalAlignment(pixelSize) : VerticalAlignment.init);
+        if (configuredHintingMode() == "natural")
+        {
+            // Match the sampling lattice before converting the outline. Native
+            // grayscale rounds off-lattice origins to its nearest sample phase;
+            // sampling an unsnapped half-step can change a stem's total ink.
+            // Rounding may carry into the next pixel, which the bounds retain.
+            const samplesX = rasterPhases(pixelSize);
+            shiftX = floor(shiftX * samplesX + 0.5) / samplesX;
+        }
         OutlinePoint[][] contours;
         loadGlyphContours(glyph, contours, 0);
         if (contours.length == 0)
@@ -222,8 +258,9 @@ final class TrueTypeFace
         }
 
         const(ubyte)[] glyphIns;
+        bool composite;
         if (_hinter !is null)
-            glyphIns = glyphInstructions(glyph);
+            glyphIns = glyphInstructions(glyph, composite);
 
         // Apply variable-font deltas to the outline (design units).
         int[] deltasXs = rawXs;
@@ -249,11 +286,10 @@ final class TrueTypeFace
             fitXs[i] = deltasXs[i];
             fitYs[i] = deltasYs[i];
         }
-        int fitLsb = advanceUnits(glyph);
         int fitAdvance = advanceUnits(glyph);
         // The TrueType hinter returns PIXEL-space coordinates (it folds the
         // design->pixel scale into the glyph program). When it succeeds we must
-        // NOT re-apply `scale` below; when it is off (default) or fails the fit
+        // NOT re-apply `scale` below; when it is disabled or fails the fit
         // arrays are design units and `scale` is applied as before.
         bool hintedCoords;
         if (_variations !is null && _variations.hasVariations())
@@ -285,20 +321,22 @@ final class TrueTypeFace
                 input.fpgm = tableData(tag!"fpgm");
                 input.prep = tableData(tag!"prep");
                 input.normalizedAxes = variationsNormalizedAxes();
+                input.composite = composite;
                 // Keep the bytecode interpreter isolated per glyph. TrueType
                 // programs are allowed to mutate scaler state, and a shared
                 // interpreter makes malformed or stateful fonts order
                 // dependent. The safe baseline is a fresh interpreter with
                 // the same font tables for each glyph.
                 auto glyphHinter = new TrueTypeHinter(_data, _faceOffset,
-                    environment.get("AURORA_HINTING", "0") == "natural");
+                    configuredHintingMode() == "natural", nativeTextExperiment());
                 auto fitted = glyphHinter.hint(input);
                 foreach (i; 0 .. fitXs.length)
                 {
-                    fitXs[i] = fitted.xs26Dot6[i] / 64.0;
+                    // Glyph instructions can move the left phantom point.
+                    // Normalize to the hinted origin without losing its fraction.
+                    fitXs[i] = (fitted.xs26Dot6[i] - fitted.originX26Dot6) / 64.0;
                     fitYs[i] = fitted.ys26Dot6[i] / 64.0;
                 }
-                fitLsb = fitted.lsb;
                 fitAdvance = fitted.advance;
                 hintedCoords = true;
                 bitmap.advance = max(0, fitAdvance);
@@ -376,11 +414,12 @@ final class TrueTypeFace
 
         // Shared grayscale area coverage for TrueType and CFF outlines.
         bitmap.alpha.length = cast(size_t) bitmap.width * cast(size_t) bitmap.height;
-        if (environment.get("AURORA_HINTING", "0") == "natural")
+        if (configuredHintingMode() == "natural")
         {
             import aurora.text.rasterizer : rasterizeSampledCoverage;
             rasterizeSampledCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height,
-                pixelSize < 20 ? 8 : 4, pixelSize < 20 ? 1 : 4);
+                rasterPhases(pixelSize), rasterPhases(pixelSize) == 4 ? 4 : 1,
+                nativeTextExperiment());
         }
         else
             rasterizeCoverage(edges, bitmap.alpha, bitmap.width, bitmap.height, supersample);
@@ -444,14 +483,14 @@ final class TrueTypeFace
 
         chooseCmap();
         parseKerning();
+        import aurora.text.fontprofile : needsThinCoverageBoost;
+        _thinCoverageBoost = needsThinCoverageBoost(tableData(tag!"name"));
         if (_glyfOutlines)
         {
-            // TrueType bytecode hinting is OFF by default. A partial bytecode
-            // interpreter corrupts some glyph outlines (e.g. '1' and 'I'
-            // collapse to a zero bbox, and the failure is order-dependent), so
-            // the unhinted baseline is the reliable, readable state. Opt back
-            // in for font debugging with AURORA_HINTING=1.
-            const hintingMode = environment.get("AURORA_HINTING", "0");
+            // Owner-approved natural grayscale hinting is shared by all apps.
+            // The earlier unhinted renderer remains available with =0; the
+            // original interpreter behavior is diagnostic only with =1.
+            const hintingMode = configuredHintingMode();
             const enableHinting = hintingMode == "1" || hintingMode == "natural";
             if (enableHinting)
                 _hinter = new TrueTypeHinter(_data, _faceOffset);
@@ -815,7 +854,7 @@ final class TrueTypeFace
     }
 
     /// Extract the bytecode program for one glyph (empty when absent).
-    private const(ubyte)[] glyphInstructions(uint glyph) const
+    private const(ubyte)[] glyphInstructions(uint glyph, out bool composite) const
     {
         if (glyph >= _numGlyphs) return null;
         const glyf = requiredTable(tag!"glyf");
@@ -826,6 +865,7 @@ final class TrueTypeFace
         const contourCount = beS16(_data, start);
         if (contourCount < 0)
         {
+            composite = true;
             // Composite glyph: instructions may appear after the components.
             return compositeInstructions(start);
         }

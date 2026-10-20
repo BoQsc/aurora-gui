@@ -35,8 +35,8 @@ repository depends on it. Delete this folder and Aurora is unaffected.
 - Scene nodes can declare hover hints. The host shows them after a dwell in an
   Aurora-rendered overlay, suppresses them for pointer exit and popups, and
   reports the active hint through `tooltipState`.
-- Light-surface text uses a contrast-enhanced grayscale transfer by default, so
-  caption-size glyphs keep native-looking stem weight instead of washing out.
+- Text uses Aurora's shared foreground-aware grayscale transfer, with the
+  reviewed lighter weight on light surfaces and established near-white weight.
 
 ## Commands
 
@@ -78,11 +78,14 @@ windowed configuration.
 
 ## Text rendering
 
-The host selects Aurora's `sharp` glyph rendering and defaults
-`AURORA_TEXT_CONTRAST` to `0.75` when the variable is not already set. This
-raises edge coverage on bright surfaces without changing font metrics or layout.
-Set `AURORA_TEXT_CONTRAST=0.5` to restore the neutral vendor transfer, or
-`AURORA_FONT_RENDER_MODE=smooth` to preserve unaligned outlines.
+The host inherits Aurora's shared `sharp`, foreground-aware grayscale policy,
+with maximum coverage contrast `0.5`. It no longer installs a private contrast
+override. Dark foreground text receives less coverage boosting; near-white text
+keeps the established transfer. Font metrics and layout are unchanged.
+`AURORA_TEXT_COVERAGE=legacy` selects the former framework transfer, and
+`AURORA_TEXT_CONTRAST` remains an explicit diagnostic override. Owner-approved
+natural grayscale hinting C is the shared default. `AURORA_HINTING=0` restores
+the previous unhinted B rendering; `1` selects the older diagnostic interpreter.
 
 ## Control channel
 

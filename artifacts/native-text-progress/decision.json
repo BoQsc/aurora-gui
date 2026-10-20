@@ -1,0 +1,211 @@
+{
+  "status": "approved",
+  "decision": "C",
+  "date": "2026-10-20",
+  "authorization": "Make C the default (Recommended)",
+  "question": "After reviewing C versus B in Pad++ at 125% DPI, should C become the shared Aurora default using ink guard 0.039 instead of 0.045? The question stated that all 144 native comparisons improve, font/DPI/full app checks pass, C is lighter at 125% DPI, and exact native parity is not achieved.",
+  "approved_default": {
+    "coverage": "foreground",
+    "hinting": "natural",
+    "maximum_contrast": 0.5,
+    "ink_guard": 0.039
+  },
+  "compatibility": "AURORA_HINTING=0 restores unhinted B; AURORA_TEXT_COVERAGE=legacy restores the earlier coverage transfer.",
+  "reviewed_evidence": {
+    "artifacts\\native-text-progress\\host-dark-144": {
+      "schema": 1,
+      "title": "host-dark-144: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-dark-144-baseline.png",
+        "sha256": "e59aad1ad746ded201393ea0b3c32eb8764aa65a270504b0c2bc563d093edfa6"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-dark-144-natural.png",
+        "sha256": "b4ec4e5be03a1a1f6b3b2d4094b13e90277b3e467ee4df1ec62e6ea8475fb2fe"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\host-dark-96": {
+      "schema": 1,
+      "title": "host-dark-96: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-dark-96-baseline.png",
+        "sha256": "1dd94841deb6e721b50bc916a83c72f9da3536d384f1392da658064654f27989"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-dark-96-natural.png",
+        "sha256": "b661513fa5ad7ec27315cb64cc313dfe81c4727760cbc8f4e43af18bec03fa32"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\host-light-144": {
+      "schema": 1,
+      "title": "host-light-144: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-light-144-baseline.png",
+        "sha256": "b614bb13dcdd89103ea1988ba6244de0b0ca2a7a994b5ecb6bda86586cbcbde5"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-light-144-natural.png",
+        "sha256": "fd584c80735dd552790bb446c41b06ea292b432029d4f1786f9fbfd3132f2296"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\host-light-96": {
+      "schema": 1,
+      "title": "host-light-96: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-light-96-baseline.png",
+        "sha256": "067e2a53f08b7d047717ffdc8ef664cf393d4b866c27b32459b49dbfc93c875b"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-light-96-natural.png",
+        "sha256": "865599de7738d1d6730453c6aa34e774a08f570c51ff018209ce552f4b2a0b9b"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\notepad-dark-144": {
+      "schema": 1,
+      "title": "notepad-dark-144: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-dark-144-baseline.png",
+        "sha256": "7817230c6bff973486fb5d8fb88f3104219c782fc4b3b14d0b6c01ff5d88a5ea"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-dark-144-natural.png",
+        "sha256": "45a179f981aedddb02eb19f7b57f98b0fde34ef565d25006a9983a08c1320cfe"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\notepad-dark-96": {
+      "schema": 1,
+      "title": "notepad-dark-96: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-dark-96-baseline.png",
+        "sha256": "a93555b6134c70a8d11e8ff43c05bb43fe2a1ed32ac4199cae0e5b4b2e4293d6"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-dark-96-natural.png",
+        "sha256": "8daf8de20f504fbd3ab8f9ba8a231a907fc9ae73010b7f38377f190bff684836"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\notepad-light-144": {
+      "schema": 1,
+      "title": "notepad-light-144: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-light-144-baseline.png",
+        "sha256": "1cefa26be049c968aae868d1b97194357714e2fbfe5633b8c27678b4b30069e8"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-light-144-natural.png",
+        "sha256": "674e1fc44c693117c7ff8904b01f68bb85391e39d8a69f7998ccf932548e9b5e"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\notepad-light-96": {
+      "schema": 1,
+      "title": "notepad-light-96: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-light-96-baseline.png",
+        "sha256": "67e92669a7547ea978d792e3d539c46c5923638c6437c04074733cbb4242f5fa"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-light-96-natural.png",
+        "sha256": "bf06e367b37564515b3b49a76292863888b919e37235c84e5ece85ad5e417d9e"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\padpp-light-144": {
+      "schema": 1,
+      "title": "padpp-light-144: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-light-144-baseline.png",
+        "sha256": "9ae047bba81ac24135ebcbbc8ef41fc12d94e19205f14d525288302f76b5d599"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-light-144-natural.png",
+        "sha256": "77f0b1b0e7a1ae13a0c29e6c801a849d875c1d3363f455ee8705b98e27e3c4fe"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\padpp-light-96": {
+      "schema": 1,
+      "title": "padpp-light-96: approved baseline / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-light-96-baseline.png",
+        "sha256": "c44b16fa393ae2df4b956615722ebc1647679e6f5ca6da4c0d0c3280c4450688"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-light-96-natural.png",
+        "sha256": "443473b85f84a4f3cbf3ce4ee3cef527651e50d8f3cab901f1a9aed2a64250ea"
+      },
+      "difference": null,
+      "decision": null
+    },
+    "artifacts\\native-text-progress\\padpp-live-120": {
+      "schema": 1,
+      "title": "Pad++ live 125% DPI: approved default / repaired natural hinting (experimental)",
+      "status": "pending-user-review",
+      "baseline": {
+        "file": "baseline.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-selftest-120dpi.png",
+        "sha256": "42c1672fd6b753d45dcabcb59260bd3edd87af21b2df215902da5c62dc245eae"
+      },
+      "candidate": {
+        "file": "candidate.png",
+        "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-natural-selftest-120dpi.png",
+        "sha256": "559c20a8aa2a78f3ea1bf739f75fd075fda99e7df94e6cbf700e63af67357eeb"
+      },
+      "difference": null,
+      "decision": null
+    }
+  },
+  "native_measurements": {
+    "file": "measurements-pre-promotion.json",
+    "sha256": "3c22ebf1fc83f7149002ea0c2becf10da740a991e1e657da4d5013261e4dd106"
+  },
+  "limitations": [
+    "Exact Windows grayscale and ClearType parity remain unachieved.",
+    "Older Notepad has an unrelated pre-existing drag/restore smoke failure in both modes."
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "padpp-light-144: approved C / experimental D",
+  "status": "reviewed-keep-C",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\padpp-light-144-C.png",
+    "sha256": "77f0b1b0e7a1ae13a0c29e6c801a849d875c1d3363f455ee8705b98e27e3c4fe"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\padpp-light-144-D.png",
+    "sha256": "017c10d3b75003d1dc72d9cd50f302f4a7175e3f44643d99c90bf734880e0454"
+  },
+  "difference": null,
+  "decision": "baseline",
+  "project_choice": "C",
+  "authorization": "Keep C; continue improving D",
+  "reviewed_on": "2026-10-20"
+}

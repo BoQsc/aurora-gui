@@ -178,6 +178,10 @@ final class FontFace
     string path() const @safe pure nothrow { return _path; }
     bool isBitmapFallback() const @safe pure nothrow @nogc { return _bitmap; }
     bool isOpenType() const @safe pure nothrow @nogc { return _trueType !is null; }
+    bool needsThinCoverageBoost() const @safe pure nothrow @nogc
+    {
+        return _trueType !is null && _trueType.needsThinCoverageBoost();
+    }
 
     /** Hash of the current variable-font coordinates (0 for static faces). */
     uint variationHash() const
@@ -341,6 +345,12 @@ final class FontFace
     int kerning(uint leftGlyph, uint rightGlyph, int pixelSize) const
     {
         return _trueType is null ? 0 : _trueType.kerning(leftGlyph, rightGlyph, pixelSize);
+    }
+
+    /// Horizontal phases used when painting an outline on its raster grid.
+    ubyte rasterPhases(int pixelSize) const
+    {
+        return _trueType is null ? 1 : _trueType.rasterPhases(pixelSize);
     }
 
     GlyphBitmap rasterizeGlyph(uint glyph, int pixelSize, int supersample = 4,

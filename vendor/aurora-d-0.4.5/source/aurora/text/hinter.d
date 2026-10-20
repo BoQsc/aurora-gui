@@ -4,7 +4,8 @@ module aurora.text.hinter;
  * Experimental TrueType bytecode hinting interpreter (pure D, dependency-free).
  *
  * Contains handlers for the TrueType instruction set. Conformance is not yet
- * established; this is not a native-compatible hinter and is off by default.
+ * established. Natural grayscale hinting is the approved shared default;
+ * complete native compatibility remains unachieved.
  * The implemented instruction families include:
  *
  *   - Font program (`fpgm`), CVT program (`prep`), per-glyph programs.
@@ -24,6 +25,15 @@ module aurora.text.hinter;
 
 import std.math : sqrt;
 import std.format;
+
+struct HintingCounters
+{
+    ulong attempts;
+    ulong successes;
+}
+
+private HintingCounters _hintingCounters;
+HintingCounters hintingCounters() @safe nothrow @nogc { return _hintingCounters; }
 
 /// Raised when hinting cannot proceed; callers fall back to the raw outline.
 final class HintAbort : Exception
@@ -54,6 +64,24 @@ private uint be32(const(ubyte)[] data, size_t offset)
     if (offset + 4 > data.length) throw new HintAbort("Truncated table read");
     return (cast(uint) data[offset] << 24) | (cast(uint) data[offset + 1] << 16) |
         (cast(uint) data[offset + 2] << 8) | cast(uint) data[offset + 3];
+}
+
+/// Version-1 gasp selects symmetric smoothing and grid-fitting independently.
+/// Native reference probes use both by default for absent/version-0 tables.
+ushort naturalGaspFlags(const(ubyte)[] data, int pixelSize)
+{
+    enum ushort defaults = 0x000C;
+    if (data.length < 4 || be16(data, 0) != 1) return defaults;
+    const count = be16(data, 2);
+    if (count > (data.length - 4) / 4)
+        throw new HintAbort("Truncated gasp ranges");
+    foreach (i; 0 .. count)
+    {
+        const offset = 4 + cast(size_t) i * 4;
+        if (pixelSize <= be16(data, offset))
+            return be16(data, offset + 2);
+    }
+    return defaults;
 }
 
 private int beS32(const(ubyte)[] data, size_t offset)
@@ -108,6 +136,7 @@ struct HintInput
     const(ubyte)[] fpgm;
     const(ubyte)[] prep;
     int[] normalizedAxes;  /// Variation coordinates (2.14) for GETVARIATION.
+    bool composite;       /// Composite accent placement may shift untouched points.
 }
 
 /// Grid-fitted result. Integer pixel coordinates remain for compatibility;
@@ -118,6 +147,7 @@ struct HintedGlyph
     int[] ys;
     long[] xs26Dot6;
     long[] ys26Dot6;
+    long originX26Dot6;  /// Hinted left phantom point; normalize outlines to this origin.
     bool[] onCurve;
     int[] contours;
     int xMin;
@@ -145,9 +175,34 @@ private struct Pt
 }
 
 /// A point zone (glyph zone or twilight zone).
+private struct HintPoints
+{
+    private Pt[] data;
+    size_t length() const @safe pure nothrow @nogc { return data.length; }
+    void length(size_t count)
+    {
+        // TrueType point indices are 16-bit, plus the four phantom points.
+        if (count > 65540) throw new HintAbort("Point-zone allocation limit exceeded");
+        data.length = count;
+    }
+    void opAssign(Pt[] points) { data = points; }
+    ref Pt opIndex(size_t index)
+    {
+        if (index >= data.length) throw new HintAbort("Point index outside its zone");
+        return data[index];
+    }
+    ref const(Pt) opIndex(size_t index) const
+    {
+        if (index >= data.length) throw new HintAbort("Point index outside its zone");
+        return data[index];
+    }
+    Pt[] opSlice() { return data; }
+    void opSliceAssign(const(Pt)[] source) { data[] = source; }
+}
+
 private struct Zone
 {
-    Pt[] points;
+    HintPoints points;
     int[] contours;
     bool twilight;
 
@@ -270,7 +325,11 @@ private final class Context
     int scanType;
     int period, phase, threshold;
     bool naturalGrid;
+    bool naturalSymmetric = true;
     bool glyphProgram;
+    bool composite;
+    bool nativeTextExperiment;
+    uint iupAxes;
     
     Zone zone0;
     Zone zone1;
@@ -292,6 +351,8 @@ private final class Context
         this.unitsPerEm = unitsPerEm;
         this.pixelSize = pixelSize;
         naturalGrid = owner !is null && owner._naturalGrid;
+        nativeTextExperiment = owner !is null && owner._nativeTextExperiment;
+        naturalSymmetric = owner is null || owner._naturalSymmetric;
         fdefs = new FuncDef[256];
         idefs = new FuncDef[256];
         roundState = 1;
@@ -464,15 +525,7 @@ private final class Context
     /// Move one point by `distance` (F26Dot6) along the freedom vector.
     void movePoint(ref Zone zone, int point, long distance)
     {
-        if (point < 0) throw new HintAbort("Negative point index");
-        if (point >= zone.points.length)
-        {
-            // The twilight zone grows on demand (FreeType semantics).
-            const oldLength = zone.points.length;
-            zone.points.length = point + 1;
-            foreach (i; oldLength .. zone.points.length)
-                zone.points[i] = Pt(0, 0, 0, 0, 0, 0, false, false, true);
-        }
+        requirePoint(zone, point);
         if (freeVectorX != 0)
         {
             zone.points[point].curX += mulFix(distance, moveX);
@@ -485,14 +538,49 @@ private final class Context
         }
     }
 
-    /// Ensure a point index is addressable (growing the twilight zone).
+    /// Glyph and twilight zones are allocated from the outline and maxp limits.
+    /// A bad operand must abort, not invent extra glyph points or allocate from
+    /// a signed distance accidentally interpreted as an index.
     void ensurePoint(ref Zone zone, int point)
     {
-        if (point < 0 || point < zone.points.length) return;
-        const oldLength = zone.points.length;
-        zone.points.length = point + 1;
-        foreach (i; oldLength .. zone.points.length)
-            zone.points[i] = Pt(0, 0, 0, 0, 0, 0, false, false, true);
+        requirePoint(zone, point);
+    }
+
+    void requirePoint(ref Zone zone, int point)
+    {
+        if (point < 0 || cast(size_t) point >= zone.points.length)
+            throw new HintAbort("Reference point outside its zone");
+    }
+
+    /// Natural rendering suppresses legacy delta dents, unless the font opts
+    /// into native instruction behavior with INSTCTRL selector 3.
+    bool allowDelta(ref Zone zone, int point)
+    {
+        if (!naturalGrid || !glyphProgram || (instructControl & 4) != 0)
+            return true;
+        return freeVectorX == 0 && freeVectorY != 0 &&
+            (composite || zone.points[point].touchY);
+    }
+
+    private bool functionStarts(int number, const(ubyte)[] signature)
+    {
+        if (number < 0 || number >= fdefs.length || !fdefs[number].active) return false;
+        const def = fdefs[number];
+        if (def.start > def.end || def.end > def.body.length ||
+            signature.length > def.end - def.start) return false;
+        return def.body[def.start .. def.start + signature.length] == signature;
+    }
+
+    long readStore(int location)
+    {
+        // Microsoft's documented TypeMan VacuFormRound compatibility: after
+        // IUP on both axes, storage 8 bypasses this exact legacy function.
+        // INSTCTRL selector 3 retains the font's native instruction behavior.
+        if (nativeTextExperiment && naturalGrid && glyphProgram &&
+            (instructControl & 4) == 0 && location == 8 && iupAxes == 3 &&
+            functionStarts(0, [0x45, 0x23, 0x46, 0x60, 0x20, 0xB0, 38]))
+            return 0;
+        return location >= 0 && cast(size_t) location < storage.length ? storage[location] : 0;
     }
 
     ref Zone zone0Ref()
@@ -628,7 +716,8 @@ private final class Context
                 long b = (arg & 0xF) - 8;
                 if (b >= 0) b++;
                 b = cast(int) (b * F);
-                movePoint(zone0Ref(), point, b);
+                if (allowDelta(zone0Ref(), point))
+                    movePoint(zone0Ref(), point, b);
             }
         }
     }
@@ -681,16 +770,22 @@ final class TrueTypeHinter
     private int _preparedForSize;
     private Context _preparedState;
     private bool _naturalGrid;
+    private bool _nativeTextExperiment;
+    private bool _naturalSymmetric = true;
+    private bool _naturalGridFit = true;
 
-    this(const(ubyte)[] data, size_t faceOffset = 0, bool naturalGrid = false)
+    this(const(ubyte)[] data, size_t faceOffset = 0, bool naturalGrid = false,
+        bool nativeTextExperiment = false)
     {
         _data = data;
         _faceOffset = faceOffset;
         _naturalGrid = naturalGrid;
+        _nativeTextExperiment = nativeTextExperiment;
     }
 
     HintedGlyph hint(HintInput input)
     {
+        ++_hintingCounters.attempts;
         prepare(input.unitsPerEm, input.pixelSize, input.fpgm, input.prep);
 
         // CVT and storage are scaler state after fpgm/prep, not mutable state
@@ -702,7 +797,7 @@ final class TrueTypeHinter
             input.unitsPerEm, input.pixelSize);
         // Size-program graphics state survives into glyph programs. Vector,
         // reference-point, zone-pointer and loop fields start at their defaults.
-        if (_preparedState !is null)
+        if (_preparedState !is null && (_preparedState.instructControl & 2) == 0)
         {
             ctx.roundState = _preparedState.roundState;
             ctx.minimumDistance = _preparedState.minimumDistance;
@@ -719,6 +814,9 @@ final class TrueTypeHinter
             ctx.phase = _preparedState.phase;
             ctx.threshold = _preparedState.threshold;
         }
+        if (_preparedState !is null)
+            ctx.instructControl = _preparedState.instructControl;
+        ctx.composite = input.composite;
         ctx.normalizedAxes = input.normalizedAxes.dup;
         ctx.fdefs[] = _fdefs[];
         ctx.idefs[] = _idefs[];
@@ -771,10 +869,11 @@ final class TrueTypeHinter
         if (maxp !is null && maxp.length >= 18)
             twilightCount += be16(maxp, 16); // maxTwilightPoints
         ctx.twilight.points.length = twilightCount;
-        foreach (ref pt; ctx.twilight.points)
+        foreach (ref pt; ctx.twilight.points[])
             pt = Pt(0, 0, 0, 0, 0, 0, false, false, true);
 
-        if (input.instructions.length > 0 && (ctx.instructControl & 1) == 0)
+        if (input.instructions.length > 0 && (ctx.instructControl & 1) == 0 &&
+            (!_naturalGrid || _naturalGridFit))
         {
             ctx.glyphProgram = true;
             runProgram(ctx, input.instructions);
@@ -802,9 +901,11 @@ final class TrueTypeHinter
             if (result.ys[i] > result.yMax) result.yMax = result.ys[i];
         }
         result.lsb = cast(int) (ctx.zone2.points[n].curX >> 6);
+        result.originX26Dot6 = ctx.zone2.points[n].curX;
         result.advance = cast(int) ((ctx.zone2.points[n + 1].curX - ctx.zone2.points[n].curX) >> 6);
         result.tsb = cast(int) (ctx.zone2.points[n + 2].curY >> 6);
         result.vadvance = cast(int) ((ctx.zone2.points[n + 3].curY - ctx.zone2.points[n + 2].curY) >> 6);
+        ++_hintingCounters.successes;
         return result;
     }
 
@@ -816,6 +917,13 @@ final class TrueTypeHinter
     {
         if (_preparedForUnits == unitsPerEm && _preparedForSize == pixelSize)
             return;
+
+        if (_naturalGrid)
+        {
+            const flags = naturalGaspFlags(tableData(tag!"gasp"), pixelSize);
+            _naturalSymmetric = (flags & 8) != 0;
+            _naturalGridFit = (flags & 4) != 0;
+        }
 
         const cvtTable = tableData(tag!"cvt ");
         const cvtCount = cvtTable.length / 2;
@@ -840,7 +948,7 @@ final class TrueTypeHinter
         if (maxp.length >= 18)
             twilightCount += be16(maxp, 16); // maxTwilightPoints
         ctx.twilight.points.length = twilightCount;
-        foreach (ref pt; ctx.twilight.points)
+        foreach (ref pt; ctx.twilight.points[])
             pt = Pt(0, 0, 0, 0, 0, 0, false, false, true);
         ctx.zone0.points.length = twilightCount;
         ctx.zone1.points.length = twilightCount;
@@ -1147,10 +1255,24 @@ final class TrueTypeHinter
             case 0x4E: ctx.autoFlip = false; return;
             case 0x85: ctx.scanControl = ctx.pop(); return;
             case 0x8D: ctx.scanType = cast(int) ctx.pop(); return;
-            case 0x8E: { const s = cast(int) ctx.pop(); const v = cast(int) ctx.pop(); if (s == 1) ctx.instructControl = v & 1; return; }
+            case 0x8E:
+            {
+                const selector = cast(int) ctx.pop();
+                const value = cast(int) ctx.pop();
+                if (selector >= 1 && selector <= 3)
+                {
+                    const mask = 1 << (selector - 1);
+                    if (value != 0 && value != mask)
+                        throw new HintAbort("Invalid INSTCTRL value");
+                    // Flags 1/2 are prep-only; flag 3 can change per glyph.
+                    if (selector == 3 || !ctx.glyphProgram)
+                        ctx.instructControl = (ctx.instructControl & ~mask) | value;
+                }
+                return;
+            }
             case 0x17: ctx.loop = cast(int) ctx.pop(); if (ctx.loop < 0) ctx.loop = 0; return;
             case 0x42: { const val = ctx.pop(); const loc = cast(int) ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.storage.length) ctx.storage[loc] = val; return; }
-            case 0x43: { const loc = cast(int) ctx.pop(); ctx.push(loc >= 0 && cast(size_t) loc < ctx.storage.length ? ctx.storage[loc] : 0); return; }
+            case 0x43: { const loc = cast(int) ctx.pop(); ctx.push(ctx.readStore(loc)); return; }
             case 0x44: { const val = ctx.pop(); const loc = cast(int) ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.cvt.length) ctx.cvt[loc] = val; return; }
             case 0x70: { const val = ctx.pop(); const loc = cast(int) ctx.pop(); if (loc >= 0 && cast(size_t) loc < ctx.cvt.length) ctx.cvt[loc] = ctx.scaleDesign(val); return; }
             case 0x45: { const loc = cast(int) ctx.pop(); ctx.push(loc >= 0 && cast(size_t) loc < ctx.cvt.length ? ctx.cvt[loc] : 0); return; }
@@ -1169,7 +1291,10 @@ final class TrueTypeHinter
                 {
                     const index = ctx.stack.length - cast(size_t) k;
                     const value = ctx.stack[index];
-                    ctx.stack[index .. $ - 1] = ctx.stack[index + 1 .. $];
+                    // D rejects overlapping slice assignment. MINDEX rotates
+                    // an existing stack range, so move the elements in order.
+                    foreach (i; index .. ctx.stack.length - 1)
+                        ctx.stack[i] = ctx.stack[i + 1];
                     ctx.stack[$ - 1] = value;
                 }
                 return;
@@ -1264,25 +1389,25 @@ final class TrueTypeHinter
             }
             case 0x3A: case 0x3B:
             {
-                const point = cast(int) ctx.pop();
                 const distance = cast(int) ctx.pop();
+                const point = cast(int) ctx.pop();
                 auto zone = ctx.zone1Ref();
                 ctx.ensurePoint(zone, point);
+                ctx.requirePoint(ctx.zone0Ref(), ctx.rp0);
                 if (ctx.zoneSelect1 == 0)
                 {
-                    zone.points[point].orgX = ctx.zone0Ref().points[ctx.rp0].orgX;
-                    zone.points[point].orgY = ctx.zone0Ref().points[ctx.rp0].orgY;
-                    zone.points[point].curX = zone.points[point].orgX + mulFix(distance, ctx.freeVectorX);
-                    zone.points[point].curY = zone.points[point].orgY + mulFix(distance, ctx.freeVectorY);
+                    zone.points[point].orgX = ctx.zone0Ref().points[ctx.rp0].orgX +
+                        mulFix(distance, ctx.freeVectorX);
+                    zone.points[point].orgY = ctx.zone0Ref().points[ctx.rp0].orgY +
+                        mulFix(distance, ctx.freeVectorY);
+                    zone.points[point].curX = zone.points[point].orgX;
+                    zone.points[point].curY = zone.points[point].orgY;
                 }
-                else
-                {
-                    const cur = ctx.project(cast(int) zone.points[point].curX,
-                        cast(int) zone.points[point].curY);
-                    const rpProj = ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp0].curX,
-                        cast(int) ctx.zone0Ref().points[ctx.rp0].curY);
-                    ctx.movePoint(ctx.zone1Ref(), point, distance - (cur - rpProj));
-                }
+                const cur = ctx.project(cast(int) zone.points[point].curX,
+                    cast(int) zone.points[point].curY);
+                const rpProj = ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp0].curX,
+                    cast(int) ctx.zone0Ref().points[ctx.rp0].curY);
+                ctx.movePoint(ctx.zone1Ref(), point, distance - (cur - rpProj));
                 ctx.rp1 = ctx.rp0;
                 ctx.rp2 = point;
                 if ((opcode & 1) != 0) ctx.rp0 = point;
@@ -1325,15 +1450,18 @@ final class TrueTypeHinter
             }
             case 0x48:
             {
-                const point = cast(int) ctx.pop();
                 const value = cast(int) ctx.pop();
+                const point = cast(int) ctx.pop();
                 auto zone = ctx.zone2Ref();
                 ctx.ensurePoint(zone, point);
-                if (ctx.zoneSelect2 == 0)
-                    zone.points[point].orgX = zone.points[point].curX;
                 const cur = ctx.project(cast(int) zone.points[point].curX,
                     cast(int) zone.points[point].curY);
                 ctx.movePoint(ctx.zone2Ref(), point, value - cur);
+                if (ctx.zoneSelect2 == 0)
+                {
+                    zone.points[point].orgX = zone.points[point].curX;
+                    zone.points[point].orgY = zone.points[point].curY;
+                }
                 return;
             }
             case 0x80:
@@ -1388,11 +1516,11 @@ final class TrueTypeHinter
             }
             case 0x0F:
             {
-                const point = cast(int) ctx.pop();
-                const a0 = cast(int) ctx.pop();
-                const a1 = cast(int) ctx.pop();
-                const b0 = cast(int) ctx.pop();
                 const b1 = cast(int) ctx.pop();
+                const b0 = cast(int) ctx.pop();
+                const a1 = cast(int) ctx.pop();
+                const a0 = cast(int) ctx.pop();
+                const point = cast(int) ctx.pop();
                 auto zone = ctx.zone2Ref();
                 ctx.ensurePoint(zone, point);
                 const bdx = ctx.zone0Ref().points[b1].curX - ctx.zone0Ref().points[b0].curX;
@@ -1429,6 +1557,7 @@ final class TrueTypeHinter
                 return;
             }
             case 0x30: case 0x31:
+                ctx.iupAxes |= 1u << (opcode & 1);
                 interpolateUntouchedPoints(ctx, (opcode & 1) != 0);
                 return;
             case 0x32: case 0x33:
@@ -1530,6 +1659,7 @@ final class TrueTypeHinter
                     const point = cast(int) ctx.pop();
                     if (point >= 0 && point < ctx.zone2Ref().points.length)
                     {
+                        if (!ctx.allowDelta(ctx.zone2Ref(), point)) continue;
                         if (ctx.freeVectorX != 0)
                         {
                             ctx.zone2Ref().points[point].curX += dx;
@@ -1633,7 +1763,7 @@ final class TrueTypeHinter
                 {
                     if ((selector & 64) != 0) result |= 1 << 13;
                     if ((selector & 0x400) != 0) result |= 1 << 17;
-                    if ((selector & 0x800) != 0) result |= 1 << 18;
+                    if ((selector & 0x800) != 0 && ctx.naturalSymmetric) result |= 1 << 18;
                     if ((selector & 0x1000) != 0) result |= 1 << 19;
                 }
                 // The natural-grid experiment selects the subpixel font
@@ -1821,6 +1951,196 @@ final class TrueTypeHinter
 
 unittest
 {
+    auto engine = new TrueTypeHinter(null, 0, true, true);
+    auto ctx = new Context(engine, null, new long[9], 2048, 13);
+    ctx.storage[8] = 42;
+    const ubyte[] signature = [0x45, 0x23, 0x46, 0x60, 0x20, 0xB0, 38, 0x2D];
+    ctx.fdefs[0] = FuncDef(true, signature, 0, signature.length);
+    ctx.glyphProgram = true;
+    assert(ctx.readStore(8) == 42, "Before IUP, legacy storage is unchanged");
+    ctx.iupAxes = 1;
+    assert(ctx.readStore(8) == 42);
+    ctx.iupAxes = 3;
+    assert(ctx.readStore(8) == 0, "Recognized post-IUP VacuFormRound is bypassed");
+    assert(ctx.storage[8] == 42, "Compatibility reads never mutate the stored value");
+    ctx.instructControl = 4;
+    assert(ctx.readStore(8) == 42, "INSTCTRL native behavior opt-out is respected");
+    ctx.instructControl = 0;
+    ctx.nativeTextExperiment = false;
+    assert(ctx.readStore(8) == 42, "Approved C stays unchanged");
+    ctx.nativeTextExperiment = true;
+    ctx.fdefs[0].start = 1;
+    assert(ctx.readStore(8) == 42, "Function number alone must never identify a font quirk");
+    ctx.fdefs[0].end = signature.length + 1;
+    assert(ctx.readStore(8) == 42, "Invalid signature bounds are rejected");
+    assert(ctx.readStore(-1) == 0 && ctx.readStore(9) == 0);
+}
+
+unittest
+{
+    const ranges = cast(ubyte[]) [0, 1, 0, 2, 0, 19, 0, 7, 0xff, 0xff, 0, 15];
+    assert(naturalGaspFlags(ranges, 13) == 7 && naturalGaspFlags(ranges, 19) == 7);
+    assert(naturalGaspFlags(ranges, 20) == 15);
+    assert(naturalGaspFlags(null, 13) == 12);
+    assert(naturalGaspFlags(cast(ubyte[]) [0, 0, 0, 1, 0xff, 0xff, 0, 3], 13) == 12);
+    bool aborted;
+    try naturalGaspFlags(cast(ubyte[]) [0, 1, 0, 1], 13);
+    catch (HintAbort) aborted = true;
+    assert(aborted, "Truncated gasp must use controlled fallback");
+    auto engine = new TrueTypeHinter(null, 0, true);
+    auto ctx = new Context(engine, null, null, 2048, 13);
+    ctx.naturalSymmetric = false;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB8, 8, 0, 0x88]);
+    assert(ctx.stack == [0L], "GETINFO must report the font's actual smoothing choice");
+    ctx.naturalSymmetric = true;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB8, 8, 0, 0x88]);
+    assert(ctx.stack == [1L << 18]);
+}
+
+unittest
+{
+    // Natural compatibility follows the documented DELTAP/SHPIX behavior,
+    // rather than letting old monochrome pixel corrections dent the outline.
+    foreach (delta; [false, true])
+    {
+        auto engine = new TrueTypeHinter(null, 0, true);
+        auto ctx = new Context(engine, null, null, 1024, 13);
+        ctx.glyphProgram = true;
+        ctx.zone0.points = [Pt()];
+        ctx.zone2.points = ctx.zone0.points;
+        auto instruction = delta ? cast(ubyte[]) [0xB2, 0x48, 0, 1, 0x5D] :
+            cast(ubyte[]) [0xB1, 0, 8, 0x38];
+        ctx.zone0.points[0].touchX = true;
+        engine.runProgram(ctx, instruction);
+        assert(ctx.stack.length == 0 && ctx.zone0.points[0].curX == 0,
+            "Suppressed horizontal deltas must still consume their operands");
+        ctx.setVectors(0);
+        engine.runProgram(ctx, instruction);
+        assert(ctx.zone0.points[0].curY == 0, "An untouched vertical delta would dent the outline");
+        ctx.zone0.points[0].touchY = true;
+        engine.runProgram(ctx, instruction);
+        assert(ctx.zone0.points[0].curY == 8, "Retain deltas on touched vertical points");
+        ctx.zone0.points[0].touchY = false;
+        ctx.composite = true;
+        engine.runProgram(ctx, instruction);
+        assert(ctx.zone0.points[0].curY == 16, "Composite accents may move untouched vertical points");
+        // A font can explicitly select native behavior; preserve other flags.
+        engine.runProgram(ctx, cast(ubyte[]) [0xB1, 4, 3, 0x8E]);
+        ctx.setVectors(1);
+        engine.runProgram(ctx, instruction);
+        assert(ctx.zone0.points[0].curX == 8, "Honor INSTCTRL native-mode opt-out");
+        engine.runProgram(ctx, cast(ubyte[]) [0xB1, 0, 3, 0x8E]);
+        engine.runProgram(ctx, instruction);
+        assert(ctx.zone0.points[0].curX == 8, "Compatibility can be restored within the glyph");
+        ctx.naturalGrid = false;
+        engine.runProgram(ctx, instruction);
+        assert(ctx.zone0.points[0].curX == 16, "Legacy hinting retains its delta semantics");
+    }
+    auto engine = new TrueTypeHinter(null, 0, true);
+    auto ctx = new Context(engine, null, null, 1024, 13);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 4, 3, 0x8E, 0xB1, 1, 1, 0x8E]);
+    assert(ctx.instructControl == 5, "INSTCTRL flags are independent");
+    ctx.glyphProgram = true;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 0, 1, 0x8E]);
+    assert(ctx.instructControl == 5, "Glyph programs cannot change prep-only flags");
+}
+
+unittest
+{
+    auto engine = new TrueTypeHinter(null);
+    HintInput input;
+    input.unitsPerEm = 64; input.pixelSize = 1;
+    input.xs = [0, 0, 64, 64]; input.ys = [0, 64, 64, 0];
+    input.onCurve = [true, true, true, true]; input.contours = [3];
+    input.advance = 64;
+    // Move the left phantom point by half a physical pixel.
+    input.instructions = cast(ubyte[]) [0xB1, 4, 32, 0x48];
+    auto result = engine.hint(input);
+    assert(result.originX26Dot6 == 32 && result.xs26Dot6[0] == 0,
+        "The rasterizer needs the fractional hinted origin, not an integer bearing");
+}
+
+unittest
+{
+    auto engine = new TrueTypeHinter(null);
+    auto ctx = new Context(engine, null, null, 1024, 13);
+    ctx.zone0.points = [Pt(), Pt(0, 0, 0, 0), Pt(640, 0, 640, 0),
+        Pt(128, -128, 128, -128), Pt(128, 128, 128, 128)];
+    ctx.zone1.points = ctx.zone2.points = ctx.zone0.points;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB4, 0, 1, 2, 3, 4, 0x0F]);
+    assert(ctx.zone2.points[0].curX == 128 && ctx.zone2.points[0].curY == 0,
+        "ISECT must pop b1,b0,a1,a0 before the destination point");
+    ctx.zone0.points[3] = Pt(0, 128, 0, 128);
+    ctx.zone0.points[4] = Pt(640, 128, 640, 128);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB4, 0, 1, 2, 3, 4, 0x0F]);
+    assert(ctx.zone2.points[0].curX == 320 && ctx.zone2.points[0].curY == 64,
+        "ISECT parallel lines must move to the average of their endpoints");
+}
+
+unittest
+{
+    auto engine = new TrueTypeHinter(null);
+    auto ctx = new Context(engine, null, null, 1024, 13);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB3, 11, 22, 33, 3, 0x26]);
+    assert(ctx.stack == [22L, 33L, 11L], "MINDEX must rotate an overlapping stack range");
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 42, 1, 0x26]);
+    assert(ctx.stack == [42L]);
+    ctx.zone0.points = [Pt(), Pt(320, 64, 320, 64, 320, 64)];
+    ctx.zone2.points = ctx.zone0.points;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB9, 0, 1, 0xff, 0x80, 0x48]);
+    assert(ctx.zone2.points[1].curX == -128 && ctx.zone2.points[1].orgX == 320,
+        "SCFS must pop coordinate before point index");
+    ctx.zoneSelect2 = 0;
+    ctx.twilight.points.length = 2;
+    ctx.setVectors(0);
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 64, 0x48]);
+    assert(ctx.twilight.points[1].curY == 64 && ctx.twilight.points[1].orgY == 64);
+    // Out-of-range point reads in different instruction families use HintAbort.
+    foreach (opcode; [0x27, 0x3C, 0x32, 0x49])
+    {
+        ctx.rp0 = ctx.rp1 = ctx.rp2 = -1;
+        bool aborted;
+        try engine.runProgram(ctx, cast(ubyte[]) [0xB9, 0xff, 0xff, 0xff, 0xff, opcode]);
+        catch (HintAbort) aborted = true;
+        assert(aborted, "Invalid reference indices must not escape as array Errors");
+    }
+}
+
+unittest
+{
+    // MSIRP pops signed distance BEFORE point number (OpenType specification).
+    // Consolas at 26px uses a negative distance; treating it as a point used to
+    // set rp0=-128 and crash on the next instruction, bypassing fallback.
+    foreach (opcode; [0x3A, 0x3B])
+    {
+        auto engine = new TrueTypeHinter(null);
+        auto ctx = new Context(engine, null, null, 1024, 13);
+        ctx.zone0.points = [Pt(128, 0, 128, 0, 128, 0), Pt(320, 0, 320, 0, 320, 0)];
+        ctx.zone1.points = ctx.zone0.points;
+        engine.runProgram(ctx, cast(ubyte[]) [0xB9, 0, 1, 0xff, 0x80, opcode]);
+        assert(ctx.zone1.points[1].curX == 0);
+        assert(ctx.zone1.points[1].orgX == 320);
+        assert(ctx.rp1 == 0 && ctx.rp2 == 1 && ctx.rp0 == (opcode == 0x3B ? 1 : 0));
+        // A corrupt reference point must abort through the supported fallback,
+        // not terminate the process with an array-bounds Error.
+        ctx.rp0 = -128;
+        bool aborted;
+        try engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 64, opcode]);
+        catch (HintAbort) aborted = true;
+        assert(aborted);
+    }
+    auto engine = new TrueTypeHinter(null);
+    auto ctx = new Context(engine, null, null, 1024, 13);
+    ctx.zone0.points = [Pt(128, 0, 192, 0, 128, 0)];
+    ctx.zoneSelect1 = 0;
+    ctx.twilight.points.length = 2;
+    engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 64, 0x3A]);
+    assert(ctx.twilight.points[1].orgX == 192 && ctx.twilight.points[1].curX == 256,
+        "Twilight MSIRP must initialize original and current coordinates correctly");
+}
+
+unittest
+{
     auto engine = new TrueTypeHinter(null, 0, true);
     auto ctx = new Context(engine, null, null, 2048, 13);
     assert(ctx.roundDistance(45, 0) == 64, "Size-program ROUND uses the physical grid");
@@ -1966,6 +2286,10 @@ unittest
     auto prepared = new TrueTypeHinter(null);
     assert(prepared.hint(input).xs26Dot6[2] == 250,
         "Glyphs inherit the size program's rounding state");
+    input.prep = cast(ubyte[]) [0x7A, 0xB1, 2, 2, 0x8E];
+    auto reset = new TrueTypeHinter(null);
+    assert(reset.hint(input).xs26Dot6[2] == 256,
+        "INSTCTRL selector 2 restores default graphics state for glyphs");
     input.prep = null;
 
     // A two-entry CVT contains signed 16-bit FWORDs, not one 32-bit value.
@@ -1982,4 +2306,15 @@ unittest
     assert(cvtHinter._cvt == [-128L, 256L]);
     assert(scaleDesignUnits(1024, 13, 2048) == 416);
     assert(scaleDesignUnits(-1024, 13, 2048) == -416);
+
+    ubyte[] gaspFont = new ubyte[36];
+    gaspFont[5] = 1;
+    gaspFont[12 .. 16] = cast(ubyte[]) ['g', 'a', 's', 'p'];
+    gaspFont[23] = 28; gaspFont[27] = 8;
+    gaspFont[28 .. 36] = cast(ubyte[]) [0, 1, 0, 1, 0xff, 0xff, 0, 8];
+    input.instructions = cast(ubyte[]) [0xB0, 2, 0x2F];
+    auto noGridFit = new TrueTypeHinter(gaspFont.idup, 0, true);
+    assert(noGridFit.hint(input).xs26Dot6[2] == 500,
+        "Natural mode must respect a font's disabled gasp grid-fitting flag");
+    assert(noGridFit._naturalSymmetric && !noGridFit._naturalGridFit);
 }

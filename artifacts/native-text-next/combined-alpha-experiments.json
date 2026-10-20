@@ -1,0 +1,7796 @@
+{
+  "C": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 12.622027534418022
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 10.622027534418022
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 9.837953091684435
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 8.067164179104477
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 7.527992277992278
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 6.0801158301158305
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 7.232929164007658
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.692405871091257
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 10.203638497652582
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.530516431924882
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 7.952063914780293
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 6.784731469152241
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 5.860884749708964
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.555005820721769
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 4.18012533572068
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.6248880931065353
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.846783625730994
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.345029239766082
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 4.434963579604578
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.7669094693028096
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.8767258382642997
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.497041420118343
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 15.51821608040201
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 13.490577889447236
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 6.2504317789291886
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.5048934945308
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 2.352870813397129
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9948165869218502
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 1.6996466431095407
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.541723294373471
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0947804473902236
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.674896437448219
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 24.115424973767052
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.217208814270723
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 23.23041474654378
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 19.134562211981567
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 27.292071197411005
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 22.401294498381876
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 14.85995232419547
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 12.64362336114422
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 4.2227465785747995
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.4907975460122698
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 5.295332823259373
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 4.438026013771997
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 4.712490575521488
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.8884141744156824
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6442201545497555
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8924459864374703
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 3.067476383265857
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4237516869095814
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.3656286043829295
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5432525951557095
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.308510638297872
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.753191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 4.083848797250859
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.5759450171821308
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 18.674281984334204
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 16.242167101827675
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 6.275
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.412765957446808
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 4.274906600249066
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.971980074719801
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6368149704029022
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.237731525682643
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 26.6231884057971
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.884057971014492
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.22609472743521
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.602323503127792
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 22.73953885567891
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 18.689154568744662
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 9.984365952518818
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.388535031847134
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 2.993181818181818
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 2.456818181818182
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 4.1410159211523885
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.378316906747536
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 3.5452983059170147
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.844095261478026
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0110271903323262
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.588821752265861
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 16.325773195876288
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.7
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.87598944591029
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.931398416886545
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 15.343619683069225
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.400333611342786
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 8.968957871396896
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.03159645232816
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 7.962993762993763
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.5372141372141375
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 10.114485165794067
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 8.78673647469459
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 7.055762949136724
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 6.040130657956136
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 4.338155256373532
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.5920939558865657
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 33.73396674584323
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 29.680522565320665
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 36.562628336755644
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 33.734086242299796
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 31.31583969465649
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 28.837786259541986
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 36.48084815321477
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 32.91586867305062
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 30.487565445026178
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.788612565445025
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 30.808052950910092
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 25.879757308328738
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 28.789473684210527
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 23.8770590598634
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 33.126138189609
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 28.44750937332619
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 23.769499417927822
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.576251455180444
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 22.208625877632898
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.45937813440321
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 21.508788159111933
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 19.293246993524516
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 15.056527590847914
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 13.057200538358009
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 13.062393647192286
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 10.175269427112875
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 4.694524495677234
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.887608069164265
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 4.496963886225632
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.7580696708213486
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 3.8899493572263344
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.3052201012855473
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 2.600798403193613
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.219560878243513
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.73784860557769
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.281274900398408
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 15.111675126903553
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.53444525018129
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.862210095497954
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.211914506593907
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.671909130624726
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 7.2957623416339015
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.158288770053476
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.26559714795009
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 2.8406954887218046
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.6771616541353382
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 2.7102180038558505
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.2555242473676405
+    }
+  ],
+  "msirp-cutin": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 12.622027534418022
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 10.622027534418022
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 9.837953091684435
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 8.067164179104477
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 7.527992277992278
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 6.0801158301158305
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 7.232929164007658
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.692405871091257
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 10.203638497652582
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.530516431924882
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 7.952063914780293
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 6.784731469152241
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 5.860884749708964
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.555005820721769
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 4.18012533572068
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.6248880931065353
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.846783625730994
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.345029239766082
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 4.434963579604578
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.7669094693028096
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.8767258382642997
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.497041420118343
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 15.51821608040201
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 13.490577889447236
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 6.2504317789291886
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.5048934945308
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 2.352870813397129
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9948165869218502
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 1.6996466431095407
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.541723294373471
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0947804473902236
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.674896437448219
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 24.115424973767052
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.217208814270723
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 23.23041474654378
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 19.134562211981567
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 27.292071197411005
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 22.401294498381876
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 14.85995232419547
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 12.64362336114422
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 4.2227465785747995
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.4907975460122698
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 5.295332823259373
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 4.438026013771997
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 4.712490575521488
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.8884141744156824
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6442201545497555
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8924459864374703
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 3.067476383265857
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4237516869095814
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.3656286043829295
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5432525951557095
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.308510638297872
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.753191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 4.083848797250859
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.5759450171821308
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 18.674281984334204
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 16.242167101827675
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 6.275
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.412765957446808
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 4.274906600249066
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.971980074719801
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6368149704029022
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.237731525682643
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 26.6231884057971
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.884057971014492
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.22609472743521
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.602323503127792
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 22.73953885567891
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 18.689154568744662
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 9.984365952518818
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.388535031847134
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 2.993181818181818
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 2.456818181818182
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 4.1410159211523885
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.378316906747536
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 3.5452983059170147
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.844095261478026
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0110271903323262
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.588821752265861
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 16.325773195876288
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.7
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.87598944591029
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.931398416886545
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 15.343619683069225
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.400333611342786
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 8.968957871396896
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.03159645232816
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 7.962993762993763
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.5372141372141375
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 10.114485165794067
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 8.78673647469459
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 7.055762949136724
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 6.040130657956136
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 4.338155256373532
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.5920939558865657
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 33.73396674584323
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 29.680522565320665
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 36.562628336755644
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 33.734086242299796
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 31.31583969465649
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 28.837786259541986
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 36.48084815321477
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 32.91586867305062
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 30.487565445026178
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.788612565445025
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 30.808052950910092
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 25.879757308328738
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 28.789473684210527
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 23.8770590598634
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 33.126138189609
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 28.44750937332619
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 23.423076923076923
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.24125874125874
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 22.208625877632898
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.45937813440321
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 21.03796296296296
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 18.80648148148148
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 14.463250168577208
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 12.45380984490897
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 13.062393647192286
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 10.175269427112875
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 4.694524495677234
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.887608069164265
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 4.496963886225632
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.7580696708213486
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 3.8899493572263344
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.3052201012855473
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 2.600798403193613
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.219560878243513
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.73784860557769
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.281274900398408
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 15.111675126903553
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.53444525018129
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.862210095497954
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.211914506593907
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.671909130624726
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 7.2957623416339015
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.158288770053476
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.26559714795009
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 2.8406954887218046
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.6771616541353382
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 2.7102180038558505
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.2555242473676405
+    }
+  ],
+  "signatures": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 12.622027534418022
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 10.622027534418022
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 9.837953091684435
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 8.067164179104477
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 7.527992277992278
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 6.0801158301158305
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 7.232929164007658
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.692405871091257
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 10.203638497652582
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.530516431924882
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 7.952063914780293
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 6.784731469152241
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 5.860884749708964
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.555005820721769
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 4.18012533572068
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.6248880931065353
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.846783625730994
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.345029239766082
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 4.434963579604578
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.7669094693028096
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.8767258382642997
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.497041420118343
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 15.51821608040201
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 13.490577889447236
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 6.2504317789291886
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.5048934945308
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 2.352870813397129
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9948165869218502
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 1.6996466431095407
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.541723294373471
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0947804473902236
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.674896437448219
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 23.640083945435467
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.587618048268624
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 22.735239852398525
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.57380073800738
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 26.592382495948137
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 21.8484602917342
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 14.244630071599046
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.989260143198091
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 4.2227465785747995
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.4907975460122698
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 5.295332823259373
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 4.438026013771997
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 4.712490575521488
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.8884141744156824
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6442201545497555
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8924459864374703
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 3.067476383265857
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4237516869095814
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.3656286043829295
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5432525951557095
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.308510638297872
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.753191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 4.083848797250859
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.5759450171821308
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 18.674281984334204
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 16.242167101827675
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 6.275
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.412765957446808
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 4.274906600249066
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.971980074719801
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6368149704029022
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.237731525682643
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 26.6231884057971
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.884057971014492
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.22609472743521
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.602323503127792
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 22.73953885567891
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 18.689154568744662
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 9.984365952518818
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.388535031847134
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 2.993181818181818
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 2.456818181818182
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 4.1410159211523885
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.378316906747536
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 3.5452983059170147
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.844095261478026
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0110271903323262
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.588821752265861
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 16.325773195876288
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.7
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.87598944591029
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.931398416886545
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 15.343619683069225
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.400333611342786
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 8.968957871396896
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.03159645232816
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 7.962993762993763
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.5372141372141375
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 10.114485165794067
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 8.78673647469459
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 7.055762949136724
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 6.040130657956136
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 4.338155256373532
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.5920939558865657
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 32.66387559808612
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 28.300239234449762
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 36.03734439834025
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 32.60269709543569
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 30.63330125120308
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 27.55822906641001
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 35.42699724517907
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 31.31955922865014
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 30.487565445026178
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.788612565445025
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 30.808052950910092
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 25.879757308328738
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 28.789473684210527
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 23.8770590598634
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 33.126138189609
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 28.44750937332619
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 16.143705463182897
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.980997624703088
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 14.491370558375635
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 12.214213197969544
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 14.11281070745698
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.52772466539197
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 15.056527590847914
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 13.057200538358009
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 13.062393647192286
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 10.175269427112875
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 4.694524495677234
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.887608069164265
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 4.496963886225632
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.7580696708213486
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 3.8899493572263344
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.3052201012855473
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 2.600798403193613
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.219560878243513
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.73784860557769
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.281274900398408
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 15.111675126903553
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.53444525018129
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.862210095497954
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.211914506593907
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.671909130624726
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 7.2957623416339015
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.158288770053476
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.26559714795009
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 2.8406954887218046
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.6771616541353382
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 2.7102180038558505
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.2555242473676405
+    }
+  ],
+  "both-cutin": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 10.33375
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 9.13125
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 9.701492537313433
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 7.936034115138593
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 7.409266409266409
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 5.981660231660232
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 7.040204211869815
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.547543075941289
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 9.974765258215962
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.38262910798122
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 8.484687083888149
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 7.565912117177097
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 5.68760907504363
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.402850494473531
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 3.979591836734694
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.4473684210526314
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.846783625730994
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.345029239766082
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 4.434963579604578
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.7669094693028096
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.8767258382642997
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.497041420118343
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 6.059899117276166
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 5.422446406052964
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 3.5982507288629737
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.433819241982507
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 2.352870813397129
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9948165869218502
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 1.6996466431095407
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.541723294373471
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0947804473902236
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.674896437448219
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 24.115424973767052
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.217208814270723
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 23.23041474654378
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 19.134562211981567
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 27.292071197411005
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 22.401294498381876
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 14.85995232419547
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 12.64362336114422
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 4.2227465785747995
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.4907975460122698
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 5.295332823259373
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 4.438026013771997
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 4.712490575521488
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.8884141744156824
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6442201545497555
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8924459864374703
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 3.067476383265857
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4237516869095814
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.3656286043829295
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5432525951557095
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.308510638297872
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.753191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 4.083848797250859
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.5759450171821308
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 6.215264187866928
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.362687540769732
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 6.275
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.412765957446808
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 4.274906600249066
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.971980074719801
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6368149704029022
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.237731525682643
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 26.6231884057971
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.884057971014492
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.22609472743521
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.602323503127792
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 22.73953885567891
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 18.689154568744662
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 9.984365952518818
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.388535031847134
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 2.993181818181818
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 2.456818181818182
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 4.1410159211523885
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.378316906747536
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 3.5452983059170147
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.844095261478026
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0110271903323262
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.588821752265861
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 16.325773195876288
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.7
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.87598944591029
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.931398416886545
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 15.343619683069225
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.400333611342786
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 8.968957871396896
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.03159645232816
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 7.962993762993763
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.5372141372141375
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 10.114485165794067
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 8.78673647469459
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 7.055762949136724
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 6.040130657956136
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 4.338155256373532
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.5920939558865657
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 33.54513064133017
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 29.442992874109265
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 36.21846153846154
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 33.4974358974359
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 30.96377502383222
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 28.60057197330791
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 36.15253077975376
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 32.63885088919289
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 29.980353634577604
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.413228552717747
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 30.321743929359823
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 25.496136865342162
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 28.32904781036561
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 23.54439533949377
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 32.71972132904609
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 28.106913183279744
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 23.423076923076923
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.24125874125874
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 22.208625877632898
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.45937813440321
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 21.03796296296296
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 18.80648148148148
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 13.761968981793661
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.809844908968307
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 12.53038046564452
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 9.79954571266326
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 4.694524495677234
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.887608069164265
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 4.496963886225632
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.7580696708213486
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 3.8899493572263344
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.3052201012855473
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 2.600798403193613
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.219560878243513
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.73784860557769
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.281274900398408
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 15.111675126903553
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.53444525018129
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.862210095497954
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.211914506593907
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.671909130624726
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 7.2957623416339015
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.158288770053476
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.26559714795009
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 2.8406954887218046
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.6771616541353382
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 2.7102180038558505
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.2555242473676405
+    }
+  ],
+  "signatures-cutin": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 10.33375
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 9.13125
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 9.701492537313433
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 7.936034115138593
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 7.409266409266409
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 5.981660231660232
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 7.040204211869815
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.547543075941289
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 9.974765258215962
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.38262910798122
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 8.484687083888149
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 7.565912117177097
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 5.68760907504363
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.402850494473531
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 3.979591836734694
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.4473684210526314
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.846783625730994
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.345029239766082
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 4.434963579604578
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.7669094693028096
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.8767258382642997
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.497041420118343
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 6.059899117276166
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 5.422446406052964
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 3.5982507288629737
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.433819241982507
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 2.352870813397129
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9948165869218502
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 1.6996466431095407
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.541723294373471
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0947804473902236
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.674896437448219
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 23.640083945435467
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.587618048268624
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 22.735239852398525
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.57380073800738
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 26.592382495948137
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 21.8484602917342
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 14.244630071599046
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.989260143198091
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 4.2227465785747995
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.4907975460122698
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 5.295332823259373
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 4.438026013771997
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 4.712490575521488
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.8884141744156824
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6442201545497555
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8924459864374703
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 3.067476383265857
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4237516869095814
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.3656286043829295
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5432525951557095
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.308510638297872
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.753191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 4.083848797250859
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.5759450171821308
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 6.215264187866928
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.362687540769732
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 6.275
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.412765957446808
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 4.274906600249066
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.971980074719801
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6368149704029022
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.237731525682643
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 26.6231884057971
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.884057971014492
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.22609472743521
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.602323503127792
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 22.73953885567891
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 18.689154568744662
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 9.984365952518818
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.388535031847134
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 2.993181818181818
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 2.456818181818182
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 4.1410159211523885
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.378316906747536
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 3.5452983059170147
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.844095261478026
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0110271903323262
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.588821752265861
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 16.325773195876288
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.7
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.87598944591029
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.931398416886545
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 15.343619683069225
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.400333611342786
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 8.968957871396896
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 8.03159645232816
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 7.962993762993763
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.5372141372141375
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 10.114485165794067
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 8.78673647469459
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 7.055762949136724
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 6.040130657956136
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 4.338155256373532
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.5920939558865657
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 32.473684210526315
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 28.061004784688997
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 35.69015544041451
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 32.36476683937824
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 30.278846153846153
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 27.32019230769231
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 35.09641873278237
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 31.040633608815426
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 29.980353634577604
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.413228552717747
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 30.321743929359823
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 25.496136865342162
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 28.32904781036561
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 23.54439533949377
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 32.71972132904609
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 28.106913183279744
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 15.78503562945368
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.692399049881235
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 14.491370558375635
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 12.214213197969544
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 13.439234449760766
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 11.755023923444977
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 13.761968981793661
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.809844908968307
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 12.53038046564452
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 9.79954571266326
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 4.694524495677234
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.887608069164265
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 4.496963886225632
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.7580696708213486
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 3.8899493572263344
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.3052201012855473
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 2.600798403193613
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.219560878243513
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.73784860557769
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.281274900398408
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 15.111675126903553
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.53444525018129
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.862210095497954
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.211914506593907
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.671909130624726
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 7.2957623416339015
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.158288770053476
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.26559714795009
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 2.8406954887218046
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.6771616541353382
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 2.7102180038558505
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.2555242473676405
+    }
+  ],
+  "post-cutin": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 10.41875
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 9.16625
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 9.716417910447761
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 7.898720682302772
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 7.564547206165703
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 6.1888246628131025
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 7.038927887683472
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.533503509891513
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 9.695014662756599
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.150146627565983
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 8.580487804878048
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 7.665188470066519
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 5.699825479930192
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.4156486329261195
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 3.996957222122785
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.4548057991766603
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.846783625730994
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.345029239766082
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 4.434963579604578
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.7669094693028096
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.8767258382642997
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.497041420118343
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 6.059899117276166
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 5.422446406052964
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 3.5982507288629737
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.433819241982507
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 2.352870813397129
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9948165869218502
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 1.6996466431095407
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.541723294373471
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0947804473902236
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.674896437448219
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 23.322140608604407
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.397691500524658
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 22.5
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.41328413284133
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 26.45218800648298
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 21.778768233387357
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 14.119331742243437
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.928400954653938
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 4.2227465785747995
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 3.4907975460122698
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 5.295332823259373
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 4.438026013771997
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 4.712490575521488
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.8884141744156824
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6442201545497555
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8924459864374703
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 2.6013513513513513
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.0364864864864867
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.3656286043829295
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5432525951557095
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.308510638297872
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.753191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 4.083848797250859
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.5759450171821308
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 6.215264187866928
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.362687540769732
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 6.275
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.412765957446808
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 4.274906600249066
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.971980074719801
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.6368149704029022
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.237731525682643
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 26.113871635610767
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.540372670807454
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 21.848078641644324
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.179624664879356
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 19.85580204778157
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 16.401023890784984
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 7.448538011695907
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.294736842105263
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 2.993181818181818
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 2.456818181818182
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 4.1410159211523885
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.378316906747536
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 3.5452983059170147
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.844095261478026
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0110271903323262
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.588821752265861
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 16.20330237358101
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.596491228070175
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.25065963060686
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.321899736147756
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 12.582151793160968
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 10.15095913261051
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 6.2435610302351625
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 5.72508398656215
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 6.422835633626097
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.227938101212882
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 9.144709180098108
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 8.044148563419762
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 4.439707960433349
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.8593970796043333
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 3.7021489971346706
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.070916905444126
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 32.516746411483254
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 28.104066985645932
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 35.520207253886014
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 32.208290155440416
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 30.03079884504331
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 27.184793070259865
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 34.953200275292495
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 30.97522367515485
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 29.80366492146597
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.331806282722514
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 30.350964187327822
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 25.659504132231405
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 28.455238859895623
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 23.71457246085909
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 32.6597965738758
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 28.14855460385439
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 15.270783847980997
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.061757719714965
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 14.491370558375635
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 12.214213197969544
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 13.39080459770115
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 11.695402298850574
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 13.12896691424713
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.210668467251857
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 12.382252559726963
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 9.638794084186575
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 4.694524495677234
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.887608069164265
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 4.496963886225632
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.7580696708213486
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 3.8899493572263344
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 3.3052201012855473
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 2.600798403193613
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.219560878243513
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.73784860557769
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.281274900398408
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 15.111675126903553
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.53444525018129
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.862210095497954
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.211914506593907
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.671909130624726
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 7.2957623416339015
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.158288770053476
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.26559714795009
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 2.8406954887218046
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.6771616541353382
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 2.7102180038558505
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.2555242473676405
+    }
+  ],
+  "curves-64": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 10.40125786163522
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 8.71320754716981
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 6.582346609257266
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 5.36167922497309
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 4.395145631067961
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.687378640776699
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 4.823491655969192
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 4.661745827984595
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 6.997633136094675
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.737869822485207
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 4.016092981671882
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.731783638801967
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 2.5799648506151143
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.0799648506151143
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 1.8255166217430367
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.6695417789757412
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.583625730994152
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.1801169590643275
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 3.9656607700312176
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.336108220603538
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.2833168805528135
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.025666337611056
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 14.898805782526713
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 12.876807039597738
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 5.505767012687428
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 4.844867358708189
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 1.6402877697841727
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.4332533972821742
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 0.732824427480916
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 0.7164667393675027
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 2.0316802123071818
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.86067341184276
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 23.9601259181532
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.2109129066107
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 23.62246777163904
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 19.35451197053407
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 27.62378640776699
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 22.64482200647249
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 12.564931178934769
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 10.724117295032915
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 0.9408424041646948
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 0.9309039280643635
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 2.011913912375096
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9961568024596463
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 1.290886075949367
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.0625316455696203
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 0.7461172741679873
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.6221870047543582
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 3.067476383265857
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4237516869095814
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.325259515570934
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5259515570934257
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.203191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.692553191489362
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 3.726083964211975
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.2801101169993117
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 18.484986945169712
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 16.04242819843342
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 5.947816826411076
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.117678381256656
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 3.8623052959501556
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.6115264797507787
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.1016431027894535
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8475353458158197
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 27.51345755693582
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 21.720496894409937
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.608385370205173
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.730597680642283
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 23.773504273504273
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 19.682051282051283
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 8.396871378910776
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 7.0637311703360375
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 0.9085948158253752
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 0.8935879945429741
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 2.0573490315229774
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.8385871629320167
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 1.4006402363949766
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.2260526963802019
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 1.2490531737615513
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.246932282987426
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 15.5437693099897
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.226570545829043
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.57355516637478
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.90367775831874
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 14.618015012510426
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 11.706422018348624
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 7.297447280799112
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.571587125416205
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 6.079616506877866
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.040433513964151
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 8.436496859734822
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 7.46685275645499
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 4.903837154890033
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.272578380907815
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 2.4899309551208284
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.094505178365938
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 32.76583034647551
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 29.07287933094385
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 35.38564102564103
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 33.058461538461536
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 30.807839388145315
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 28.5736137667304
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 35.845467032967036
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 32.49038461538461
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 29.479235332893868
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.044825313117997
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 29.325
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 24.621111111111112
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 26.864536999595632
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 22.247472705216335
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 31.315390857451987
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 26.96808222883419
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 23.57409568261377
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.414235705950993
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 21.885114885114884
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.358641358641357
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 21.44916820702403
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 19.179297597042513
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 13.704576043068641
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.941453566621803
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 10.625498007968128
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.311326124075128
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 1.695421686746988
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.4727710843373494
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 1.2422779922779923
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.1740669240669241
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 0.8764682850430697
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.8600234925606891
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 1.879241516966068
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 1.7574850299401197
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.80956175298805
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.289243027888446
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 14.81326604181687
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.257390050468638
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.67785843920145
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.031760435571687
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.022270742358078
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.649344978165939
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.03909026297086
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.169864960909736
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 1.194915254237288
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.1640772128060264
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 0.7871897755981573
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.7466191113092584
+    }
+  ],
+  "curves-256": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 10.268261964735517
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 8.652392947103275
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 6.348762109795479
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 5.191603875134553
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 3.9805825242718447
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.353398058252427
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 4.276172125883108
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 4.179190751445087
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 6.545239503252513
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.3950325251330575
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 3.6563758389261745
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.4612975391498884
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 2.2281780902167547
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.812829525483304
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 1.6043126684636118
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.5078167115902965
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.3403508771929826
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.9239766081871346
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 3.720083246618106
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.2049947970863686
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.0345508390918066
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 1.8134254689042448
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 14.505342551854179
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 12.600251414204903
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 5.281015579919215
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 4.603577611079054
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 1.4600319744204637
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.2841726618705036
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 0.4481723949809056
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 0.49045280960174575
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 1.8796880185861269
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.7570527713242616
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 23.98424369747899
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 20.215336134453782
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 23.920883164673413
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 19.595216191352346
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 27.592562651576394
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 22.603071948261924
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 12.233532934131736
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 10.508383233532934
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 0.4540719696969697
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 0.5516098484848485
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 1.459438677431757
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.5924644367550942
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 0.8450811359026369
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 0.6843306288032455
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 0.4151870640456563
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.3937856689917565
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 2.967654986522911
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4191374663072778
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.213379469434833
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.4521337946943484
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.012779552715655
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.5047923322683707
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 3.409090909090909
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 2.9958677685950414
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 18.48302872062663
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 16.06070496083551
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 5.82089552238806
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 4.979744136460554
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 3.631972577126831
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.4234964163290744
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.0189147879251053
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.758502101643103
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 27.701446280991735
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 21.890495867768596
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.649732620320854
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.76559714795009
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 24.04688832054561
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 19.964194373401533
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 8.118771726535341
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.873117033603708
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 0.6046405823475887
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 0.697452229299363
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 1.6591860022822367
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.5492582731076454
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 0.9935992122107337
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 0.896110290497292
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 1.000908540278619
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.0757116898849182
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 15.476828012358393
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.1524201853759
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.591943957968475
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.910683012259195
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 14.588186356073212
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 11.71963394342762
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 7.01165371809101
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.320199778024417
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 5.8748435544430535
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 4.884021693783897
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 8.26869322152341
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 7.314814814814815
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 4.642388758782201
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.049648711943794
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 2.2713278664940297
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.9057689541073226
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 32.49760765550239
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 28.83133971291866
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 35.339157245632066
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 32.959917780061666
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 30.693409742120345
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 28.551098376313277
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 35.791465932553336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 32.388162422573984
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 29.255277044854882
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 25.842348284960423
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 29.14516129032258
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 24.549499443826473
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 26.75091130012151
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 22.155933576346698
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 31.160303276468994
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 26.78364473327918
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 23.660046728971963
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.4696261682243
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 21.74974974974975
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.16216216216216
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 21.28558225508318
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 19.044362292051755
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 13.601478494623656
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.97983870967742
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 10.226339794754846
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.029646522234891
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 1.2961890979257116
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.1123974915581283
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 0.7264242034116511
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 0.7814612166076601
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 0.5026455026455027
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.5387027238879091
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 1.3726273726273726
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 1.3586413586413586
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.52828685258964
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.08844621513944
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 14.873381294964028
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.297841726618705
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.612976406533576
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 16.984119782214155
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.006983849847229
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.651243998254038
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.070742979025951
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.196587273373622
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 0.9033474776049033
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 0.896982555398397
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 0.5334423305588585
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.5566290130796671
+    }
+  ],
+  "curves-vacuform": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "error": 10.40125786163522
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "error": 8.71320754716981
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "error": 6.582346609257266
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "error": 5.36167922497309
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "error": 4.395145631067961
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.687378640776699
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "error": 4.823491655969192
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "error": 4.661745827984595
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "error": 6.997633136094675
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.737869822485207
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "error": 4.016092981671882
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "error": 3.731783638801967
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "error": 2.5799648506151143
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "error": 2.0799648506151143
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "error": 1.8255166217430367
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.6695417789757412
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "error": 3.583625730994152
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "error": 3.1801169590643275
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "error": 3.9656607700312176
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.336108220603538
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "error": 2.2833168805528135
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "error": 2.025666337611056
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "error": 14.898805782526713
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "error": 12.876807039597738
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "error": 5.505767012687428
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "error": 4.844867358708189
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "error": 1.6402877697841727
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.4332533972821742
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "error": 0.732824427480916
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "error": 0.7164667393675027
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "error": 2.0316802123071818
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.86067341184276
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "error": 23.484784889821615
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "error": 19.581322140608606
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "error": 23.159447004608296
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.810138248847927
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "error": 26.978119935170177
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "error": 22.122366288492707
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "error": 11.838226482923906
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "error": 10.01318154583583
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "error": 0.9408424041646948
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "error": 0.9309039280643635
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "error": 2.011913912375096
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.9961568024596463
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "error": 1.290886075949367
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.0625316455696203
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "error": 0.7461172741679873
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.6221870047543582
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "error": 3.067476383265857
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "error": 2.4237516869095814
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "error": 4.325259515570934
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "error": 3.5259515570934257
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "error": 4.203191489361702
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "error": 3.692553191489362
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "error": 3.726083964211975
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "error": 3.2801101169993117
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "error": 18.484986945169712
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "error": 16.04242819843342
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "error": 5.947816826411076
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "error": 5.117678381256656
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "error": 3.8623052959501556
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "error": 3.6115264797507787
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "error": 3.1016431027894535
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.8475353458158197
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "error": 27.51345755693582
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "error": 21.720496894409937
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "error": 22.608385370205173
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "error": 18.730597680642283
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "error": 23.773504273504273
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "error": 19.682051282051283
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "error": 8.396871378910776
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "error": 7.0637311703360375
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "error": 0.9085948158253752
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "error": 0.8935879945429741
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "error": 2.0573490315229774
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.8385871629320167
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "error": 1.4006402363949766
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.2260526963802019
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "error": 1.2490531737615513
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "error": 1.246932282987426
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "error": 15.5437693099897
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.226570545829043
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "error": 20.57355516637478
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "error": 16.90367775831874
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "error": 14.618015012510426
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "error": 11.706422018348624
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "error": 7.297447280799112
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "error": 6.571587125416205
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "error": 6.079616506877866
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "error": 5.040433513964151
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "error": 8.436496859734822
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "error": 7.46685275645499
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "error": 4.903837154890033
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "error": 4.272578380907815
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "error": 2.4899309551208284
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "error": 2.094505178365938
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "error": 31.834134615384617
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "error": 27.68028846153846
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "error": 35.16476683937824
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "error": 32.28290155440415
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "error": 29.691049085659287
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "error": 26.961501443695862
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "error": 34.21537396121884
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "error": 30.340027700831026
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "error": 29.479235332893868
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "error": 26.044825313117997
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "error": 29.325
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "error": 24.621111111111112
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "error": 26.864536999595632
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "error": 22.247472705216335
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "error": 31.315390857451987
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "error": 26.96808222883419
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "error": 15.133174791914387
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "error": 13.140309155766944
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "error": 12.590816326530613
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "error": 10.592857142857143
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "error": 12.415311004784689
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "error": 11.128229665071771
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "error": 13.704576043068641
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "error": 11.941453566621803
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "error": 10.625498007968128
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "error": 8.311326124075128
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "error": 1.695421686746988
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "error": 1.4727710843373494
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "error": 1.2422779922779923
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.1740669240669241
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "error": 0.8764682850430697
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.8600234925606891
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "error": 1.879241516966068
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "error": 1.7574850299401197
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "error": 25.80956175298805
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "error": 22.289243027888446
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "error": 14.81326604181687
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "error": 12.257390050468638
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "error": 19.67785843920145
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "error": 17.031760435571687
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "error": 8.022270742358078
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "error": 6.649344978165939
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "error": 11.03909026297086
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "error": 9.169864960909736
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "error": 1.194915254237288
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "error": 1.1640772128060264
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "error": 0.7871897755981573
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "error": 0.7466191113092584
+    }
+  ]
+}

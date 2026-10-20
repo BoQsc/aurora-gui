@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "host-dark-96: previous B / approved C",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-dark-96-baseline.png",
+    "sha256": "1dd94841deb6e721b50bc916a83c72f9da3536d384f1392da658064654f27989"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\host-dark-96-natural.png",
+    "sha256": "b661513fa5ad7ec27315cb64cc313dfe81c4727760cbc8f4e43af18bec03fa32"
+  },
+  "difference": null,
+  "decision": "candidate",
+  "project_candidate": "C",
+  "approved_on": "2026-10-20",
+  "authorization": "Make C the default (Recommended)"
+}

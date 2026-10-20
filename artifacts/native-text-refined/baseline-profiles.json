@@ -1,0 +1,7 @@
+{
+  "default": "C",
+  "reviewed_D_decision": "Keep C; continue improving D",
+  "C_D_measurements": "artifacts\\native-text-next\\measurements.json",
+  "reviewed_D_source": "artifacts\\native-text-next\\reviewed-D-source",
+  "new_override": "AURORA_TEXT_EXPERIMENT=native-refined"
+}

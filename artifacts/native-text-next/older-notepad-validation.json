@@ -1,0 +1,37 @@
+[
+  {
+    "command": [
+      "dmd",
+      "-i",
+      "-version=AuroraHeadless",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+      "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-next\\older-notepad",
+      "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-next\\older-notepad\\smoke.exe",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\tests\\headless_smoke.d",
+      "user32.lib",
+      "gdi32.lib",
+      "shell32.lib",
+      "wininet.lib"
+    ],
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-next\\older-notepad\\smoke.exe"
+    ],
+    "exit_code": 1,
+    "output": "\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\tests\\headless_smoke.d(120): Drag down did not restore the initial window size\n----------------\n0x000000014013AC87\n0x000000014013A92B\n0x00000001400024EC\n0x0000000140159053\n0x0000000140158EAF\n0x0000000140158FAF\n0x0000000140158EAF\n0x0000000140158DBE\n0x000000014013ABC9\n0x00000001400034C4\n0x00000001401AD50E\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n",
+    "profile": "C"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-next\\older-notepad\\smoke.exe"
+    ],
+    "exit_code": 1,
+    "output": "\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\tests\\headless_smoke.d(120): Drag down did not restore the initial window size\n----------------\n0x000000014013AC87\n0x000000014013A92B\n0x00000001400024EC\n0x0000000140159053\n0x0000000140158EAF\n0x0000000140158FAF\n0x0000000140158EAF\n0x0000000140158DBE\n0x000000014013ABC9\n0x00000001400034C4\n0x00000001401AD50E\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n",
+    "profile": "D"
+  }
+]

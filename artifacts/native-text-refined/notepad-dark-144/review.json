@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "notepad-dark-144: approved C / refined D (experimental)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-refined\\notepad-dark-144-C.png",
+    "sha256": "45a179f981aedddb02eb19f7b57f98b0fde34ef565d25006a9983a08c1320cfe"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-refined\\notepad-dark-144-refined-D.png",
+    "sha256": "67b8387d23ce85e8851b53359f0101c9b2534d142ef4691e8cf4b2df7873ec4a"
+  },
+  "difference": null,
+  "decision": null
+}

@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-20",
+  "default_changed": false,
+  "checks": [
+    {"name": "text-coverage-test", "status": "passed", "command": "dub run --config=text-coverage-test", "workdir": "vendor/aurora-d-0.4.5", "detail": "64 size/phase/mode cases; raw coverage, bounded color variants, growth, opacity, mixed surfaces, clipping and compatibility"},
+    {"name": "font-quality-regression", "status": "passed", "policies": ["legacy", "foreground"], "detail": "1872 glyph/size/phase checks in each mode; explicit InterVariable.ttf fixture"},
+    {"name": "dpi-rendering", "status": "passed", "policies": ["legacy", "foreground"], "detail": "120, 144 and 192 DPI geometry and physical glyphs"},
+    {"name": "native-comparison-python", "status": "passed", "command": "python -W ignore -m unittest scripts.tests.test_font_comparison", "detail": "6 tests"},
+    {"name": "live-vulkan-capture", "status": "passed", "policies": ["legacy", "foreground"], "detail": "96 DPI actual screen captures; two changing markers per mode; 12 pixels differing across two frames, maximum channel error 1 against software"},
+    {"name": "vulkan-retained-compositor", "status": "passed", "policy": "foreground", "detail": "10 transform-only frames; 0 content rebuilds; 0 geometry uploads during measured interaction"},
+    {"name": "historical-legacy-corpus", "status": "passed", "detail": "20 of 20 saved Segoe/Consolas captures are pixel-identical"},
+    {"name": "host-full-verification-legacy", "status": "passed", "command": "python experiments/aurora-host/tools/verify_experiment.py", "environment": {"AURORA_TEXT_COVERAGE": "legacy", "AURORA_TEXT_CONTRAST": "unset"}, "detail": "Includes scene validation, control/editor, menus, tabs, toolbar, context, canvas and live redraw"},
+    {"name": "host-full-verification-candidate", "status": "failed", "command": "python experiments/aurora-host/tools/verify_experiment.py", "environment": {"AURORA_TEXT_COVERAGE": "foreground", "AURORA_TEXT_CONTRAST": "0.5"}, "detail": "UI-depth ink-density check: 0.0477 < 0.061. Existing test unchanged. Earlier scene/control/editor and UI action checks completed; verifier stops at this assertion."},
+    {"name": "older-notepad-full-smoke", "status": "failed-in-both-modes", "policies": ["legacy", "foreground"], "detail": "aurora-notepad/tests/headless_smoke.d:120: Drag down did not restore the initial window size. Same non-text failure in both modes."},
+    {"name": "standards-audit", "status": "existing-failures", "command": "python scripts/audit-aurora-standards.py", "detail": "Five core contracts pass. Existing missing-core-path errors for native Fan Control and standalone Music."}
+  ]
+}

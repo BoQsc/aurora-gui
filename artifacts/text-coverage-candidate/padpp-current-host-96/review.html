@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pad++ 96 DPI: A current host 0.75 / B foreground candidate 0.5</title>
+<style>
+  :root { color-scheme: dark; font-family: Segoe UI, sans-serif; }
+  body { margin: 0; background: #101318; color: #eef2f7; }
+  header { padding: 22px 28px; border-bottom: 1px solid #343b46; }
+  h1, h2 { margin: 0 0 10px; }
+  .pending { color: #ffd166; }
+  main { padding: 24px; display: grid; gap: 24px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  figure, .compare, .diff { margin: 0; padding: 14px; background: #191e26;
+    border: 1px solid #343b46; border-radius: 10px; }
+  figcaption { font-weight: 650; margin-bottom: 10px; }
+  img { display: block; width: 100%; height: auto; image-rendering: auto; }
+  .compare { overflow: hidden; }
+  .stage { position: relative; line-height: 0; }
+  .stage .candidate { position: absolute; inset: 0; clip-path: inset(0 50% 0 0); }
+  input[type=range] { width: 100%; margin: 14px 0 0; }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { padding: 8px 13px; border-radius: 6px; border: 1px solid #566173;
+    color: inherit; background: #252c36; cursor: pointer; }
+  .decision { padding: 16px; border-left: 4px solid #ffd166; background: #191e26; }
+  @media (max-width: 850px) { .pair { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pad++ 96 DPI: A current host 0.75 / B foreground candidate 0.5</h1>
+  <div class="pending">B approved by the project owner on 20 October 2026 — shared foreground coverage default.</div>
+</header>
+<main>
+  <section class="pair">
+    <figure><figcaption>A — current standard</figcaption>
+      <img src="baseline.png" alt="Current standard"></figure>
+    <figure><figcaption>B — approved shared default</figcaption>
+      <img src="candidate.png" alt="Proposed candidate"></figure>
+  </section>
+  <section class="compare">
+    <h2>Same-position wipe comparison</h2>
+    <div class="stage">
+      <img src="baseline.png" alt="Current standard">
+      <img class="candidate" id="candidate" src="candidate.png"
+        alt="Proposed candidate">
+    </div>
+    <input id="wipe" type="range" min="0" max="100" value="50"
+      aria-label="Candidate reveal percentage">
+    <div class="controls">
+      <button type="button" id="show-a">Show A</button>
+      <button type="button" id="show-b">Show B</button>
+      <button type="button" id="blink">Blink A/B</button>
+      <span id="amount">50% B</span>
+    </div>
+  </section>
+  
+  <section class="decision">
+    Owner selected B. <a href="../decision.json">Decision record</a>.
+  </section>
+</main>
+<script>
+  const wipe = document.getElementById('wipe');
+  const candidate = document.getElementById('candidate');
+  const amount = document.getElementById('amount');
+  let timer = null;
+  function show(value) {
+    wipe.value = value;
+    candidate.style.clipPath = `inset(0 ${100 - value}% 0 0)`;
+    amount.textContent = `${value}% B`;
+  }
+  wipe.addEventListener('input', () => { clearInterval(timer); timer = null;
+    show(Number(wipe.value)); });
+  document.getElementById('show-a').onclick = () => show(0);
+  document.getElementById('show-b').onclick = () => show(100);
+  document.getElementById('blink').onclick = () => {
+    if (timer) { clearInterval(timer); timer = null; return; }
+    let b = false; show(0);
+    timer = setInterval(() => { b = !b; show(b ? 100 : 0); }, 650);
+  };
+</script>
+</body>
+</html>

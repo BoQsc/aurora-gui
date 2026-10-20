@@ -299,6 +299,7 @@ def main() -> int:
     print("control demo: click, tree update, and live screenshot verified")
     print("editor control: text, state, selection, events, wrap, action, and screenshot verified")
     print("UI depth: menus, cascade submenu, tabs, toolbar, context menu, and pixels verified")
+    print("text weight: approved natural hinting C; minimum ink 0.039")
     print("canvas: retained shapes, colors, and text pixels verified")
     print("canvas control: live setCanvas redraw verified")
     print("aurora-host experiment verification passed")

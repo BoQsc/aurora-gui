@@ -1,0 +1,11 @@
+{
+  "default": "C",
+  "status": "experimental-refinement",
+  "owner_direction": "Keep C; continue improving D",
+  "default_changed": false,
+  "promotion_proposed": false,
+  "remaining_regressions_against_D": {
+    "monochrome": 3,
+    "RGB": 4
+  }
+}

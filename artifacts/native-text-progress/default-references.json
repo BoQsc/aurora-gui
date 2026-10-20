@@ -1,0 +1,22 @@
+[
+  {
+    "app": "host",
+    "reference": "experiments\\aurora-host\\samples\\ui-depth-reference.png",
+    "dpi": 120,
+    "width": 1225,
+    "height": 800,
+    "sha256": "07f50664ec60475d6ee4dd93d4353c9cb3531419080708c90166af201bc0b346",
+    "hinting_override": null
+  },
+  {
+    "app": "padpp",
+    "reference": "experiments\\aurora-host-notepadpp\\samples\\padpp-reference.png",
+    "dpi": 120,
+    "width": 1475,
+    "height": 950,
+    "sha256": "daeee22ddd5dfb072b212ff51badbc262afef40ac29232f20d24e1c469ce6e82",
+    "hinting_override": null,
+    "reviewed_C_differing_pixels": 0,
+    "reviewed_C_difference_bounds": null
+  }
+]

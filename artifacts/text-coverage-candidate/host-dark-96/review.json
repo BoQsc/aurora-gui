@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "title": "host-dark-96: A legacy / B foreground coverage",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\host-dark-96-legacy.png",
+    "sha256": "1dd94841deb6e721b50bc916a83c72f9da3536d384f1392da658064654f27989"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\host-dark-96-foreground.png",
+    "sha256": "1dd94841deb6e721b50bc916a83c72f9da3536d384f1392da658064654f27989"
+  },
+  "difference": {
+    "file": "difference.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\text-coverage-candidate\\review\\host-dark-96-difference.png",
+    "sha256": "4f989f49dae43ea4e59cde8563e79463d6e3fdbcfc8f9edbefcffa50af455b00"
+  },
+  "decision": "B",
+  "decision_date": "2026-10-20",
+  "decision_source": "../decision.json"
+}

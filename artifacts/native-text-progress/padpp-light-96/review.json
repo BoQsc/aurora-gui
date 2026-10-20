@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "padpp-light-96: previous B / approved C",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-light-96-baseline.png",
+    "sha256": "c44b16fa393ae2df4b956615722ebc1647679e6f5ca6da4c0d0c3280c4450688"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\padpp-light-96-natural.png",
+    "sha256": "443473b85f84a4f3cbf3ce4ee3cef527651e50d8f3cab901f1a9aed2a64250ea"
+  },
+  "difference": null,
+  "decision": "candidate",
+  "project_candidate": "C",
+  "approved_on": "2026-10-20",
+  "authorization": "Make C the default (Recommended)"
+}

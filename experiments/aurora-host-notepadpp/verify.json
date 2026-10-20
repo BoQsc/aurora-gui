@@ -19,7 +19,11 @@
       "kind": "compile",
       "command": {
         "program": "dub",
-        "args": ["build", "-b", "release"],
+        "args": [
+          "build",
+          "-b",
+          "release"
+        ],
         "workdir": "experiments/aurora-host",
         "timeout": 600000
       }
@@ -28,7 +32,9 @@
       "kind": "tests",
       "command": {
         "program": "python",
-        "args": ["experiments/aurora-host/tools/verify_experiment.py"],
+        "args": [
+          "experiments/aurora-host/tools/verify_experiment.py"
+        ],
         "workdir": ".",
         "timeout": 900000
       }
@@ -37,7 +43,12 @@
       "kind": "interaction",
       "command": {
         "program": "python",
-        "args": ["-u", "-B", "padpp.py", "--self-test"],
+        "args": [
+          "-u",
+          "-B",
+          "padpp.py",
+          "--self-test"
+        ],
         "workdir": "experiments/aurora-host-notepadpp",
         "timeout": 600000
       }
@@ -46,7 +57,7 @@
       "kind": "render",
       "reference": "experiments/aurora-host-notepadpp/samples/padpp-reference.png",
       "actual": "experiments/aurora-host-notepadpp/build/padpp.png",
-      "referenceSource": "Reviewed baseline of Aurora Pad++ at logical 1180x760 (100% display scale): menu bar, icon toolbar, four document tabs, find bar, 2,001-line benchmark editor, and segmented status bar."
+      "referenceSource": "Owner-approved natural grayscale hinting C, 2026-10-20: Aurora Pad++ at logical 1180x760 and 125% display scale (1475x950 pixels), including menu bar, icon toolbar, four document tabs, find bar, 2,001-line benchmark editor, and segmented status bar. Captured with no rendering overrides. Previous B 100% reference is preserved in artifacts/native-text-progress/padpp-B-reference-96dpi.png."
     }
   ]
 }

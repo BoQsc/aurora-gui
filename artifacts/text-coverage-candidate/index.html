@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>Aurora foreground coverage candidate</title>
+<style>body{font:16px/1.55 'Segoe UI',sans-serif;max-width:1100px;margin:35px auto;padding:0 22px;color:#172033;background:#f8fafc}
+a{color:#164bad}table{border-collapse:collapse}td,th{padding:8px 16px;border:1px solid #ccd3dc;text-align:left}
+.status{padding:16px;background:#fff3cd;border-left:4px solid #cb9611}img{max-width:100%;height:auto}code{background:#e8edf3;padding:3px}</style>
+<h1>Aurora foreground coverage candidate</h1>
+<p class="status">B was approved on 20 October 2026 and is now the shared default. The reviewed weight guard is 0.045. The original measurements remain below. Further native-fidelity work is documented separately.</p>
+<p>Start with the current Pad++ host: <a href="padpp-current-host-96/review.html">100% DPI A/B</a> ·
+<a href="padpp-current-host-144/review.html">150% DPI A/B</a>. A uses current host contrast 0.75; B uses foreground correction with maximum contrast 0.5.</p>
+<h2>Renderer comparison at 13 px</h2><p>The rows below isolate the engine change against the framework's 0.5 baseline. Lower native-reference error is a diagnostic, not a readability verdict.</p>
+<img src="font-comparison.png" alt="Segoe UI and Consolas at 13 pixels">
+<p class="status"><b>DPI correction:</b> the original software images labeled 144 DPI were actually 96 DPI. Their reviewed bytes are preserved. See <a href="capture-errata.json">the erratum</a> and <a href="../native-text-progress/index.html">corrected captures</a>.</p><h2>Applications and DPI</h2><p>These comparisons use maximum contrast 0.5 in both A and B. The host editor uses its real light/dark themes. Pad++ currently supplies a light skin only.</p>
+<table><tr><th>Application</th><th>Theme</th><th>100%</th><th>150%</th></tr><tr><td>Older Aurora Notepad</td><td>light</td><td><a href="notepad-light-96/review.html">96 DPI</a></td><td><a href="notepad-light-144/review.html">144 DPI</a></td></tr><tr><td>Older Aurora Notepad</td><td>dark</td><td><a href="notepad-dark-96/review.html">96 DPI</a></td><td><a href="notepad-dark-144/review.html">144 DPI</a></td></tr><tr><td>Host editor primitives</td><td>light</td><td><a href="host-light-96/review.html">96 DPI</a></td><td><a href="host-light-144/review.html">144 DPI</a></td></tr><tr><td>Host editor primitives</td><td>dark</td><td><a href="host-dark-96/review.html">96 DPI</a></td><td><a href="host-dark-144/review.html">144 DPI</a></td></tr><tr><td>Pad++ (normalized 0.5 baseline)</td><td>light</td><td><a href="padpp-light-96/review.html">96 DPI</a></td><td><a href="padpp-light-144/review.html">144 DPI</a></td></tr></table>
+<h2>Live Vulkan capture</h2><p>Both modes captured two changing marker states from the actual screen. Each differed from software in 12 pixels across both frames, with maximum channel error 1.</p>
+<p><a href="gpu-legacy-1.png">A GPU</a> · <a href="gpu-foreground-1.png">B GPU</a></p>
+<h2>Scope and remaining work</h2><p>This first pass adjusts grayscale coverage according to foreground luminance. It preserves shaping, glyph metrics and near-white coverage. It does not implement full background-sensitive gamma correction or repair experimental hinting.</p>
+<p><a href="README.md">Implementation, test results and known failures</a> · <a href="evidence.json">Measurements</a> · <a href="validation.json">Validation record</a></p>
+<p><a href="decision.json">Owner decision</a> · <a href="../native-text-progress/index.html">Native-fidelity progress</a></p>

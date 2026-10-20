@@ -357,6 +357,30 @@
       ]
     },
     {
+      "name": "hinting-windows-test",
+      "targetType": "executable",
+      "targetName": "aurora-hinting-windows-test",
+      "mainSourceFile": "tests/hinting_windows_regression.d",
+      "libs-windows": ["user32", "gdi32"],
+      "versions": ["AuroraHeadless"]
+    },
+    {
+      "name": "text-coverage-test",
+      "targetType": "executable",
+      "targetName": "aurora-text-coverage-test",
+      "mainSourceFile": "tests/text_coverage.d",
+      "libs-windows": ["user32", "gdi32"],
+      "versions": ["AuroraHeadless"]
+    },
+    {
+      "name": "native-alpha-test",
+      "targetType": "executable",
+      "targetName": "aurora-native-alpha-test",
+      "mainSourceFile": "tests/native_alpha.d",
+      "libs-windows": ["user32", "gdi32"],
+      "versions": ["AuroraHeadless"]
+    },
+    {
       "name": "font-quality-test",
       "targetType": "executable",
       "targetName": "aurora-font-quality-test",
@@ -373,6 +397,14 @@
       "versions": [
         "AuroraHeadless"
       ]
+    },
+    {
+      "name": "window-dpi-test",
+      "targetType": "executable",
+      "targetName": "aurora-window-dpi-test",
+      "mainSourceFile": "tests/window_dpi_regression.d",
+      "versions": ["AuroraHeadless"],
+      "libs-windows": ["user32", "gdi32"]
     },
     {
       "name": "compositor-test",

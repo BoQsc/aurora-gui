@@ -1,0 +1,1285 @@
+{
+  "reference": "https://learn.microsoft.com/en-us/typography/cleartype/truetypecleartype",
+  "comparisons": [
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 839,
+      "mean_absolute_error": 26.842669845053635
+    },
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 839,
+      "mean_absolute_error": 23.01311084624553
+    },
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1036,
+      "mean_absolute_error": 10.20945945945946
+    },
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1036,
+      "mean_absolute_error": 6.911196911196911
+    },
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1766,
+      "mean_absolute_error": 24.855039637599095
+    },
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1766,
+      "mean_absolute_error": 19.712910532276332
+    },
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3436,
+      "mean_absolute_error": 7.718277066356229
+    },
+    {
+      "variant": "control",
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3436,
+      "mean_absolute_error": 5.099825378346915
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 855,
+      "mean_absolute_error": 7.2409356725146194
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 855,
+      "mean_absolute_error": 4.231578947368421
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1014,
+      "mean_absolute_error": 6.437869822485207
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1014,
+      "mean_absolute_error": 3.4615384615384617
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1737,
+      "mean_absolute_error": 8.983304548071388
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1737,
+      "mean_absolute_error": 6.002878526194588
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 3.98450665941832
+    },
+    {
+      "variant": "control",
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 2.1299266104919816
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 1105,
+      "mean_absolute_error": 73.93212669683258
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 1105,
+      "mean_absolute_error": 64.60995475113123
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1325,
+      "mean_absolute_error": 51.62264150943396
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1325,
+      "mean_absolute_error": 44.53433962264151
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 25.409805735430158
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 22.99491211840888
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 6.193013319929631
+    },
+    {
+      "variant": "control",
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 4.32998240764011
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 1086,
+      "mean_absolute_error": 72.37569060773481
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 1086,
+      "mean_absolute_error": 64.38489871086556
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1242,
+      "mean_absolute_error": 52.65780998389694
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1242,
+      "mean_absolute_error": 45.48228663446055
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 28.462505612932194
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 23.25684777727885
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 5.196415418610361
+    },
+    {
+      "variant": "control",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 3.322121286520992
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 917,
+      "mean_absolute_error": 53.5474372955289
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 917,
+      "mean_absolute_error": 47.57688113413304
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1184,
+      "mean_absolute_error": 56.926520270270274
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1184,
+      "mean_absolute_error": 51.005067567567565
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1865,
+      "mean_absolute_error": 50.82627345844504
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1865,
+      "mean_absolute_error": 43.186058981233245
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 6.865132630233301
+    },
+    {
+      "variant": "control",
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 4.240332374560563
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 799,
+      "mean_absolute_error": 14.4630788485607
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 799,
+      "mean_absolute_error": 11.261576971214017
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1036,
+      "mean_absolute_error": 10.20945945945946
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1036,
+      "mean_absolute_error": 6.911196911196911
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1748,
+      "mean_absolute_error": 19.859267734553775
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1748,
+      "mean_absolute_error": 15.467391304347826
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3436,
+      "mean_absolute_error": 7.718277066356229
+    },
+    {
+      "variant": "delta-compat",
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3436,
+      "mean_absolute_error": 5.099825378346915
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 855,
+      "mean_absolute_error": 7.2409356725146194
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 855,
+      "mean_absolute_error": 4.231578947368421
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1014,
+      "mean_absolute_error": 6.437869822485207
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1014,
+      "mean_absolute_error": 3.4615384615384617
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1737,
+      "mean_absolute_error": 8.983304548071388
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1737,
+      "mean_absolute_error": 6.002878526194588
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 3.98450665941832
+    },
+    {
+      "variant": "delta-compat",
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 2.1299266104919816
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 953,
+      "mean_absolute_error": 23.94123819517314
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 953,
+      "mean_absolute_error": 20.661070304302203
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1236,
+      "mean_absolute_error": 27.12135922330097
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1236,
+      "mean_absolute_error": 22.796116504854368
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 25.409805735430158
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 22.99491211840888
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 6.193013319929631
+    },
+    {
+      "variant": "delta-compat",
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 4.32998240764011
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 966,
+      "mean_absolute_error": 26.506211180124225
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 966,
+      "mean_absolute_error": 21.230848861283643
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1171,
+      "mean_absolute_error": 23.204953031596926
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1171,
+      "mean_absolute_error": 19.15542271562767
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 28.462505612932194
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 23.25684777727885
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 5.196415418610361
+    },
+    {
+      "variant": "delta-compat",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 3.322121286520992
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 859,
+      "mean_absolute_error": 25.57857974388824
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 859,
+      "mean_absolute_error": 20.324796274738066
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1081,
+      "mean_absolute_error": 23.91581868640148
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1081,
+      "mean_absolute_error": 19.716928769657724
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1754,
+      "mean_absolute_error": 20.377423033067274
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1754,
+      "mean_absolute_error": 16.716647662485748
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 6.865132630233301
+    },
+    {
+      "variant": "delta-compat",
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 4.240332374560563
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 810,
+      "mean_absolute_error": 16.441975308641975
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 810,
+      "mean_absolute_error": 12.328395061728395
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1044,
+      "mean_absolute_error": 11.60632183908046
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1044,
+      "mean_absolute_error": 8.265325670498084
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1755,
+      "mean_absolute_error": 19.46324786324786
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1755,
+      "mean_absolute_error": 15.374928774928774
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3453,
+      "mean_absolute_error": 9.587604981175788
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3453,
+      "mean_absolute_error": 6.887054735013032
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 857,
+      "mean_absolute_error": 10.04200700116686
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 857,
+      "mean_absolute_error": 6.899649941656943
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1017,
+      "mean_absolute_error": 9.041297935103245
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1017,
+      "mean_absolute_error": 5.667649950835791
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1725,
+      "mean_absolute_error": 9.151884057971014
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1725,
+      "mean_absolute_error": 6.6347826086956525
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 3.98450665941832
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 2.1299266104919816
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 953,
+      "mean_absolute_error": 25.929695697796433
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 953,
+      "mean_absolute_error": 23.27806925498426
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1225,
+      "mean_absolute_error": 26.077551020408162
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1225,
+      "mean_absolute_error": 21.660408163265306
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 25.409805735430158
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 22.99491211840888
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 6.193013319929631
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 4.32998240764011
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 962,
+      "mean_absolute_error": 26.35031185031185
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 962,
+      "mean_absolute_error": 21.593555093555093
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1175,
+      "mean_absolute_error": 23.685106382978724
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1175,
+      "mean_absolute_error": 19.34978723404255
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 28.462505612932194
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 23.25684777727885
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 5.196415418610361
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 3.322121286520992
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 844,
+      "mean_absolute_error": 26.317535545023695
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 844,
+      "mean_absolute_error": 22.03436018957346
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1064,
+      "mean_absolute_error": 23.768796992481203
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1064,
+      "mean_absolute_error": 19.62124060150376
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1762,
+      "mean_absolute_error": 23.346765039727583
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1762,
+      "mean_absolute_error": 18.959137343927356
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 6.865132630233301
+    },
+    {
+      "variant": "control-raw-x",
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 4.240332374560563
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 810,
+      "mean_absolute_error": 16.441975308641975
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 810,
+      "mean_absolute_error": 12.328395061728395
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1044,
+      "mean_absolute_error": 11.60632183908046
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1044,
+      "mean_absolute_error": 8.265325670498084
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1755,
+      "mean_absolute_error": 19.46324786324786
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1755,
+      "mean_absolute_error": 15.374928774928774
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3453,
+      "mean_absolute_error": 9.587604981175788
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3453,
+      "mean_absolute_error": 6.887054735013032
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 857,
+      "mean_absolute_error": 10.04200700116686
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 857,
+      "mean_absolute_error": 6.899649941656943
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1017,
+      "mean_absolute_error": 9.041297935103245
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1017,
+      "mean_absolute_error": 5.667649950835791
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1725,
+      "mean_absolute_error": 9.151884057971014
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1725,
+      "mean_absolute_error": 6.6347826086956525
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 3.98450665941832
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3679,
+      "mean_absolute_error": 2.1299266104919816
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 952,
+      "mean_absolute_error": 25.073529411764707
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 952,
+      "mean_absolute_error": 22.47689075630252
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1226,
+      "mean_absolute_error": 25.671288743882545
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1226,
+      "mean_absolute_error": 21.27732463295269
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 25.409805735430158
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2162,
+      "mean_absolute_error": 22.99491211840888
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 6.193013319929631
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3979,
+      "mean_absolute_error": 4.32998240764011
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 958,
+      "mean_absolute_error": 23.836116910229645
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 958,
+      "mean_absolute_error": 19.769311064718163
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1173,
+      "mean_absolute_error": 22.053708439897697
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1173,
+      "mean_absolute_error": 18.061381074168796
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 28.462505612932194
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 2227,
+      "mean_absolute_error": 23.25684777727885
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 5.196415418610361
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 4073,
+      "mean_absolute_error": 3.322121286520992
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "ink_pixels": 845,
+      "mean_absolute_error": 26.702958579881656
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "ink_pixels": 845,
+      "mean_absolute_error": 22.286390532544377
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "ink_pixels": 1061,
+      "mean_absolute_error": 23.05937794533459
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "ink_pixels": 1061,
+      "mean_absolute_error": 18.963242224316684
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "ink_pixels": 1761,
+      "mean_absolute_error": 22.91198182850653
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "ink_pixels": 1761,
+      "mean_absolute_error": 18.59398069278819
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 6.865132630233301
+    },
+    {
+      "variant": "delta-compat-raw-x",
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "ink_pixels": 3129,
+      "mean_absolute_error": 4.240332374560563
+    }
+  ]
+}

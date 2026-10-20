@@ -1,3 +1,80 @@
+## Refined native text candidate — opt-in (2026-10-20)
+
+- The owner chose to keep C and continue improving D. C remains the default;
+  the reviewed `native-next` profile and its evidence remain unchanged.
+- `AURORA_TEXT_EXPERIMENT=native-refined` adds a pure-D adaptation of Microsoft
+  Terminal's MIT-licensed grayscale gamma/foreground model to D's masks. Known
+  thin families are identified from OpenType names, including renamed files.
+  Opacity stays outside the color key; one raw outline serves bounded variants.
+  Experimental gamma defaults to 1.8 (`AURORA_TEXT_GAMMA`, clamped 1.0–2.2).
+- The refinement improves all 144 native monochrome comparisons over C,
+  lowering mean error from 12.862 to 10.427 (18.9%). The separate opaque RGB
+  corpus improves 276/288 with 12 equal and none worse than C. Small Courier
+  New regressions against D remain visible; this is not a promotion.
+- An experimental Vulkan shader now rounds glyph opacity to A8 before blending,
+  matching software. Both accepted live probe frames agree exactly. C/D keep
+  their original shader bytes. C corpus and matched application pixels remain
+  unchanged, including the live Pad++ comparison at the same desktop scale.
+- Framework/cache/metadata tests, isolated releases, and full host/Pad++
+  workflows are recorded in [the refinement report](artifacts/native-text-refined/README.md).
+  The host's approved ink guard remains 0.039. Native rasterization, dropout and
+  shaping gaps remain; no native API is added to production rendering.
+
+## Native scan-conversion candidate D — opt-in (2026-10-20)
+
+- `AURORA_TEXT_EXPERIMENT=native-next` enables closing-edge sample inclusion,
+  native half-alpha quantization and exact-signature VacuFormRound compatibility.
+  C remains the approved default. No native rasterizer enters application code.
+- D improves 134 of 144 same-origin Windows grayscale comparisons against C,
+  with 10 equal and none worse. Average error falls from 12.862 to 11.689.
+  Every approved C corpus/application capture retains its pixels.
+- C/D framework and full host/Pad++ checks pass. Software/Vulkan captures and
+  same-size app reviews are preserved in the
+  [candidate evidence](artifacts/native-text-next/README.md). D's GPU/software
+  differences are at most one channel level. Exact native parity is unfinished.
+- Other interpreter, curve and gamma hypotheses are preserved with their
+  regressions. Generated native fonts distinguish edge/dropout behavior from
+  instruction changes; unsupported minimum-stroke heuristics are excluded.
+- The comparison tool now reports the actual natural default and experiment
+  mode instead of labeling unset hinting as disabled.
+
+## Shared text coverage and natural grayscale hinting (2026-10-20)
+
+- The owner approved foreground-aware coverage B after the light/dark, DPI,
+  application and native-reference review. `GlyphAtlas` now owns this default;
+  Canvas supplies foreground color and both renderers consume the same A8 masks.
+  Raw masks are rasterized once, with bounded luminance variants and opacity
+  applied afterwards. Near-white coverage and layout remain unchanged.
+- Removed the host's private `0.75` contrast override. It inherits the core
+  maximum `0.5`; `AURORA_TEXT_COVERAGE=legacy` restores the previous transfer.
+  At B approval the host ink fixture was `0.0477` with a `0.045` guard.
+  The decision and original failed checks remain in
+  [the coverage review](artifacts/text-coverage-candidate/README.md).
+- The shared TrueType hinter now follows MSIRP, SCFS and ISECT operand order,
+  rotates MINDEX without overlapping D slices, bounds point-zone access with
+  controlled fallback, and preserves fractional hinted phantom origins.
+  Natural DELTAP/SHPIX compatibility suppresses legacy outline dents, retaining
+  vertical composite accent placement and honoring INSTCTRL native-mode opt-outs.
+  Version-1 gasp ranges select grid-fitting/symmetric smoothing, verified with
+  generated-font DirectWrite probes.
+  Font-selected 8×1/4×4 sampling and matching phase snapping fix the remaining
+  Tahoma discrepancy and Inter's off-grid ink loss without weakening its test.
+  Instruction unit tests and a 7,200-case Windows-font sweep cover the fixes.
+- The owner approved natural hinting C and its 0.039 host ink guard after live
+  Pad++ B/C review. It is now the shared default and lowers native-reference
+  error in all 144 cases across nine fonts, including Inter. `AURORA_HINTING=0`
+  retains unhinted B behavior; exact Windows pixel parity remains unachieved.
+  See [the native progress report](artifacts/native-text-progress/README.md)
+  for reproducible measurements, live GPU evidence and remaining work.
+- Vendor checksums include the changed sources, new focused tests and DUB
+  configurations. The standards audit now covers dependency-based experiments
+  and verifies shared coverage and natural hinting defaults.
+- The headless platform now preserves injected DPI/client metrics so test
+  resize events survive native readback. Presenting physical frames no longer
+  overwrites logical client size. A window-level DPI regression and capture
+  assertions prevent the prior mislabeled 144-DPI evidence; original images
+  remain preserved with an erratum and corrected software captures.
+
 ## Vendor patch: native mouse leave clears hover (`platform/win32.d`, `window.d`)
 
 - Windows stops delivering `WM_MOUSEMOVE` once the pointer crosses the client

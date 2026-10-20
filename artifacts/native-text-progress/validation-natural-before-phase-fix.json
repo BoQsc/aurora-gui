@@ -1,0 +1,84 @@
+{
+  "date": "2026-10-20",
+  "coverage_default": "foreground",
+  "hinting_default": "off",
+  "hinting_under_test": "natural",
+  "source_sha256": {
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\hinter.d": "12f57e59b46efefe9afd2a1827b3d8cd6d6159b11d883339611885577238ced1",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\truetype.d": "0dceba88654c8c11e68b066be19b287c40181718f20a9987399a73b3070328f3",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\atlas.d": "f393de256c4b5fa8c40871902af941b06ea543c59301c010c68de911b2a955b7",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83"
+  },
+  "checks": [
+    {
+      "name": "host-verifier",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "experiments/aurora-host/tools/verify_experiment.py"
+          ],
+          "workdir": ".",
+          "exit_code": 1,
+          "output": "aurora-host verification failed: command failed: C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe -B C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\tools\\ui_depth_test.py --out-dir C:\\Users\\WINDOW~1\\AppData\\Local\\Temp\\aurora-host-psw38noc\nexpected exit 0, got 1\nevent: {\"action\": \"file.save\", \"event\": \"action\", \"node\": \"file-menu\"}\nevent: {\"action\": \"view.wrap\", \"event\": \"action\", \"node\": \"edit-menu\"}\nevent: {\"action\": \"edit.matchCase\", \"event\": \"action\", \"node\": \"edit-menu\"}\nevent: {\"action\": \"file.open.recent.notes\", \"event\": \"action\", \"node\": \"file-menu\"}\nevent: {\"action\": \"doc.welcome\", \"event\": \"action\", \"node\": \"docs\"}\nevent: {\"action\": \"file.save\", \"event\": \"action\", \"node\": \"tb-save\"}\nevent: {\"action\": \"edit.copy\", \"event\": \"action\", \"node\": \"editor\"}\nui depth test failed: light-surface text is washing out (ink=0.0416)\nTraceback (most recent call last):\n  File \"C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\tools\\ui_depth_test.py\", line 447, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\tools\\ui_depth_test.py\", line 417, in main\n    require(ink >= 0.045,\n    ~~~~~~~^^^^^^^^^^^^^^\n            f\"light-surface text is washing out (ink={ink:.4f})\")\n            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\tools\\ui_depth_test.py\", line 18, in require\n    raise RuntimeError(message)\nRuntimeError: light-surface text is washing out (ink=0.0416)\n\n"
+        }
+      ]
+    },
+    {
+      "name": "padpp-self-test",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "-u",
+            "-B",
+            "padpp.py",
+            "--self-test",
+            "--host",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\host-release\\aurora-host-experiment.exe"
+          ],
+          "workdir": "experiments\\aurora-host-notepadpp",
+          "exit_code": 0,
+          "output": "{\n  \"large_file\": {\n    \"name\": \"large-2000.txt\",\n    \"bytes\": 214000,\n    \"lines\": 2001,\n    \"load_seconds\": 0.34044210000138264,\n    \"roundtrip_seconds\": 0.008305499999551103,\n    \"switch_seconds\": 0.19949250000354368,\n    \"find_seconds\": 0.1014774000068428,\n    \"load_mib_per_second\": 0.5994743414815872,\n    \"roundtrip_mib_per_second\": 24.572428357349708\n  },\n  \"host_working_set_mb\": 276.96484375,\n  \"screenshot_pixels\": {\n    \"width\": 1475,\n    \"height\": 950,\n    \"samples\": 82427,\n    \"dark_fraction\": 0.029601950817086633,\n    \"bright_fraction\": 0.9293192764506776,\n    \"mean_luminance\": 236.84535477452778,\n    \"quantized_colors\": 47\n  },\n  \"chrome_heights\": {\n    \"menubar\": 30,\n    \"toolbar\": 42,\n    \"docs\": 34,\n    \"findbar\": 38,\n    \"statusbar\": 26\n  },\n  \"editor_gutter\": {\n    \"dark_pixels\": 572,\n    \"sample_width\": 45\n  },\n  \"file_menu\": {\n    \"width\": 209,\n    \"height\": 146,\n    \"items\": 8\n  },\n  \"editor_context_menu\": {\n    \"width\": 216,\n    \"height\": 216,\n    \"items\": 12\n  },\n  \"tabs\": 4,\n  \"dirty_after_save\": false,\n  \"screenshot\": \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n  \"screenshots\": [\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-menu.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-context.png\"\n  ]\n}\naurora pad++ self-test passed\nself-test: startup\nself-test: File menu and new tab\nself-test: document tab clicks\nself-test: menu screenshot\nself-test: language menu\nself-test: editor context menu and find\nself-test: delayed hover hints\nself-test: find-bar replace and view toggles\nself-test: live find counts, whole word, and find previous\nself-test: checked menu state and zoom\nself-test: save and open\nself-test: large document benchmark\nbenchmark: capture current editor (214000 chars target)\nbenchmark: setText\nbenchmark: loaded in 0.34s {'setText': 0.0113571999972919, 'setSelection': 0.3290802999981679}; getText\nbenchmark: round trip in 0.01s; switch\nbenchmark: switch in 0.20s; find\nbenchmark: find in 0.101s\nself-test: screenshot\n"
+        }
+      ]
+    },
+    {
+      "name": "font-quality",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\font-quality\\font-quality.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 1,
+          "output": "\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\tests\\font_quality_regression.d(64): Horizontal phase must conserve ink within A8 rounding error\n----------------\n0x0000000140128237\n0x0000000140127EDB\n0x0000000140001EB7\n0x00000001401443C3\n0x000000014014421F\n0x000000014014431F\n0x000000014014421F\n0x000000014014412E\n0x0000000140128179\n0x0000000140002004\n0x0000000140194ACE\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n"
+        }
+      ]
+    },
+    {
+      "name": "dpi",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\dpi\\dpi.exe"
+          ],
+          "workdir": "vendor\\aurora-d-0.4.5",
+          "exit_code": 0,
+          "output": "DPI 120: logical 120x80 -> framebuffer 150x100; font 21px\nDPI 144: logical 120x80 -> framebuffer 180x120; font 26px\nDPI 192: logical 120x80 -> framebuffer 240x160; font 34px\nHigh-DPI geometry, physical glyphs, and sharp grayscale mode passed.\n"
+        }
+      ]
+    }
+  ],
+  "release_binaries": {
+    "build-validation\\native-text-progress\\host-release\\aurora-host-experiment.exe": {
+      "bytes": 3184128,
+      "sha256": "1ece3b571002c49b57aefaf1a5a7aafdb94add17185a13440b86b8e8f0ab810c"
+    },
+    "build-validation\\native-text-progress\\notepad-release\\aurora-notepad.exe": {
+      "bytes": 2764800,
+      "sha256": "46c0001a568a31f3d6e0a87d32910b9818358cd167815bdf12269fe76bff6f96"
+    }
+  },
+  "known_failure": "Older Notepad tests/headless_smoke.d:120 drag/restore assertion; reproduced in both coverage modes in original validation."
+}

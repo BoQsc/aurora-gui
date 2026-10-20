@@ -1,0 +1,12 @@
+{
+  "role": "Exact shared-text sources for the reviewed D candidate. C was retained by owner choice.",
+  "original_source_sha256": {
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\hinter.d": "d4a94d0c378d60514acbe7a494c5ce07f7f39d16ae6e13d1c918a5110808223b",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\truetype.d": "40106607621405f7403d7d9910ed53413c73152604f5e6b19bc37fdb6ee309cd",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\rasterizer.d": "08484e964cb47ada1f09d01b5f2e296163d764e85af9db98e052cdc0666cf786",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\atlas.d": "ad2dd048ca03178d65af40867fb9222b911caac06a9bd2f0295078ecf6e60378",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83",
+    "vendor\\aurora-d-0.4.5\\tests\\font_quality.d": "0c223ed3e6bd29154058d1a14f0789d0ffaa3b5611acca4e8e7cb890dc2b4959",
+    "scripts\\compare-font-rendering.py": "c5c3bda68207a39ad4dbc7573d988c38f4681ab3a24c644775af2deee44ccce9"
+  }
+}

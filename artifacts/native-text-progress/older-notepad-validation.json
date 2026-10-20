@@ -1,0 +1,40 @@
+[
+  {
+    "command": [
+      "dmd",
+      "-i",
+      "-version=AuroraHeadless",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+      "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+      "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\older-notepad",
+      "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\older-notepad\\smoke.exe",
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\tests\\headless_smoke.d",
+      "user32.lib",
+      "gdi32.lib",
+      "shell32.lib",
+      "wininet.lib"
+    ],
+    "workdir": ".",
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\older-notepad\\smoke.exe"
+    ],
+    "workdir": "aurora-notepad",
+    "exit_code": 1,
+    "output": "\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\tests\\headless_smoke.d(120): Drag down did not restore the initial window size\n----------------\n0x0000000140139DE7\n0x0000000140139A8B\n0x00000001400024EC\n0x00000001401581B3\n0x000000014015800F\n0x000000014015810F\n0x000000014015800F\n0x0000000140157F1E\n0x0000000140139D29\n0x00000001400034C4\n0x00000001401AC66E\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n",
+    "hinting": "0"
+  },
+  {
+    "command": [
+      "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-progress\\validation\\older-notepad\\smoke.exe"
+    ],
+    "workdir": "aurora-notepad",
+    "exit_code": 1,
+    "output": "\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\tests\\headless_smoke.d(120): Drag down did not restore the initial window size\n----------------\n0x0000000140139DE7\n0x0000000140139A8B\n0x00000001400024EC\n0x00000001401581B3\n0x000000014015800F\n0x000000014015810F\n0x000000014015800F\n0x0000000140157F1E\n0x0000000140139D29\n0x00000001400034C4\n0x00000001401AC66E\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n",
+    "hinting": "natural"
+  }
+]

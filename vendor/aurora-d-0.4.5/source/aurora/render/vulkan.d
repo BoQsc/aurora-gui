@@ -10,11 +10,12 @@ import aurora.surface : Surface;
 import aurora.types : Rect, Size, maxInt, minInt;
 import aurora.vulkan.api;
 import aurora.vulkan.shaders : fragmentShaderSpirv, imageFragmentShaderSpirv,
-    vertexShaderSpirv;
+    vertexShaderSpirv, quantizedFragmentShaderSpirv;
 import core.stdc.config : c_ulong;
 import core.stdc.string : memcpy;
 import std.algorithm : max, min;
 import std.conv : to;
+import std.process : environment;
 import std.string : fromStringz, toStringz;
 
 private struct HostBuffer
@@ -1315,7 +1316,12 @@ final class VulkanRenderer : RenderBackend
 
     private void createPipelines()
     {
-        _pipeline = createGraphicsPipeline(fragmentShaderSpirv,
+        // The refined text experiment rounds opacity to A8 before blending,
+        // matching software text. Approved C and reviewed D keep their shader.
+        const refinedText = environment.get("AURORA_HINTING", "natural") == "natural" &&
+            environment.get("AURORA_TEXT_COVERAGE", "foreground") == "foreground" &&
+            environment.get("AURORA_TEXT_EXPERIMENT", "") == "native-refined";
+        _pipeline = createGraphicsPipeline(refinedText ? quantizedFragmentShaderSpirv : fragmentShaderSpirv,
             "creating the Vulkan glyph graphics pipeline (check embedded SPIR-V compatibility)");
         _imagePipeline = createGraphicsPipeline(imageFragmentShaderSpirv,
             "creating the Vulkan RGBA image graphics pipeline (check embedded SPIR-V compatibility)");

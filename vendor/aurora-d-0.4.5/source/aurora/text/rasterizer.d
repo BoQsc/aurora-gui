@@ -150,10 +150,15 @@ void rasterizeCoverage(const(OutlineEdge)[] edges, ubyte[] alpha,
 /// Experimental scan-conversion lattice for native-compatibility work.
 /// Unlike area coverage, this counts samples and intentionally quantizes alpha.
 void rasterizeSampledCoverage(const(OutlineEdge)[] edges, ubyte[] alpha,
-    int width, int height, int samplesX, int samplesY)
+    int width, int height, int samplesX, int samplesY, bool nativeEdges = false)
 {
     assert(width >= 0 && height >= 0 && samplesX > 0 && samplesY > 0);
     assert(alpha.length == cast(size_t) width * height);
+    if (nativeEdges)
+    {
+        rasterizeNativeSampledCoverage(edges, alpha, width, height, samplesX, samplesY);
+        return;
+    }
     alpha[] = 0;
     struct Crossing { double x; int winding; }
     Crossing[] crossings;
@@ -190,6 +195,85 @@ void rasterizeSampledCoverage(const(OutlineEdge)[] edges, ubyte[] alpha,
         foreach (x; 0 .. width)
             alpha[cast(size_t) y * width + x] = cast(ubyte) ((counts[x] * 255 + total / 2) / total);
     }
+}
+
+/// Opt-in native edge experiment. Closing-edge ties are included, and exact
+/// half-alpha quantization ties round down. Keep disjoint/overlapping spans a
+/// union so a shared boundary never counts the same subpixel twice.
+private void rasterizeNativeSampledCoverage(const(OutlineEdge)[] edges, ubyte[] alpha,
+    int width, int height, int samplesX, int samplesY)
+{
+    alpha[] = 0;
+    if (width == 0 || height == 0 || edges.length == 0) return;
+    struct Crossing { double x; int winding; }
+    Crossing[] crossings;
+    int[] counts = new int[width];
+    bool[] hits = new bool[cast(size_t) width * samplesX];
+    foreach (y; 0 .. height)
+    {
+        counts[] = 0;
+        foreach (sy; 0 .. samplesY)
+        {
+            hits[] = false;
+            const yc = y + (sy + 0.5) / samplesY;
+            crossings.length = 0;
+            foreach (edge; edges)
+            {
+                if (yc < min(edge.y0, edge.y1) || yc >= max(edge.y0, edge.y1)) continue;
+                const t = (yc - edge.y0) / (edge.y1 - edge.y0);
+                crossings ~= Crossing(edge.x0 + t * (edge.x1 - edge.x0), edge.y1 > edge.y0 ? 1 : -1);
+            }
+            crossings.sort!((a, b) => a.x < b.x);
+            int winding;
+            double left;
+            foreach (crossing; crossings)
+            {
+                const previous = winding;
+                winding += crossing.winding;
+                if (previous == 0 && winding != 0) left = crossing.x;
+                if (previous != 0 && winding == 0)
+                {
+                    const start = max(0.0, min(cast(double) width, left));
+                    const stop = max(0.0, min(cast(double) width, crossing.x));
+                    if (stop <= start) continue;
+                    const first = max(0, cast(int) ceil(start * samplesX - 0.5));
+                    const last = min(width * samplesX, cast(int) floor(stop * samplesX - 0.5) + 1);
+                    foreach (sample; first .. last) hits[sample] = true;
+                }
+            }
+            foreach (sample, covered; hits)
+                if (covered) ++counts[sample / samplesX];
+        }
+        const total = samplesX * samplesY;
+        foreach (x; 0 .. width)
+            alpha[cast(size_t) y * width + x] =
+                cast(ubyte) ((counts[x] * 255 + (total - 1) / 2) / total);
+    }
+}
+
+unittest
+{
+    OutlineEdge[] box(double x0, double y0, double x1, double y1)
+    {
+        return [OutlineEdge(x0, y0, x1, y0), OutlineEdge(x1, y0, x1, y1),
+            OutlineEdge(x1, y1, x0, y1), OutlineEdge(x0, y1, x0, y0)];
+    }
+    ubyte[] pixels = new ubyte[3];
+    rasterizeSampledCoverage(box(0.125, 0, 0.375, 1), pixels, 3, 1, 4, 4);
+    assert(pixels == [64, 0, 0], "Approved C retains its half-open closing edge");
+    rasterizeSampledCoverage(box(0.125, 0, 0.375, 1), pixels, 3, 1, 4, 4, true);
+    assert(pixels == [127, 0, 0], "Native closing-edge ties and half-alpha quantization");
+    rasterizeSampledCoverage(box(0, 0, 0.125, 1), pixels, 3, 1, 4, 4, true);
+    assert(pixels == [64, 0, 0]);
+    rasterizeSampledCoverage(box(0.125, 0, 0.375, 1) ~ box(0.375, 0, 0.625, 1),
+        pixels, 3, 1, 4, 4, true);
+    assert(pixels == [191, 0, 0], "A shared sample boundary contributes only once");
+    rasterizeSampledCoverage(box(0.125, 0, 0.125, 1), pixels, 3, 1, 4, 4, true);
+    assert(pixels == [0, 0, 0], "Zero-width outlines must not acquire ink");
+    rasterizeSampledCoverage(box(-2, -1, 2, 2) ~ box(0, 0, 2, 1), pixels, 3, 1, 4, 4, true);
+    assert(pixels == [255, 255, 0], "Nonzero winding is a union, including clipped contours");
+    rasterizeSampledCoverage(null, pixels, 3, 1, 4, 4, true);
+    assert(pixels == [0, 0, 0]);
 }
 
 unittest

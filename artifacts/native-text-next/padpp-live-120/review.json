@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "Pad++ live 125% DPI: approved C / candidate D",
+  "status": "reviewed-keep-C",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\padpp-live-C.png",
+    "sha256": "559c20a8aa2a78f3ea1bf739f75fd075fda99e7df94e6cbf700e63af67357eeb"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-next\\padpp-live-D.png",
+    "sha256": "a57f42190e2c47c2bdbf1bdbebdecc72c974f222eabf9e35262ed7da301ac859"
+  },
+  "difference": null,
+  "decision": "baseline",
+  "project_choice": "C",
+  "authorization": "Keep C; continue improving D",
+  "reviewed_on": "2026-10-20"
+}

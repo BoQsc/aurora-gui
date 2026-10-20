@@ -42,6 +42,17 @@ class AuroraStandardsAuditTests(unittest.TestCase):
         self.assertIn("sharp font rasterization is the window default", contracts)
         self.assertIn(
             "native-weight grayscale contrast is the atlas default", contracts)
+        self.assertIn("foreground-aware text coverage is the atlas default", contracts)
+        self.assertIn("natural grayscale hinting is the shared font default", contracts)
+
+    def test_dependency_based_host_is_audited(self):
+        packages = {p["manifest"]: p for p in self.result["packages"]}
+        self.assertTrue(packages["experiments/aurora-host/dub.json"]["uses_canonical_core"])
+
+    def test_native_and_audio_only_programs_are_not_toolkit_packages(self):
+        names = {p["name"] for p in self.result["packages"]}
+        self.assertNotIn("aurora-fan-control", names)
+        self.assertNotIn("aurora-music", names)
 
     def test_frameless_window_shell_is_a_core_contract(self):
         self.assertIn(

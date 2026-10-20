@@ -1,7 +1,7 @@
 # Aurora quality ratchet
 
 Aurora applications should improve the framework, not accumulate private fixes.
-Every application in this repository compiles the same canonical source tree at
+Aurora-D applications in this repository compile the same canonical source tree at
 `vendor/aurora-d-0.4.5/source`, so a corrected framework default reaches old and
 new programs on their next rebuild.
 
@@ -82,13 +82,37 @@ captures when those renderers do not produce identical pixels.
 
 ## Current promotion backlog
 
-No candidates are currently awaiting review.
+- **Native scan-conversion compatibility — D under refinement, 2026-10-20.** Closing-edge
+  samples, native half-alpha quantization and recognized VacuFormRound behavior
+  improve 134 of 144 comparisons against C, with 10 equal and no regressions.
+  The owner chose to keep C and continue improving D. The reviewed D remains
+  opt-in with `AURORA_TEXT_EXPERIMENT=native-next`.
+  See [the C/D evidence](artifacts/native-text-next/README.md).
+  The separate `native-refined` experiment adds bounded foreground/gamma
+  correction and matching A8 opacity rounding on Vulkan. It improves 144/144
+  monochrome and 276/288 opaque RGB cases against C (12 RGB ties), but retains
+  small Courier New regressions against D. C stays the default while those
+  gaps are investigated. See [the refinement evidence](artifacts/native-text-refined/README.md).
 
 This backlog is intentionally short. Add an item when a local workaround is
 found; remove it only after the behavior and its regression test live in Aurora.
 
 ## Approved promotions
 
+- **Natural grayscale hinting — C approved 2026-10-20.** The owner selected
+  “Make C the default” after the live Pad++ B/C review. Repaired instructions,
+  font-selected sampling and matching phases improve all 144 native comparisons.
+  C is now the shared default; `AURORA_HINTING=0` restores unhinted B behavior.
+  The reviewed 125% fixture and DPI sweep justify the ink guard change from
+  0.045 to 0.039. Exact Windows parity remains unachieved. See the
+  [decision record](artifacts/native-text-progress/decision.json).
+- **Foreground-aware coverage — B approved 2026-10-20.** The owner selected B
+  after light/dark, old/new application, DPI and native-reference comparisons.
+  Aurora now owns the foreground-aware default and the host's private 0.75
+  override is removed. `legacy` restores the previous framework transfer.
+  The reviewed lighter fixture justifies the documented ink guard update from
+  0.061 to 0.045; original failures are preserved in the
+  [decision record](artifacts/text-coverage-candidate/decision.json).
 - **OpenCode font bootstrap — B approved 2026-09-27.** Aurora's `GlyphAtlas`
   retains ownership of the `0.5` coverage-contrast default. The project owner
   approved removal of the duplicate OpenCode helper after matched 1200×800 A/B

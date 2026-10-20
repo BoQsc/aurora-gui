@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-20",
+  "status": "keep-C-and-refine-D",
+  "decision": "C",
+  "authorization": "Keep C; continue improving D",
+  "default_changed": false,
+  "review": "padpp-live-120/review.html",
+  "image_hashes": {
+    "artifacts\\native-text-next\\host-dark-144": {
+      "baseline": "b4ec4e5be03a1a1f6b3b2d4094b13e90277b3e467ee4df1ec62e6ea8475fb2fe",
+      "candidate": "9714d3f6774b9b64eb3e590cb2e6772a4910ea9a2a7bb75262a903109fb4f3af"
+    },
+    "artifacts\\native-text-next\\host-dark-96": {
+      "baseline": "b661513fa5ad7ec27315cb64cc313dfe81c4727760cbc8f4e43af18bec03fa32",
+      "candidate": "25faf39e4536e8a009645af0c590e25696ce6437d23a5e9306da75054ef81f91"
+    },
+    "artifacts\\native-text-next\\host-light-144": {
+      "baseline": "fd584c80735dd552790bb446c41b06ea292b432029d4f1786f9fbfd3132f2296",
+      "candidate": "e27486218bf8f353ac9519acfb170cba7c2e5ca80aa091e9cd622515269ec9a1"
+    },
+    "artifacts\\native-text-next\\host-light-96": {
+      "baseline": "865599de7738d1d6730453c6aa34e774a08f570c51ff018209ce552f4b2a0b9b",
+      "candidate": "18181c977bc47b4ec3a81e73ba80fb416a1cd4104d662e9bd3ac63bbc934f3f8"
+    },
+    "artifacts\\native-text-next\\notepad-dark-144": {
+      "baseline": "45a179f981aedddb02eb19f7b57f98b0fde34ef565d25006a9983a08c1320cfe",
+      "candidate": "772ec213b1e584fe54d41ecf9e94c6f7f9e26b5241e8f5edec8bb7fb0dfd679c"
+    },
+    "artifacts\\native-text-next\\notepad-dark-96": {
+      "baseline": "8daf8de20f504fbd3ab8f9ba8a231a907fc9ae73010b7f38377f190bff684836",
+      "candidate": "49adf9cdeec867018be8a537df4f3b8258dabbb094dbadbacaae85ca2d61acc2"
+    },
+    "artifacts\\native-text-next\\notepad-light-144": {
+      "baseline": "674e1fc44c693117c7ff8904b01f68bb85391e39d8a69f7998ccf932548e9b5e",
+      "candidate": "ca795de171d436e6e224ff49b63e09c289ad340d22bfdb27396776b7316c5476"
+    },
+    "artifacts\\native-text-next\\notepad-light-96": {
+      "baseline": "bf06e367b37564515b3b49a76292863888b919e37235c84e5ece85ad5e417d9e",
+      "candidate": "fc74c4b7968a4370e7769fabfb7b5901e2c9dd10d1fa76688ff3373949c613a1"
+    },
+    "artifacts\\native-text-next\\padpp-light-144": {
+      "baseline": "77f0b1b0e7a1ae13a0c29e6c801a849d875c1d3363f455ee8705b98e27e3c4fe",
+      "candidate": "017c10d3b75003d1dc72d9cd50f302f4a7175e3f44643d99c90bf734880e0454"
+    },
+    "artifacts\\native-text-next\\padpp-light-96": {
+      "baseline": "443473b85f84a4f3cbf3ce4ee3cef527651e50d8f3cab901f1a9aed2a64250ea",
+      "candidate": "1cec260303a327a588aa9b7b51a439d79ac8b892e03d10e16e3f694f0e7ab665"
+    },
+    "artifacts\\native-text-next\\padpp-live-120": {
+      "baseline": "559c20a8aa2a78f3ea1bf739f75fd075fda99e7df94e6cbf700e63af67357eeb",
+      "candidate": "a57f42190e2c47c2bdbf1bdbebdecc72c974f222eabf9e35262ed7da301ac859"
+    }
+  }
+}

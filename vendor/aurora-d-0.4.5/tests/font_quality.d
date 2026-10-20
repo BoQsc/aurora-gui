@@ -33,6 +33,8 @@ int main(string[] args)
     info["height"] = height;
     info["pixel_size"] = options.pixelSize;
     info["font"] = args[1];
+    info["coverage_contrast"] = fonts.atlas.coverageContrast();
+    info["coverage_policy"] = fonts.atlas.foregroundCoverage() ? "foreground" : "legacy";
     info["text"] = args[4];
     JSONValue[] glyphs;
     foreach (g; layout.glyphs)

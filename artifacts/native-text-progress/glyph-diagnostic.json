@@ -1,0 +1,1612 @@
+[
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "+",
+    "baseline": {
+      "ink_pixels": 44,
+      "mean_absolute_error": 16.545454545454547,
+      "actual_ink": 5721,
+      "native_ink": 5133
+    },
+    "natural": {
+      "ink_pixels": 36,
+      "mean_absolute_error": 33.25,
+      "actual_ink": 6264,
+      "native_ink": 5133
+    },
+    "neutral": {
+      "ink_pixels": 36,
+      "mean_absolute_error": 30.666666666666668,
+      "actual_ink": 6264,
+      "native_ink": 5256
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "-",
+    "baseline": {
+      "ink_pixels": 12,
+      "mean_absolute_error": 56.666666666666664,
+      "actual_ink": 1542,
+      "native_ink": 1226
+    },
+    "natural": {
+      "ink_pixels": 12,
+      "mean_absolute_error": 26.5,
+      "actual_ink": 1484,
+      "native_ink": 1226
+    },
+    "neutral": {
+      "ink_pixels": 12,
+      "mean_absolute_error": 28.0,
+      "actual_ink": 1484,
+      "native_ink": 1244
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "0",
+    "baseline": {
+      "ink_pixels": 90,
+      "mean_absolute_error": 23.233333333333334,
+      "actual_ink": 12930,
+      "native_ink": 11425
+    },
+    "natural": {
+      "ink_pixels": 81,
+      "mean_absolute_error": 26.098765432098766,
+      "actual_ink": 12755,
+      "native_ink": 11425
+    },
+    "neutral": {
+      "ink_pixels": 81,
+      "mean_absolute_error": 23.617283950617285,
+      "actual_ink": 12755,
+      "native_ink": 11674
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "1",
+    "baseline": {
+      "ink_pixels": 61,
+      "mean_absolute_error": 20.918032786885245,
+      "actual_ink": 8754,
+      "native_ink": 7818
+    },
+    "natural": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 26.25,
+      "actual_ink": 8886,
+      "native_ink": 7818
+    },
+    "neutral": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 24.232142857142858,
+      "actual_ink": 8886,
+      "native_ink": 7977
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "2",
+    "baseline": {
+      "ink_pixels": 69,
+      "mean_absolute_error": 34.72463768115942,
+      "actual_ink": 10459,
+      "native_ink": 8679
+    },
+    "natural": {
+      "ink_pixels": 64,
+      "mean_absolute_error": 45.171875,
+      "actual_ink": 10396,
+      "native_ink": 8679
+    },
+    "neutral": {
+      "ink_pixels": 64,
+      "mean_absolute_error": 44.359375,
+      "actual_ink": 10396,
+      "native_ink": 8831
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "3",
+    "baseline": {
+      "ink_pixels": 76,
+      "mean_absolute_error": 34.828947368421055,
+      "actual_ink": 10883,
+      "native_ink": 8936
+    },
+    "natural": {
+      "ink_pixels": 63,
+      "mean_absolute_error": 47.42857142857143,
+      "actual_ink": 10664,
+      "native_ink": 8936
+    },
+    "neutral": {
+      "ink_pixels": 63,
+      "mean_absolute_error": 46.82539682539682,
+      "actual_ink": 10664,
+      "native_ink": 9084
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "4",
+    "baseline": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 13.909090909090908,
+      "actual_ink": 11311,
+      "native_ink": 10372
+    },
+    "natural": {
+      "ink_pixels": 62,
+      "mean_absolute_error": 26.080645161290324,
+      "actual_ink": 11043,
+      "native_ink": 10372
+    },
+    "neutral": {
+      "ink_pixels": 62,
+      "mean_absolute_error": 24.483870967741936,
+      "actual_ink": 11043,
+      "native_ink": 10581
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "5",
+    "baseline": {
+      "ink_pixels": 72,
+      "mean_absolute_error": 54.625,
+      "actual_ink": 10774,
+      "native_ink": 9125
+    },
+    "natural": {
+      "ink_pixels": 63,
+      "mean_absolute_error": 33.26984126984127,
+      "actual_ink": 10573,
+      "native_ink": 9125
+    },
+    "neutral": {
+      "ink_pixels": 63,
+      "mean_absolute_error": 32.22222222222222,
+      "actual_ink": 10573,
+      "native_ink": 9247
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "6",
+    "baseline": {
+      "ink_pixels": 83,
+      "mean_absolute_error": 46.04819277108434,
+      "actual_ink": 12367,
+      "native_ink": 10957
+    },
+    "natural": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 50.45454545454545,
+      "actual_ink": 12388,
+      "native_ink": 10957
+    },
+    "neutral": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 49.857142857142854,
+      "actual_ink": 12388,
+      "native_ink": 11159
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "7",
+    "baseline": {
+      "ink_pixels": 57,
+      "mean_absolute_error": 38.14035087719298,
+      "actual_ink": 8857,
+      "native_ink": 7565
+    },
+    "natural": {
+      "ink_pixels": 49,
+      "mean_absolute_error": 27.775510204081634,
+      "actual_ink": 8420,
+      "native_ink": 7565
+    },
+    "neutral": {
+      "ink_pixels": 49,
+      "mean_absolute_error": 26.714285714285715,
+      "actual_ink": 8420,
+      "native_ink": 7685
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "8",
+    "baseline": {
+      "ink_pixels": 97,
+      "mean_absolute_error": 32.577319587628864,
+      "actual_ink": 14096,
+      "native_ink": 12984
+    },
+    "natural": {
+      "ink_pixels": 91,
+      "mean_absolute_error": 35.505494505494504,
+      "actual_ink": 14153,
+      "native_ink": 12984
+    },
+    "neutral": {
+      "ink_pixels": 91,
+      "mean_absolute_error": 33.956043956043956,
+      "actual_ink": 14153,
+      "native_ink": 13201
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "9",
+    "baseline": {
+      "ink_pixels": 91,
+      "mean_absolute_error": 25.12087912087912,
+      "actual_ink": 12652,
+      "native_ink": 10914
+    },
+    "natural": {
+      "ink_pixels": 73,
+      "mean_absolute_error": 33.16438356164384,
+      "actual_ink": 12079,
+      "native_ink": 10914
+    },
+    "neutral": {
+      "ink_pixels": 73,
+      "mean_absolute_error": 31.84931506849315,
+      "actual_ink": 12079,
+      "native_ink": 11092
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "=",
+    "baseline": {
+      "ink_pixels": 46,
+      "mean_absolute_error": 87.76086956521739,
+      "actual_ink": 5429,
+      "native_ink": 4216
+    },
+    "natural": {
+      "ink_pixels": 36,
+      "mean_absolute_error": 60.666666666666664,
+      "actual_ink": 6128,
+      "native_ink": 4216
+    },
+    "neutral": {
+      "ink_pixels": 36,
+      "mean_absolute_error": 60.44444444444444,
+      "actual_ink": 6128,
+      "native_ink": 4208
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "A",
+    "baseline": {
+      "ink_pixels": 84,
+      "mean_absolute_error": 20.273809523809526,
+      "actual_ink": 12847,
+      "native_ink": 12202
+    },
+    "natural": {
+      "ink_pixels": 75,
+      "mean_absolute_error": 15.813333333333333,
+      "actual_ink": 12880,
+      "native_ink": 12202
+    },
+    "neutral": {
+      "ink_pixels": 75,
+      "mean_absolute_error": 15.32,
+      "actual_ink": 12880,
+      "native_ink": 12435
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "H",
+    "baseline": {
+      "ink_pixels": 86,
+      "mean_absolute_error": 13.337209302325581,
+      "actual_ink": 13207,
+      "native_ink": 12800
+    },
+    "natural": {
+      "ink_pixels": 75,
+      "mean_absolute_error": 27.36,
+      "actual_ink": 12946,
+      "native_ink": 12800
+    },
+    "neutral": {
+      "ink_pixels": 75,
+      "mean_absolute_error": 29.85333333333333,
+      "actual_ink": 12946,
+      "native_ink": 13075
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "I",
+    "baseline": {
+      "ink_pixels": 41,
+      "mean_absolute_error": 3.8048780487804876,
+      "actual_ink": 5581,
+      "native_ink": 5603
+    },
+    "natural": {
+      "ink_pixels": 39,
+      "mean_absolute_error": 16.0,
+      "actual_ink": 4979,
+      "native_ink": 5603
+    },
+    "neutral": {
+      "ink_pixels": 39,
+      "mean_absolute_error": 21.333333333333332,
+      "actual_ink": 4979,
+      "native_ink": 5811
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "O",
+    "baseline": {
+      "ink_pixels": 99,
+      "mean_absolute_error": 31.383838383838384,
+      "actual_ink": 14819,
+      "native_ink": 12460
+    },
+    "natural": {
+      "ink_pixels": 85,
+      "mean_absolute_error": 35.576470588235296,
+      "actual_ink": 14550,
+      "native_ink": 12460
+    },
+    "neutral": {
+      "ink_pixels": 85,
+      "mean_absolute_error": 33.2,
+      "actual_ink": 14550,
+      "native_ink": 12688
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "V",
+    "baseline": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 7.974025974025974,
+      "actual_ink": 10915,
+      "native_ink": 10711
+    },
+    "natural": {
+      "ink_pixels": 65,
+      "mean_absolute_error": 10.107692307692307,
+      "actual_ink": 10930,
+      "native_ink": 10711
+    },
+    "neutral": {
+      "ink_pixels": 65,
+      "mean_absolute_error": 8.784615384615385,
+      "actual_ink": 10930,
+      "native_ink": 10935
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "_",
+    "baseline": {
+      "ink_pixels": 22,
+      "mean_absolute_error": 135.9090909090909,
+      "actual_ink": 3292,
+      "native_ink": 2550
+    },
+    "natural": {
+      "ink_pixels": 10,
+      "mean_absolute_error": 0.0,
+      "actual_ink": 2550,
+      "native_ink": 2550
+    },
+    "neutral": {
+      "ink_pixels": 10,
+      "mean_absolute_error": 0.0,
+      "actual_ink": 2550,
+      "native_ink": 2550
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "a",
+    "baseline": {
+      "ink_pixels": 68,
+      "mean_absolute_error": 23.970588235294116,
+      "actual_ink": 9159,
+      "native_ink": 8425
+    },
+    "natural": {
+      "ink_pixels": 58,
+      "mean_absolute_error": 34.672413793103445,
+      "actual_ink": 8956,
+      "native_ink": 8425
+    },
+    "neutral": {
+      "ink_pixels": 58,
+      "mean_absolute_error": 33.56896551724138,
+      "actual_ink": 8956,
+      "native_ink": 8545
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "b",
+    "baseline": {
+      "ink_pixels": 87,
+      "mean_absolute_error": 16.183908045977013,
+      "actual_ink": 12208,
+      "native_ink": 11324
+    },
+    "natural": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 28.272727272727273,
+      "actual_ink": 12121,
+      "native_ink": 11324
+    },
+    "neutral": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 26.07792207792208,
+      "actual_ink": 12121,
+      "native_ink": 11549
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "e",
+    "baseline": {
+      "ink_pixels": 65,
+      "mean_absolute_error": 29.676923076923078,
+      "actual_ink": 9335,
+      "native_ink": 8356
+    },
+    "natural": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 30.517857142857142,
+      "actual_ink": 9341,
+      "native_ink": 8356
+    },
+    "neutral": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 29.642857142857142,
+      "actual_ink": 9341,
+      "native_ink": 8477
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "f",
+    "baseline": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 18.321428571428573,
+      "actual_ink": 7719,
+      "native_ink": 7339
+    },
+    "natural": {
+      "ink_pixels": 50,
+      "mean_absolute_error": 20.7,
+      "actual_ink": 7192,
+      "native_ink": 7339
+    },
+    "neutral": {
+      "ink_pixels": 50,
+      "mean_absolute_error": 21.9,
+      "actual_ink": 7192,
+      "native_ink": 7455
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "g",
+    "baseline": {
+      "ink_pixels": 89,
+      "mean_absolute_error": 43.943820224719104,
+      "actual_ink": 13449,
+      "native_ink": 12732
+    },
+    "natural": {
+      "ink_pixels": 82,
+      "mean_absolute_error": 28.817073170731707,
+      "actual_ink": 13901,
+      "native_ink": 12732
+    },
+    "neutral": {
+      "ink_pixels": 82,
+      "mean_absolute_error": 26.890243902439025,
+      "actual_ink": 13901,
+      "native_ink": 12944
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "i",
+    "baseline": {
+      "ink_pixels": 40,
+      "mean_absolute_error": 10.025,
+      "actual_ink": 4686,
+      "native_ink": 4595
+    },
+    "natural": {
+      "ink_pixels": 33,
+      "mean_absolute_error": 17.12121212121212,
+      "actual_ink": 4228,
+      "native_ink": 4595
+    },
+    "neutral": {
+      "ink_pixels": 33,
+      "mean_absolute_error": 14.030303030303031,
+      "actual_ink": 4228,
+      "native_ink": 4691
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "l",
+    "baseline": {
+      "ink_pixels": 44,
+      "mean_absolute_error": 6.295454545454546,
+      "actual_ink": 5727,
+      "native_ink": 5698
+    },
+    "natural": {
+      "ink_pixels": 42,
+      "mean_absolute_error": 14.666666666666666,
+      "actual_ink": 5362,
+      "native_ink": 5698
+    },
+    "neutral": {
+      "ink_pixels": 42,
+      "mean_absolute_error": 10.666666666666666,
+      "actual_ink": 5362,
+      "native_ink": 5810
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "m",
+    "baseline": {
+      "ink_pixels": 99,
+      "mean_absolute_error": 15.333333333333334,
+      "actual_ink": 13632,
+      "native_ink": 12936
+    },
+    "natural": {
+      "ink_pixels": 84,
+      "mean_absolute_error": 27.38095238095238,
+      "actual_ink": 13280,
+      "native_ink": 12936
+    },
+    "neutral": {
+      "ink_pixels": 84,
+      "mean_absolute_error": 26.345238095238095,
+      "actual_ink": 13280,
+      "native_ink": 13167
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "n",
+    "baseline": {
+      "ink_pixels": 66,
+      "mean_absolute_error": 13.621212121212121,
+      "actual_ink": 8677,
+      "native_ink": 8296
+    },
+    "natural": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 24.232142857142858,
+      "actual_ink": 8437,
+      "native_ink": 8296
+    },
+    "neutral": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 22.982142857142858,
+      "actual_ink": 8437,
+      "native_ink": 8450
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "o",
+    "baseline": {
+      "ink_pixels": 69,
+      "mean_absolute_error": 20.507246376811594,
+      "actual_ink": 9508,
+      "native_ink": 8401
+    },
+    "natural": {
+      "ink_pixels": 57,
+      "mean_absolute_error": 37.92982456140351,
+      "actual_ink": 9641,
+      "native_ink": 8401
+    },
+    "neutral": {
+      "ink_pixels": 57,
+      "mean_absolute_error": 37.21052631578947,
+      "actual_ink": 9641,
+      "native_ink": 8542
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "r",
+    "baseline": {
+      "ink_pixels": 40,
+      "mean_absolute_error": 15.85,
+      "actual_ink": 5087,
+      "native_ink": 4655
+    },
+    "natural": {
+      "ink_pixels": 33,
+      "mean_absolute_error": 24.939393939393938,
+      "actual_ink": 4898,
+      "native_ink": 4655
+    },
+    "neutral": {
+      "ink_pixels": 33,
+      "mean_absolute_error": 21.727272727272727,
+      "actual_ink": 4898,
+      "native_ink": 4755
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "s",
+    "baseline": {
+      "ink_pixels": 50,
+      "mean_absolute_error": 24.66,
+      "actual_ink": 6745,
+      "native_ink": 6160
+    },
+    "natural": {
+      "ink_pixels": 43,
+      "mean_absolute_error": 28.976744186046513,
+      "actual_ink": 6646,
+      "native_ink": 6160
+    },
+    "neutral": {
+      "ink_pixels": 43,
+      "mean_absolute_error": 28.53488372093023,
+      "actual_ink": 6646,
+      "native_ink": 6277
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "t",
+    "baseline": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 21.215686274509803,
+      "actual_ink": 6902,
+      "native_ink": 6014
+    },
+    "natural": {
+      "ink_pixels": 42,
+      "mean_absolute_error": 25.285714285714285,
+      "actual_ink": 6762,
+      "native_ink": 6014
+    },
+    "neutral": {
+      "ink_pixels": 42,
+      "mean_absolute_error": 23.547619047619047,
+      "actual_ink": 6762,
+      "native_ink": 6093
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "u",
+    "baseline": {
+      "ink_pixels": 69,
+      "mean_absolute_error": 10.840579710144928,
+      "actual_ink": 8692,
+      "native_ink": 8370
+    },
+    "natural": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 20.901960784313726,
+      "actual_ink": 8374,
+      "native_ink": 8370
+    },
+    "neutral": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 22.019607843137255,
+      "actual_ink": 8374,
+      "native_ink": 8509
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "v",
+    "baseline": {
+      "ink_pixels": 55,
+      "mean_absolute_error": 16.8,
+      "actual_ink": 7359,
+      "native_ink": 6501
+    },
+    "natural": {
+      "ink_pixels": 43,
+      "mean_absolute_error": 11.023255813953488,
+      "actual_ink": 6805,
+      "native_ink": 6501
+    },
+    "neutral": {
+      "ink_pixels": 43,
+      "mean_absolute_error": 8.534883720930232,
+      "actual_ink": 6805,
+      "native_ink": 6662
+    }
+  },
+  {
+    "font": "calibri",
+    "size": 20,
+    "character": "|",
+    "baseline": {
+      "ink_pixels": 57,
+      "mean_absolute_error": 7.964912280701754,
+      "actual_ink": 6886,
+      "native_ink": 6786
+    },
+    "natural": {
+      "ink_pixels": 54,
+      "mean_absolute_error": 17.40740740740741,
+      "actual_ink": 6862,
+      "native_ink": 6786
+    },
+    "neutral": {
+      "ink_pixels": 54,
+      "mean_absolute_error": 20.74074074074074,
+      "actual_ink": 6862,
+      "native_ink": 6894
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "+",
+    "baseline": {
+      "ink_pixels": 57,
+      "mean_absolute_error": 55.49122807017544,
+      "actual_ink": 7098,
+      "native_ink": 6927
+    },
+    "natural": {
+      "ink_pixels": 46,
+      "mean_absolute_error": 28.608695652173914,
+      "actual_ink": 5709,
+      "native_ink": 6927
+    },
+    "neutral": {
+      "ink_pixels": 46,
+      "mean_absolute_error": 29.869565217391305,
+      "actual_ink": 5709,
+      "native_ink": 7083
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "-",
+    "baseline": {
+      "ink_pixels": 12,
+      "mean_absolute_error": 91.0,
+      "actual_ink": 2047,
+      "native_ink": 1859
+    },
+    "natural": {
+      "ink_pixels": 12,
+      "mean_absolute_error": 50.333333333333336,
+      "actual_ink": 1275,
+      "native_ink": 1859
+    },
+    "neutral": {
+      "ink_pixels": 12,
+      "mean_absolute_error": 53.333333333333336,
+      "actual_ink": 1275,
+      "native_ink": 1915
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "0",
+    "baseline": {
+      "ink_pixels": 85,
+      "mean_absolute_error": 17.658823529411766,
+      "actual_ink": 12462,
+      "native_ink": 12473
+    },
+    "natural": {
+      "ink_pixels": 74,
+      "mean_absolute_error": 21.45945945945946,
+      "actual_ink": 13037,
+      "native_ink": 12473
+    },
+    "neutral": {
+      "ink_pixels": 74,
+      "mean_absolute_error": 19.864864864864863,
+      "actual_ink": 13037,
+      "native_ink": 12719
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "1",
+    "baseline": {
+      "ink_pixels": 60,
+      "mean_absolute_error": 17.733333333333334,
+      "actual_ink": 7970,
+      "native_ink": 7902
+    },
+    "natural": {
+      "ink_pixels": 41,
+      "mean_absolute_error": 19.29268292682927,
+      "actual_ink": 7233,
+      "native_ink": 7902
+    },
+    "neutral": {
+      "ink_pixels": 41,
+      "mean_absolute_error": 21.073170731707318,
+      "actual_ink": 7233,
+      "native_ink": 8001
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "2",
+    "baseline": {
+      "ink_pixels": 74,
+      "mean_absolute_error": 24.175675675675677,
+      "actual_ink": 10467,
+      "native_ink": 10288
+    },
+    "natural": {
+      "ink_pixels": 62,
+      "mean_absolute_error": 28.580645161290324,
+      "actual_ink": 11540,
+      "native_ink": 10288
+    },
+    "neutral": {
+      "ink_pixels": 62,
+      "mean_absolute_error": 25.43548387096774,
+      "actual_ink": 11540,
+      "native_ink": 10539
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "3",
+    "baseline": {
+      "ink_pixels": 81,
+      "mean_absolute_error": 28.580246913580247,
+      "actual_ink": 10603,
+      "native_ink": 10404
+    },
+    "natural": {
+      "ink_pixels": 68,
+      "mean_absolute_error": 29.176470588235293,
+      "actual_ink": 11286,
+      "native_ink": 10404
+    },
+    "neutral": {
+      "ink_pixels": 68,
+      "mean_absolute_error": 26.058823529411764,
+      "actual_ink": 11286,
+      "native_ink": 10664
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "4",
+    "baseline": {
+      "ink_pixels": 68,
+      "mean_absolute_error": 49.720588235294116,
+      "actual_ink": 10839,
+      "native_ink": 10544
+    },
+    "natural": {
+      "ink_pixels": 60,
+      "mean_absolute_error": 31.8,
+      "actual_ink": 12080,
+      "native_ink": 10544
+    },
+    "neutral": {
+      "ink_pixels": 60,
+      "mean_absolute_error": 28.416666666666668,
+      "actual_ink": 12080,
+      "native_ink": 10819
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "5",
+    "baseline": {
+      "ink_pixels": 75,
+      "mean_absolute_error": 26.733333333333334,
+      "actual_ink": 11482,
+      "native_ink": 11593
+    },
+    "natural": {
+      "ink_pixels": 67,
+      "mean_absolute_error": 33.67164179104478,
+      "actual_ink": 11829,
+      "native_ink": 11593
+    },
+    "neutral": {
+      "ink_pixels": 67,
+      "mean_absolute_error": 33.61194029850746,
+      "actual_ink": 11829,
+      "native_ink": 11879
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "6",
+    "baseline": {
+      "ink_pixels": 95,
+      "mean_absolute_error": 32.31578947368421,
+      "actual_ink": 12879,
+      "native_ink": 12259
+    },
+    "natural": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 27.766233766233768,
+      "actual_ink": 13739,
+      "native_ink": 12259
+    },
+    "neutral": {
+      "ink_pixels": 77,
+      "mean_absolute_error": 25.07792207792208,
+      "actual_ink": 13739,
+      "native_ink": 12512
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "7",
+    "baseline": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 7.625,
+      "actual_ink": 8309,
+      "native_ink": 8384
+    },
+    "natural": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 22.686274509803923,
+      "actual_ink": 7589,
+      "native_ink": 8384
+    },
+    "neutral": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 21.627450980392158,
+      "actual_ink": 7589,
+      "native_ink": 8564
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "8",
+    "baseline": {
+      "ink_pixels": 102,
+      "mean_absolute_error": 23.333333333333332,
+      "actual_ink": 14139,
+      "native_ink": 13429
+    },
+    "natural": {
+      "ink_pixels": 81,
+      "mean_absolute_error": 20.71604938271605,
+      "actual_ink": 13579,
+      "native_ink": 13429
+    },
+    "neutral": {
+      "ink_pixels": 81,
+      "mean_absolute_error": 19.160493827160494,
+      "actual_ink": 13579,
+      "native_ink": 13723
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "9",
+    "baseline": {
+      "ink_pixels": 90,
+      "mean_absolute_error": 21.655555555555555,
+      "actual_ink": 12756,
+      "native_ink": 12349
+    },
+    "natural": {
+      "ink_pixels": 73,
+      "mean_absolute_error": 25.767123287671232,
+      "actual_ink": 13708,
+      "native_ink": 12349
+    },
+    "neutral": {
+      "ink_pixels": 73,
+      "mean_absolute_error": 22.73972602739726,
+      "actual_ink": 13708,
+      "native_ink": 12624
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "=",
+    "baseline": {
+      "ink_pixels": 66,
+      "mean_absolute_error": 86.03030303030303,
+      "actual_ink": 7106,
+      "native_ink": 7262
+    },
+    "natural": {
+      "ink_pixels": 44,
+      "mean_absolute_error": 55.18181818181818,
+      "actual_ink": 4974,
+      "native_ink": 7262
+    },
+    "neutral": {
+      "ink_pixels": 44,
+      "mean_absolute_error": 59.63636363636363,
+      "actual_ink": 4974,
+      "native_ink": 7470
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "A",
+    "baseline": {
+      "ink_pixels": 82,
+      "mean_absolute_error": 10.097560975609756,
+      "actual_ink": 12702,
+      "native_ink": 12768
+    },
+    "natural": {
+      "ink_pixels": 74,
+      "mean_absolute_error": 14.756756756756756,
+      "actual_ink": 12402,
+      "native_ink": 12768
+    },
+    "neutral": {
+      "ink_pixels": 74,
+      "mean_absolute_error": 14.432432432432432,
+      "actual_ink": 12402,
+      "native_ink": 13022
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "H",
+    "baseline": {
+      "ink_pixels": 80,
+      "mean_absolute_error": 14.0875,
+      "actual_ink": 13963,
+      "native_ink": 13652
+    },
+    "natural": {
+      "ink_pixels": 64,
+      "mean_absolute_error": 30.0625,
+      "actual_ink": 12742,
+      "native_ink": 13652
+    },
+    "neutral": {
+      "ink_pixels": 64,
+      "mean_absolute_error": 31.0,
+      "actual_ink": 12742,
+      "native_ink": 13894
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "I",
+    "baseline": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 7.0588235294117645,
+      "actual_ink": 7978,
+      "native_ink": 7876
+    },
+    "natural": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 11.588235294117647,
+      "actual_ink": 7531,
+      "native_ink": 7876
+    },
+    "neutral": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 10.0,
+      "actual_ink": 7531,
+      "native_ink": 8041
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "O",
+    "baseline": {
+      "ink_pixels": 105,
+      "mean_absolute_error": 22.409523809523808,
+      "actual_ink": 15070,
+      "native_ink": 14487
+    },
+    "natural": {
+      "ink_pixels": 88,
+      "mean_absolute_error": 23.227272727272727,
+      "actual_ink": 15525,
+      "native_ink": 14487
+    },
+    "neutral": {
+      "ink_pixels": 88,
+      "mean_absolute_error": 20.886363636363637,
+      "actual_ink": 15525,
+      "native_ink": 14807
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "V",
+    "baseline": {
+      "ink_pixels": 72,
+      "mean_absolute_error": 6.041666666666667,
+      "actual_ink": 11238,
+      "native_ink": 10889
+    },
+    "natural": {
+      "ink_pixels": 65,
+      "mean_absolute_error": 8.6,
+      "actual_ink": 11160,
+      "native_ink": 10889
+    },
+    "neutral": {
+      "ink_pixels": 65,
+      "mean_absolute_error": 7.569230769230769,
+      "actual_ink": 11160,
+      "native_ink": 11108
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "_",
+    "baseline": {
+      "ink_pixels": 33,
+      "mean_absolute_error": 88.06060606060606,
+      "actual_ink": 2942,
+      "native_ink": 3240
+    },
+    "natural": {
+      "ink_pixels": 22,
+      "mean_absolute_error": 29.90909090909091,
+      "actual_ink": 2582,
+      "native_ink": 3240
+    },
+    "neutral": {
+      "ink_pixels": 22,
+      "mean_absolute_error": 31.272727272727273,
+      "actual_ink": 2582,
+      "native_ink": 3270
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "a",
+    "baseline": {
+      "ink_pixels": 78,
+      "mean_absolute_error": 34.73076923076923,
+      "actual_ink": 11313,
+      "native_ink": 10662
+    },
+    "natural": {
+      "ink_pixels": 67,
+      "mean_absolute_error": 31.73134328358209,
+      "actual_ink": 12182,
+      "native_ink": 10662
+    },
+    "neutral": {
+      "ink_pixels": 67,
+      "mean_absolute_error": 29.044776119402986,
+      "actual_ink": 12182,
+      "native_ink": 10938
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "b",
+    "baseline": {
+      "ink_pixels": 78,
+      "mean_absolute_error": 23.743589743589745,
+      "actual_ink": 12732,
+      "native_ink": 11936
+    },
+    "natural": {
+      "ink_pixels": 69,
+      "mean_absolute_error": 26.028985507246375,
+      "actual_ink": 13258,
+      "native_ink": 11936
+    },
+    "neutral": {
+      "ink_pixels": 69,
+      "mean_absolute_error": 22.434782608695652,
+      "actual_ink": 13258,
+      "native_ink": 12284
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "e",
+    "baseline": {
+      "ink_pixels": 78,
+      "mean_absolute_error": 22.05128205128205,
+      "actual_ink": 10735,
+      "native_ink": 10381
+    },
+    "natural": {
+      "ink_pixels": 64,
+      "mean_absolute_error": 26.109375,
+      "actual_ink": 10392,
+      "native_ink": 10381
+    },
+    "neutral": {
+      "ink_pixels": 64,
+      "mean_absolute_error": 25.734375,
+      "actual_ink": 10392,
+      "native_ink": 10601
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "f",
+    "baseline": {
+      "ink_pixels": 53,
+      "mean_absolute_error": 18.056603773584907,
+      "actual_ink": 7853,
+      "native_ink": 8272
+    },
+    "natural": {
+      "ink_pixels": 44,
+      "mean_absolute_error": 26.454545454545453,
+      "actual_ink": 7998,
+      "native_ink": 8272
+    },
+    "neutral": {
+      "ink_pixels": 44,
+      "mean_absolute_error": 27.25,
+      "actual_ink": 7998,
+      "native_ink": 8431
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "g",
+    "baseline": {
+      "ink_pixels": 92,
+      "mean_absolute_error": 29.445652173913043,
+      "actual_ink": 14203,
+      "native_ink": 14168
+    },
+    "natural": {
+      "ink_pixels": 81,
+      "mean_absolute_error": 25.753086419753085,
+      "actual_ink": 15396,
+      "native_ink": 14168
+    },
+    "neutral": {
+      "ink_pixels": 81,
+      "mean_absolute_error": 22.45679012345679,
+      "actual_ink": 15396,
+      "native_ink": 14503
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "i",
+    "baseline": {
+      "ink_pixels": 26,
+      "mean_absolute_error": 24.03846153846154,
+      "actual_ink": 4967,
+      "native_ink": 5268
+    },
+    "natural": {
+      "ink_pixels": 24,
+      "mean_absolute_error": 22.166666666666668,
+      "actual_ink": 5096,
+      "native_ink": 5268
+    },
+    "neutral": {
+      "ink_pixels": 24,
+      "mean_absolute_error": 18.666666666666668,
+      "actual_ink": 5096,
+      "native_ink": 5352
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "l",
+    "baseline": {
+      "ink_pixels": 28,
+      "mean_absolute_error": 26.285714285714285,
+      "actual_ink": 5722,
+      "native_ink": 6146
+    },
+    "natural": {
+      "ink_pixels": 28,
+      "mean_absolute_error": 19.5,
+      "actual_ink": 5796,
+      "native_ink": 6146
+    },
+    "neutral": {
+      "ink_pixels": 28,
+      "mean_absolute_error": 16.0,
+      "actual_ink": 5796,
+      "native_ink": 6244
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "m",
+    "baseline": {
+      "ink_pixels": 90,
+      "mean_absolute_error": 18.244444444444444,
+      "actual_ink": 15289,
+      "native_ink": 14577
+    },
+    "natural": {
+      "ink_pixels": 83,
+      "mean_absolute_error": 19.93975903614458,
+      "actual_ink": 15362,
+      "native_ink": 14577
+    },
+    "neutral": {
+      "ink_pixels": 83,
+      "mean_absolute_error": 18.289156626506024,
+      "actual_ink": 15362,
+      "native_ink": 14964
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "n",
+    "baseline": {
+      "ink_pixels": 54,
+      "mean_absolute_error": 21.22222222222222,
+      "actual_ink": 9848,
+      "native_ink": 9266
+    },
+    "natural": {
+      "ink_pixels": 49,
+      "mean_absolute_error": 25.387755102040817,
+      "actual_ink": 9844,
+      "native_ink": 9266
+    },
+    "neutral": {
+      "ink_pixels": 49,
+      "mean_absolute_error": 21.183673469387756,
+      "actual_ink": 9844,
+      "native_ink": 9508
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "o",
+    "baseline": {
+      "ink_pixels": 74,
+      "mean_absolute_error": 18.743243243243242,
+      "actual_ink": 10287,
+      "native_ink": 10130
+    },
+    "natural": {
+      "ink_pixels": 66,
+      "mean_absolute_error": 23.515151515151516,
+      "actual_ink": 10650,
+      "native_ink": 10130
+    },
+    "neutral": {
+      "ink_pixels": 66,
+      "mean_absolute_error": 21.545454545454547,
+      "actual_ink": 10650,
+      "native_ink": 10348
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "r",
+    "baseline": {
+      "ink_pixels": 30,
+      "mean_absolute_error": 18.933333333333334,
+      "actual_ink": 5644,
+      "native_ink": 5208
+    },
+    "natural": {
+      "ink_pixels": 29,
+      "mean_absolute_error": 23.0,
+      "actual_ink": 5735,
+      "native_ink": 5208
+    },
+    "neutral": {
+      "ink_pixels": 29,
+      "mean_absolute_error": 18.75862068965517,
+      "actual_ink": 5735,
+      "native_ink": 5383
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "s",
+    "baseline": {
+      "ink_pixels": 70,
+      "mean_absolute_error": 22.914285714285715,
+      "actual_ink": 9092,
+      "native_ink": 8816
+    },
+    "natural": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 29.375,
+      "actual_ink": 9915,
+      "native_ink": 8816
+    },
+    "neutral": {
+      "ink_pixels": 56,
+      "mean_absolute_error": 26.785714285714285,
+      "actual_ink": 9915,
+      "native_ink": 9023
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "t",
+    "baseline": {
+      "ink_pixels": 44,
+      "mean_absolute_error": 17.863636363636363,
+      "actual_ink": 7672,
+      "native_ink": 7986
+    },
+    "natural": {
+      "ink_pixels": 40,
+      "mean_absolute_error": 23.925,
+      "actual_ink": 7935,
+      "native_ink": 7986
+    },
+    "neutral": {
+      "ink_pixels": 40,
+      "mean_absolute_error": 22.75,
+      "actual_ink": 7935,
+      "native_ink": 8143
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "u",
+    "baseline": {
+      "ink_pixels": 54,
+      "mean_absolute_error": 25.11111111111111,
+      "actual_ink": 9904,
+      "native_ink": 9184
+    },
+    "natural": {
+      "ink_pixels": 49,
+      "mean_absolute_error": 31.775510204081634,
+      "actual_ink": 10195,
+      "native_ink": 9184
+    },
+    "neutral": {
+      "ink_pixels": 49,
+      "mean_absolute_error": 26.73469387755102,
+      "actual_ink": 10195,
+      "native_ink": 9429
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "v",
+    "baseline": {
+      "ink_pixels": 52,
+      "mean_absolute_error": 6.076923076923077,
+      "actual_ink": 7925,
+      "native_ink": 7775
+    },
+    "natural": {
+      "ink_pixels": 48,
+      "mean_absolute_error": 9.583333333333334,
+      "actual_ink": 7907,
+      "native_ink": 7775
+    },
+    "neutral": {
+      "ink_pixels": 48,
+      "mean_absolute_error": 7.3125,
+      "actual_ink": 7907,
+      "native_ink": 7938
+    }
+  },
+  {
+    "font": "tahoma",
+    "size": 18,
+    "character": "|",
+    "baseline": {
+      "ink_pixels": 54,
+      "mean_absolute_error": 14.88888888888889,
+      "actual_ink": 6387,
+      "native_ink": 6409
+    },
+    "natural": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 10.666666666666666,
+      "actual_ink": 5967,
+      "native_ink": 6409
+    },
+    "neutral": {
+      "ink_pixels": 51,
+      "mean_absolute_error": 10.666666666666666,
+      "actual_ink": 5967,
+      "native_ink": 6511
+    }
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "title": "notepad-dark-96: previous B / approved C",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-dark-96-baseline.png",
+    "sha256": "a93555b6134c70a8d11e8ff43c05bb43fe2a1ed32ac4199cae0e5b4b2e4293d6"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-progress\\notepad-dark-96-natural.png",
+    "sha256": "8daf8de20f504fbd3ab8f9ba8a231a907fc9ae73010b7f38377f190bff684836"
+  },
+  "difference": null,
+  "decision": "candidate",
+  "project_candidate": "C",
+  "approved_on": "2026-10-20",
+  "authorization": "Make C the default (Recommended)"
+}

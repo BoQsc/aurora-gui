@@ -1,0 +1,9 @@
+Font completed: C:\Windows\Fonts\segoeui.ttf; hint attempts=1782 successes=1782 fallbacks=0
+Font completed: C:\Windows\Fonts\consola.ttf; hint attempts=1746 successes=1746 fallbacks=0
+Font completed: C:\Windows\Fonts\arial.ttf; hint attempts=1800 successes=1800 fallbacks=0
+Font completed: C:\Windows\Fonts\calibri.ttf; hint attempts=1692 successes=1692 fallbacks=0
+Font completed: C:\Windows\Fonts\tahoma.ttf; hint attempts=1782 successes=1782 fallbacks=0
+Font completed: C:\Windows\Fonts\verdana.ttf; hint attempts=1800 successes=1800 fallbacks=0
+Font completed: C:\Windows\Fonts\cour.ttf; hint attempts=1800 successes=1800 fallbacks=0
+Font completed: C:\Windows\Fonts\times.ttf; hint attempts=1800 successes=1800 fallbacks=0
+Natural hinting: 8 fonts, 7200 glyph/size checks plus reverse-order replay, 0 blanks.

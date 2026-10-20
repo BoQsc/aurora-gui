@@ -1,0 +1,13 @@
+{
+  "date": "2026-10-20",
+  "status": "approved",
+  "decision": "B",
+  "scope": "Promote the reviewed foreground-aware coverage weight to the shared Aurora baseline; continue native-fidelity improvements separately.",
+  "authorization": "I think it's better and we should work on closing gaps so we get near or exactly same rendering as windows native.",
+  "shared_default": "foreground",
+  "compatibility": "AURORA_TEXT_COVERAGE=legacy",
+  "hinting_default": "off",
+  "host_override_removed": true,
+  "density_guard": {"previous": 0.061, "reviewed_candidate": 0.0477, "approved_baseline_minimum": 0.045},
+  "validation": "Original failures remain in validation.json. Post-promotion validation is in artifacts/native-text-progress."
+}

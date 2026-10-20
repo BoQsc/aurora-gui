@@ -1,0 +1,50 @@
+[
+  {
+    "hinting": "0",
+    "font": "segoeui.ttf",
+    "theme": "light",
+    "refinement_inactive": true
+  },
+  {
+    "hinting": "0",
+    "font": "segoeui.ttf",
+    "theme": "dark",
+    "refinement_inactive": true
+  },
+  {
+    "hinting": "0",
+    "font": "cour.ttf",
+    "theme": "light",
+    "refinement_inactive": true
+  },
+  {
+    "hinting": "0",
+    "font": "cour.ttf",
+    "theme": "dark",
+    "refinement_inactive": true
+  },
+  {
+    "hinting": "1",
+    "font": "segoeui.ttf",
+    "theme": "light",
+    "refinement_inactive": true
+  },
+  {
+    "hinting": "1",
+    "font": "segoeui.ttf",
+    "theme": "dark",
+    "refinement_inactive": true
+  },
+  {
+    "hinting": "1",
+    "font": "cour.ttf",
+    "theme": "light",
+    "refinement_inactive": true
+  },
+  {
+    "hinting": "1",
+    "font": "cour.ttf",
+    "theme": "dark",
+    "refinement_inactive": true
+  }
+]

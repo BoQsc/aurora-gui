@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "title": "padpp-light-96: A legacy / B foreground coverage",
+  "status": "approved",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\padpp-light-96-legacy.png",
+    "sha256": "3c04a5088870dcd93b3e587b2763e2ed9cf57cec657b5e690b30c437cc1ef329"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\padpp-light-96-foreground.png",
+    "sha256": "c44b16fa393ae2df4b956615722ebc1647679e6f5ca6da4c0d0c3280c4450688"
+  },
+  "difference": {
+    "file": "difference.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\text-coverage-candidate\\review\\padpp-light-96-difference.png",
+    "sha256": "b2b0f93f196911a06400b5d9f5e2714be3ec014a8140087ea46e55cba193777d"
+  },
+  "decision": "B",
+  "decision_date": "2026-10-20",
+  "decision_source": "../decision.json"
+}

@@ -53,7 +53,7 @@
       "kind": "render",
       "reference": "experiments/aurora-host/samples/ui-depth-reference.png",
       "actual": "experiments/aurora-host/build/ui-depth.png",
-      "referenceSource": "Reviewed baseline of the host workbench: menu bar, icon toolbar, document tabs, editor, and status bar at 1.25x DPI."
+      "referenceSource": "Owner-approved natural grayscale hinting C, 2026-10-20: host workbench menu bar, icon toolbar, document tabs, editor, and status bar at 125% DPI (1225x800 pixels, 980x640 logical). Captured with no rendering overrides. Previous B reference is preserved in artifacts/native-text-progress/host-B-reference-120dpi.png."
     }
   ]
 }
