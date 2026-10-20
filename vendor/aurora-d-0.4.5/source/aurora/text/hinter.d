@@ -329,6 +329,7 @@ private final class Context
     bool glyphProgram;
     bool composite;
     bool nativeTextExperiment;
+    bool refinedTextExperiment;
     uint iupAxes;
     
     Zone zone0;
@@ -352,6 +353,7 @@ private final class Context
         this.pixelSize = pixelSize;
         naturalGrid = owner !is null && owner._naturalGrid;
         nativeTextExperiment = owner !is null && owner._nativeTextExperiment;
+        refinedTextExperiment = owner !is null && owner._refinedTextExperiment;
         naturalSymmetric = owner is null || owner._naturalSymmetric;
         fdefs = new FuncDef[256];
         idefs = new FuncDef[256];
@@ -663,20 +665,20 @@ private final class Context
         if (autoFlip && (orgDist ^ cvtDist) < 0)
             cvtDist = -cvtDist;
 
-        long distance = cvtDist;
-        if ((opcode & 4) != 0)
+        // Native horizontal cut-in also rejects a mismatched CVT distance in
+        // unrounded MIRP. Keeping it only in the rounded branch distorts stems
+        // in, for example, Consolas numerals. Confine this to refined D until
+        // owner review; y distances and INSTCTRL native opt-outs stay intact.
+        if (((opcode & 4) != 0 ||
+             (refinedTextExperiment && naturalGrid && glyphProgram &&
+              projVectorY == 0 && (instructControl & 4) == 0)) &&
+            zoneSelect0 == zoneSelect1)
         {
-            if (zoneSelect0 == zoneSelect1)
-            {
-                delta = cvtDist - orgDist;
-                if (delta < 0) delta = -delta;
-                if (delta > effectiveCutIn())
-                    cvtDist = orgDist;
-            }
-            distance = roundDistance(cvtDist, 0);
+            delta = cvtDist - orgDist;
+            if (delta < 0) delta = -delta;
+            if (delta > effectiveCutIn()) cvtDist = orgDist;
         }
-        else
-            distance = roundNone(cvtDist, 0);
+        long distance = (opcode & 4) != 0 ? roundDistance(cvtDist, 0) : roundNone(cvtDist, 0);
 
         if ((opcode & 8) != 0)
         {
@@ -771,16 +773,18 @@ final class TrueTypeHinter
     private Context _preparedState;
     private bool _naturalGrid;
     private bool _nativeTextExperiment;
+    private bool _refinedTextExperiment;
     private bool _naturalSymmetric = true;
     private bool _naturalGridFit = true;
 
     this(const(ubyte)[] data, size_t faceOffset = 0, bool naturalGrid = false,
-        bool nativeTextExperiment = false)
+        bool nativeTextExperiment = false, bool refinedTextExperiment = false)
     {
         _data = data;
         _faceOffset = faceOffset;
         _naturalGrid = naturalGrid;
         _nativeTextExperiment = nativeTextExperiment;
+        _refinedTextExperiment = refinedTextExperiment;
     }
 
     HintedGlyph hint(HintInput input)
@@ -2150,6 +2154,45 @@ unittest
     ctx.setVectors(0);
     assert(ctx.roundDistance(45, 0) == 64);
     assert(ctx.effectiveMinimumDistance() == 64 && ctx.effectiveCutIn() == 68);
+}
+
+unittest
+{
+    // A 2px outline distance with a 2.125px CVT request exceeds the natural
+    // x cut-in (68/16 = 4 F26Dot6 units). Native generated-font probes restore
+    // the outline even for MIRP without rounding. C/D must retain their pixels.
+    foreach (refined; [false, true])
+    foreach (natural; [false, true])
+    foreach (glyphProgram; [false, true])
+    foreach (nativeOptOut; [false, true])
+    foreach (horizontal; [false, true])
+    foreach (negative; [false, true])
+    {
+        auto engine = new TrueTypeHinter(null, 0, natural, true, refined);
+        auto ctx = new Context(engine, [136L], null, 2048, 17);
+        ctx.glyphProgram = glyphProgram;
+        ctx.instructControl = nativeOptOut ? 4 : 0;
+        ctx.setVectors(horizontal ? 1 : 0);
+        const original = negative ? -128 : 128;
+        ctx.zone0.points = [Pt(), horizontal ? Pt(original, 0, original, 0) : Pt(0, original, 0, original)];
+        ctx.zone1.points = ctx.zone0.points;
+        engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 0, 0xE0]);
+        const restored = refined && natural && glyphProgram && !nativeOptOut && horizontal;
+        const distance = restored ? 128 : 136;
+        const expected = negative ? -distance : distance;
+        assert((horizontal ? ctx.zone1.points[1].curX : ctx.zone1.points[1].curY) == expected);
+    }
+    foreach (difference; [3, 4, 5])
+    {
+        auto engine = new TrueTypeHinter(null, 0, true, true, true);
+        auto ctx = new Context(engine, [128L + difference], null, 2048, 17);
+        ctx.glyphProgram = true;
+        ctx.zone0.points = [Pt(), Pt(128, 0, 128, 0)];
+        ctx.zone1.points = ctx.zone0.points;
+        engine.runProgram(ctx, cast(ubyte[]) [0xB1, 1, 0, 0xE0]);
+        assert(ctx.zone1.points[1].curX == (difference > 4 ? 128 : 128 + difference),
+            "Cut-in equality must retain the CVT request");
+    }
 }
 
 unittest

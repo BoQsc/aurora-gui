@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "padpp-light-96: approved C / refined D (experimental)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\padpp-light-96-C.png",
+    "sha256": "443473b85f84a4f3cbf3ce4ee3cef527651e50d8f3cab901f1a9aed2a64250ea"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\padpp-light-96-refined-D.png",
+    "sha256": "783f99205faabe77123b825f62aad0d9144d832b1a53c28e93f20bc55d6daa6a"
+  },
+  "difference": null,
+  "decision": null
+}

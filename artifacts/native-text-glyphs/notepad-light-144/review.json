@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "notepad-light-144: approved C / refined D (experimental)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\notepad-light-144-C.png",
+    "sha256": "674e1fc44c693117c7ff8904b01f68bb85391e39d8a69f7998ccf932548e9b5e"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\notepad-light-144-refined-D.png",
+    "sha256": "b4dab503e6beefd31f323349b8a067cfa6c047ffc483f1ce58c7bcca6f84bbf5"
+  },
+  "difference": null,
+  "decision": null
+}

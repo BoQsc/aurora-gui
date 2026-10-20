@@ -1,0 +1,33 @@
+{
+  "updated": [
+    "source/aurora/text/hinter.d",
+    "source/aurora/text/truetype.d",
+    "docs/FONTS.md"
+  ],
+  "updated_files_verified": true,
+  "unrelated_preexisting_mismatches": [
+    {
+      "file": "source/aurora/render/select.d",
+      "recorded": "1baaee14f57632ca56fa42ae5f277a4f740a52e9d7e7b0e65a111f48ec71a27a",
+      "actual": "56554eca9bccb633b38d7ac736c6797e8cfcfd3d070b66b1bfdbb6799be00b65"
+    },
+    {
+      "file": "source/aurora/widgets/listview.d",
+      "recorded": "2d0138058b20e0c9cd2f3d34886225c89edeb1a3f664c1187a8902143db028d1",
+      "actual": "d8654951d2cbf29a2a65cafaf9aea214c289e25db67ce7a89bea65925865efc9"
+    },
+    {
+      "file": "source/aurora/window.d",
+      "recorded": "073a4a05b60c87d911aedf5d61473bbe1c7fe7a6e0bbbc004a8974f75a9e46b0",
+      "actual": "a6ce9b22a4d60c2b0d92dbf0107b1307b44b3bcce5197901fe105760f702199e"
+    }
+  ],
+  "preexisting_debt_in_touched_Vulkan_file": [
+    {
+      "file": "source/aurora/render/vulkan.d",
+      "recorded": "ab70a1e2afddc1496a6bfb953bb37bb2d7b189a9cfb8939ca1407d9de3e792fa",
+      "actual": "9b3dec46a1fb1563576bdef91689b9fb071af60dbb44a04e9294193299d38159"
+    }
+  ],
+  "debt_note": "Vulkan already differed from the vendor manifest before this experiment. Re-digesting the new optional shader selection does not certify those earlier changes."
+}

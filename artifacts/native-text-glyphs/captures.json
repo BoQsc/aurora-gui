@@ -1,0 +1,286 @@
+{
+  "C_app_pixels_unchanged": true,
+  "records": [
+    {
+      "command": [
+        "dmd",
+        "-i",
+        "-O",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\generated",
+        "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless",
+        "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\capture.d",
+        "user32.lib",
+        "gdi32.lib",
+        "shell32.lib",
+        "wininet.lib",
+        "-version=AuroraHeadless"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "dmd",
+        "-i",
+        "-O",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\generated",
+        "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\native",
+        "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\native\\capture.exe",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\capture.d",
+        "user32.lib",
+        "gdi32.lib",
+        "shell32.lib",
+        "wininet.lib"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-light-96-C",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-light-144-C",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-dark-96-C",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-dark-144-C",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-light-96-C",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host light 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-light-144-C",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host light 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-dark-96-C",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host dark 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-dark-144-C",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host dark 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\padpp-light-96-C",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 96 DPI; atlas=512x512; rasterizations=368\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\padpp-light-144-C",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 144 DPI; atlas=512x512; rasterizations=327\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\native\\capture.exe",
+        "native",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\gpu-C"
+      ],
+      "exit_code": 0,
+      "output": "Vulkan screen capture: two validated live states; DPI=120; differing pixels=0; maximum channel error=0; rejected frames=0\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-light-96-refined-D",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-light-144-refined-D",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-dark-96-refined-D",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\notepad-dark-144-refined-D",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-light-96-refined-D",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host light 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-light-144-refined-D",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host light 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-dark-96-refined-D",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host dark 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\host-dark-144-refined-D",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host dark 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\padpp-light-96-refined-D",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 96 DPI; atlas=512x512; rasterizations=368\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\headless\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\padpp-light-144-refined-D",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 144 DPI; atlas=512x512; rasterizations=327\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\native\\capture.exe",
+        "native",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-glyphs\\capture\\gpu-refined-D"
+      ],
+      "exit_code": 0,
+      "output": "Vulkan screen capture: two validated live states; DPI=120; differing pixels=0; maximum channel error=0; rejected frames=0\n"
+    }
+  ]
+}

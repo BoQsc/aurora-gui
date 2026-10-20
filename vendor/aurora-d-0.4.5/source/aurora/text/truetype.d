@@ -35,6 +35,12 @@ private bool nativeTextExperiment()
         (experiment == "native-next" || experiment == "native-refined");
 }
 
+private bool refinedTextExperiment()
+{
+    return configuredHintingMode() == "natural" &&
+        environment.get("AURORA_TEXT_EXPERIMENT", "") == "native-refined";
+}
+
 private enum uint tag(string value) =
     (cast(uint) value[0] << 24) | (cast(uint) value[1] << 16) |
     (cast(uint) value[2] << 8) | cast(uint) value[3];
@@ -328,7 +334,7 @@ final class TrueTypeFace
                 // dependent. The safe baseline is a fresh interpreter with
                 // the same font tables for each glyph.
                 auto glyphHinter = new TrueTypeHinter(_data, _faceOffset,
-                    configuredHintingMode() == "natural", nativeTextExperiment());
+                    configuredHintingMode() == "natural", nativeTextExperiment(), refinedTextExperiment());
                 auto fitted = glyphHinter.hint(input);
                 foreach (i; 0 .. fitXs.length)
                 {

@@ -1,0 +1,229 @@
+{
+  "scope": "16 generated-font cases; x/y and symmetric/asymmetric; neutral DirectWrite reference",
+  "comparisons": [
+    {
+      "axis": "x",
+      "gasp": 7,
+      "outline_26dot6": 64,
+      "requested_26dot6": 128,
+      "before": {
+        "error": 127.5,
+        "exact": false
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "x",
+      "gasp": 7,
+      "outline_26dot6": 96,
+      "requested_26dot6": 160,
+      "before": {
+        "error": 84.66666666666667,
+        "exact": false
+      },
+      "after": {
+        "error": 0.5,
+        "exact": false
+      }
+    },
+    {
+      "axis": "x",
+      "gasp": 7,
+      "outline_26dot6": 128,
+      "requested_26dot6": 192,
+      "before": {
+        "error": 85.0,
+        "exact": false
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "x",
+      "gasp": 7,
+      "outline_26dot6": 192,
+      "requested_26dot6": 256,
+      "before": {
+        "error": 63.75,
+        "exact": false
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "x",
+      "gasp": 15,
+      "outline_26dot6": 64,
+      "requested_26dot6": 128,
+      "before": {
+        "error": 127.5,
+        "exact": false
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "x",
+      "gasp": 15,
+      "outline_26dot6": 96,
+      "requested_26dot6": 160,
+      "before": {
+        "error": 84.66666666666667,
+        "exact": false
+      },
+      "after": {
+        "error": 0.5,
+        "exact": false
+      }
+    },
+    {
+      "axis": "x",
+      "gasp": 15,
+      "outline_26dot6": 128,
+      "requested_26dot6": 192,
+      "before": {
+        "error": 85.0,
+        "exact": false
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "x",
+      "gasp": 15,
+      "outline_26dot6": 192,
+      "requested_26dot6": 256,
+      "before": {
+        "error": 63.75,
+        "exact": false
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 7,
+      "outline_26dot6": 64,
+      "requested_26dot6": 128,
+      "before": {
+        "error": 0.0,
+        "exact": true
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 7,
+      "outline_26dot6": 96,
+      "requested_26dot6": 160,
+      "before": {
+        "error": 0.0,
+        "exact": true
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 7,
+      "outline_26dot6": 128,
+      "requested_26dot6": 192,
+      "before": {
+        "error": 0.0,
+        "exact": true
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 7,
+      "outline_26dot6": 192,
+      "requested_26dot6": 256,
+      "before": {
+        "error": 0.0,
+        "exact": true
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 15,
+      "outline_26dot6": 64,
+      "requested_26dot6": 128,
+      "before": {
+        "error": 0.0,
+        "exact": true
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 15,
+      "outline_26dot6": 96,
+      "requested_26dot6": 160,
+      "before": {
+        "error": 0.3333333333333333,
+        "exact": false
+      },
+      "after": {
+        "error": 0.3333333333333333,
+        "exact": false
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 15,
+      "outline_26dot6": 128,
+      "requested_26dot6": 192,
+      "before": {
+        "error": 0.0,
+        "exact": true
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    },
+    {
+      "axis": "y",
+      "gasp": 15,
+      "outline_26dot6": 192,
+      "requested_26dot6": 256,
+      "before": {
+        "error": 0.0,
+        "exact": true
+      },
+      "after": {
+        "error": 0.0,
+        "exact": true
+      }
+    }
+  ]
+}

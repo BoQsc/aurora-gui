@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "courier 17px isolated numerals: previous / updated refined D (C stays default)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\digit-pixels\\courier-phase0-before.png",
+    "sha256": "b5fb66f41578f4dfffb98eb9added4ca777d12ff9dc684af33398cd2b5b67320"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\digit-pixels\\courier-phase0-after.png",
+    "sha256": "b5fb66f41578f4dfffb98eb9added4ca777d12ff9dc684af33398cd2b5b67320"
+  },
+  "difference": null,
+  "decision": null
+}

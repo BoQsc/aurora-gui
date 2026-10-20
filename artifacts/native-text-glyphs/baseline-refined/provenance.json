@@ -1,0 +1,12 @@
+{
+  "git_revision": "1765355a580028778db56ccac2a5ce53124c7b30",
+  "source_sha256": {
+    "alphacorrection.d": "1862931b6dc1462360fc855fee86fce706179f4b15c9ef129cd2dd1235876530",
+    "atlas.d": "b979842ca491a4d1c1edc67e3de88027263f048f3a8d854c4ac147d6d04c75b0",
+    "fontprofile.d": "077942f300652ee82fee819a25c759596b3ca7af3067593c2321f7f5e1e0305f",
+    "hinter.d": "d4a94d0c378d60514acbe7a494c5ce07f7f39d16ae6e13d1c918a5110808223b",
+    "rasterizer.d": "08484e964cb47ada1f09d01b5f2e296163d764e85af9db98e052cdc0666cf786",
+    "truetype.d": "c54e480c5d03a9955be42ade5c2695374d172340e41ec5169f749b20207516df"
+  },
+  "previous_evidence": "artifacts/native-text-refined/measurements.json"
+}

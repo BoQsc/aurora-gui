@@ -1,0 +1,2310 @@
+{
+  "mirp-post-iup": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 8.69875,
+      "neutral_error": 8.58375,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 7.76125,
+      "neutral_error": 7.2225,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 8.998933901918976,
+      "neutral_error": 8.789978678038379,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 7.478678038379531,
+      "neutral_error": 7.368869936034115,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 7.042471042471043,
+      "neutral_error": 6.72007722007722,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 5.605212355212355,
+      "neutral_error": 5.629343629343629,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 6.594767070835992,
+      "neutral_error": 6.534779834077856,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 6.115507338864071,
+      "neutral_error": 5.427568602425016,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 9.02112676056338,
+      "neutral_error": 8.916079812206572,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 7.735328638497653,
+      "neutral_error": 7.494718309859155,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 7.276520195295162,
+      "neutral_error": 7.107412339103417,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 5.918774966711052,
+      "neutral_error": 6.020861074123391,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 5.644851657940663,
+      "neutral_error": 5.397033158813263,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 4.337114601512507,
+      "neutral_error": 4.56457242582897,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.9121016827783746,
+      "neutral_error": 3.8421052631578947,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.341747225205872,
+      "neutral_error": 3.253311851056212,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 1.9532163742690059,
+      "neutral_error": 1.8280701754385964,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 1.8233918128654971,
+      "neutral_error": 1.4526315789473685,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 3.554630593132154,
+      "neutral_error": 3.393340270551509,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 3.0176899063475546,
+      "neutral_error": 2.8095733610822062,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 2.5970443349753696,
+      "neutral_error": 2.4216748768472907,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 2.25320197044335,
+      "neutral_error": 1.9684729064039408,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 4.895964691046658,
+      "neutral_error": 4.80327868852459,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 4.421815889029004,
+      "neutral_error": 3.9836065573770494,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 2.859475218658892,
+      "neutral_error": 2.798250728862974,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 2.7539358600583093,
+      "neutral_error": 2.2985422740524784,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 2.2344497607655502,
+      "neutral_error": 2.080542264752791,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 1.8763955342902712,
+      "neutral_error": 1.7492025518341308,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 1.7423212829573254,
+      "neutral_error": 1.6482739874966024,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 1.5430823593367764,
+      "neutral_error": 1.3886925795053005,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 2.5907207953603977,
+      "neutral_error": 2.484507042253521,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 2.1181441590720795,
+      "neutral_error": 2.075393537696769,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 22.11857292759706,
+      "neutral_error": 21.988457502623294,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 18.597061909758658,
+      "neutral_error": 18.554039874081848,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 20.10608856088561,
+      "neutral_error": 19.989852398523986,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 16.41420664206642,
+      "neutral_error": 16.837638376383765,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 24.000810372771475,
+      "neutral_error": 23.871150729335493,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 20.163695299837926,
+      "neutral_error": 20.165316045380877,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 11.947494033412887,
+      "neutral_error": 11.784606205250597,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 10.00178997613365,
+      "neutral_error": 9.9236276849642,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 4.303445021236432,
+      "neutral_error": 4.18499292118924,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 3.5167531854648417,
+      "neutral_error": 3.537989617744219,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 4.727620504973221,
+      "neutral_error": 4.503060443764346,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 3.685921958684009,
+      "neutral_error": 3.7681713848508034,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 4.284493591354612,
+      "neutral_error": 4.1440060316662475,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 3.648906760492586,
+      "neutral_error": 3.5096757979391806,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.564737423119382,
+      "neutral_error": 3.4470903642958524,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 2.831256899542659,
+      "neutral_error": 2.9145245229459076,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 2.395411605937922,
+      "neutral_error": 2.145748987854251,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 1.9244264507422402,
+      "neutral_error": 1.7489878542510122,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 3.756632064590542,
+      "neutral_error": 3.5813148788927336,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 3.324106113033449,
+      "neutral_error": 2.958477508650519,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 3.5553191489361704,
+      "neutral_error": 3.379787234042553,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 3.092553191489362,
+      "neutral_error": 2.8148936170212764,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 3.354639175257732,
+      "neutral_error": 3.174570446735395,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 2.79106529209622,
+      "neutral_error": 2.6164948453608248,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 5.743639921722114,
+      "neutral_error": 5.6255707762557075,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 4.970645792563601,
+      "neutral_error": 4.702544031311154,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 5.477659574468085,
+      "neutral_error": 5.3627659574468085,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 4.722340425531915,
+      "neutral_error": 4.466489361702128,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 3.834059775840598,
+      "neutral_error": 3.7378580323785804,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 3.36425902864259,
+      "neutral_error": 3.1559775840597757,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.6906625930876458,
+      "neutral_error": 3.5726561008210806,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.2514798548787476,
+      "neutral_error": 3.039144548405576,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 23.9472049689441,
+      "neutral_error": 23.479296066252587,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 19.113871635610767,
+      "neutral_error": 19.84472049689441,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 19.073279714030384,
+      "neutral_error": 18.875781948168008,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 15.882931188561216,
+      "neutral_error": 15.94906166219839,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 19.39404255319149,
+      "neutral_error": 19.18127659574468,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 16.20255319148936,
+      "neutral_error": 16.217021276595744,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 8.049218297625941,
+      "neutral_error": 7.909669947886508,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 6.721482339316734,
+      "neutral_error": 6.644470179502027,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 2.9881818181818183,
+      "neutral_error": 2.807272727272727,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 2.3781818181818184,
+      "neutral_error": 2.3286363636363636,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 4.222137983320698,
+      "neutral_error": 4.038286580742987,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 3.3786959818043973,
+      "neutral_error": 3.385898407884761,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 3.084213110729192,
+      "neutral_error": 2.9315001227596365,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 2.458138963908667,
+      "neutral_error": 2.4713970046648663,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 2.418882175226586,
+      "neutral_error": 2.322809667673716,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 1.9166163141993957,
+      "neutral_error": 1.9406344410876133,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 13.663917525773195,
+      "neutral_error": 13.43298969072165,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 11.342268041237114,
+      "neutral_error": 11.301030927835052,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 17.846965699208443,
+      "neutral_error": 17.740545294635005,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 14.6622691292876,
+      "neutral_error": 14.984168865435356,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 14.038301415487094,
+      "neutral_error": 13.8992506244796,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 11.607826810990842,
+      "neutral_error": 11.690258118234805,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 7.054323725055433,
+      "neutral_error": 6.941241685144124,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 6.034368070953437,
+      "neutral_error": 5.822062084257206,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 5.630353430353431,
+      "neutral_error": 5.423700623700624,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 4.558835758835759,
+      "neutral_error": 4.570893970893971,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 7.400698080279232,
+      "neutral_error": 7.245026178010471,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 6.213612565445026,
+      "neutral_error": 6.108202443280978,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 6.766682221185254,
+      "neutral_error": 6.647690153989734,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 5.653523098460103,
+      "neutral_error": 5.616192253849744,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.780865081638499,
+      "neutral_error": 3.694070466914924,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.179318246920653,
+      "neutral_error": 3.1274706387854483,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 32.49641148325359,
+      "neutral_error": 34.127990430622006,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 28.36244019138756,
+      "neutral_error": 28.895933014354068,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 34.85699481865285,
+      "neutral_error": 35.50259067357513,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 31.673575129533678,
+      "neutral_error": 30.02901554404145,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 29.464870067372473,
+      "neutral_error": 29.943214629451397,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 26.712223291626565,
+      "neutral_error": 25.340712223291625,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 34.1899518238128,
+      "neutral_error": 34.773571920165175,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 30.421885753613214,
+      "neutral_error": 29.445285615966966,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 29.482984293193716,
+      "neutral_error": 30.055628272251308,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 26.18455497382199,
+      "neutral_error": 25.426047120418847,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 29.97466960352423,
+      "neutral_error": 31.05011013215859,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 25.520925110132158,
+      "neutral_error": 26.29625550660793,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 27.380971497390608,
+      "neutral_error": 28.01846647932557,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 22.945403452428742,
+      "neutral_error": 23.665596146126052,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 30.703961456102785,
+      "neutral_error": 31.525428265524624,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 25.90872591006424,
+      "neutral_error": 26.637847965738757,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 13.351543942992874,
+      "neutral_error": 13.184085510688837,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 11.241092636579573,
+      "neutral_error": 11.106888361045131,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 11.978680203045686,
+      "neutral_error": 11.95736040609137,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 10.390862944162437,
+      "neutral_error": 10.050761421319796,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 12.546845124282983,
+      "neutral_error": 12.503824091778203,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 11.22944550669216,
+      "neutral_error": 10.51242829827916,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 12.359164420485175,
+      "neutral_error": 12.295148247978437,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 10.493935309973045,
+      "neutral_error": 10.370619946091644,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 8.453356086461888,
+      "neutral_error": 8.342434584755404,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 7.237201365187714,
+      "neutral_error": 7.102389078498294,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 4.293467819404419,
+      "neutral_error": 4.106628242074928,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 3.5883765609990395,
+      "neutral_error": 3.4707012487992315,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 4.535634387983381,
+      "neutral_error": 4.383509108341323,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 3.7315436241610738,
+      "neutral_error": 3.6749760306807286,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.9713673548889754,
+      "neutral_error": 3.8246980911569928,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.314569536423841,
+      "neutral_error": 3.2197117257499026,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 2.7285429141716566,
+      "neutral_error": 2.4790419161676644,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 2.2714570858283434,
+      "neutral_error": 2.1307385229540916,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 25.829482071713148,
+      "neutral_error": 25.806374501992032,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 22.29003984063745,
+      "neutral_error": 21.796812749003983,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 15.18854242204496,
+      "neutral_error": 15.04205946337926,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 12.548223350253807,
+      "neutral_error": 12.746918056562727,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 19.930422919508867,
+      "neutral_error": 19.72169167803547,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 17.22282855843565,
+      "neutral_error": 16.679399727148702,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 8.775010921799913,
+      "neutral_error": 8.644823066841415,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 7.303189165574486,
+      "neutral_error": 7.2791612057667106,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 11.227450980392156,
+      "neutral_error": 10.984313725490196,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 9.275579322638146,
+      "neutral_error": 9.302317290552585,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 2.911654135338346,
+      "neutral_error": 2.81203007518797,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 2.693843984962406,
+      "neutral_error": 2.3731203007518795,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 2.7650897226753672,
+      "neutral_error": 2.655939492807356,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 2.265905383360522,
+      "neutral_error": 2.2469227346878244,
+      "neutral_exact": false
+    }
+  ],
+  "mirp-post-delta": [
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 8.69875,
+      "neutral_error": 8.58375,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 7.76125,
+      "neutral_error": 7.2225,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 8.998933901918976,
+      "neutral_error": 8.789978678038379,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 7.478678038379531,
+      "neutral_error": 7.368869936034115,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 7.042471042471043,
+      "neutral_error": 6.72007722007722,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 5.605212355212355,
+      "neutral_error": 5.629343629343629,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 6.594767070835992,
+      "neutral_error": 6.534779834077856,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 6.115507338864071,
+      "neutral_error": 5.427568602425016,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 9.02112676056338,
+      "neutral_error": 8.916079812206572,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 7.735328638497653,
+      "neutral_error": 7.494718309859155,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 7.276520195295162,
+      "neutral_error": 7.107412339103417,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 5.918774966711052,
+      "neutral_error": 6.020861074123391,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 5.644851657940663,
+      "neutral_error": 5.397033158813263,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 4.337114601512507,
+      "neutral_error": 4.56457242582897,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.9121016827783746,
+      "neutral_error": 3.8421052631578947,
+      "neutral_exact": false
+    },
+    {
+      "font": "segoe",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.341747225205872,
+      "neutral_error": 3.253311851056212,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 1.9532163742690059,
+      "neutral_error": 1.8280701754385964,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 1.8233918128654971,
+      "neutral_error": 1.4526315789473685,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 3.554630593132154,
+      "neutral_error": 3.393340270551509,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 3.0176899063475546,
+      "neutral_error": 2.8095733610822062,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 2.5970443349753696,
+      "neutral_error": 2.4216748768472907,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 2.25320197044335,
+      "neutral_error": 1.9684729064039408,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 4.895964691046658,
+      "neutral_error": 4.80327868852459,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 4.421815889029004,
+      "neutral_error": 3.9836065573770494,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 2.859475218658892,
+      "neutral_error": 2.798250728862974,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 2.7539358600583093,
+      "neutral_error": 2.2985422740524784,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 2.2344497607655502,
+      "neutral_error": 2.080542264752791,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 1.8763955342902712,
+      "neutral_error": 1.7492025518341308,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 1.7423212829573254,
+      "neutral_error": 1.6482739874966024,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 1.5430823593367764,
+      "neutral_error": 1.3886925795053005,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 2.5907207953603977,
+      "neutral_error": 2.484507042253521,
+      "neutral_exact": false
+    },
+    {
+      "font": "consolas",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 2.1181441590720795,
+      "neutral_error": 2.075393537696769,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 22.11857292759706,
+      "neutral_error": 21.988457502623294,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 18.597061909758658,
+      "neutral_error": 18.554039874081848,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 20.10608856088561,
+      "neutral_error": 19.989852398523986,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 16.41420664206642,
+      "neutral_error": 16.837638376383765,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 24.000810372771475,
+      "neutral_error": 23.871150729335493,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 20.163695299837926,
+      "neutral_error": 20.165316045380877,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 11.947494033412887,
+      "neutral_error": 11.784606205250597,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 10.00178997613365,
+      "neutral_error": 9.9236276849642,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 4.303445021236432,
+      "neutral_error": 4.18499292118924,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 3.5167531854648417,
+      "neutral_error": 3.537989617744219,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 4.727620504973221,
+      "neutral_error": 4.503060443764346,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 3.685921958684009,
+      "neutral_error": 3.7681713848508034,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 4.284493591354612,
+      "neutral_error": 4.1440060316662475,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 3.648906760492586,
+      "neutral_error": 3.5096757979391806,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.564737423119382,
+      "neutral_error": 3.4470903642958524,
+      "neutral_exact": false
+    },
+    {
+      "font": "arial",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 2.831256899542659,
+      "neutral_error": 2.9145245229459076,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 2.395411605937922,
+      "neutral_error": 2.145748987854251,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 1.9244264507422402,
+      "neutral_error": 1.7489878542510122,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 3.756632064590542,
+      "neutral_error": 3.5813148788927336,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 3.324106113033449,
+      "neutral_error": 2.958477508650519,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 3.5553191489361704,
+      "neutral_error": 3.379787234042553,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 3.092553191489362,
+      "neutral_error": 2.8148936170212764,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 3.354639175257732,
+      "neutral_error": 3.174570446735395,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 2.79106529209622,
+      "neutral_error": 2.6164948453608248,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 5.743639921722114,
+      "neutral_error": 5.6255707762557075,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 4.970645792563601,
+      "neutral_error": 4.702544031311154,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 5.477659574468085,
+      "neutral_error": 5.3627659574468085,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 4.722340425531915,
+      "neutral_error": 4.466489361702128,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 3.834059775840598,
+      "neutral_error": 3.7378580323785804,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 3.36425902864259,
+      "neutral_error": 3.1559775840597757,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.6906625930876458,
+      "neutral_error": 3.5726561008210806,
+      "neutral_exact": false
+    },
+    {
+      "font": "calibri",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.2514798548787476,
+      "neutral_error": 3.039144548405576,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 23.9472049689441,
+      "neutral_error": 23.479296066252587,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 19.113871635610767,
+      "neutral_error": 19.84472049689441,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 19.073279714030384,
+      "neutral_error": 18.875781948168008,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 15.882931188561216,
+      "neutral_error": 15.94906166219839,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 19.39404255319149,
+      "neutral_error": 19.18127659574468,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 16.20255319148936,
+      "neutral_error": 16.217021276595744,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 8.049218297625941,
+      "neutral_error": 7.909669947886508,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 6.721482339316734,
+      "neutral_error": 6.644470179502027,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 2.9881818181818183,
+      "neutral_error": 2.807272727272727,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 2.3781818181818184,
+      "neutral_error": 2.3286363636363636,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 4.222137983320698,
+      "neutral_error": 4.038286580742987,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 3.3786959818043973,
+      "neutral_error": 3.385898407884761,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 3.084213110729192,
+      "neutral_error": 2.9315001227596365,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 2.458138963908667,
+      "neutral_error": 2.4713970046648663,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 2.418882175226586,
+      "neutral_error": 2.322809667673716,
+      "neutral_exact": false
+    },
+    {
+      "font": "tahoma",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 1.9166163141993957,
+      "neutral_error": 1.9406344410876133,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 13.663917525773195,
+      "neutral_error": 13.43298969072165,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 11.342268041237114,
+      "neutral_error": 11.301030927835052,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 17.846965699208443,
+      "neutral_error": 17.740545294635005,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 14.6622691292876,
+      "neutral_error": 14.984168865435356,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 14.038301415487094,
+      "neutral_error": 13.8992506244796,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 11.607826810990842,
+      "neutral_error": 11.690258118234805,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 7.054323725055433,
+      "neutral_error": 6.941241685144124,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 6.034368070953437,
+      "neutral_error": 5.822062084257206,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 5.630353430353431,
+      "neutral_error": 5.423700623700624,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 4.558835758835759,
+      "neutral_error": 4.570893970893971,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 7.400698080279232,
+      "neutral_error": 7.245026178010471,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 6.213612565445026,
+      "neutral_error": 6.108202443280978,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 6.766682221185254,
+      "neutral_error": 6.647690153989734,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 5.653523098460103,
+      "neutral_error": 5.616192253849744,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.780865081638499,
+      "neutral_error": 3.694070466914924,
+      "neutral_exact": false
+    },
+    {
+      "font": "verdana",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.179318246920653,
+      "neutral_error": 3.1274706387854483,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 32.49641148325359,
+      "neutral_error": 34.127990430622006,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 28.36244019138756,
+      "neutral_error": 28.895933014354068,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 34.85699481865285,
+      "neutral_error": 35.50259067357513,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 31.673575129533678,
+      "neutral_error": 30.02901554404145,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 29.464870067372473,
+      "neutral_error": 29.943214629451397,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 26.712223291626565,
+      "neutral_error": 25.340712223291625,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 34.1899518238128,
+      "neutral_error": 34.773571920165175,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 30.421885753613214,
+      "neutral_error": 29.445285615966966,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 29.482984293193716,
+      "neutral_error": 30.055628272251308,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 26.18455497382199,
+      "neutral_error": 25.426047120418847,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 29.97466960352423,
+      "neutral_error": 31.05011013215859,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 25.520925110132158,
+      "neutral_error": 26.29625550660793,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 27.380971497390608,
+      "neutral_error": 28.01846647932557,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 22.945403452428742,
+      "neutral_error": 23.665596146126052,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 30.703961456102785,
+      "neutral_error": 31.525428265524624,
+      "neutral_exact": false
+    },
+    {
+      "font": "courier",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 25.90872591006424,
+      "neutral_error": 26.637847965738757,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 13.351543942992874,
+      "neutral_error": 13.184085510688837,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 11.241092636579573,
+      "neutral_error": 11.106888361045131,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 11.978680203045686,
+      "neutral_error": 11.95736040609137,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 10.390862944162437,
+      "neutral_error": 10.050761421319796,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 12.546845124282983,
+      "neutral_error": 12.503824091778203,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 11.22944550669216,
+      "neutral_error": 10.51242829827916,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 12.359164420485175,
+      "neutral_error": 12.295148247978437,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 10.493935309973045,
+      "neutral_error": 10.370619946091644,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 8.453356086461888,
+      "neutral_error": 8.342434584755404,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 7.237201365187714,
+      "neutral_error": 7.102389078498294,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 4.293467819404419,
+      "neutral_error": 4.106628242074928,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 3.5883765609990395,
+      "neutral_error": 3.4707012487992315,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 4.535634387983381,
+      "neutral_error": 4.383509108341323,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 3.7315436241610738,
+      "neutral_error": 3.6749760306807286,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 3.9713673548889754,
+      "neutral_error": 3.8246980911569928,
+      "neutral_exact": false
+    },
+    {
+      "font": "times",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 3.314569536423841,
+      "neutral_error": 3.2197117257499026,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "light",
+      "monitor_error": 2.7285429141716566,
+      "neutral_error": 2.4790419161676644,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 11,
+      "theme": "dark",
+      "monitor_error": 2.2714570858283434,
+      "neutral_error": 2.1307385229540916,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "light",
+      "monitor_error": 25.829482071713148,
+      "neutral_error": 25.806374501992032,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 12,
+      "theme": "dark",
+      "monitor_error": 22.29003984063745,
+      "neutral_error": 21.796812749003983,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "light",
+      "monitor_error": 15.18854242204496,
+      "neutral_error": 15.04205946337926,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 13,
+      "theme": "dark",
+      "monitor_error": 12.548223350253807,
+      "neutral_error": 12.746918056562727,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "light",
+      "monitor_error": 19.930422919508867,
+      "neutral_error": 19.72169167803547,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 17,
+      "theme": "dark",
+      "monitor_error": 17.22282855843565,
+      "neutral_error": 16.679399727148702,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "light",
+      "monitor_error": 8.775010921799913,
+      "neutral_error": 8.644823066841415,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "theme": "dark",
+      "monitor_error": 7.303189165574486,
+      "neutral_error": 7.2791612057667106,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "light",
+      "monitor_error": 11.227450980392156,
+      "neutral_error": 10.984313725490196,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 20,
+      "theme": "dark",
+      "monitor_error": 9.275579322638146,
+      "neutral_error": 9.302317290552585,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "light",
+      "monitor_error": 2.911654135338346,
+      "neutral_error": 2.81203007518797,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 26,
+      "theme": "dark",
+      "monitor_error": 2.693843984962406,
+      "neutral_error": 2.3731203007518795,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "light",
+      "monitor_error": 2.7650897226753672,
+      "neutral_error": 2.655939492807356,
+      "neutral_exact": false
+    },
+    {
+      "font": "inter",
+      "size": 34,
+      "theme": "dark",
+      "monitor_error": 2.265905383360522,
+      "neutral_error": 2.2469227346878244,
+      "neutral_exact": false
+    }
+  ]
+}

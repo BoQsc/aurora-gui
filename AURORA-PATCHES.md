@@ -1,3 +1,27 @@
+## Refined D: horizontal stem distances and 17px numerals (2026-10-20)
+
+- The owner requested the remaining Courier New regressions and Consolas 17px
+  numerals be fixed while C stays the default. Only `native-refined` changes.
+  Reviewed D (`native-next`), C and both earlier evidence packages retain their
+  pixels. No application font override or per-family/size tuning is introduced.
+- The experimental hinter now applies natural horizontal CVT cut-in to MIRP
+  without rounding. A mismatched CVT request previously overrode the outline
+  stem distance. Vertical instructions, native INSTCTRL opt-outs and the older
+  profiles retain their behavior. Generated-font native probes and signed
+  instruction tests cover the change.
+- All three monochrome and four RGB regressions against reviewed D are removed.
+  The new refinement improves 40/144 over the previous refinement (104 equal,
+  none worse), and all 144 over C and D. Average native error is 10.011 versus
+  C's 12.862. All 276 visible RGB cases improve against C/D; 12 controls tie.
+- At 17px, every isolated Consolas numeral was tested at eight phases in both
+  themes: 64 cases improve, 96 tie, none regress; mean error falls 23.790→2.834.
+  Courier's isolated numerals remain unchanged and still show native shape
+  differences. Finer curves and post-IUP changes were excluded after causing
+  regressions, despite improving their aggregate scores.
+- Reproducible evidence and preserved before/after pixels are in the
+  [glyph-fidelity report](artifacts/native-text-glyphs/README.md). C remains the
+  shared default. Exact native rendering is still unfinished.
+
 ## Refined native text candidate — opt-in (2026-10-20)
 
 - The owner chose to keep C and continue improving D. C remains the default;

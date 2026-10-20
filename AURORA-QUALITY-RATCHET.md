@@ -89,10 +89,14 @@ captures when those renderers do not produce identical pixels.
   opt-in with `AURORA_TEXT_EXPERIMENT=native-next`.
   See [the C/D evidence](artifacts/native-text-next/README.md).
   The separate `native-refined` experiment adds bounded foreground/gamma
-  correction and matching A8 opacity rounding on Vulkan. It improves 144/144
-  monochrome and 276/288 opaque RGB cases against C (12 RGB ties), but retains
-  small Courier New regressions against D. C stays the default while those
-  gaps are investigated. See [the refinement evidence](artifacts/native-text-refined/README.md).
+  correction and matching A8 opacity rounding on Vulkan. Its initial version
+  retained small Courier New regressions against D; see
+  [the preserved refinement evidence](artifacts/native-text-refined/README.md).
+  The subsequent horizontal unrounded MIRP fix removes those three monochrome
+  and four RGB regressions and improves Consolas 17px numerals across fractional
+  phases. C stays the default; Courier's remaining numeral shape mismatch and
+  broader native parity are still open. See
+  [the glyph-fidelity evidence](artifacts/native-text-glyphs/README.md).
 
 This backlog is intentionally short. Add an item when a local workaround is
 found; remove it only after the behavior and its regression test live in Aurora.

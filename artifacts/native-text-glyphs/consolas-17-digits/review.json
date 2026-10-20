@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "title": "consolas 17px isolated numerals: previous / updated refined D (C stays default)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\digit-pixels\\consolas-phase0-before.png",
+    "sha256": "bed7a54caeef1cc7bdaeed60d11f8d380d1f0ff0ec9e6c8b42c9b089e787d4eb"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\native-text-glyphs\\digit-pixels\\consolas-phase0-after.png",
+    "sha256": "fdf9aa2736092529ff305287c22c0944d8e95d5bcc328227f8dd027b05f2cdff"
+  },
+  "difference": null,
+  "decision": null
+}

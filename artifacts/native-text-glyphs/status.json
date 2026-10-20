@@ -1,0 +1,8 @@
+{
+  "default": "C",
+  "status": "refined-D-stem-fix",
+  "default_changed": false,
+  "promotion_proposed": false,
+  "reported_Courier_regressions_removed": true,
+  "Courier_isolated_numeral_outlines_improved": false
+}

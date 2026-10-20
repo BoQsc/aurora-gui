@@ -1,0 +1,2901 @@
+{
+  "scope": "320 cases: 2 fonts \u00d7 10 isolated numerals \u00d7 8 phases \u00d7 2 themes, all 17px",
+  "summary": {
+    "consolas": {
+      "improved": 64,
+      "equal": 96,
+      "regressed": 0,
+      "before_mean": 23.78952774469237,
+      "after_mean": 2.834326526637796
+    },
+    "courier": {
+      "improved": 0,
+      "equal": 160,
+      "regressed": 0,
+      "before_mean": 31.73431729149656,
+      "after_mean": 31.73431729149656
+    }
+  },
+  "comparisons": [
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 4.387096774193548,
+      "after_error": 4.387096774193548
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 3.5806451612903225,
+      "after_error": 3.5806451612903225
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 80.03030303030303,
+      "after_error": 3.303030303030303
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 67.15151515151516,
+      "after_error": 1.9696969696969697
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 44.17948717948718,
+      "after_error": 4.82051282051282
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 40.02564102564103,
+      "after_error": 3.7435897435897436
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 0.8888888888888888,
+      "after_error": 0.8888888888888888
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 1.25,
+      "after_error": 1.25
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 0.09090909090909091,
+      "after_error": 0.09090909090909091
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 0.45454545454545453,
+      "after_error": 0.45454545454545453
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 46.37837837837838,
+      "after_error": 1.0810810810810811
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 39.486486486486484,
+      "after_error": 0.8918918918918919
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 2.836734693877551,
+      "after_error": 2.836734693877551
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 2.816326530612245,
+      "after_error": 2.816326530612245
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 1.2424242424242424,
+      "after_error": 1.2424242424242424
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 0.8484848484848485,
+      "after_error": 0.8484848484848485
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 82.88524590163935,
+      "after_error": 5.892857142857143
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 68.26229508196721,
+      "after_error": 4.821428571428571
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 5.42,
+      "after_error": 5.42
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 4.48,
+      "after_error": 4.48
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 4.633333333333334,
+      "after_error": 4.633333333333334
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 3.35,
+      "after_error": 3.35
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 80.21212121212122,
+      "after_error": 2.9393939393939394
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 67.84848484848484,
+      "after_error": 2.393939393939394
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 44.025,
+      "after_error": 5.0
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 39.8,
+      "after_error": 4.051282051282051
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 1.027027027027027,
+      "after_error": 1.027027027027027
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 1.4594594594594594,
+      "after_error": 1.4594594594594594
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 0.43636363636363634,
+      "after_error": 0.43636363636363634
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 0.4727272727272727,
+      "after_error": 0.4727272727272727
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 42.048780487804876,
+      "after_error": 0.8780487804878049
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 35.24390243902439,
+      "after_error": 1.0
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 2.8085106382978724,
+      "after_error": 2.8085106382978724
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 2.574468085106383,
+      "after_error": 2.574468085106383
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 1.2352941176470589,
+      "after_error": 1.2352941176470589
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 0.9411764705882353,
+      "after_error": 0.9411764705882353
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 79.015625,
+      "after_error": 5.508474576271187
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 65.703125,
+      "after_error": 6.576271186440678
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 5.595744680851064,
+      "after_error": 5.595744680851064
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 4.23404255319149,
+      "after_error": 4.23404255319149
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 5.2727272727272725,
+      "after_error": 5.2727272727272725
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 3.9272727272727272,
+      "after_error": 3.9272727272727272
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 61.7906976744186,
+      "after_error": 2.488372093023256
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 52.41860465116279,
+      "after_error": 2.6511627906976742
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 45.76923076923077,
+      "after_error": 5.184210526315789
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 38.82051282051282,
+      "after_error": 4.7105263157894735
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 1.054054054054054,
+      "after_error": 1.054054054054054
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 1.6216216216216217,
+      "after_error": 1.6216216216216217
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 0.07272727272727272,
+      "after_error": 0.07272727272727272
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 0.4909090909090909,
+      "after_error": 0.4909090909090909
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 41.19047619047619,
+      "after_error": 0.8809523809523809
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 34.785714285714285,
+      "after_error": 1.1666666666666667
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 2.8863636363636362,
+      "after_error": 2.8863636363636362
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 2.4545454545454546,
+      "after_error": 2.4545454545454546
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 1.125,
+      "after_error": 1.125
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 1.0,
+      "after_error": 1.0
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 82.39344262295081,
+      "after_error": 5.203389830508475
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 69.70491803278688,
+      "after_error": 5.983050847457627
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 5.428571428571429,
+      "after_error": 5.428571428571429
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 4.428571428571429,
+      "after_error": 4.428571428571429
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 5.236363636363636,
+      "after_error": 5.236363636363636
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 4.527272727272727,
+      "after_error": 4.527272727272727
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 63.214285714285715,
+      "after_error": 2.5
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 53.142857142857146,
+      "after_error": 2.1904761904761907
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 44.8,
+      "after_error": 5.175
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 36.025,
+      "after_error": 4.975
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 1.2727272727272727,
+      "after_error": 1.2727272727272727
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 0.8181818181818182,
+      "after_error": 0.8181818181818182
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 0.3617021276595745,
+      "after_error": 0.3617021276595745
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 0.40425531914893614,
+      "after_error": 0.40425531914893614
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 46.67567567567568,
+      "after_error": 0.8648648648648649
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 38.2972972972973,
+      "after_error": 1.4054054054054055
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 2.847826086956522,
+      "after_error": 2.847826086956522
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 2.4347826086956523,
+      "after_error": 2.4347826086956523
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 1.0909090909090908,
+      "after_error": 1.0909090909090908
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 1.2121212121212122,
+      "after_error": 1.2121212121212122
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 79.87096774193549,
+      "after_error": 5.649122807017544
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 69.96774193548387,
+      "after_error": 5.491228070175438
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 5.638297872340425,
+      "after_error": 5.638297872340425
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 4.085106382978723,
+      "after_error": 4.085106382978723
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 4.35,
+      "after_error": 4.35
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 3.9166666666666665,
+      "after_error": 3.9166666666666665
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 63.095238095238095,
+      "after_error": 2.380952380952381
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 53.5,
+      "after_error": 2.5476190476190474
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 43.65853658536585,
+      "after_error": 5.195121951219512
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 33.951219512195124,
+      "after_error": 4.195121951219512
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 1.393939393939394,
+      "after_error": 1.393939393939394
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 0.7272727272727273,
+      "after_error": 0.7272727272727273
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 0.3191489361702128,
+      "after_error": 0.3191489361702128
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 0.19148936170212766,
+      "after_error": 0.19148936170212766
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 48.611111111111114,
+      "after_error": 1.1944444444444444
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 40.416666666666664,
+      "after_error": 1.6388888888888888
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 2.6530612244897958,
+      "after_error": 2.6530612244897958
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 2.5510204081632653,
+      "after_error": 2.5510204081632653
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 1.1515151515151516,
+      "after_error": 1.1515151515151516
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 1.4848484848484849,
+      "after_error": 1.4848484848484849
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 75.2063492063492,
+      "after_error": 5.842105263157895
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 66.84126984126983,
+      "after_error": 4.157894736842105
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 6.0,
+      "after_error": 6.0
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 4.204545454545454,
+      "after_error": 4.204545454545454
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 4.112903225806452,
+      "after_error": 4.112903225806452
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 4.112903225806452,
+      "after_error": 4.112903225806452
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 64.78048780487805,
+      "after_error": 2.5853658536585367
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 55.26829268292683,
+      "after_error": 3.073170731707317
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 43.1219512195122,
+      "after_error": 5.0
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 34.48780487804878,
+      "after_error": 4.7073170731707314
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 1.1470588235294117,
+      "after_error": 1.1470588235294117
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 0.7352941176470589,
+      "after_error": 0.7352941176470589
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 0.08695652173913043,
+      "after_error": 0.08695652173913043
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 0.15217391304347827,
+      "after_error": 0.15217391304347827
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 47.628571428571426,
+      "after_error": 1.2285714285714286
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 41.114285714285714,
+      "after_error": 0.6571428571428571
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 2.816326530612245,
+      "after_error": 2.816326530612245
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 2.877551020408163,
+      "after_error": 2.877551020408163
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 1.1515151515151516,
+      "after_error": 1.1515151515151516
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 1.7575757575757576,
+      "after_error": 1.7575757575757576
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 75.38709677419355,
+      "after_error": 6.071428571428571
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 66.7741935483871,
+      "after_error": 4.303571428571429
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 5.74468085106383,
+      "after_error": 5.74468085106383
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 5.425531914893617,
+      "after_error": 5.425531914893617
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 3.9692307692307693,
+      "after_error": 3.9692307692307693
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 3.953846153846154,
+      "after_error": 3.953846153846154
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 78.08823529411765,
+      "after_error": 3.088235294117647
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 66.17647058823529,
+      "after_error": 2.6470588235294117
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 43.2,
+      "after_error": 4.85
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 36.25,
+      "after_error": 4.225
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 1.054054054054054,
+      "after_error": 1.054054054054054
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 0.8648648648648649,
+      "after_error": 0.8648648648648649
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 0.37777777777777777,
+      "after_error": 0.37777777777777777
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 0.13333333333333333,
+      "after_error": 0.13333333333333333
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 47.08571428571429,
+      "after_error": 1.1142857142857143
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 41.4,
+      "after_error": 0.5714285714285714
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 3.08,
+      "after_error": 3.08
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 2.48,
+      "after_error": 2.48
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 1.3636363636363635,
+      "after_error": 1.3636363636363635
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 0.9090909090909091,
+      "after_error": 0.9090909090909091
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 83.32758620689656,
+      "after_error": 6.519230769230769
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 71.53448275862068,
+      "after_error": 4.115384615384615
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 5.3061224489795915,
+      "after_error": 5.3061224489795915
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 5.714285714285714,
+      "after_error": 5.714285714285714
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 4.109375,
+      "after_error": 4.109375
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 3.5,
+      "after_error": 3.5
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 77.76470588235294,
+      "after_error": 3.2941176470588234
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 65.05882352941177,
+      "after_error": 1.7941176470588236
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 42.925,
+      "after_error": 4.775
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 38.175,
+      "after_error": 3.8
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 1.1428571428571428,
+      "after_error": 1.1428571428571428
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 1.0571428571428572,
+      "after_error": 1.0571428571428572
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 0.3111111111111111,
+      "after_error": 0.3111111111111111
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 0.3333333333333333,
+      "after_error": 0.3333333333333333
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 47.75,
+      "after_error": 1.25
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 41.30555555555556,
+      "after_error": 0.75
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 3.0816326530612246,
+      "after_error": 3.0816326530612246
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 2.4693877551020407,
+      "after_error": 2.4693877551020407
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 1.3636363636363635,
+      "after_error": 1.3636363636363635
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 0.8181818181818182,
+      "after_error": 0.8181818181818182
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 85.93103448275862,
+      "after_error": 6.60377358490566
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 71.94827586206897,
+      "after_error": 4.528301886792453
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 5.408163265306122,
+      "after_error": 5.408163265306122
+    },
+    {
+      "font": "consolas",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 4.775510204081633,
+      "after_error": 4.775510204081633
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 42.604651162790695,
+      "after_error": 42.604651162790695
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 36.97674418604651,
+      "after_error": 36.97674418604651
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 39.54838709677419,
+      "after_error": 39.54838709677419
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 32.67741935483871,
+      "after_error": 32.67741935483871
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 25.813953488372093,
+      "after_error": 25.813953488372093
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 22.906976744186046,
+      "after_error": 22.906976744186046
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 49.94871794871795,
+      "after_error": 49.94871794871795
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 41.51282051282051,
+      "after_error": 41.51282051282051
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 15.428571428571429,
+      "after_error": 15.428571428571429
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 10.057142857142857,
+      "after_error": 10.057142857142857
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 27.829268292682926,
+      "after_error": 27.829268292682926
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 26.24390243902439,
+      "after_error": 26.24390243902439
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 36.458333333333336,
+      "after_error": 36.458333333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 34.145833333333336,
+      "after_error": 34.145833333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 33.63333333333333,
+      "after_error": 33.63333333333333
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 30.866666666666667,
+      "after_error": 30.866666666666667
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 31.78,
+      "after_error": 31.78
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 30.4,
+      "after_error": 30.4
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 0,
+      "theme": "light",
+      "before_error": 47.69387755102041,
+      "after_error": 47.69387755102041
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 0,
+      "theme": "dark",
+      "before_error": 43.55102040816327,
+      "after_error": 43.55102040816327
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 32.84090909090909,
+      "after_error": 32.84090909090909
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 29.5,
+      "after_error": 29.5
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 29.363636363636363,
+      "after_error": 29.363636363636363
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 14.909090909090908,
+      "after_error": 14.909090909090908
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 24.622222222222224,
+      "after_error": 24.622222222222224
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 22.044444444444444,
+      "after_error": 22.044444444444444
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 39.80952380952381,
+      "after_error": 39.80952380952381
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 36.214285714285715,
+      "after_error": 36.214285714285715
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 25.272727272727273,
+      "after_error": 25.272727272727273
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 23.363636363636363,
+      "after_error": 23.363636363636363
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 22.625,
+      "after_error": 22.625
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 22.3,
+      "after_error": 22.3
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 36.875,
+      "after_error": 36.875
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 30.041666666666668,
+      "after_error": 30.041666666666668
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 46.25,
+      "after_error": 46.25
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 43.71875,
+      "after_error": 43.71875
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 35.48148148148148,
+      "after_error": 35.48148148148148
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 35.77777777777778,
+      "after_error": 35.77777777777778
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 1,
+      "theme": "light",
+      "before_error": 41.54,
+      "after_error": 41.54
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 1,
+      "theme": "dark",
+      "before_error": 38.54,
+      "after_error": 38.54
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 41.17777777777778,
+      "after_error": 41.17777777777778
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 39.577777777777776,
+      "after_error": 39.577777777777776
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 30.454545454545453,
+      "after_error": 30.454545454545453
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 16.318181818181817,
+      "after_error": 16.318181818181817
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 22.204545454545453,
+      "after_error": 22.204545454545453
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 19.681818181818183,
+      "after_error": 19.681818181818183
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 46.90909090909091,
+      "after_error": 46.90909090909091
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 44.63636363636363,
+      "after_error": 44.63636363636363
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 12.767441860465116,
+      "after_error": 12.767441860465116
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 12.348837209302326,
+      "after_error": 12.348837209302326
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 24.425,
+      "after_error": 24.425
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 24.6,
+      "after_error": 24.6
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 36.96,
+      "after_error": 36.96
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 31.08,
+      "after_error": 31.08
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 33.58064516129032,
+      "after_error": 33.58064516129032
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 33.645161290322584,
+      "after_error": 33.645161290322584
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 29.796296296296298,
+      "after_error": 29.796296296296298
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 32.22222222222222,
+      "after_error": 32.22222222222222
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 2,
+      "theme": "light",
+      "before_error": 47.76470588235294,
+      "after_error": 47.76470588235294
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 2,
+      "theme": "dark",
+      "before_error": 45.411764705882355,
+      "after_error": 45.411764705882355
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 34.325581395348834,
+      "after_error": 34.325581395348834
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 31.186046511627907,
+      "after_error": 31.186046511627907
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 25.6875,
+      "after_error": 25.6875
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 25.8125,
+      "after_error": 25.8125
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 22.4,
+      "after_error": 22.4
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 19.325,
+      "after_error": 19.325
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 35.4390243902439,
+      "after_error": 35.4390243902439
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 32.707317073170735,
+      "after_error": 32.707317073170735
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 26.767441860465116,
+      "after_error": 26.767441860465116
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 21.697674418604652,
+      "after_error": 21.697674418604652
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 22.657894736842106,
+      "after_error": 22.657894736842106
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 21.07894736842105,
+      "after_error": 21.07894736842105
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 39.270833333333336,
+      "after_error": 39.270833333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 36.104166666666664,
+      "after_error": 36.104166666666664
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 48.6,
+      "after_error": 48.6
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 43.43333333333333,
+      "after_error": 43.43333333333333
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 36.527272727272724,
+      "after_error": 36.527272727272724
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 40.127272727272725,
+      "after_error": 40.127272727272725
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 3,
+      "theme": "light",
+      "before_error": 39.12,
+      "after_error": 39.12
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 3,
+      "theme": "dark",
+      "before_error": 36.02,
+      "after_error": 36.02
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 32.08888888888889,
+      "after_error": 32.08888888888889
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 31.822222222222223,
+      "after_error": 31.822222222222223
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 43.333333333333336,
+      "after_error": 43.333333333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 43.36363636363637,
+      "after_error": 43.36363636363637
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 23.53846153846154,
+      "after_error": 23.53846153846154
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 19.41025641025641,
+      "after_error": 19.41025641025641
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 41.0,
+      "after_error": 41.0
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 40.333333333333336,
+      "after_error": 40.333333333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 13.372093023255815,
+      "after_error": 13.372093023255815
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 11.674418604651162,
+      "after_error": 11.674418604651162
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 26.4,
+      "after_error": 26.4
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 20.742857142857144,
+      "after_error": 20.742857142857144
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 46.0,
+      "after_error": 46.0
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 44.1875,
+      "after_error": 44.1875
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 32.41379310344828,
+      "after_error": 32.41379310344828
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 28.93103448275862,
+      "after_error": 28.93103448275862
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 30.927272727272726,
+      "after_error": 30.927272727272726
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 35.29090909090909,
+      "after_error": 35.29090909090909
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 4,
+      "theme": "light",
+      "before_error": 41.53846153846154,
+      "after_error": 41.53846153846154
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 4,
+      "theme": "dark",
+      "before_error": 40.86538461538461,
+      "after_error": 40.86538461538461
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 32.888888888888886,
+      "after_error": 32.888888888888886
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 29.88888888888889,
+      "after_error": 29.88888888888889
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 21.151515151515152,
+      "after_error": 21.151515151515152
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 16.757575757575758,
+      "after_error": 16.757575757575758
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 19.305555555555557,
+      "after_error": 19.305555555555557
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 14.0,
+      "after_error": 14.0
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 38.575,
+      "after_error": 38.575
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 34.2,
+      "after_error": 34.2
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 28.658536585365855,
+      "after_error": 28.658536585365855
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 24.951219512195124,
+      "after_error": 24.951219512195124
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 20.852941176470587,
+      "after_error": 20.852941176470587
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 15.264705882352942,
+      "after_error": 15.264705882352942
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 42.857142857142854,
+      "after_error": 42.857142857142854
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 39.36734693877551,
+      "after_error": 39.36734693877551
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 48.9,
+      "after_error": 48.9
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 41.93333333333333,
+      "after_error": 41.93333333333333
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 36.52,
+      "after_error": 36.52
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 37.1,
+      "after_error": 37.1
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 5,
+      "theme": "light",
+      "before_error": 40.25,
+      "after_error": 40.25
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 5,
+      "theme": "dark",
+      "before_error": 34.645833333333336,
+      "after_error": 34.645833333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 36.2,
+      "after_error": 36.2
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 34.46666666666667,
+      "after_error": 34.46666666666667
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 39.39393939393939,
+      "after_error": 39.39393939393939
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 31.606060606060606,
+      "after_error": 31.606060606060606
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 24.02777777777778,
+      "after_error": 24.02777777777778
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 18.63888888888889,
+      "after_error": 18.63888888888889
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 47.8974358974359,
+      "after_error": 47.8974358974359
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 39.41025641025641,
+      "after_error": 39.41025641025641
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 17.902439024390244,
+      "after_error": 17.902439024390244
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 16.70731707317073,
+      "after_error": 16.70731707317073
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 28.135135135135137,
+      "after_error": 28.135135135135137
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 24.054054054054053,
+      "after_error": 24.054054054054053
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 43.3,
+      "after_error": 43.3
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 42.98,
+      "after_error": 42.98
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 36.48275862068966,
+      "after_error": 36.48275862068966
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 31.724137931034484,
+      "after_error": 31.724137931034484
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 33.46808510638298,
+      "after_error": 33.46808510638298
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 34.659574468085104,
+      "after_error": 34.659574468085104
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 6,
+      "theme": "light",
+      "before_error": 47.25,
+      "after_error": 47.25
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 6,
+      "theme": "dark",
+      "before_error": 42.083333333333336,
+      "after_error": 42.083333333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 32.733333333333334,
+      "after_error": 32.733333333333334
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "0",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 28.977777777777778,
+      "after_error": 28.977777777777778
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 22.9375,
+      "after_error": 22.9375
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "1",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 19.03125,
+      "after_error": 19.03125
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 21.069767441860463,
+      "after_error": 21.069767441860463
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "2",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 18.930232558139537,
+      "after_error": 18.930232558139537
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 36.666666666666664,
+      "after_error": 36.666666666666664
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "3",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 30.666666666666668,
+      "after_error": 30.666666666666668
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 17.5,
+      "after_error": 17.5
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "4",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 10.382352941176471,
+      "after_error": 10.382352941176471
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 22.05,
+      "after_error": 22.05
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "5",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 21.0,
+      "after_error": 21.0
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 36.958333333333336,
+      "after_error": 36.958333333333336
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "6",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 34.1875,
+      "after_error": 34.1875
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 47.125,
+      "after_error": 47.125
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "7",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 43.0,
+      "after_error": 43.0
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 36.16981132075472,
+      "after_error": 36.16981132075472
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "8",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 34.79245283018868,
+      "after_error": 34.79245283018868
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 7,
+      "theme": "light",
+      "before_error": 38.4375,
+      "after_error": 38.4375
+    },
+    {
+      "font": "courier",
+      "size": 17,
+      "digit": "9",
+      "phase_eighths": 7,
+      "theme": "dark",
+      "before_error": 34.166666666666664,
+      "after_error": 34.166666666666664
+    }
+  ]
+}

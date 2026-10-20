@@ -286,9 +286,15 @@ This does not read system monitor settings or promise parity on other machines.
 The refined Vulkan glyph shader rounds opacity to A8 before blending, matching
 software. C/D retain the original shader; RGBA image rendering is unchanged.
 Run `dub run --config=native-alpha-test` for cache/growth/profile/Canvas checks.
-The repository-root `artifacts/native-text-refined/README.md` records the native
-RGB corpus, live GPU tests and remaining Courier New regressions. The adapted
-model's license is in `licenses/Microsoft-Terminal-MIT.txt`.
+The initial `artifacts/native-text-refined/README.md` preserves the native RGB
+corpus, live GPU tests and its Courier New regressions. A subsequent refined-only
+fix applies horizontal CVT cut-in to unrounded MIRP. This removes those measured
+regressions and corrects Consolas 17px numeral stems without changing metrics,
+gamma, per-family policy or C/D pixels. Signed, vertical and compatibility
+instruction tests plus generated-font native probes cover the fix. The current
+`artifacts/native-text-glyphs/README.md` records individual digits at all eight
+17px phases, remaining Courier shape differences and rejected curve experiments.
+The adapted alpha model's license is in `licenses/Microsoft-Terminal-MIT.txt`.
 
 ## Current font boundaries
 
