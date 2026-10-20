@@ -9,6 +9,7 @@ find/replace behavior, status, and the performance benchmark.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from dataclasses import dataclass, field
 import faulthandler
 import json
@@ -34,6 +35,47 @@ TAB_COUNT = 8
 COUNT_THRESHOLD = 512 * 1024
 BENCH_LINES = int(os.environ.get("AURORA_PADPP_BENCH_LINES", "2000"))
 LANGUAGES = ["Plain Text", "Python", "C++", "D", "JSON", "Markdown"]
+ZOOM_STEPS = [80, 90, 100, 110, 125, 150, 175, 200]
+BASE_FONT_SIZE = 17
+SYNTAX_THRESHOLD = 200_000
+TOKEN_COLORS = {
+    "comment": "#2f7d32",
+    "string": "#a15c00",
+    "keyword": "#2457a7",
+    "number": "#8a3fa0",
+}
+TOKEN_PATTERNS = {
+    "Python": re.compile(
+        r"""(?P<comment>#[^\n]*)"""
+        r'''|(?P<string>"""[\s\S]*?"""|''' + "'''" + r"""[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')"""
+        r"""|(?P<keyword>\b(?:and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|nonlocal|not|or|pass|raise|return|True|try|while|with|yield)\b)"""
+        r"""|(?P<number>\b\d+(?:\.\d+)?\b)"""
+    ),
+    "C++": re.compile(
+        r"""(?P<comment>//[^\n]*|/\*[\s\S]*?\*/)"""
+        r"""|(?P<string>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')"""
+        r"""|(?P<keyword>\b(?:alignas|auto|bool|break|case|catch|char|class|const|constexpr|continue|default|delete|do|double|else|enum|explicit|extern|false|float|for|friend|if|inline|int|long|namespace|new|nullptr|operator|private|protected|public|return|short|signed|sizeof|static|struct|switch|template|this|throw|true|try|typedef|typename|union|unsigned|using|virtual|void|volatile|while)\b)"""
+        r"""|(?P<number>\b\d+(?:\.\d+)?\b)"""
+    ),
+    "D": re.compile(
+        r"""(?P<comment>//[^\n]*|/\*[\s\S]*?\*/|/[+][\s\S]*?[+]/)"""
+        r"""|(?P<string>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')"""
+        r"""|(?P<keyword>\b(?:alias|auto|bool|break|case|cast|class|const|continue|default|delegate|do|double|else|enum|false|final|float|for|foreach|foreach_reverse|if|immutable|import|in|int|interface|long|mixin|module|new|null|out|override|private|protected|public|return|scope|shared|short|static|struct|switch|template|this|throw|true|try|typeof|ubyte|uint|ulong|union|unittest|ushort|void|while|with)\b)"""
+        r"""|(?P<number>\b\d+(?:\.\d+)?\b)"""
+    ),
+    "JSON": re.compile(
+        r"""(?P<string>"(?:\\.|[^"\\\n])*")"""
+        r"""|(?P<keyword>\b(?:true|false|null)\b)"""
+        r"""|(?P<number>-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)"""
+    ),
+    "Markdown": re.compile(
+        r"""(?P<comment>^>.*$)"""
+        r"""|(?P<string>`[^`\n]+`|```[\s\S]*?```)"""
+        r"""|(?P<keyword>^#{1,6}[ \t].*$|\*\*[^*\n]+\*\*)"""
+        r"""|(?P<number>^\s*[-*+]\s|^\s*\d+\.\s)""",
+        re.MULTILINE,
+    ),
+}
 SUFFIXES = {
     ".py": "Python",
     ".pyw": "Python",
@@ -194,6 +236,7 @@ class Document:
     words: int | None = 0
     lines: int = 1
     status: str = "Ready"
+    revision: int = 0
 
 
 class Workbench:
@@ -203,9 +246,19 @@ class Workbench:
         self.active = 0
         self.wrap = False
         self.match_case = False
+        self.whole_word = False
+        self.line_numbers = True
+        self.highlight_current_line = True
+        self.zoom_percent = 100
+        self.find_needle = ""
+        self.menu_base: dict[str, list] = {}
+        self._menu_cache_key: tuple | None = None
+        self._find_cache_key: tuple | None = None
+        self._find_count = 0
         self.running = True
         self.action_seq = 0
         self.last_error: str | None = None
+        self._load_menu_base()
 
     # ---------- startup and document model ----------
 
@@ -221,8 +274,96 @@ class Workbench:
                 self.docs[0].status = f"Open failed: {error}"
         self.active = 0
         self.session.call("setWordWrap", node="editor", wrap=False)
+        self._apply_editor_view()
         self._load_active()
         self._refresh_all(self.docs[0].status)
+
+    def _apply_editor_view(self) -> None:
+        font_size = (0 if self.zoom_percent == 100 else
+                     round(BASE_FONT_SIZE * self.zoom_percent / 100))
+        self.session.call(
+            "setEditorView", node="editor",
+            lineNumbers=self.line_numbers,
+            highlightCurrentLine=self.highlight_current_line,
+            fontSize=font_size,
+        )
+
+    @staticmethod
+    def _syntax_styles(doc: Document) -> list[dict]:
+        pattern = TOKEN_PATTERNS.get(doc.language)
+        if pattern is None or len(doc.text) > SYNTAX_THRESHOLD:
+            return []
+        styles = []
+        for match in pattern.finditer(doc.text):
+            color = TOKEN_COLORS.get(match.lastgroup or "")
+            if color is not None:
+                styles.append({
+                    "start": match.start(),
+                    "end": match.end(),
+                    "color": color,
+                })
+        return styles
+
+    def _apply_syntax(self, doc: Document | None = None) -> None:
+        doc = self.docs[self.active] if doc is None else doc
+        self.session.call("setEditorStyles", node="editor",
+                          styles=self._syntax_styles(doc))
+
+    def _load_menu_base(self) -> None:
+        try:
+            scene = json.loads(SCENE.read_text(encoding="utf-8"))
+        except OSError:
+            return
+
+        def visit(nodes: list[dict]) -> None:
+            for node in nodes:
+                if node.get("type") == "menu":
+                    self.menu_base[node["id"]] = deepcopy(node.get("items", []))
+                visit(node.get("children", []))
+
+        root = scene.get("root")
+        if root is not None:
+            visit([root])
+
+    @staticmethod
+    def _set_checked(items: list[dict], states: dict[str, bool]) -> None:
+        for item in items:
+            if item.get("label") in states:
+                item["checked"] = states[item["label"]]
+            Workbench._set_checked(item.get("children", []), states)
+
+    def _refresh_menus(self) -> None:
+        doc = self.docs[self.active]
+        states = {
+            "edit-menu": {
+                "Word wrap": self.wrap,
+                "Match case": self.match_case,
+                "Whole word": self.whole_word,
+            },
+            "view-menu": {
+                "Word wrap": self.wrap,
+                "Match case": self.match_case,
+                "Toggle line numbers": self.line_numbers,
+                "Toggle current line": self.highlight_current_line,
+            },
+            "language-menu": {
+                language: language == doc.language for language in LANGUAGES
+            },
+        }
+        key = (
+            doc.language, self.wrap, self.match_case, self.whole_word,
+            self.line_numbers, self.highlight_current_line,
+        )
+        if key == self._menu_cache_key:
+            return
+        for node, flags in states.items():
+            base = self.menu_base.get(node)
+            if base is None:
+                continue
+            items = deepcopy(base)
+            self._set_checked(items, flags)
+            self.session.call("setMenu", node=node, items=items)
+        self._menu_cache_key = key
 
     @staticmethod
     def _language_for(path: Path) -> str:
@@ -247,6 +388,7 @@ class Workbench:
 
     def _measure(self, doc: Document, force: bool = False) -> None:
         self._measure_static(doc, force)
+        doc.revision += 1
 
     def _load_active(self) -> None:
         doc = self.docs[self.active]
@@ -256,6 +398,7 @@ class Workbench:
         after_text = time.perf_counter()
         self.session.call("setSelection", node="editor",
                           start=doc.cursor, end=doc.anchor)
+        self._apply_syntax(doc)
         self.last_load_timings = {
             "setText": after_text - started,
             "setSelection": time.perf_counter() - after_text,
@@ -363,6 +506,7 @@ class Workbench:
             doc.path = path
             doc.name = path.name
             doc.language = self._language_for(path)
+            self._apply_syntax(doc)
         if doc.path is None:
             return self.save_as()
         try:
@@ -405,6 +549,7 @@ class Workbench:
         doc = self._capture_active()
         doc.language = language
         doc.status = f"Language mode: {language}"
+        self._apply_syntax(doc)
         self._refresh_all(doc.status)
 
     def select_all(self) -> None:
@@ -436,15 +581,80 @@ class Workbench:
             f"Match case {'on' if self.match_case else 'off'}"
         )
 
+    def toggle_whole_word(self) -> None:
+        self.whole_word = not self.whole_word
+        self._refresh_all(
+            f"Whole word {'on' if self.whole_word else 'off'}"
+        )
+
+    def toggle_line_numbers(self) -> None:
+        self.line_numbers = not self.line_numbers
+        self._apply_editor_view()
+        self._refresh_all(
+            f"Line numbers {'on' if self.line_numbers else 'off'}"
+        )
+
+    def toggle_current_line(self) -> None:
+        self.highlight_current_line = not self.highlight_current_line
+        self._apply_editor_view()
+        self._refresh_all(
+            f"Current line highlight "
+            f"{'on' if self.highlight_current_line else 'off'}"
+        )
+
+    def zoom_in(self) -> None:
+        next_steps = [step for step in ZOOM_STEPS if step > self.zoom_percent]
+        if not next_steps:
+            self._set_message("Zoom: 200% (maximum)")
+            return
+        self.zoom_percent = next_steps[0]
+        self._apply_editor_view()
+        self._refresh_all(f"Zoom: {self.zoom_percent}%")
+
+    def zoom_out(self) -> None:
+        previous = [step for step in ZOOM_STEPS if step < self.zoom_percent]
+        if not previous:
+            self._set_message("Zoom: 80% (minimum)")
+            return
+        self.zoom_percent = previous[-1]
+        self._apply_editor_view()
+        self._refresh_all(f"Zoom: {self.zoom_percent}%")
+
+    def zoom_reset(self) -> None:
+        self.zoom_percent = 100
+        self._apply_editor_view()
+        self._refresh_all("Zoom: 100%")
+
     def _pattern(self, needle: str) -> re.Pattern[str]:
         flags = 0 if self.match_case else re.IGNORECASE
-        return re.compile(re.escape(needle), flags)
+        body = re.escape(needle)
+        if self.whole_word:
+            body = rf"(?<!\w){body}(?!\w)"
+        return re.compile(body, flags)
 
     def _needle(self) -> str:
         return self.session.call("getText", node="find")["text"]
 
     def _replacement(self) -> str:
         return self.session.call("getText", node="replace")["text"]
+
+    def _refresh_find_hint(self) -> None:
+        doc = self.docs[self.active]
+        needle = self.find_needle
+        if not needle:
+            key = None
+            label = "Right-click the editor for commands"
+        else:
+            key = (needle, self.match_case, self.whole_word,
+                   id(doc), doc.revision, len(doc.text))
+            count = len(self._pattern(needle).findall(doc.text))
+            self._find_count = count
+            label = ("No matches" if count == 0 else
+                     f"{count} match{'' if count == 1 else 'es'}")
+        if key == self._find_cache_key:
+            return
+        self._find_cache_key = key
+        self.session.call("setText", node="find-hint", text=label)
 
     def _select_match(self, start: int, end: int, text: str,
                       message: str | None = None) -> None:
@@ -470,13 +680,38 @@ class Workbench:
         state = self.session.call("getEditorState", node="editor")
         text = doc.text
         start = int(state["cursor"])
+        self.find_needle = needle
         pattern = self._pattern(needle)
         match = pattern.search(text, start)
         if match is None and start > 0:
             match = pattern.search(text, 0, start)
         if match is None:
+            self._refresh_find_hint()
             self._set_message(f"Not found: {needle}")
             return
+        self._select_match(match.start(), match.end(), text,
+                           f"Found at line "
+                           f"{text.count(chr(10), 0, match.start()) + 1}")
+
+    def find_previous(self) -> None:
+        needle = self._needle()
+        if not needle:
+            self._set_message("Find text is empty")
+            return
+        doc = self._capture_active()
+        state = self.session.call("getEditorState", node="editor")
+        start = min(int(state["anchor"]), int(state["cursor"]))
+        text = doc.text
+        self.find_needle = needle
+        pattern = self._pattern(needle)
+        matches = list(pattern.finditer(text, 0, start))
+        if not matches and start < len(text):
+            matches = list(pattern.finditer(text, start))
+        if not matches:
+            self._refresh_find_hint()
+            self._set_message(f"Not found before cursor: {needle}")
+            return
+        match = matches[-1]
         self._select_match(match.start(), match.end(), text,
                            f"Found at line "
                            f"{text.count(chr(10), 0, match.start()) + 1}")
@@ -494,6 +729,7 @@ class Workbench:
         self._measure(doc, force=True)
         self.session.call("setSelection", node="editor",
                           start=doc.anchor, end=doc.cursor)
+        self._apply_syntax(doc)
         self._refresh_all(message)
 
     def replace_current(self) -> None:
@@ -544,8 +780,13 @@ class Workbench:
             if name == "action":
                 self.action_seq += 1
                 self.handle_action(event.get("action", ""))
-            elif name == "editor" and event.get("node") == "editor":
-                self.handle_editor_event(event)
+            elif name == "editor":
+                node = event.get("node")
+                if node == "editor":
+                    self.handle_editor_event(event)
+                elif node == "find" and event.get("kind") == "change":
+                    self.find_needle = self._needle()
+                    self._refresh_find_hint()
         except Exception as error:
             self.last_error = str(error)
             self._set_message(f"Error: {error}")
@@ -573,8 +814,16 @@ class Workbench:
             self.toggle_wrap()
         elif action in ("toggleCase", "search.case"):
             self.toggle_case()
+        elif action in ("toggleWholeWord", "search.wholeWord"):
+            self.toggle_whole_word()
+        elif action in ("toggleLineNumbers", "view.lineNumbers"):
+            self.toggle_line_numbers()
+        elif action in ("toggleCurrentLine", "view.currentLine"):
+            self.toggle_current_line()
         elif action in ("findNext", "search.findNext"):
             self.find_next()
+        elif action in ("findPrevious", "search.findPrevious"):
+            self.find_previous()
         elif action in ("replace", "search.replace"):
             self.replace_current()
         elif action in ("replaceAll", "search.replaceAll"):
@@ -594,8 +843,12 @@ class Workbench:
                 "Host: UI chrome, menus, tabs, files, text; "
                 "app: editor policy"
             )
-        elif action in ("view.zoomIn", "view.zoomOut", "view.zoomReset"):
-            self._set_message("Zoom is not exposed by the host yet")
+        elif action in ("view.zoomIn", "zoomIn"):
+            self.zoom_in()
+        elif action in ("view.zoomOut", "zoomOut"):
+            self.zoom_out()
+        elif action in ("view.zoomReset", "zoomReset"):
+            self.zoom_reset()
         elif action in ("exit", "app.exit"):
             self.running = False
         else:
@@ -616,6 +869,7 @@ class Workbench:
                 doc.lines = doc.text.count("\n") + 1
             else:
                 doc.words = None
+            self._apply_syntax(doc)
             doc.status = "Modified"
             self._refresh_all(doc.status)
         else:
@@ -669,6 +923,8 @@ class Workbench:
         )
         self.session.call("setText", node="status-language",
                           text=doc.language)
+        self.session.call("setText", node="status-zoom",
+                          text=f"{self.zoom_percent}%")
         self.session.call("setText", node="status-message",
                           text=doc.status)
 
@@ -695,10 +951,16 @@ class Workbench:
         self.session.call("setChrome", node="tb-wrap", active=self.wrap)
         self.session.call("setChrome", node="tb-case",
                           active=self.match_case)
+        self.session.call("setChrome", node="tb-lines",
+                          active=self.line_numbers)
         self.session.call("setChrome", node="find-case",
                           active=self.match_case)
+        self.session.call("setChrome", node="find-word",
+                          active=self.whole_word)
         self._refresh_tabs()
         self._status()
+        self._refresh_find_hint()
+        self._refresh_menus()
 
     # ---------- benchmark and lifecycle ----------
 
@@ -901,6 +1163,13 @@ def node_rect(app: Workbench, node: str) -> dict:
     return app.session.call("getBounds", node=node)["rect"]
 
 
+def node_text(app: Workbench, node: str) -> str:
+    for entry in app.session.call("tree")["nodes"]:
+        if entry["id"] == node:
+            return entry.get("text", "")
+    raise RuntimeError(f"node not found in tree: {node}")
+
+
 def verify_chrome_pixels(app: Workbench, ppm: Path) -> dict:
     width, height, raw = read_ppm(ppm)
     scale = width / 1180
@@ -908,7 +1177,7 @@ def verify_chrome_pixels(app: Workbench, ppm: Path) -> dict:
         ("menubar", 0.96, 0.5, (0xF0, 0xF2, 0xF5), 30),
         ("toolbar", 0.61, 0.5, (0xF7, 0xF9, 0xFB), 42),
         ("docs", 0.96, 0.5, (0xEE, 0xF1, 0xF5), 34),
-        ("findbar", 0.75, 0.5, (0xEE, 0xF2, 0xF6), 38),
+        ("findbar", 0.88, 0.5, (0xEE, 0xF2, 0xF6), 38),
         ("statusbar", 0.60, 0.5, (0xE8, 0xED, 0xF2), 26),
     ]
     heights = {}
@@ -933,6 +1202,33 @@ def verify_chrome_pixels(app: Workbench, ppm: Path) -> dict:
         (0xFF, 0xFF, 0xFF), "editor",
     )
     return heights
+
+
+def verify_editor_gutter(app: Workbench, ppm: Path) -> dict:
+    width, height, raw = read_ppm(ppm)
+    scale = width / 1180
+    editor = node_rect(app, "editor")
+    left = round((int(editor["x"]) + 8) * scale)
+    right = round((int(editor["x"]) + 44) * scale)
+    top = round((int(editor["y"]) + 4) * scale)
+    bottom = round((int(editor["y"]) + int(editor["height"]) - 4) * scale)
+    require_color(
+        raw, width,
+        round((int(editor["x"]) + 12) * scale),
+        round((int(editor["y"]) + int(editor["height"]) * 0.9) * scale),
+        (0xEE, 0xF1, 0xF5), "editor gutter",
+    )
+    dark = 0
+    for y in range(top, bottom, 2):
+        for x in range(left, right, 2):
+            red, green, blue = sample_color(raw, width, x, y)
+            if red + green + blue < 430:
+                dark += 1
+    if dark < 60:
+        raise RuntimeError(
+            f"line-number gutter has too few glyph pixels: {dark}"
+        )
+    return {"dark_pixels": dark, "sample_width": right - left}
 
 
 def verify_popup_pixels(ppm: Path, menu: dict, label: str) -> dict:
@@ -1091,7 +1387,8 @@ def run_self_test(app: Workbench, screenshot: Path, png: Path,
     context_labels = [
         item["label"] for item in context["items"] if not item["separator"]
     ]
-    if (context_labels[:3] != ["Find...", "Find Next", "Replace All"] or
+    if (context_labels[:4] != ["Find...", "Find Next", "Find Previous",
+                               "Replace All"] or
             "Select All" not in context_labels):
         raise RuntimeError(f"unexpected editor context menu: {context_labels}")
     context_shot = screenshot.with_name("padpp-context.ppm")
@@ -1106,18 +1403,132 @@ def run_self_test(app: Workbench, screenshot: Path, png: Path,
     if selected != "world":
         raise RuntimeError(f"context Find Next selected {selected!r}")
 
+    log("self-test: delayed hover hints")
+    case = node_rect(app, "tb-case")
+    # Start from a neutral pointer so the hint arms from a fresh move, not from
+    # whatever hover state the preceding context-menu click left behind.
+    app.session.call("uiMove", x=16, y=700)
+    app.pump_until(
+        lambda: not app.session.call(
+            "tooltipState")["tooltip"]["visible"], 3)
+    app.session.call(
+        "uiMove",
+        x=int(case["x"]) + int(case["width"]) // 2,
+        y=int(case["y"]) + int(case["height"]) // 2,
+    )
+    if not app.pump_until(
+            lambda: app.session.call("tooltipState")["tooltip"]["visible"], 5):
+        state = app.session.call("tooltipState")["tooltip"]
+        raise RuntimeError(
+            f"toolbar hover hint did not appear (target={case}, state={state})")
+    hint = app.session.call("tooltipState")["tooltip"]
+    if (hint["node"] != "tb-case"
+            or hint["text"] != "Match case (case-sensitive search)"):
+        raise RuntimeError(f"unexpected toolbar hover hint: {hint}")
+    if int(hint["rect"]["y"]) + int(hint["rect"]["height"]) > int(case["y"]):
+        raise RuntimeError("toolbar hover hint overlaps its anchor")
+    app.session.call("uiMove", x=900, y=700)
+    if not app.pump_until(
+            lambda: not app.session.call(
+                "tooltipState")["tooltip"]["visible"], 3):
+        raise RuntimeError("hover hint did not hide after pointer exit")
+
     log("self-test: find-bar replace and view toggles")
     app.session.call("setText", node="replace", text="Aurora")
     click_action(app, "replace-all", "replaceAll")
     replaced = app.editor_text()
     if "greet(\"Aurora\")" not in replaced or "world" in replaced:
         raise RuntimeError("Replace All did not update the document")
+
+    log("self-test: live find counts, whole word, and find previous")
+    app.session.call("setText", node="find", text="Aurora")
+    app.pump_until(lambda: app.find_needle == "Aurora", 5)
+    app.find_needle = "Aurora"
+    app._refresh_find_hint()
+    if app._find_count != 2:
+        raise RuntimeError(f"find count was {app._find_count}, expected 2")
+    hint = node_text(app, "find-hint")
+    if hint != "2 matches":
+        raise RuntimeError(f"find hint was {hint!r}, expected '2 matches'")
+    app.session.call("setText", node="find", text="Auro")
+    app.find_needle = "Auro"
+    app._refresh_find_hint()
+    if app._find_count != 2:
+        raise RuntimeError("substring find count was not 2")
+    click_action(app, "find-word", "toggleWholeWord")
+    if not app.whole_word or app._find_count != 0:
+        raise RuntimeError("whole-word toggle did not filter the find count")
+    hint = node_text(app, "find-hint")
+    if hint != "No matches":
+        raise RuntimeError(f"whole-word hint was {hint!r}")
+    click_action(app, "find-word", "toggleWholeWord")
+    if app.whole_word:
+        raise RuntimeError("whole-word toggle did not turn off")
+
+    app.session.call("setText", node="find", text="Aurora")
+    app.find_needle = "Aurora"
+    app.session.call("setSelection", node="editor",
+                     start=len(app.editor_text()),
+                     end=len(app.editor_text()))
+    app.find_previous()
+    state = app.session.call("getEditorState", node="editor")
+    selected = app.editor_text()[min(state["anchor"], state["cursor"]):
+                                  max(state["anchor"], state["cursor"])]
+    if selected != "Aurora":
+        raise RuntimeError(f"Find Previous selected {selected!r}")
     click_action(app, "tb-wrap", "toggleWrap")
     if not app.wrap:
         raise RuntimeError("toolbar Wrap did not turn word wrap on")
     click_action(app, "tb-wrap", "toggleWrap")
     if app.wrap:
         raise RuntimeError("toolbar Wrap did not turn word wrap off")
+    click_action(app, "tb-lines", "toggleLineNumbers")
+    if app.line_numbers:
+        raise RuntimeError("toolbar Lines did not hide the gutter")
+    click_action(app, "tb-lines", "toggleLineNumbers")
+    if not app.line_numbers:
+        raise RuntimeError("toolbar Lines did not restore the gutter")
+    view_menu = open_menu(app, "view-menu")
+    click_menu_item(app, view_menu, "Toggle current line")
+    if app.highlight_current_line:
+        raise RuntimeError("View > current line did not disable the band")
+    view_menu = open_menu(app, "view-menu")
+    click_menu_item(app, view_menu, "Toggle current line")
+    if not app.highlight_current_line:
+        raise RuntimeError("View > current line did not restore the band")
+
+    log("self-test: checked menu state and zoom")
+    click_action(app, "tb-wrap", "toggleWrap")
+    view_menu = open_menu(app, "view-menu")
+    wrap_item = next(item for item in view_menu["items"]
+                     if item["label"] == "Word wrap")
+    if not wrap_item["checked"]:
+        raise RuntimeError("View > Word wrap did not show its checked state")
+    click_menu_item(app, view_menu, "Word wrap")
+    if app.wrap:
+        raise RuntimeError("View > Word wrap did not toggle wrap off")
+    language_menu = open_menu(app, "language-menu")
+    python_item = next(item for item in language_menu["items"]
+                       if item["label"] == "Python")
+    if not python_item["checked"]:
+        raise RuntimeError("Language > Python did not show its checked state")
+    click_menu_item(app, language_menu, "Python")
+
+    app.zoom_in()
+    if app.zoom_percent != 110:
+        raise RuntimeError("Zoom in did not reach 110%")
+    zoom_label = node_text(app, "status-zoom")
+    if zoom_label != "110%":
+        raise RuntimeError(f"status zoom was {zoom_label!r}")
+    app.zoom_out()
+    app.zoom_reset()
+    if app.zoom_percent != 100:
+        raise RuntimeError("Zoom reset did not restore 100%")
+    styles = app._syntax_styles(app.docs[app.active])
+    colors = {style["color"] for style in styles}
+    if TOKEN_COLORS["keyword"] not in colors or (
+            TOKEN_COLORS["string"] not in colors):
+        raise RuntimeError(f"Python syntax styles are incomplete: {colors}")
 
     log("self-test: save and open")
     sample = temp / "sample.py"
@@ -1139,24 +1550,40 @@ def run_self_test(app: Workbench, screenshot: Path, png: Path,
 
     log("self-test: large document benchmark")
     large = app.run_benchmark()
+    large_index = len(app.docs) - 1
     if large["lines"] not in (BENCH_LINES, BENCH_LINES + 1):
         raise RuntimeError(
             f"benchmark created {large['lines']} lines, "
             f"expected {BENCH_LINES}"
         )
-    if (large["load_seconds"] > 20
-            or large["roundtrip_seconds"] > 15
-            or large["switch_seconds"] > 30
-            or large["find_seconds"] > 30):
+    # The host virtualizes editor layout; whole-document repaint regressions
+    # previously took 1.5 s to load, 12 s to find, and ~419 MB of RSS.
+    if (large["load_seconds"] > 2
+            or large["roundtrip_seconds"] > 2
+            or large["switch_seconds"] > 3
+            or large["find_seconds"] > 2):
         raise RuntimeError(f"large-file performance gate failed: {large}")
     host_rss = host_working_set_mb(app.session.process.pid)
+    if host_rss is not None and host_rss > 350:
+        raise RuntimeError(
+            f"large-file memory gate failed: {host_rss:.0f} MB working set"
+        )
 
     log("self-test: screenshot")
-    app.activate_tab(1)
+    app.activate_tab(large_index)
+    if app.docs[app.active].name != large["name"]:
+        raise RuntimeError(
+            f"benchmark tab was not activated: {app.docs[app.active].name}"
+        )
+    app.session.call("setText", node="find", text="Aurora")
+    app.session.call("setText", node="replace", text="world")
+    app.find_needle = "Aurora"
     app._refresh_all("Self-test passed | 2,001-line large-file document")
+    app.session.call("uiMove", x=900, y=700)
     app.screenshot(screenshot)
     pixels = verify_ppm_pixels(screenshot)
     chrome_heights = verify_chrome_pixels(app, screenshot)
+    gutter = verify_editor_gutter(app, screenshot)
     ppm_to_png(screenshot, png)
     menu_png = png.with_name("padpp-menu.png")
     context_png = png.with_name("padpp-context.png")
@@ -1167,6 +1594,7 @@ def run_self_test(app: Workbench, screenshot: Path, png: Path,
         "host_working_set_mb": host_rss,
         "screenshot_pixels": pixels,
         "chrome_heights": chrome_heights,
+        "editor_gutter": gutter,
         "file_menu": menu_pixels,
         "editor_context_menu": context_pixels,
         "tabs": len(app.docs),

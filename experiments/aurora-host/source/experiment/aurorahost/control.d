@@ -1,7 +1,9 @@
 module experiment.aurorahost.control;
 
 import experiment.aurorahost.events : HostEvent, buttonName, keyName;
-import experiment.aurorahost.host_ui : TabItem, TabStrip;
+import experiment.aurorahost.canvas : parseCanvasColor;
+import experiment.aurorahost.host_editor : EditorTextStyle, HostTextEditor;
+import experiment.aurorahost.host_ui : HostTooltip, TabItem, TabStrip;
 import experiment.aurorahost.protocol : ProtocolVersion;
 import experiment.aurorahost.scene : NodeInfo, NodeRegistry,
     parseCanvasCommands, parseTabItems;
@@ -11,6 +13,8 @@ import aurora : ContextMenu, FileDialogMode, FileDialogOptions, GuiWindow, Key,
     runFileDialogWindow;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
+import core.time : MonoTime, usecs;
+import std.algorithm : sort;
 import std.conv : to;
 import std.exception : enforce;
 import std.file : mkdirRecurse;
@@ -24,6 +28,8 @@ private struct ControlCommand
 {
     string line;
 }
+
+private enum TooltipDelayMicros = 550_000;
 
 /**
  * A stdin/stdout JSON-lines control channel.
@@ -39,6 +45,9 @@ class ControlServer
     private ControlCommand[] _queue;
     private Thread _reader;
     private bool _running = true;
+    private HostTooltip _tooltip;
+    private string _tooltipNode;
+    private MonoTime _tooltipShownAt;
 
     this(GuiWindow window, NodeRegistry registry)
     {
@@ -52,6 +61,78 @@ class ControlServer
         _reader = new Thread(delegate() { readLoop(); });
         _reader.isDaemon = true;
         _reader.start();
+    }
+
+    /**
+     * Advance hover feedback on the UI thread. Hover hints wait for a short
+     * dwell so scanning across a toolbar does not flash a trail of overlays.
+     */
+    void service(double)
+    {
+        if (_window.root is null ||
+            _window.root.topmostPopupSurface() !is null)
+        {
+            hideTooltip();
+            return;
+        }
+
+        string node;
+        string text;
+        Rect anchor;
+        if (!_registry.hoveredTooltip(node, text, anchor))
+        {
+            hideTooltip();
+            return;
+        }
+
+        if (node != _tooltipNode)
+        {
+            hideTooltip(false);
+            _tooltipNode = node;
+            _tooltipShownAt = MonoTime.currTime;
+        }
+        if (MonoTime.currTime - _tooltipShownAt < TooltipDelayMicros.usecs)
+            return;
+
+        if (_tooltip is null)
+        {
+            _tooltip = new HostTooltip(text);
+            _window.root.add(_tooltip);
+        }
+        else if (_tooltip.text != text)
+            _tooltip.setText(text);
+
+        const rootOrigin = _window.root.globalOrigin();
+        const rootSize = _window.root.bounds();
+        const tipSize = _tooltip.bounds();
+        int x = anchor.x + (anchor.width - tipSize.width) / 2;
+        int y = anchor.y - tipSize.height - 6;
+        if (y < rootOrigin.y)
+            y = anchor.y + anchor.height + 6;
+        const maxX = rootOrigin.x + rootSize.width - tipSize.width - 4;
+        const maxY = rootOrigin.y + rootSize.height - tipSize.height - 4;
+        if (x < rootOrigin.x + 4) x = rootOrigin.x + 4;
+        if (x > maxX) x = maxX;
+        if (y < rootOrigin.y) y = rootOrigin.y;
+        if (y > maxY) y = maxY;
+        _tooltip.setBounds(Rect(x - rootOrigin.x, y - rootOrigin.y,
+            tipSize.width, tipSize.height));
+        _window.root.bringChildToFront(_tooltip);
+    }
+
+    private void hideTooltip(bool resetTarget = true)
+    {
+        if (_tooltip !is null)
+        {
+            if (_tooltip.parent() !is null)
+                _tooltip.parent().remove(_tooltip);
+            _tooltip = null;
+        }
+        if (resetTarget)
+        {
+            _tooltipNode = null;
+            _tooltipShownAt = MonoTime.init;
+        }
     }
 
     void stop()
@@ -317,6 +398,12 @@ class ControlServer
                 case "setWordWrap":
                     setWordWrap(requestId, document);
                     break;
+                case "setEditorView":
+                    setEditorView(requestId, document);
+                    break;
+                case "setEditorStyles":
+                    setEditorStyles(requestId, document);
+                    break;
                 case "setCanvas":
                     setCanvas(requestId, document);
                     break;
@@ -329,6 +416,9 @@ class ControlServer
                 case "setChrome":
                     setChrome(requestId, document);
                     break;
+                case "setMenu":
+                    setMenu(requestId, document);
+                    break;
                 case "getBounds":
                     getBounds(requestId, document);
                     break;
@@ -340,6 +430,9 @@ class ControlServer
                     break;
                 case "uiMove":
                     uiMove(requestId, document);
+                    break;
+                case "tooltipState":
+                    tooltipState(requestId);
                     break;
                 case "menu":
                     openMenu(requestId, document);
@@ -444,6 +537,14 @@ class ControlServer
             respond(id, false, "unknown node: " ~ node);
             return;
         }
+        if (auto editor = cast(HostTextEditor) widget)
+        {
+            JSONValue[string] extra;
+            extra["node"] = JSONValue(node);
+            extra["text"] = JSONValue(editor.textUtf8());
+            respond(id, true, null, extra);
+            return;
+        }
         auto editor = cast(TextEditor) widget;
         if (editor is null)
         {
@@ -463,6 +564,19 @@ class ControlServer
         if (widget is null)
         {
             respond(id, false, "unknown node: " ~ node);
+            return;
+        }
+        if (auto editor = cast(HostTextEditor) widget)
+        {
+            JSONValue[string] extra;
+            extra["node"] = JSONValue(node);
+            extra["length"] = JSONValue(cast(long) editor.textView.length);
+            extra["cursor"] = JSONValue(cast(long) editor.cursorIndex());
+            extra["anchor"] = JSONValue(cast(long) editor.selectionAnchor());
+            extra["line"] = JSONValue(cast(long) editor.cursorLine());
+            extra["column"] = JSONValue(cast(long) editor.cursorColumn());
+            extra["hasSelection"] = JSONValue(editor.hasSelection());
+            respond(id, true, null, extra);
             return;
         }
         auto editor = cast(TextEditor) widget;
@@ -489,6 +603,24 @@ class ControlServer
         if (widget is null)
         {
             respond(id, false, "unknown node: " ~ node);
+            return;
+        }
+        if (auto editor = cast(HostTextEditor) widget)
+        {
+            const start = optionalInt(document, "start", -1);
+            const end = optionalInt(document, "end", -1);
+            enforce(start >= 0 && end >= 0,
+                "start and end are required and must be non-negative");
+            enforce(start <= editor.textView.length &&
+                end <= editor.textView.length,
+                "selection range is outside the document");
+            editor.setSelection(cast(size_t) start, cast(size_t) end);
+            editor.requestFocus();
+            JSONValue[string] extra;
+            extra["node"] = JSONValue(node);
+            extra["start"] = JSONValue(start);
+            extra["end"] = JSONValue(end);
+            respond(id, true, null, extra);
             return;
         }
         auto editor = cast(TextEditor) widget;
@@ -522,6 +654,20 @@ class ControlServer
             respond(id, false, "unknown node: " ~ node);
             return;
         }
+        if (auto editor = cast(HostTextEditor) widget)
+        {
+            auto wrap = "wrap" in document.object;
+            enforce(wrap !is null, "wrap is required");
+            enforce((*wrap).type == JSONType.true_ ||
+                (*wrap).type == JSONType.false_,
+                "wrap must be a boolean");
+            editor.setWordWrap((*wrap).boolean);
+            JSONValue[string] extra;
+            extra["node"] = JSONValue(node);
+            extra["wrap"] = JSONValue((*wrap).boolean);
+            respond(id, true, null, extra);
+            return;
+        }
         auto editor = cast(TextEditor) widget;
         if (editor is null)
         {
@@ -537,6 +683,103 @@ class ControlServer
         JSONValue[string] extra;
         extra["node"] = JSONValue(node);
         extra["wrap"] = JSONValue((*wrap).boolean);
+        respond(id, true, null, extra);
+    }
+
+    private void setEditorView(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto widget = _registry.widget(node);
+        auto editor = cast(HostTextEditor) widget;
+        if (editor is null)
+        {
+            respond(id, false, "node is not a host text editor: " ~ node);
+            return;
+        }
+        auto lineNumbers = "lineNumbers" in document.object;
+        auto currentLine = "highlightCurrentLine" in document.object;
+        auto fontValue = "fontSize" in document.object;
+        enforce(lineNumbers !is null || currentLine !is null ||
+            fontValue !is null,
+            "lineNumbers, highlightCurrentLine, or fontSize is required");
+        foreach (value; [lineNumbers, currentLine])
+        {
+            if (value is null) continue;
+            enforce((*value).type == JSONType.true_ ||
+                (*value).type == JSONType.false_,
+                "editor view flags must be booleans");
+        }
+        const fontSize = optionalInt(document, "fontSize", -1);
+        enforce(fontSize == -1 || (fontSize >= 0 && fontSize <= 48),
+            "fontSize must be -1 or between 0 and 48");
+        if (lineNumbers !is null)
+            editor.setLineNumbers((*lineNumbers).boolean);
+        if (currentLine !is null)
+            editor.setCurrentLineHighlight((*currentLine).boolean);
+        if (fontSize >= 0)
+            editor.setFontPixelSize(cast(int) fontSize);
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["lineNumbers"] = JSONValue(editor.lineNumbers());
+        extra["highlightCurrentLine"] =
+            JSONValue(editor.currentLineHighlight());
+        extra["fontSize"] = JSONValue(editor.fontPixelSizeOverride());
+        respond(id, true, null, extra);
+    }
+
+    private void setEditorStyles(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto editor = cast(HostTextEditor) _registry.widget(node);
+        if (editor is null)
+        {
+            respond(id, false, "node is not a host text editor: " ~ node);
+            return;
+        }
+        auto value = "styles" in document.object;
+        enforce(value !is null, "styles is required");
+        enforce((*value).type == JSONType.array,
+            "styles must be an array");
+        enforce((*value).array.length <= 20000,
+            "styles exceeds 20000 ranges");
+
+        const textLength = editor.textView.length;
+        EditorTextStyle[] styles;
+        styles.reserve((*value).array.length);
+        foreach (index, item; (*value).array)
+        {
+            const label = "styles[" ~ to!string(index) ~ "]";
+            enforce(item.type == JSONType.object,
+                label ~ " must be an object");
+            auto startValue = "start" in item.object;
+            auto endValue = "end" in item.object;
+            enforce(startValue !is null && endValue !is null,
+                label ~ ".start and .end are required");
+            enforce((*startValue).type == JSONType.integer &&
+                (*endValue).type == JSONType.integer,
+                label ~ ".start and .end must be integers");
+            const start = (*startValue).integer;
+            const end = (*endValue).integer;
+            enforce(start >= 0 && end >= start,
+                label ~ " range is invalid");
+            enforce(end <= textLength,
+                label ~ " range exceeds the document length");
+            if (start == end) continue;
+            const color = optionalString(item, "color", "");
+            enforce(color.length > 0, label ~ ".color is required");
+            styles ~= EditorTextStyle(cast(size_t) start, cast(size_t) end,
+                parseCanvasColor(color, label ~ ".color"));
+        }
+        styles.sort!((a, b) => a.start < b.start);
+        foreach (index, style; styles)
+            if (index > 0)
+                enforce(styles[index - 1].end <= style.start,
+                    "editor style ranges must not overlap");
+        editor.setTextStyles(styles);
+
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["styles"] = JSONValue(cast(long) editor.styleCount());
         respond(id, true, null, extra);
     }
 
@@ -638,6 +881,25 @@ class ControlServer
         respond(id, true, null, extra);
     }
 
+    private void setMenu(long id, JSONValue document)
+    {
+        const node = requireString(document, "node");
+        auto value = "items" in document.object;
+        enforce(value !is null, "items is required");
+        enforce((*value).type == JSONType.array,
+            "items must be an array");
+        const count = _registry.setMenuItems(node, *value);
+        if (count < 0)
+        {
+            respond(id, false, "node is not a menu: " ~ node);
+            return;
+        }
+        JSONValue[string] extra;
+        extra["node"] = JSONValue(node);
+        extra["items"] = JSONValue(cast(long) count);
+        respond(id, true, null, extra);
+    }
+
     private void getBounds(long id, JSONValue document)
     {
         auto widget = requireWidget(document);
@@ -676,6 +938,25 @@ class ControlServer
         extra["node"] = JSONValue(requireString(document, "node"));
         extra["count"] = JSONValue(cast(long) tabs.length);
         extra["tabs"] = JSONValue(tabs);
+        respond(id, true, null, extra);
+    }
+
+    private void tooltipState(long id)
+    {
+        JSONValue[string] tooltip;
+        tooltip["visible"] = JSONValue(_tooltip !is null);
+        if (_tooltipNode.length > 0)
+            tooltip["node"] = JSONValue(_tooltipNode);
+        if (_tooltip !is null)
+        {
+            tooltip["text"] = JSONValue(_tooltip.text);
+            const origin = _tooltip.globalOrigin();
+            const bounds = _tooltip.bounds();
+            tooltip["rect"] = rectValue(
+                Rect(origin.x, origin.y, bounds.width, bounds.height));
+        }
+        JSONValue[string] extra;
+        extra["tooltip"] = JSONValue(tooltip);
         respond(id, true, null, extra);
     }
 

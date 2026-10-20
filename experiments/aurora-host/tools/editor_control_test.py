@@ -84,6 +84,53 @@ def main() -> int:
         if wrapped.get("wrap") is not True:
             raise RuntimeError(f"setWordWrap did not report true: {wrapped}")
 
+        view = session.send(
+            "setEditorView", node="editor", lineNumbers=True,
+            highlightCurrentLine=True,
+        )
+        if (view.get("lineNumbers") is not True
+                or view.get("highlightCurrentLine") is not True):
+            raise RuntimeError(f"setEditorView did not enable both: {view}")
+        view = session.send("setEditorView", node="editor", lineNumbers=False)
+        if (view.get("lineNumbers") is not False
+                or view.get("highlightCurrentLine") is not True):
+            raise RuntimeError(f"setEditorView did not disable gutter: {view}")
+        view = session.send("setEditorView", node="editor", fontSize=23)
+        if view.get("fontSize") != 23:
+            raise RuntimeError(f"setEditorView did not apply font size: {view}")
+        view = session.send("setEditorView", node="editor", fontSize=0)
+        if view.get("fontSize") != 0:
+            raise RuntimeError(f"setEditorView did not reset font size: {view}")
+        if session.send("setEditorView", node="editor",
+                        fontSize=49).get("ok"):
+            raise RuntimeError("setEditorView accepted an oversized font")
+
+        styled = session.send(
+            "setEditorStyles", node="editor",
+            styles=[
+                {"start": 0, "end": 6, "color": "#2457a7"},
+                {"start": 7, "end": 10, "color": "#2f7d32"},
+            ],
+        )
+        if not styled.get("ok") or styled.get("styles") != 2:
+            raise RuntimeError(f"setEditorStyles failed: {styled}")
+        if session.send(
+            "setEditorStyles", node="editor",
+            styles=[
+                {"start": 0, "end": 8, "color": "#2457a7"},
+                {"start": 7, "end": 10, "color": "#2f7d32"},
+            ],
+        ).get("ok"):
+            raise RuntimeError("setEditorStyles accepted overlapping ranges")
+        if session.send(
+            "setEditorStyles", node="editor",
+            styles=[{"start": 0, "end": 999, "color": "#2457a7"}],
+        ).get("ok"):
+            raise RuntimeError("setEditorStyles accepted an out-of-range span")
+        cleared = session.send("setEditorStyles", node="editor", styles=[])
+        if not cleared.get("ok") or cleared.get("styles") != 0:
+            raise RuntimeError(f"setEditorStyles did not clear: {cleared}")
+
         session.send("click", node="apply")
         if not any(
             event.get("event") == "action"

@@ -14,6 +14,7 @@ import std.array : join;
 import std.conv : to;
 import std.file : mkdirRecurse;
 import std.path : dirName;
+import std.process : environment;
 import std.stdio : stderr, stdout, writeln;
 
 private void usage()
@@ -33,6 +34,15 @@ private string optionValue(string[] args, string name, string fallback)
         if (args[index] == name)
             return args[index + 1];
     return fallback;
+}
+
+private void applyTextRenderingDefaults()
+{
+    // The vendor's neutral transfer is tuned for dark surfaces. Host apps
+    // default to a lightly contrast-enhanced transfer so light-theme text keeps
+    // native-looking stem weight instead of washing out at caption sizes.
+    if ("AURORA_TEXT_CONTRAST" !in environment)
+        environment["AURORA_TEXT_CONTRAST"] = "0.75";
 }
 
 private int renderScene(const Scene scene, string outputPath)
@@ -67,6 +77,7 @@ private int runWindowed(GuiWindow window, NodeRegistry registry, bool control)
         };
         window.applicationService = delegate(double delta)
         {
+            server.service(delta);
             server.drain();
         };
         server.start();
@@ -86,6 +97,8 @@ int main(string[] args)
         usage();
         return args.length < 2 ? 2 : 0;
     }
+
+    applyTextRenderingDefaults();
 
     try
     {

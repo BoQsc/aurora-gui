@@ -129,7 +129,7 @@
         "children": [
           {"id": "tb-new", "type": "button", "text": "New", "style": "toolbar", "icon": "new", "action": "file.new"},
           {"id": "tb-open", "type": "button", "text": "Open", "style": "toolbar", "icon": "open", "action": "file.open"},
-          {"id": "tb-save", "type": "button", "text": "Save", "style": "toolbar", "icon": "save", "action": "file.save"},
+          {"id": "tb-save", "type": "button", "text": "Save", "style": "toolbar", "icon": "save", "action": "file.save", "tooltip": "Save the current document (Ctrl+S)"},
           {"id": "tb-sep-1", "type": "separator", "orientation": "vertical"},
           {"id": "tb-cut", "type": "button", "text": "Cut", "style": "toolbar", "action": "edit.cut"},
           {"id": "tb-copy", "type": "button", "text": "Copy", "style": "toolbar", "action": "edit.copy"},

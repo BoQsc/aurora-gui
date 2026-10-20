@@ -1,0 +1,34 @@
+
+core.exception.ArrayIndexError@C:\Users\windows10\Documents\github_repositories\aurora-gui\vendor\aurora-d-0.4.5\source\aurora\text\hinter.d(1280): index [18446744073709551488] is out of bounds for array of length 129
+----------------
+0x000000014011AF17
+0x000000014011AA2E
+0x0000000140075AC0
+0x0000000140073243
+0x0000000140070AA7
+0x000000014005094C
+0x000000014004E9A4
+0x000000014009CB61
+0x00000001400C8824
+0x0000000140001C2E
+0x00000001401377B3
+0x000000014013760F
+0x000000014013770F
+0x000000014013760F
+0x000000014013751E
+0x000000014011AE59
+0x0000000140002D02
+0x0000000140195C4E
+0x00007FF837137124 in BaseThreadInitThunk
+0x00007FF83909CC91 in RtlUserThreadStart
+Traceback (most recent call last):
+  File "C:\Users\windows10\Documents\github_repositories\aurora-gui\scripts\compare-font-rendering.py", line 335, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "C:\Users\windows10\Documents\github_repositories\aurora-gui\scripts\compare-font-rendering.py", line 257, in main
+    subprocess.run([str(exe), str(Path(args.font).resolve()), str(size), str(prefix), args.text], env=env, check=True)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\windows10\AppData\Local\Python\pythoncore-3.15-64\Lib\subprocess.py", line 692, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\text-rendering-audit-2026-10-20\\consolas-natural\\font-quality.exe', 'C:\\Windows\\Fonts\\consola.ttf', '26', 'C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\text-rendering-audit-2026-10-20\\consolas-natural\\26', 'Hamburgefontsiv 0123456789 = + - _ Il1 O0 | AV fi']' returned non-zero exit status 1.

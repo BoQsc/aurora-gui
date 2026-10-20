@@ -13,6 +13,9 @@ repository depends on it. Delete this folder and Aurora is unaffected.
 - The same executable can open a real Aurora window with `--run`.
 - A stdin/stdout control channel can inspect and change the live scene.
 - Scenes can contain real editable text areas and named button actions.
+- The host owns editor painting: only display rows intersecting the viewport are
+  shaped and drawn, while the full buffer, selection, and undo state stay in the
+  host.
 - Single-line text fields feed application search and command workflows.
 - Editor text, cursor, anchor, and line/column changes are readable and
   observable without the host owning document policy.
@@ -25,6 +28,15 @@ repository depends on it. Delete this folder and Aurora is unaffected.
   headless modes.
 - A memory-mapped shared surface carries RGBA frames and an input ring, so
   high-frequency clients do not send per-frame JSON draw commands.
+- Application-visible content is Aurora-rendered: menu bars, tabs, toolbars,
+  popups, the editor, and the undecorated file-dialog window all paint through
+  Aurora. The OS retains only the top-level window frame, taskbar integration,
+  and dialog window placement/system-move.
+- Scene nodes can declare hover hints. The host shows them after a dwell in an
+  Aurora-rendered overlay, suppresses them for pointer exit and popups, and
+  reports the active hint through `tooltipState`.
+- Light-surface text uses a contrast-enhanced grayscale transfer by default, so
+  caption-size glyphs keep native-looking stem weight instead of washing out.
 
 ## Commands
 
@@ -63,6 +75,14 @@ Direct CLI modes:
 
 `--render` is intended for the `host-headless` configuration. `--run` is the
 windowed configuration.
+
+## Text rendering
+
+The host selects Aurora's `sharp` glyph rendering and defaults
+`AURORA_TEXT_CONTRAST` to `0.75` when the variable is not already set. This
+raises edge coverage on bright surfaces without changing font metrics or layout.
+Set `AURORA_TEXT_CONTRAST=0.5` to restore the neutral vendor transfer, or
+`AURORA_FONT_RENDER_MODE=smooth` to preserve unaligned outlines.
 
 ## Control channel
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import time
 import traceback
 
 from control_client import HostSession
@@ -119,6 +120,33 @@ def pixel_point(rect: dict, root: dict, scale: float) -> tuple[int, int]:
     )
 
 
+def changed_pixels(before: bytes, after: bytes, width: int,
+                   top: int, bottom: int) -> int:
+    changed = 0
+    for y in range(max(0, top), bottom):
+        start = y * width * 3
+        end = start + width * 3
+        changed += sum(
+            1 for left, right in zip(before[start:end], after[start:end])
+            if left != right
+        )
+    return changed
+
+
+def ink_fraction(pixels: bytes, width: int, left: int, top: int,
+                 right: int, bottom: int) -> float:
+    """Average glyph ink on a light background (0 = blank, 1 = black)."""
+    total = 0
+    count = 0
+    for y in range(max(0, top), bottom):
+        for x in range(max(0, left), right):
+            red, green, blue = sample(pixels, width, x, y)
+            total += 255 - (red + green + blue) // 3
+            count += 1
+    require(count > 0, "text ink sample region is empty")
+    return total / (count * 255)
+
+
 def verify_layout(pixels: bytes, width: int, height: int, root: dict,
                   bounds: dict) -> None:
     scale = pixel_scale(width, root)
@@ -217,6 +245,27 @@ def main() -> int:
         require(action_count(session, "edit-menu", "view.wrap") == 1,
                 "Word wrap did not emit its action")
 
+        replacement = [
+            {"label": "Word wrap", "action": "view.wrap", "checked": False},
+            {"label": "Match case", "action": "edit.matchCase",
+             "checked": True},
+        ]
+        response = session.send("setMenu", node="edit-menu",
+                                items=replacement)
+        require(response.get("ok") is True and response.get("items") == 2,
+                f"setMenu did not replace the items: {response}")
+        menu = open_menu(session, bounds, "edit-menu")
+        require(menu_item(menu, "Word wrap")["checked"] is False,
+                "setMenu did not clear the checked state")
+        require(menu_item(menu, "Match case")["checked"] is True,
+                "setMenu did not set the checked state")
+        click_item(session, menu, "Match case")
+        require(action_count(session, "edit-menu", "edit.matchCase") == 1,
+                "replacement menu item did not emit its action")
+        if session.send("setMenu", node="editor",
+                        items=replacement).get("ok"):
+            raise RuntimeError("setMenu accepted a non-menu node")
+
         menu = open_menu(session, bounds, "file-menu")
         recent = menu_item(menu, "Recent Files")
         session.send("uiMove", x=center(recent["rect"])[0],
@@ -269,6 +318,63 @@ def main() -> int:
                 "toolbar Save did not emit its action")
 
         editor_x, editor_y = center(bounds["editor"])
+        session.send("uiMove", x=editor_x, y=editor_y)
+        time.sleep(0.1)
+        before_tooltip = out / "ui-depth-no-tooltip.ppm"
+        session.send("screenshot", path=str(before_tooltip))
+        before_width, before_height, before_pixels = read_ppm(before_tooltip)
+        session.send("uiMove", x=center(bounds["tb-save"])[0],
+                     y=center(bounds["tb-save"])[1])
+        time.sleep(0.2)
+        early = session.send("tooltipState")["tooltip"]
+        require(early["visible"] is False,
+                "tooltip appeared before its hover dwell elapsed")
+        time.sleep(0.5)
+        tooltip = session.send("tooltipState")["tooltip"]
+        require(tooltip["visible"] is True,
+                f"hover hint did not appear: {tooltip}")
+        require(tooltip["node"] == "tb-save" and
+                tooltip["text"] == "Save the current document (Ctrl+S)",
+                f"hover hint has the wrong content: {tooltip}")
+        require(int(tooltip["rect"]["y"]) + int(tooltip["rect"]["height"]) <=
+                int(bounds["tb-save"]["y"]),
+                "hover hint does not sit above its anchor")
+        tooltip_shot = out / "ui-depth-tooltip.ppm"
+        session.send("screenshot", path=str(tooltip_shot))
+        tip_width, tip_height, tip_pixels = read_ppm(tooltip_shot)
+        require((tip_width, tip_height) == (before_width, before_height),
+                "hover hint changed the scene size")
+        scale = pixel_scale(tip_width, root)
+        tip_rect = tooltip["rect"]
+        tip_x, tip_y = pixel_point(tip_rect, root, scale)
+        require_color(tip_pixels, tip_width,
+                      tip_x + round(4 * scale),
+                      tip_y + round(int(tip_rect["height"]) * scale) // 2,
+                      (0xFF, 0xFF, 0xFF), "tooltip surface")
+        menubar_bottom = round(
+            (int(bounds["menubar"]["y"]) + int(bounds["menubar"]["height"]) -
+             int(root["y"])) * scale
+        )
+        changed = changed_pixels(before_pixels, tip_pixels, tip_width, 0,
+                                 menubar_bottom)
+        require(changed > round(120 * scale * scale),
+                f"tooltip did not visibly overlay the menu bar ({changed} px)")
+
+        session.send("uiMove", x=editor_x, y=editor_y)
+        time.sleep(0.1)
+        hidden = session.send("tooltipState")["tooltip"]
+        require(hidden["visible"] is False,
+                f"hover hint stayed visible after pointer exit: {hidden}")
+        hidden_shot = out / "ui-depth-tooltip-hidden.ppm"
+        session.send("screenshot", path=str(hidden_shot))
+        hidden_width, hidden_height, hidden_pixels = read_ppm(hidden_shot)
+        require((hidden_width, hidden_height) == (before_width, before_height),
+                "hiding the hover hint changed the scene size")
+        require(changed_pixels(before_pixels, hidden_pixels, hidden_width, 0,
+                               menubar_bottom) == 0,
+                "the menu bar did not return to its unhovered pixels")
+
+        editor_x, editor_y = center(bounds["editor"])
         session.send("uiClick", x=editor_x, y=editor_y, button="right")
         context = session.send("menuState")["menu"]
         context_labels = [
@@ -295,13 +401,26 @@ def main() -> int:
         session.send("screenshot", path=str(shot))
         width, height, pixels = read_ppm(shot)
         verify_layout(pixels, width, height, root, bounds)
+        scale = pixel_scale(width, root)
+        editor_x, editor_y = pixel_point(bounds["editor"], root, scale)
+        ink = ink_fraction(
+            pixels,
+            width,
+            editor_x + round(8 * scale),
+            editor_y + round(4 * scale),
+            editor_x + round(450 * scale),
+            editor_y + round(150 * scale),
+        )
+        require(ink >= 0.061,
+                f"light-surface text is washing out (ink={ink:.4f})")
 
         try:
             from PIL import Image
         except ImportError:
             pass
         else:
-            for ppm in (shot, menu_shot, context_shot):
+            for ppm in (shot, menu_shot, context_shot, before_tooltip,
+                        tooltip_shot, hidden_shot):
                 Image.open(ppm).save(ppm.with_suffix(".png"))
 
         print(f"layout: menu={bounds['menubar']['height']} "
@@ -309,6 +428,7 @@ def main() -> int:
               f"tabs={bounds['docs']['height']} "
               f"editor={bounds['editor']['height']} "
               f"status={bounds['statusbar']['height']}")
+        print(f"editor text ink: {ink:.4f}")
         print(f"actions: {sorted(set(action_events(session)))}")
         print(f"screenshots: {shot}, {menu_shot}, {context_shot}")
     finally:

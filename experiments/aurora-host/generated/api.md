@@ -2,8 +2,8 @@
 
 **Generated from `protocol/aurora-host.api.json`.** Do not edit manually.
 
-- Experiment version: `0.4.1`
-- Protocol version: `5`
+- Experiment version: `0.4.4`
+- Protocol version: `8`
 - Schema version: `2`
 - Max scene depth: `16`
 - Max scene nodes: `256`
@@ -28,6 +28,9 @@
 - `text-editor`
 - `text-field`
 - `text-selection`
+- `editor-view`
+- `editor-styles`
+- `editor-font-zoom`
 - `editor-events`
 - `assets`
 - `pointer-events`
@@ -35,11 +38,13 @@
 - `frame-events`
 - `shared-surface`
 - `menu`
+- `dynamic-menu`
 - `tabs`
 - `separator`
 - `popup-menu`
 - `context-menu`
 - `ui-test-driver`
+- `tooltips`
 
 ## Window
 
@@ -74,6 +79,7 @@
 - `action`: optional button action name; emits an action event instead of the default activation event
 - `events`: optional canvas/surface events (pointer, key, tick) or editor events (change, cursor)
 - `tickHz`: optional canvas tick rate from 1 to 240; defaults to 0 (disabled)
+- `tooltip`: optional plain-text hover hint; shown after a short dwell and hidden by popups or pointer exit
 
 ## Commands
 
@@ -99,14 +105,18 @@ Transport: stdin/stdout JSON lines; launch --run <scene> --control
 | `getEditorState` | Read text length, cursor, anchor, line, and column from an editor. |
 | `setSelection` | Select a Unicode code-point range in an editor and focus it. |
 | `setWordWrap` | Set word wrapping on a text-editor node. |
+| `setEditorView` | Set lineNumbers, highlightCurrentLine, and/or a pixel fontSize override on a host text editor. |
+| `setEditorStyles` | Replace non-overlapping token color ranges on a host text editor. |
 | `setCanvas` | Replace a canvas node's command list by node ID. |
 | `setTick` | Set a canvas tick rate by node ID. |
 | `setTabs` | Replace the tab list on a tabs node by node ID. |
 | `setChrome` | Update button style, icon, active state, text color, or font size by node ID. |
+| `setMenu` | Replace a menu node's popup items, including checked and enabled state. |
 | `getBounds` | Return a node's global rectangle. |
 | `getTabs` | Return tab labels, actions, active/dirty flags, and global rectangles. |
 | `uiClick` | Route a real pointer click through the UI input pipeline at global coordinates. |
 | `uiMove` | Route a real pointer move through the UI input pipeline at global coordinates. |
+| `tooltipState` | Report the active hover hint's node, text, visibility, and global rectangle. |
 | `menu` | Open a menu node's popup menu by node ID. |
 | `menuState` | Report the open popup menu rectangle, item geometry, and item state. |
 | `menuClick` | Click a popup menu item by index and verify that the popup closed. |

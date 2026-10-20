@@ -3,8 +3,10 @@ module experiment.aurorahost.scene;
 import experiment.aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
     parseCanvasColor;
 import experiment.aurorahost.events : HostEvent;
+import experiment.aurorahost.host_editor : HostTextArea, HostTextEditor;
 import experiment.aurorahost.host_ui : ChromeButton, ChromeStyle, ContextTextArea,
-    ContextTextField, TabItem, TabStrip, iconForName, parseChromeStyle;
+    ContextHostTextArea, ContextTextField, HostMenuButton, TabItem, TabStrip,
+    iconForName, parseChromeStyle;
 import experiment.aurorahost.image_widget : ImageWidget;
 import experiment.aurorahost.surface : SurfaceInfo, SurfaceSpec, SurfaceWidget;
 import experiment.aurorahost.protocol : MaxSceneDepth, MaxSceneNodes, NodeTypes,
@@ -32,6 +34,7 @@ struct SceneNode
     string id;
     string type;
     string text;
+    string tooltip;
     string action;
     int scale = 2;
     int spacing = 8;
@@ -50,6 +53,8 @@ struct SceneNode
     string icon;
     string orientation = "horizontal";
     bool active;
+    bool lineNumbers;
+    bool highlightCurrentLine;
     int fontSize;
     string textAlign;
     bool hasTextColor;
@@ -98,6 +103,7 @@ class NodeRegistry
     private Widget[string] _widgets;
     private string[string] _types;
     private string[string] _texts;
+    private string[string] _tooltips;
     private string[] _order;
     private SurfaceWidget[] _surfaces;
 
@@ -123,7 +129,9 @@ class NodeRegistry
     {
         auto widget = id in _widgets;
         if (widget is null) return false;
-        if (auto editor = cast(TextEditor) *widget)
+        if (auto editor = cast(HostTextEditor) *widget)
+            editor.setText(text, notify);
+        else if (auto editor = cast(TextEditor) *widget)
             editor.setText(text, notify);
         else if (auto label = cast(Label) *widget)
             label.setText(text);
@@ -139,6 +147,39 @@ class NodeRegistry
     {
         auto found = id in _widgets;
         return found is null ? null : *found;
+    }
+
+    /** Attach an explanatory hover hint without changing widget layout. */
+    void setTooltip(string id, string tooltip)
+    {
+        if (id in _widgets)
+            _tooltips[id] = tooltip;
+    }
+
+    /**
+     * Find the deepest enabled, hovered node carrying a tooltip.
+     *
+     * Registration order is parent-before-child, so walking in reverse keeps
+     * nested controls from being shadowed by a container hint.
+     */
+    bool hoveredTooltip(out string id, out string text, out Rect rect)
+    {
+        foreach_reverse (candidate; _order)
+        {
+            auto tooltip = candidate in _tooltips;
+            if (tooltip is null || (*tooltip).length == 0) continue;
+            auto widget = candidate in _widgets;
+            if (widget is null || *widget is null) continue;
+            if (!(*widget).visible() || !(*widget).enabled() ||
+                !(*widget).hovered()) continue;
+            const origin = (*widget).globalOrigin();
+            const bounds = (*widget).bounds();
+            id = candidate;
+            text = *tooltip;
+            rect = Rect(origin.x, origin.y, bounds.width, bounds.height);
+            return true;
+        }
+        return false;
     }
 
     bool activate(string id)
@@ -273,6 +314,21 @@ class NodeRegistry
         return false;
     }
 
+    /**
+     * Replace a menu node's portable popup items. Applications use this to
+     * reflect live checked state without recreating the scene.
+     */
+    int setMenuItems(string id, JSONValue items)
+    {
+        auto widget = id in _widgets;
+        if (widget is null) return -1;
+        auto menu = cast(HostMenuButton) *widget;
+        if (menu is null) return -1;
+        auto specs = parseMenuItems(items, id ~ ".items");
+        menu.setItems(buildMenuItems(specs, this, id));
+        return cast(int) menu.itemCount();
+    }
+
     bool injectKey(string id, string kind, Key key, uint modifiers)
     {
         auto widget = id in _widgets;
@@ -312,7 +368,9 @@ class NodeRegistry
         foreach (id; _order)
         {
             string text = _texts[id];
-            if (auto editor = cast(TextEditor) _widgets[id])
+            if (auto editor = cast(HostTextEditor) _widgets[id])
+                text = editor.textUtf8();
+            else if (auto editor = cast(TextEditor) _widgets[id])
                 text = editor.textUtf8();
             else if (auto label = cast(Label) _widgets[id])
                 text = toUTF8(label.text());
@@ -710,6 +768,9 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
     enforce(node.type.length > 0, label ~ ".type is required");
     enforce(NodeTypes.canFind(node.type),
         format("%s has unknown node type '%s'", label, node.type));
+    node.tooltip = readString(value, "tooltip", "", label);
+    enforce(node.tooltip.length <= 240,
+        label ~ ".tooltip must not exceed 240 characters");
 
     switch (node.type)
     {
@@ -736,6 +797,9 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
         case "textArea":
             requireNoChildren(value, label);
             node.text = readString(value, "text", "", label);
+            node.lineNumbers = readBool(value, "lineNumbers", false, label);
+            node.highlightCurrentLine = readBool(value,
+                "highlightCurrentLine", false, label);
             if (auto events = "events" in value.object)
                 node.events = parseEditorEvents(*events, label ~ ".events");
             if (auto menu = "menu" in value.object)
@@ -888,7 +952,7 @@ string describeScene(const Scene scene)
         scene.window.theme, scene.root.type);
 }
 
-private void emitEditorEvent(TextEditor editor, string node, string kind,
+private void emitEditorEvent(T)(T editor, string node, string kind,
     NodeRegistry registry)
 {
     if (registry.onEvent is null)
@@ -905,7 +969,7 @@ private void emitEditorEvent(TextEditor editor, string node, string kind,
     registry.onEvent(event);
 }
 
-private void wireEditorEvents(TextEditor editor, const SceneNode node,
+private void wireEditorEvents(T)(T editor, const SceneNode node,
     NodeRegistry registry)
 {
     if (node.events.canFind("change"))
@@ -1111,8 +1175,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
         }
         case "menu":
         {
-            auto button = new ChromeButton(node.text, iconForName(node.icon),
-                ChromeStyle.menu);
+            auto button = new HostMenuButton(node.text);
             if (node.fontSize > 0)
                 button.setPixelSize(node.fontSize);
             if (node.hasTextColor)
@@ -1120,13 +1183,9 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             applyHints(button, node);
             registry.registerNode(node.id, node.type, button, node.text);
             auto items = buildMenuItems(node.menuItems, registry, node.id);
-            if (items.length > 0)
-                button.onClick = delegate()
-                {
-                    showContextMenuBelow(button, items);
-                };
-            else
-                button.onClick = delegate() { registry.notifyActivated(node.id); };
+            button.setItems(items);
+            button.onEmpty = delegate() { registry.notifyActivated(node.id); };
+            button.onClick = delegate() { button.open(); };
             return button;
         }
         case "tabs":
@@ -1154,12 +1213,14 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
         }
         case "textArea":
         {
-            TextEditor editor = node.menuItems.length > 0 ?
-                new ContextTextArea(node.text,
+            HostTextEditor editor = node.menuItems.length > 0 ?
+                new ContextHostTextArea(node.text,
                     buildMenuItems(node.menuItems, registry, node.id)) :
-                new TextArea(node.text);
+                new HostTextArea(node.text);
             if (node.hasTextColor)
                 editor.setTextColor(node.textColor);
+            editor.setLineNumbers(node.lineNumbers);
+            editor.setCurrentLineHighlight(node.highlightCurrentLine);
             editor.layoutHints().flex = 1.0;
             applyHints(editor, node);
             registry.registerNode(node.id, node.type, editor, node.text);
@@ -1241,6 +1302,16 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry)
     options.width = scene.window.width;
     options.height = scene.window.height;
     auto window = new GuiWindow(options, themeWithOverrides(scene));
-    window.setRoot(buildWidget(scene.root, registry));
+    auto root = buildWidget(scene.root, registry);
+    registerTooltips(scene.root, registry);
+    window.setRoot(root);
     return window;
+}
+
+private void registerTooltips(const SceneNode node, NodeRegistry registry)
+{
+    if (node.tooltip.length > 0)
+        registry.setTooltip(node.id, node.tooltip);
+    foreach (child; node.children)
+        registerTooltips(child, registry);
 }

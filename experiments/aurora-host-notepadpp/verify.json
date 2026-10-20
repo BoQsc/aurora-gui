@@ -46,7 +46,7 @@
       "kind": "render",
       "reference": "experiments/aurora-host-notepadpp/samples/padpp-reference.png",
       "actual": "experiments/aurora-host-notepadpp/build/padpp.png",
-      "referenceSource": "Reviewed baseline of Aurora Pad++ at 1.25x DPI: menu bar, icon toolbar, four document tabs, find bar, editor, and segmented status bar."
+      "referenceSource": "Reviewed baseline of Aurora Pad++ at logical 1180x760 (100% display scale): menu bar, icon toolbar, four document tabs, find bar, 2,001-line benchmark editor, and segmented status bar."
     }
   ]
 }

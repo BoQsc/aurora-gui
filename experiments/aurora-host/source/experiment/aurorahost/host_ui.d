@@ -1,5 +1,6 @@
 module experiment.aurorahost.host_ui;
 
+import experiment.aurorahost.host_editor : HostTextArea;
 import aurora;
 import std.algorithm : max;
 import std.string : toLower;
@@ -142,6 +143,45 @@ IconKind iconForName(string name)
         case "chevrondown":
         case "downarrow": return IconKind.chevronDown;
         default: return IconKind.none;
+    }
+}
+
+/**
+ * Compact delayed hover hint. It is a non-interactive root overlay so it can
+ * extend beyond its anchor without participating in scene layout.
+ */
+final class HostTooltip : HBox
+{
+    private Label _label;
+
+    this(string text = "")
+    {
+        super(0, Insets(8, 5));
+        layoutHints().excludeFromLayout = true;
+        setComposited(true);
+        setEnabled(false);
+        _label = new Label();
+        _label.setPixelSize(12);
+        _label.setEllipsis(false);
+        add(_label);
+        const palette = theme();
+        setBackground(palette.panelElevated);
+        setBorder(palette.border, 3);
+        setText(text);
+    }
+
+    string text() const
+    {
+        return toUTF8(_label.text);
+    }
+
+    void setText(string text)
+    {
+        _label.setText(text);
+        const measured = measure();
+        setBounds(Rect(0, 0, measured.width, measured.height));
+        layoutTree();
+        invalidate();
     }
 }
 
@@ -320,6 +360,37 @@ class ChromeButton : Button
     }
 }
 
+/** Menu-bar button whose popup items can be replaced by the application. */
+class HostMenuButton : ChromeButton
+{
+    private ContextMenuItem[] _items;
+
+    void delegate() onEmpty;
+
+    this(string text = "")
+    {
+        super(text, IconKind.none, ChromeStyle.menu);
+    }
+
+    void setItems(ContextMenuItem[] items)
+    {
+        _items = items.dup;
+    }
+
+    size_t itemCount() const @safe pure nothrow @nogc
+    {
+        return _items.length;
+    }
+
+    void open()
+    {
+        if (_items.length > 0)
+            showContextMenuBelow(this, _items);
+        else if (onEmpty !is null)
+            onEmpty();
+    }
+}
+
 /** One application-owned tab shown by the host TabStrip. */
 struct TabItem
 {
@@ -344,6 +415,7 @@ class TabStrip : Widget
     this(TabItem[] items = [])
     {
         setFocusable(true);
+        setCursor(CursorKind.hand);
         layoutHints().preferredHeight = 30;
         setItems(items);
     }
@@ -522,6 +594,30 @@ class TabStrip : Widget
 
 /** TextArea with a generic, app-owned right-click command menu. */
 class ContextTextArea : TextArea
+{
+    private ContextMenuItem[] _items;
+
+    this(string text, ContextMenuItem[] items)
+    {
+        super(text);
+        _items = items.dup;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.right && _items.length > 0)
+        {
+            requestFocus();
+            showContextMenuKeepPopups(this,
+                localToGlobal(event.position), _items);
+            return true;
+        }
+        return super.onMouseDown(event);
+    }
+}
+
+/** Host-rendered text area with a generic, app-owned context menu. */
+class ContextHostTextArea : HostTextArea
 {
     private ContextMenuItem[] _items;
 

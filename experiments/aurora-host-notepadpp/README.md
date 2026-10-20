@@ -16,30 +16,41 @@ editor policy to the host?
 - A Windows-style chrome stack: menu bar, icon toolbar, document tab strip,
   docked find/replace bar, editor, and segmented status bar.
 - Six dropdown menus with separators, shortcut labels, and a cascading Zoom
-  submenu. Every command is dispatched back to the application.
+  submenu. Checked items track wrap, case, whole-word, gutter, band, and language
+  state, and every command is dispatched back to the application.
 - An editor right-click menu for find, replace, select-all, wrap, and case.
 - New, Open, Save, Save As, and Close Tab workflow.
 - Generic host file dialogs for open and save paths; no app-specific dialog code
   in the host.
-- Multi-line editor with live `change` and `cursor` events.
-- Find Next with wrap-around; literal matching with optional case sensitivity.
+- Multi-line editor with live `change` and `cursor` events, a host-drawn
+  line-number gutter, a current-line band, and host-rendered syntax spans.
+- Find Next and Find Previous with wrap-around, optional case sensitivity,
+  whole-word matching, and a live match count.
 - Replace current match and Replace All through the host selection API.
 - Language metadata for Plain Text, Python, C++, D, JSON, and Markdown, with
-  automatic mode selection from common file suffixes.
+  automatic mode selection from common file suffixes and keyword, string,
+  number, and comment coloring for bounded documents.
 - Character, word, line, cursor, and document-status reporting.
 - UTF-8 file reading and writing through the application model.
 - A repeatable large-document benchmark that measures editor load, text round
   trip, tab switch, and a search that selects near the end of the document.
+- A virtualized host editor keeps the 2,001-line benchmark load and find under
+  0.1 s and host memory near 240 MB instead of shaping every document glyph.
+- View-menu, toolbar, and context-menu toggles for line numbers, the current
+  line band, word wrap, and match case, plus 10% editor zoom steps and reset.
+- Delayed Aurora-rendered hover hints document toolbar, search-field, and
+  search-button commands; tab hit areas use a hand cursor.
 - A self-test that drives the real host process and verifies tab switching,
-  editing events, find/replace, save/open round trips, menu and context popups,
-  exact reference pixels, and performance.
+  editing events, find/replace, whole-word counts, Find Previous, checked menus,
+  zoom, hover hints, save/open round trips, menu and context popups, exact
+  reference pixels, and performance/memory gates.
 
-Not implemented: syntax coloring, split views, session restore, column
-selection, tab reordering or drag-out, native tooltips, docking, and a full
-Notepad++ shortcut map. Shortcut text is a menu label only; the application does
-not yet bind every accelerator. The host supplies a generic tab strip, but no
-document model: tab labels, active state, dirty state, and activation policy
-remain application-owned.
+Not implemented: split views, session restore, column selection, tab reordering
+or drag-out, OS-native tooltips, docking, and a full Notepad++ shortcut map.
+Shortcut text is a menu label only; the application does not yet bind every
+accelerator. The host supplies a generic tab strip, but no document model: tab
+labels, active state, dirty state, and activation policy remain
+application-owned.
 
 ## Build and run
 

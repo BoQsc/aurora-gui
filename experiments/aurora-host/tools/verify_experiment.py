@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import json
 import os
 import re
 import shutil
@@ -99,18 +100,27 @@ def main() -> int:
             gui = build(dmd, temp, "host", headless=False)
 
             version = run([str(headless), "--version"]).stdout
-            if "protocol 5" not in version or "Unicode 17.0.0" not in version:
+            schema = json.loads(
+                (ROOT / "protocol" / "aurora-host.api.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            expected_protocol = f"protocol {schema['protocolVersion']}"
+            if (expected_protocol not in version
+                    or "Unicode 17.0.0" not in version):
                 raise VerificationError("version output is missing protocol or Unicode version\n" + version)
 
             capabilities = run([str(headless), "--capabilities"]).stdout
             if ("headless-render" not in capabilities
                     or "textArea" not in capabilities
+                    or "editor-view" not in capabilities
                     or "text-field" not in capabilities
                     or "text-selection" not in capabilities
                     or "editor-events" not in capabilities
                     or "canvas" not in capabilities
                     or "surface" not in capabilities
-                    or "shared-surface" not in capabilities):
+                    or "shared-surface" not in capabilities
+                    or "tooltips" not in capabilities):
                 raise VerificationError("capabilities output is incomplete\n" + capabilities)
 
             checked = run([str(headless), "--check", "samples/hello.scene.json"]).stdout
@@ -234,7 +244,9 @@ def main() -> int:
                     "UI depth test did not report success\n" + ui.stdout
                 )
             for name in ("ui-depth.ppm", "ui-depth-menu.ppm",
-                         "ui-depth-context.ppm"):
+                         "ui-depth-context.ppm", "ui-depth-no-tooltip.ppm",
+                         "ui-depth-tooltip.ppm",
+                         "ui-depth-tooltip-hidden.ppm"):
                 verify_ppm(temp / name)
 
             canvas_image = temp / "canvas.ppm"

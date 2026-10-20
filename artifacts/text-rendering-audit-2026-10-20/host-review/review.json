@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "title": "Pad++ text contrast: A current host 0.75 / B Aurora baseline 0.5 (96 DPI software)",
+  "status": "pending-user-review",
+  "baseline": {
+    "file": "baseline.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-rendering-audit-2026-10-20\\padpp-current-host.png",
+    "sha256": "de30a7ab8c0ab7fda4f44ccd7bf94be6c1bc13a209cdc6e219ecb6d90f2ef8b4"
+  },
+  "candidate": {
+    "file": "candidate.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-rendering-audit-2026-10-20\\padpp-framework-default.png",
+    "sha256": "b9336b4f1b8982d665b28b934d537500910cdce1f0c41bccde2246b0a03bf181"
+  },
+  "difference": {
+    "file": "difference.png",
+    "source": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-rendering-audit-2026-10-20\\padpp-difference.png",
+    "sha256": "99d9069881f650c1e174ba2475c3f1d69cfc84c7a2244b5039ead2f408c027fa"
+  },
+  "decision": null
+}

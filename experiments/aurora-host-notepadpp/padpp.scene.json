@@ -65,11 +65,13 @@
               {"separator": true},
               {"label": "Find...", "shortcut": "Ctrl+F", "action": "search.find"},
               {"label": "Find Next", "shortcut": "F3", "action": "findNext"},
+              {"label": "Find Previous", "shortcut": "Shift+F3", "action": "findPrevious"},
               {"label": "Replace...", "shortcut": "Ctrl+H", "action": "search.replace"},
               {"label": "Replace All", "shortcut": "Ctrl+Shift+H", "action": "replaceAll"},
               {"separator": true},
-              {"label": "Word wrap", "action": "toggleWrap"},
-              {"label": "Match case", "action": "toggleCase"}
+              {"label": "Word wrap", "action": "toggleWrap", "checked": false},
+              {"label": "Match case", "action": "toggleCase", "checked": false},
+              {"label": "Whole word", "action": "toggleWholeWord", "checked": false}
             ]
           },
           {
@@ -77,8 +79,11 @@
             "type": "menu",
             "text": "View",
             "items": [
-              {"label": "Word wrap", "action": "toggleWrap"},
-              {"label": "Match case", "action": "toggleCase"},
+              {"label": "Word wrap", "action": "toggleWrap", "checked": false},
+              {"label": "Match case", "action": "toggleCase", "checked": false},
+              {"separator": true},
+              {"label": "Toggle line numbers", "action": "toggleLineNumbers", "checked": true},
+              {"label": "Toggle current line", "action": "toggleCurrentLine", "checked": true},
               {"separator": true},
               {"label": "Zoom", "children": [
                 {"label": "Zoom in", "shortcut": "Ctrl++", "action": "view.zoomIn"},
@@ -94,7 +99,7 @@
             "type": "menu",
             "text": "Language",
             "items": [
-              {"label": "Plain Text", "action": "lang:Plain Text"},
+              {"label": "Plain Text", "action": "lang:Plain Text", "checked": true},
               {"label": "Python", "action": "lang:Python"},
               {"label": "C++", "action": "lang:C++"},
               {"label": "D", "action": "lang:D"},
@@ -135,27 +140,29 @@
         "background": "#f7f9fb",
         "border": "#d7dce2",
         "children": [
-          {"id": "tb-new", "type": "button", "text": "New", "style": "toolbar", "width": 62, "icon": "new", "action": "new"},
-          {"id": "tb-open", "type": "button", "text": "Open", "style": "toolbar", "width": 70, "icon": "open", "action": "open"},
-          {"id": "tb-save", "type": "button", "text": "Save", "style": "toolbar", "width": 64, "icon": "save", "action": "save"},
-          {"id": "tb-save-as", "type": "button", "text": "Save As", "style": "toolbar", "width": 82, "action": "saveAs"},
+          {"id": "tb-new", "type": "button", "text": "New", "style": "toolbar", "width": 62, "icon": "new", "action": "new", "tooltip": "New document (Ctrl+N)"},
+          {"id": "tb-open", "type": "button", "text": "Open", "style": "toolbar", "width": 70, "icon": "open", "action": "open", "tooltip": "Open a text file (Ctrl+O)"},
+          {"id": "tb-save", "type": "button", "text": "Save", "style": "toolbar", "width": 64, "icon": "save", "action": "save", "tooltip": "Save the active document (Ctrl+S)"},
+          {"id": "tb-save-as", "type": "button", "text": "Save As", "style": "toolbar", "width": 82, "action": "saveAs", "tooltip": "Save to a new file (Ctrl+Shift+S)"},
           {"id": "tb-sep-1", "type": "separator", "orientation": "vertical"},
-          {"id": "tb-find", "type": "button", "text": "Find", "style": "toolbar", "width": 62, "icon": "search", "action": "search.find"},
-          {"id": "tb-find-next", "type": "button", "text": "Find Next", "style": "toolbar", "width": 84, "action": "findNext"},
-          {"id": "tb-replace", "type": "button", "text": "Replace", "style": "toolbar", "width": 76, "action": "replace"},
+          {"id": "tb-find", "type": "button", "text": "Find", "style": "toolbar", "width": 62, "icon": "search", "action": "search.find", "tooltip": "Open search and focus the find field (Ctrl+F)"},
+          {"id": "tb-find-next", "type": "button", "text": "Find Next", "style": "toolbar", "width": 84, "action": "findNext", "tooltip": "Select the next match (F3)"},
+          {"id": "tb-replace", "type": "button", "text": "Replace", "style": "toolbar", "width": 76, "action": "replace", "tooltip": "Replace the current match (Ctrl+H)"},
           {"id": "tb-sep-2", "type": "separator", "orientation": "vertical"},
-          {"id": "tb-wrap", "type": "button", "text": "Wrap", "style": "toolbar", "width": 62, "action": "toggleWrap"},
-          {"id": "tb-case", "type": "button", "text": "Aa", "style": "toolbar", "width": 38, "action": "toggleCase"},
+          {"id": "tb-wrap", "type": "button", "text": "Wrap", "style": "toolbar", "width": 62, "action": "toggleWrap", "tooltip": "Toggle word wrap"},
+          {"id": "tb-case", "type": "button", "text": "Aa", "style": "toolbar", "width": 38, "action": "toggleCase", "tooltip": "Match case (case-sensitive search)"},
+          {"id": "tb-lines", "type": "button", "text": "Lines", "style": "toolbar", "width": 58, "action": "toggleLineNumbers", "tooltip": "Toggle line numbers"},
           {"id": "tb-sep-3", "type": "separator", "orientation": "vertical"},
-          {"id": "tb-bench", "type": "button", "text": "Benchmark", "style": "toolbar", "width": 96, "action": "benchmark"},
+          {"id": "tb-bench", "type": "button", "text": "Benchmark", "style": "toolbar", "width": 96, "action": "benchmark", "tooltip": "Load and measure a 100,000-line document"},
           {"id": "tb-spacer", "type": "spacer", "flex": 1},
-          {"id": "tb-close", "type": "button", "text": "Close Tab", "style": "toolbar", "width": 92, "icon": "close", "action": "closeTab"}
+          {"id": "tb-close", "type": "button", "text": "Close Tab", "style": "toolbar", "width": 92, "icon": "close", "action": "closeTab", "tooltip": "Close the active tab (Ctrl+W)"}
         ]
       },
       {
         "id": "docs",
         "type": "tabs",
         "height": 34,
+        "tooltip": "Document tabs; click to switch",
         "items": []
       },
       {
@@ -168,13 +175,15 @@
         "border": "#d0d5db",
         "children": [
           {"id": "find-label", "type": "label", "text": "Find:", "scale": 1, "fontSize": 12, "textColor": "#4b5563"},
-          {"id": "find", "type": "textField", "text": "", "width": 220, "height": 26, "events": ["change", "cursor"]},
+          {"id": "find", "type": "textField", "text": "", "width": 220, "height": 26, "events": ["change", "cursor"], "tooltip": "Text to find (Enter next, Shift+Enter previous)"},
           {"id": "replace-label", "type": "label", "text": "Replace:", "scale": 1, "fontSize": 12, "textColor": "#4b5563"},
-          {"id": "replace", "type": "textField", "text": "", "width": 180, "height": 26, "events": ["change", "cursor"]},
-          {"id": "find-next", "type": "button", "text": "Find Next", "style": "flat", "width": 84, "height": 26, "action": "findNext"},
-          {"id": "replace-one", "type": "button", "text": "Replace", "style": "flat", "width": 78, "height": 26, "action": "replace"},
-          {"id": "replace-all", "type": "button", "text": "Replace All", "style": "flat", "width": 88, "height": 26, "action": "replaceAll"},
-          {"id": "find-case", "type": "button", "text": "Aa", "style": "flat", "width": 38, "height": 26, "action": "toggleCase"},
+          {"id": "replace", "type": "textField", "text": "", "width": 180, "height": 26, "events": ["change", "cursor"], "tooltip": "Replacement text"},
+          {"id": "find-prev", "type": "button", "text": "Prev", "style": "flat", "width": 56, "height": 26, "action": "findPrevious", "tooltip": "Select the previous match (Shift+F3)"},
+          {"id": "find-next", "type": "button", "text": "Find Next", "style": "flat", "width": 84, "height": 26, "action": "findNext", "tooltip": "Select the next match (F3)"},
+          {"id": "replace-one", "type": "button", "text": "Replace", "style": "flat", "width": 78, "height": 26, "action": "replace", "tooltip": "Replace the current match"},
+          {"id": "replace-all", "type": "button", "text": "Replace All", "style": "flat", "width": 88, "height": 26, "action": "replaceAll", "tooltip": "Replace every match (Ctrl+Shift+H)"},
+          {"id": "find-case", "type": "button", "text": "Aa", "style": "flat", "width": 38, "height": 26, "action": "toggleCase", "tooltip": "Match case (case-sensitive search)"},
+          {"id": "find-word", "type": "button", "text": "Ab|", "style": "flat", "width": 40, "height": 26, "action": "toggleWholeWord", "tooltip": "Match whole words only"},
           {"id": "find-spacer", "type": "spacer", "flex": 1},
           {"id": "find-hint", "type": "label", "text": "Right-click the editor for commands", "scale": 1, "fontSize": 11, "textColor": "#5b6573"}
         ]
@@ -192,17 +201,23 @@
             "id": "editor",
             "type": "textArea",
             "flex": 1,
+            "lineNumbers": true,
+            "highlightCurrentLine": true,
             "events": ["change", "cursor"],
             "text": "Aurora Pad++\n============\n\nA Notepad++-style workbench built on the generic aurora-host.\n\nHost owns: window, widgets, layout, text editing, selection, painting.\nApp owns: tabs, files, dirty state, language modes, find/replace, status.\n\nTry File > New, the toolbar, the document tabs, or right-click here.\nThe Language menu changes the document mode. Tools > Large document benchmark\nruns the measured workload.\n",
             "menu": [
               {"label": "Find...", "shortcut": "Ctrl+F", "action": "search.find"},
               {"label": "Find Next", "shortcut": "F3", "action": "findNext"},
+              {"label": "Find Previous", "shortcut": "Shift+F3", "action": "findPrevious"},
               {"label": "Replace All", "shortcut": "Ctrl+Shift+H", "action": "replaceAll"},
               {"separator": true},
               {"label": "Select All", "shortcut": "Ctrl+A", "action": "selectAll"},
               {"separator": true},
               {"label": "Word wrap", "action": "toggleWrap"},
-              {"label": "Match case", "action": "toggleCase"}
+              {"label": "Match case", "action": "toggleCase"},
+              {"separator": true},
+              {"label": "Toggle line numbers", "action": "toggleLineNumbers"},
+              {"label": "Toggle current line", "action": "toggleCurrentLine"}
             ]
           }
         ]
@@ -221,6 +236,7 @@
           {"id": "status-document", "type": "label", "text": "1 line", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
           {"id": "status-spacer", "type": "spacer", "flex": 1},
           {"id": "status-language", "type": "label", "text": "Plain Text", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
+          {"id": "status-zoom", "type": "label", "text": "100%", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
           {"id": "status-encoding", "type": "label", "text": "UTF-8", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
           {"id": "status-eol", "type": "label", "text": "Windows (CRLF)", "scale": 1, "fontSize": 11, "textColor": "#4b5563"},
           {"id": "status-message", "type": "label", "text": "Ready", "scale": 1, "fontSize": 11, "textColor": "#2f7d32"}
