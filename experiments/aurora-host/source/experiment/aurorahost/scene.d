@@ -401,6 +401,151 @@ private bool hasField(JSONValue object, string key)
     return (key in object.object) !is null;
 }
 
+private bool isCommonNodeField(string name)
+{
+    switch (name)
+    {
+        case "id":
+        case "type":
+        case "tooltip":
+        case "width":
+        case "height":
+        case "flex":
+        case "padding":
+        case "background":
+        case "border":
+        case "radius":
+        case "style":
+        case "icon":
+        case "active":
+        case "fontSize":
+        case "textColor":
+        case "align":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool isNodeSpecificField(string type, string name)
+{
+    switch (type)
+    {
+        case "column":
+        case "row":
+            return name == "children" || name == "spacing";
+        case "label":
+            return name == "text" || name == "scale";
+        case "button":
+            return name == "text" || name == "action";
+        case "menu":
+            return name == "text" || name == "items";
+        case "tabs":
+            return name == "items";
+        case "separator":
+            return name == "orientation";
+        case "textArea":
+            return name == "text" || name == "events" || name == "menu" ||
+                name == "lineNumbers" || name == "highlightCurrentLine";
+        case "textField":
+            return name == "text" || name == "events" || name == "menu";
+        case "canvas":
+            return name == "events" || name == "tickHz" ||
+                name == "commands";
+        case "image":
+            return name == "src";
+        case "surface":
+            return name == "path" || name == "events";
+        case "spacer":
+            return false;
+        default:
+            return false;
+    }
+}
+
+private bool isSceneField(string name)
+{
+    switch (name)
+    {
+        case "schemaVersion":
+        case "window":
+        case "themeOverrides":
+        case "root":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool isWindowField(string name)
+{
+    switch (name)
+    {
+        case "title":
+        case "width":
+        case "height":
+        case "theme":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool isMenuItemField(string name)
+{
+    switch (name)
+    {
+        case "label":
+        case "shortcut":
+        case "action":
+        case "icon":
+        case "separator":
+        case "enabled":
+        case "checked":
+        case "children":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool isTabItemField(string name)
+{
+    switch (name)
+    {
+        case "label":
+        case "action":
+        case "active":
+        case "dirty":
+            return true;
+        default:
+            return false;
+    }
+}
+
+private bool isCanvasCommandField(string name)
+{
+    switch (name)
+    {
+        case "op":
+        case "x":
+        case "y":
+        case "x2":
+        case "y2":
+        case "width":
+        case "height":
+        case "radius":
+        case "thickness":
+        case "scale":
+        case "text":
+        case "src":
+        case "color":
+            return true;
+        default:
+            return false;
+    }
+}
+
 private void requireNoChildren(JSONValue object, string label)
 {
     enforce(!hasField(object, "children"), label ~ " does not accept children");
@@ -504,6 +649,9 @@ private MenuItemSpec[] parseMenuItems(JSONValue value, string label, int depth =
         spec.separator = readBool(item, "separator", false, itemLabel);
         spec.enabled = readBool(item, "enabled", true, itemLabel);
         spec.checked = readBool(item, "checked", false, itemLabel);
+        foreach (name, ignored; item.object)
+            enforce(isMenuItemField(name),
+                format("%s has unknown field '%s'", itemLabel, name));
         if (spec.separator)
             enforce(spec.label.length == 0 && spec.action.length == 0,
                 itemLabel ~ ": a separator cannot have a label or action");
@@ -533,6 +681,9 @@ TabItem[] parseTabItems(JSONValue value, string label)
         tab.action = readString(item, "action", "", itemLabel);
         tab.active = readBool(item, "active", false, itemLabel);
         tab.dirty = readBool(item, "dirty", false, itemLabel);
+        foreach (name, ignored; item.object)
+            enforce(isTabItemField(name),
+                format("%s has unknown field '%s'", itemLabel, name));
         items ~= tab;
     }
     return items;
@@ -615,6 +766,9 @@ private CanvasCommand parseCanvasCommand(JSONValue value, int index,
 {
     enforce(value.type == JSONType.object, label ~ " must be an object");
     CanvasCommand command;
+    foreach (name, ignored; value.object)
+        enforce(isCanvasCommandField(name),
+            format("%s has unknown field '%s'", label, name));
     command.op = readString(value, "op", "", label);
     enforce(command.op == "rect" || command.op == "roundedRect" ||
         command.op == "line" || command.op == "circle" ||
@@ -636,6 +790,12 @@ private CanvasCommand parseCanvasCommand(JSONValue value, int index,
         command.src = readString(value, "src", "", label);
         enforce(command.src.length > 0, label ~ ".src is required for image");
         command.image = loadImage(resolveAssetPath(assetBase, command.src));
+        enforce(command.image.width() > 0 && command.image.height() > 0,
+            label ~ " image has no pixels");
+        enforce(cast(ulong) command.image.width() * command.image.height() <=
+            MaxSurfacePixels,
+            format("%s image exceeds max pixel count %d", label,
+                MaxSurfacePixels));
         if (command.width == 0)
             command.width = command.image.width();
         if (command.height == 0)
@@ -683,6 +843,12 @@ private CanvasSpec parseCanvas(JSONValue value, string label, string assetBase)
     if (auto commands = "commands" in value.object)
         canvas.commands = parseCanvasCommands(*commands,
             label ~ ".commands", assetBase);
+    if (canvas.events.canFind("tick") && canvas.tickHz == 0)
+        enforce(false,
+            label ~ ".tickHz must be set when events includes 'tick'");
+    if (canvas.tickHz > 0 && !canvas.events.canFind("tick"))
+        enforce(false,
+            label ~ ".events must include 'tick' when tickHz is set");
     return canvas;
 }
 
@@ -768,6 +934,10 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
     enforce(node.type.length > 0, label ~ ".type is required");
     enforce(NodeTypes.canFind(node.type),
         format("%s has unknown node type '%s'", label, node.type));
+    foreach (name, ignored; value.object)
+        enforce(isCommonNodeField(name) ||
+            isNodeSpecificField(node.type, name),
+            format("%s has unknown field '%s'", label, name));
     node.tooltip = readString(value, "tooltip", "", label);
     enforce(node.tooltip.length <= 240,
         label ~ ".tooltip must not exceed 240 characters");
@@ -907,6 +1077,9 @@ Scene loadScene(string path)
 {
     const JSONValue document = parseJSON(readText(path));
     enforce(document.type == JSONType.object, "scene root must be an object");
+    foreach (name, ignored; document.object)
+        enforce(isSceneField(name),
+            format("scene has unknown field '%s'", name));
 
     Scene scene;
     scene.schemaVersion = readInt(document, "schemaVersion", -1, "scene");
@@ -921,6 +1094,9 @@ Scene loadScene(string path)
         enforce((*windowValue).type == JSONType.object,
             "scene.window must be an object");
         auto window = *windowValue;
+        foreach (name, ignored; window.object)
+            enforce(isWindowField(name),
+                format("scene.window has unknown field '%s'", name));
         scene.window.title = readString(window, "title",
             "Aurora Host Experiment", "scene.window");
         scene.window.width = readInt(window, "width", 760, "scene.window");
@@ -942,7 +1118,17 @@ Scene loadScene(string path)
     int count;
     scene.root = parseNode(*rootValue, count, 0, "scene.root", "root",
         scene.assetBase);
+    bool[string] ids;
+    validateUniqueIds(scene.root, ids);
     return scene;
+}
+
+private void validateUniqueIds(const SceneNode node, ref bool[string] seen)
+{
+    enforce((node.id in seen) is null, "duplicate node id: " ~ node.id);
+    seen[node.id] = true;
+    foreach (child; node.children)
+        validateUniqueIds(child, seen);
 }
 
 string describeScene(const Scene scene)

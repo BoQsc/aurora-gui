@@ -18,7 +18,8 @@
       "command": {
         "program": "dub",
         "args": [
-          "build"
+          "build",
+          "--dest=build/verify"
         ],
         "workdir": "experiments/aurora-host",
         "timeout": 600000
@@ -43,7 +44,9 @@
           "-B",
           "tools/ui_depth_test.py",
           "--out-dir",
-          "build"
+          "build",
+          "--host",
+          "build/verify/aurora-host-experiment.exe"
         ],
         "workdir": "experiments/aurora-host",
         "timeout": 120000

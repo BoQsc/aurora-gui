@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Unknown Field",
+    "width": 320,
+    "height": 200,
+    "theme": "light"
+  },
+  "root": {
+    "type": "column",
+    "children": [
+      {"id": "go", "type": "button", "text": "Go", "actionn": "go"}
+    ]
+  }
+}

@@ -8,6 +8,7 @@ import sys
 import time
 import traceback
 
+import control_client
 from control_client import HostSession
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -199,7 +200,10 @@ def verify_popup_pixels(pixels: bytes, width: int, height: int, root: dict,
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", default="build")
+    parser.add_argument("--host", type=Path)
     args = parser.parse_args()
+    if args.host is not None:
+        control_client.EXE = args.host.resolve()
     out = ROOT / args.out_dir
     out.mkdir(parents=True, exist_ok=True)
 

@@ -9,6 +9,8 @@ repository depends on it. Delete this folder and Aurora is unaffected.
 - A scene file is the stable, user-facing contract.
 - The protocol constants and reference are generated from one schema.
 - The host validates a scene without creating a window.
+- Validation rejects unknown fields, duplicate node IDs, and inconsistent
+  frame-event declarations instead of deferring them to the first render.
 - The host can construct the retained widget tree and render it headlessly.
 - The same executable can open a real Aurora window with `--run`.
 - A stdin/stdout control channel can inspect and change the live scene.
@@ -57,6 +59,13 @@ dub run --config=host-headless -- --render samples/canvas.scene.json --out build
 dub run --config=host-headless -- --render samples/image.scene.json --out build/image.ppm
 python tools/control_client.py
 ```
+
+`verify.json` builds the windowed host into `build/verify` before the UI-depth
+check, so verification can run while a demo instance is open. Its final render
+comparison expects the owner-approved 125% DPI reference; use
+`verify-source.json` for a DPI-independent compile and source/control/render
+gate.
+
 
 Direct CLI modes:
 

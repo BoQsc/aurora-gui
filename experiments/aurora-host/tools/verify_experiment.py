@@ -175,6 +175,21 @@ def main() -> int:
             if "unknown node type" not in combined:
                 raise VerificationError("invalid scene failed for the wrong reason\n" + combined)
 
+            for fixture, expected in (
+                ("tests/duplicate-id.scene.json", "duplicate node id: same"),
+                ("tests/unknown-field.scene.json", "unknown field 'actionn'"),
+                ("tests/tick-without-rate.scene.json", "tickHz"),
+            ):
+                rejected = run(
+                    [str(headless), "--check", fixture],
+                    expect=1,
+                )
+                combined = rejected.stdout + rejected.stderr
+                if expected not in combined:
+                    raise VerificationError(
+                        f"{fixture} failed for the wrong reason\n" + combined
+                    )
+
             image = temp / "hello.ppm"
             rendered = run(
                 [
