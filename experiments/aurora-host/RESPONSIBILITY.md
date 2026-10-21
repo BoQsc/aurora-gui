@@ -17,10 +17,12 @@ content means.
 - The primary Aurora window, its lifecycle, layout, painting, and invalidation,
   plus host-owned dialogs at the same platform boundary.
 - Pointer, keyboard, wheel, and tick routing to scene nodes.
-- The frame clock and composition of application-supplied surface frames.
+- The frame clock and composition of application-supplied surface frames,
+  including logical/native DPI scaling and staleness policy.
 - Platform adapters at the boundary: file dialogs, clipboard integration, and
   the stdin/stdout control channel.
-- Diagnostics for host-owned state, including input-ring health and frame
+- Diagnostics for host-owned state, including input-ring saturation and
+  discrete-event reserve, surface mapping failures, retry timing, and frame
   freshness.
 
 ## The host MUST NOT own

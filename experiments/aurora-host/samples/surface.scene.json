@@ -22,6 +22,7 @@
         "path": "../build/live.surface",
         "width": 320,
         "height": 240,
+        "staleMs": 250,
         "events": ["pointer", "key"]
       }
     ]

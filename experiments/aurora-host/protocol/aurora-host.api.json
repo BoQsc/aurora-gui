@@ -1,7 +1,7 @@
 {
   "name": "aurora-host-experiment",
-  "experimentVersion": "0.4.4",
-  "protocolVersion": 8,
+  "experimentVersion": "0.4.5",
+  "protocolVersion": 9,
   "schemaVersion": 2,
   "description": "A small retained-scene host experiment for Aurora.",
   "capabilities": [
@@ -29,6 +29,10 @@
     "key-events",
     "frame-events",
     "shared-surface",
+    "surface-diagnostics",
+    "surface-dpi",
+    "surface-input-reserve",
+    "surface-stale-policy",
     "menu",
     "dynamic-menu",
     "tabs",
@@ -163,6 +167,7 @@
       "height": "RGBA surface height",
       "flex": "optional layout flex",
       "events": "optional pointer,key event list",
+      "staleMs": "optional milliseconds without a new frame before the surface is stale; default 500",
       "background": "#RRGGBB or #RRGGBBAA"
     },
     "spacer": {
@@ -209,10 +214,14 @@
       "keyUp": 6
     },
     "inputEventLayout": "kind:u8, button:u8, key:u16, modifiers:u32, x:i32, y:i32, wheelX:i32, wheelY:i32",
+    "inputReserve": 8,
     "frameLayout": "two consecutive width*height*4 RGBA8 buffers after header and input ring; active selects the readable buffer",
     "semantics": {
       "frame": "the writer fills an inactive buffer, sets active, then increments frameSeq; the host copies the active buffer and writes the copied sequence to hostReadSeq; writers may reuse a buffer after hostReadSeq catches up with the frame that used it",
       "input": "the host appends events at inputTail and the external consumer reads from inputHead, advancing inputHead after consuming; head == tail means empty and tail - head == inputCapacity means full",
+      "inputReserve": "up to inputReserve slots are reserved for discrete key, button, and wheel events so pointer motion cannot starve them; smaller rings reserve roughly a quarter of their capacity, at least one when capacity is greater than one",
+      "inputCoordinates": "pointer and wheel x/y are logical surface coordinates matching scene width/height; a writer sampling a native buffer scales them by native/logical",
+      "dpi": "scene width/height are logical layout extents; header width/height are native RGBA pixels, normally the host-preferred logical*displayScale size; the host scales the native image into the logical bounds",
       "wheel": "kind 4 records pointer position in x/y and wheel deltas in wheelX/wheelY"
     }
   },

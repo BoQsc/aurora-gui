@@ -10,6 +10,7 @@ import traceback
 
 import control_client
 from control_client import HostSession
+from image_io import write_png
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -421,14 +422,10 @@ def main() -> int:
         require(ink >= minimum_ink,
                 f"light-surface text is washing out (ink={ink:.4f})")
 
-        try:
-            from PIL import Image
-        except ImportError:
-            pass
-        else:
-            for ppm in (shot, menu_shot, context_shot, before_tooltip,
-                        tooltip_shot, hidden_shot):
-                Image.open(ppm).save(ppm.with_suffix(".png"))
+        for ppm in (shot, menu_shot, context_shot, before_tooltip,
+                    tooltip_shot, hidden_shot):
+            ppm_width, ppm_height, ppm_pixels = read_ppm(ppm)
+            write_png(ppm.with_suffix(".png"), ppm_width, ppm_height, ppm_pixels)
 
         print(f"layout: menu={bounds['menubar']['height']} "
               f"toolbar={bounds['toolbar']['height']} "

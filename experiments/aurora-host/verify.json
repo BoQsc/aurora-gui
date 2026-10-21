@@ -53,10 +53,24 @@
       }
     },
     {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/normalize_ui_screenshot.py"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
       "kind": "render",
-      "reference": "experiments/aurora-host/samples/ui-depth-reference.png",
-      "actual": "experiments/aurora-host/build/ui-depth.png",
-      "referenceSource": "Owner-approved natural grayscale hinting C, 2026-10-20: host workbench menu bar, icon toolbar, document tabs, editor, and status bar at 125% DPI (1225x800 pixels, 980x640 logical). Captured with no rendering overrides. Previous B reference is preserved in artifacts/native-text-progress/host-B-reference-120dpi.png."
+      "reference": "experiments/aurora-host/samples/ui-depth-ref1x.png",
+      "actual": "experiments/aurora-host/build/ui-depth-1x.png",
+      "channelTolerance": 0,
+      "maxDifferentPixels": 12544,
+      "referenceSource": "Nearest-neighbor 1x projection of the owner-approved natural grayscale hinting C reference (2026-10-20, 125% DPI, 1225x800 pixels, 980x640 logical). The original remains samples/ui-depth-reference.png. The live screenshot is captured at the host display scale and normalized to this 980x640 logical viewport before comparison; up to 2% differing pixels are accepted for DPI-dependent glyph hinting. Previous B reference is preserved in artifacts/native-text-progress/host-B-reference-120dpi.png."
     }
   ]
 }

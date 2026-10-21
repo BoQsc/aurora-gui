@@ -48,6 +48,7 @@ class SharedSurface:
         struct.pack_into("<Q", self.map, 40, 0)
         struct.pack_into("<IIIII", self.map, 48, 0, 0, EVENT, BUFFERS, self.frame_bytes)
         self.sequence = 0
+        self.closed = False
 
     def frame_offset(self, index: int) -> int:
         return HEADER + CAPACITY * EVENT + index * self.frame_bytes
@@ -99,6 +100,9 @@ class SharedSurface:
         return events
 
     def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
         self.map.close()
         self.file.close()
 
@@ -244,9 +248,37 @@ def event_name(kind: int) -> str:
 def main() -> int:
     if not EXE.exists():
         raise RuntimeError(f"missing executable: {EXE}")
-    surface = SharedSurface(SURFACE, WIDTH, HEIGHT)
+    SURFACE.unlink(missing_ok=True)
     host = Host(SCENE)
+    surface = None
+    invalid_info = None
+    open_failed_info = None
     try:
+        missing_info = None
+        for _ in range(100):
+            missing_info = host.request("surface", node="live")
+            if "missing" in missing_info["error"].lower():
+                break
+            time.sleep(0.02)
+        if not missing_info or "missing" not in missing_info["error"].lower():
+            raise RuntimeError(f"missing surface was not reported: {missing_info!r}")
+
+        SURFACE.mkdir()
+        try:
+            for _ in range(100):
+                open_failed_info = host.request("surface", node="live")
+                if "open failed" in open_failed_info["error"].lower():
+                    break
+                time.sleep(0.02)
+            if (not open_failed_info or open_failed_info["mapped"]
+                    or "open failed" not in open_failed_info["error"].lower()):
+                raise RuntimeError(
+                    f"surface open failure was not reported: {open_failed_info!r}"
+                )
+        finally:
+            SURFACE.rmdir()
+
+        surface = SharedSurface(SURFACE, WIDTH, HEIGHT)
         info = None
         for _ in range(100):
             info = host.request("surface", node="live")
@@ -255,6 +287,12 @@ def main() -> int:
             time.sleep(0.02)
         if not info or not info.get("mapped"):
             raise RuntimeError(f"surface did not map: {info!r}")
+        if (info["error"] or info["pixelWidth"] != WIDTH
+                or info["pixelHeight"] != HEIGHT
+                or info["preferredWidth"] != WIDTH
+                or info["preferredHeight"] != HEIGHT
+                or info["displayScale"] != 1.0):
+            raise RuntimeError(f"mapped surface contract is inconsistent: {info!r}")
 
         input_map = host.request("inputmap")
         if input_map["keys"]["w"] != 48 or input_map["modifiers"]["shift"] != 1:
@@ -292,6 +330,8 @@ def main() -> int:
         stale_info = host.request("surface", node="live")
         if not stale_info["stale"] or stale_info["frameAgeMs"] < 500:
             raise RuntimeError(f"surface did not report stale: {stale_info!r}")
+        if stale_info["staleAfterMs"] != 250:
+            raise RuntimeError(f"surface ignored staleMs policy: {stale_info!r}")
         refreshed = surface.publish(draw_cube(0.9, 0.4))
         surface.wait_for_host(refreshed)
         fresh_info = host.request("surface", node="live")
@@ -326,7 +366,9 @@ def main() -> int:
                 f"expected one coalesced move, got {identical_moves!r}"
             )
 
-        dropped_before = host.request("surface", node="live")["inputDropped"]
+        before_saturation = host.request("surface", node="live")
+        dropped_before = before_saturation["inputDropped"]
+        moves_dropped_before = before_saturation["inputDroppedMoves"]
         for index in range(70):
             host.request(
                 "pointer", node="live", kind="move", x=index + 1, y=1, button="left"
@@ -334,7 +376,18 @@ def main() -> int:
         info = host.request("surface", node="live")
         if info["inputDropped"] <= dropped_before:
             raise RuntimeError(f"full input ring did not report drops: {info!r}")
-        surface.read_inputs()
+        if info["inputDroppedMoves"] <= moves_dropped_before:
+            raise RuntimeError(f"pointer-move drops were not classified: {info!r}")
+
+        # Movement is intentionally capped below capacity. A discrete event
+        # injected after the flood must still be appended.
+        host.request("key", node="live", kind="down", key="w", modifiers=1)
+        host.request("key", node="live", kind="up", key="w", modifiers=1)
+        flooded = surface.read_inputs()
+        if not any(event["kind"] == 5 and event["key"] == 48 for event in flooded):
+            raise RuntimeError(f"key-down was starved by pointer movement: {info!r}")
+        if not any(event["kind"] == 6 and event["key"] == 48 for event in flooded):
+            raise RuntimeError(f"key-up was starved by pointer movement: {info!r}")
 
         host.request("pointer", node="live", kind="down", x=40, y=50, button="left")
         host.request("pointer", node="live", kind="move", x=100, y=80, button="left")
@@ -362,6 +415,28 @@ def main() -> int:
         if missing:
             raise RuntimeError(f"input ring missing injected events: {missing!r}; actual={sorted(actual)!r}")
 
+        # Replacing the magic must transition a live mapping into a visible
+        # incompatible-file state rather than leaving a stale image behind.
+        surface.close()
+        with SURFACE.open("r+b") as stream:
+            stream.write(b"BROKEN!!")
+        for _ in range(100):
+            invalid_info = host.request("surface", node="live")
+            if not invalid_info["mapped"] and "magic" in invalid_info["error"].lower():
+                break
+            time.sleep(0.02)
+        if not invalid_info or invalid_info["mapped"] or "magic" not in invalid_info["error"].lower():
+            raise RuntimeError(f"invalid surface was not reported: {invalid_info!r}")
+        invalid_shot = screenshot_path("aurora-host-surface-invalid.ppm")
+        host.request("screenshot", path=str(invalid_shot))
+        stale_colors = ppm_counts(
+            invalid_shot, {(0, 200, 120), (230, 57, 70)}
+        )
+        if any(stale_colors.values()):
+            raise RuntimeError(
+                f"stale surface pixels survived invalidation: {stale_colors!r}"
+            )
+
         print(
             json.dumps(
                 {
@@ -375,8 +450,16 @@ def main() -> int:
                     "input_map": input_map,
                     "input_coalesced": info["inputCoalesced"],
                     "input_dropped": info["inputDropped"],
+                    "input_dropped_moves": info["inputDroppedMoves"],
+                    "input_dropped_discrete": info["inputDroppedDiscrete"],
                     "stale_after_idle": stale_info,
                     "fresh_after_publish": fresh_info,
+                    "missing": missing_info,
+                    "open_failed": open_failed_info,
+                    "invalid": invalid_info,
+                    "invalid_stale_colors": {
+                        str(color): count for color, count in stale_colors.items()
+                    },
                     "input_ring": [
                         {"event": event_name(event["kind"]), **event}
                         for event in events
@@ -398,7 +481,8 @@ def main() -> int:
         return 0
     finally:
         host.close()
-        surface.close()
+        if surface is not None:
+            surface.close()
         if host.errors:
             print("host stderr:\n" + "\n".join(host.errors), file=sys.stderr)
 

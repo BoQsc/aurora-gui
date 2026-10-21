@@ -2,8 +2,8 @@
 
 **Generated from `protocol/aurora-host.api.json`.** Do not edit manually.
 
-- Experiment version: `0.4.4`
-- Protocol version: `8`
+- Experiment version: `0.4.5`
+- Protocol version: `9`
 - Schema version: `2`
 - Max scene depth: `16`
 - Max scene nodes: `256`
@@ -37,6 +37,10 @@
 - `key-events`
 - `frame-events`
 - `shared-surface`
+- `surface-diagnostics`
+- `surface-dpi`
+- `surface-input-reserve`
+- `surface-stale-policy`
 - `menu`
 - `dynamic-menu`
 - `tabs`
@@ -140,6 +144,9 @@ Transport: stdin/stdout JSON lines; launch --run <scene> --control
 - Frame layout: two consecutive width*height*4 RGBA8 buffers after header and input ring; active selects the readable buffer
 - frame: the writer fills an inactive buffer, sets active, then increments frameSeq; the host copies the active buffer and writes the copied sequence to hostReadSeq; writers may reuse a buffer after hostReadSeq catches up with the frame that used it
 - input: the host appends events at inputTail and the external consumer reads from inputHead, advancing inputHead after consuming; head == tail means empty and tail - head == inputCapacity means full
+- inputReserve: up to inputReserve slots are reserved for discrete key, button, and wheel events so pointer motion cannot starve them; smaller rings reserve roughly a quarter of their capacity, at least one when capacity is greater than one
+- inputCoordinates: pointer and wheel x/y are logical surface coordinates matching scene width/height; a writer sampling a native buffer scales them by native/logical
+- dpi: scene width/height are logical layout extents; header width/height are native RGBA pixels, normally the host-preferred logical*displayScale size; the host scales the native image into the logical bounds
 - wheel: kind 4 records pointer position in x/y and wheel deltas in wheelX/wheelY
 
 | Header offset | Field |

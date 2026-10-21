@@ -455,7 +455,8 @@ private bool isNodeSpecificField(string type, string name)
         case "image":
             return name == "src";
         case "surface":
-            return name == "path" || name == "events";
+            return name == "path" || name == "events" ||
+                name == "staleMs";
         case "spacer":
             return false;
         default:
@@ -896,6 +897,8 @@ private SurfaceSpec parseSurface(JSONValue value, string label,
         format("%s surface exceeds max pixel count %d", label,
             MaxSurfacePixels));
     surface.flex = readRange(value, "flex", 0, 0, 1000, label);
+    surface.staleMs = cast(uint) readRange(value, "staleMs", 500, 50,
+        3600000, label);
     parseBackground(value, label, surface.hasBackground, surface.background);
     if (auto events = "events" in value.object)
         surface.events = parseEvents(*events, label ~ ".events");

@@ -60,6 +60,7 @@ python tools/drive_interaction.py
 python tools/drive_animation.py
 python tools/drive_image.py
 python tools/drive_surface.py
+python tools/surface_dpi_test.py
 
 dub run --config=host -- samples/hello.scene.json
 dub run --config=host-headless -- --render samples/hello.scene.json --out build/hello.ppm
@@ -70,7 +71,10 @@ python tools/control_client.py
 
 `verify.json` builds the windowed host into `build/verify` before the UI-depth
 check, so verification can run while a demo instance is open. Its final render
-comparison expects the owner-approved 125% DPI reference; use
+comparison normalizes the live screenshot to the owner-approved 1225x800
+(125% DPI) reference's 980x640 logical viewport and allows up to 2% differing
+pixels for DPI-dependent glyph hinting; layout, chrome, and color checks remain
+exact. Use
 `verify-source.json` for a DPI-independent compile and source/control/render
 gate.
 
@@ -226,6 +230,7 @@ height:
   "path": "../build/live.surface",
   "width": 320,
   "height": 240,
+  "staleMs": 250,
   "events": ["pointer", "key"],
   "flex": 1
 }
@@ -236,10 +241,21 @@ The file is a little-endian, versioned mapping. The generated
 layout. The current surface version is `2`, the header is 80 bytes, input events
 are 24 bytes, and there are two RGBA8 frame buffers after a 64-event ring:
 
+Scene `width` and `height` are logical layout extents. The header dimensions are
+native RGBA pixels and may be the host-preferred `logical * displayScale` size;
+the host scales that image into the scene bounds. At 96 DPI, a 320x240 surface
+therefore accepts a 320x240 native frame; at 200% it accepts 640x480. The control
+response exposes `pixelWidth`, `pixelHeight`, `displayScale`,
+`preferredWidth`, and `preferredHeight` so a producer can match the window.
+
 ```text
 kind:u8, button:u8, key:u16, modifiers:u32,
 x:i32, y:i32, wheelX:i32, wheelY:i32
 ```
+
+Pointer and wheel `x`/`y` are logical surface coordinates matching the scene
+`width` and `height`; a producer sampling a native buffer scales them by the
+native-to-logical ratio.
 
 The writer fills the inactive buffer, sets `active`, then increments `frameSeq`.
 The host copies the active buffer on its normal tick and publishes the copied
@@ -249,12 +265,23 @@ the buffer. The host appends input at `inputTail`; the client reads from
 `tail - head == inputCapacity` is full.
 
 The `surface` control response reports `inputDropped` and `inputCoalesced`
-counters plus `frameAgeMs` and `stale`; a mapped surface becomes stale after
-0.5 seconds without a new frame. Adjacent identical pointer moves are coalesced
+counters plus `frameAgeMs` and `stale`; `staleMs` configures the staleness
+window (default 500 ms, minimum 50). `inputDroppedMoves` and
+`inputDroppedDiscrete` classify saturation: up to eight ring slots are
+reserved for key, button, and wheel events (smaller rings reserve roughly a
+quarter, with at least one slot when capacity is greater than one), so pointer
+motion cannot starve a later key-up or button-up. Adjacent identical
+pointer moves are coalesced
 because motion is state rather than an ordered command; the coalescing counter
 records how many duplicate samples were absorbed. `inputmap` returns the
 numeric key, modifier, button, and event-kind contract used by the ring, so
 clients do not have to hard-code undocumented Aurora enum values.
+
+Mapping failures are reported instead of silently retried. A missing file,
+incompatible magic/version/layout, and an open failure leave `mapped:false` with
+an `error` string; `retryInMs` reports the next retry. A live mapping that later
+fails validation is unmapped and reports the new error, so a stale image cannot
+survive a malformed replacement.
 
 No draw commands cross the JSON channel per frame. `tools/drive_surface.py`
 publishes a checker frame and a software-rasterized, z-buffered rotating cube
@@ -312,12 +339,13 @@ and control channel.
 
 [aurora-host-notepadpp](../aurora-host-notepadpp/) goes further: an eight-slot
 tabbed workbench with file dialogs, dirty state, find/replace, language
-metadata, editor events, and a measured large-document benchmark. Its self-test
-also exposes the current scaling limit: the first full layout of a 214 KB
-document takes roughly 1.5-2.4 s on a release host build, a 5,000-line document
-stalls during end-of-document selection, and a 100,000-line stress run is not
-viable because retained editor layout and memory grow steeply with document
-size. Normal small-document editing remains responsive.
+metadata, editor events, and a measured large-document benchmark. Unwrapped
+documents no longer allocate a display-row map proportional to the document;
+selection and scrolling use the logical line index directly. Wrapped documents
+keep a per-line row index and shape only viewport rows. A 100,000-line
+stress pass in the core editor test measures `setText`, end-of-document
+selection, wrap toggling, and wrapped selection, failing if any operation
+exceeds five seconds.
 
 ## Layout
 

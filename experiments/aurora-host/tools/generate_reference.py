@@ -54,6 +54,7 @@ def render_d(schema: dict) -> str:
         f'enum SurfaceVersion = {schema["surface"]["version"]};',
         f'enum SurfaceHeaderSize = {schema["surface"]["headerSize"]};',
         f'enum SurfaceInputEventSize = {schema["surface"]["inputEventSize"]};',
+        f'enum SurfaceInputReserve = {schema["surface"]["inputReserve"]};',
         f'enum SurfaceBufferCount = {schema["surface"]["bufferCount"]};',
         "",
     ]

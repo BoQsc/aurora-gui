@@ -2,11 +2,12 @@ module experiment.aurorahost.surface;
 
 import experiment.aurorahost.events : HostEvent;
 import experiment.aurorahost.protocol : MaxInputEvents, MaxSurfacePixels,
-    SurfaceBufferCount, SurfaceHeaderSize, SurfaceInputEventSize, SurfaceMagic,
-    SurfaceVersion;
-import aurora : Canvas, Color, Event, Key, MouseButton, PointF, Rect,
-    RgbaImage, Widget;
+    SurfaceBufferCount, SurfaceHeaderSize, SurfaceInputEventSize,
+    SurfaceInputReserve, SurfaceMagic, SurfaceVersion;
+import aurora : Canvas, Color, Event, GuiWindow, Key, MouseButton, PointF,
+    Rect, RgbaImage, Widget;
 import std.algorithm : canFind, equal;
+import std.conv : to;
 import std.exception : enforce;
 import std.file : exists;
 import std.mmfile : MmFile;
@@ -20,6 +21,7 @@ struct SurfaceSpec
     bool hasBackground;
     Color background;
     string[] events;
+    uint staleMs;
 }
 
 struct SurfaceInfo
@@ -32,8 +34,18 @@ struct SurfaceInfo
     uint inputTail;
     uint inputDropped;
     uint inputCoalesced;
+    uint inputDroppedMoves;
+    uint inputDroppedDiscrete;
     double frameAge;
     bool stale;
+    uint staleMs;
+    string error;
+    uint retryMs;
+    uint pixelWidth;
+    uint pixelHeight;
+    uint preferredWidth;
+    uint preferredHeight;
+    double displayScale;
 }
 
 private uint readU32(const(ubyte)[] data, size_t offset)
@@ -104,8 +116,14 @@ class SurfaceWidget : Widget
     private double _retry;
     private uint _inputDropped;
     private uint _inputCoalesced;
+    private uint _inputDroppedMoves;
+    private uint _inputDroppedDiscrete;
     private double _frameAge;
     private bool _hasFrame;
+    private uint _staleMs = 500;
+    private string _lastError;
+    private uint _pixelWidth;
+    private uint _pixelHeight;
 
     void delegate(HostEvent) onInput;
 
@@ -118,6 +136,8 @@ class SurfaceWidget : Widget
         _background = spec.background;
         _pointerEvents = spec.events.canFind("pointer");
         _keyEvents = spec.events.canFind("key");
+        _staleMs = spec.staleMs > 0 ? spec.staleMs : 500;
+        _retry = 0.0;
         setFocusable(_keyEvents);
         if (_width > 0)
             layoutHints().preferredWidth = _width;
@@ -127,51 +147,104 @@ class SurfaceWidget : Widget
             layoutHints().flex = spec.flex;
     }
 
-    private bool headerValid(const(ubyte)[] data)
+    private string headerError(const(ubyte)[] data)
     {
         if (data.length < SurfaceHeaderSize)
-            return false;
+            return "surface header is shorter than 80 bytes";
         if (!equal(data[0 .. 8], cast(const(ubyte)[]) SurfaceMagic))
-            return false;
+            return "surface magic mismatch";
         if (readU32(data, 8) != SurfaceVersion)
-            return false;
-        if (readU32(data, 12) < SurfaceHeaderSize)
-            return false;
-        if (readU32(data, 16) != _width || readU32(data, 20) != _height)
-            return false;
+            return "unsupported surface version " ~ to!string(readU32(data, 8));
+        const headerSize = readU32(data, 12);
+        if (headerSize < SurfaceHeaderSize)
+            return "surface header size is too small";
+        const pixelWidth = readU32(data, 16);
+        const pixelHeight = readU32(data, 20);
+        if (pixelWidth == 0 || pixelHeight == 0)
+            return "surface dimensions are zero";
+        if (cast(ulong) pixelWidth * pixelHeight > MaxSurfacePixels)
+            return "surface exceeds max pixel count";
+        const capacity = readU32(data, 28);
+        if (capacity == 0 || capacity > MaxInputEvents)
+            return "surface input capacity is invalid";
         if (readU32(data, 56) != SurfaceInputEventSize)
-            return false;
-        if (readU32(data, 60) < SurfaceBufferCount)
-            return false;
-        if (readU32(data, 64) != cast(uint) (_width * _height * 4))
-            return false;
-        return cast(ulong) _width * _height <= MaxSurfacePixels;
+            return "surface input event size mismatch";
+        const bufferCount = readU32(data, 60);
+        if (bufferCount < SurfaceBufferCount)
+            return "surface buffer count is too small";
+        const active = readU32(data, 24);
+        if (active >= bufferCount)
+            return "surface active frame buffer is invalid";
+        const frameBytes = readU32(data, 64);
+        if (cast(ulong) frameBytes != cast(ulong) pixelWidth * pixelHeight * 4)
+            return "surface frame byte count mismatch";
+        const expected = cast(ulong) headerSize +
+            cast(ulong) capacity * SurfaceInputEventSize +
+            cast(ulong) bufferCount * frameBytes;
+        if (expected > data.length)
+            return "surface mapping is smaller than its declared layout";
+        return null;
+    }
+
+    private double currentDisplayScale()
+    {
+        auto window = cast(GuiWindow) host();
+        return window is null ? 1.0 : window.displayScale().x();
+    }
+
+    private uint preferredExtent(int logical, double scale)
+    {
+        const value = cast(double) logical * scale;
+        return value <= 0 ? 1 : cast(uint) (value + 0.5);
+    }
+
+    private void clearMapping(string error)
+    {
+        _mapping = null;
+        _image = null;
+        _pixelWidth = 0;
+        _pixelHeight = 0;
+        _hasFrame = false;
+        _frameAge = 0.0;
+        _lastError = error;
+        invalidate();
     }
 
     private void mapSurface()
     {
         if (!exists(_path))
+        {
+            clearMapping("surface file is missing");
             return;
+        }
         try
         {
             auto mapping = new MmFile(_path, MmFile.Mode.readWrite, 0, null);
             const data = cast(const(ubyte)[]) mapping[];
-            if (!headerValid(data))
+            const error = headerError(data);
+            if (error !is null)
             {
+                clearMapping(error);
                 mapping = null;
                 return;
             }
             _mapping = mapping;
+            _pixelWidth = readU32(data, 16);
+            _pixelHeight = readU32(data, 20);
+            _image = null;
             _lastSequence = 0;
             _hasFrame = false;
             _frameAge = 0.0;
             _inputDropped = 0;
             _inputCoalesced = 0;
+            _inputDroppedMoves = 0;
+            _inputDroppedDiscrete = 0;
+            _lastError = "";
             _retry = 0.5;
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            // The writer may be creating or replacing the file.
+            clearMapping("surface open failed: " ~ error.msg);
         }
     }
 
@@ -191,9 +264,10 @@ class SurfaceWidget : Widget
         }
 
         auto data = cast(ubyte[]) _mapping[];
-        if (!headerValid(data))
+        const error = headerError(data);
+        if (error !is null)
         {
-            _mapping = null;
+            clearMapping(error);
             return;
         }
 
@@ -201,6 +275,8 @@ class SurfaceWidget : Widget
         if (sequence == _lastSequence)
             return;
 
+        const pixelWidth = readU32(data, 16);
+        const pixelHeight = readU32(data, 20);
         const active = readU32(data, 24);
         const inputCapacity = readU32(data, 28);
         const bufferCount = readU32(data, 60);
@@ -216,10 +292,13 @@ class SurfaceWidget : Widget
         if (frameEnd > data.length)
             return;
 
+        _pixelWidth = pixelWidth;
+        _pixelHeight = pixelHeight;
         if (_image is null)
-            _image = new RgbaImage(_width, _height, data[frameStart .. frameEnd]);
+            _image = new RgbaImage(pixelWidth, pixelHeight,
+                data[frameStart .. frameEnd]);
         else
-            _image.reset(_width, _height, data[frameStart .. frameEnd]);
+            _image.reset(pixelWidth, pixelHeight, data[frameStart .. frameEnd]);
         _lastSequence = sequence;
         _hasFrame = true;
         _frameAge = 0.0;
@@ -236,8 +315,20 @@ class SurfaceWidget : Widget
         result.sequence = _lastSequence;
         result.inputDropped = _inputDropped;
         result.inputCoalesced = _inputCoalesced;
+        result.inputDroppedMoves = _inputDroppedMoves;
+        result.inputDroppedDiscrete = _inputDroppedDiscrete;
+        result.staleMs = _staleMs;
         result.frameAge = _hasFrame ? _frameAge : 0.0;
-        result.stale = _mapping !is null && (!_hasFrame || _frameAge > 0.5);
+        result.stale = _mapping !is null &&
+            (!_hasFrame || _frameAge * 1000.0 > _staleMs);
+        result.error = _lastError.length > 0 ? _lastError :
+            (_mapping is null ? "surface not mapped" : "");
+        result.retryMs = _mapping is null ? cast(uint) (_retry * 1000.0) : 0;
+        result.pixelWidth = _pixelWidth;
+        result.pixelHeight = _pixelHeight;
+        result.displayScale = currentDisplayScale();
+        result.preferredWidth = preferredExtent(_width, result.displayScale);
+        result.preferredHeight = preferredExtent(_height, result.displayScale);
         if (_mapping !is null)
         {
             const data = cast(const(ubyte)[]) _mapping[];
@@ -270,11 +361,6 @@ class SurfaceWidget : Widget
             return;
         const head = readU32(data, 48);
         const tail = readU32(data, 52);
-        if (tail - head >= capacity)
-        {
-            ++_inputDropped;
-            return;
-        }
 
         // Pointer motion is state, not an ordered command. Collapse adjacent
         // identical moves so a jittery window cannot fill the ring with
@@ -295,6 +381,30 @@ class SurfaceWidget : Widget
                 ++_inputCoalesced;
                 return;
             }
+        }
+        // Reserve room for discrete events. Pointer moves must not consume the
+        // whole ring and cause a later key-up or button-up to be dropped.
+        uint reserve;
+        if (capacity > 1)
+        {
+            reserve = capacity / 4;
+            if (reserve == 0)
+                reserve = 1;
+            if (reserve > SurfaceInputReserve)
+                reserve = SurfaceInputReserve;
+        }
+        const moveLimit = capacity - reserve;
+        if (kind == 2 && tail - head >= moveLimit)
+        {
+            ++_inputDroppedMoves;
+            ++_inputDropped;
+            return;
+        }
+        if (kind != 2 && tail - head >= capacity)
+        {
+            ++_inputDroppedDiscrete;
+            ++_inputDropped;
+            return;
         }
         const offset = cast(size_t) headerSize +
             cast(size_t) (tail % capacity) * eventSize;

@@ -5,6 +5,7 @@
     "experiments/aurora-host/protocol",
     "experiments/aurora-host/samples/surface.scene.json",
     "experiments/aurora-host/tools/drive_surface.py",
+    "experiments/aurora-host/tools/surface_dpi_test.py",
     "experiments/aurora-host/tools/host_session.py",
     "experiments/aurora-host/dub.json"
   ],
@@ -16,6 +17,15 @@
         "args": ["build"],
         "workdir": "experiments/aurora-host",
         "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tools/surface_dpi_test.py"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
       }
     },
     {

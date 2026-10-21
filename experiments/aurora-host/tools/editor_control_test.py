@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
+import time
 
 sys.dont_write_bytecode = True
 
@@ -130,6 +132,44 @@ def main() -> int:
         cleared = session.send("setEditorStyles", node="editor", styles=[])
         if not cleared.get("ok") or cleared.get("styles") != 0:
             raise RuntimeError(f"setEditorStyles did not clear: {cleared}")
+
+        lines = 100_000
+        large_text = "\n".join(f"line {index}" for index in range(lines))
+        session.send("setWordWrap", node="editor", wrap=False)
+        started = time.perf_counter()
+        session.send("setText", node="editor", text=large_text)
+        set_ms = (time.perf_counter() - started) * 1000.0
+        started = time.perf_counter()
+        session.send("setSelection", node="editor", start=0, end=len(large_text))
+        select_ms = (time.perf_counter() - started) * 1000.0
+        state = session.send("getEditorState", node="editor")
+        if (state.get("length") != len(large_text)
+                or state.get("line") != lines - 1
+                or not state.get("hasSelection")):
+            raise RuntimeError(f"large document selection is wrong: {state}")
+
+        started = time.perf_counter()
+        session.send("setWordWrap", node="editor", wrap=True)
+        wrap_ms = (time.perf_counter() - started) * 1000.0
+        started = time.perf_counter()
+        session.send("setSelection", node="editor", start=0, end=len(large_text))
+        wrapped_select_ms = (time.perf_counter() - started) * 1000.0
+        state = session.send("getEditorState", node="editor")
+        if (state.get("line") != lines - 1
+                or not state.get("hasSelection")):
+            raise RuntimeError(f"wrapped large selection is wrong: {state}")
+        timings = {
+            "setTextMs": round(set_ms, 1),
+            "selectMs": round(select_ms, 1),
+            "wrapMs": round(wrap_ms, 1),
+            "wrappedSelectMs": round(wrapped_select_ms, 1),
+        }
+        print(json.dumps(timings, sort_keys=True))
+        if max(timings.values()) > 5000.0:
+            raise RuntimeError(f"large document operation is too slow: {timings}")
+
+        session.send("setWordWrap", node="editor", wrap=False)
+        session.send("setText", node="editor", text="Large-document layout passed")
 
         session.send("click", node="apply")
         if not any(

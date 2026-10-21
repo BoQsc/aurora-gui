@@ -1218,8 +1218,19 @@ class ControlServer
         extra["inputTail"] = JSONValue(cast(long) info.inputTail);
         extra["inputDropped"] = JSONValue(cast(long) info.inputDropped);
         extra["inputCoalesced"] = JSONValue(cast(long) info.inputCoalesced);
+        extra["inputDroppedMoves"] = JSONValue(cast(long) info.inputDroppedMoves);
+        extra["inputDroppedDiscrete"] = JSONValue(
+            cast(long) info.inputDroppedDiscrete);
         extra["frameAgeMs"] = JSONValue(cast(long) (info.frameAge * 1000.0));
         extra["stale"] = JSONValue(info.stale);
+        extra["staleAfterMs"] = JSONValue(cast(long) info.staleMs);
+        extra["error"] = JSONValue(info.error);
+        extra["retryInMs"] = JSONValue(cast(long) info.retryMs);
+        extra["pixelWidth"] = JSONValue(cast(long) info.pixelWidth);
+        extra["pixelHeight"] = JSONValue(cast(long) info.pixelHeight);
+        extra["preferredWidth"] = JSONValue(cast(long) info.preferredWidth);
+        extra["preferredHeight"] = JSONValue(cast(long) info.preferredHeight);
+        extra["displayScale"] = JSONValue(info.displayScale);
         respond(id, true, null, extra);
     }
 

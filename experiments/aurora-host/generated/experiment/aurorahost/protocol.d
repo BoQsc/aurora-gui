@@ -5,8 +5,8 @@ module experiment.aurorahost.protocol;
  * Do not edit manually; run tools/generate_reference.py.
  */
 
-enum ExperimentVersion = "0.4.4";
-enum ProtocolVersion = 8;
+enum ExperimentVersion = "0.4.5";
+enum ProtocolVersion = 9;
 enum SchemaVersion = 2;
 
 immutable string[] Capabilities = [
@@ -34,6 +34,10 @@ immutable string[] Capabilities = [
     "key-events",
     "frame-events",
     "shared-surface",
+    "surface-diagnostics",
+    "surface-dpi",
+    "surface-input-reserve",
+    "surface-stale-policy",
     "menu",
     "dynamic-menu",
     "tabs",
@@ -70,4 +74,5 @@ enum SurfaceMagic = "AURSFACE";
 enum SurfaceVersion = 2;
 enum SurfaceHeaderSize = 80;
 enum SurfaceInputEventSize = 24;
+enum SurfaceInputReserve = 8;
 enum SurfaceBufferCount = 2;

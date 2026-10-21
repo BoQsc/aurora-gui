@@ -167,6 +167,21 @@ def main() -> int:
                     "surface scene was not accepted\n" + surface_checked
                 )
 
+            surface_dpi = run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "tools" / "surface_dpi_test.py"),
+                    "--host",
+                    str(headless),
+                ]
+            )
+            if "surface dpi test passed" not in surface_dpi.stdout:
+                raise VerificationError(
+                    "surface DPI contract test did not report success\n"
+                    + surface_dpi.stdout
+                )
+
             animation_checked = run(
                 [str(headless), "--check", "samples/animation.scene.json"]
             ).stdout
@@ -309,6 +324,59 @@ def main() -> int:
                     "canvas control test did not report success\n"
                     + canvas_live.stdout
                 )
+
+            surface = run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "tools" / "drive_surface.py"),
+                ],
+                env=control_env,
+            )
+            surface_report = json.loads(surface.stdout)
+            if (surface_report.get("input_dropped", 0) <= 0
+                    or surface_report.get("input_dropped_discrete") != 0
+                    or surface_report.get("input_coalesced", 0) <= 0):
+                raise VerificationError(
+                    "surface input saturation report is invalid\n"
+                    + surface.stdout
+                )
+            if (not surface_report.get("stale_after_idle", {}).get("stale")
+                    or surface_report.get("fresh_after_publish", {}).get("stale")
+                    or surface_report.get("stale_after_idle", {}).get(
+                        "staleAfterMs") != 250):
+                raise VerificationError(
+                    "surface stale policy was not applied\n" + surface.stdout
+                )
+            if "missing" not in surface_report.get("missing", {}).get(
+                    "error", "").lower():
+                raise VerificationError(
+                    "surface missing-file diagnostic was not reported\n"
+                    + surface.stdout
+                )
+            if not surface_report.get("open_failed", {}).get(
+                    "error", "").lower().startswith("surface open failed:"):
+                raise VerificationError(
+                    "surface open-failure diagnostic was not reported\n"
+                    + surface.stdout
+                )
+            if not surface_report.get("invalid", {}).get("error"):
+                raise VerificationError(
+                    "surface invalid-mapping diagnostic was not reported\n"
+                    + surface.stdout
+                )
+            if any(surface_report.get("invalid_stale_colors", {}).values()):
+                raise VerificationError(
+                    "stale surface pixels survived mapping failure\n"
+                    + surface.stdout
+                )
+            ring_kinds = {
+                event.get("kind") for event in surface_report.get("input_ring", [])
+            }
+            if not {5, 6}.issubset(ring_kinds):
+                raise VerificationError(
+                    "key down/up did not survive saturation\n" + surface.stdout
+                )
     except VerificationError as error:
         print(f"aurora-host verification failed: {error}", file=sys.stderr)
         return 1
@@ -326,6 +394,7 @@ def main() -> int:
     print("text weight: approved natural hinting C; minimum ink 0.039")
     print("canvas: retained shapes, colors, and text pixels verified")
     print("canvas control: live setCanvas redraw verified")
+    print("surface: input reserve, diagnostics, stale policy, and pixels verified")
     print("aurora-host experiment verification passed")
     return 0
 

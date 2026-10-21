@@ -639,6 +639,16 @@ class HostTextEditor : Widget
 
     private void rebuildRowMap()
     {
+        if (!_wordWrap)
+        {
+            // Unwrapped text has one display row per logical line. Avoid a
+            // document-sized row map so selection and scrolling stay cheap.
+            _charsPerRow = 0;
+            _lineRowStart.length = 0;
+            _totalRows = _lineStarts.length > 0 ? _lineStarts.length : 1;
+            _scrollLine = clampInt(_scrollLine, 0, maxScrollLine());
+            return;
+        }
         if (_lineStarts.length == 0)
         {
             _lineRowStart = [0, 0];
@@ -689,6 +699,9 @@ class HostTextEditor : Widget
         @safe pure nothrow @nogc
     {
         subline = 0;
+        if (!_wordWrap)
+            return _lineStarts.length == 0 ? 0 :
+                (row < _lineStarts.length ? row : _lineStarts.length - 1);
         if (_lineRowStart.length < 2) return 0;
         size_t low = 0;
         size_t high = _lineRowStart.length - 1;
@@ -704,6 +717,14 @@ class HostTextEditor : Widget
 
     private void rowChunk(size_t row, out size_t start, out size_t end)
     {
+        if (!_wordWrap)
+        {
+            const line = _lineStarts.length == 0 ? 0 :
+                (row < _lineStarts.length ? row : _lineStarts.length - 1);
+            start = lineStart(line);
+            end = lineEnd(line);
+            return;
+        }
         size_t subline;
         const line = rowLine(row, subline);
         const begin = lineStart(line);
@@ -722,6 +743,8 @@ class HostTextEditor : Widget
     private size_t rowForCursor()
     {
         const line = lineForLogical(_cursor);
+        if (!_wordWrap)
+            return line;
         const offset = _cursor - lineStart(line);
         const subline = _wordWrap ?
             offset / cast(size_t) maxInt(1, _charsPerRow) : 0;
