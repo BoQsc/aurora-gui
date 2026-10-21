@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Untitled - Notepad",
+    "width": 900,
+    "height": 620,
+    "theme": "light",
+    "decorated": false
+  },
+  "themeOverrides": {
+    "fontScale": 1
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "background": "#ffffff",
+    "children": [
+      {
+        "id": "titlebar",
+        "type": "titleBar",
+        "text": "Untitled - Notepad",
+        "height": 32,
+        "background": "#ffffff",
+        "border": "#d0d0d0",
+        "textColor": "#1a1a1a"
+      },
+      {
+        "id": "menubar",
+        "type": "row",
+        "height": 24,
+        "spacing": 0,
+        "padding": 1,
+        "background": "#ffffff",
+        "border": "#d0d0d0",
+        "children": [
+          {
+            "id": "file-menu",
+            "type": "menu",
+            "text": "File",
+            "width": 44,
+            "height": 22,
+            "items": [
+              {"label": "New", "shortcut": "Ctrl+N", "action": "file.new"},
+              {"label": "Open...", "shortcut": "Ctrl+O", "action": "file.open"},
+              {"label": "Save", "shortcut": "Ctrl+S", "action": "file.save"},
+              {"label": "Save As...", "shortcut": "Ctrl+Shift+S", "action": "file.saveAs"},
+              {"separator": true},
+              {"label": "Page Setup...", "action": "file.pageSetup"},
+              {"label": "Print...", "shortcut": "Ctrl+P", "action": "file.print"},
+              {"separator": true},
+              {"label": "Exit", "action": "app.exit"}
+            ]
+          },
+          {
+            "id": "edit-menu",
+            "type": "menu",
+            "text": "Edit",
+            "width": 44,
+            "height": 22,
+            "items": [
+              {"label": "Undo", "shortcut": "Ctrl+Z", "action": "edit.undo"},
+              {"separator": true},
+              {"label": "Cut", "shortcut": "Ctrl+X", "action": "edit.cut"},
+              {"label": "Copy", "shortcut": "Ctrl+C", "action": "edit.copy"},
+              {"label": "Paste", "shortcut": "Ctrl+V", "action": "edit.paste"},
+              {"label": "Delete", "shortcut": "Del", "action": "edit.delete"},
+              {"separator": true},
+              {"label": "Find...", "shortcut": "Ctrl+F", "action": "edit.find"},
+              {"label": "Find Next", "shortcut": "F3", "action": "edit.findNext"},
+              {"label": "Replace...", "shortcut": "Ctrl+H", "action": "edit.replace"},
+              {"label": "Go To...", "shortcut": "Ctrl+G", "action": "edit.goto"},
+              {"separator": true},
+              {"label": "Select All", "shortcut": "Ctrl+A", "action": "edit.selectAll"},
+              {"label": "Time/Date", "shortcut": "F5", "action": "edit.timeDate"}
+            ]
+          },
+          {
+            "id": "format-menu",
+            "type": "menu",
+            "text": "Format",
+            "width": 58,
+            "height": 22,
+            "items": [
+              {"label": "Word Wrap", "checked": true, "action": "format.wordWrap"},
+              {"label": "Font...", "action": "format.font"}
+            ]
+          },
+          {
+            "id": "view-menu",
+            "type": "menu",
+            "text": "View",
+            "width": 48,
+            "height": 22,
+            "items": [
+              {"label": "Status Bar", "checked": true, "action": "view.statusBar"}
+            ]
+          },
+          {
+            "id": "help-menu",
+            "type": "menu",
+            "text": "Help",
+            "width": 48,
+            "height": 22,
+            "items": [
+              {"label": "View Help", "action": "help.view"},
+              {"separator": true},
+              {"label": "About Notepad", "action": "help.about"}
+            ]
+          }
+        ]
+      },
+      {
+        "id": "editor",
+        "type": "textArea",
+        "text": "Windows 10 Notepad\n\nThis entire window is rendered by Aurora.\nThe titlebar, menus, editor, caret, and status bar are retained widgets.\n\nStart typing...",
+        "flex": 1,
+        "events": ["change", "cursor"],
+        "menu": [
+          {"label": "Undo", "shortcut": "Ctrl+Z", "action": "edit.undo"},
+          {"separator": true},
+          {"label": "Cut", "shortcut": "Ctrl+X", "action": "edit.cut"},
+          {"label": "Copy", "shortcut": "Ctrl+C", "action": "edit.copy"},
+          {"label": "Paste", "shortcut": "Ctrl+V", "action": "edit.paste"},
+          {"separator": true},
+          {"label": "Select All", "shortcut": "Ctrl+A", "action": "edit.selectAll"}
+        ]
+      },
+      {
+        "id": "statusbar",
+        "type": "row",
+        "height": 24,
+        "spacing": 8,
+        "padding": 4,
+        "background": "#f0f0f0",
+        "border": "#d0d0d0",
+        "children": [
+          {
+            "id": "position",
+            "type": "label",
+            "text": "Ln 1, Col 1",
+            "scale": 1,
+            "textColor": "#303030"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "id": "zoom",
+            "type": "label",
+            "text": "100%",
+            "scale": 1,
+            "textColor": "#303030",
+            "align": "right"
+          }
+        ]
+      }
+    ]
+  }
+}
