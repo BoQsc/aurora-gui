@@ -72,6 +72,7 @@
 | `tabs` | no | no | no | no |
 | `separator` | no | no | no | no |
 | `titleBar` | no | yes | no | no |
+| `component` | no | no | no | no |
 | `textArea` | no | yes | no | no |
 | `textField` | no | yes | no | no |
 | `canvas` | no | no | no | no |

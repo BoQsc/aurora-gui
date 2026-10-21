@@ -57,6 +57,7 @@ immutable string[] NodeTypes = [
     "tabs",
     "separator",
     "titleBar",
+    "component",
     "textArea",
     "textField",
     "canvas",

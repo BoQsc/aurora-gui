@@ -2,6 +2,8 @@ module experiment.aurorahost.scene;
 
 import experiment.aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
     parseCanvasColor;
+import experiment.aurorahost.component : ComponentContext, ComponentRegistry;
+import experiment.aurorahost.components : registerBuiltinComponents;
 import experiment.aurorahost.events : HostEvent;
 import experiment.aurorahost.host_editor : HostTextArea, HostTextEditor;
 import experiment.aurorahost.host_ui : ChromeButton, ChromeStyle, ContextTextArea,
@@ -63,6 +65,8 @@ struct SceneNode
     RgbaImage image;
     string[] events;
     int tickHz;
+    string component;
+    JSONValue props;
     CanvasSpec canvas;
     SurfaceSpec surface;
     MenuItemSpec[] menuItems;
@@ -111,6 +115,13 @@ class NodeRegistry
     string assetBase;
     GuiWindow window;
     bool decorated = true;
+    ComponentRegistry components;
+
+    this()
+    {
+        components = new ComponentRegistry();
+        registerBuiltinComponents(components);
+    }
 
     void delegate(string) onActivate;
     void delegate(string node, string action) onAction;
@@ -464,6 +475,8 @@ private bool isNodeSpecificField(string type, string name)
             return name == "text" || name == "events" || name == "menu";
         case "titleBar":
             return name == "text";
+        case "component":
+            return name == "component" || name == "props";
         case "canvas":
             return name == "events" || name == "tickHz" ||
                 name == "commands";
@@ -1007,6 +1020,18 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
             node.text = readString(value, "text", "", label);
             enforce(node.text.length > 0, label ~ ".text is required");
             break;
+        case "component":
+            requireNoChildren(value, label);
+            node.component = readString(value, "component", "", label);
+            enforce(node.component.length > 0,
+                label ~ ".component is required");
+            if (auto props = "props" in value.object)
+            {
+                enforce((*props).type == JSONType.object,
+                    label ~ ".props must be an object");
+                node.props = *props;
+            }
+            break;
         case "menu":
             requireNoChildren(value, label);
             node.text = readString(value, "text", "", label);
@@ -1480,6 +1505,18 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             applyHints(bar, node);
             registry.registerNode(node.id, node.type, bar, node.text);
             return bar;
+        }
+        case "component":
+        {
+            auto widget = registry.components.create(node.component,
+                ComponentContext(registry.window, registry.assetBase,
+                    delegate(string action)
+                    {
+                        registry.dispatchAction(node.id, action);
+                    }), node.props);
+            applyHints(widget, node);
+            registry.registerNode(node.id, node.type, widget, node.text);
+            return widget;
         }
         case "canvas":
         {

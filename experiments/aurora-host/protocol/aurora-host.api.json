@@ -124,6 +124,14 @@
       "spacing": false,
       "height": "optional bar height; default 40"
     },
+    "component": {
+      "children": false,
+      "text": false,
+      "scale": false,
+      "spacing": false,
+      "component": "registered host component name",
+      "props": "component-specific object"
+    },
     "textArea": {
       "children": false,
       "text": true,
