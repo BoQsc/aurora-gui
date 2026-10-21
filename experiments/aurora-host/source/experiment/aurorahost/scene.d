@@ -110,6 +110,7 @@ class NodeRegistry
 
     string assetBase;
     GuiWindow window;
+    bool decorated = true;
 
     void delegate(string) onActivate;
     void delegate(string node, string action) onAction;
@@ -1455,6 +1456,12 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
         }
         case "titleBar":
         {
+            if (registry.decorated)
+            {
+                auto spacer = new Spacer(0.0);
+                registry.registerNode(node.id, node.type, spacer, node.text);
+                return spacer;
+            }
             enforce(registry.window !is null,
                 "titleBar requires a window host");
             auto bar = new FramelessWindowTitleBar(registry.window);
@@ -1533,6 +1540,7 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry)
     options.width = scene.window.width;
     options.height = scene.window.height;
     options.decorated = scene.window.decorated;
+    options.darkTitleBar = scene.window.theme == "dark";
     auto window = new GuiWindow(options, themeWithOverrides(scene));
     registry.window = window;
     applyScene(window, scene, registry);
@@ -1544,10 +1552,13 @@ void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
     registry.window = window;
     registry.reset();
     registry.assetBase = scene.assetBase;
+    registry.decorated = scene.window.decorated;
     auto root = buildWidget(scene.root, registry);
     registerTooltips(scene.root, registry);
     window.setRoot(root);
     window.setTitle(scene.window.title);
+    window.setDecorated(scene.window.decorated);
+    window.setFrameDark(scene.window.theme == "dark");
     window.setTheme(themeWithOverrides(scene));
 }
 

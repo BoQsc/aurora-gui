@@ -365,6 +365,25 @@ final class GuiWindow : WidgetHost, NativeWindowSink
         _native.setTitle(title);
     }
 
+    /** True when the native operating-system frame is shown. */
+    bool decorated()
+    {
+        return _native !is null && _native.decorated();
+    }
+
+    /** Change native decoration without recreating the window. */
+    bool setDecorated(bool value)
+    {
+        if (_native is null) return false;
+        const changed = _native.setDecorated(value);
+        if (changed)
+        {
+            invalidate();
+            _native.invalidate();
+        }
+        return changed;
+    }
+
     /** Enter or leave native monitor fullscreen without changing widget coordinates. */
     void setFullscreen(bool value)
     {

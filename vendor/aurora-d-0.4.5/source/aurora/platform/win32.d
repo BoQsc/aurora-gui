@@ -1479,6 +1479,53 @@ else version (Windows)
             applyFrameStyle(_hwnd, dark);
         }
 
+        override bool setDecorated(bool value)
+        {
+            if (_hwnd is null || _closed) return false;
+            if (options.decorated == value) return true;
+
+            const logical = clientSize();
+            DWORD style = cast(DWORD) GetWindowLongPtrW(_hwnd, GWL_STYLE);
+            const DWORD exStyle =
+                cast(DWORD) GetWindowLongPtrW(_hwnd, GWL_EXSTYLE);
+            style &= ~(WS_POPUP | WS_OVERLAPPEDWINDOW);
+            if (value)
+                style |= WS_OVERLAPPEDWINDOW;
+            else
+            {
+                style |= WS_POPUP | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+                if (options.resizable)
+                    style |= WS_THICKFRAME;
+            }
+            if (!options.resizable)
+                style &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+            if (options.nativeVerticalScrollHost)
+                style |= WS_VSCROLL;
+
+            SetWindowLongPtrW(_hwnd, GWL_STYLE, style);
+            options.decorated = value;
+            loadDwmFunctions();
+            if (dwmExtendFrameIntoClientArea !is null)
+            {
+                MARGINS margins;
+                dwmExtendFrameIntoClientArea(_hwnd, &margins);
+            }
+            if (value)
+                applyFrameStyle(_hwnd, options.darkTitleBar);
+            else
+                applyFramelessFrame(_hwnd);
+
+            const physical = _displayScale.logicalToPhysical(logical);
+            RECT outer = RECT(0, 0, physical.width, physical.height);
+            if (value)
+                adjustOuterRectForDpi(outer, style, exStyle, _dpi);
+            SetWindowPos(_hwnd, null, 0, 0, outer.right - outer.left,
+                outer.bottom - outer.top,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE |
+                SWP_FRAMECHANGED);
+            return true;
+        }
+
         private void setWindowIcon(string path)
         {
             if (_hwnd is null || path.length == 0) return;

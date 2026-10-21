@@ -141,6 +141,19 @@ abstract class NativeWindow
     void setFrameDark(bool dark)
     {
     }
+    /** Current native decoration state. */
+    bool decorated() const
+    {
+        return options.decorated;
+    }
+    /**
+     * Switch between the native frame and a frameless custom-caption window.
+     * Backends that cannot restyle a live window return false.
+     */
+    bool setDecorated(bool value)
+    {
+        return false;
+    }
     abstract void setCursor(CursorKind cursor);
     /** Hide/show the host cursor; false means the backend cannot guarantee it. */
     bool setPointerVisible(bool visible)
