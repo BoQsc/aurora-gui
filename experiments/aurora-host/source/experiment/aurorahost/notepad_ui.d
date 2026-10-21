@@ -3,9 +3,11 @@ module experiment.aurorahost.notepad_ui;
 import experiment.aurorahost.component : ComponentContext;
 import experiment.aurorahost.host_editor : HostTextEditor;
 import aurora;
+import aurora.image : RgbaImage;
 import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
 import std.format : format;
 import std.json : JSONType, JSONValue;
+import std.math : sqrt;
 import std.utf : toUTF32;
 
 private enum CaptionTarget : ubyte
@@ -38,6 +40,8 @@ final class NotepadView : Widget
     private bool _showStatus = true;
     private bool _maximized;
     private Rect _restoreBounds;
+    private RgbaImage _closeGlyph;
+    private int _closeGlyphPhysical;
 
     private CaptionTarget _hotCaption;
     private CaptionTarget _pressedCaption;
@@ -162,7 +166,7 @@ final class NotepadView : Widget
                     target == CaptionTarget.close ?
                     Color.rgb(0xe8, 0x11, 0x23) :
                     Color.rgb(0xe5, 0xe5, 0xe5));
-            const glyph = hot && target == CaptionTarget.close ?
+            Color glyph = hot && target == CaptionTarget.close ?
                 Color.rgb(255, 255, 255) : text;
             const cx = rect.x + rect.width / 2;
             const cy = rect.y + rect.height / 2;
@@ -172,10 +176,9 @@ final class NotepadView : Widget
                 canvas.strokeRect(Rect(cx - 5, cy - 5, 10, 10), glyph, 1);
             else
             {
-                canvas.drawLine(Point(cx - 5, cy - 5),
-                    Point(cx + 5, cy + 5), glyph, 1);
-                canvas.drawLine(Point(cx + 5, cy - 5),
-                    Point(cx - 5, cy + 5), glyph, 1);
+                auto glyphRect = Rect(cx - 5, cy - 5, 10, 10);
+                auto image = closeGlyph();
+                canvas.drawImage(glyphRect, image, image.bounds(), glyph, false);
             }
         }
 
@@ -313,6 +316,18 @@ final class NotepadView : Widget
         invalidate();
     }
 
+    private RgbaImage closeGlyph()
+    {
+        const physical = _window.displayScale().logicalToPhysical(
+            Size(10, 10)).width;
+        if (_closeGlyph is null || _closeGlyphPhysical != physical)
+        {
+            _closeGlyph = renderCloseGlyph(physical);
+            _closeGlyphPhysical = physical;
+        }
+        return _closeGlyph;
+    }
+
     private void dispatch(string action)
     {
         switch (action)
@@ -423,6 +438,62 @@ final class NotepadView : Widget
                 return [];
         }
     }
+}
+
+private double distanceToSegment(double px, double py, double ax, double ay,
+    double bx, double by)
+{
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lengthSquared = dx * dx + dy * dy;
+    double t = lengthSquared == 0 ? 0 :
+        ((px - ax) * dx + (py - ay) * dy) / lengthSquared;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const qx = ax + t * dx - px;
+    const qy = ay + t * dy - py;
+    return sqrt(qx * qx + qy * qy);
+}
+
+/**
+ * Rasterize the caption close mark at physical resolution. The two crossing
+ * strokes are supersampled so the mark stays sharp at 125% and 150% DPI
+ * instead of becoming a jagged logical-pixel diagonal.
+ */
+private RgbaImage renderCloseGlyph(int size)
+{
+    const samples = 4;
+    const inset = size * 0.1;
+    const start = inset;
+    const end = size - inset;
+    const halfWidth = size * 0.055;
+    auto pixels = new ubyte[size * size * 4];
+    foreach (y; 0 .. size)
+    {
+        foreach (x; 0 .. size)
+        {
+            uint covered;
+            foreach (sy; 0 .. samples)
+            {
+                foreach (sx; 0 .. samples)
+                {
+                    const px = x + (sx + 0.5) / samples;
+                    const py = y + (sy + 0.5) / samples;
+                    if (distanceToSegment(px, py, start, start, end, end) <=
+                            halfWidth ||
+                        distanceToSegment(px, py, end, start, start, end) <=
+                            halfWidth)
+                        ++covered;
+                }
+            }
+            const offset = (y * size + x) * 4;
+            pixels[offset] = 255;
+            pixels[offset + 1] = 255;
+            pixels[offset + 2] = 255;
+            pixels[offset + 3] = cast(ubyte)
+                (covered * 255 / (samples * samples));
+        }
+    }
+    return new RgbaImage(size, size, pixels);
 }
 
 Widget createNotepad(ComponentContext context, JSONValue props)

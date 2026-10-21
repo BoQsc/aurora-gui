@@ -74,6 +74,23 @@ dub run --config=host-headless -- --render samples/image.scene.json --out build/
 python tools/control_client.py
 ```
 
+### Live window workflow
+
+Never launch `--run` directly from the executable you are still rebuilding.
+Windows locks a running executable, so the build cannot replace it.
+
+Use the launcher instead:
+
+```text
+python -B tools/live_host.py --scene samples/notepad.scene.json
+```
+
+It builds into a unique `build/live/<timestamp>/` directory, copies the host to
+`build/run/<timestamp>/`, and runs the copy. The build output stays unlocked, so
+source rebuilds cannot close or block the visible window. Pass `--exe` to use an
+already-built host, and `--replace PID` to close the old window only after the
+new copy is running.
+
 ## Portable package
 
 [PACKAGING.md](PACKAGING.md) defines the Windows x64 distribution layout,
