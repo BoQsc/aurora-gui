@@ -60,7 +60,8 @@
     "title": "string",
     "width": "int",
     "height": "int",
-    "theme": "light|dark"
+    "theme": "light|dark",
+    "decorated": "optional boolean; false uses the in-canvas custom titlebar"
   },
   "nodeTypes": {
     "column": {
@@ -115,6 +116,13 @@
       "scale": false,
       "spacing": false,
       "orientation": "horizontal|vertical"
+    },
+    "titleBar": {
+      "children": false,
+      "text": true,
+      "scale": false,
+      "spacing": false,
+      "height": "optional bar height; default 40"
     },
     "textArea": {
       "children": false,

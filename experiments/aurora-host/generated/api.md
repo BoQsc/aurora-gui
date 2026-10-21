@@ -58,6 +58,7 @@
 | `width` | int |
 | `height` | int |
 | `theme` | light|dark |
+| `decorated` | optional boolean; false uses the in-canvas custom titlebar |
 
 ## Node types
 
@@ -70,6 +71,7 @@
 | `menu` | no | yes | no | no |
 | `tabs` | no | no | no | no |
 | `separator` | no | no | no | no |
+| `titleBar` | no | yes | no | no |
 | `textArea` | no | yes | no | no |
 | `textField` | no | yes | no | no |
 | `canvas` | no | no | no | no |

@@ -4,7 +4,8 @@
     "title": "Aurora Workspace",
     "width": 900,
     "height": 620,
-    "theme": "dark"
+    "theme": "dark",
+    "decorated": false
   },
   "root": {
     "id": "root",
@@ -13,11 +14,20 @@
     "padding": 0,
     "children": [
       {
+        "id": "titlebar",
+        "type": "titleBar",
+        "text": "Aurora Workspace",
+        "height": 40,
+        "background": "#134e4a",
+        "border": "#2dd4bf",
+        "textColor": "#f0fdfa"
+      },
+      {
         "id": "toolbar",
         "type": "row",
-        "spacing": 6,
-        "padding": 8,
-        "height": 46,
+        "spacing": 4,
+        "padding": 4,
+        "height": 36,
         "background": "#1b1f27",
         "border": "#343a46",
         "children": [
@@ -27,6 +37,8 @@
             "style": "toolbar",
             "icon": "new",
             "text": "New",
+            "width": 84,
+            "height": 28,
             "action": "file.new"
           },
           {
@@ -35,6 +47,8 @@
             "style": "toolbar",
             "icon": "open",
             "text": "Open",
+            "width": 84,
+            "height": 28,
             "action": "file.open"
           },
           {
@@ -43,6 +57,8 @@
             "style": "toolbar",
             "icon": "save",
             "text": "Save",
+            "width": 84,
+            "height": 28,
             "action": "file.save"
           },
           {
@@ -55,6 +71,8 @@
             "style": "toolbar",
             "icon": "search",
             "text": "Find",
+            "width": 84,
+            "height": 28,
             "action": "edit.find"
           },
           {

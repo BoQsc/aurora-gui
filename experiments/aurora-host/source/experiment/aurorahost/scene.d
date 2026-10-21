@@ -27,6 +27,7 @@ struct SceneWindow
     int width = 760;
     int height = 520;
     string theme = "light";
+    bool decorated = true;
 }
 
 struct SceneNode
@@ -108,6 +109,7 @@ class NodeRegistry
     private SurfaceWidget[] _surfaces;
 
     string assetBase;
+    GuiWindow window;
 
     void delegate(string) onActivate;
     void delegate(string node, string action) onAction;
@@ -459,6 +461,8 @@ private bool isNodeSpecificField(string type, string name)
                 name == "lineNumbers" || name == "highlightCurrentLine";
         case "textField":
             return name == "text" || name == "events" || name == "menu";
+        case "titleBar":
+            return name == "text";
         case "canvas":
             return name == "events" || name == "tickHz" ||
                 name == "commands";
@@ -496,6 +500,7 @@ private bool isWindowField(string name)
         case "width":
         case "height":
         case "theme":
+        case "decorated":
             return true;
         default:
             return false;
@@ -996,6 +1001,11 @@ private SceneNode parseNode(JSONValue value, ref int count, int depth,
             if (auto menu = "menu" in value.object)
                 node.menuItems = parseMenuItems(*menu, label ~ ".menu");
             break;
+        case "titleBar":
+            requireNoChildren(value, label);
+            node.text = readString(value, "text", "", label);
+            enforce(node.text.length > 0, label ~ ".text is required");
+            break;
         case "menu":
             requireNoChildren(value, label);
             node.text = readString(value, "text", "", label);
@@ -1115,6 +1125,8 @@ Scene loadScene(string path)
         scene.window.width = readInt(window, "width", 760, "scene.window");
         scene.window.height = readInt(window, "height", 520, "scene.window");
         scene.window.theme = readString(window, "theme", "light", "scene.window");
+        scene.window.decorated = readBool(window, "decorated", true,
+            "scene.window");
         enforce(scene.window.width >= 200 && scene.window.width <= 10000,
             "scene.window.width must be between 200 and 10000");
         enforce(scene.window.height >= 200 && scene.window.height <= 10000,
@@ -1441,6 +1453,27 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             wireEditorEvents(field, node, registry);
             return field;
         }
+        case "titleBar":
+        {
+            enforce(registry.window !is null,
+                "titleBar requires a window host");
+            auto bar = new FramelessWindowTitleBar(registry.window);
+            bar.setTitle(node.text);
+            bar.setShowIcon(false);
+            if (node.height > 0)
+                bar.setBarHeight(node.height);
+            if (node.hasBackground)
+                bar.setBackground(node.background);
+            if (node.hasBorder)
+                bar.setBorderColor(node.border);
+            if (node.hasTextColor)
+                bar.setTextColor(node.textColor);
+            if (node.radius > 0)
+                bar.setCornerRadius(node.radius);
+            applyHints(bar, node);
+            registry.registerNode(node.id, node.type, bar, node.text);
+            return bar;
+        }
         case "canvas":
         {
             auto canvas = new CanvasWidget(node.canvas);
@@ -1499,13 +1532,16 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry)
     options.title = scene.window.title;
     options.width = scene.window.width;
     options.height = scene.window.height;
+    options.decorated = scene.window.decorated;
     auto window = new GuiWindow(options, themeWithOverrides(scene));
+    registry.window = window;
     applyScene(window, scene, registry);
     return window;
 }
 
 void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
 {
+    registry.window = window;
     registry.reset();
     registry.assetBase = scene.assetBase;
     auto root = buildWidget(scene.root, registry);
