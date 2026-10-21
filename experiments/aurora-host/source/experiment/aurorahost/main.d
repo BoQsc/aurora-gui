@@ -1,5 +1,8 @@
 module experiment.aurorahost.main;
 
+version (Windows)
+    import experiment.aurorahost.crt.msvcrt_shim;
+
 import experiment.aurorahost.control : ControlServer;
 import experiment.aurorahost.events : HostEvent;
 import experiment.aurorahost.protocol : Capabilities, ExperimentVersion,

@@ -7,13 +7,17 @@ be extracted anywhere; no runtime path points back into the source repository.
 ## Supported target
 
 - Windows x64.
-- The executable is built with the repository's DMD toolchain and dynamically
-  uses the Microsoft Visual C++ 2013 runtime (`MSVCR120.dll`).
-- Install the Microsoft Visual C++ 2013 Redistributable on the target machine
-  before launching the package. The package does not include `MSVCR120.dll`;
-  Microsoft redistribution terms are not assumed.
-- System fonts, `user32.dll`, and `gdi32.dll` are supplied by Windows. The
-  package does not bundle fonts or Windows system libraries.
+- The executable is built with the repository's DMD toolchain and uses the
+  Windows system C runtime (`msvcrt.dll`). A small first-party compatibility
+  layer supplies the few entry points that `msvcrt.dll` does not export.
+- No Microsoft Visual C++ Redistributable is required. The package does not
+  bundle `MSVCR120.dll` or another redistributable CRT.
+- Windows 10 and Windows 11 are the supported systems. `msvcrt.dll` is a legacy
+  system component; Microsoft does not recommend it as the CRT for new
+  applications. Do not treat older Windows versions, Wine/Proton, or minimal
+  Windows editions as supported without separate verification.
+- System fonts, `user32.dll`, `gdi32.dll`, and `msvcrt.dll` are supplied by
+  Windows. The package does not bundle fonts or Windows system libraries.
 - The scene file and any relative image asset are resolved relative to the
   scene file itself, so the package can be moved as a unit.
 
@@ -25,7 +29,7 @@ aurora-host-<version>-win64/
   README.md                     package-local launch instructions
   PACKAGING.md                  this contract
   MANIFEST.sha256               content hashes for every other package file
-  PACKAGE-METADATA.json         product, version, platform, runtime prerequisite
+  PACKAGE-METADATA.json         product, version, platform, runtime contract
   samples/                      scenes and the relative image asset
   licenses/
     LICENSE                     host code: 0BSD
@@ -110,8 +114,10 @@ runtime behavior.
 - Every runtime path in the package is relative to the extracted package root
   or to the scene file that references it.
 - The package contains no absolute source-checkout paths and no build directory.
-- The package contains no `MSVCR120.dll`; the redistributable is an explicit
-  prerequisite.
+- The package contains no `MSVCR120.dll` or other redistributable CRT. The
+  executable must pass `tools/check_crt_imports.py`, which requires the system
+  `msvcrt.dll` and rejects versioned `msvcr*`, `msvcp*`, `vcruntime*`, UCRT, and
+  API-set CRT imports.
 - The package does not claim that all third-party material is 0BSD/CC0. The
   licenses and notices above preserve the Unicode, Microsoft Terminal MIT,
   DMD/Phobos, and zlib terms.

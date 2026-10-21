@@ -30,8 +30,8 @@ Terminal MIT** license. Both notices must accompany a binary distribution.
 ## Runtime platform
 
 - The host uses Windows system libraries (`user32`, `gdi32`, `shell32`,
-  `ole32`, `advapi32`, and `kernel32`) and system fonts. No fonts are bundled.
-- The current DMD build also imports `MSVCR120.dll`. Redistribution of that
-  Microsoft runtime binary requires rights under Microsoft's Visual C++
-  license terms. A packaged distribution must either use a licensed static CRT
-  build or document the Microsoft Visual C++ 2013 Redistributable prerequisite.
+  `ole32`, `advapi32`, `kernel32`, and `msvcrt`) and system fonts. No fonts or
+  system DLLs are bundled.
+- The `msvcrt.dll` compatibility layer is original first-party code under 0BSD.
+  It contains no Microsoft CRT source and does not redistribute a Microsoft
+  runtime. `msvcrt.dll` is supplied by Windows.

@@ -22,6 +22,7 @@ sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.path.insert(0, str(ROOT / "tools"))
 from check_boundary import verify_boundary  # noqa: E402
+from check_crt_imports import verify_crt_imports  # noqa: E402
 from image_io import nearest_resize, read_image  # noqa: E402
 
 
@@ -59,6 +60,7 @@ def build(dmd: str, temp: pathlib.Path, name: str, *, headless: bool) -> pathlib
         f"-I{STANDARD / 'source'}",
         f"-I{ROOT / 'generated'}",
         f"-I{ROOT / 'source'}",
+        "-mscrtlib=msvcrt",
         "-i",
         f"-od={object_dir}",
         f"-of={executable}",
@@ -128,6 +130,13 @@ def main() -> int:
             temp = pathlib.Path(temp_name)
             headless = build(dmd, temp, "host-headless", headless=True)
             gui = build(dmd, temp, "host", headless=False)
+            crt_errors = (
+                verify_crt_imports(headless) + verify_crt_imports(gui)
+            )
+            if crt_errors:
+                raise VerificationError(
+                    "host CRT imports are invalid:\n" + "\n".join(crt_errors)
+                )
 
             version = run([str(headless), "--version"]).stdout
             schema = json.loads(
@@ -399,6 +408,15 @@ def main() -> int:
                 raise VerificationError(
                     "key down/up did not survive saturation\n" + surface.stdout
                 )
+            run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "tools" / "crt_edge_test.py"),
+                    "--host",
+                    str(gui),
+                ]
+            )
     except VerificationError as error:
         print(f"aurora-host verification failed: {error}", file=sys.stderr)
         return 1
@@ -408,6 +426,7 @@ def main() -> int:
     print("host boundary: dependencies, imports, and leaf status verified")
     print("headless host: built")
     print("windowed host: built")
+    print("CRT imports: Windows msvcrt.dll only")
     print("version/capabilities: verified")
     print("scene check: valid accepted, invalid rejected")
     print("headless render: binary PPM produced")
@@ -418,6 +437,7 @@ def main() -> int:
     print("canvas: retained shapes, colors, and text pixels verified")
     print("canvas control: live setCanvas redraw verified")
     print("surface: input reserve, diagnostics, stale policy, and pixels verified")
+    print("CRT edge cases: Unicode argv/environment, locale, time, and paths verified")
     print("aurora-host experiment verification passed")
     return 0
 

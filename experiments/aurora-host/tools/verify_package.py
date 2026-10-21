@@ -15,6 +15,9 @@ import tempfile
 import threading
 import zipfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_crt_imports import verify_crt_imports  # noqa: E402
+
 
 class VerificationError(Exception):
     pass
@@ -224,6 +227,11 @@ def verify_package(package: Path) -> None:
             raise VerificationError(
                 "package must not bundle the CRT: " + ", ".join(sorted(forbidden))
             )
+        crt_errors = verify_crt_imports(executable)
+        if crt_errors:
+            raise VerificationError(
+                "package CRT imports are invalid:\n" + "\n".join(crt_errors)
+            )
 
         version = run(executable, ["--version"], root)
         if "aurora-host-experiment" not in version:
@@ -244,6 +252,7 @@ def verify_package(package: Path) -> None:
             print(f"render: {scene} {width}x{height}")
 
         verify_control(executable, root)
+        print("CRT imports: Windows msvcrt.dll only")
         print("control: ping, tree, and close verified")
         print(f"package verification passed: {package}")
 

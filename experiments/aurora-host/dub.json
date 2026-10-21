@@ -13,6 +13,9 @@
   "targetName": "aurora-host-experiment",
   "targetType": "executable",
   "mainSourceFile": "source/experiment/aurorahost/main.d",
+  "dflags-windows": [
+    "-mscrtlib=msvcrt"
+  ],
   "version": "0.1.0",
   "dependencies": {
     "aurora-d": {

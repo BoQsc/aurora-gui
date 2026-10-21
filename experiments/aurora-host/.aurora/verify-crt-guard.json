@@ -1,0 +1,36 @@
+{
+  "inputs": [
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/tests/crt_probe.d",
+    "experiments/aurora-host/tools/check_crt_imports.py",
+    "experiments/aurora-host/tools/crt_guard_test.py",
+    "experiments/aurora-host/tools/pe_imports.py",
+    "experiments/aurora-host/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build", "--dest=build/verify"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/crt_guard_test.py",
+          "--host",
+          "build/verify/aurora-host-experiment.exe"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    }
+  ]
+}

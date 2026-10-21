@@ -86,9 +86,9 @@ def package_readme(version: str) -> str:
 This package contains the isolated retained-scene host, sample scenes, their
 relative image asset, and the applicable license notices.
 
-Prerequisite
-  Microsoft Visual C++ 2013 Redistributable (MSVCR120.dll). The package does
-  not bundle that system runtime.
+Runtime
+  Windows x64 with the system msvcrt.dll. No Visual C++ Redistributable is
+  required; the package does not bundle a redistributable CRT.
 
 Run from this directory
   {EXECUTABLE} --version
@@ -125,9 +125,7 @@ def write_metadata(stage: Path, version: str) -> None:
             "config": BUILD_CONFIG,
             "buildType": "release",
         },
-        "runtimePrerequisite": (
-            "Microsoft Visual C++ 2013 Redistributable (MSVCR120.dll)"
-        ),
+        "runtimePrerequisite": "None; uses Windows system msvcrt.dll",
         "bundledRuntime": False,
     }
     (stage / "PACKAGE-METADATA.json").write_text(

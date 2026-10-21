@@ -4,6 +4,7 @@
     "experiments/aurora-host/generated",
     "experiments/aurora-host/protocol",
     "experiments/aurora-host/samples/interaction.scene.json",
+    "experiments/aurora-host/tools/check_crt_imports.py",
     "experiments/aurora-host/tools/drive_interaction.py",
     "experiments/aurora-host/tools/host_session.py",
     "experiments/aurora-host/dub.json"
@@ -16,6 +17,15 @@
         "args": ["build"],
         "workdir": "experiments/aurora-host",
         "timeout": 600000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tools/check_crt_imports.py", "aurora-host-experiment.exe"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 30000
       }
     },
     {

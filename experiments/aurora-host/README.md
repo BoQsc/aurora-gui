@@ -75,11 +75,11 @@ python tools/control_client.py
 ## Portable package
 
 [PACKAGING.md](PACKAGING.md) defines the Windows x64 distribution layout,
-runtime prerequisite, launch model, and clean-extraction verification. The
-package contains only the release windowed host, sample scenes and assets,
-package-local documentation, and license notices. It uses the Microsoft Visual
-C++ 2013 Redistributable (`MSVCR120.dll`) as an explicit target prerequisite and
-does not bundle that DLL.
+runtime contract, launch model, and clean-extraction verification. The package
+contains only the release windowed host, sample scenes and assets,
+package-local documentation, and license notices. It uses the Windows system
+CRT (`msvcrt.dll`) and does not require or bundle a Microsoft Visual C++
+Redistributable. Windows 10/11 x64 is the supported target.
 
 `tools/package_host.py` builds and stages a directory plus zip; it refuses to
 overwrite an existing output unless `--clean` is passed. `tools/verify_package.py`
