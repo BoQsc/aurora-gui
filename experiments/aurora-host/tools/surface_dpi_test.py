@@ -122,7 +122,8 @@ def main() -> int:
                 "headless render failed\n" + completed.stdout + completed.stderr
             )
         width, height, pixels = read_ppm(output)
-        if (width, height) != (WIDTH, HEIGHT):
+        scale = width / WIDTH
+        if scale < 1.0 or height != int(HEIGHT * scale + 0.5):
             raise RuntimeError(f"unexpected render size: {width}x{height}")
         counts = {color[:3]: 0 for color in COLORS}
         for offset in range(0, len(pixels), 3):
@@ -133,10 +134,10 @@ def main() -> int:
         if missing:
             raise RuntimeError(f"native surface was not visible: {missing!r}")
         quadrants = {
-            (WIDTH // 4, HEIGHT // 4): COLORS[0][:3],
-            (WIDTH * 3 // 4, HEIGHT // 4): COLORS[1][:3],
-            (WIDTH // 4, HEIGHT * 3 // 4): COLORS[2][:3],
-            (WIDTH * 3 // 4, HEIGHT * 3 // 4): COLORS[3][:3],
+            (width // 4, height // 4): COLORS[0][:3],
+            (width * 3 // 4, height // 4): COLORS[1][:3],
+            (width // 4, height * 3 // 4): COLORS[2][:3],
+            (width * 3 // 4, height * 3 // 4): COLORS[3][:3],
         }
         for (x, y), expected in quadrants.items():
             offset = (y * width + x) * 3
@@ -149,6 +150,7 @@ def main() -> int:
             json.dumps(
                 {
                     "logical": [WIDTH, HEIGHT],
+                    "displayScale": scale,
                     "native": [NATIVE_WIDTH, NATIVE_HEIGHT],
                     "colors": {str(color): count for color, count in counts.items()},
                 }

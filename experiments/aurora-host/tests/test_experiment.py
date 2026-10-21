@@ -14,7 +14,7 @@ VERIFY = ROOT / "tools" / "verify_experiment.py"
 class AuroraHostExperimentTests(unittest.TestCase):
     def test_experiment_gate(self):
         completed = subprocess.run(
-            [sys.executable, str(VERIFY)],
+            [sys.executable, "-B", str(VERIFY)],
             cwd=ROOT,
             capture_output=True,
             text=True,

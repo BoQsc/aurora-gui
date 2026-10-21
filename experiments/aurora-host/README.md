@@ -61,6 +61,7 @@ python tools/drive_animation.py
 python tools/drive_image.py
 python tools/drive_surface.py
 python tools/surface_dpi_test.py
+python tools/module_contract_test.py
 
 dub run --config=host -- samples/hello.scene.json
 dub run --config=host-headless -- --render samples/hello.scene.json --out build/hello.ppm
@@ -77,6 +78,13 @@ pixels for DPI-dependent glyph hinting; layout, chrome, and color checks remain
 exact. Use
 `verify-source.json` for a DPI-independent compile and source/control/render
 gate.
+
+The 1x UI-depth golden is reproducibly projected from the owner-approved 125%
+reference:
+
+```text
+python tools/normalize_ui_screenshot.py --screenshot samples/ui-depth-reference.png --reference samples/ui-depth-ref1x.png --out samples/ui-depth-ref1x.png
+```
 
 
 Direct CLI modes:
@@ -330,6 +338,12 @@ separate optional modules, not reasons to make the core host own browser or
 engine policy. The current surface ABI uses a CPU-visible mapping and is an
 experiment, not a stable binary contract.
 
+The integration contract for out-of-process modules is
+[MODULES.md](MODULES.md). It defines the version/capability handshake, lifecycle,
+frame ownership, input-ring rules, failure recovery, and shutdown expectations.
+It also states the deliberate v1 limits: no focus/IME/drag-drop events, no GPU
+handoff, and no host-side module supervision.
+
 ## Separate demos
 
 The host does not contain application-specific notepad code. A separate
@@ -351,6 +365,7 @@ exceeds five seconds.
 
 ```text
 protocol/aurora-host.api.json   single source of truth
+MODULES.md                      out-of-process module contract and lifecycle
 generated/                      generated protocol constants and API reference
 source/                         scene parser, widget builder, host CLI
 samples/                        valid scenes, including editor, canvas, animation, image, and surface

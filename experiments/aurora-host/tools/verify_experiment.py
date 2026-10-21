@@ -18,8 +18,11 @@ AURORA = VENDOR / "aurora-d-0.4.5"
 STANDARD = VENDOR / "aurora-standard"
 MAIN = ROOT / "source" / "experiment" / "aurorahost" / "main.d"
 
+sys.dont_write_bytecode = True
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 sys.path.insert(0, str(ROOT / "tools"))
 from check_boundary import verify_boundary  # noqa: E402
+from image_io import nearest_resize, read_image  # noqa: E402
 
 
 class VerificationError(Exception):
@@ -90,6 +93,24 @@ def verify_ppm(path: pathlib.Path) -> None:
         )
 
 
+def verify_ui_reference() -> None:
+    source = ROOT / "samples" / "ui-depth-reference.png"
+    reference = ROOT / "samples" / "ui-depth-ref1x.png"
+    source_width, source_height, source_pixels = read_image(source)
+    target_width, target_height, target_pixels = read_image(reference)
+    projected = nearest_resize(
+        source_pixels,
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+    )
+    if projected != target_pixels:
+        raise VerificationError(
+            "the 1x UI-depth reference is not the committed projection"
+        )
+
+
 def main() -> int:
     dmd = shutil.which("dmd")
     if not dmd:
@@ -101,6 +122,7 @@ def main() -> int:
             raise VerificationError(
                 "host boundary violations:\n" + "\n".join(boundary)
             )
+        verify_ui_reference()
         run([sys.executable, str(ROOT / "tools" / "generate_reference.py"), "--check"])
         with tempfile.TemporaryDirectory(prefix="aurora-host-") as temp_name:
             temp = pathlib.Path(temp_name)
@@ -382,6 +404,7 @@ def main() -> int:
         return 1
 
     print("generated reference: current")
+    print("UI reference: reproducible 1x projection verified")
     print("host boundary: dependencies, imports, and leaf status verified")
     print("headless host: built")
     print("windowed host: built")

@@ -1,0 +1,32 @@
+{
+  "inputs": [
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/MODULES.md",
+    "experiments/aurora-host/tools/module_contract_test.py",
+    "experiments/aurora-host/tools/surface_client.py",
+    "experiments/aurora-host/tools/host_session.py",
+    "experiments/aurora-host/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tools/module_contract_test.py"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    }
+  ]
+}

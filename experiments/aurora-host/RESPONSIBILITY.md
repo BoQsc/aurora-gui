@@ -24,6 +24,8 @@ content means.
 - Diagnostics for host-owned state, including input-ring saturation and
   discrete-event reserve, surface mapping failures, retry timing, and frame
   freshness.
+- The versioned control/shared-surface contract in [MODULES.md](MODULES.md);
+  external modules run out of process and the host never loads them.
 
 ## The host MUST NOT own
 
@@ -34,6 +36,8 @@ content means.
   retained canvas, but the client decides what and when to draw.
 - Application modules, demo modules, or repository packages other than the
   approved vendor dependencies.
+- Module supervision, restart policy, sandboxing, GPU/compositor handoff, audio
+  services, a module-facing focus/IME protocol, or packaged browser runtimes.
 
 ## Enforcement rules
 

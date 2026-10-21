@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Normalize a live host screenshot to the UI-depth golden viewport."""
+"""Normalize a host screenshot or reference image to the UI-depth viewport."""
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from image_io import nearest_resize, png_size, read_ppm, require, write_png
+from image_io import nearest_resize, png_size, read_image, require, write_png
 
 
 def main() -> int:
@@ -23,7 +23,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    width, height, pixels = read_ppm(args.screenshot)
+    width, height, pixels = read_image(args.screenshot)
     reference_width, reference_height = png_size(args.reference)
     require(
         width * reference_height == height * reference_width,
@@ -40,7 +40,7 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     write_png(args.out, reference_width, reference_height, normalized)
     print(
-        f"normalized {width}x{height} screenshot to "
+        f"normalized {width}x{height} image to "
         f"{reference_width}x{reference_height}: {args.out}"
     )
     return 0

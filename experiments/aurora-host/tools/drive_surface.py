@@ -9,102 +9,17 @@ from __future__ import annotations
 
 import json
 import math
-import mmap
-import struct
 import time
 from pathlib import Path
 import sys
 
 from host_session import EXE, ROOT, Host, ppm_counts, ppm_unique, screenshot_path
+from surface_client import SharedSurface
 
 SCENE = ROOT / "samples" / "surface.scene.json"
 SURFACE = ROOT / "build" / "live.surface"
 WIDTH = 320
 HEIGHT = 240
-CAPACITY = 64
-HEADER = 80
-EVENT = 24
-BUFFERS = 2
-MAGIC = b"AURSFACE"
-VERSION = 2
-
-
-class SharedSurface:
-    def __init__(self, path: Path, width: int, height: int) -> None:
-        self.path = path
-        self.width = width
-        self.height = height
-        self.frame_bytes = width * height * 4
-        self.size = HEADER + CAPACITY * EVENT + BUFFERS * self.frame_bytes
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("wb") as stream:
-            stream.truncate(self.size)
-        self.file = path.open("r+b")
-        self.map = mmap.mmap(self.file.fileno(), self.size)
-        struct.pack_into(
-            "<8sIIIIII", self.map, 0, MAGIC, VERSION, HEADER, width, height, 0, CAPACITY
-        )
-        struct.pack_into("<Q", self.map, 32, 0)
-        struct.pack_into("<Q", self.map, 40, 0)
-        struct.pack_into("<IIIII", self.map, 48, 0, 0, EVENT, BUFFERS, self.frame_bytes)
-        self.sequence = 0
-        self.closed = False
-
-    def frame_offset(self, index: int) -> int:
-        return HEADER + CAPACITY * EVENT + index * self.frame_bytes
-
-    def publish(self, pixels: bytes) -> int:
-        if len(pixels) != self.frame_bytes:
-            raise ValueError(f"frame is {len(pixels)} bytes, expected {self.frame_bytes}")
-        active = struct.unpack_from("<I", self.map, 24)[0]
-        target = 1 - active
-        offset = self.frame_offset(target)
-        self.map[offset : offset + self.frame_bytes] = pixels
-        struct.pack_into("<I", self.map, 24, target)
-        self.sequence += 1
-        struct.pack_into("<Q", self.map, 32, self.sequence)
-        return self.sequence
-
-    def host_read(self) -> int:
-        return struct.unpack_from("<Q", self.map, 40)[0]
-
-    def wait_for_host(self, sequence: int, timeout: float = 5.0) -> None:
-        deadline = time.monotonic() + timeout
-        while self.host_read() < sequence:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"host did not read frame {sequence}: {self.host_read()}")
-            time.sleep(0.005)
-
-    def read_inputs(self) -> list[dict]:
-        head = struct.unpack_from("<I", self.map, 48)[0]
-        tail = struct.unpack_from("<I", self.map, 52)[0]
-        events: list[dict] = []
-        for index in range(head, tail):
-            offset = HEADER + (index % CAPACITY) * EVENT
-            kind, button, key, modifiers, x, y, wheel_x, wheel_y = struct.unpack_from(
-                "<BBHIiiii", self.map, offset
-            )
-            events.append(
-                {
-                    "kind": kind,
-                    "button": button,
-                    "key": key,
-                    "modifiers": modifiers,
-                    "x": x,
-                    "y": y,
-                    "wheelX": wheel_x,
-                    "wheelY": wheel_y,
-                }
-            )
-        struct.pack_into("<I", self.map, 48, tail)
-        return events
-
-    def close(self) -> None:
-        if self.closed:
-            return
-        self.closed = True
-        self.map.close()
-        self.file.close()
 
 
 def background() -> bytearray:
@@ -287,11 +202,15 @@ def main() -> int:
             time.sleep(0.02)
         if not info or not info.get("mapped"):
             raise RuntimeError(f"surface did not map: {info!r}")
+        expected_preferred = (
+            int(WIDTH * info["displayScale"] + 0.5),
+            int(HEIGHT * info["displayScale"] + 0.5),
+        )
         if (info["error"] or info["pixelWidth"] != WIDTH
                 or info["pixelHeight"] != HEIGHT
-                or info["preferredWidth"] != WIDTH
-                or info["preferredHeight"] != HEIGHT
-                or info["displayScale"] != 1.0):
+                or (info["preferredWidth"], info["preferredHeight"])
+                != expected_preferred
+                or info["displayScale"] <= 0):
             raise RuntimeError(f"mapped surface contract is inconsistent: {info!r}")
 
         input_map = host.request("inputmap")

@@ -5,6 +5,7 @@
     "experiments/aurora-host/protocol",
     "experiments/aurora-host/samples/surface.scene.json",
     "experiments/aurora-host/tools/drive_surface.py",
+    "experiments/aurora-host/tools/surface_client.py",
     "experiments/aurora-host/tools/surface_dpi_test.py",
     "experiments/aurora-host/tools/host_session.py",
     "experiments/aurora-host/dub.json"
