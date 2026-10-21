@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Workspace",
+    "width": 900,
+    "height": 620,
+    "theme": "dark"
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "children": [
+      {
+        "id": "toolbar",
+        "type": "row",
+        "spacing": 6,
+        "padding": 8,
+        "height": 46,
+        "background": "#1b1f27",
+        "border": "#343a46",
+        "children": [
+          {
+            "id": "new",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "new",
+            "text": "New",
+            "action": "file.new"
+          },
+          {
+            "id": "open",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "open",
+            "text": "Open",
+            "action": "file.open"
+          },
+          {
+            "id": "save",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "save",
+            "text": "Save",
+            "action": "file.save"
+          },
+          {
+            "type": "separator",
+            "orientation": "vertical"
+          },
+          {
+            "id": "find",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "search",
+            "text": "Find",
+            "action": "edit.find"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "id": "workspace",
+            "type": "label",
+            "text": "Workspace",
+            "scale": 1,
+            "align": "right",
+            "textColor": "#8d96a6"
+          }
+        ]
+      },
+      {
+        "id": "content",
+        "type": "column",
+        "flex": 1,
+        "spacing": 12,
+        "padding": 24,
+        "children": [
+          {
+            "id": "heading",
+            "type": "label",
+            "text": "Live editing is working",
+            "scale": 3
+          },
+          {
+            "id": "subtitle",
+            "type": "label",
+            "text": "A calm place to start.",
+            "scale": 1,
+            "textColor": "#8d96a6"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          }
+        ]
+      }
+    ]
+  }
+}

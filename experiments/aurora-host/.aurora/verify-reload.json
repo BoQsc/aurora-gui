@@ -1,0 +1,38 @@
+{
+  "inputs": [
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/samples/workspace.scene.json",
+    "experiments/aurora-host/tools/host_session.py",
+    "experiments/aurora-host/tools/reload_test.py",
+    "experiments/aurora-host/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build", "--dest=build/verify"],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/reload_test.py",
+          "--host",
+          "build/verify/aurora-host-experiment.exe",
+          "--scene",
+          "samples/workspace.scene.json"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    }
+  ]
+}

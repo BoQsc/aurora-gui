@@ -62,10 +62,12 @@ python tools/drive_image.py
 python tools/drive_surface.py
 python tools/surface_dpi_test.py
 python tools/module_contract_test.py
+python tools/reload_test.py --host build/verify/aurora-host-experiment.exe --scene samples/workspace.scene.json
 python -B tools/package_host.py --out build/package/aurora-host-0.1.0-win64
 python -B tools/verify_package.py --package build/package/aurora-host-0.1.0-win64.zip
 
 dub run --config=host -- samples/hello.scene.json
+dub run --config=host -- samples/workspace.scene.json --watch
 dub run --config=host-headless -- --render samples/hello.scene.json --out build/hello.ppm
 dub run --config=host-headless -- --render samples/canvas.scene.json --out build/canvas.ppm
 dub run --config=host-headless -- --render samples/image.scene.json --out build/image.ppm
@@ -160,12 +162,18 @@ The host prints `READY`. Send one JSON object per line:
 {"id":14,"command":"fileDialog","mode":"open","title":"Open file"}
 {"id":15,"command":"screenshot","path":"build/control-shot.ppm"}
 {"id":16,"command":"close"}
+{"id":17,"command":"reload"}
 ```
 
 Responses are `RESPONSE {json}`; button events are `EVENT {json}`. A button
 with an `action` field emits an action event instead of the default activation
 event. All widget access happens on the UI thread; the reader thread only queues
 commands.
+
+`reload` reparses the scene file used at launch and replaces the retained tree in
+the existing window. `--watch` does the same automatically when the file's
+modification time changes. A reload keeps the window and control session alive;
+invalid scene edits are reported on stderr and leave the previous tree visible.
 
 Canvas and surface nodes opt into events with `"events":["pointer","key","tick"]`.
 Pointer events report local `x`/`y`, button, and modifiers; wheel events also

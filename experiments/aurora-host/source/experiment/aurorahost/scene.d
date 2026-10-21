@@ -113,6 +113,16 @@ class NodeRegistry
     void delegate(string node, string action) onAction;
     void delegate(HostEvent) onEvent;
 
+    void reset()
+    {
+        _widgets = null;
+        _types = null;
+        _texts = null;
+        _tooltips = null;
+        _order.length = 0;
+        _surfaces.length = 0;
+    }
+
     void registerNode(string id, string type, Widget widget, string text)
     {
         enforce(id.length > 0, "node id must not be empty");
@@ -1485,16 +1495,24 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
 
 GuiWindow createWindow(const Scene scene, NodeRegistry registry)
 {
-    registry.assetBase = scene.assetBase;
     WindowOptions options;
     options.title = scene.window.title;
     options.width = scene.window.width;
     options.height = scene.window.height;
     auto window = new GuiWindow(options, themeWithOverrides(scene));
+    applyScene(window, scene, registry);
+    return window;
+}
+
+void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
+{
+    registry.reset();
+    registry.assetBase = scene.assetBase;
     auto root = buildWidget(scene.root, registry);
     registerTooltips(scene.root, registry);
     window.setRoot(root);
-    return window;
+    window.setTitle(scene.window.title);
+    window.setTheme(themeWithOverrides(scene));
 }
 
 private void registerTooltips(const SceneNode node, NodeRegistry registry)

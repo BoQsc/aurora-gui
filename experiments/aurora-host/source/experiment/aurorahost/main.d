@@ -7,15 +7,16 @@ import experiment.aurorahost.control : ControlServer;
 import experiment.aurorahost.events : HostEvent;
 import experiment.aurorahost.protocol : Capabilities, ExperimentVersion,
     NodeTypes, ProtocolVersion, SchemaVersion;
-import experiment.aurorahost.scene : createWindow, describeScene, loadScene,
-    NodeRegistry, Scene;
+import experiment.aurorahost.scene : applyScene, createWindow, describeScene,
+    loadScene, NodeRegistry, Scene;
 import aurora.standard.text.unicode.properties : UnicodeDataVersion;
 import aurora : GuiWindow;
 
 import std.algorithm : canFind;
 import std.array : join;
 import std.conv : to;
-import std.file : mkdirRecurse;
+import std.datetime : SysTime;
+import std.file : mkdirRecurse, timeLastModified;
 import std.path : dirName;
 import std.stdio : stderr, stdout, writeln;
 
@@ -27,7 +28,7 @@ private void usage()
     writeln("  --capabilities");
     writeln("  --check <scene>");
     writeln("  --render <scene> [--out <file.ppm>]");
-    writeln("  --run <scene> [--control]");
+    writeln("  --run <scene> [--control] [--watch]");
 }
 
 private string optionValue(string[] args, string name, string fallback)
@@ -50,12 +51,53 @@ private int renderScene(const Scene scene, string outputPath)
     return 0;
 }
 
-private int runWindowed(GuiWindow window, NodeRegistry registry, bool control)
+private class SceneWatcher
+{
+    private string _path;
+    private GuiWindow _window;
+    private NodeRegistry _registry;
+    private SysTime _stamp;
+
+    this(string path, GuiWindow window, NodeRegistry registry)
+    {
+        _path = path;
+        _window = window;
+        _registry = registry;
+        _stamp = timeLastModified(path);
+    }
+
+    void poll()
+    {
+        SysTime stamp;
+        try
+            stamp = timeLastModified(_path);
+        catch (Exception)
+            return;
+        if (stamp <= _stamp)
+            return;
+        _stamp = stamp;
+        try
+        {
+            const scene = loadScene(_path);
+            applyScene(_window, scene, _registry);
+            stderr.writeln("reloaded: " ~ describeScene(scene));
+            stderr.flush();
+        }
+        catch (Exception error)
+        {
+            stderr.writeln("aurora-host: reload failed: " ~ error.msg);
+            stderr.flush();
+        }
+    }
+}
+
+private int runWindowed(GuiWindow window, NodeRegistry registry, bool control,
+    string scenePath, bool watch)
 {
     ControlServer server;
     if (control)
     {
-        server = new ControlServer(window, registry);
+        server = new ControlServer(window, registry, scenePath);
         registry.onActivate = delegate(string id)
         {
             server.eventActivated(id);
@@ -68,11 +110,25 @@ private int runWindowed(GuiWindow window, NodeRegistry registry, bool control)
         {
             server.eventInput(event);
         };
+    }
+    SceneWatcher watcher;
+    if (watch)
+        watcher = new SceneWatcher(scenePath, window, registry);
+    if (control || watch)
+    {
         window.applicationService = delegate(double delta)
         {
-            server.service(delta);
-            server.drain();
+            if (watcher !is null)
+                watcher.poll();
+            if (server !is null)
+            {
+                server.service(delta);
+                server.drain();
+            }
         };
+    }
+    if (server !is null)
+    {
         server.start();
         writeln("READY");
         stdout.flush();
@@ -140,7 +196,8 @@ int main(string[] args)
                 const scene = loadScene(args[2]);
                 auto registry = new NodeRegistry();
                 auto window = createWindow(scene, registry);
-                return runWindowed(window, registry, args.canFind("--control"));
+                return runWindowed(window, registry, args.canFind("--control"),
+                    args[2], args.canFind("--watch"));
             }
 
 

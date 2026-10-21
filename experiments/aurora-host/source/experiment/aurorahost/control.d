@@ -5,8 +5,8 @@ import experiment.aurorahost.canvas : parseCanvasColor;
 import experiment.aurorahost.host_editor : EditorTextStyle, HostTextEditor;
 import experiment.aurorahost.host_ui : HostTooltip, TabItem, TabStrip;
 import experiment.aurorahost.protocol : ProtocolVersion;
-import experiment.aurorahost.scene : NodeInfo, NodeRegistry,
-    parseCanvasCommands, parseTabItems;
+import experiment.aurorahost.scene : applyScene, describeScene, loadScene,
+    NodeInfo, NodeRegistry, parseCanvasCommands, parseTabItems;
 import experiment.aurorahost.surface : SurfaceInfo;
 import aurora : ContextMenu, FileDialogMode, FileDialogOptions, GuiWindow, Key,
     MouseButton, Point, Rect, TextEditor, Theme, UiTestDriver, Widget,
@@ -41,6 +41,7 @@ class ControlServer
 {
     private GuiWindow _window;
     private NodeRegistry _registry;
+    private string _scenePath;
     private Mutex _mutex;
     private ControlCommand[] _queue;
     private Thread _reader;
@@ -49,10 +50,11 @@ class ControlServer
     private string _tooltipNode;
     private MonoTime _tooltipShownAt;
 
-    this(GuiWindow window, NodeRegistry registry)
+    this(GuiWindow window, NodeRegistry registry, string scenePath)
     {
         _window = window;
         _registry = registry;
+        _scenePath = scenePath;
         _mutex = new Mutex();
     }
 
@@ -475,6 +477,9 @@ class ControlServer
                     break;
                 case "setMenu":
                     setMenu(requestId, document);
+                    break;
+                case "reload":
+                    reload(requestId);
                     break;
                 case "getBounds":
                     getBounds(requestId, document);
@@ -964,6 +969,23 @@ class ControlServer
         extra["node"] = JSONValue(node);
         extra["items"] = JSONValue(cast(long) count);
         respond(id, true, null, extra);
+    }
+
+    private void reload(long id)
+    {
+        try
+        {
+            const scene = loadScene(_scenePath);
+            hideTooltip();
+            applyScene(_window, scene, _registry);
+            JSONValue[string] extra;
+            extra["scene"] = JSONValue(describeScene(scene));
+            respond(id, true, null, extra);
+        }
+        catch (Exception error)
+        {
+            respond(id, false, error.msg);
+        }
     }
 
     private void getBounds(long id, JSONValue document)

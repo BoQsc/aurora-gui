@@ -14,10 +14,13 @@ EXE = ROOT / "aurora-host-experiment.exe"
 
 
 class Host:
-    def __init__(self, scene: Path, exe: Path = EXE) -> None:
+    def __init__(self, scene: Path, exe: Path = EXE, watch: bool = False) -> None:
         self.exe = exe
+        arguments = [str(exe), "--run", str(scene), "--control"]
+        if watch:
+            arguments.append("--watch")
         self.process = subprocess.Popen(
-            [str(exe), "--run", str(scene), "--control"],
+            arguments,
             cwd=str(ROOT),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
