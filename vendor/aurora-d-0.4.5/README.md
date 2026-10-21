@@ -583,4 +583,4 @@ The glyph-cache key now uses render flags for `sharp` versus `smooth` coverage a
 
 The implementation is based on the official Unicode 17 UAX #29, UAX #9, and UAX #14 specifications and conformance files, and on the OpenType GDEF, GSUB, GPOS, TrueType-outline, and CFF specifications. See [Unicode text architecture](docs/UNICODE_TEXT.md), [Text layout API](docs/TEXT_LAYOUT.md), and [Font rendering](docs/FONTS.md) for direct source links.
 
-Unicode data is redistributed under the terms in [LICENSE-UNICODE.txt](LICENSE-UNICODE.txt). Aurora source is distributed under the [Boost Software License 1.0](LICENSE).
+Unicode data is redistributed under the terms in [LICENSE-UNICODE.txt](LICENSE-UNICODE.txt). Aurora source is distributed under the [BSD Zero Clause License (0BSD)](LICENSE).

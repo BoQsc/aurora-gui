@@ -26,7 +26,11 @@ Start with these actions:
 
 Do not add hostname-specific layout fixes, replace missing behavior with successful stubs, overwrite references to match Aurora, hide missing resources, omit required capabilities, or call an unrun platform verified.
 
-Both browser packages currently declare BSL-1.0; vendor and generated-data terms also need review. A license label does not relicense existing dependencies. Complete the requested first-party CC0/0BSD grant and the separately scoped distribution audit truthfully.
+Both browser packages and the Aurora-owned vendor packages now declare 0BSD for
+source, and the repository CC0 grant covers first-party documentation and
+content. Unicode, Microsoft Terminal MIT, DMD/Phobos and zlib terms remain
+separate: a license label does not relicense those dependencies. Complete the
+separately scoped distribution audit truthfully.
 
 Treat certificate-chain validation, origin security, hostile-content containment/review, performance, licensing and actual platform evidence as release gates. Handshake signatures and hostname matching alone do not establish trusted HTTPS.
 

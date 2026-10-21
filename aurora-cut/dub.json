@@ -2,10 +2,10 @@
   "name": "aurora-cut",
   "description": "A lightweight MP4/MP3 timeline editor built with Aurora-D and FFmpeg",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright © 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-cut",
   "mainSourceFile": "source/app.d",

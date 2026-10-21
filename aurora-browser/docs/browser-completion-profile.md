@@ -311,10 +311,10 @@ faster pass.
   families; the legacy CJK encodings (Shift_JIS, GBK, Big5, EUC-KR) are not in
   the table.
 - **Licensing.** The strict CC0/0BSD distribution claim is **not** satisfied:
-  Aurora-D is BSL-1.0 plus Unicode License V3 data, the linked D runtime and
-  Phobos are BSL-1.0, and zlib is reached through `std.zlib`/`etc.c.zlib`. See
-  `third-party-inventory.json`; both `dub.json` files still declare
-  `"license": "BSL-1.0"`.
+  Aurora-D and Aurora-standard code are 0BSD, but they carry Unicode License V3
+  data; the linked D runtime and Phobos are BSL-1.0, and zlib is reached through
+  `std.zlib`/`etc.c.zlib`. See `third-party-inventory.json`; both first-party
+  `dub.json` files now declare `"license": "0BSD"`.
 
 ## How to re-run the evidence
 

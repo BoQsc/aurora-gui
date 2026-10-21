@@ -2,10 +2,10 @@
   "name": "aurora-font-viewer",
   "description": "A minimal Aurora-D font viewer: enumerates every installed system font and renders live specimens through Aurora's own pure-D text engine (no FFmpeg, no OS font API).",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-font-viewer",
   "mainSourceFile": "source/app.d",

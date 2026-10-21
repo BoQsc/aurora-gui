@@ -2,10 +2,10 @@
   "name": "aurora-d",
   "description": "Cross-platform Vulkan/software GUI library for D with an Aurora-rendered retained compositor and pure-D Unicode/OpenType text",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "sourcePaths": [
     "source"
   ],

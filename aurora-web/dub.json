@@ -2,10 +2,10 @@
   "name": "aurora-web",
   "description": "A cross-platform standards-oriented web engine library built on Aurora-D: HTML/CSS parsing, DOM, layout, painting, and a JavaScript host",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright © 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "library",
   "sourcePaths": [
     "source",

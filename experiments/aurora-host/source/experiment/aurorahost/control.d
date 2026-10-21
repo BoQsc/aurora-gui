@@ -1120,6 +1120,22 @@ class ControlServer
 
     private void menuClick(long id, JSONValue document)
     {
+        const hoverX = cast(int) optionalInt(document, "hoverX", int.min);
+        const hoverY = cast(int) optionalInt(document, "hoverY", int.min);
+        enforce((hoverX == int.min) == (hoverY == int.min),
+            "hoverX and hoverY must be provided together");
+        if (hoverX != int.min)
+        {
+            enforce(hoverX >= -100000 && hoverX <= 100000 &&
+                hoverY >= -100000 && hoverY <= 100000,
+                "hover coordinates must be between -100000 and 100000");
+        }
+        auto driver = new UiTestDriver(_window);
+        // Re-arm a cascade in the same command as the click. A separate
+        // pointer command can be interleaved with a native mouse sample that
+        // retracts the child menu, leaving this click to hit the parent item.
+        if (hoverX != int.min)
+            driver.moveTo(Point(hoverX, hoverY));
         auto menu = openContextMenu();
         const index = optionalInt(document, "index", -1);
         enforce(index >= 0 && index < cast(long) menu.items.length,
@@ -1143,7 +1159,6 @@ class ControlServer
             y += height;
         }
         enforce(found, "cannot click a separator");
-        auto driver = new UiTestDriver(_window);
         driver.click(point);
         const closed = _window.root.topmostPopupSurface() is null;
         enforce(closed, "menu did not close after item click");

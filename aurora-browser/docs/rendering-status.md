@@ -781,12 +781,13 @@ subresources are served from the bounded cache instead of being re-fetched.
 
 ## Known limitations carried forward
 
-- Unicode data, the Boost-licensed GUI library, the linked D runtime and zlib
-  reached through `std.zlib`/`etc.c.zlib` mean the strict CC0/0BSD distribution
-  claim is **not** satisfied; every component is listed in
-  `third-party-inventory.json` with the resolution it needs.
-- Both `dub.json` files still declare `"license": "BSL-1.0"` with author
-  `"OpenAI"`; that metadata change was explicitly set aside for now.
+- Unicode data, the linked D runtime and Phobos (BSL-1.0), and zlib reached
+  through `std.zlib`/`etc.c.zlib` mean the strict CC0/0BSD distribution claim is
+  **not** satisfied; every component is listed in `third-party-inventory.json`
+  with the resolution it needs.
+- Both `dub.json` files and the Aurora-owned vendor packages now declare
+  `"license": "0BSD"`. Unicode, Microsoft Terminal MIT, DMD/Phobos and
+  system-runtime terms remain separate from that grant.
 - Web faces are supported in the uncompressed `sfnt` (TrueType/OpenType) form, in
   a WOFF 1.0 container and in a WOFF 2.0 container. `woff.d` unwraps the WOFF 1.0
   container to that same sfnt: header and table directory, then each table's

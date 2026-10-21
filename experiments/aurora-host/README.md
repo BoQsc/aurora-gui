@@ -62,6 +62,8 @@ python tools/drive_image.py
 python tools/drive_surface.py
 python tools/surface_dpi_test.py
 python tools/module_contract_test.py
+python -B tools/package_host.py --out build/package/aurora-host-0.1.0-win64
+python -B tools/verify_package.py --package build/package/aurora-host-0.1.0-win64.zip
 
 dub run --config=host -- samples/hello.scene.json
 dub run --config=host-headless -- --render samples/hello.scene.json --out build/hello.ppm
@@ -69,6 +71,21 @@ dub run --config=host-headless -- --render samples/canvas.scene.json --out build
 dub run --config=host-headless -- --render samples/image.scene.json --out build/image.ppm
 python tools/control_client.py
 ```
+
+## Portable package
+
+[PACKAGING.md](PACKAGING.md) defines the Windows x64 distribution layout,
+runtime prerequisite, launch model, and clean-extraction verification. The
+package contains only the release windowed host, sample scenes and assets,
+package-local documentation, and license notices. It uses the Microsoft Visual
+C++ 2013 Redistributable (`MSVCR120.dll`) as an explicit target prerequisite and
+does not bundle that DLL.
+
+`tools/package_host.py` builds and stages a directory plus zip; it refuses to
+overwrite an existing output unless `--clean` is passed. `tools/verify_package.py`
+extracts the zip to a fresh temporary directory, verifies `MANIFEST.sha256`,
+checks and renders both a text scene and the image-asset scene, and drives the
+live control channel.
 
 `verify.json` builds the windowed host into `build/verify` before the UI-depth
 check, so verification can run while a demo instance is open. Its final render
@@ -371,6 +388,7 @@ source/                         scene parser, widget builder, host CLI
 samples/                        valid scenes, including editor, canvas, animation, image, and surface
 tests/                          invalid scene fixture
 tools/                          generator, control clients, and verifier
+PACKAGING.md                    portable package layout and runtime contract
 build/                          ignored build and render output
 LICENSE                         0BSD source-code license
 LICENSE-CC0.txt                 CC0-1.0 documentation and sample-content license

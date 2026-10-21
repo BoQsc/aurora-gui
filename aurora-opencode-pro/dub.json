@@ -2,10 +2,10 @@
   "name": "aurora-opencode-pro",
   "description": "Extended Aurora OpenCode desktop chat client built on the shared aurora-opencode-core package",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-opencode-pro",
   "mainSourceFile": "source/app.d",

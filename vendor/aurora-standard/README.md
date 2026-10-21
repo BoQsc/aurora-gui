@@ -105,7 +105,7 @@ place.
 The implementation was extracted from the verified Unicode layer of the
 vendored Aurora-D 0.4.5 tree and moved to the `aurora.standard.*` namespace
 without changing the algorithms or generated tables. The original algorithm
-bodies and tables remain covered by the Boost Software License 1.0 in
+bodies and tables remain available under the BSD Zero Clause License (0BSD) in
 [LICENSE](LICENSE). The official Unicode data and license are covered by
 [LICENSE-UNICODE.txt](LICENSE-UNICODE.txt).
 

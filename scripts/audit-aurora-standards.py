@@ -18,7 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CORE_SOURCE = ROOT / "vendor" / "aurora-d-0.4.5" / "source"
 # These intentionally independent programs do not use the Aurora-D toolkit.
 # Keep the exceptions explicit so a new GUI package cannot silently evade audit.
-NON_AURORA_PACKAGES = {"aurora-fan-control", "aurora-music"}
+NON_AURORA_PACKAGES = {
+    "aurora-fan-control",
+    "aurora-host-world",
+    "aurora-music",
+}
 
 
 @dataclass(frozen=True)

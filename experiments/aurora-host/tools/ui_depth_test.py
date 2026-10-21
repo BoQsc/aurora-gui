@@ -39,6 +39,20 @@ def action_count(session: HostSession, node: str, action: str) -> int:
     return action_events(session).count((node, action))
 
 
+def wait_tooltip(session: HostSession, bounds: dict, node: str,
+                 timeout: float = 2.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        x, y = center(bounds[node])
+        session.send("uiMove", x=x, y=y)
+        tooltip = session.send("tooltipState")["tooltip"]
+        if tooltip["visible"] is True and tooltip.get("node") == node:
+            return tooltip
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"hover hint did not appear for {node}: {tooltip}")
+        time.sleep(0.02)
+
+
 def open_menu(session: HostSession, bounds: dict, node: str) -> dict:
     x, y = center(bounds[node])
     response = session.send("uiClick", x=x, y=y)
@@ -64,9 +78,13 @@ def menu_item(menu: dict, label: str) -> dict:
     raise RuntimeError(f"menu item not found: {label} in {labels}")
 
 
-def click_item(session: HostSession, menu: dict, label: str) -> None:
+def click_item(session: HostSession, menu: dict, label: str,
+               hover: dict | None = None) -> None:
     index = menu_index(menu, label)
-    response = session.send("menuClick", index=index)
+    fields = {"index": index}
+    if hover is not None:
+        fields["hoverX"], fields["hoverY"] = center(hover)
+    response = session.send("menuClick", **fields)
     require(response.get("ok") is True, f"menuClick failed for {label}: {response}")
     require(response.get("closed") is True, f"menu stayed open after {label}")
 
@@ -286,7 +304,7 @@ def main() -> int:
         menu_width, menu_height, menu_pixels = read_ppm(menu_shot)
         verify_popup_pixels(menu_pixels, menu_width, menu_height, root, child,
                             "cascade")
-        click_item(session, child, "notes.txt")
+        click_item(session, child, "notes.txt", hover=recent["rect"])
         require(action_count(session, "file-menu", "file.open.recent.notes") == 1,
                 "submenu item did not emit its action")
 
@@ -334,10 +352,7 @@ def main() -> int:
         early = session.send("tooltipState")["tooltip"]
         require(early["visible"] is False,
                 "tooltip appeared before its hover dwell elapsed")
-        time.sleep(0.5)
-        tooltip = session.send("tooltipState")["tooltip"]
-        require(tooltip["visible"] is True,
-                f"hover hint did not appear: {tooltip}")
+        tooltip = wait_tooltip(session, bounds, "tb-save")
         require(tooltip["node"] == "tb-save" and
                 tooltip["text"] == "Save the current document (Ctrl+S)",
                 f"hover hint has the wrong content: {tooltip}")

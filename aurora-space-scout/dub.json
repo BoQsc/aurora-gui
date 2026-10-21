@@ -1,9 +1,9 @@
 {
   "name": "aurora-space-scout",
   "description": "Find recently installed and unusually large files and folders with a safe, Recycle Bin based cleanup workflow.",
-  "authors": ["OpenAI"],
-  "copyright": "Copyright © 2026 OpenAI",
-  "license": "BSL-1.0",
+  "authors": ["aurora-gui contributors"],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-space-scout",
   "mainSourceFile": "source/app.d",

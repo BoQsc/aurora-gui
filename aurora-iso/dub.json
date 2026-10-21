@@ -2,10 +2,10 @@
   "name": "aurora-iso",
   "description": "A self-contained ISO image toolkit built with Aurora-D: browse, extract, create, download, and write ISO images to USB drives or the filesystem.",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-iso",
   "mainSourceFile": "source/app.d",

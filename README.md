@@ -390,3 +390,15 @@ It writes `dist\aurora-gui-<version>-<commit>-<timestamp>.zip` and includes the 
 - Selection, Cut, Text, and Transition tools show hover tooltips.
 - The Effects / Properties panel no longer contains long sliders. Labeled numeric values support exact typing and horizontal drag-scrubbing, with Shift for fine control.
 - Regression coverage verifies that moving a clip during playback starts no replacement decoder and leaves playback active.
+
+## License
+
+First-party Aurora source code, package metadata, protocol schemas, generated
+constants, and tools are licensed under **0BSD**. First-party documentation,
+sample scenes, images, and other content are licensed under **CC0-1.0**.
+
+See [LICENSE](LICENSE), [LICENSE-CC0.txt](LICENSE-CC0.txt), and
+[LICENSING.md](LICENSING.md). Vendored Aurora-D and Aurora-standard code is also
+0BSD. Unicode data, Microsoft Terminal material, DMD/Phobos, zlib, and Microsoft
+runtime material retain their separate licenses; they are not relicensed by the
+Aurora project.

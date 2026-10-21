@@ -2,9 +2,9 @@
   "name": "aurora-music",
   "description": "A self-contained 0BSD software instrument: synthesizes piano, guitar, bass and drums and renders scores to WAV.",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright © 2026 OpenAI",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
   "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-music",

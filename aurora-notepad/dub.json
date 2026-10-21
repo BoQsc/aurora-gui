@@ -2,10 +2,10 @@
   "name": "aurora-notepad",
   "description": "A new standard Notepad built on Aurora-D, starting with a custom downstream titlebar",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-notepad",
   "mainSourceFile": "source/app.d",

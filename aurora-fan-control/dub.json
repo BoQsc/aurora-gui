@@ -1,8 +1,9 @@
 {
   "name": "aurora-fan-control",
   "description": "Manual fan control for Lenovo Legion laptops via the WMI Game Zone interface (root\\WMI : LENOVO_GAMEZONE_DATA).",
-  "authors": ["Aurora"],
-  "license": "BSL-1.0",
+  "authors": ["aurora-gui contributors"],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "sourcePaths": ["source"],
   "libs-windows": ["ole32", "oleaut32", "uuid", "user32", "gdi32", "shell32", "kernel32"],

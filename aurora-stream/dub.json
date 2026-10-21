@@ -2,10 +2,10 @@
   "name": "aurora-stream",
   "description": "A focused multi-output Twitch and YouTube broadcaster built with Aurora-D and FFmpeg",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright © 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "sourcePaths": [
     "source",
     "../vendor/aurora-d-0.4.5/source"

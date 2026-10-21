@@ -2,10 +2,10 @@
   "name": "aurora-image-viewer",
   "description": "A lightweight image viewer built with Aurora-D using a custom mipmapped CPU scaler for fast high-quality pan and zoom",
   "authors": [
-    "OpenAI"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-image-viewer",
   "mainSourceFile": "source/app.d",

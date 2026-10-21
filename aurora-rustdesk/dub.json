@@ -1,9 +1,9 @@
 {
   "name": "aurora-rustdesk",
   "description": "RustDesk-style remote desktop: numeric ID rendezvous, one-time password, encrypted session, file and clipboard transfer",
-  "authors": ["OpenAI"],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "authors": ["aurora-gui contributors"],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-rustdesk",
   "mainSourceFile": "source/app.d",

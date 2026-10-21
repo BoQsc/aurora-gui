@@ -15,12 +15,12 @@
     "resolution": "specific remaining action"
   },
   "policy": {
-    "projectSourceClaim": "First-party browser material is offered under the SPDX expression CC0-1.0 OR 0BSD, the recipient choosing. The two official texts are kept separately; no combined text is invented.",
-    "strictDistributionClaim": "NOT SATISFIED. Not every redistributable component in this package is under CC0/0BSD. Aurora-D is Boost Software License 1.0 and carries Unicode data under the Unicode License V3; the D runtime/standard library linked into the executable is Boost 1.0; content decoding and PNG inflate reach zlib through std.zlib and etc.c.zlib, whose implementation is Zlib-licensed. Those are ordinary permissive licenses and are recorded here rather than relabeled.",
+    "projectSourceClaim": "First-party browser source is 0BSD; first-party documentation and content are CC0-1.0. The official texts are kept separately.",
+    "strictDistributionClaim": "NOT SATISFIED. Not every redistributable component in this package is under CC0/0BSD. Aurora-D and Aurora-standard code are 0BSD but carry Unicode data under the Unicode License V3 and Microsoft Terminal MIT material; the D runtime/standard library linked into the executable is BSL-1.0; content decoding and PNG inflate reach zlib through std.zlib and etc.c.zlib, whose implementation is Zlib-licensed. Those are ordinary permissive licenses and are recorded here rather than relabeled.",
     "notes": [
       "A wrapper module or a changed SPDX line does not resolve a conflict.",
       "Third-party material in this repository has not been relicensed by this inventory.",
-      "Package metadata currently declares BSL-1.0 for both packages, which is not the requested grant; see the first-party entries."
+      "All Aurora-owned package metadata now declares 0BSD, including the vendored Aurora-D and Aurora-standard copies; Unicode, Microsoft Terminal MIT, DMD/Phobos and zlib notices remain separate."
     ]
   },
   "components": [
@@ -29,36 +29,36 @@
       "versionOrCommit": "0.66.3 (aurora-web/dub.json)",
       "paths": ["aurora-web/source/**", "aurora-web/dub.json"],
       "origin": "original work written for this project",
-      "rightsEvidence": "owner's request for the browser task (CC0-1.0 OR 0BSD for first-party material); no per-file contributor provenance audit recorded yet",
-      "licenseExpression": "CC0-1.0 OR 0BSD",
+      "rightsEvidence": "owner's request: 0BSD for first-party source and CC0-1.0 for first-party documentation/content; no per-file contributor provenance audit recorded yet",
+      "licenseExpression": "0BSD",
       "role": "runtime-source",
       "redistributed": true,
       "strictTargetSatisfied": true,
-      "resolution": "aurora-web/dub.json still declares \"license\": \"BSL-1.0\" and authors \"OpenAI\"; update the metadata to the requested expression, add SPDX headers to the engine files, and record the human rights holder (brief 5.1: generated metadata is not a provenance audit)."
+      "resolution": "aurora-web/dub.json now declares 0BSD. Per-file provenance headers remain future work (brief 5.1: generated metadata is not a provenance audit)."
     },
     {
       "component": "aurora-browser application shell",
       "versionOrCommit": "0.66.3 (aurora-browser/dub.json)",
       "paths": ["aurora-browser/source/**", "aurora-browser/dub.json"],
       "origin": "original work written for this project",
-      "rightsEvidence": "owner's request for the browser task (CC0-1.0 OR 0BSD for first-party material)",
-      "licenseExpression": "CC0-1.0 OR 0BSD",
+      "rightsEvidence": "owner's request: 0BSD for first-party source and CC0-1.0 for first-party documentation/content",
+      "licenseExpression": "0BSD",
       "role": "runtime-source",
       "redistributed": true,
       "strictTargetSatisfied": true,
-      "resolution": "same metadata update as the engine entry (dub.json declares BSL-1.0 today)."
+      "resolution": "aurora-browser/dub.json now declares 0BSD; per-file provenance remains future work."
     },
     {
       "component": "Aurora-D GUI, text and raster toolkit (vendored)",
       "versionOrCommit": "0.4.5 (vendor/aurora-d-0.4.5/PACKAGE-METADATA.json, MANIFEST.sha256)",
       "paths": ["vendor/aurora-d-0.4.5/source/**", "vendor/aurora-d-0.4.5/LICENSE"],
-      "origin": "upstream source, vendored; this repository patches it, with every patch recorded in AURORA-PATCHES.md at the repository root and MANIFEST.sha256",
-      "rightsEvidence": "vendor/aurora-d-0.4.5/LICENSE contains the Boost Software License 1.0 text",
-      "licenseExpression": "BSL-1.0",
+      "origin": "Aurora project source vendored into this repository; every patch is recorded in AURORA-PATCHES.md at the repository root and MANIFEST.sha256",
+      "rightsEvidence": "vendor/aurora-d-0.4.5/LICENSE contains the 0BSD text; Unicode and Microsoft Terminal MIT notices are separate",
+      "licenseExpression": "0BSD",
       "role": "runtime-source",
       "redistributed": true,
-      "strictTargetSatisfied": false,
-      "resolution": "Boost 1.0 is permissive but outside CC0/0BSD. Obtain an applicable grant from its rights holder, independently replace it, or record an explicit owner decision to accept it; keep the conflict in this ledger until then."
+      "strictTargetSatisfied": true,
+      "resolution": "Aurora-owned code is 0BSD. Keep the separate Unicode and Microsoft Terminal MIT notices with any distribution."
     },
     {
       "component": "Unicode data inside Aurora-D",
@@ -138,7 +138,7 @@
       "paths": ["aurora-opencode-pro/tests/browser-fixtures/**", "aurora-opencode-pro/build/browser-reference-validation*/**", "aurora-browser/tests/verify-render.json"],
       "origin": "fixture HTML written for this project; reference PNGs generated by the installed Edge browser from those fixtures; live-site baselines (djangoproject.com, boqsc.eu) captured by this engine",
       "rightsEvidence": "project-owned fixtures; live-site captures are provenance-restricted third-party content",
-      "licenseExpression": "CC0-1.0 OR 0BSD (project fixtures only)",
+      "licenseExpression": "CC0-1.0 (project fixtures only)",
       "role": "test-only",
       "redistributed": false,
       "strictTargetSatisfied": true,
@@ -162,7 +162,7 @@
       "paths": ["aurora-web/aurora-web.lib", "aurora-web/aurora-web-test-library.exe and .pdb", "aurora-web/*.obj", "vendor/aurora-d-0.4.5/*.exe and *.pdb"],
       "origin": "generated by this project's own builds",
       "rightsEvidence": "generated from the sources listed above; no separate grant needed while they are not published",
-      "licenseExpression": "inherits its inputs (BSL-1.0 and CC0-1.0 OR 0BSD mix)",
+      "licenseExpression": "inherits its inputs (0BSD/CC0-1.0 plus Unicode/DMD/zlib terms)",
       "role": "bundled-binary",
       "redistributed": false,
       "strictTargetSatisfied": false,
@@ -174,7 +174,7 @@
       "paths": ["aurora-browser/docs/AGENT-HANDOFF.md", "aurora-browser/docs/IMPLEMENTATION-BRIEF.md", "aurora-opencode-pro/tools/capture-browser-reference.py", "aurora-opencode-pro/tools/browser-probe.d", "aurora-opencode-pro/tools/browser-engine-check.d"],
       "origin": "original work written for this project",
       "rightsEvidence": "owner's request for the browser task",
-      "licenseExpression": "CC0-1.0 OR 0BSD",
+      "licenseExpression": "CC0-1.0",
       "role": "test-only",
       "redistributed": false,
       "strictTargetSatisfied": true,

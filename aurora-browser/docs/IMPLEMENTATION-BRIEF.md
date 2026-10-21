@@ -2,7 +2,9 @@
 
 **Prepared:** 16 October 2026.  
 **Intended executor:** Aurora OpenCode Pro working on the native Aurora Browser and Aurora Web engine.  
-**Requested licensing target:** `CC0-1.0 OR 0BSD` for implementation material whose rights permit that grant, with a separately verified distribution inventory.  
+**Requested licensing target:** `0BSD` for implementation material and
+`CC0-1.0` for documentation/content whose rights permit that grant, with a
+separately verified distribution inventory.
 **Repository:** `C:/Users/windows10/Documents/github_repositories/aurora-gui`.  
 **Related conversation:** `t-m639276073661326566-0`, titled “web browser”.
 
@@ -124,21 +126,27 @@ The following map identifies inspected implementation locations. Presence of cod
 
 Comments in this checkout are not uniformly current. For example, browser UI comments still mention WinINet while the inspected network implementation uses the owned byte transport. The TLS header understates work now present in its body: `CertificateVerify` signatures and DNS-name matching have implementations. Conversely, neither those functions nor encryption establish trust-chain validation. Resolve claims by inspecting executable paths and running relevant tests, then update stale comments with the change they describe.
 
-Both [engine package metadata](C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-web/dub.json) and [browser package metadata](C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-browser/dub.json) currently declare `BSL-1.0`. They include Aurora-D source directly. The dependency's [license](C:/Users/windows10/Documents/github_repositories/aurora-gui/vendor/aurora-d-0.4.5/LICENSE) is Boost Software License 1.0, and it carries a separate [Unicode license](C:/Users/windows10/Documents/github_repositories/aurora-gui/vendor/aurora-d-0.4.5/LICENSE-UNICODE.txt). The licensing target is therefore future work, not a description of current packaging.
+Both [engine package metadata](C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-web/dub.json) and [browser package metadata](C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-browser/dub.json) now declare `0BSD` for first-party source. They include Aurora-D source directly. Its [license](C:/Users/windows10/Documents/github_repositories/aurora-gui/vendor/aurora-d-0.4.5/LICENSE) is 0BSD, and it carries a separate [Unicode license](C:/Users/windows10/Documents/github_repositories/aurora-gui/vendor/aurora-d-0.4.5/LICENSE-UNICODE.txt). The strict distribution target therefore remains future work, not a description of current packaging.
 
 ## 5. Licensing and provenance are part of completion
 
 ### 5.1 The requested grant
 
-Use the SPDX expression `CC0-1.0 OR 0BSD` for original browser material that its rights holders can offer under either option. The `OR` expresses a recipient's choice. Do not invent a combined legal text or claim that two different licenses are identical. Keep the exact official texts separately and explain the choice in the project's license overview. The canonical references are [CC0 1.0 legal code](https://creativecommons.org/publicdomain/zero/1.0/legalcode.en) and [BSD Zero Clause text](https://spdx.org/licenses/0BSD.html).
+Use `0BSD` for original source code and `CC0-1.0` for original documentation and
+content that their rights holders can offer under those terms. Do not invent a
+combined legal text or claim that two different licenses are identical. Keep the
+exact official texts separately and explain the split in the project's license
+overview. The canonical references are [CC0 1.0 legal code](https://creativecommons.org/publicdomain/zero/1.0/legalcode.en) and [BSD Zero Clause text](https://spdx.org/licenses/0BSD.html).
 
 CC0 seeks a waiver of covered rights and provides a fallback license where needed; its text expressly leaves patent and trademark rights unaffected. The 0BSD text gives a broad copyright permission and warranty disclaimer without the notice-retention conditions found in multi-clause BSD licenses. Neither is evidence that third-party material in this repository has been relicensed.
 
-User intent establishes the desired project policy. A complete migration also requires evidence of rights for existing contributions. Metadata saying “OpenAI” or an AI assistant generating a patch is not a provenance audit. Record the source and applicable grant of material actually incorporated, including generated data and imported examples.
+User intent establishes the desired project policy. A complete migration also requires evidence of rights for existing contributions. An AI assistant generating a patch is not a provenance audit. Record the source and applicable grant of material actually incorporated, including generated data and imported examples.
 
 ### 5.2 Separate two claims that are often confused
 
-**Project-source claim:** the browser-owned implementation is available under `CC0-1.0 OR 0BSD`, with other components identified separately.
+**Project-source claim:** browser-owned source is available under `0BSD`, and
+browser-owned documentation/content under `CC0-1.0`, with other components
+identified separately.
 
 **Strict distribution claim:** all redistributable implementation and data included in a particular source/binary package meet the user's strict CC0/0BSD-only condition.
 

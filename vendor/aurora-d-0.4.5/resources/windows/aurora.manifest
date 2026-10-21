@@ -4,7 +4,7 @@
           manifestVersion="1.0">
   <assemblyIdentity
       type="win32"
-      name="OpenAI.AuroraD.Application"
+      name="Aurora.AuroraD.Application"
       version="1.0.0.0"
       processorArchitecture="*" />
   <description>Aurora-D application</description>

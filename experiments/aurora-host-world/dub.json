@@ -2,10 +2,10 @@
   "name": "aurora-host-world",
   "description": "Software-rendered 3D terrain world for the aurora-host shared surface",
   "authors": [
-    "Aurora experiment"
+    "aurora-gui contributors"
   ],
-  "copyright": "Copyright © 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "sourcePaths": [
     "source"
   ],

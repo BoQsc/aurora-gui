@@ -1,0 +1,69 @@
+{
+  "inputs": [
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/tools",
+    "experiments/aurora-host/samples",
+    "experiments/aurora-host/dub.json",
+    "experiments/aurora-host/README.md",
+    "experiments/aurora-host/PACKAGING.md",
+    "experiments/aurora-host/LICENSE",
+    "experiments/aurora-host/LICENSE-CC0.txt",
+    "experiments/aurora-host/THIRD-PARTY-NOTICES.md",
+    "vendor/aurora-d-0.4.5/LICENSE",
+    "vendor/aurora-d-0.4.5/LICENSE-UNICODE.txt",
+    "vendor/aurora-d-0.4.5/Microsoft-Terminal-MIT.txt",
+    "vendor/aurora-d-0.4.5/source",
+    "vendor/aurora-standard/LICENSE",
+    "vendor/aurora-standard/LICENSE-UNICODE.txt",
+    "vendor/aurora-standard/source"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": [
+          "build",
+          "--config=host",
+          "--build=release",
+          "--dest=build/package-build"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/package_host.py",
+          "--clean",
+          "--executable",
+          "build/package-build/aurora-host-experiment.exe",
+          "--out",
+          "build/package/aurora-host-0.1.0-win64"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/verify_package.py",
+          "--package",
+          "build/package/aurora-host-0.1.0-win64.zip"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    }
+  ]
+}

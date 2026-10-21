@@ -1,9 +1,9 @@
 {
   "name": "aurora-remote",
   "description": "Encrypted low-latency Windows remote control, transfer, and relay",
-  "authors": ["OpenAI"],
-  "copyright": "Copyright © 2026 OpenAI",
-  "license": "BSL-1.0",
+  "authors": ["aurora-gui contributors"],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
   "targetType": "executable",
   "targetName": "aurora-remote",
   "mainSourceFile": "source/app.d",
