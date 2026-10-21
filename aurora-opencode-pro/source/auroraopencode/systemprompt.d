@@ -457,10 +457,14 @@ private string environmentSection(in SystemPromptContext ctx)
 public SystemPromptModule rebuildModule()
 {
     return textModule("rebuild", "\n# Rebuilding Aurora OpenCode\n" ~
-        "Aurora OpenCode is running from its own source, so you can apply a " ~
-        "change to the running app with the `rebuild` tool whenever the " ~
-        "change is to Aurora OpenCode's own source - regardless of which " ~
-        "folder the tools run in. The tool is a deploy, not a save: it " ~
+        "Aurora OpenCode (this app; the `aurora-opencode-pro` package) is " ~
+        "running from its own source, so you can apply a change to the running " ~
+        "app with the `rebuild` tool whenever the change is to Aurora OpenCode's " ~
+        "own source - regardless of which folder the tools run in. `rebuild` is " ~
+        "never for the general Aurora repository at the parent of this package, " ~
+        "and never for a sibling Aurora app such as `aurora-opencode`: those are " ~
+        "different projects, so edit and build them by their own flow. The tool " ~
+        "is a deploy, not a save: it " ~
         "persists this conversation, hands the build to a detached helper " ~
         "that waits for the app to exit, runs `dub build`, and relaunches " ~
         "the app, which then continues this conversation. `rebuild` does the " ~
@@ -468,13 +472,15 @@ public SystemPromptModule rebuildModule()
         "never kill or restart the app - only the tool can, because the live " ~
         "executable is locked while the app runs and a build in place would " ~
         "both fail to overwrite it and leave a stale yet rebuilt state. After " ~
-        "you finish a change to Aurora's own source, call `rebuild` so the " ~
+        "you finish a change to Aurora OpenCode's own source " ~
+        "(`aurora-opencode-pro`), call `rebuild` so the " ~
         "change goes live; otherwise use the tool deliberately - not as a " ~
         "byproduct of answering, not mid-discussion, not on half-applied " ~
         "code, not twice for one change - and announce it when you do. It " ~
         "needs no user approval or confirmation. If the build fails, the " ~
         "resumed conversation reports the compiler errors so you can fix " ~
-        "them and call `rebuild` again. While you work on Aurora's own source, " ~
+        "them and call `rebuild` again. While you work on Aurora OpenCode's own " ~
+        "source (`aurora-opencode-pro`), " ~
         "call the `sync` tool before editing, when a maintainer-update notice " ~
         "arrives, and before rebuilding. It applies the latest maintainer " ~
         "source and preserves your work. Run it between file operations and reread affected files after updates; " ~

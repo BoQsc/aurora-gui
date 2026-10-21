@@ -26,7 +26,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
 import auroraopencode.runtime : AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
-import rebuild : RebuildOutcome, findAuroraRoot, isAuroraProject,
+import rebuild : RebuildOutcome, findAuroraRoot, isAuroraProject, isRebuildAware,
     findAuroraSourceFolder, findDeveloperSourceDirectory, launchRebuild, planRebuild, readRebuildOutcome, rebuildFailed,
     rebuildIncomplete, rebuildStatusLabel, rebuildSucceeded;
 import auroraopencode.updater : UpdateCheck, checkForUpdate, launchUpdateHelper;
@@ -506,14 +506,43 @@ private static double firstBaseline(TextLayout layout)
         ? 0.0 : layout.lines[0].baseline;
 }
 
-private string currentTimestamp()
+private static string clockTimeLabel(SysTime when)
 {
-    auto now = Clock.currTime;
     string pad(int value)
     {
         return value < 10 ? "0" ~ to!string(value) : to!string(value);
     }
-    return pad(now.hour) ~ ":" ~ pad(now.minute);
+    return pad(when.hour) ~ ":" ~ pad(when.minute);
+}
+
+private string currentTimestamp()
+{
+    return clockTimeLabel(Clock.currTime);
+}
+
+/// The sidebar's last-activity label. It comes from the session's persisted
+/// stamp, not from loaded messages: threads are restored lazily, so most rows
+/// have no message body in memory and used to render with no time at all.
+private static string sessionActivityTimeLabel(long unixSeconds)
+{
+    if (unixSeconds <= 0) return "";
+    return clockTimeLabel(SysTime.fromUnixTime(unixSeconds).toLocalTime);
+}
+
+/// Creation tick encoded in a session id (`t-m<ticks>-<counter>`). Used only
+/// to break equal-activity ties deterministically, newest conversation first.
+private static long sessionCreatedTick(const ref ChatSession session)
+{
+    enum prefix = "t-m";
+    if (session.id.length <= prefix.length ||
+        session.id[0 .. prefix.length] != prefix) return 0;
+    long value;
+    foreach (c; session.id[prefix.length .. $])
+    {
+        if (c < '0' || c > '9') break;
+        value = value * 10 + (c - '0');
+    }
+    return value;
 }
 
 /// Compact token count for the Aurora-usage readout: the exact number below a
@@ -633,7 +662,6 @@ private final class SharedTextLayoutCache
         int width;
         MdComposition value;
     }
-
     private static struct LayoutEntry
     {
         dstring text;
@@ -12336,6 +12364,7 @@ private string _suggestExcludeId;
             thisExePath()).workingDir.length > 0;
     }
 
+
     /// Test-only: the conversation a restart would continue, resolved from the
     /// live state exactly as `requestAgentRebuild` does.
     public string resumeOwnerForTesting()
@@ -14103,14 +14132,13 @@ private string _suggestExcludeId;
     }
     // <<< filecontext:end
 
-    /// Whether the prompt should carry Aurora self-hosting awareness: either
-    /// the conversation's project is Aurora's own package, or the running app
-    /// can rebuild itself (a dev checkout), which is the same capability.
+    /// Whether the prompt should carry Aurora OpenCode self-hosting awareness.
+    /// The general Aurora repository and sibling Aurora apps are not the app
+    /// package, so rebuild guidance must not leak into their conversations.
     private bool isSelfProjectWorkspace(string workspace) const
     {
-        if (_settings.developerMode) return true;
-        if (isAuroraProject(workspace)) return true;
-        return canSelfRebuild();
+        return isRebuildAware(workspace, developerSourceDirectory(),
+            _settings.developerMode, canSelfRebuild());
     }
 
     private Project* activeProject()
@@ -27101,8 +27129,9 @@ private void pollButtonSuggestionRequest()
                 previousRank[sessionIndex] = cast(int) i + 1;
         foreach (bool pinnedPass; [true, false])
         {
-            int[] group;    // session indices, newest-created first
-            long[] groupAt; // activity stamp per entry (0 = unknown)
+            int[] group;     // session indices, newest-created first
+            long[] groupAt;  // activity stamp per entry (0 = unknown)
+            long[] groupBorn; // creation tick per entry, for tie-breaks
             foreach_reverse (index, session; _sessions)
             {
                 // Sessions restored from an older build have no project; they
@@ -27123,6 +27152,7 @@ private void pollButtonSuggestionRequest()
                     continue;
                 group ~= cast(int) index;
                 groupAt ~= session.updatedAt;
+                groupBorn ~= sessionCreatedTick(session);
             }
             if (freezeOrder)
             {
@@ -27148,20 +27178,28 @@ private void pollButtonSuggestionRequest()
             }
             else if (byRecency)
             {
-                // Stable insertion sort, most recent first; equal stamps keep
-                // the newest-created-first order they arrived in.
+                // Insertion sort, most recent first. Equal activity stamps are
+                // ordered by creation tick, so a copied or moved conversation
+                // cannot swap rows merely because `_sessions` was reordered.
                 foreach (i; 1 .. group.length)
                 {
                     const key = groupAt[i];
+                    const born = groupBorn[i];
                     const value = group[i];
                     size_t j = i;
-                    while (j > 0 && groupAt[j - 1] < key)
+                    while (j > 0)
                     {
+                        if (groupAt[j - 1] > key ||
+                            (groupAt[j - 1] == key &&
+                                groupBorn[j - 1] >= born))
+                            break;
                         groupAt[j] = groupAt[j - 1];
+                        groupBorn[j] = groupBorn[j - 1];
                         group[j] = group[j - 1];
                         --j;
                     }
                     groupAt[j] = key;
+                    groupBorn[j] = born;
                     group[j] = value;
                 }
             }
@@ -27171,10 +27209,15 @@ private void pollButtonSuggestionRequest()
                 const title = session.title.length > 0 ? session.title
                     : "New chat";
                 indices ~= index;
-                string secondary;
-                const path = activeMessagePath(session);
-                if (path.length > 0)
-                    secondary = session.messages[path[$ - 1]].time;
+                string secondary = sessionActivityTimeLabel(session.updatedAt);
+                if (secondary.length == 0)
+                {
+                    // Legacy sessions predate `updatedAt`; if their body is
+                    // already loaded, keep showing the last message time.
+                    const path = activeMessagePath(session);
+                    if (path.length > 0)
+                        secondary = session.messages[path[$ - 1]].time;
+                }
                 const rowLabel = isSessionArchived(session.id)
                     ? "(archived) " ~ title
                     : (pinnedPass ? "★ " ~ title : title);
@@ -27758,7 +27801,8 @@ private void pollButtonSuggestionRequest()
             if (project.id == projectId) { name = project.name; break; }
         if (name.length == 0) return;
         session.projectId = projectId;
-        session.updatedAt = Clock.currTime.toUnixTime();
+        // Moving a conversation is organization, not activity; keep its
+        // last-activity stamp so it does not jump to the top of the target list.
         _dirtyThreads[session.id] = true;
         markDirty();
         updateSessionList();
@@ -31215,6 +31259,16 @@ private void pollButtonSuggestionRequest()
         return _sessionList is null ? "" : _sessionList.activityRowsForTesting();
     }
 
+    /// Test-only: the right-aligned secondary label (last-activity time) painted
+    /// on a visible sidebar row.
+    public string sessionRowSecondaryForTesting(int row) const
+    {
+        if (_sessionList is null || row < 0 ||
+            row >= cast(int) _sessionList.items().length)
+            return "";
+        return to!string(_sessionList.items()[cast(size_t) row].secondary);
+    }
+
     public bool sessionTurnBusyForTesting(int sessionIndex)
     {
         return sessionIsBusy(sessionIndex);
@@ -32860,6 +32914,12 @@ private void pollButtonSuggestionRequest()
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
         _sessions[index].updatedAt = unixSeconds;
+    }
+
+    /// Test-only: rebuild the sidebar from current session metadata.
+    public void refreshSessionListForTesting()
+    {
+        updateSessionList(false);
     }
 
     /// Test-only: persist the current sessions to disk immediately.

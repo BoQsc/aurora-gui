@@ -1,0 +1,24 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/tests/tools_test.d",
+    "aurora-opencode-pro/tests/developer_ui_contracts.d",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-c",
+          "import os,sys,runpy; os.environ['PATH']=r'C:\\Users\\windows10\\AppData\\Local\\GitHubDesktop\\app-3.6.7\\resources\\app\\git\\cmd;'+os.environ['PATH']; sys.argv=['tests/run_architecture_checks.py','tools_test','developer_ui_contracts']; runpy.run_path('tests/run_architecture_checks.py', run_name='__main__')"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    }
+  ]
+}

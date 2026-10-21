@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Host — Terrain World",
+    "width": 960,
+    "height": 540,
+    "theme": "dark"
+  },
+  "root": {
+    "type": "column",
+    "spacing": 0,
+    "children": [
+      {
+        "id": "world",
+        "type": "surface",
+        "path": "build/world.surface",
+        "width": 960,
+        "height": 540,
+        "flex": 1,
+        "events": ["pointer", "key"]
+      }
+    ]
+  }
+}

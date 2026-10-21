@@ -26,7 +26,7 @@ import auroraopencode.orchestrator : experimentalOrchestratorExecute,
     experimentalOrchestratorTools;
 // Aurora's own source package detection, so the `run` tool never recompiles the
 // running app's executable instead of using the in-app `rebuild` flow.
-import rebuild : isAuroraProject;
+import rebuild : isAuroraProject, isRebuildWorkspace;
 import std.file : dirEntries, exists, isFile, isDir, isSymlink, SpanMode, read,
     readText, write, mkdirRecurse, fileCopy = copy, remove, rename,
     rmdir, rmdirRecurse, tempDir, getSize,
@@ -735,8 +735,11 @@ private OpenCodeToolDef rebuildToolDefinition()
 {
     return OpenCodeToolDef(
         "rebuild",
-        "Rebuild the Aurora OpenCode application itself and relaunch it. Only " ~
-        "useful when you are working on Aurora's own source. It persists the " ~
+        "Rebuild the Aurora OpenCode application itself (the " ~
+        "`aurora-opencode-pro` package) and relaunch it. Only useful when you " ~
+        "are working on Aurora OpenCode's own source - never for the general " ~
+        "Aurora repository or a sibling Aurora app such as `aurora-opencode`. " ~
+        "It persists the " ~
         "conversation, hands the build to a detached helper that waits for " ~
         "this process to exit, runs `dub build`, and relaunches the app, which " ~
         "then continues this conversation. The running executable is never " ~
@@ -761,7 +764,8 @@ private OpenCodeToolDef syncToolDefinition()
         "sync",
         "Check the Aurora OpenCode source for updates pushed by the maintainer " ~
         "and reapply your own local changes on top of them. Use this while " ~
-        "working on Aurora's own source, so you build on the latest version and " ~
+        "working on Aurora OpenCode's own source (the `aurora-opencode-pro` " ~
+        "package), so you build on the latest version and " ~
         "resolve any conflict early. It checks the maintainer source branch " ~
         "selected for this Aurora release " ~
         "and, unless reapply is turned off in Settings, fetches and applies " ~
@@ -6268,7 +6272,7 @@ public __gshared string delegate(string arguments) syncRequestHandler;
 /// performs no build itself: `dub` cannot replace the running image, so only
 /// the app can drive the detached-helper flow. Returns a clear result either
 /// way so the model is never left believing a rebuild happened when it did not.
-private ToolExecution runRebuildTool(string arguments)
+private ToolExecution runRebuildTool(string arguments, string workspace)
 {
     if (rebuildRequestHandler is null)
         return ToolExecution("rebuild",
@@ -6283,6 +6287,15 @@ private ToolExecution runRebuildTool(string arguments)
                 if (field.type == JSONType.string) reason = field.str;
     }
     catch (Exception) {}
+    const developerSource = developerToolSourceDirectory();
+    if (developerSource.length > 0 &&
+        !isRebuildWorkspace(workspace, developerSource))
+        return ToolExecution("rebuild",
+            "Error: `rebuild` only applies to Aurora OpenCode's own source " ~
+            "(the `aurora-opencode-pro` package) that is running this " ~
+            "conversation. This workspace is the general Aurora project or " ~
+            "another Aurora app, so build and test that project directly " ~
+            "instead of rebuilding Aurora OpenCode.", true);
     if (rebuildSourceCheckHandler !is null)
     {
         const blocked = rebuildSourceCheckHandler();
@@ -6440,7 +6453,7 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return ToolExecution(call.name, routing[0], routing[1]);
         }
         case "rebuild":
-            return runRebuildTool(call.arguments);
+            return runRebuildTool(call.arguments, workspace);
         case "sync":
             return runSyncTool(call.arguments);
         default:

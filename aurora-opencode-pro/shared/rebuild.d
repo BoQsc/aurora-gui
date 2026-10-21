@@ -407,6 +407,61 @@ bool isAuroraProject(string dir)
     return false;
 }
 
+/// True when `path` is `parent` itself or one of its descendants, compared by
+/// normalized path text so separators, `.` segments and Windows drive case do
+/// not change the answer. A relative path that never reaches the absolute
+/// parent is not considered inside it.
+private bool isSameOrChildPath(string path, string parent)
+{
+    if (path.length == 0 || parent.length == 0) return false;
+    try
+    {
+        auto current = buildNormalizedPath(path);
+        const root = buildNormalizedPath(parent);
+        foreach (_; 0 .. 64)
+        {
+            if (current.toLower == root.toLower) return true;
+            const up = dirName(current);
+            if (up.length == 0 || up == current) break;
+            current = up;
+        }
+    }
+    catch (Exception) {}
+    return false;
+}
+
+/**
+ * Whether the agent-facing rebuild flow applies to `workspace`.
+ *
+ * Rebuild compiles the Aurora OpenCode / Aurora OpenCode Pro package that this
+ * app was built from. The general Aurora repository and its sibling `aurora-*`
+ * apps are different projects: rebuilding them would deploy Aurora OpenCode
+ * instead of the edited app, so those workspaces are rejected even when the
+ * running app can self-rebuild. A sandbox or unrelated workspace stays eligible
+ * while a developer source is configured, which preserves the self-fix flow.
+ */
+bool isRebuildWorkspace(string workspace, string developerSource)
+{
+    if (developerSource.length == 0 || !isAuroraProject(developerSource))
+        return false;
+    if (isSameOrChildPath(workspace, developerSource)) return true;
+    const general = findAuroraRoot(developerSource);
+    if (general.length > 0 && isSameOrChildPath(workspace, general)) return false;
+    return true;
+}
+
+/// Whether the app should present rebuild awareness and accept a rebuild
+/// request for `workspace`. `developerMode` and `canSelfRebuild` are explicit
+/// so the decision is testable without constructing the window; neither flag
+/// may bypass the workspace check for the general Aurora repository.
+bool isRebuildAware(string workspace, string developerSource,
+    bool developerMode, bool canSelfRebuild)
+{
+    if (isAuroraProject(workspace)) return true;
+    if (!developerMode && !canSelfRebuild) return false;
+    return isRebuildWorkspace(workspace, developerSource);
+}
+
 /// Accept a package, its repository root, or its source subfolder. Older
 /// Developer settings and folder links have used all three forms.
 private string auroraPackageAt(string path)

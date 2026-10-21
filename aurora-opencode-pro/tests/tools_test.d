@@ -11,9 +11,11 @@ import auroraopencode.computeruse : computerUseEncodePng, setComputerUseSetting,
     computerUseInputTargetRefusalForTesting;
 import auroraopencode.tools : ChangeContext, ToolCancellation, ToolExecution,
     buildSystemPrompt, builtinToolDefinitions, cancelRunningCommands, executeTool,
-    listChangeRecords, nativeOnlyToolDefinitions, resetRunningCommands,
+    installDeveloperToolSource, listChangeRecords, nativeOnlyToolDefinitions,
+    resetRunningCommands, restoreDeveloperToolSource,
     rebuildRequestHandler, resolveToolPath, revertChangeRecord,
     toolSteeringPrompt, runFilesystemHelperMode;
+import rebuild : isRebuildAware;
 import auroraopencode.systemprompt : PromptVerbosity, promptVerbosityDirective,
     promptVerbosityFromName, promptVerbosityLabel, promptVerbosityName,
     promptVerbosityNames, rebuildModule, setSystemPromptModules;
@@ -1331,6 +1333,54 @@ int main(string[] args)
         writeln("Rebuild tool is advertised and reaches the host application");
     }
 
+    // Rebuild belongs to Aurora OpenCode's own package, not the general Aurora
+    // repository or a sibling Aurora app. The tool must reject those contexts
+    // instead of deploying Aurora OpenCode from an unrelated project.
+    {
+        const general = buildPath(dir, "aurora-gui");
+        const appSource = buildPath(general, "aurora-opencode-pro");
+        const sibling = buildPath(general, "aurora-opencode");
+        mkdirRecurse(buildPath(appSource, "shared"));
+        mkdirRecurse(sibling);
+        write(buildPath(appSource, "shared", "rebuild.d"), "module rebuild;");
+        write(buildPath(appSource, "dub.json"), `{"name":"aurora-opencode-pro"}`);
+        write(buildPath(appSource, "source.d"), "module source;");
+        auto previousSource = installDeveloperToolSource(appSource);
+        scope (exit) restoreDeveloperToolSource(previousSource);
+        bool requested;
+        rebuildRequestHandler = delegate bool(string reason)
+        {
+            requested = true;
+            return true;
+        };
+        scope (exit) rebuildRequestHandler = null;
+
+        auto generalTool = executeTool(makeCall("rebuild", "{}"), general);
+        assert(generalTool.failed &&
+            generalTool.output.indexOf("general Aurora") >= 0,
+            "rebuild must refuse the general Aurora repository: " ~
+            generalTool.output);
+        assert(!requested, "a wrong-context rebuild must not reach the app");
+
+        auto siblingTool = executeTool(makeCall("rebuild", "{}"), sibling);
+        assert(siblingTool.failed && !requested,
+            "rebuild must refuse a sibling Aurora app: " ~ siblingTool.output);
+
+        auto selfTool = executeTool(makeCall("rebuild", "{}"), appSource);
+        assert(!selfTool.failed && requested,
+            "rebuild must still work in Aurora OpenCode's own package: " ~
+            selfTool.output);
+        assert(isRebuildAware(general, appSource, true, true) == false,
+            "Developer mode must not expose rebuild in the general Aurora repository");
+        assert(isRebuildAware(sibling, appSource, true, true) == false,
+            "Developer mode must not expose rebuild in a sibling Aurora app");
+        assert(isRebuildAware(appSource, appSource, false, false),
+            "Aurora OpenCode's own package should always be rebuild-aware");
+        assert(isRebuildAware(buildPath(dir, "sandbox"), appSource, true, false),
+            "an unrelated sandbox should stay rebuild-aware in Developer mode");
+        writeln("Rebuild is limited to Aurora OpenCode's own package");
+    }
+
     // The rebuild awareness module is opt-in: it appears only when registered,
     // and clearing the module set removes it from later prompts.
     {
@@ -1349,6 +1399,9 @@ int main(string[] args)
             "the rebuild notice must tell the agent never to kill or restart the app");
         assert(withRebuild.indexOf("`rebuild` does the compile") >= 0,
             "the rebuild notice must state that the rebuild tool performs the compile");
+        assert(withRebuild.indexOf("general Aurora") >= 0 &&
+            withRebuild.indexOf("aurora-opencode-pro") >= 0,
+            "the rebuild notice must exclude the general Aurora project");
         setSystemPromptModules(null);
         assert(buildSystemPrompt(true, ".", "auto").indexOf(
             "Rebuilding Aurora OpenCode") < 0,

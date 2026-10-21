@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the glyph-rasterization fix (one TrueTypeHinter per pixel size in truetype.d, row-filtered coverage bands in rasterizer.d) so the 1.2 s-per-bubble cold paint that caused the 7 s UI stall is live.",
+  "reason": "Deploy the verified fix that limits rebuild prompt/tool gating to Aurora OpenCode/Pro source and rejects the general Aurora repository.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-21 10:21:27.6277577 UTC",
-  "finishedAt": "2026-10-21 10:22:46.9030652 UTC",
-  "durationMs": 79274,
+  "startedAt": "2026-10-21 10:35:36.3433076 UTC",
+  "finishedAt": "2026-10-21 10:36:28.217132 UTC",
+  "durationMs": 51873,
   "exitCode": 0,
   "errors": []
 }

@@ -1,0 +1,41 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/tests/sidebar_recency_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-version=AuroraHeadless",
+          "-i",
+          "-Isource",
+          "-Ishared",
+          "-I..\\aurora-opencode-core\\source",
+          "-I..\\vendor\\aurora-d-0.4.5\\source",
+          "-Jassets",
+          "tests\\sidebar_recency_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-of=build\\sidebar-recency-contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build\\sidebar-recency-contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 120000
+      }
+    }
+  ]
+}

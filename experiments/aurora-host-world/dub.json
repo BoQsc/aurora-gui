@@ -1,0 +1,16 @@
+{
+  "name": "aurora-host-world",
+  "description": "Software-rendered 3D terrain world for the aurora-host shared surface",
+  "authors": [
+    "Aurora experiment"
+  ],
+  "copyright": "Copyright © 2026 OpenAI",
+  "license": "BSL-1.0",
+  "sourcePaths": [
+    "source"
+  ],
+  "targetName": "aurora-host-world",
+  "targetType": "executable",
+  "mainSourceFile": "source/app.d",
+  "version": "0.1.0"
+}

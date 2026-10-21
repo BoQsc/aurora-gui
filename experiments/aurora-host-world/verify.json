@@ -1,0 +1,41 @@
+{
+  "inputs": [
+    "experiments/aurora-host-world/dub.json",
+    "experiments/aurora-host-world/source/app.d",
+    "experiments/aurora-host-world/source/world/world.d",
+    "experiments/aurora-host-world/source/world/render.d",
+    "experiments/aurora-host-world/source/world/surface.d",
+    "experiments/aurora-host-world/world.scene.json",
+    "experiments/aurora-host-world/tools/verify_live.py",
+    "experiments/aurora-host/aurora-host-experiment.exe"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build", "--build=release"],
+        "workdir": "experiments/aurora-host-world",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": ".\\aurora-host-world.exe",
+        "args": ["--self-test"],
+        "workdir": "experiments/aurora-host-world",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": ["-u", "tools\\verify_live.py"],
+        "workdir": "experiments/aurora-host-world",
+        "timeout": 120000
+      }
+    }
+  ]
+}
