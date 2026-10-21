@@ -88,16 +88,32 @@ void rasterizeCoverage(const(OutlineEdge)[] edges, ubyte[] alpha,
     double[] breaks;
     Crossing[] crossings;
     double[] coverage = new double[width];
+    size_t[] active;
     breaks.reserve(edges.length * 2 + samples + 1);
     crossings.reserve(edges.length);
+    active.reserve(edges.length);
     foreach (y; 0 .. height)
     {
         coverage[] = 0;
         breaks.length = 0;
+        // Only edges whose y range intersects this pixel row can produce a
+        // crossing inside it. Selecting them once per row keeps the band loop
+        // proportional to the strokes actually present in the row instead of
+        // re-testing the whole outline for every band (that was milliseconds
+        // per glyph, and a cold transcript page paid it for every new glyph).
+        active.length = 0;
+        foreach (index, edge; edges)
+        {
+            if (max(edge.y0, edge.y1) <= y || min(edge.y0, edge.y1) >= y + 1)
+                continue;
+            active ~= index;
+        }
+        if (active.length == 0) continue;
         foreach (sample; 0 .. samples + 1)
             breaks ~= y + cast(double) sample / samples;
-        foreach (edge; edges)
+        foreach (index; active)
         {
+            const edge = edges[index];
             if (edge.y0 > y && edge.y0 < y + 1) breaks ~= edge.y0;
             if (edge.y1 > y && edge.y1 < y + 1) breaks ~= edge.y1;
         }
@@ -108,8 +124,9 @@ void rasterizeCoverage(const(OutlineEdge)[] edges, ubyte[] alpha,
             if (weight <= 0) continue;
             const yc = (breaks[band] + breaks[band - 1]) * 0.5;
             crossings.length = 0;
-            foreach (edge; edges)
+            foreach (index; active)
             {
+                const edge = edges[index];
                 if (yc < min(edge.y0, edge.y1) ||
                     yc >= max(edge.y0, edge.y1)) continue;
                 const t = (yc - edge.y0) / (edge.y1 - edge.y0);

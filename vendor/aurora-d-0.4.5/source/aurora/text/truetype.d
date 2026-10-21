@@ -110,6 +110,7 @@ final class TrueTypeFace
     private bool _glyfOutlines;
     private string _sourcePath;
     private TrueTypeHinter _hinter;
+    private TrueTypeHinter[int] _sizeHinters;
     private FontVariations _variations;
     private ColrRenderer _colr;
     private bool _thinCoverageBoost;
@@ -217,6 +218,24 @@ final class TrueTypeFace
         const found = key in _kernPairs;
         if (found is null) return 0;
         return cast(double) *found * scaleFor(pixelSize);
+    }
+
+    /** Bytecode interpreter shared by the glyphs of one pixel size.
+     *
+     * The size programs (fpgm and prep) depend only on the face and the pixel
+     * size, so prepare() only has to run once per size instead of once per
+     * glyph. hint() keeps per-glyph isolation by running each glyph program in
+     * its own Context with private CVT and storage copies.
+     */
+    private TrueTypeHinter sizeHinter(int pixelSize)
+    {
+        if (auto found = pixelSize in _sizeHinters)
+            return *found;
+        auto hinter = new TrueTypeHinter(_data, _faceOffset,
+            configuredHintingMode() == "natural", nativeTextExperiment(),
+            refinedTextExperiment());
+        _sizeHinters[pixelSize] = hinter;
+        return hinter;
     }
 
     GlyphBitmap rasterize(uint glyph, int pixelSize, int supersample = 4,
@@ -328,13 +347,15 @@ final class TrueTypeFace
                 input.prep = tableData(tag!"prep");
                 input.normalizedAxes = variationsNormalizedAxes();
                 input.composite = composite;
-                // Keep the bytecode interpreter isolated per glyph. TrueType
-                // programs are allowed to mutate scaler state, and a shared
-                // interpreter makes malformed or stateful fonts order
-                // dependent. The safe baseline is a fresh interpreter with
-                // the same font tables for each glyph.
-                auto glyphHinter = new TrueTypeHinter(_data, _faceOffset,
-                    configuredHintingMode() == "natural", nativeTextExperiment(), refinedTextExperiment());
+                // One interpreter per pixel size. The size programs (fpgm and
+                // prep) depend only on the face and the pixel size, but this
+                // used to build a fresh interpreter per glyph, which re-ran
+                // both programs for every glyph that entered the atlas and
+                // cost milliseconds per glyph. hint() still gives each glyph
+                // program its own Context, CVT and storage copies, so a
+                // stateful or malformed font cannot leak scaler state from one
+                // glyph to the next.
+                auto glyphHinter = (cast() this).sizeHinter(pixelSize);
                 auto fitted = glyphHinter.hint(input);
                 foreach (i; 0 .. fitXs.length)
                 {
