@@ -9,6 +9,9 @@
     "experiments/aurora-host/dub.json",
     "experiments/aurora-host/README.md",
     "experiments/aurora-host/MODULES.md",
+    "experiments/aurora-host/LICENSE",
+    "experiments/aurora-host/LICENSE-CC0.txt",
+    "experiments/aurora-host/THIRD-PARTY-NOTICES.md",
     "experiments/aurora-host/.gitignore",
     "vendor/aurora-d-0.4.5/source",
     "vendor/aurora-standard/source"

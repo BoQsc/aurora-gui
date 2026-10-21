@@ -4,8 +4,8 @@
   "authors": [
     "Aurora experiment"
   ],
-  "copyright": "Copyright \u00a9 2026 OpenAI",
-  "license": "BSL-1.0",
+  "copyright": "Copyright (C) 2026 aurora-host contributors",
+  "license": "0BSD",
   "sourcePaths": [
     "source",
     "generated"

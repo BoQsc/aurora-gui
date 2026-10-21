@@ -372,6 +372,9 @@ samples/                        valid scenes, including editor, canvas, animatio
 tests/                          invalid scene fixture
 tools/                          generator, control clients, and verifier
 build/                          ignored build and render output
+LICENSE                         0BSD source-code license
+LICENSE-CC0.txt                 CC0-1.0 documentation and sample-content license
+THIRD-PARTY-NOTICES.md          vendor, Unicode, MIT, and Microsoft runtime notices
 ```
 
 ## Scope
@@ -392,3 +395,15 @@ The next experiment can add a native C/plugin ABI, GPU-shared textures, or a
 retained-scene client protocol without changing this folder's isolation rule:
 the experiment may depend on vendor packages, but no vendor or application code
 may depend on the experiment.
+
+## License
+
+The host's source code, protocol schema, generated constants, and tools are
+released under **0BSD**; see [LICENSE](LICENSE). Documentation, sample scenes,
+images, and sample assets are released under **CC0-1.0**; see
+[LICENSE-CC0.txt](LICENSE-CC0.txt).
+
+The vendored `aurora-d` and `aurora-standard` packages, Unicode data, the
+Microsoft Terminal MIT material, and the DMD runtime retain their own licenses.
+See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). These notices do not
+relicense vendor code.
