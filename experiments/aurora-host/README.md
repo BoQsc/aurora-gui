@@ -1,8 +1,16 @@
 # aurora-host experiment
 
 An isolated experiment for a portable Aurora UI host. It is a leaf: it depends
-on `vendor/aurora-d-0.4.5` and `vendor/aurora-standard`, but nothing in the
-repository depends on it. Delete this folder and Aurora is unaffected.
+on `vendor/aurora-d-0.4.5` and `vendor/aurora-standard`, but no repository
+package depends on it. Delete this folder and Aurora is unaffected.
+
+## Responsibility
+
+The host has one responsibility: it owns the retained Aurora UI shell and its
+platform boundary. It does not own application content, application rendering,
+or domain policy. [RESPONSIBILITY.md](RESPONSIBILITY.md) defines the normative
+rules, and `tools/check_boundary.py` enforces the dependency, import, and leaf
+constraints as part of the experiment verification gate.
 
 ## What it proves
 

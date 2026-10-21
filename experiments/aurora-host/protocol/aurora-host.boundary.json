@@ -1,0 +1,16 @@
+{
+  "policyVersion": 1,
+  "package": "aurora-host-experiment",
+  "namespace": "experiment.aurorahost",
+  "responsibility": "Own the retained Aurora UI shell and its platform boundary.",
+  "allowedDependencies": {
+    "aurora-d": "../../vendor/aurora-d-0.4.5",
+    "aurora-standard": "../../vendor/aurora-standard"
+  },
+  "allowedImportPrefixes": [
+    "aurora",
+    "experiment.aurorahost",
+    "std",
+    "core"
+  ]
+}

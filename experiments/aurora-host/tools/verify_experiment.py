@@ -18,6 +18,9 @@ AURORA = VENDOR / "aurora-d-0.4.5"
 STANDARD = VENDOR / "aurora-standard"
 MAIN = ROOT / "source" / "experiment" / "aurorahost" / "main.d"
 
+sys.path.insert(0, str(ROOT / "tools"))
+from check_boundary import verify_boundary  # noqa: E402
+
 
 class VerificationError(Exception):
     pass
@@ -93,6 +96,11 @@ def main() -> int:
         print("dmd is not on PATH", file=sys.stderr)
         return 1
     try:
+        boundary = verify_boundary(ROOT, REPO)
+        if boundary:
+            raise VerificationError(
+                "host boundary violations:\n" + "\n".join(boundary)
+            )
         run([sys.executable, str(ROOT / "tools" / "generate_reference.py"), "--check"])
         with tempfile.TemporaryDirectory(prefix="aurora-host-") as temp_name:
             temp = pathlib.Path(temp_name)
@@ -306,6 +314,7 @@ def main() -> int:
         return 1
 
     print("generated reference: current")
+    print("host boundary: dependencies, imports, and leaf status verified")
     print("headless host: built")
     print("windowed host: built")
     print("version/capabilities: verified")

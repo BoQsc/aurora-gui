@@ -8,6 +8,7 @@
     "experiments/aurora-host/tests",
     "experiments/aurora-host/dub.json",
     "experiments/aurora-host/README.md",
+    "experiments/aurora-host/RESPONSIBILITY.md",
     "experiments/aurora-host/.gitignore",
     "vendor/aurora-d-0.4.5/source",
     "vendor/aurora-standard/source"
