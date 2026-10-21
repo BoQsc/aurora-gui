@@ -290,6 +290,63 @@ class ControlServer
         return cast(uint) value;
     }
 
+    private void addInputKey(ref JSONValue[string] keys, Key key)
+    {
+        keys[keyName(key)] = JSONValue(cast(long) key);
+    }
+
+    private void inputMap(long id)
+    {
+        JSONValue[string] keys;
+        foreach (key; [
+            Key.backspace, Key.tab, Key.enter, Key.escape, Key.space,
+            Key.pageUp, Key.pageDown, Key.end, Key.home, Key.left, Key.up,
+            Key.right, Key.down, Key.insert, Key.deleteKey, Key.minus,
+            Key.equal, Key.leftBracket, Key.rightBracket, Key.backslash,
+            Key.semicolon, Key.apostrophe, Key.grave, Key.comma, Key.period,
+            Key.slash,
+        ])
+            addInputKey(keys, key);
+        foreach (offset; 0 .. 26)
+            addInputKey(keys, cast(Key) (cast(int) Key.a + offset));
+        foreach (offset; 0 .. 10)
+            addInputKey(keys, cast(Key) (cast(int) Key.digit0 + offset));
+        foreach (offset; 0 .. 12)
+            addInputKey(keys, cast(Key) (cast(int) Key.f1 + offset));
+
+        JSONValue[string] modifiers;
+        modifiers["none"] = JSONValue(0);
+        modifiers["shift"] = JSONValue(1);
+        modifiers["control"] = JSONValue(2);
+        modifiers["alt"] = JSONValue(4);
+        modifiers["meta"] = JSONValue(8);
+        modifiers["capsLock"] = JSONValue(16);
+        modifiers["numLock"] = JSONValue(32);
+
+        JSONValue[string] buttons;
+        buttons["none"] = JSONValue(cast(long) MouseButton.none);
+        buttons["left"] = JSONValue(cast(long) MouseButton.left);
+        buttons["middle"] = JSONValue(cast(long) MouseButton.middle);
+        buttons["right"] = JSONValue(cast(long) MouseButton.right);
+        buttons["extra1"] = JSONValue(cast(long) MouseButton.extra1);
+        buttons["extra2"] = JSONValue(cast(long) MouseButton.extra2);
+
+        JSONValue[string] kinds;
+        kinds["pointerDown"] = JSONValue(1);
+        kinds["pointerMove"] = JSONValue(2);
+        kinds["pointerUp"] = JSONValue(3);
+        kinds["wheel"] = JSONValue(4);
+        kinds["keyDown"] = JSONValue(5);
+        kinds["keyUp"] = JSONValue(6);
+
+        JSONValue[string] extra;
+        extra["keys"] = JSONValue(keys);
+        extra["modifiers"] = JSONValue(modifiers);
+        extra["buttons"] = JSONValue(buttons);
+        extra["kinds"] = JSONValue(kinds);
+        respond(id, true, null, extra);
+    }
+
     private MouseButton parseButton(string name)
     {
         switch (name.toLower)
@@ -449,6 +506,9 @@ class ControlServer
                 case "key":
                     key(requestId, document);
                     break;
+                case "inputmap":
+                    inputMap(requestId);
+                    break;
                 case "surface":
                     surface(requestId, document);
                     break;
@@ -484,8 +544,14 @@ class ControlServer
 
         JSONValue[string] window;
         const size = _window.logicalClientSize();
+        const framebuffer = _window.framebufferSize();
+        const scale = _window.displayScale();
         window["width"] = JSONValue(cast(long) size.width);
         window["height"] = JSONValue(cast(long) size.height);
+        window["framebufferWidth"] = JSONValue(cast(long) framebuffer.width);
+        window["framebufferHeight"] = JSONValue(cast(long) framebuffer.height);
+        window["displayScaleX"] = JSONValue(cast(double) scale.x());
+        window["displayScaleY"] = JSONValue(cast(double) scale.y());
         extra["window"] = JSONValue(window);
         respond(id, true, null, extra);
     }
@@ -1150,6 +1216,10 @@ class ControlServer
         extra["sequence"] = JSONValue(cast(long) info.sequence);
         extra["inputHead"] = JSONValue(cast(long) info.inputHead);
         extra["inputTail"] = JSONValue(cast(long) info.inputTail);
+        extra["inputDropped"] = JSONValue(cast(long) info.inputDropped);
+        extra["inputCoalesced"] = JSONValue(cast(long) info.inputCoalesced);
+        extra["frameAgeMs"] = JSONValue(cast(long) (info.frameAge * 1000.0));
+        extra["stale"] = JSONValue(info.stale);
         respond(id, true, null, extra);
     }
 

@@ -186,7 +186,9 @@ def main() -> int:
             raise SystemExit(f"missing required file: {path}")
 
     shots = Path(tempfile.mkdtemp(prefix="aurora-world-verify-"))
-    before, during, after = (shots / f"{name}.ppm" for name in ("before", "during", "after"))
+    before, during, after, look = (
+        shots / f"{name}.ppm" for name in ("before", "during", "after", "look")
+    )
     client = subprocess.Popen(
         [str(CLIENT), "--no-host", "--seconds", "8"],
         cwd=str(EXPERIMENT),
@@ -208,7 +210,28 @@ def main() -> int:
             time.sleep(0.05)
         assert info and info.get("mapped"), f"surface not mapped: {info}"
         assert (info["width"], info["height"]) == (WIDTH, HEIGHT), info
+        if info["stale"] or info["frameAgeMs"] >= 500:
+            raise AssertionError(f"mapped surface is not fresh: {info}")
         initial_tail = info["inputTail"]
+
+        status = host.request({"command": "status"})
+        assert status.get("ok"), status
+        window = status["window"]
+        if (
+            window["framebufferWidth"] < window["width"]
+            or window["framebufferHeight"] < window["height"]
+            or window["displayScaleX"] < 1
+            or window["displayScaleY"] < 1
+        ):
+            raise AssertionError(f"invalid display metrics: {status}")
+        input_map = host.request({"command": "inputmap"})
+        assert input_map.get("ok"), input_map
+        if (
+            input_map["keys"]["w"] != 48
+            or input_map["modifiers"]["shift"] != 1
+            or input_map["kinds"]["keyDown"] != 5
+        ):
+            raise AssertionError(f"input map is inconsistent: {input_map}")
 
         host.screenshot(before)
         down = host.request(
@@ -230,18 +253,41 @@ def main() -> int:
         time.sleep(0.4)
         host.screenshot(after)
 
+        pointer_start = released["inputTail"]
+        host.request(
+            {"command": "pointer", "node": "world", "kind": "down", "x": 480, "y": 270, "button": "left"}
+        )
+        host.request(
+            {"command": "pointer", "node": "world", "kind": "move", "x": 560, "y": 270, "button": "left"}
+        )
+        host.request(
+            {"command": "pointer", "node": "world", "kind": "up", "x": 560, "y": 270, "button": "left"}
+        )
+        dragged = wait_head(host, 5)
+        time.sleep(0.3)
+        host.screenshot(look)
+
         assert released["inputHead"] >= 2, released
         all_events = read_events(initial_tail, released["inputTail"])
         if not any(e["kind"] == 6 and e["key"] == 48 for e in all_events):
             raise AssertionError(f"W up missing from ring: {all_events}")
+        pointer_events = read_events(pointer_start, dragged["inputTail"])
+        for kind, x, y in ((1, 480, 270), (2, 560, 270), (3, 560, 270)):
+            if not any(
+                e["kind"] == kind and e["x"] == x and e["y"] == y
+                for e in pointer_events
+            ):
+                raise AssertionError(f"pointer drag missing {kind} at {x},{y}: {pointer_events}")
 
         width, height, first = read_ppm(before)
         width2, height2, second = read_ppm(during)
         width3, height3, third = read_ppm(after)
-        assert (width, height) == (width2, height2) == (width3, height3)
+        width4, height4, fourth = read_ppm(look)
+        assert (width, height) == (width2, height2) == (width3, height3) == (width4, height4)
 
         moved = differing(first, second)
         settled = differing(second, third)
+        turned = differing(third, fourth)
         pixels = width * height
         if moved < pixels * 3 // 100:
             raise AssertionError(
@@ -251,6 +297,8 @@ def main() -> int:
             raise AssertionError(
                 f"post-release frame barely changed ({settled} bytes)"
             )
+        if turned < pixels // 100:
+            raise AssertionError(f"pointer drag barely changed the frame ({turned} bytes)")
 
         print(
             "live surface OK: "
@@ -258,7 +306,8 @@ def main() -> int:
             f"{released['inputTail']}, "
             f"W down/up verified across {len(all_events)} events, "
             f"before/during diff {moved} bytes, "
-            f"during/after diff {settled} bytes, shots {shots}"
+            f"during/after diff {settled} bytes, "
+            f"pointer drag diff {turned} bytes, shots {shots}"
         )
     finally:
         try:

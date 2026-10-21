@@ -30,6 +30,10 @@ struct SurfaceInfo
     ulong sequence;
     uint inputHead;
     uint inputTail;
+    uint inputDropped;
+    uint inputCoalesced;
+    double frameAge;
+    bool stale;
 }
 
 private uint readU32(const(ubyte)[] data, size_t offset)
@@ -98,6 +102,10 @@ class SurfaceWidget : Widget
     private RgbaImage _image;
     private ulong _lastSequence;
     private double _retry;
+    private uint _inputDropped;
+    private uint _inputCoalesced;
+    private double _frameAge;
+    private bool _hasFrame;
 
     void delegate(HostEvent) onInput;
 
@@ -155,6 +163,10 @@ class SurfaceWidget : Widget
             }
             _mapping = mapping;
             _lastSequence = 0;
+            _hasFrame = false;
+            _frameAge = 0.0;
+            _inputDropped = 0;
+            _inputCoalesced = 0;
             _retry = 0.5;
         }
         catch (Exception)
@@ -166,6 +178,7 @@ class SurfaceWidget : Widget
     /** Copy a newly published frame and acknowledge it to the writer. */
     void refresh(double deltaSeconds)
     {
+        _frameAge += deltaSeconds;
         if (_mapping is null)
         {
             _retry -= deltaSeconds;
@@ -208,6 +221,8 @@ class SurfaceWidget : Widget
         else
             _image.reset(_width, _height, data[frameStart .. frameEnd]);
         _lastSequence = sequence;
+        _hasFrame = true;
+        _frameAge = 0.0;
         writeU64(data, 40, sequence);
         invalidate();
     }
@@ -219,6 +234,10 @@ class SurfaceWidget : Widget
         result.width = _width;
         result.height = _height;
         result.sequence = _lastSequence;
+        result.inputDropped = _inputDropped;
+        result.inputCoalesced = _inputCoalesced;
+        result.frameAge = _hasFrame ? _frameAge : 0.0;
+        result.stale = _mapping !is null && (!_hasFrame || _frameAge > 0.5);
         if (_mapping !is null)
         {
             const data = cast(const(ubyte)[]) _mapping[];
@@ -252,7 +271,31 @@ class SurfaceWidget : Widget
         const head = readU32(data, 48);
         const tail = readU32(data, 52);
         if (tail - head >= capacity)
+        {
+            ++_inputDropped;
             return;
+        }
+
+        // Pointer motion is state, not an ordered command. Collapse adjacent
+        // identical moves so a jittery window cannot fill the ring with
+        // duplicate samples before the consumer polls.
+        if (kind == 2 && tail > head)
+        {
+            const previous = cast(size_t) headerSize +
+                cast(size_t) ((tail - 1) % capacity) * eventSize;
+            if (data[previous] == 2 && data[previous + 1] == button &&
+                data[previous + 2] == (key & 0xff) &&
+                data[previous + 3] == ((key >> 8) & 0xff) &&
+                readU32(data, previous + 4) == modifiers &&
+                readI32(data, previous + 8) == x &&
+                readI32(data, previous + 12) == y &&
+                readI32(data, previous + 16) == wheelX &&
+                readI32(data, previous + 20) == wheelY)
+            {
+                ++_inputCoalesced;
+                return;
+            }
+        }
         const offset = cast(size_t) headerSize +
             cast(size_t) (tail % capacity) * eventSize;
         data[offset] = cast(ubyte) kind;

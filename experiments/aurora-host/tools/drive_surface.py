@@ -256,6 +256,12 @@ def main() -> int:
         if not info or not info.get("mapped"):
             raise RuntimeError(f"surface did not map: {info!r}")
 
+        input_map = host.request("inputmap")
+        if input_map["keys"]["w"] != 48 or input_map["modifiers"]["shift"] != 1:
+            raise RuntimeError(f"input map is inconsistent: {input_map!r}")
+        if input_map["kinds"]["keyDown"] != 5 or input_map["buttons"]["left"] != 1:
+            raise RuntimeError(f"input map is inconsistent: {input_map!r}")
+
         checker_sequence = surface.publish(checker())
         surface.wait_for_host(checker_sequence)
         checker_shot = screenshot_path("aurora-host-surface-checker.ppm")
@@ -282,12 +288,53 @@ def main() -> int:
         if unique < 100:
             raise RuntimeError(f"cube screenshot has too little variation: {unique} colors")
 
+        time.sleep(0.7)
+        stale_info = host.request("surface", node="live")
+        if not stale_info["stale"] or stale_info["frameAgeMs"] < 500:
+            raise RuntimeError(f"surface did not report stale: {stale_info!r}")
+        refreshed = surface.publish(draw_cube(0.9, 0.4))
+        surface.wait_for_host(refreshed)
+        fresh_info = host.request("surface", node="live")
+        if fresh_info["stale"]:
+            raise RuntimeError(f"surface did not recover from stale: {fresh_info!r}")
+
         # Drain events that the real window may have received while frames were
         # published, so the assertion below covers only the injected sequence.
         drained = surface.read_inputs()
         info = host.request("surface", node="live")
         if info["inputTail"] != info["inputHead"]:
             raise RuntimeError(f"input ring did not drain: {info!r}")
+        if info["stale"]:
+            raise RuntimeError(f"fresh surface reported stale: {info!r}")
+
+        coalesced_before = info["inputCoalesced"]
+        host.request("pointer", node="live", kind="down", x=40, y=50, button="left")
+        host.request("pointer", node="live", kind="move", x=100, y=80, button="left")
+        host.request("pointer", node="live", kind="move", x=100, y=80, button="left")
+        host.request("pointer", node="live", kind="up", x=100, y=80, button="left")
+        info = host.request("surface", node="live")
+        if info["inputCoalesced"] <= coalesced_before:
+            raise RuntimeError(f"identical pointer moves were not coalesced: {info!r}")
+        coalesced_events = surface.read_inputs()
+        identical_moves = [
+            event
+            for event in coalesced_events
+            if event["kind"] == 2 and event["x"] == 100 and event["y"] == 80
+        ]
+        if len(identical_moves) != 1:
+            raise RuntimeError(
+                f"expected one coalesced move, got {identical_moves!r}"
+            )
+
+        dropped_before = host.request("surface", node="live")["inputDropped"]
+        for index in range(70):
+            host.request(
+                "pointer", node="live", kind="move", x=index + 1, y=1, button="left"
+            )
+        info = host.request("surface", node="live")
+        if info["inputDropped"] <= dropped_before:
+            raise RuntimeError(f"full input ring did not report drops: {info!r}")
+        surface.read_inputs()
 
         host.request("pointer", node="live", kind="down", x=40, y=50, button="left")
         host.request("pointer", node="live", kind="move", x=100, y=80, button="left")
@@ -325,6 +372,11 @@ def main() -> int:
                     "cube_screenshot": str(cube_shot),
                     "cube_unique_colors": unique,
                     "drained_window_events": len(drained),
+                    "input_map": input_map,
+                    "input_coalesced": info["inputCoalesced"],
+                    "input_dropped": info["inputDropped"],
+                    "stale_after_idle": stale_info,
+                    "fresh_after_publish": fresh_info,
                     "input_ring": [
                         {"event": event_name(event["kind"]), **event}
                         for event in events

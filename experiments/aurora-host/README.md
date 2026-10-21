@@ -119,9 +119,10 @@ The host prints `READY`. Send one JSON object per line:
 {"id":10,"command":"setTick","node":"plot","hz":60}
 {"id":11,"command":"pointer","node":"plot","kind":"down","x":40,"y":30,"button":"left"}
 {"id":12,"command":"key","node":"plot","kind":"down","key":"a","modifiers":1}
-{"id":13,"command":"fileDialog","mode":"open","title":"Open file"}
-{"id":14,"command":"screenshot","path":"build/control-shot.ppm"}
-{"id":15,"command":"close"}
+{"id":13,"command":"inputmap"}
+{"id":14,"command":"fileDialog","mode":"open","title":"Open file"}
+{"id":15,"command":"screenshot","path":"build/control-shot.ppm"}
+{"id":16,"command":"close"}
 ```
 
 Responses are `RESPONSE {json}`; button events are `EVENT {json}`. A button
@@ -238,6 +239,14 @@ sequence in `hostReadSeq`; a writer waits for that acknowledgement before reusin
 the buffer. The host appends input at `inputTail`; the client reads from
 `inputHead` and advances it after consuming. `head == tail` is empty and
 `tail - head == inputCapacity` is full.
+
+The `surface` control response reports `inputDropped` and `inputCoalesced`
+counters plus `frameAgeMs` and `stale`; a mapped surface becomes stale after
+0.5 seconds without a new frame. Adjacent identical pointer moves are coalesced
+because motion is state rather than an ordered command; the coalescing counter
+records how many duplicate samples were absorbed. `inputmap` returns the
+numeric key, modifier, button, and event-kind contract used by the ring, so
+clients do not have to hard-code undocumented Aurora enum values.
 
 No draw commands cross the JSON channel per frame. `tools/drive_surface.py`
 publishes a checker frame and a software-rasterized, z-buffered rotating cube
