@@ -171,7 +171,7 @@ final class NotepadView : Widget
             const cx = rect.x + rect.width / 2;
             const cy = rect.y + rect.height / 2;
             if (target == CaptionTarget.minimize)
-                canvas.fillRect(Rect(cx - 6, cy - 1, 12, 2), glyph);
+                canvas.fillRect(Rect(cx - 5, cy, 10, 1), glyph);
             else if (target == CaptionTarget.maximize)
                 canvas.strokeRect(Rect(cx - 5, cy - 5, 10, 10), glyph, 1);
             else
@@ -465,7 +465,9 @@ private RgbaImage renderCloseGlyph(int size)
     const inset = size * 0.1;
     const start = inset;
     const end = size - inset;
-    const halfWidth = size * 0.055;
+    // Match the 1-logical-pixel stroke used by the minimize and maximize
+    // marks after conversion to the current physical raster size.
+    const halfWidth = size * 0.04;
     auto pixels = new ubyte[size * size * 4];
     foreach (y; 0 .. size)
     {
