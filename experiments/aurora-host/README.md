@@ -108,7 +108,7 @@ new copy is running.
 dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools/icon_author.d --scene samples/notepad.scene.json --icon assets/aurora-notepad.ico --scene-out samples/notepad-icon.scene.json
 ```
 
-`--kind host|notepad|alert` generates a new seven-size ICO, and
+`--kind host|notepad|sticky|alert` generates a new seven-size ICO, and
 `--base64-out <file>` also writes its base64 form.
 
 ## Portable package
