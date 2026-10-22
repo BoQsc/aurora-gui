@@ -85,15 +85,19 @@ Staging copies the executable into the package and then runs
 section using only the Python standard library, because the bundled DMD linker
 does not link resource objects. The source icon lives at
 `assets/aurora-host.ico`; it is a packaging input, not a package file.
-Regenerate that asset from the first-party generator with:
+The icon itself is authored by the first-party D tool; no Python or image
+library participates in icon generation. Regenerate the asset with:
 
 ```text
-python -B tools/make_app_icon.py --out assets/aurora-host.ico
+dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools/icon_author.d --kind host --out assets/aurora-host.ico
 ```
 
-The notepad scene icon is generated the same way with
-`python -B tools/make_app_icon.py --kind notepad --out assets/aurora-notepad.ico`,
-then embedded with `tools/embed_scene_icon.py`.
+The notepad asset and its scene embedding use the same tool:
+
+```text
+dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools/icon_author.d --kind notepad --out assets/aurora-notepad.ico
+dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools/icon_author.d --scene samples/notepad.scene.json --icon assets/aurora-notepad.ico --scene-out samples/notepad-icon.scene.json
+```
 
 For a build already produced by the release recipe, pass
 `--executable build/package-build/aurora-host-experiment.exe` to stage that

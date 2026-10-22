@@ -49,6 +49,8 @@ constraints as part of the experiment verification gate.
   reviewed lighter weight on light surfaces and established near-white weight.
 - The application icon is embedded in both the window runtime and the PE
   resource, so the executable remains portable without an `.ico` sidecar.
+- Icon artwork, ICO assembly, and scene base64 embedding are first-party D
+  authoring, so no Python interpreter or image library is involved.
 - A scene can carry its own base64 ICO in `window.icon`. The host materializes
   it to a content-addressed temp file and applies it live, so editing a scene
   updates the titlebar and taskbar icon without restarting the process.
@@ -73,6 +75,7 @@ python tools/reload_test.py --host build/verify/aurora-host-experiment.exe --sce
 python -B tools/package_host.py --out build/package/aurora-host-0.1.0-win64
 python -B tools/verify_package.py --package build/package/aurora-host-0.1.0-win64.zip
 
+dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools/icon_author.d --kind host --out assets/aurora-host.ico
 dub run --config=host -- samples/hello.scene.json
 dub run --config=host -- samples/workspace.scene.json --watch
 dub run --config=host-headless -- --render samples/hello.scene.json --out build/hello.ppm
@@ -102,8 +105,11 @@ new copy is running.
 `window.icon` or regenerate the scene from an ICO with:
 
 ```text
-python -B tools/embed_scene_icon.py --scene samples/notepad.scene.json --icon assets/aurora-notepad.ico --out samples/notepad-icon.scene.json
+dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools/icon_author.d --scene samples/notepad.scene.json --icon assets/aurora-notepad.ico --scene-out samples/notepad-icon.scene.json
 ```
+
+`--kind host|notepad|alert` generates a new seven-size ICO, and
+`--base64-out <file>` also writes its base64 form.
 
 ## Portable package
 

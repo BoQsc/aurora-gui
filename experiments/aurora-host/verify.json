@@ -34,6 +34,25 @@
     {
       "kind": "tests",
       "command": {
+        "program": "dmd",
+        "args": [
+          "-I../../vendor/aurora-d-0.4.5/source",
+          "-Isource",
+          "-i",
+          "-mscrtlib=msvcrt",
+          "-unittest",
+          "-od=build/verify",
+          "-of=build/verify/icon-author-unittest.exe",
+          "-run",
+          "tools/icon_author.d"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
         "program": "python",
         "args": [
           "-B",

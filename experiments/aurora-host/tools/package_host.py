@@ -108,7 +108,9 @@ def package_readme(version: str) -> str:
 This package contains the isolated retained-scene host, sample scenes, their
 relative image asset, and the applicable license notices. The executable
 carries its application icon; no .ico sidecar is required. A scene may embed a
-base64 ICO in window.icon and update its window icon live.
+base64 ICO in window.icon and update its window icon live. Icons are authored
+by the first-party D tool in the source checkout; this package needs no icon
+tooling.
 
 Runtime
   Windows x64 with the system msvcrt.dll. No Visual C++ Redistributable is
