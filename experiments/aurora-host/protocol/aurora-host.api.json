@@ -41,7 +41,8 @@
     "context-menu",
     "ui-test-driver",
     "tooltips",
-    "scene-icon"
+    "scene-icon",
+    "live-icon-control"
   ],
   "limits": {
     "maxSceneDepth": 16,

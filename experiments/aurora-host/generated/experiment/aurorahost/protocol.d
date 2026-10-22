@@ -47,6 +47,7 @@ immutable string[] Capabilities = [
     "ui-test-driver",
     "tooltips",
     "scene-icon",
+    "live-icon-control",
 ];
 
 immutable string[] NodeTypes = [

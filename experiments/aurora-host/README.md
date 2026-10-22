@@ -111,9 +111,21 @@ dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools
 `--kind host|notepad|sticky|alert` generates a new seven-size ICO, and
 `--base64-out <file>` also writes its base64 form.
 
+`samples/notepad-sticky.scene.json` is the checked-in sticky-icon demo and
+embeds `assets/aurora-notepad-sticky.ico`.
+
 With `--control`, a running window can also be changed directly with
 `{"command":"setIcon","icon":"<base64 ICO>"}`. The host materializes and owns
-the icon, so no scene edit or external HICON helper is needed.
+the icon, so no scene edit or external HICON helper is needed. Clients can
+detect this with the `live-icon-control` capability.
+
+The host, icon author, and protocol generator are D. Python files under
+`tools/` are development, test, and packaging tooling; they are not shipped in
+the package and are not required by the host or by icon authoring.
+
+Built-in authoring is procedural (`host`, `notepad`, `sticky`, `alert`).
+Arbitrary artwork is still supported at runtime by supplying an ICO through
+`window.icon` or `setIcon`; the authoring tool does not draw freeform art.
 
 ## Portable package
 

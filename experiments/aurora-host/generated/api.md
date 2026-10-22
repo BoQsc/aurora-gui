@@ -50,6 +50,7 @@
 - `ui-test-driver`
 - `tooltips`
 - `scene-icon`
+- `live-icon-control`
 
 ## Window
 

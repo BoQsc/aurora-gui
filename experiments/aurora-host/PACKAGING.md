@@ -60,6 +60,8 @@ A scene may instead embed a base64 ICO in `window.icon`. The host writes the
 decoded bytes to a content-addressed temp file and reloads the window icon
 live. `samples/notepad-icon.scene.json` demonstrates this and remains a single
 portable scene file with no icon sidecar.
+`samples/notepad-sticky.scene.json` is the checked-in sticky-icon variant and
+can also be changed live through the `setIcon` control command.
 
 ## Build a package
 

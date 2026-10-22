@@ -161,7 +161,8 @@ def main() -> int:
                     or "surface" not in capabilities
                     or "shared-surface" not in capabilities
                     or "tooltips" not in capabilities
-                    or "scene-icon" not in capabilities):
+                    or "scene-icon" not in capabilities
+                    or "live-icon-control" not in capabilities):
                 raise VerificationError("capabilities output is incomplete\n" + capabilities)
 
             checked = run([str(headless), "--check", "samples/hello.scene.json"]).stdout
@@ -198,6 +199,14 @@ def main() -> int:
             if "scene OK" not in icon_checked:
                 raise VerificationError(
                     "scene icon sample was not accepted\n" + icon_checked
+                )
+
+            sticky_checked = run(
+                [str(headless), "--check", "samples/notepad-sticky.scene.json"]
+            ).stdout
+            if "scene OK" not in sticky_checked:
+                raise VerificationError(
+                    "sticky icon sample was not accepted\n" + sticky_checked
                 )
 
             surface_checked = run(

@@ -124,6 +124,7 @@ Run from this directory
   {EXECUTABLE} --run samples/hello.scene.json
   {EXECUTABLE} --run samples/hello.scene.json --control
   {EXECUTABLE} --run samples/notepad-icon.scene.json
+  {EXECUTABLE} --run samples/notepad-sticky.scene.json
 
 PACKAGING.md defines the package contract and control-channel format.
 MANIFEST.sha256 is the integrity authority for the staged files.

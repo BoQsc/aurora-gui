@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify scene-embedded ICO data updates the titlebar and live taskbar icon."""
+"""Verify scene ICO and setIcon update the live window HICON."""
 from __future__ import annotations
 
 import argparse
@@ -153,13 +153,13 @@ def main() -> int:
                 except Exception:
                     pass
             if digest_b == digest_a:
-                raise RuntimeError("scene watch did not refresh the taskbar icon")
+                raise RuntimeError("scene watch did not refresh the window icon")
             if digest_b != digest_set_b:
                 raise RuntimeError(
-                    "setIcon and scene watch produced different taskbar icons")
+                    "setIcon and scene watch produced different window icons")
             shot_b = screenshot(host, temp / "b.ppm")
             if differing_pixels(shot_a[2], shot_b[2]) < 50:
-                raise RuntimeError("scene watch did not refresh the titlebar icon")
+                raise RuntimeError("scene watch did not refresh visible icon pixels")
 
             write_scene(scene_path, with_a)
             host.request("reload")
@@ -168,7 +168,7 @@ def main() -> int:
             if digest_c != digest_a:
                 raise RuntimeError("control reload did not restore the first icon")
             if differing_pixels(shot_b[2], shot_c[2]) < 50:
-                raise RuntimeError("control reload did not refresh the titlebar icon")
+                raise RuntimeError("control reload did not refresh visible icon pixels")
 
             bad = copy.deepcopy(base)
             bad["window"]["icon"] = "this is not base64!"
@@ -193,7 +193,7 @@ def main() -> int:
                 print("host stderr:", *host.errors, sep="\n", file=sys.stderr)
             host.close()
 
-    print("scene icon test passed: watch, control reload, titlebar, and taskbar")
+    print("scene icon test passed: setIcon, watch, control reload, and window HICON")
     return 0
 
 

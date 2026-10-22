@@ -62,6 +62,37 @@ def open_menu(session: HostSession, bounds: dict, node: str) -> dict:
     return state["menu"]
 
 
+def current_menu(session: HostSession) -> dict | None:
+    try:
+        state = session.send("menuState")
+    except RuntimeError as error:
+        if "no menu is open" not in str(error):
+            raise
+        return None
+    return state.get("menu")
+
+
+def open_context_menu(session: HostSession, bounds: dict) -> dict:
+    editor_x, editor_y = center(bounds["editor"])
+    for _ in range(3):
+        response = session.send(
+            "uiClick", x=editor_x, y=editor_y, button="right")
+        require(response.get("ok") is True,
+                f"context-menu click failed: {response}")
+        menu = current_menu(session)
+        if menu is not None and menu.get("items"):
+            return menu
+        time.sleep(0.05)
+    raise RuntimeError("context menu did not stay open")
+
+
+def ensure_context_menu(session: HostSession, bounds: dict) -> dict:
+    menu = current_menu(session)
+    if menu is not None and menu.get("items"):
+        return menu
+    return open_context_menu(session, bounds)
+
+
 def menu_index(menu: dict, label: str) -> int:
     for item in menu["items"]:
         if item["label"] == label:
@@ -394,9 +425,7 @@ def main() -> int:
                                menubar_bottom) == 0,
                 "the menu bar did not return to its unhovered pixels")
 
-        editor_x, editor_y = center(bounds["editor"])
-        session.send("uiClick", x=editor_x, y=editor_y, button="right")
-        context = session.send("menuState")["menu"]
+        context = open_context_menu(session, bounds)
         context_labels = [
             item["label"] for item in context["items"] if not item["separator"]
         ]
@@ -407,6 +436,7 @@ def main() -> int:
         session.send("screenshot", path=str(context_shot))
         burn = read_ppm(context_shot)
         verify_popup_pixels(burn[2], burn[0], burn[1], root, context, "context")
+        context = ensure_context_menu(session, bounds)
         click_item(session, context, "Copy")
         require(action_count(session, "editor", "edit.copy") == 1,
                 "context menu Copy did not emit its action")
@@ -447,6 +477,7 @@ def main() -> int:
               f"tabs={bounds['docs']['height']} "
               f"editor={bounds['editor']['height']} "
               f"status={bounds['statusbar']['height']}")
+        print(f"display scale: {scale:g}")
         print(f"editor text ink: {ink:.4f}")
         print(f"text weight profile: approved C; minimum={minimum_ink}")
         print(f"actions: {sorted(set(action_events(session)))}")
