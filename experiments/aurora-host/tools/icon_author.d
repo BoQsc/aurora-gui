@@ -107,6 +107,32 @@ private double[4] sampleNotepad(double x, double y) nothrow @safe
     return [color[0], color[1], color[2], 255.0];
 }
 
+private double[4] sampleSticky(double x, double y) nothrow @safe
+{
+    const border = roundedRectDistance(x, y, 0.46, 0.10);
+    if (border > 0.0)
+        return [0.0, 0.0, 0.0, 0.0];
+
+    auto color = mix([250.0, 190.0, 63.0], [216.0, 122.0, 28.0], y);
+    if (abs(border) < 0.022)
+        color = mix(color, [255.0, 238.0, 184.0], 0.9);
+
+    const page = max(abs(x - 0.5) - 0.245, abs(y - 0.5) - 0.305);
+    if (page <= 0.0)
+    {
+        color = [255.0, 251.0, 236.0];
+        const rule = min(
+            segmentDistance(x, y, 0.31, 0.37, 0.69, 0.37),
+            min(segmentDistance(x, y, 0.31, 0.50, 0.69, 0.50),
+                segmentDistance(x, y, 0.31, 0.63, 0.59, 0.63))) - 0.038;
+        if (rule <= 0.0)
+            color = [18.0, 108.0, 112.0];
+        else if (rule < 0.025)
+            color = mix(color, [198.0, 228.0, 219.0], 1.0 - rule / 0.025);
+    }
+    return [color[0], color[1], color[2], 255.0];
+}
+
 private double[4] sampleAlert(double x, double y) nothrow @safe
 {
     const edge = roundedRectDistance(x, y, 0.46, 0.10);
@@ -359,7 +385,7 @@ private void writeBase64(const(ubyte)[] bytes, string path)
 private int usage()
 {
     stderr.writeln("usage:");
-    stderr.writeln("  icon-author --kind host|notepad|alert --out <file.ico>");
+    stderr.writeln("  icon-author --kind host|notepad|sticky|alert --out <file.ico>");
     stderr.writeln("  icon-author --scene <scene.json> --icon <file.ico> " ~
         "--scene-out <scene.json>");
     return 2;
@@ -420,6 +446,7 @@ int main(string[] args)
         {
             case "host": sampler = &sampleHost; break;
             case "notepad": sampler = &sampleNotepad; break;
+            case "sticky": sampler = &sampleSticky; break;
             case "alert": sampler = &sampleAlert; break;
         }
         if (!outPath.length)
@@ -446,6 +473,7 @@ unittest
 {
     assert(sampleHost(0.5, 0.5)[3] == 255.0);
     assert(sampleNotepad(0.5, 0.5)[3] == 255.0);
+    assert(sampleSticky(0.5, 0.5)[3] == 255.0);
     assert(sampleAlert(0.5, 0.5)[3] == 255.0);
     assert(render(16, 8, &sampleHost).pixels()[(8 * 16 + 8) * 4 + 3] == 255);
 
@@ -479,11 +507,16 @@ unittest
 
     const host = buildIco(&sampleHost);
     const notepad = buildIco(&sampleNotepad);
+    const sticky = buildIco(&sampleSticky);
     const alert = buildIco(&sampleAlert);
     verifyIcon(host, "host icon");
     verifyIcon(notepad, "notepad icon");
+    verifyIcon(sticky, "sticky icon");
     verifyIcon(alert, "alert icon");
     assert(!equal(host, notepad));
+    assert(!equal(sticky, host));
+    assert(!equal(sticky, notepad));
+    assert(!equal(sticky, alert));
     assert(!equal(alert, host));
     assert(!equal(alert, notepad));
 
