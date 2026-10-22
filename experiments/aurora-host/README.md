@@ -111,6 +111,10 @@ dmd -I../../vendor/aurora-d-0.4.5/source -Isource -i -mscrtlib=msvcrt -run tools
 `--kind host|notepad|sticky|alert` generates a new seven-size ICO, and
 `--base64-out <file>` also writes its base64 form.
 
+With `--control`, a running window can also be changed directly with
+`{"command":"setIcon","icon":"<base64 ICO>"}`. The host materializes and owns
+the icon, so no scene edit or external HICON helper is needed.
+
 ## Portable package
 
 [PACKAGING.md](PACKAGING.md) defines the Windows x64 distribution layout,
@@ -198,8 +202,9 @@ The host prints `READY`. Send one JSON object per line:
 {"id":13,"command":"inputmap"}
 {"id":14,"command":"fileDialog","mode":"open","title":"Open file"}
 {"id":15,"command":"screenshot","path":"build/control-shot.ppm"}
-{"id":16,"command":"close"}
-{"id":17,"command":"reload"}
+{"id":16,"command":"setIcon","icon":"<base64 ICO>"}
+{"id":17,"command":"close"}
+{"id":18,"command":"reload"}
 ```
 
 Responses are `RESPONSE {json}`; button events are `EVENT {json}`. A button
@@ -211,6 +216,7 @@ commands.
 the existing window. `--watch` does the same automatically when the file's
 modification time changes. A reload keeps the window and control session alive;
 invalid scene edits are reported on stderr and leave the previous tree visible.
+`setIcon` replaces the live window icon from a base64 ICO until the next reload.
 
 Canvas and surface nodes opt into events with `"events":["pointer","key","tick"]`.
 Pointer events report local `x`/`y`, button, and modifiers; wheel events also

@@ -43,6 +43,22 @@ def wait_for_digest(hwnd: int, expected: str, timeout: float = 8.0) -> str:
         f"window icon did not update; expected {expected[:12]}, got {last[:12]}")
 
 
+def wait_for_change(hwnd: int, previous: str, timeout: float = 8.0) -> str:
+    deadline = time.monotonic() + timeout
+    last = previous
+    while time.monotonic() < deadline:
+        try:
+            last = icon_digest(hwnd, ICON_BIG, GCLP_HICON)
+        except Exception:
+            time.sleep(0.1)
+            continue
+        if last != previous:
+            return last
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"window icon did not change; stayed {last[:12]}")
+
+
 def first_icon_digest(hwnd: int, timeout: float = 5.0) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -93,6 +109,7 @@ def main() -> int:
             "samples/notepad-icon.scene.json does not embed "
             "assets/aurora-notepad.ico")
     icon_a = base64.b64encode(args.icon_a.read_bytes()).decode("ascii")
+    icon_b = base64.b64encode(args.icon_b.read_bytes()).decode("ascii")
     with_a = copy.deepcopy(base)
     with_a["window"]["icon"] = icon_a
     with_b = sample
@@ -108,6 +125,23 @@ def main() -> int:
             digest_a = first_icon_digest(hwnd)
             shot_a = screenshot(host, temp / "a.ppm")
 
+            try:
+                host.request("setIcon", icon="this is not base64!")
+            except RuntimeError as error:
+                if "not valid base64" not in str(error):
+                    raise
+            else:
+                raise RuntimeError("setIcon accepted invalid base64")
+
+            response = host.request("setIcon", icon=icon_b)
+            if response.get("bytes") != args.icon_b.stat().st_size:
+                raise RuntimeError("setIcon reported the wrong byte count")
+            digest_set_b = wait_for_change(hwnd, digest_a)
+            screenshot(host, temp / "set-b.ppm")
+
+            host.request("setIcon", icon=icon_a)
+            wait_for_digest(hwnd, digest_a)
+
             write_scene(scene_path, with_b)
             # The watch path must notice the new scene without a control reload.
             deadline = time.monotonic() + 8.0
@@ -120,6 +154,9 @@ def main() -> int:
                     pass
             if digest_b == digest_a:
                 raise RuntimeError("scene watch did not refresh the taskbar icon")
+            if digest_b != digest_set_b:
+                raise RuntimeError(
+                    "setIcon and scene watch produced different taskbar icons")
             shot_b = screenshot(host, temp / "b.ppm")
             if differing_pixels(shot_a[2], shot_b[2]) < 50:
                 raise RuntimeError("scene watch did not refresh the titlebar icon")

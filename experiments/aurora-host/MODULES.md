@@ -90,6 +90,8 @@ The control channel is one JSON object per line on stdin/stdout:
 - `status` reports the window and framebuffer dimensions.
 - `surface` reports mapping state, frame sequence, `hostReadSeq`, input
   head/tail, coalescing/drop counters, frame age, stale state, and DPI fields.
+- `setIcon` replaces the live window icon from a base64 ICO; the host owns the
+  materialized icon cache.
 - `screenshot` is a diagnostic/test operation, not a per-frame transport.
 
 ## Shared-surface rules

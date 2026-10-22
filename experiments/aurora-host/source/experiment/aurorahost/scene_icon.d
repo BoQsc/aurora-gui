@@ -13,15 +13,21 @@ enum MaxSceneIconBase64 = 512 * 1024;
 /// Decode the base64 ICO carried by `scene.window.icon`.
 ubyte[] decodeSceneIcon(string encoded)
 {
+    return decodeIcon(encoded, "scene.window.icon");
+}
+
+/// Decode a base64 ICO field, naming the field in validation errors.
+ubyte[] decodeIcon(string encoded, string label)
+{
     enforce(encoded.length > 0,
-        "scene.window.icon must not be empty");
+        label ~ " must not be empty");
     enforce(encoded.length <= MaxSceneIconBase64,
-        "scene.window.icon is too large");
+        label ~ " is too large");
     try
         return Base64.decode(encoded);
     catch (Exception error)
         throw new Exception(
-            "scene.window.icon is not valid base64: " ~ error.msg);
+            label ~ " is not valid base64: " ~ error.msg);
 }
 
 /**

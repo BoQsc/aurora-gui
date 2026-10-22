@@ -63,7 +63,7 @@
     "height": "int",
     "theme": "light|dark",
     "decorated": "optional boolean; false uses the in-canvas custom titlebar",
-    "icon": "optional base64 Windows ICO for the window, taskbar, and alt-tab icon; applied live on scene reload"
+    "icon": "optional base64 Windows ICO for the window, taskbar, and alt-tab icon; applied live on scene reload or the setIcon control command"
   },
   "nodeTypes": {
     "column": {
@@ -267,6 +267,7 @@
       "setTick": "Set a canvas tick rate by node ID.",
       "setTabs": "Replace the tab list on a tabs node by node ID.",
       "setChrome": "Update button style, icon, active state, text color, or font size by node ID.",
+      "setIcon": "Replace the live window, taskbar, and alt-tab icon from a base64 Windows ICO; the host owns the materialized cache.",
       "setMenu": "Replace a menu node's popup items, including checked and enabled state.",
       "getBounds": "Return a node's global rectangle.",
       "getTabs": "Return tab labels, actions, active/dirty flags, and global rectangles.",

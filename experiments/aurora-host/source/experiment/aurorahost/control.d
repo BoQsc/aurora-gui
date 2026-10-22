@@ -7,10 +7,12 @@ import experiment.aurorahost.host_ui : HostTooltip, TabItem, TabStrip;
 import experiment.aurorahost.protocol : ProtocolVersion;
 import experiment.aurorahost.scene : applyScene, describeScene, loadScene,
     NodeInfo, NodeRegistry, parseCanvasCommands, parseTabItems;
+import experiment.aurorahost.scene_icon : decodeIcon, sceneIconPath;
 import experiment.aurorahost.surface : SurfaceInfo;
 import aurora : ContextMenu, FileDialogMode, FileDialogOptions, GuiWindow, Key,
     MouseButton, Point, Rect, TextEditor, Theme, UiTestDriver, Widget,
     runFileDialogWindow;
+import aurora.image : RgbaImage, decodeIcoImage;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import core.time : MonoTime, usecs;
@@ -475,6 +477,9 @@ class ControlServer
                 case "setChrome":
                     setChrome(requestId, document);
                     break;
+                case "setIcon":
+                    setIcon(requestId, document);
+                    break;
                 case "setMenu":
                     setMenu(requestId, document);
                     break;
@@ -869,6 +874,36 @@ class ControlServer
         JSONValue[string] extra;
         extra["node"] = JSONValue(node);
         extra["commands"] = JSONValue(cast(long) parsed.length);
+        respond(id, true, null, extra);
+    }
+
+    private void setIcon(long id, JSONValue document)
+    {
+        const encoded = requireString(document, "icon");
+        const bytes = decodeIcon(encoded, "setIcon.icon");
+        RgbaImage image;
+        try
+            image = decodeIcoImage(bytes, "setIcon.icon");
+        catch (Exception error)
+        {
+            respond(id, false, "setIcon.icon is not a valid ICO: " ~ error.msg);
+            return;
+        }
+        const path = sceneIconPath(bytes);
+        if (path.length == 0)
+        {
+            respond(id, false, "setIcon.icon could not be materialized");
+            return;
+        }
+        if (!_window.setIconPath(path))
+        {
+            respond(id, false, "setIcon.icon could not be applied");
+            return;
+        }
+        _registry.iconPath = path;
+        _registry.iconImage = image;
+        JSONValue[string] extra;
+        extra["bytes"] = JSONValue(cast(long) bytes.length);
         respond(id, true, null, extra);
     }
 
