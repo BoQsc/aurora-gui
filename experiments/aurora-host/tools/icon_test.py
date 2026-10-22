@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from ctypes import wintypes
+import hashlib
 from pathlib import Path
 import sys
 import time
@@ -43,9 +44,40 @@ class Bitmap(ctypes.Structure):
     ]
 
 
-def window_icon(hwnd: int, which: int, class_index: int) -> tuple[int, int, int]:
+class BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+class RgbQuad(ctypes.Structure):
+    _fields_ = [
+        ("rgbBlue", ctypes.c_ubyte),
+        ("rgbGreen", ctypes.c_ubyte),
+        ("rgbRed", ctypes.c_ubyte),
+        ("rgbReserved", ctypes.c_ubyte),
+    ]
+
+
+class BitmapInfo(ctypes.Structure):
+    _fields_ = [
+        ("bmiHeader", BitmapInfoHeader),
+        ("bmiColors", RgbQuad * 1),
+    ]
+
+
+def window_icon_handle(hwnd: int, which: int, class_index: int) -> int:
     user32 = ctypes.windll.user32
-    gdi32 = ctypes.windll.gdi32
     user32.SendMessageW.argtypes = [
         wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.SendMessageW.restype = ctypes.c_void_p
@@ -56,6 +88,13 @@ def window_icon(hwnd: int, which: int, class_index: int) -> tuple[int, int, int]
         handle = user32.GetClassLongPtrW(hwnd, class_index)
     if not handle:
         raise RuntimeError(f"window has no icon for slot {which}")
+    return handle
+
+
+def window_icon(hwnd: int, which: int, class_index: int) -> tuple[int, int, int]:
+    handle = window_icon_handle(hwnd, which, class_index)
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
 
     user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes.POINTER(IconInfo)]
     user32.GetIconInfo.restype = wintypes.BOOL
@@ -79,6 +118,76 @@ def window_icon(hwnd: int, which: int, class_index: int) -> tuple[int, int, int]
             gdi32.DeleteObject(info.hbmColor)
         if info.hbmMask:
             gdi32.DeleteObject(info.hbmMask)
+
+
+def icon_pixels(hwnd: int, which: int, class_index: int) -> tuple[int, int, bytes]:
+    """Return the top-down RGBA pixels of a live window icon slot."""
+    handle = window_icon_handle(hwnd, which, class_index)
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes.POINTER(IconInfo)]
+    user32.GetIconInfo.restype = wintypes.BOOL
+    info = IconInfo()
+    if not user32.GetIconInfo(handle, ctypes.byref(info)):
+        raise RuntimeError(f"GetIconInfo failed for icon slot {which}")
+    try:
+        if not info.hbmColor:
+            raise RuntimeError(f"icon slot {which} has no colour bitmap")
+        gdi32.GetObjectW.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p]
+        gdi32.GetObjectW.restype = ctypes.c_int
+        bitmap = Bitmap()
+        if not gdi32.GetObjectW(
+            info.hbmColor, ctypes.sizeof(bitmap), ctypes.byref(bitmap)
+        ):
+            raise RuntimeError(f"icon slot {which} bitmap is unavailable")
+
+        bmi = BitmapInfo()
+        bmi.bmiHeader.biSize = ctypes.sizeof(BitmapInfoHeader)
+        bmi.bmiHeader.biWidth = bitmap.bmWidth
+        bmi.bmiHeader.biHeight = -bitmap.bmHeight
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bmi.bmiHeader.biCompression = 0
+        size = bitmap.bmWidth * bitmap.bmHeight * 4
+        pixels = ctypes.create_string_buffer(size)
+
+        hdc = user32.GetDC(None)
+        if not hdc:
+            raise RuntimeError("GetDC failed while reading the window icon")
+        try:
+            gdi32.GetDIBits.argtypes = [
+                wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
+                ctypes.c_void_p, ctypes.POINTER(BitmapInfo), wintypes.UINT]
+            gdi32.GetDIBits.restype = ctypes.c_int
+            copied = gdi32.GetDIBits(
+                hdc, info.hbmColor, 0, bitmap.bmHeight, pixels,
+                ctypes.byref(bmi), 0)
+            if copied != bitmap.bmHeight:
+                raise RuntimeError(
+                    f"GetDIBits copied {copied} of {bitmap.bmHeight} icon rows")
+        finally:
+            user32.ReleaseDC(None, hdc)
+        rgba = bytearray(pixels.raw)
+        for offset in range(0, len(rgba), 4):
+            rgba[offset], rgba[offset + 2] = rgba[offset + 2], rgba[offset]
+        return bitmap.bmWidth, bitmap.bmHeight, bytes(rgba)
+    finally:
+        gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+        gdi32.DeleteObject.restype = wintypes.BOOL
+        if info.hbmColor:
+            gdi32.DeleteObject(info.hbmColor)
+        if info.hbmMask:
+            gdi32.DeleteObject(info.hbmMask)
+
+
+def icon_digest(hwnd: int, which: int, class_index: int) -> str:
+    width, height, pixels = icon_pixels(hwnd, which, class_index)
+    return hashlib.sha256(
+        width.to_bytes(4, "little") +
+        height.to_bytes(4, "little") +
+        pixels
+    ).hexdigest()
 
 
 def main() -> int:

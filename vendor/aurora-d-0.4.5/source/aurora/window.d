@@ -249,6 +249,11 @@ final class GuiWindow : WidgetHost, NativeWindowSink
     {
         if (_native !is null) _native.setFrameDark(dark);
     }
+    /** Replace the application icon of this live window. */
+    bool setIconPath(string path)
+    {
+        return _native !is null && _native.setIconPath(path);
+    }
     string rendererName() const { return _renderer is null ? "None" : _renderer.name(); }
     bool hardwareAccelerated() const { return _renderer !is null && _renderer.hardwareAccelerated(); }
     bool rendererSupportsLiveResizeScaling() const

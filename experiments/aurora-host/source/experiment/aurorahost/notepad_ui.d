@@ -40,6 +40,7 @@ final class NotepadView : Widget
 
     private bool _wordWrap = true;
     private bool _showStatus = true;
+    private RgbaImage _icon;
     private RgbaImage _closeGlyph;
     private int _closeGlyphPhysical;
     private CaptionInteractionLayer _caption;
@@ -52,11 +53,12 @@ final class NotepadView : Widget
     private enum int statusHeight = 22;
     private enum int captionWidth = 46;
 
-    this(GuiWindow window, string title, string text,
+    this(GuiWindow window, string title, string text, RgbaImage icon,
         void delegate(string action) dispatchAction)
     {
         _window = window;
         _title = toUTF32(title);
+        _icon = icon;
         _dispatchAction = dispatchAction;
         foreach (label; ["File", "Edit", "Format", "View", "Help"])
             _menuLabels ~= toUTF32(label);
@@ -138,13 +140,18 @@ final class NotepadView : Widget
         canvas.fillRect(Rect(0, titleHeight - 1, width, 1), border);
 
         const icon = Rect(8, 8, 16, 16);
-        canvas.fillRoundedRect(icon, 2, Color.rgb(0x2a, 0x6f, 0xcc));
-        canvas.fillRect(Rect(icon.x + 3, icon.y + 4, 10, 1),
-            Color.rgb(255, 255, 255));
-        canvas.fillRect(Rect(icon.x + 3, icon.y + 8, 10, 1),
-            Color.rgb(255, 255, 255));
-        canvas.fillRect(Rect(icon.x + 3, icon.y + 12, 7, 1),
-            Color.rgb(255, 255, 255));
+        if (_icon !is null)
+            canvas.drawImage(icon, _icon);
+        else
+        {
+            canvas.fillRoundedRect(icon, 2, Color.rgb(0x2a, 0x6f, 0xcc));
+            canvas.fillRect(Rect(icon.x + 3, icon.y + 4, 10, 1),
+                Color.rgb(255, 255, 255));
+            canvas.fillRect(Rect(icon.x + 3, icon.y + 8, 10, 1),
+                Color.rgb(255, 255, 255));
+            canvas.fillRect(Rect(icon.x + 3, icon.y + 12, 7, 1),
+                Color.rgb(255, 255, 255));
+        }
 
         canvas.drawTextInRect(Rect(32, 0, width - 180, titleHeight),
             _title, text, 1, HorizontalAlign.left, VerticalAlign.middle, true);
@@ -460,6 +467,6 @@ Widget createNotepad(ComponentContext context, JSONValue props)
             if ((*value).type == JSONType.string)
                 text = (*value).str;
     }
-    return new NotepadView(context.window, title, text,
+    return new NotepadView(context.window, title, text, context.icon,
         context.dispatchAction);
 }

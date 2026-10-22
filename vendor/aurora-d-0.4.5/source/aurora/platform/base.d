@@ -141,6 +141,14 @@ abstract class NativeWindow
     void setFrameDark(bool dark)
     {
     }
+    /**
+     * Replace the application icon of a live window. The path names a Windows
+     * ICO; backends that cannot update icons return false.
+     */
+    bool setIconPath(string path)
+    {
+        return false;
+    }
     /** Current native decoration state. */
     bool decorated() const
     {

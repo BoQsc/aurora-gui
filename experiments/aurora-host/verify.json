@@ -58,6 +58,20 @@
       }
     },
     {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/scene_icon_test.py",
+          "--host",
+          "build/verify/aurora-host-experiment.exe"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
       "kind": "prepare",
       "command": {
         "program": "python",

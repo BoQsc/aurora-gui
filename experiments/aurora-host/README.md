@@ -49,6 +49,9 @@ constraints as part of the experiment verification gate.
   reviewed lighter weight on light surfaces and established near-white weight.
 - The application icon is embedded in both the window runtime and the PE
   resource, so the executable remains portable without an `.ico` sidecar.
+- A scene can carry its own base64 ICO in `window.icon`. The host materializes
+  it to a content-addressed temp file and applies it live, so editing a scene
+  updates the titlebar and taskbar icon without restarting the process.
 
 ## Commands
 
@@ -65,6 +68,7 @@ python tools/drive_surface.py
 python tools/surface_dpi_test.py
 python tools/module_contract_test.py
 python tools/icon_test.py --host build/verify/aurora-host-experiment.exe
+python tools/scene_icon_test.py --host build/verify/aurora-host-experiment.exe
 python tools/reload_test.py --host build/verify/aurora-host-experiment.exe --scene samples/workspace.scene.json
 python -B tools/package_host.py --out build/package/aurora-host-0.1.0-win64
 python -B tools/verify_package.py --package build/package/aurora-host-0.1.0-win64.zip
@@ -85,7 +89,7 @@ Windows locks a running executable, so the build cannot replace it.
 Use the launcher instead:
 
 ```text
-python -B tools/live_host.py --scene samples/notepad.scene.json
+python -B tools/live_host.py --scene samples/notepad-icon.scene.json
 ```
 
 It builds into a unique `build/live/<timestamp>/` directory, copies the host to
@@ -93,6 +97,13 @@ It builds into a unique `build/live/<timestamp>/` directory, copies the host to
 source rebuilds cannot close or block the visible window. Pass `--exe` to use an
 already-built host, and `--replace PID` to close the old window only after the
 new copy is running.
+
+`samples/notepad-icon.scene.json` embeds the notepad ICO as base64. Replace
+`window.icon` or regenerate the scene from an ICO with:
+
+```text
+python -B tools/embed_scene_icon.py --scene samples/notepad.scene.json --icon assets/aurora-notepad.ico --out samples/notepad-icon.scene.json
+```
 
 ## Portable package
 

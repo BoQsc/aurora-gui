@@ -49,6 +49,7 @@
 - `context-menu`
 - `ui-test-driver`
 - `tooltips`
+- `scene-icon`
 
 ## Window
 
@@ -59,6 +60,7 @@
 | `height` | int |
 | `theme` | light|dark |
 | `decorated` | optional boolean; false uses the in-canvas custom titlebar |
+| `icon` | optional base64 Windows ICO for the window, taskbar, and alt-tab icon; applied live on scene reload |
 
 ## Node types
 

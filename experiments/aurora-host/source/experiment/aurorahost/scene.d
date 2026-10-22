@@ -15,6 +15,7 @@ import experiment.aurorahost.image_widget : ImageWidget;
 import experiment.aurorahost.surface : SurfaceInfo, SurfaceSpec, SurfaceWidget;
 import experiment.aurorahost.protocol : MaxSceneDepth, MaxSceneNodes, NodeTypes,
     MaxCanvasCommands, MaxInputEvents, MaxSurfacePixels, SchemaVersion;
+import experiment.aurorahost.scene_icon : decodeSceneIcon, sceneIconPath;
 import std.algorithm : canFind, max;
 import std.exception : enforce;
 import std.file : readText;
@@ -24,6 +25,7 @@ import std.path : absolutePath, buildPath, dirName, isAbsolute;
 import std.utf : toUTF8;
 
 import aurora;
+import aurora.image : RgbaImage, decodeIcoImage;
 
 struct SceneWindow
 {
@@ -32,6 +34,8 @@ struct SceneWindow
     int height = 520;
     string theme = "light";
     bool decorated = true;
+    ubyte[] iconData;
+    RgbaImage iconImage;
 }
 
 struct SceneNode
@@ -117,6 +121,8 @@ class NodeRegistry
     string assetBase;
     GuiWindow window;
     bool decorated = true;
+    string iconPath;
+    RgbaImage iconImage;
     ComponentRegistry components;
 
     this()
@@ -517,6 +523,7 @@ private bool isWindowField(string name)
         case "height":
         case "theme":
         case "decorated":
+        case "icon":
             return true;
         default:
             return false;
@@ -1155,6 +1162,18 @@ Scene loadScene(string path)
         scene.window.theme = readString(window, "theme", "light", "scene.window");
         scene.window.decorated = readBool(window, "decorated", true,
             "scene.window");
+        if (auto icon = "icon" in window.object)
+        {
+            enforce((*icon).type == JSONType.string,
+                "scene.window.icon must be a base64 string");
+            scene.window.iconData = decodeSceneIcon((*icon).str);
+            try
+                scene.window.iconImage = decodeIcoImage(
+                    scene.window.iconData, "scene.window.icon");
+            catch (Exception error)
+                throw new Exception(
+                    "scene.window.icon is not a valid ICO: " ~ error.msg);
+        }
         enforce(scene.window.width >= 200 && scene.window.width <= 10000,
             "scene.window.width must be between 200 and 10000");
         enforce(scene.window.height >= 200 && scene.window.height <= 10000,
@@ -1515,7 +1534,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
                     delegate(string action)
                     {
                         registry.dispatchAction(node.id, action);
-                    }), node.props);
+                    }, registry.iconImage), node.props);
             applyHints(widget, node);
             registry.registerNode(node.id, node.type, widget, node.text);
             return widget;
@@ -1580,9 +1599,14 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry)
     options.height = scene.window.height;
     options.decorated = scene.window.decorated;
     options.darkTitleBar = scene.window.theme == "dark";
-    options.iconPath = applicationIconPath();
+    auto iconPath = sceneIconPath(scene.window.iconData);
+    if (iconPath.length == 0)
+        iconPath = applicationIconPath();
+    options.iconPath = iconPath;
     auto window = new GuiWindow(options, themeWithOverrides(scene));
     registry.window = window;
+    registry.iconPath = iconPath;
+    registry.iconImage = cast(RgbaImage) scene.window.iconImage;
     applyScene(window, scene, registry);
     return window;
 }
@@ -1593,6 +1617,13 @@ void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
     registry.reset();
     registry.assetBase = scene.assetBase;
     registry.decorated = scene.window.decorated;
+    registry.iconImage = cast(RgbaImage) scene.window.iconImage;
+    auto iconPath = sceneIconPath(scene.window.iconData);
+    if (iconPath.length == 0)
+        iconPath = applicationIconPath();
+    if (iconPath.length > 0 && iconPath != registry.iconPath &&
+        window.setIconPath(iconPath))
+        registry.iconPath = iconPath;
     auto root = buildWidget(scene.root, registry);
     registerTooltips(scene.root, registry);
     window.setRoot(root);

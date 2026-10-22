@@ -1,6 +1,6 @@
 module experiment.aurorahost.component;
 
-import aurora : GuiWindow, Widget;
+import aurora : GuiWindow, RgbaImage, Widget;
 import std.json : JSONValue;
 
 /**
@@ -15,6 +15,7 @@ struct ComponentContext
     GuiWindow window;
     string assetBase;
     void delegate(string action) dispatchAction;
+    RgbaImage icon;
 }
 
 alias ComponentFactory = Widget delegate(ComponentContext context,

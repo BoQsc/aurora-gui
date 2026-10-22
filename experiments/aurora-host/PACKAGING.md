@@ -56,6 +56,11 @@ the icon bytes for the live window/taskbar/Alt-Tab icon, and packaging appends
 the same ICO frames as `RT_GROUP_ICON`/`RT_ICON` PE resources for Explorer.
 This keeps the executable self-contained when it is copied out of the package.
 
+A scene may instead embed a base64 ICO in `window.icon`. The host writes the
+decoded bytes to a content-addressed temp file and reloads the window icon
+live. `samples/notepad-icon.scene.json` demonstrates this and remains a single
+portable scene file with no icon sidecar.
+
 ## Build a package
 
 From `experiments/aurora-host`:
@@ -85,6 +90,10 @@ Regenerate that asset from the first-party generator with:
 ```text
 python -B tools/make_app_icon.py --out assets/aurora-host.ico
 ```
+
+The notepad scene icon is generated the same way with
+`python -B tools/make_app_icon.py --kind notepad --out assets/aurora-notepad.ico`,
+then embedded with `tools/embed_scene_icon.py`.
 
 For a build already produced by the release recipe, pass
 `--executable build/package-build/aurora-host-experiment.exe` to stage that

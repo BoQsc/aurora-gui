@@ -1526,15 +1526,31 @@ else version (Windows)
             return true;
         }
 
-        private void setWindowIcon(string path)
+        override bool setIconPath(string path)
         {
-            if (_hwnd is null || path.length == 0) return;
+            return setWindowIcon(path);
+        }
+
+        private bool setWindowIcon(string path)
+        {
+            if (_hwnd is null || path.length == 0) return false;
             auto large = loadWindowIcon(path, SM_CXICON, SM_CYICON);
             auto small = loadWindowIcon(path, SM_CXSMICON, SM_CYSMICON);
-            if (large is null && small is null) return;
-            _largeIcon = large;
-            _smallIcon = small;
+            if (large is null && small is null) return false;
+
+            auto oldLarge = _largeIcon;
+            auto oldSmall = _smallIcon;
+            if (large !is null) _largeIcon = large;
+            if (small !is null) _smallIcon = small;
             applyWindowIcons();
+            // Explorer may create or repaint a taskbar button slightly after
+            // WM_SETICON. Republish once more after the shell has caught up.
+            SetTimer(_hwnd, iconRefreshTimerId, 250, null);
+            if (large !is null && oldLarge !is null && oldLarge !is large)
+                DestroyIcon(oldLarge);
+            if (small !is null && oldSmall !is null && oldSmall !is small)
+                DestroyIcon(oldSmall);
+            return true;
         }
 
         /// Publish the loaded icons to both the window and its class so the

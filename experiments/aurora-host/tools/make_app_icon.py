@@ -40,7 +40,7 @@ def segment_distance(x: float, y: float, ax: float, ay: float,
     return math.hypot(x - (ax + t * dx), y - (ay + t * dy))
 
 
-def sample(x: float, y: float) -> tuple[float, float, float, float]:
+def sample_host(x: float, y: float) -> tuple[float, float, float, float]:
     base = rounded_rect_distance(x, y, 0.44, 0.13)
     if base > 0.0:
         return 0.0, 0.0, 0.0, 0.0
@@ -66,7 +66,35 @@ def sample(x: float, y: float) -> tuple[float, float, float, float]:
     return color[0], color[1], color[2], 255.0
 
 
-def render(size: int, samples: int) -> bytes:
+def sample_notepad(x: float, y: float) -> tuple[float, float, float, float]:
+    border = rounded_rect_distance(x, y, 0.46, 0.09)
+    if border > 0.0:
+        return 0.0, 0.0, 0.0, 0.0
+
+    color = mix((47.0, 120.0, 208.0), (31.0, 87.0, 168.0), y)
+    if abs(border) < 0.02:
+        color = mix(color, (89.0, 158.0, 235.0), 0.85)
+
+    # A white page with three blue text rules reads as Notepad even at 16 px.
+    page = max(abs(x - 0.5) - 0.245, abs(y - 0.5) - 0.305)
+    if page <= 0.0:
+        color = (255.0, 255.0, 255.0)
+        rules = (
+            segment_distance(x, y, 0.32, 0.37, 0.68, 0.37),
+            segment_distance(x, y, 0.32, 0.49, 0.68, 0.49),
+            segment_distance(x, y, 0.32, 0.61, 0.58, 0.61),
+        )
+        rule = min(rules) - 0.042
+        if rule <= 0.0:
+            color = (42.0, 111.0, 204.0)
+        elif rule < 0.025:
+            color = mix(color, (196.0, 219.0, 244.0),
+                        1.0 - rule / 0.025)
+
+    return color[0], color[1], color[2], 255.0
+
+
+def render(size: int, samples: int, sampler=sample_host) -> bytes:
     pixels = bytearray()
     step = 1.0 / (size * samples)
     for py in range(size):
@@ -77,7 +105,7 @@ def render(size: int, samples: int) -> bytes:
                 y = (py + (sy + 0.5) / samples) / size
                 for sx in range(samples):
                     x = (px + (sx + 0.5) / samples) / size
-                    r, g, b, a = sample(x, y)
+                    r, g, b, a = sampler(x, y)
                     red += r * a
                     green += g * a
                     blue += b * a
@@ -101,19 +129,19 @@ def chunk(kind: bytes, data: bytes) -> bytes:
         ">I", zlib.crc32(body) & 0xFFFFFFFF)
 
 
-def png(size: int, samples: int) -> bytes:
-    raw = render(size, samples)
+def png(size: int, samples: int, sampler=sample_host) -> bytes:
+    raw = render(size, samples, sampler)
     return (b"\x89PNG\r\n\x1a\n" +
             chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) +
             chunk(b"IDAT", zlib.compress(raw, 9)) +
             chunk(b"IEND", b""))
 
 
-def build_ico() -> bytes:
+def build_ico(sampler=sample_host) -> bytes:
     frames = []
     for size in SIZES:
         samples = 8 if size <= 48 else 4
-        frames.append((size, png(size, samples)))
+        frames.append((size, png(size, samples, sampler)))
     header = struct.pack("<HHH", 0, 1, len(frames))
     offset = 6 + 16 * len(frames)
     directory = bytearray()
@@ -138,9 +166,11 @@ def build_ico() -> bytes:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--kind", choices=("host", "notepad"), default="host")
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_bytes(build_ico())
+    sampler = sample_host if args.kind == "host" else sample_notepad
+    args.out.write_bytes(build_ico(sampler))
     print(f"wrote {args.out} ({args.out.stat().st_size} bytes, "
           f"{len(SIZES)} sizes)")
     return 0

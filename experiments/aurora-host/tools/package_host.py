@@ -107,7 +107,8 @@ def package_readme(version: str) -> str:
 
 This package contains the isolated retained-scene host, sample scenes, their
 relative image asset, and the applicable license notices. The executable
-carries its application icon; no .ico sidecar is required.
+carries its application icon; no .ico sidecar is required. A scene may embed a
+base64 ICO in window.icon and update its window icon live.
 
 Runtime
   Windows x64 with the system msvcrt.dll. No Visual C++ Redistributable is
@@ -120,6 +121,7 @@ Run from this directory
   {EXECUTABLE} --render samples/image.scene.json --out out/image.ppm
   {EXECUTABLE} --run samples/hello.scene.json
   {EXECUTABLE} --run samples/hello.scene.json --control
+  {EXECUTABLE} --run samples/notepad-icon.scene.json
 
 PACKAGING.md defines the package contract and control-channel format.
 MANIFEST.sha256 is the integrity authority for the staged files.
