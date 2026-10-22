@@ -1,10 +1,12 @@
 module experiment.aurorahost.notepad_ui;
 
+import experiment.aurorahost.caption : CaptionInteractionLayer;
 import experiment.aurorahost.component : ComponentContext;
 import experiment.aurorahost.host_editor : HostTextEditor;
 import aurora;
 import aurora.image : RgbaImage;
 import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
+import aurora.widgets.titlebar : TitleBarControl;
 import std.format : format;
 import std.json : JSONType, JSONValue;
 import std.math : sqrt;
@@ -38,13 +40,10 @@ final class NotepadView : Widget
 
     private bool _wordWrap = true;
     private bool _showStatus = true;
-    private bool _maximized;
-    private Rect _restoreBounds;
     private RgbaImage _closeGlyph;
     private int _closeGlyphPhysical;
+    private CaptionInteractionLayer _caption;
 
-    private CaptionTarget _hotCaption;
-    private CaptionTarget _pressedCaption;
     private int _hotMenu = -1;
     private int _pressedMenu = -1;
 
@@ -72,6 +71,10 @@ final class NotepadView : Widget
         _editor.onCursorMoved = delegate() { updateStatus(); };
         add(_editor);
 
+        _caption = new CaptionInteractionLayer(window, titleHeight);
+        _caption.onVisualChanged = delegate() { invalidate(); };
+        add(_caption);
+
         setFocusable(false);
         setCursor(CursorKind.arrow);
     }
@@ -98,17 +101,6 @@ final class NotepadView : Widget
             captionWidth, titleHeight);
     }
 
-    private CaptionTarget captionAt(Point point)
-    {
-        foreach (target; [CaptionTarget.minimize, CaptionTarget.maximize,
-            CaptionTarget.close])
-        {
-            if (captionRect(target).contains(point))
-                return target;
-        }
-        return CaptionTarget.none;
-    }
-
     private int menuAt(Point point)
     {
         if (point.y < titleHeight || point.y >= titleHeight + menuHeight)
@@ -124,6 +116,8 @@ final class NotepadView : Widget
         const bottom = _showStatus ? statusHeight : 0;
         _editor.setBounds(Rect(0, menuY(), bounds().width,
             maxInt(1, bounds().height - menuY() - bottom)));
+        _caption.setBounds(Rect(0, 0, bounds().width, titleHeight));
+        _caption.layoutTree();
         _editor.layoutTree();
     }
 
@@ -159,8 +153,8 @@ final class NotepadView : Widget
             CaptionTarget.close])
         {
             const rect = captionRect(target);
-            const hot = target == _hotCaption;
-            const pressed = target == _pressedCaption;
+            const hot = target == captionTarget(_caption.hotControl());
+            const pressed = target == captionTarget(_caption.pressedControl());
             if (hot || pressed)
                 canvas.fillRect(rect,
                     target == CaptionTarget.close ?
@@ -213,33 +207,18 @@ final class NotepadView : Widget
 
     override bool onMouseMove(ref Event event)
     {
-        const nextCaption = captionAt(event.position);
         const nextMenu = menuAt(event.position);
-        if (nextCaption != _hotCaption || nextMenu != _hotMenu)
+        if (nextMenu != _hotMenu)
         {
-            _hotCaption = nextCaption;
             _hotMenu = nextMenu;
-            setCursor(nextCaption != CaptionTarget.none ? CursorKind.hand :
-                nextMenu >= 0 ? CursorKind.hand : CursorKind.arrow);
+            setCursor(nextMenu >= 0 ? CursorKind.hand : CursorKind.arrow);
             invalidate();
         }
-        return nextCaption != CaptionTarget.none || nextMenu >= 0;
+        return nextMenu >= 0;
     }
 
     override bool onMouseDown(ref Event event)
     {
-        if (event.position.y < titleHeight)
-        {
-            const target = captionAt(event.position);
-            if (target != CaptionTarget.none)
-            {
-                _pressedCaption = target;
-                invalidate();
-                return true;
-            }
-            beginSystemMove();
-            return true;
-        }
         const index = menuAt(event.position);
         if (index >= 0)
         {
@@ -257,15 +236,6 @@ final class NotepadView : Widget
 
     override bool onMouseUp(ref Event event)
     {
-        if (_pressedCaption != CaptionTarget.none)
-        {
-            const target = _pressedCaption;
-            _pressedCaption = CaptionTarget.none;
-            invalidate();
-            if (captionRect(target).contains(event.position))
-                activateCaption(target);
-            return true;
-        }
         if (_pressedMenu >= 0)
         {
             _pressedMenu = -1;
@@ -275,38 +245,15 @@ final class NotepadView : Widget
         return false;
     }
 
-    private void activateCaption(CaptionTarget target)
+    private static CaptionTarget captionTarget(TitleBarControl control)
     {
-        if (target == CaptionTarget.close)
-            _window.close();
-        else if (target == CaptionTarget.minimize)
-            _window.minimize();
-        else if (target == CaptionTarget.maximize)
-            toggleMaximize();
-    }
-
-    private void toggleMaximize()
-    {
-        Rect current;
-        if (_maximized)
+        switch (control)
         {
-            if (!_restoreBounds.empty)
-                _window.setWindowBounds(_restoreBounds);
-            _maximized = false;
+            case TitleBarControl.minimize: return CaptionTarget.minimize;
+            case TitleBarControl.maximize: return CaptionTarget.maximize;
+            case TitleBarControl.close: return CaptionTarget.close;
+            default: return CaptionTarget.none;
         }
-        else
-        {
-            if (_window.windowBounds(current))
-                _restoreBounds = current;
-            Rect work;
-            if (_window.queryWorkArea(Point(current.x, current.y), work) &&
-                !work.empty)
-            {
-                _window.setWindowBounds(work);
-                _maximized = true;
-            }
-        }
-        invalidate();
     }
 
     private void updateStatus()

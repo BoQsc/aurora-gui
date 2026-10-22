@@ -2,6 +2,7 @@ module experiment.aurorahost.scene;
 
 import experiment.aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
     parseCanvasColor;
+import experiment.aurorahost.caption : StandardCaptionBar;
 import experiment.aurorahost.component : ComponentContext, ComponentRegistry;
 import experiment.aurorahost.components : registerBuiltinComponents;
 import experiment.aurorahost.events : HostEvent;
@@ -1489,7 +1490,7 @@ Widget buildWidget(const SceneNode node, NodeRegistry registry)
             }
             enforce(registry.window !is null,
                 "titleBar requires a window host");
-            auto bar = new FramelessWindowTitleBar(registry.window);
+            auto bar = new StandardCaptionBar(registry.window);
             bar.setTitle(node.text);
             bar.setShowIcon(false);
             if (node.height > 0)

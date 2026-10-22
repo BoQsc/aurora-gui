@@ -6,6 +6,8 @@
     "experiments/aurora-host/samples/notepad.scene.json",
     "experiments/aurora-host/tools/host_session.py",
     "experiments/aurora-host/tools/notepad_component_test.py",
+    "experiments/aurora-host/tools/caption_behavior_test.py",
+    "experiments/aurora-host/tools/titlebar_behavior_test.py",
     "experiments/aurora-host/dub.json"
   ],
   "steps": [
@@ -25,6 +27,36 @@
         "args": [
           "-B",
           "tools/notepad_component_test.py",
+          "--host",
+          "build/verify/aurora-host-experiment.exe",
+          "--scene",
+          "samples/notepad.scene.json"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/titlebar_behavior_test.py",
+          "--host",
+          "build/verify/aurora-host-experiment.exe"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/caption_behavior_test.py",
           "--host",
           "build/verify/aurora-host-experiment.exe",
           "--scene",
