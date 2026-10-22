@@ -17,6 +17,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_crt_imports import verify_crt_imports  # noqa: E402
+from check_pe_icon import PeIconError, verify_pe_icon  # noqa: E402
 
 
 class VerificationError(Exception):
@@ -232,6 +233,10 @@ def verify_package(package: Path) -> None:
             raise VerificationError(
                 "package CRT imports are invalid:\n" + "\n".join(crt_errors)
             )
+        try:
+            icon_frames = verify_pe_icon(executable)
+        except PeIconError as error:
+            raise VerificationError(f"package application icon is invalid: {error}")
 
         version = run(executable, ["--version"], root)
         if "aurora-host-experiment" not in version:
@@ -253,6 +258,7 @@ def verify_package(package: Path) -> None:
 
         verify_control(executable, root)
         print("CRT imports: Windows msvcrt.dll only")
+        print(f"icon: embedded RT_GROUP_ICON with {icon_frames} frames")
         print("control: ping, tree, and close verified")
         print(f"package verification passed: {package}")
 

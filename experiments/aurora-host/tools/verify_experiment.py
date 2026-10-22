@@ -60,6 +60,7 @@ def build(dmd: str, temp: pathlib.Path, name: str, *, headless: bool) -> pathlib
         f"-I{STANDARD / 'source'}",
         f"-I{ROOT / 'generated'}",
         f"-I{ROOT / 'source'}",
+        f"-J{ROOT / 'assets'}",
         "-mscrtlib=msvcrt",
         "-i",
         f"-od={object_dir}",

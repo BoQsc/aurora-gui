@@ -25,7 +25,8 @@ be extracted anywhere; no runtime path points back into the source repository.
 
 ```text
 aurora-host-<version>-win64/
-  aurora-host-experiment.exe     windowed host; also supports check/render
+  aurora-host-experiment.exe     windowed host with an embedded application
+                                 icon; also supports check/render
   README.md                     package-local launch instructions
   PACKAGING.md                  this contract
   MANIFEST.sha256               content hashes for every other package file
@@ -33,7 +34,8 @@ aurora-host-<version>-win64/
   samples/                      scenes and the relative image asset
   licenses/
     LICENSE                     host code: 0BSD
-    LICENSE-CC0.txt             documentation and sample content: CC0-1.0
+    LICENSE-CC0.txt             documentation, sample content, and icon
+                                 artwork: CC0-1.0
     THIRD-PARTY-NOTICES.md      package-relative third-party index
     aurora-d/
       LICENSE                   aurora-d code: 0BSD
@@ -48,6 +50,11 @@ aurora-host-<version>-win64/
 `MANIFEST.sha256` covers the executable, scenes, documentation, and license
 files. The manifest and metadata are the only package files that are generated
 after staging.
+
+The application icon is not shipped as a sidecar `.ico`. The executable embeds
+the icon bytes for the live window/taskbar/Alt-Tab icon, and packaging appends
+the same ICO frames as `RT_GROUP_ICON`/`RT_ICON` PE resources for Explorer.
+This keeps the executable self-contained when it is copied out of the package.
 
 ## Build a package
 
@@ -67,6 +74,17 @@ compiler runs need not be byte-identical; reusing the same executable produces
 a byte-identical archive. The DMD license text is copied from the compiler
 installation selected by `dmd` on `PATH`; packaging fails if that text cannot
 be found.
+
+Staging copies the executable into the package and then runs
+`scripts/patch-pe-icon.py` against that copy. The patcher appends a `.rsrc`
+section using only the Python standard library, because the bundled DMD linker
+does not link resource objects. The source icon lives at
+`assets/aurora-host.ico`; it is a packaging input, not a package file.
+Regenerate that asset from the first-party generator with:
+
+```text
+python -B tools/make_app_icon.py --out assets/aurora-host.ico
+```
 
 For a build already produced by the release recipe, pass
 `--executable build/package-build/aurora-host-experiment.exe` to stage that
@@ -91,8 +109,9 @@ server is available and then uses newline-delimited JSON on stdin/stdout. A
 request is `{"id": <number>, "command": "<name>"}`; responses are
 `RESPONSE {...}` and asynchronous notifications are `EVENT {...}`.
 
-The windowed executable retains the full CLI, so the package needs only one
-binary. `--render` does not require a visible window and writes a P6 PPM.
+The windowed executable retains the full CLI and its icon, so the package needs
+only one binary. `--render` does not require a visible window and writes a P6
+PPM.
 
 ## Clean-environment verification
 
@@ -104,16 +123,18 @@ python -B tools/verify_package.py --package build/package/aurora-host-0.1.0-win6
 
 The verifier extracts the zip into a fresh temporary directory, checks every
 manifest hash, runs `--version` and `--check`, renders both a text scene and the
-image-asset scene, and drives the live control channel through `ping`, `tree`,
-and `close`. It does not add the repository to `PATH`, `PYTHONPATH`, or the
-child environment. A failure identifies the missing file, dependency, or
-runtime behavior.
+image-asset scene, validates the executable's embedded `RT_GROUP_ICON` frames,
+and drives the live control channel through `ping`, `tree`, and `close`. It does
+not add the repository to `PATH`, `PYTHONPATH`, or the child environment. A
+failure identifies the missing file, dependency, or runtime behavior.
 
 ## Portability contract
 
 - Every runtime path in the package is relative to the extracted package root
   or to the scene file that references it.
 - The package contains no absolute source-checkout paths and no build directory.
+- The executable contains both its runtime icon bytes and its Explorer icon
+  resources. No `.ico` sidecar is required at runtime.
 - The package contains no `MSVCR120.dll` or other redistributable CRT. The
   executable must pass `tools/check_crt_imports.py`, which requires the system
   `msvcrt.dll` and rejects versioned `msvcr*`, `msvcp*`, `vcruntime*`, UCRT, and

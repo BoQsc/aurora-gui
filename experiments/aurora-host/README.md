@@ -47,6 +47,8 @@ constraints as part of the experiment verification gate.
   reports the active hint through `tooltipState`.
 - Text uses Aurora's shared foreground-aware grayscale transfer, with the
   reviewed lighter weight on light surfaces and established near-white weight.
+- The application icon is embedded in both the window runtime and the PE
+  resource, so the executable remains portable without an `.ico` sidecar.
 
 ## Commands
 
@@ -62,6 +64,7 @@ python tools/drive_image.py
 python tools/drive_surface.py
 python tools/surface_dpi_test.py
 python tools/module_contract_test.py
+python tools/icon_test.py --host build/verify/aurora-host-experiment.exe
 python tools/reload_test.py --host build/verify/aurora-host-experiment.exe --scene samples/workspace.scene.json
 python -B tools/package_host.py --out build/package/aurora-host-0.1.0-win64
 python -B tools/verify_package.py --package build/package/aurora-host-0.1.0-win64.zip

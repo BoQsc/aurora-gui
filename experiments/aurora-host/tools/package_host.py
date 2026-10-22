@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parents[1]
 EXECUTABLE = "aurora-host-experiment.exe"
 BUILD_CONFIG = "host"
+ICON = ROOT / "assets" / "aurora-host.ico"
+PE_ICON_PATCHER = REPO / "scripts" / "patch-pe-icon.py"
 
 
 class PackagingError(Exception):
@@ -80,11 +82,32 @@ def build_executable(destination: Path) -> Path:
     return executable
 
 
+def patch_executable_icon(executable: Path) -> None:
+    """Embed the application icon without adding a sidecar asset to the package."""
+    if not ICON.is_file():
+        raise PackagingError(f"application icon is missing: {ICON}")
+    if not PE_ICON_PATCHER.is_file():
+        raise PackagingError(f"PE icon patcher is missing: {PE_ICON_PATCHER}")
+    completed = subprocess.run(
+        [sys.executable, str(PE_ICON_PATCHER), str(ICON), str(executable)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        raise PackagingError(
+            "could not embed the application icon:\n"
+            + completed.stdout
+            + completed.stderr
+        )
+
+
 def package_readme(version: str) -> str:
     return f"""Aurora host experiment {version} (Windows x64)
 
 This package contains the isolated retained-scene host, sample scenes, their
-relative image asset, and the applicable license notices.
+relative image asset, and the applicable license notices. The executable
+carries its application icon; no .ico sidecar is required.
 
 Runtime
   Windows x64 with the system msvcrt.dll. No Visual C++ Redistributable is
@@ -135,6 +158,7 @@ def write_metadata(stage: Path, version: str) -> None:
 
 def stage_package(stage: Path, executable: Path, version: str) -> None:
     copy_file(executable, stage / EXECUTABLE)
+    patch_executable_icon(stage / EXECUTABLE)
     copy_file(ROOT / "PACKAGING.md", stage / "PACKAGING.md")
     copy_file(ROOT / "LICENSE", stage / "licenses" / "LICENSE")
     copy_file(ROOT / "LICENSE-CC0.txt", stage / "licenses" / "LICENSE-CC0.txt")

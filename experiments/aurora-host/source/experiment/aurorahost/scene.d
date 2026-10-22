@@ -2,6 +2,7 @@ module experiment.aurorahost.scene;
 
 import experiment.aurorahost.canvas : CanvasCommand, CanvasSpec, CanvasWidget,
     parseCanvasColor;
+import experiment.aurorahost.app_icon : applicationIconPath;
 import experiment.aurorahost.caption : StandardCaptionBar;
 import experiment.aurorahost.component : ComponentContext, ComponentRegistry;
 import experiment.aurorahost.components : registerBuiltinComponents;
@@ -1579,6 +1580,7 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry)
     options.height = scene.window.height;
     options.decorated = scene.window.decorated;
     options.darkTitleBar = scene.window.theme == "dark";
+    options.iconPath = applicationIconPath();
     auto window = new GuiWindow(options, themeWithOverrides(scene));
     registry.window = window;
     applyScene(window, scene, registry);

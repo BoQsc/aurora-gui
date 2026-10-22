@@ -3,6 +3,7 @@
     "experiments/aurora-host/protocol",
     "experiments/aurora-host/generated",
     "experiments/aurora-host/source",
+    "experiments/aurora-host/assets",
     "experiments/aurora-host/tools",
     "experiments/aurora-host/samples",
     "experiments/aurora-host/tests",
@@ -40,6 +41,20 @@
         ],
         "workdir": ".",
         "timeout": 600000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/icon_test.py",
+          "--host",
+          "build/verify/aurora-host-experiment.exe"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
       }
     },
     {

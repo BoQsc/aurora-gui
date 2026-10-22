@@ -3,6 +3,7 @@
     "experiments/aurora-host/protocol",
     "experiments/aurora-host/generated",
     "experiments/aurora-host/source",
+    "experiments/aurora-host/assets",
     "experiments/aurora-host/tools",
     "experiments/aurora-host/samples",
     "experiments/aurora-host/dub.json",
