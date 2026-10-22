@@ -53,6 +53,24 @@
     {
       "kind": "tests",
       "command": {
+        "program": "dmd",
+        "args": [
+          "-I../../vendor/aurora-d-0.4.5/source",
+          "-Isource",
+          "-i",
+          "-mscrtlib=msvcrt",
+          "-od=build/verify",
+          "-of=build/verify/notepad-glyph-test.exe",
+          "-run",
+          "tools/notepad_glyph_test.d"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
         "program": "python",
         "args": [
           "-B",
@@ -83,6 +101,22 @@
         "args": [
           "-B",
           "tools/scene_icon_test.py",
+          "--host",
+          "build/verify/aurora-host-experiment.exe"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "interaction",
+      "command": {
+        "program": "python",
+        "args": [
+          "-B",
+          "tools/notepad_close_pixel_test.py",
+          "--out-dir",
+          "build",
           "--host",
           "build/verify/aurora-host-experiment.exe"
         ],

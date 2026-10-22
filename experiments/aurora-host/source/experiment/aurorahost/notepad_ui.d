@@ -3,13 +3,12 @@ module experiment.aurorahost.notepad_ui;
 import experiment.aurorahost.caption : CaptionInteractionLayer;
 import experiment.aurorahost.component : ComponentContext;
 import experiment.aurorahost.host_editor : HostTextEditor;
+import experiment.aurorahost.notepad_close_glyph : renderCloseGlyph;
 import aurora;
-import aurora.image : RgbaImage;
 import aurora.widgets.contextmenu : ContextMenuItem, showContextMenu;
 import aurora.widgets.titlebar : TitleBarControl;
 import std.format : format;
 import std.json : JSONType, JSONValue;
-import std.math : sqrt;
 import std.utf : toUTF32;
 
 private enum CaptionTarget : ubyte
@@ -392,64 +391,6 @@ final class NotepadView : Widget
                 return [];
         }
     }
-}
-
-private double distanceToSegment(double px, double py, double ax, double ay,
-    double bx, double by)
-{
-    const dx = bx - ax;
-    const dy = by - ay;
-    const lengthSquared = dx * dx + dy * dy;
-    double t = lengthSquared == 0 ? 0 :
-        ((px - ax) * dx + (py - ay) * dy) / lengthSquared;
-    t = t < 0 ? 0 : t > 1 ? 1 : t;
-    const qx = ax + t * dx - px;
-    const qy = ay + t * dy - py;
-    return sqrt(qx * qx + qy * qy);
-}
-
-/**
- * Rasterize the caption close mark at physical resolution. The two crossing
- * strokes are supersampled so the mark stays sharp at 125% and 150% DPI
- * instead of becoming a jagged logical-pixel diagonal.
- */
-private RgbaImage renderCloseGlyph(int size)
-{
-    const samples = 4;
-    const inset = size * 0.1;
-    const start = inset;
-    const end = size - inset;
-    // Match the 1-logical-pixel stroke used by the minimize and maximize
-    // marks after conversion to the current physical raster size.
-    const halfWidth = size * 0.04;
-    auto pixels = new ubyte[size * size * 4];
-    foreach (y; 0 .. size)
-    {
-        foreach (x; 0 .. size)
-        {
-            uint covered;
-            foreach (sy; 0 .. samples)
-            {
-                foreach (sx; 0 .. samples)
-                {
-                    const px = x + (sx + 0.5) / samples;
-                    const py = y + (sy + 0.5) / samples;
-                    if (distanceToSegment(px, py, start, start, end, end) <=
-                            halfWidth ||
-                        distanceToSegment(px, py, end, start, start, end) <=
-                            halfWidth)
-                        ++covered;
-                }
-            }
-            const offset = (y * size + x) * 4;
-            pixels[offset] = 255;
-            pixels[offset + 1] = 255;
-            pixels[offset + 2] = 255;
-            pixels[offset + 3] = cast(ubyte)
-                (covered * 255 / (samples * samples));
-        }
-    }
-    return new RgbaImage(size, size, pixels);
 }
 
 Widget createNotepad(ComponentContext context, JSONValue props)
