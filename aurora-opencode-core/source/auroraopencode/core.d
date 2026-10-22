@@ -1156,6 +1156,12 @@ public struct ChatSession
     // written before this field existed) and sorts as the oldest.
     long updatedAt;
     string verificationScope;
+    // General headless-session configuration. `instructions` is appended to
+    // this conversation's system prompt only. `toolsMode` is -1 to inherit the
+    // app's Tools setting, 0 to disable tools for this session, and 1 to enable
+    // them for this session. Both fields are optional and backward compatible.
+    string instructions;
+    int toolsMode = -1;
 }
 
 // ---------------------------------------------------------------------------

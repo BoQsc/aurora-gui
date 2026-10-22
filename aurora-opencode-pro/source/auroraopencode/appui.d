@@ -10452,6 +10452,21 @@ private enum ChangeGrouping
     all
 }
 
+/// General headless-session state, independent of any game or NPC vocabulary.
+public struct AgentSessionInfo
+{
+    string id;
+    string title;
+    string model;
+    bool thinking;
+    int toolsMode;
+    bool busy;
+    string turnStatus;
+    string taskStatus;
+    string verificationStatus;
+    string turnId;
+}
+
 public final class OpenCodeRoot : VBox
 {
     private GuiWindow _window;
@@ -11737,7 +11752,7 @@ private string _suggestExcludeId;
         auto session = &_sessions[_current];
         if (initializeLegacyTask(*session)) { publishThreadUpdated(*session); markDirty(); }
         if (session.taskStatus != "waiting_input" || session.turnStatus != "completed" || taskAwaitingInput(*session) ||
-            !_settings.toolsEnabled || !_settings.apiKey.length) return false;
+            !toolsEnabledForSession(*session) || !_settings.apiKey.length) return false;
         session.taskStatus = "active"; session.contract.blocker = "";
         session.turnStatus = "interrupted";
         if (!_resumeCountdown)
@@ -18382,7 +18397,7 @@ private void pollButtonSuggestionRequest()
                 recordTurnUsage(*message, totalTokens, promptTokens,
                     completionTokens, requestId);
             message.tokensPerSecondTenths = _turnTokenRateTenths;
-            if (!cancelled && terminal && _settings.toolsEnabled && _settings.autoRetireImages)
+            if (!cancelled && terminal && toolsEnabledForSession(_sessions[sessionIndex]) && _settings.autoRetireImages)
                 message.retiredImages = completedReplyImageIds(_sessions[sessionIndex], message.id,
                     experimentalImageHistoryLimit());
             publishMessageEvent(AgentEventKind.itemUpdated,
@@ -18449,7 +18464,7 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
-        if (taskContinuation(*session, _settings.toolsEnabled).action == TaskContinuationAction.settle &&
+        if (taskContinuation(*session, toolsEnabledForSession(*session)).action == TaskContinuationAction.settle &&
             completionHandoffNeeded(*session))
         {
             ChatMessage handoff;
@@ -18481,13 +18496,13 @@ private void pollButtonSuggestionRequest()
         // subagent's chat reports back to its parent; the parent waits while a
         // dispatched round is still running and resumes once it reports back.
         const childNeedsWork = session.parentSessionId.length &&
-            taskContinuation(*session, _settings.toolsEnabled).action != TaskContinuationAction.settle;
+            taskContinuation(*session, toolsEnabledForSession(*session)).action != TaskContinuationAction.settle;
         if (experimentalOrchestratorEnabled() && session.agents.length > 0 && !childNeedsWork)
         {
             // A subagent's own chat reports back and never loops on its own.
             if (session.parentSessionId.length > 0)
             {
-                if (taskContinuation(*session, _settings.toolsEnabled).action == TaskContinuationAction.settle)
+                if (taskContinuation(*session, toolsEnabledForSession(*session)).action == TaskContinuationAction.settle)
                 {
                     collectSubagentResult(sessionIndex);
                     return;
@@ -18556,7 +18571,7 @@ private void pollButtonSuggestionRequest()
         }
         if (session.taskStatus == "waiting_input" && !taskAwaitingInput(*session))
         { session.taskStatus = "active"; session.contract.blocker = ""; }
-        const continuation = taskContinuation(*session, _settings.toolsEnabled);
+        const continuation = taskContinuation(*session, toolsEnabledForSession(*session));
         if (continuation.action == TaskContinuationAction.continueWork ||
             continuation.action == TaskContinuationAction.replan)
         {
@@ -18615,7 +18630,7 @@ private void pollButtonSuggestionRequest()
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
         if (session.queuedGuidance.length > 0) return true;
-        return taskContinuation(session, _settings.toolsEnabled).action != TaskContinuationAction.settle ||
+        return taskContinuation(session, toolsEnabledForSession(session)).action != TaskContinuationAction.settle ||
             (!completionHandoffPending(session) && completionHandoffNeeded(session, finishReason));
     }
 
@@ -19125,7 +19140,7 @@ private void pollButtonSuggestionRequest()
             recordTurnUsage(*reply, event.totalTokens, event.promptTokens,
                 event.completionTokens, event.requestId);
         }
-        const recover = _settings.toolsEnabled && !_stopPending &&
+        const recover = toolsEnabledForSession(*session) && !_stopPending &&
             !computerUseAbortActive() &&
             !explanationOnlyRequest(latestActualUserRequest(*session));
         logInfo("agent-output request=" ~ to!string(event.requestId) ~
@@ -19430,7 +19445,7 @@ private void pollButtonSuggestionRequest()
                 break;
             }
 
-        if (!_settings.toolsEnabled || calls.length == 0)
+        if (!toolsEnabledForSession(*session) || calls.length == 0)
         {
             message.content ~= (message.content.length == 0 ? "" : "\n\n") ~
                 "⚠ The model requested tools, but tools are disabled.";
@@ -20597,7 +20612,7 @@ private void pollButtonSuggestionRequest()
         return id;
     }
 
-    private void sendMessage()
+    private void sendMessage(bool allowSideQuestion = true)
     {
         const submittedTicks = MonoTime.currTime.ticks;
         if (_updateChecking || _sourceFetching || _developerPublishing)
@@ -20620,7 +20635,7 @@ private void pollButtonSuggestionRequest()
             _autoContinueStreak = 0;
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
-        if (startSideQuestion(composerText)) return;
+        if (allowSideQuestion && startSideQuestion(composerText)) return;
         if (_stopPending)
         {
             updateStatus("Stopped. Waiting for the previous request to close…");
@@ -22402,6 +22417,22 @@ private void pollButtonSuggestionRequest()
         _timerBadge.setSeconds(total, running);
     }
 
+    /// Tools setting for one conversation. `-1` inherits the app setting so
+    /// existing conversations and the normal GUI are unchanged.
+    private bool toolsEnabledForSession(const ref ChatSession session) const
+    {
+        return session.toolsMode >= 0 ? session.toolsMode != 0
+            : _settings.toolsEnabled;
+    }
+
+    /// Optional per-session system-prompt section. Kept outside the cached
+    /// prompt so one session's instructions never leak into another.
+    private static string sessionInstructionsBlock(const ref ChatSession session)
+    {
+        if (session.instructions.length == 0) return "";
+        return "\n# Session instructions\n" ~ session.instructions ~ "\n";
+    }
+
     /// Cached wrapper around `buildSystemPrompt`. The prompt is composed from
     /// modules and is multi-kilobyte; its inputs only change with the
     /// workspace, tool mode, platform, verbosity, self-hosting modules and the
@@ -22490,7 +22521,8 @@ private void pollButtonSuggestionRequest()
                 markDirty();
             }
         }
-        if (_settings.toolsEnabled)
+        const bool toolsEnabled = toolsEnabledForSession(*session);
+        if (toolsEnabled)
             ensureDurableTaskCheckpoint(*session,
                 _settings.experimentalNestedPlans);
         // experimental: orchestrator - pick the participant that answers this
@@ -22540,7 +22572,7 @@ private void pollButtonSuggestionRequest()
             updateStatus("Reviewing the stalled diagnosis with " ~ orchestratorModel ~ "…");
         }
         ChatRequestMessage[] messages;
-        if (_settings.toolsEnabled)
+        if (toolsEnabled)
         {
             ChatRequestMessage systemPrompt;
             systemPrompt.role = "system";
@@ -22584,6 +22616,7 @@ private void pollButtonSuggestionRequest()
                 orchestratorSpeaker.length > 0)
                 systemPrompt.content ~= experimentalOrchestratorIdentityBlock(
                     *session, orchestratorSpeaker);
+            systemPrompt.content ~= sessionInstructionsBlock(*session);
             messages ~= systemPrompt;
         }
         else
@@ -22594,6 +22627,7 @@ private void pollButtonSuggestionRequest()
                 _settings.experimentalNestedPlans) ~
                 responsePlanReviewPrompt() ~
                 trackedPlanPromptBlock() ~
+                sessionInstructionsBlock(*session) ~
                 promptVerbosityDirective(_settings.verbosity);
             if (taskPrompt.length > 0)
             {
@@ -22614,7 +22648,7 @@ private void pollButtonSuggestionRequest()
                 "Use at most four focused tool rounds. Source and screenshots are evidence; prior claims are not proof.";
             messages ~= review;
         }
-        if (_settings.toolsEnabled && !_finalAnswerRequested && !summaryOnly)
+        if (toolsEnabled && !_finalAnswerRequested && !summaryOnly)
             tools = _settings.legacyTools
                 ? builtinToolDefinitions()
                 : nativeOnlyToolDefinitions();
@@ -22675,7 +22709,7 @@ private void pollButtonSuggestionRequest()
         }
         else if (compactionEnabled)
         {
-            const normalContextLimit = requestContextBudget(orchestratorModel);
+            const normalContextLimit = requestContextBudget(orchestratorModel, toolsEnabled);
             const contextLimit = diagnosticReview && normalContextLimit > 64_000 ? 64_000 : normalContextLimit;
             compactedRequestMessages = prepareCompactedRequest(*session,
                 contextLimit, fixedRequestBytes, checkpointCreated,
@@ -22689,7 +22723,7 @@ private void pollButtonSuggestionRequest()
             // trim is what actually shrinks the bytes the gateway sees.
             compactedRequestMessages = compactRequestMessages(
                 buildRequestMessages(*session),
-                requestContextBudget(orchestratorModel), fixedRequestBytes);
+                requestContextBudget(orchestratorModel, toolsEnabled), fixedRequestBytes);
         }
         else
             compactedRequestMessages = buildRequestMessages(*session);
@@ -22720,7 +22754,7 @@ private void pollButtonSuggestionRequest()
         if (_current == sessionIndex)
         {
             if (_usageBadge !is null)
-                _usageBadge.setLimit(requestContextBudget(orchestratorModel));
+                _usageBadge.setLimit(requestContextBudget(orchestratorModel, toolsEnabled));
             refreshUsageBadge();
         }
         // The OpenCode gateway routes by a stable per-conversation id; it
@@ -22775,7 +22809,7 @@ private void pollButtonSuggestionRequest()
         }
         if (checkpointCreated && startModelCompaction(sessionIndex,
             oldCompactionAnchor, oldCompactionSummary,
-            requestContextBudget(orchestratorModel)))
+            requestContextBudget(orchestratorModel, toolsEnabled)))
         {
             setTurnInFlight(true);
             updateStatus("Compacting context before continuing...");
@@ -22795,7 +22829,7 @@ private void pollButtonSuggestionRequest()
         _client.setEventWake(_window.serviceWake());
         JSONValue requestDetails;
         requestDetails["turn"] = runtimeTurnId(*session);
-        requestDetails["contextBudget"] = requestContextBudget(orchestratorModel);
+        requestDetails["contextBudget"] = requestContextBudget(orchestratorModel, toolsEnabled);
         requestDetails["messageBytes"] = cast(long) (requestMessageBytes(messages) + requestToolDefinitionBytes(tools));
         requestDetails["messageCount"] = cast(long) messages.length;
         requestDetails["toolCount"] = cast(long) tools.length;
@@ -28636,6 +28670,10 @@ private void pollButtonSuggestionRequest()
         root["title"] = session.title;
         root["model"] = session.model;
         root["thinking"] = session.thinking;
+        if (session.instructions.length > 0)
+            root["instructions"] = session.instructions;
+        if (session.toolsMode >= 0)
+            root["toolsMode"] = session.toolsMode;
         if (session.projectId.length > 0)
             root["project"] = session.projectId;
         if (session.objective.length > 0) root["objective"] = session.objective;
@@ -28987,6 +29025,12 @@ private void pollButtonSuggestionRequest()
             session.model = field.str;
         if (auto field = "thinking" in sessionValue.object)
             session.thinking = field.type == JSONType.true_;
+        if (auto field = "instructions" in sessionValue.object)
+            if (field.type == JSONType.string)
+                session.instructions = field.str;
+        if (auto field = "toolsMode" in sessionValue.object)
+            if (field.type == JSONType.integer)
+                session.toolsMode = cast(int) field.integer;
         if (auto field = "project" in sessionValue.object)
             session.projectId = field.str;
         if (auto field = "objective" in sessionValue.object)
@@ -29808,6 +29852,11 @@ private void pollButtonSuggestionRequest()
 
     private int requestContextBudget(string model)
     {
+        return requestContextBudget(model, _settings.toolsEnabled);
+    }
+
+    private int requestContextBudget(string model, bool toolsEnabled)
+    {
         const limit = effectiveContextLimit(model);
         const target = contextBudgetForModel(_settings, _settings.baseUrl,
             model);
@@ -29815,7 +29864,7 @@ private void pollButtonSuggestionRequest()
         if (_compactionBudgetsBaseUrl == _settings.baseUrl)
             if (auto learned = model in _learnedCompactionBudgets)
                 if (*learned < budget) budget = *learned;
-        return workingContextBudget(budget, _settings.toolsEnabled && _settings.adaptiveWorkingContext &&
+        return workingContextBudget(budget, toolsEnabled && _settings.adaptiveWorkingContext &&
             contextCompactionForModel(_settings, _settings.baseUrl, model), _toolRounds);
     }
 
@@ -30561,7 +30610,7 @@ private void pollButtonSuggestionRequest()
                     else applyToolResult(*event);
                     break;
                 case OpenCodeEventKind.done:
-                    if (!event.cancelled && _settings.toolsEnabled &&
+                    if (!event.cancelled && toolsEnabledForSession(_sessions[runtimeIndex]) &&
                         !completionHandoffPending(_sessions[runtimeIndex]) &&
                         !explanationOnlyRequest(latestActualUserRequest(_sessions[runtimeIndex])) &&
                         answerReplayed(_sessions[runtimeIndex]))
@@ -31092,14 +31141,32 @@ private void pollButtonSuggestionRequest()
         rebuildMessageColumnNow();
     }
 
+    /// Full text of the latest assistant message on a conversation's active
+    /// branch. Tool rows can be the final message after a partial turn, so the
+    /// search walks backward instead of assuming the last row is the reply.
+    private static string lastAssistantContentAt(const ref ChatSession session)
+    {
+        const path = activeMessagePath(session);
+        foreach_reverse (index; path)
+            if (session.messages[index].role == "assistant")
+                return session.messages[index].content;
+        return "";
+    }
+
+    private static string lastAssistantErrorAt(const ref ChatSession session)
+    {
+        const path = activeMessagePath(session);
+        foreach_reverse (index; path)
+            if (session.messages[index].role == "assistant")
+                return session.messages[index].error;
+        return "";
+    }
+
     /// Test-only: full text of the latest assistant message in the current session.
     public string lastAssistantContentForTesting()
     {
         if (_current < 0) return "";
-        auto session = &_sessions[_current];
-        const path = activeMessagePath(*session);
-        if (path.length == 0) return "";
-        return session.messages[path[$ - 1]].content;
+        return lastAssistantContentAt(_sessions[_current]);
     }
 
     /// Test-only: number of persisted chat sessions.
@@ -31965,6 +32032,158 @@ private void pollButtonSuggestionRequest()
         updateSessionsHeader();
     }
 
+    // -- headless session API ----------------------------------------------
+    //
+    // A narrow, game-agnostic surface over the existing per-conversation
+    // runtime. The JSON-lines host in sessionserver.d uses these methods; an
+    // NPC, support bot or background coding agent is just a caller-supplied
+    // id plus a system-prompt section and an optional per-session tools mode.
+
+    /// Create a conversation that a headless caller can address by id.
+    /// `thinkingMode` and `toolsMode` are -1 to inherit the app setting, or
+    /// 0/1 to pin the choice for this session. Returns the new internal session
+    /// id, or an empty string while startup is still restoring history.
+    public string createAgentSession(string title, string model,
+        int thinkingMode, int toolsMode, string instructions, string workspace)
+    {
+        if (_startupLoadPending) return "";
+        const path = workspace.length > 0 ? workspace : getcwd();
+        startConversationInProject(agentProjectName(path), path);
+        if (_current < 0 || _current >= cast(int) _sessions.length) return "";
+        auto session = &_sessions[_current];
+        session.title = title.length > 0 ? title : "Agent session";
+        if (model.length > 0) session.model = model;
+        session.thinking = thinkingMode >= 0
+            ? thinkingMode != 0 : _settings.thinking;
+        session.toolsMode = toolsMode >= -1 && toolsMode <= 1 ? toolsMode : -1;
+        session.instructions = instructions;
+        session.updatedAt = Clock.currTime.toUnixTime();
+        publishThreadUpdated(*session);
+        markDirty();
+        return session.id;
+    }
+
+    /// Submit one user turn to a session. Rejected when that session already
+    /// has a turn in flight; other sessions may run concurrently.
+    public bool submitAgentTurn(string sessionId, string text, out string error)
+    {
+        error = "";
+        const index = sessionIndexForTesting(sessionId);
+        if (index < 0) { error = "unknown_session"; return false; }
+        if (_startupLoadPending || threadLoadPending(index) ||
+            threadHistoryUnavailable(index))
+        { error = "session_loading"; return false; }
+        const prompt = text.strip();
+        if (prompt.length == 0) { error = "empty_prompt"; return false; }
+        // `sessionIsBusy` checks this session's own runtime, including its Stop
+        // token. The loaded runtime may belong to another conversation.
+        if (sessionIsBusy(index)) { error = "session_busy"; return false; }
+        selectSession(index);
+        if (_input is null) { error = "ui_unavailable"; return false; }
+        const before = _sessions[index].messages.length;
+        _input.setText(prompt, false);
+        // Headless callers get the prompt as a user message, never as the
+        // interactive /btw side-question command.
+        sendMessage(false);
+        if (sessionIsBusy(index) || _sessions[index].turnStatus == "running" ||
+            _sessions[index].messages.length > before)
+            return true;
+        error = "turn_not_started";
+        return false;
+    }
+
+    /// Stop the turn owned by one session, selecting it first so the existing
+    /// Stop path targets the right runtime.
+    public bool cancelAgentTurn(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        if (index < 0) return false;
+        if (!sessionIsBusy(index) && _sessions[index].turnStatus != "running")
+            return false;
+        selectSession(index);
+        stopActiveTurn();
+        return true;
+    }
+
+    public bool agentSessionBusy(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        return index >= 0 && sessionIsBusy(index);
+    }
+
+    public string agentSessionTurnStatus(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        return index >= 0 ? _sessions[index].turnStatus : "";
+    }
+
+    public string agentSessionTaskStatus(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        return index >= 0 ? _sessions[index].taskStatus : "";
+    }
+
+    public string agentSessionVerificationStatus(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        return index >= 0 ? _sessions[index].verificationStatus : "";
+    }
+
+    public string agentSessionTurnId(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        return index >= 0 ? runtimeTurnId(_sessions[index]) : "";
+    }
+
+    public string agentSessionReply(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        return index >= 0 ? lastAssistantContentAt(_sessions[index]) : "";
+    }
+
+    public string agentSessionError(string sessionId)
+    {
+        const index = sessionIndexForTesting(sessionId);
+        return index >= 0 ? lastAssistantErrorAt(_sessions[index]) : "";
+    }
+
+    public string[] agentSessionIds()
+    {
+        string[] ids;
+        foreach (i; 0 .. _sessions.length)
+            if (_sessions[i].id.length > 0) ids ~= _sessions[i].id;
+        return ids;
+    }
+
+    public AgentSessionInfo agentSessionInfo(string sessionId)
+    {
+        AgentSessionInfo info;
+        info.toolsMode = -1;
+        const index = sessionIndexForTesting(sessionId);
+        if (index < 0) return info;
+        const session = _sessions[index];
+        info.id = session.id;
+        info.title = session.title;
+        info.model = session.model;
+        info.thinking = session.thinking;
+        info.toolsMode = session.toolsMode;
+        info.busy = sessionIsBusy(index);
+        info.turnStatus = session.turnStatus;
+        info.taskStatus = session.taskStatus;
+        info.verificationStatus = session.verificationStatus;
+        info.turnId = runtimeTurnId(session);
+        return info;
+    }
+
+    private static string agentProjectName(string workspace)
+    {
+        if (workspace.length == 0) return "Agent API";
+        const digest = toLower(toHexString(
+            sha256Of(cast(const(ubyte)[]) workspace)).idup).idup;
+        const suffix = digest.length >= 8 ? digest[0 .. 8] : digest;
+        return "Agent API: " ~ baseName(workspace) ~ " " ~ suffix;
+    }
+
     /// Test-only: append a conversation (parallel role/content arrays) without
     /// network activity, then rebuild the message column.
     public void addConversationForTesting(const(string)[] roles,
@@ -32348,11 +32567,7 @@ private void pollButtonSuggestionRequest()
     public string lastAssistantErrorForTesting()
     {
         if (_current < 0) return "";
-        const path = activeMessagePath(_sessions[_current]);
-        foreach_reverse (index; path)
-            if (_sessions[_current].messages[index].role == "assistant")
-                return _sessions[_current].messages[index].error;
-        return "";
+        return lastAssistantErrorAt(_sessions[_current]);
     }
 
     public string journalDraftForTesting()

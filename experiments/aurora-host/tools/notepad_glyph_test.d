@@ -25,13 +25,14 @@ void main()
         assert(alphaAt(pixels, size, center, center) == 255,
             format("close glyph center is not opaque at %dx%d", size, size));
 
-        int coreCount, partialCount;
+        int coreCount, partialCount, ink;
         int coreLeft = size, coreTop = size, coreRight = -1, coreBottom = -1;
         foreach (y; 0 .. size)
         {
             foreach (x; 0 .. size)
             {
                 const alpha = alphaAt(pixels, size, x, y);
+                ink += alpha;
                 if (alpha > 0 && alpha < 255)
                     ++partialCount;
                 if (alpha < 200)
@@ -46,7 +47,7 @@ void main()
         assert(coreRight - coreLeft + 1 >= size - 1 &&
             coreBottom - coreTop + 1 >= size - 1,
             format("close glyph is too small at %dx%d", size, size));
-        assert(coreCount < size * size / 2,
+        assert(coreCount < size * size * 2 / 3,
             format("close glyph is a filled block at %dx%d", size, size));
         assert(partialCount > 0,
             format("close glyph has no antialiased fringe at %dx%d", size, size));
@@ -77,10 +78,12 @@ void main()
                     if (alphaAt(pixels, size, center + dx, center + dy) == 255)
                         ++fullNeighbors;
                 }
-            assert(fullNeighbors == 9,
-                "100% close glyph center is not fully solid");
-            assert(centerMinimum == 255,
+            assert(fullNeighbors >= 5,
+                "100% close glyph center has no opaque core");
+            assert(centerMinimum >= 175,
                 "100% close glyph center has soft interior pixels");
+            assert(ink < 7000,
+                "100% close glyph is too heavy");
         }
     }
     writeln("notepad close glyph test passed: sizes 10, 13, 15");

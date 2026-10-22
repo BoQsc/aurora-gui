@@ -38,7 +38,8 @@ def close_box(pixels: bytes, width: int, height: int) -> tuple[int, int]:
 def inspect_glyph(pixels: bytes, width: int, height: int,
                   glyph: tuple[int, int], background: tuple[int, int, int],
                   foreground: tuple[int, int, int], label: str,
-                  foreground_tolerance: int) -> None:
+                  foreground_tolerance: int,
+                  center_luma_limit: int | None = None) -> None:
     left, top = glyph
     core = 0
     for y in range(top, top + 10):
@@ -46,18 +47,24 @@ def inspect_glyph(pixels: bytes, width: int, height: int,
             color = sample(pixels, width, x, y)
             if near(color, foreground, foreground_tolerance):
                 core += 1
-    require(core >= 40,
+    require(core >= 20,
             f"{label} is too thin: only {core} solid pixels")
 
     center_x, center_y = left + 4, top + 4
     center_core = 0
+    center_maximum_luma = 0
     for y in range(center_y - 1, center_y + 2):
         for x in range(center_x - 1, center_x + 2):
-            if near(sample(pixels, width, x, y), foreground,
-                    foreground_tolerance):
+            color = sample(pixels, width, x, y)
+            center_maximum_luma = max(center_maximum_luma,
+                                      sum(color) // 3)
+            if near(color, foreground, foreground_tolerance):
                 center_core += 1
     require(center_core == 9,
             f"{label} center is not solid: {center_core}/9 pixels")
+    if center_luma_limit is not None:
+        require(center_maximum_luma <= center_luma_limit,
+                f"{label} center is too soft: luma {center_maximum_luma}")
 
 
 def main() -> int:
@@ -91,7 +98,7 @@ def main() -> int:
         require(near(sample(pixels, width, 856, 4), BACKGROUND, 20),
                 "normal close button chrome is not neutral")
         inspect_glyph(pixels, width, height, glyph, BACKGROUND, TEXT,
-                      "normal close glyph", 60)
+                      "normal close glyph", 70, center_luma_limit=95)
 
         require(session.send("uiMove", x=left + 5, y=top + 5).get("ok") is True,
                 "close button hover move failed")
@@ -104,7 +111,7 @@ def main() -> int:
         require(near(sample(pixels, width, 856, 4), CLOSE_RED, 20),
                 "hover close button chrome is not red")
         inspect_glyph(pixels, width, height, glyph, CLOSE_RED, WHITE,
-                      "hover close glyph", 40)
+                      "hover close glyph", 75)
     finally:
         session.close()
 

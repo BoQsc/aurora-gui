@@ -7,6 +7,7 @@ import auroraopencode.core : opencodeTheme;
 import auroraopencode.crashguard : installCrashHandler, runGuarded,
     runResolveCrashMode;
 import auroraopencode.logging : logInfo, logLaunch;
+import auroraopencode.sessionserver : runSessionServer;
 import auroraopencode.updater : runUpdateHelperMode;
 import core.thread : Thread;
 import core.time : msecs, MonoTime, seconds;
@@ -257,6 +258,8 @@ private int printUsage()
     writeln("                                           console, one batch on a pipe)");
     writeln("  aurora-opencode-pro --headless-loop      one prompt per stdin line");
     writeln("  aurora-opencode-pro --headless-loop-json settled replies as JSON lines");
+    writeln("  aurora-opencode-pro --session-server     JSONL API for many sessions");
+    writeln("                                           at once; see --session-server --help");
     writeln("  aurora-opencode-pro --screenshot <path>");
     writeln(`  aurora-opencode-pro --screenshot-chat <path> "prompt"`);
     writeln("  aurora-opencode-pro --software-renderer  draw with the CPU; kept for");
@@ -540,6 +543,8 @@ private int runApp(string[] args)
         attachCliConsole();
         return printUsage();
     }
+    if (arg1 == "--session-server")
+        return runSessionServer(args[2 .. $]);
     // One interactive session, one prompt per line, until `exit`/`quit`.
     if (arg1 == "--interactive" || arg1 == "-i" || arg1 == "--headless-loop" || arg1 == "--headless-loop-json")
     {
