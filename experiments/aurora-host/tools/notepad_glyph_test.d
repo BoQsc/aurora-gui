@@ -67,14 +67,20 @@ void main()
         if (size == 10)
         {
             int fullNeighbors;
+            int centerMinimum = 255;
             foreach (dy; -1 .. 2)
                 foreach (dx; -1 .. 2)
+                {
+                    const alpha = alphaAt(pixels, size, center + dx, center + dy);
+                    if (alpha < centerMinimum)
+                        centerMinimum = alpha;
                     if (alphaAt(pixels, size, center + dx, center + dy) == 255)
                         ++fullNeighbors;
-            assert(fullNeighbors == 1,
-                "100% close glyph must have a single full-opacity center pixel");
-            assert(alphaAt(pixels, size, 1, 0) == 0,
-                "100% close glyph retains a low-coverage halo pixel");
+                }
+            assert(fullNeighbors == 9,
+                "100% close glyph center is not fully solid");
+            assert(centerMinimum == 255,
+                "100% close glyph center has soft interior pixels");
         }
     }
     writeln("notepad close glyph test passed: sizes 10, 13, 15");

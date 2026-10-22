@@ -37,23 +37,27 @@ def close_box(pixels: bytes, width: int, height: int) -> tuple[int, int]:
 
 def inspect_glyph(pixels: bytes, width: int, height: int,
                   glyph: tuple[int, int], background: tuple[int, int, int],
-                  foreground: tuple[int, int, int], label: str) -> None:
+                  foreground: tuple[int, int, int], label: str,
+                  foreground_tolerance: int) -> None:
     left, top = glyph
     core = 0
-    unclassified = 0
     for y in range(top, top + 10):
         for x in range(left, left + 10):
             color = sample(pixels, width, x, y)
-            if near(color, background, 20):
-                continue
-            if near(color, foreground, 20):
+            if near(color, foreground, foreground_tolerance):
                 core += 1
-                continue
-            unclassified += 1
-    require(unclassified == 0,
-            f"{label} has {unclassified} low-contrast halo pixels")
-    require(core >= 12,
-            f"{label} has only {core} solid glyph pixels")
+    require(core >= 40,
+            f"{label} is too thin: only {core} solid pixels")
+
+    center_x, center_y = left + 4, top + 4
+    center_core = 0
+    for y in range(center_y - 1, center_y + 2):
+        for x in range(center_x - 1, center_x + 2):
+            if near(sample(pixels, width, x, y), foreground,
+                    foreground_tolerance):
+                center_core += 1
+    require(center_core == 9,
+            f"{label} center is not solid: {center_core}/9 pixels")
 
 
 def main() -> int:
@@ -84,9 +88,10 @@ def main() -> int:
         left, top = glyph
         require(near(sample(pixels, width, left, top), TEXT, 20),
                 "normal close glyph is not solid at its endpoint")
-        require(near(sample(pixels, width, left + 1, top), BACKGROUND, 20),
-                "normal close glyph has a halo beside its endpoint")
-        inspect_glyph(pixels, width, height, glyph, BACKGROUND, TEXT, "normal close glyph")
+        require(near(sample(pixels, width, 856, 4), BACKGROUND, 20),
+                "normal close button chrome is not neutral")
+        inspect_glyph(pixels, width, height, glyph, BACKGROUND, TEXT,
+                      "normal close glyph", 60)
 
         require(session.send("uiMove", x=left + 5, y=top + 5).get("ok") is True,
                 "close button hover move failed")
@@ -96,13 +101,14 @@ def main() -> int:
         width, height, pixels = read_ppm(hover_path)
         require(near(sample(pixels, width, left, top), WHITE, 20),
                 "hover close glyph is not white at its endpoint")
-        require(near(sample(pixels, width, left + 1, top), CLOSE_RED, 20),
-                "hover close glyph has a pale halo beside its endpoint")
-        inspect_glyph(pixels, width, height, glyph, CLOSE_RED, WHITE, "hover close glyph")
+        require(near(sample(pixels, width, 856, 4), CLOSE_RED, 20),
+                "hover close button chrome is not red")
+        inspect_glyph(pixels, width, height, glyph, CLOSE_RED, WHITE,
+                      "hover close glyph", 40)
     finally:
         session.close()
 
-    print("notepad close pixel test passed: normal and hover glyphs are crisp")
+    print("notepad close pixel test passed: normal and hover glyphs are solid")
     return 0
 
 

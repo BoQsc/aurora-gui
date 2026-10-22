@@ -31,11 +31,11 @@ RgbaImage renderCloseGlyph(int size)
     // of a two-by-two block at 100% DPI.
     const start = (size & 1) == 0 ? 0.0 : 0.5;
     const end = start + size - 1;
-    // A full logical pixel, scaled with the physical mask. The previous 0.8 px
-    // stroke left the diagonal mostly partial-alpha and made it look washed
-    // out at 100% DPI.
-    const scaledWidth = size * 0.05;
-    const halfWidth = scaledWidth < 0.5 ? 0.5 : scaledWidth;
+    // A diagonal loses perceived weight at this size, so use a 2 px minimum
+    // at 100% DPI: a full 1 px core plus a nearly opaque second pixel. The
+    // width scales above 100% so the mark keeps its weight at higher sizes.
+    const scaledWidth = size * 0.08;
+    const halfWidth = scaledWidth < 1.0 ? 1.0 : scaledWidth;
     auto pixels = new ubyte[size * size * 4];
     foreach (y; 0 .. size)
     {
