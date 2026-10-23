@@ -1514,6 +1514,7 @@ public struct Settings
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
     bool experimentalChatRedesign; // highly experimental presentation, off by default
+    bool experimentalFollowUpDivider; // opt-in collapsible automatic follow-up UI
     bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
     // experimental: planmode - stricter, non-templating plan upkeep. Off by
     // default; the Settings dialog owns this switch.
@@ -1950,6 +1951,9 @@ public Settings loadSettings()
                 if (auto found = "experimentalChatRedesign" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalChatRedesign = found.type == JSONType.true_;
+                if (auto found = "experimentalFollowUpDivider" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalFollowUpDivider = found.type == JSONType.true_;
                 if (auto found = "experimentalNestedPlans" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalNestedPlans =
@@ -2285,6 +2289,7 @@ public void saveSettings(const ref Settings settings)
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
     root["experimentalChatRedesign"] = settings.experimentalChatRedesign;
+    root["experimentalFollowUpDivider"] = settings.experimentalFollowUpDivider;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;
     root["experimentalStrictPlan"] = settings.experimentalStrictPlan;
     root["experimentalComputerUse"] = settings.experimentalComputerUse;

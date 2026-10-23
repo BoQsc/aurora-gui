@@ -62,7 +62,9 @@ int main()
     mkdirRecurse(state); setOpencodeStateDirectoryForTesting(state);
     Settings settings; settings.baseUrl = "http://127.0.0.1:1/v1"; settings.apiKey = "fixture";
     settings.workspace = state; settings.toolsEnabled = false; settings.quickTitle = false;
+    assert(!settings.experimentalFollowUpDivider, "Experimental follow-up UI must be off by default");
     saveSettings(settings);
+    assert(!loadSettings().experimentalFollowUpDivider);
     WindowOptions options; options.width = 1100; options.height = 820;
     options.renderer = RendererPreference.software;
     auto window = new GuiWindow(options, opencodeTheme());
@@ -82,6 +84,16 @@ int main()
     root.appendOwnedToolResultForTesting("read-extra", "read", "Unique extra review receipt", `{"filePath":"out.txt"}`, 0, 0, "");
     root.beginStreamForTesting(); root.streamContentForTesting("The final result is ready. Checks are recorded above.");
     paint();
+    assert(find(root, "oc-automatic-follow-up") is null, "Disabled divider still appeared");
+    const beforeEnable = root.messageCountForTesting();
+    auto option = root.automaticFollowUpCheckboxForTesting();
+    assert(option !is null && !option.checked());
+    root.toggleSettingsSectionForTesting("oc-settings-options"); paint();
+    window.saveScreenshot("build/follow-up-option.ppm");
+    option.setChecked(true); root.flushSettingsForTesting();
+    assert(loadSettings().experimentalFollowUpDivider, "Enabled option was not saved");
+    root.dismissPopupForTesting(); paint();
+    assert(root.messageCountForTesting() == beforeEnable, "UI toggle changed conversation history");
     auto section = cast(AutomaticFollowUpSection) find(root, "oc-automatic-follow-up");
     assert(section !is null && section.collapsed());
     assert(section.notice.indexOf("may improve") >= 0 && section.label.indexOf("Running") >= 0);
@@ -116,6 +128,13 @@ int main()
     section = cast(AutomaticFollowUpSection) find(root, "oc-automatic-follow-up");
     assert(section !is null && section.label == finalLabel, "Reload changed the settled elapsed time");
     assert(root.messageCountForTesting() == count && root.lastAssistantContentForTesting().indexOf("The final result") == 0);
+    option = root.automaticFollowUpCheckboxForTesting(); assert(option.checked());
+    option.setChecked(false); root.flushSettingsForTesting(); root.dismissPopupForTesting(); paint();
+    assert(!loadSettings().experimentalFollowUpDivider && find(root, "oc-automatic-follow-up") is null);
+    assert(root.messageCountForTesting() == count && root.followUpAnswerVisibleForTesting());
+    option = root.automaticFollowUpCheckboxForTesting();
+    option.setChecked(true); root.flushSettingsForTesting(); root.dismissPopupForTesting(); paint();
+    assert(find(root, "oc-automatic-follow-up") !is null, "Re-enabling lost existing follow-up sections");
     root.addConversationForTesting(["user", "assistant"], ["A new question", "An ordinary answer"]); paint();
     assert(root.lastAssistantContentForTesting() == "An ordinary answer");
 
@@ -157,6 +176,6 @@ int main()
     section = cast(AutomaticFollowUpSection) find(root, "oc-automatic-follow-up");
     assert(section !is null && section.collapsed(), "Paging dropped the automatic follow-up boundary");
     assert(root.followUpAnswerVisibleForTesting());
-    writeln("PASS automatic follow-up divider, live/frozen timer, mouse/keyboard expansion, search, branch/reload preservation and both transcript layouts");
+    writeln("PASS experimental option defaults off, actual Settings toggle persists and applies immediately without changing history; divider, timer, search, reload and both layouts");
     return 0;
 }

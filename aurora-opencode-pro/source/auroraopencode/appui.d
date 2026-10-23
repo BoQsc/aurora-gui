@@ -15943,6 +15943,7 @@ private string _suggestExcludeId;
             followUpSections[section] = range;
             _messageColumn.add(section);
         }
+        if (_settings.experimentalFollowUpDivider)
         foreach (range; followUpRanges(*session, fullPath, session.turnStatus == "running"))
         {
             if (range.startSlot < hiddenCount && range.endSlot > hiddenCount) addFollowUpSection(range);
@@ -25231,6 +25232,20 @@ private void pollButtonSuggestionRequest()
         chatRedesignRow.add(chatRedesignCheck);
         optionsBody.add(chatRedesignRow);
 
+        auto followUpRow = new HBox(8);
+        followUpRow.layoutHints().preferredHeight = 32;
+        auto followUpCheck = new CheckBox("Experimental automatic follow-up divider");
+        followUpCheck.setId("oc-followupdivider");
+        followUpCheck.setChecked(_settings.experimentalFollowUpDivider, false);
+        followUpCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalFollowUpDivider = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        followUpRow.add(followUpCheck);
+        optionsBody.add(followUpRow);
+
         // experimental: one level of optional substeps, off by default
         auto nestedRow = new HBox(8);
         nestedRow.layoutHints().preferredHeight = 32;
@@ -34182,6 +34197,12 @@ private void pollButtonSuggestionRequest()
         _settings.experimentalChatRedesign = value;
         saveSettingsNow();
         if (_current >= 0) rebuildMessageColumn();
+    }
+
+    public CheckBox automaticFollowUpCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-followupdivider");
     }
 
     public void setExperimentalStrictPlanForTesting(bool value)
