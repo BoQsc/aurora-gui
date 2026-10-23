@@ -20,6 +20,39 @@ void append(ref ChatSession s, string id, string tool, bool failed = false, stri
 
 int main()
 {
+    {
+        ChatSession p;
+        p.taskSteps = [TaskStep("Inspect inputs", "in_progress", "inspect", "research", "Inputs understood"),
+            TaskStep("Write implementation", "pending", "edit", "edit", "Requested change exists"),
+            TaskStep("Run tests", "pending", "test", "verify", "Tests pass")];
+        append(p, "read-input", "read");
+        const args = `{"plan_mode":"patch","plan":[{"id":"inspect","status":"completed"},{"id":"edit","status":"in_progress","blocker":"Investigating compatibility"}]}`;
+        auto root = parseJSON(args);
+        assert(!planUpdateError(p, args, p.taskSteps).length);
+        auto updated = normalizedPlan(p, root["plan"], p.taskSteps, true, true);
+        assert(updated.length == 3 && updated[0].status == "completed" && updated[1].status == "in_progress");
+        assert(updated[2] == p.taskSteps[2] && updated[1].done == p.taskSteps[1].done);
+        assert(updated[1].blocker == "Investigating compatibility" && updated[0].evidence == ["read-input"]);
+        assert(p.taskSteps[0].status == "in_progress", "Normalization mutated the live plan before validation");
+        assert(planUpdateText(p, args).indexOf("[id: test]") >= 0);
+        assert(planUpdateError(p, `{"plan_mode":"patch","plan":[{"id":"typo","status":"completed"}]}`, p.taskSteps).indexOf("unknown outcome ID") >= 0);
+        assert(planUpdateError(p, `{"plan_mode":"patch","plan":[{"id":"edit","status":"in_progress"}]}`, p.taskSteps).indexOf("Error:") == 0);
+        assert(planUpdateError(p, `{"plan_mode":"patch","plan":[{"id":"test","status":"completed"}]}`, p.taskSteps).length);
+        foreach (bad; [
+            `{"plan_mode":"patch","plan":[{"id":"edit"},{"id":"edit"}]}`,
+            `{"plan_mode":"patch","replace_entire_plan":true,"plan":[{"id":"edit"}]}`,
+            `{"plan_mode":"patch","plan":[{"id":"edit","status":"done"}]}`,
+            `{"plan_mode":"patch","plan":[{"id":"edit","evidence":[5]}]}`,
+            `{"plan":[{"step":"Silently discarded","status":"wrong"}]}`,
+            `{"plan_mode":"patch"}`])
+            assert(planUpdateError(p, bad, p.taskSteps).length, bad);
+        p.taskSteps = updated;
+        assert(planUpdateError(p, `{"plan_mode":"patch","plan":[{"id":"inspect","status":"pending"}]}`, p.taskSteps).length);
+        assert(!planUpdateError(p, `{"plan_mode":"patch","plan":[{"id":"edit","blocker":""}]}`, p.taskSteps).length);
+        auto roundtrip = taskStepsFromJson(taskStepsToJson(updated));
+        assert(roundtrip == updated, "Patched plan failed persistence roundtrip");
+        writeln("PASS atomic incremental progress, retained outcomes/acceptance, stable ID feedback, invalid patches and persistence");
+    }
     assert(inferredPlanKind("Run manifest, API-surface, consumer, and Unicode conformance checks") == "verify");
     assert(inferredPlanKind("Execute the regression suite") == "verify");
     assert(inferredPlanKind("Test whether the vendored tree is pristine or actively forked") == "research");

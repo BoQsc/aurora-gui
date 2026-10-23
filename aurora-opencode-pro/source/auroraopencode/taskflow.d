@@ -570,9 +570,74 @@ void rememberPlanRevision(ref ChatSession session, JSONValue root, const(TaskSte
         }
 }
 
-TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(TaskStep)[] previous,
-    bool retainCompleted = true)
+bool incrementalPlan(JSONValue root)
 {
+    auto mode = "plan_mode" in root.object;
+    return mode !is null && mode.type == JSONType.string && mode.str == "patch";
+}
+
+// Validate before the tolerant persistence parser can discard malformed rows.
+string planShapeError(JSONValue root)
+{
+    if (auto mode = "plan_mode" in root.object)
+        if (mode.type != JSONType.string || !["full", "patch"].canFind(mode.str))
+            return "Error: plan_mode must be full or patch.";
+    const patch = incrementalPlan(root);
+    if (patch && "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_)
+        return "Error: patch mode cannot replace the plan.";
+    auto plan = "plan" in root.object;
+    if (plan is null) return patch ? "Error: patch mode requires plan updates." : "";
+    if (plan.type != JSONType.array || !plan.array.length) return "Error: plan must be a non-empty array.";
+    bool[string] seen;
+    foreach (row; plan.array)
+    {
+        if (row.type != JSONType.object) return "Error: every plan update must be an object.";
+        foreach (key; ["id", "step", "status", "kind", "done", "blocker"])
+            if (auto value = key in row.object)
+                if (value.type != JSONType.string) return "Error: plan." ~ key ~ " must be a string.";
+        if (patch)
+        {
+            if (!("id" in row.object) || !row["id"].str.strip().length)
+                return "Error: patch updates require an existing stable id; use read_plan for IDs.";
+            const id = row["id"].str;
+            if (id in seen) return "Error: update each outcome ID once per call: " ~ id;
+            seen[id] = true;
+        }
+        else if (!("step" in row.object) || !row["step"].str.strip().length || !("status" in row.object))
+            return "Error: full plan rows require step and status. For existing outcomes use plan_mode patch and id.";
+        if (auto value = "status" in row.object)
+            if (!["pending", "in_progress", "completed"].canFind(value.str)) return "Error: invalid plan status.";
+        if (auto value = "step" in row.object)
+            if (!value.str.strip().length) return "Error: plan step text must not be empty.";
+        if (auto value = "kind" in row.object)
+            if (!["research", "edit", "verify", "answer", "other"].canFind(value.str)) return "Error: invalid plan kind.";
+        if (auto value = "evidence" in row.object)
+        {
+            if (value.type != JSONType.array) return "Error: evidence must contain tool-call IDs.";
+            foreach (id; value.array)
+                if (id.type != JSONType.string || !id.str.strip().length) return "Error: invalid evidence ID.";
+        }
+    }
+    return "";
+}
+
+TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(TaskStep)[] previous,
+    bool retainCompleted = true, bool patch = false)
+{
+    if (patch)
+    {
+        auto merged = taskStepsToJson(previous);
+        foreach (i, ref row; merged.array)
+        {
+            // Storage uses text; the tool interface uses step.
+            row["step"] = row["text"]; row.object.remove("text");
+            row["kind"] = reconciledPlanKind(previous[i]);
+            foreach (update; value.array)
+                if (update["id"].str == row["id"].str)
+                    foreach (key, field; update.object) row[key] = field;
+        }
+        value = merged;
+    }
     auto steps = taskStepsFromJson(value);
     if (retainCompleted)
         foreach_reverse (oldIndex, old; previous)
@@ -644,7 +709,7 @@ string planUpdateText(const ref ChatSession session, string arguments)
 {
     const root = parseJSON(arguments);
     const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement) : session.taskSteps;
+    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps;
     auto output = appender!string();
     output.put("Plan updated");
     if (auto reason = "explanation" in root.object)
@@ -655,6 +720,7 @@ string planUpdateText(const ref ChatSession session, string arguments)
         const marker = step.status == "completed" ? "[x]" : step.status == "in_progress" ? "[>]" : "[ ]";
         output.put("\n" ~ to!string(i + 1) ~ ". " ~ marker ~ " " ~ step.text);
         if (step.done.length) output.put(" (done: " ~ step.done ~ ")");
+        output.put(" [id: " ~ step.id ~ "]");
     }
     if (!("plan" in root.object)) output.put(" checklist retained.");
     if ("work_items" in root.object)
@@ -807,6 +873,15 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     try root = parseJSON(arguments);
     catch (Exception) return "Error: invalid plan JSON.";
     if (root.type != JSONType.object) return "Error: update_plan requires an object.";
+    const shapeError = planShapeError(root);
+    if (shapeError.length) return shapeError;
+    if (incrementalPlan(root))
+        foreach (row; root["plan"].array)
+        {
+            bool found;
+            foreach (old; previous) if (old.id == row["id"].str) { found = true; break; }
+            if (!found) return "Error: unknown outcome ID: " ~ row["id"].str ~ ". Use read_plan; patch mode only updates existing outcomes.";
+        }
     bool update;
     foreach (key; ["plan", "work_items", "work_context", "objective", "constraints", "decisions"]) if (key in root.object) update = true;
     if (!update) return "Error: provide plan, work_items, work_context or task metadata.";
@@ -822,7 +897,7 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         if (!explicitlyNewTask(request) && !explicitPlanReplacementRequested(request))
             return "Error: replacing unfinished outcomes requires an explicit user scope change. Preserve their IDs and statuses.";
     }
-    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], previous, !replacement) : previous;
+    const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], previous, !replacement, incrementalPlan(root)) : previous;
     string reason;
     if (auto field = "explanation" in root.object)
     {

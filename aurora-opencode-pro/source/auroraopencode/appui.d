@@ -75,7 +75,7 @@ import auroraopencode.orchestrator : setOrchestratorSetting,
 import auroraopencode.planmode : experimentalStrictPlanEnabled,
     setStrictPlanSetting, trackedPlanPromptBlock;
 import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
-import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError,
+import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError, incrementalPlan,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
     restoreBranchTask, initializeLegacyTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
 import auroraopencode.taskcontext : taskContext;
@@ -20097,7 +20097,7 @@ private void pollButtonSuggestionRequest()
                 if (value.length > 0) session.objective = value;
             }
         const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        auto steps = plan !is null ? normalizedPlan(session, *plan, session.taskSteps, !replacement) : session.taskSteps.dup;
+        auto steps = plan !is null ? normalizedPlan(session, *plan, session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps.dup;
         foreach (key; ["constraints", "decisions"])
             if (auto field = key in root.object)
                 if (field.type == JSONType.array)
@@ -20158,7 +20158,7 @@ private void pollButtonSuggestionRequest()
         TaskStep[] previous;
         foreach (nested; session.nestedPlans) if (nested.parentStep == parent) previous = nested.steps;
         const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        auto steps = normalizedPlan(session, root["plan"], previous, !replacement);
+        auto steps = normalizedPlan(session, root["plan"], previous, !replacement, incrementalPlan(root));
         foreach (ref nested; session.nestedPlans)
             if (nested.parentStep == parent)
             {
@@ -21633,7 +21633,7 @@ private void pollButtonSuggestionRequest()
         if (error.length) return error;
         const root = parseJSON(arguments);
         const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement) : session.taskSteps;
+        const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps;
         foreach (nested; session.nestedPlans)
             if (nested.parentStep <= session.taskSteps.length)
                 foreach (step; steps)

@@ -20,6 +20,11 @@ def call(identity, name, arguments):
 
 
 def plan(status):
+    if status != "in_progress":
+        return {"plan_mode": "patch", "plan": (
+            [{"id": "write", "status": "completed"}, {"id": "verify", "status": "in_progress"}]
+            if status == "checking" else
+            [{"id": "verify", "status": "completed", "evidence": ["write-output", "check"]}])}
     return {"objective": "Write and verify a fixture",
             "plan": [{"id": "write", "step": "Write out.txt and its test",
                       "status": "in_progress" if status == "in_progress" else "completed",
