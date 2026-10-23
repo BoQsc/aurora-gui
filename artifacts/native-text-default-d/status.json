@@ -13,5 +13,6 @@
   "pro_text_and_markdown_checks": "pass",
   "pro_full_smoke": "FAIL \u2014 restored branch continuation, also fails C",
   "pro_consistency": "FAIL \u2014 missing activity widget, also fails C",
-  "production_delivery": "pending"
+  "production_delivery": "rebuilt, relaunched and published",
+  "source_commit": "62b7762cad246390f01f96d9fcf9e8ec04ac6a40"
 }

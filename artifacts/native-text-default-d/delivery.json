@@ -1,0 +1,30 @@
+{
+  "rebuild": {
+    "status": "ok",
+    "phase": "relaunching",
+    "reason": "",
+    "command": "dub build --build=release --force",
+    "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
+    "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+    "startedAt": "2026-10-23 07:11:37.9643449 UTC",
+    "finishedAt": "2026-10-23 07:13:11.9317813 UTC",
+    "durationMs": 93967,
+    "exitCode": 0,
+    "errors": []
+  },
+  "provenance": {
+    "source_commit": "62b7762cad246390f01f96d9fcf9e8ec04ac6a40",
+    "source_branch": "codex/portable-crt-experiment",
+    "source_fingerprint": "22048f06d56d59dfd8968ce4ae1a35966235d851faa924b5748bcc1c5ab32011",
+    "source_dirty": false,
+    "binary_sha256": "2a9b54ebe7fa65b796abf64c884355ecb9a11cc07df4413c617f8f8e0ba49af6"
+  },
+  "binary_matches_source": true,
+  "publication_exit_code": 0,
+  "publication_output": "Publishing with installed runtime required: MSVCR120.dll\nForge release unchanged; public download verified.\n",
+  "relaunched_process": {
+    "Name": "aurora-opencode-pro.exe",
+    "ProcessId": 61672,
+    "ExecutablePath": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe"
+  }
+}

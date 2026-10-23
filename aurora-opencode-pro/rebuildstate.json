@@ -1,13 +1,13 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the verified fix that limits rebuild prompt/tool gating to Aurora OpenCode/Pro source and rejects the general Aurora repository.",
-  "command": "dub build --build=release",
+  "reason": "",
+  "command": "dub build --build=release --force",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-21 10:35:36.3433076 UTC",
-  "finishedAt": "2026-10-21 10:36:28.217132 UTC",
-  "durationMs": 51873,
+  "startedAt": "2026-10-23 07:11:37.9643449 UTC",
+  "finishedAt": "2026-10-23 07:13:11.9317813 UTC",
+  "durationMs": 93967,
   "exitCode": 0,
   "errors": []
 }

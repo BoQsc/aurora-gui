@@ -5,6 +5,12 @@ instruction and curve fixes in the preceding conformance audit, is now selected
 without an environment override. This is an approved default change, **not a
 claim that every font or glyph is correct**.
 
+OpenCode Pro was rebuilt through its detached application helper, relaunched,
+and published to its configured update channel. Required public download
+verification passed. Its binary provenance matches source commit
+`62b7762cad246390f01f96d9fcf9e8ec04ac6a40`; see `delivery.json`. Publication
+does not change the incomplete native quality result.
+
 `aurora.text.renderpolicy` now owns selection for TrueType geometry/sampling,
 atlas alpha correction and Vulkan blending. All Aurora packages use the same
 canonical core. `AURORA_TEXT_EXPERIMENT=compatible-c` selects the former C;
@@ -61,3 +67,9 @@ references do not certify every Windows rendering mode, script or other platform
 Historical evidence packages were preserved. Only owned vendor manifest entries
 were updated; the three inherited platform/window mismatches remain documented
 in `vendor-manifest-audit.json`.
+
+The CPU-only chat fixture also measures first composition/paint and 120 cached
+software paints in three separate processes per profile. Refined D's cached
+paint averages range from 1.699–1.779ms per run, with 517 glyph rasterizations
+cached in each process. These finite samples exclude provider/network time and
+do not establish an absolute latency minimum (`render-performance.json`).

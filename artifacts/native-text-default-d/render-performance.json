@@ -1,0 +1,47 @@
+{
+  "scope": "Isolated CPU-only chat composition/first paint and 120 repeated software paints. No provider/network request. Three separate runs per profile; not an absolute latency minimum.",
+  "cases": [
+    {
+      "profile": "C",
+      "attempt": 0,
+      "cold_us": 90664,
+      "warm_us": 1705,
+      "cached_glyph_rasterizations": 517
+    },
+    {
+      "profile": "C",
+      "attempt": 1,
+      "cold_us": 147228,
+      "warm_us": 2177,
+      "cached_glyph_rasterizations": 517
+    },
+    {
+      "profile": "C",
+      "attempt": 2,
+      "cold_us": 99491,
+      "warm_us": 1845,
+      "cached_glyph_rasterizations": 517
+    },
+    {
+      "profile": "default",
+      "attempt": 0,
+      "cold_us": 115461,
+      "warm_us": 1779,
+      "cached_glyph_rasterizations": 517
+    },
+    {
+      "profile": "default",
+      "attempt": 1,
+      "cold_us": 111378,
+      "warm_us": 1699,
+      "cached_glyph_rasterizations": 517
+    },
+    {
+      "profile": "default",
+      "attempt": 2,
+      "cold_us": 105545,
+      "warm_us": 1768,
+      "cached_glyph_rasterizations": 517
+    }
+  ]
+}
