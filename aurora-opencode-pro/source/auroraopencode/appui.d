@@ -93,6 +93,7 @@ import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
 import auroraopencode.turnsummary : TurnWorkSummary;
+import auroraopencode.followupsection : AutomaticFollowUpSection, FollowUpRange, followUpRanges, freezeFollowUpTimers;
 import auroraopencode.buttonsuggest : ButtonSuggestion,
     conversationDigest, parseSuggestionResponse, recentConversationPaths,
     suggestionsForPaths,
@@ -10731,6 +10732,7 @@ public final class OpenCodeRoot : VBox
     // on every streamed tool-argument rebuild.
     private bool[string] _groupCollapsed;
     private TurnWorkSummary[string] _turnWorkSummaries;
+    private AutomaticFollowUpSection[string] _followUpSections;
     private MessageBubble[string] _activityReasoning;
     private PopupOverlay _activePopup;
     // "New buttons from recent chats" dialog and its one-shot generation.
@@ -15679,6 +15681,7 @@ private string _suggestExcludeId;
         }
         // A folded turn must not leak its presentation visibility into cached
         // message rows reused by the next projection.
+        foreach (section; _followUpSections) section.restoreRows();
         foreach (summary; _turnWorkSummaries) summary.restoreRows();
         foreach (row; messageColumnVisuals())
             if (auto bubble = cast(MessageBubble) row) bubble._reasoningInActivity = false;
@@ -15918,6 +15921,33 @@ private string _suggestExcludeId;
                 break;
             }
         bool liveRowsAdded = false;
+        FollowUpRange[size_t] followUpStarts;
+        FollowUpRange[AutomaticFollowUpSection] followUpSections;
+        void addFollowUpSection(FollowUpRange range)
+        {
+            const key = "follow-up:" ~ session.id ~ ":" ~ session.messages[range.markerIndex].id;
+            auto existing = key in _followUpSections;
+            auto section = existing is null ? new AutomaticFollowUpSection() : *existing;
+            if (existing is null)
+            {
+                section.onCollapseChanged = delegate(bool value)
+                {
+                    ChatScrollView.holdPositionForNextLayout(section);
+                    _groupCollapsed[key] = value;
+                    _messageColumn.invalidate(); _messagesScroll.invalidate();
+                };
+                if (auto saved = key in _groupCollapsed) section.setCollapsed(*saved);
+                _followUpSections[key] = section;
+            }
+            section.update(null, range);
+            followUpSections[section] = range;
+            _messageColumn.add(section);
+        }
+        foreach (range; followUpRanges(*session, fullPath, session.turnStatus == "running"))
+        {
+            if (range.startSlot < hiddenCount && range.endSlot > hiddenCount) addFollowUpSection(range);
+            else if (range.startSlot >= hiddenCount) followUpStarts[range.markerIndex] = range;
+        }
         size_t slot = 0;
         while (slot < path.length)
         {
@@ -15946,6 +15976,7 @@ private string _suggestExcludeId;
             // point the agent hit a limit.
             if (message.internal)
             {
+                if (auto range = index in followUpStarts) addFollowUpSection(*range);
                 ++slot;
                 continue;
             }
@@ -16177,6 +16208,7 @@ private string _suggestExcludeId;
                 if (auto bubble = cast(MessageBubble) child)
                     if (!bubble.hidden()) break;
             }
+        foldAutomaticFollowUps(*session, followUpSections);
         // Steering typed while this turn is still running is queued durably and
         // injected at the next valid message boundary. Show it now as a
         // dimmed, pending user bubble so submitting a prompt never looks like
@@ -16825,6 +16857,62 @@ private void pollButtonSuggestionRequest()
         return result;
     }
 
+    private void foldAutomaticFollowUps(const ref ChatSession session,
+        FollowUpRange[AutomaticFollowUpSection] sections)
+    {
+        if (!sections.length) { _followUpSections = null; return; }
+        Widget[] projected, details;
+        AutomaticFollowUpSection current;
+        bool keepVisible;
+        bool[AutomaticFollowUpSection] used;
+        void flush()
+        {
+            if (current !is null) current.update(details, sections[current]);
+            details = null;
+        }
+        foreach (row; _messageColumn.children().dup)
+        {
+            if (auto section = cast(AutomaticFollowUpSection) row)
+            {
+                flush(); current = section; keepVisible = false;
+                used[section] = true; projected ~= section; continue;
+            }
+            bool user, important, answer;
+            void inspect(Widget node)
+            {
+                long index = -1;
+                if (auto bubble = cast(MessageBubble) node)
+                {
+                    index = bubble.messageIndex();
+                    important |= bubble._failed;
+                    answer |= bubble is _streamBubble && bubble._content.length > 0;
+                }
+                else if (auto deferred = cast(DeferredTranscriptRow) node) index = deferred.messageIndex;
+                if (index >= 0 && index < session.messages.length)
+                {
+                    const ref message = session.messages[cast(size_t) index];
+                    user |= message.role == "user" && !message.internal;
+                    important |= message.failed || message.toolName == "request_input" || message.toolName == "task_blocker";
+                    if (current !is null) answer |= index == sections[current].finalAnswerIndex;
+                }
+                foreach (child; node.children()) inspect(child);
+            }
+            inspect(row);
+            if (user) { flush(); current = null; keepVisible = false; }
+            // Never hide a failure or essential question. The resulting answer
+            // stays outside; its live activity can still fold into the section.
+            keepVisible |= important;
+            if (current is null || keepVisible || answer) projected ~= row;
+            else details ~= row;
+        }
+        flush();
+        string[] expired;
+        foreach (key, section; _followUpSections) if (section !in used) expired ~= key;
+        foreach (key; expired) _followUpSections.remove(key);
+        _messageColumn.clearChildren();
+        foreach (row; projected) _messageColumn.add(row);
+    }
+
     /// Keep prose in chronological order; fold only reasoning and settled tools.
     private void groupTurnWorkProjection(const ref ChatSession session,
         const(size_t)[] path)
@@ -17184,6 +17272,8 @@ private void pollButtonSuggestionRequest()
                 group.setCollapsed(false);
             if (auto summary = cast(TurnWorkSummary) parent)
                 summary.setCollapsed(false);
+            if (auto section = cast(AutomaticFollowUpSection) parent)
+                section.setCollapsed(false);
         }
         // Revealing a match is a deliberate move away from the live end of the
         // transcript, so automatic scrolling hands over (the jump-to-latest pill
@@ -20310,6 +20400,8 @@ private void pollButtonSuggestionRequest()
         cancelPendingTools();
 
         auto session = &_sessions[sessionIndex];
+        foreach (index; freezeFollowUpTimers(*session, true))
+            publishMessageEvent(AgentEventKind.itemUpdated, *session, session.messages[index]);
         // Guidance was already submitted by the user and persisted while this
         // turn was live. Stopping must not silently erase it. Move it into the
         // visible transcript without starting another request; the following
@@ -22305,6 +22397,8 @@ private void pollButtonSuggestionRequest()
         // active path so the elapsed time is preserved instead of silently
         // dropping out of the total and reading as a reset.
         auto session = &_sessions[_turnSessionIndex];
+        foreach (index; freezeFollowUpTimers(*session))
+            publishMessageEvent(AgentEventKind.itemUpdated, *session, session.messages[index]);
         size_t target = size_t.max;
         if (_turnUserId.length > 0)
             foreach (i, ref message; session.messages)
@@ -32190,6 +32284,31 @@ private void pollButtonSuggestionRequest()
         const(string)[] contents)
     {
         addConversationForTestingWithReasoning(roles, contents, null);
+    }
+
+    public void appendAutomaticFollowUpForTesting(bool summary = false)
+    {
+        import auroraopencode.taskcontinuation : taskContinuationMarker;
+        ChatMessage message;
+        message.role = "user"; message.internal = true;
+        message.content = summary ? completionHandoffMarker ~ completionHandoffInstruction : taskContinuationMarker;
+        appendMessage(_sessions[_current], message);
+        _sessions[_current].turnStatus = "running";
+        rebuildMessageColumn();
+    }
+
+    public bool followUpAnswerVisibleForTesting()
+    {
+        if (_current < 0) return false;
+        const session = &_sessions[_current];
+        foreach (range; followUpRanges(*session, activeMessagePath(*session), false))
+        {
+            auto bubble = bubbleForMessageIndex(cast(int) range.finalAnswerIndex);
+            if (bubble is null) return false;
+            for (auto node = cast(Widget) bubble; node !is null; node = node.parent())
+                if (!node.visible()) return false;
+        }
+        return true;
     }
 
     /// Test-only: append a user turn carrying one durable image attachment,
