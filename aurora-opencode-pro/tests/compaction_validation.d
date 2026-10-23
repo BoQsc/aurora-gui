@@ -1,23 +1,42 @@
 module compaction_validation;
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
-import auroraopencode.core : Settings, saveSettings, setOpencodeStateDirectoryForTesting, opencodeTheme;
+import auroraopencode.core : Settings, saveSettings, setOpencodeStateDirectoryForTesting, opencodeTheme,
+    setContextBudgetForModel, setContextCompactionForModel;
 import core.time : MonoTime, seconds, msecs;
 import core.thread : Thread;
 import std.array : replicate;
 import std.conv : to;
-import std.file : mkdirRecurse;
-import std.path : absolutePath;
+import std.file : mkdirRecurse, readText, write;
+import std.path : absolutePath, buildPath;
 import std.stdio : writeln;
 import std.string : indexOf;
-import std.json : JSONValue;
+import std.json : JSONValue, parseJSON;
+import std.process : environment;
 
 int main()
 {
     const state = absolutePath("compaction-validation-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(state); setOpencodeStateDirectoryForTesting(state);
     Settings settings; settings.baseUrl = "http://127.0.0.1:9/v1";
-    settings.apiKey = ""; settings.quickTitle = false; saveSettings(settings);
+    settings.apiKey = ""; settings.quickTitle = false;
+    settings.model = "deepseek/deepseek-v4.1-flash";
+    settings.toolsEnabled = true;
+    setContextBudgetForModel(settings, settings.baseUrl, settings.model, 500_000);
+    setContextCompactionForModel(settings, settings.baseUrl, settings.model, true);
+    saveSettings(settings);
+    // Existing installs must recover without requiring a manual settings edit.
+    const settingsPath = buildPath(state, "settings.json");
+    auto legacySettings = parseJSON(readText(settingsPath));
+    legacySettings["adaptiveWorkingContext"] = true;
+    write(settingsPath, legacySettings.toString());
+    const oldWorkingContext = environment.get("AURORA_WORKING_CONTEXT_TOKENS", "");
+    environment["AURORA_WORKING_CONTEXT_TOKENS"] = "128000";
+    scope(exit)
+    {
+        if (oldWorkingContext.length) environment["AURORA_WORKING_CONTEXT_TOKENS"] = oldWorkingContext;
+        else environment.remove("AURORA_WORKING_CONTEXT_TOKENS");
+    }
     WindowOptions options; options.renderer = RendererPreference.software;
     auto window = new GuiWindow(options, opencodeTheme());
     auto root = new OpenCodeRoot(window); window.setRoot(root);
@@ -40,6 +59,34 @@ int main()
         ["Retain reference data for later queries.", "Ready.", original,
          "Reference data received.", "Return CRITICAL_REFERENCE_VALUE exactly."]);
     const count = root.totalMessageCountForTesting();
+    foreach (rounds; [0, 31, 32, 33, 128, 4096])
+    {
+        root.setToolRoundsForTesting(rounds);
+        assert(root.requestContextBudgetForTesting(settings.model) == 500_000,
+            "A long tool task overrode the selected context target");
+        bool retained;
+        foreach (message; root.activeCompactedRequestMessagesForTesting())
+            if (message.content.indexOf("CRITICAL_REFERENCE_VALUE=Q9-7316") >= 0) retained = true;
+        assert(retained, "Tool-round count retired context that fits the selected target");
+    }
+    root.setProviderContextLimitForTesting(settings.model, 300_000);
+    assert(root.requestContextBudgetForTesting(settings.model) == 300_000);
+    root.setContextBudgetForTesting(64_000);
+    assert(root.requestContextBudgetForTesting(settings.model) == 64_000);
+    root.setContextBudgetForTesting(0);
+    assert(root.requestContextBudgetForTesting(settings.model) == 300_000,
+        "Auto must use the provider window during long tool tasks");
+    root.setProviderContextLimitForTesting(settings.model, 1_000_000);
+    root.setContextBudgetForTesting(500_000);
+    root.recordContextUsageForTesting(240_000, 0, 240_000);
+    assert(root.contextLimitForTesting() == 500_000 && root.contextUsageTextForTesting() == "48%",
+        "The context meter and request must use the same selected target");
+    root.flushSettingsForTesting();
+    const migratedSettings = parseJSON(readText(settingsPath));
+    assert("adaptiveWorkingContext" !in migratedSettings.object,
+        "Saving settings retained the obsolete automatic context cap");
+    root.setToolRoundsForTesting(0);
+    writeln("PASS selected context survives 4096 tool rounds and legacy settings; provider limits and meter agree");
     foreach (budget; [500_000, 64_000, 16_000])
     {
         const request = root.compactedRequestMessagesForTesting(budget);

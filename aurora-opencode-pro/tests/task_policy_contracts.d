@@ -51,10 +51,7 @@ int main(string[] arguments)
     assert(scopedResumePrompt("implement OTHER project", true) == "implement OTHER project");
     import std.string : indexOf;
     assert(scopedResumePrompt("implement OTHER project", false).indexOf("OTHER") < 0);
-    assert(workingContextBudget(375_000, true, 32) == 128_000);
-    assert(workingContextBudget(64_000, true, 32) == 64_000);
-    assert(workingContextBudget(375_000, false, 100) == 375_000);
-    writeln("PASS task checkout ownership, cross-checkout rejection, typed evidence, scoped resume and working context");
+    writeln("PASS task checkout ownership, cross-checkout rejection, typed evidence and scoped resume");
     auto longHistory = session;
     longHistory.id = "long-history-fixture";
     foreach (_; 0 .. 5000) append(longHistory,"assistant","Recorded inspection");

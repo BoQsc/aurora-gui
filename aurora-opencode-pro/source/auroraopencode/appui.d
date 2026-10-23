@@ -81,7 +81,7 @@ import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateEr
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError, taskInputError, taskAwaitingInput;
-import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, workingContextBudget, diagnosticToolAllowed;
+import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
 import auroraopencode.agentresult : subagentResult;
@@ -22804,7 +22804,7 @@ private void pollButtonSuggestionRequest()
         }
         else if (compactionEnabled)
         {
-            const normalContextLimit = requestContextBudget(orchestratorModel, toolsEnabled);
+            const normalContextLimit = requestContextBudget(orchestratorModel);
             const contextLimit = diagnosticReview && normalContextLimit > 64_000 ? 64_000 : normalContextLimit;
             compactedRequestMessages = prepareCompactedRequest(*session,
                 contextLimit, fixedRequestBytes, checkpointCreated,
@@ -22818,7 +22818,7 @@ private void pollButtonSuggestionRequest()
             // trim is what actually shrinks the bytes the gateway sees.
             compactedRequestMessages = compactRequestMessages(
                 buildRequestMessages(*session),
-                requestContextBudget(orchestratorModel, toolsEnabled), fixedRequestBytes);
+                requestContextBudget(orchestratorModel), fixedRequestBytes);
         }
         else
             compactedRequestMessages = buildRequestMessages(*session);
@@ -22849,7 +22849,7 @@ private void pollButtonSuggestionRequest()
         if (_current == sessionIndex)
         {
             if (_usageBadge !is null)
-                _usageBadge.setLimit(requestContextBudget(orchestratorModel, toolsEnabled));
+                _usageBadge.setLimit(requestContextBudget(orchestratorModel));
             refreshUsageBadge();
         }
         // The OpenCode gateway routes by a stable per-conversation id; it
@@ -22904,7 +22904,7 @@ private void pollButtonSuggestionRequest()
         }
         if (checkpointCreated && startModelCompaction(sessionIndex,
             oldCompactionAnchor, oldCompactionSummary,
-            requestContextBudget(orchestratorModel, toolsEnabled)))
+            requestContextBudget(orchestratorModel)))
         {
             setTurnInFlight(true);
             updateStatus("Compacting context before continuing...");
@@ -22924,7 +22924,7 @@ private void pollButtonSuggestionRequest()
         _client.setEventWake(_window.serviceWake());
         JSONValue requestDetails;
         requestDetails["turn"] = runtimeTurnId(*session);
-        requestDetails["contextBudget"] = requestContextBudget(orchestratorModel, toolsEnabled);
+        requestDetails["contextBudget"] = requestContextBudget(orchestratorModel);
         requestDetails["messageBytes"] = cast(long) (requestMessageBytes(messages) + requestToolDefinitionBytes(tools));
         requestDetails["messageCount"] = cast(long) messages.length;
         requestDetails["toolCount"] = cast(long) tools.length;
@@ -23616,12 +23616,6 @@ private void pollButtonSuggestionRequest()
         items ~= ContextMenuItem.separatorItem();
         items ~= ContextMenuItem.command("Provider limit: " ~
             formatThousands(providerLimit) ~ " tokens", delegate() {}, "", false);
-        items ~= ContextMenuItem.check("Use 128k working context for long tool tasks",
-            _settings.adaptiveWorkingContext, delegate()
-            {
-                _settings.adaptiveWorkingContext = !_settings.adaptiveWorkingContext;
-                saveSettingsNow(); refreshUsageBadge();
-            });
         items ~= ContextMenuItem.check("Use this model for stalled-task diagnosis",
             _settings.diagnosticModel == model, delegate()
             {
@@ -29961,11 +29955,6 @@ private void pollButtonSuggestionRequest()
 
     private int requestContextBudget(string model)
     {
-        return requestContextBudget(model, _settings.toolsEnabled);
-    }
-
-    private int requestContextBudget(string model, bool toolsEnabled)
-    {
         const limit = effectiveContextLimit(model);
         const target = contextBudgetForModel(_settings, _settings.baseUrl,
             model);
@@ -29973,8 +29962,10 @@ private void pollButtonSuggestionRequest()
         if (_compactionBudgetsBaseUrl == _settings.baseUrl)
             if (auto learned = model in _learnedCompactionBudgets)
                 if (*learned < budget) budget = *learned;
-        return workingContextBudget(budget, toolsEnabled && _settings.adaptiveWorkingContext &&
-            contextCompactionForModel(_settings, _settings.baseUrl, model), _toolRounds);
+        // Tool-round count says nothing about context pressure. Keep the
+        // selected target stable throughout a task; only provider limits and
+        // an observed overflow may reduce it.
+        return budget;
     }
 
     /// Merge a session parsed from a snapshot into the live list. When the same

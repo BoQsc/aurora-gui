@@ -116,14 +116,17 @@ stagnation. Three stalled continuations trigger a new diagnosis using a reduced
 case, independent expectations and contradictory evidence. Further stalls trigger recurring recovery with a changed approach, preserving work/history. Actual outcome progress resets the
 window. Productive tool work has no fixed round cap.
 
-The model/context button's context menu exposes two controls:
+The model/context button's context menu controls the target and automatic
+compaction. A selected target stays in effect for the entire task, regardless
+of tool-round count. Auto uses the provider window. Provider limits and a
+learned overflow budget can reduce a target; ordinary tool activity cannot.
+The former 32-round cap, `adaptiveWorkingContext` setting and
+`AURORA_WORKING_CONTEXT_TOKENS` override are retired. Existing settings files
+load without reactivating the cap. Compaction retains the full transcript and
+branches on disk.
 
-- **Use 128k working context for long tool tasks**: enabled by default. After
-  32 tool rounds, when automatic compaction is enabled for that model, the
-  working context is capped at 128k or the user's smaller
-  target. Compaction retains the full transcript/branches on disk. Disable the
-  checkbox to retain the selected target. `AURORA_WORKING_CONTEXT_TOKENS=0`
-  disables this cap; a value >=16000 selects another cap.
+The menu also exposes an optional diagnostic review:
+
 - **Use this model for stalled-task diagnosis**: off until explicitly selected.
   A configured reviewer gets at most four requests and a 64k context ceiling
   through the current provider. Only inspection tools are advertised/accepted;

@@ -1380,8 +1380,11 @@ int main(string[] args)
         "Switching forward did not restore the edited branch");
     // Continuing from a restored branch appends to it without disturbing the
     // other run.
+    const branchMessageCount = root.messageCountForTesting();
     root.addConversationForTesting(["user"], ["continue here"]);
-    assert(root.lastAssistantContentForTesting() == "continue here",
+    assert(root.messageCountForTesting() == branchMessageCount + 1 &&
+        root.messageContentForTesting(root.totalMessageCountForTesting() - 1) == "continue here" &&
+        root.lastAssistantContentForTesting() == "edited answer",
         "Continuing on a restored branch did not append to it");
     assert(root.invokeBubbleVersionPrevForTesting(editedUserChild),
         "Prompt version back arrow failed after continuing");
@@ -2661,7 +2664,7 @@ int main(string[] args)
         auto targetMenu = cast(ContextMenu) currentTransientPopup(root);
         assert(targetMenu !is null,
             "Right-clicking the model should open context targets");
-        assert(targetMenu.items().length == 13,
+        assert(targetMenu.items().length == 12,
             "Context menu should show the target, the provider limit, a " ~
             "compaction switch and five targets");
         assert(targetMenu.items()[0].label ==
@@ -2674,13 +2677,13 @@ int main(string[] args)
             "Context menu must display the read-only provider limit");
         assert(!targetMenu.items()[2].checked,
             "Automatic compaction should be off by default");
-        assert(targetMenu.items()[8].checked,
+        assert(targetMenu.items()[7].checked,
             "Auto target should be selected by default");
-        assert(targetMenu.items()[12].label == toUTF32("500,000 tokens") &&
-            targetMenu.items()[12].enabled,
+        assert(targetMenu.items()[11].label == toUTF32("500,000 tokens") &&
+            targetMenu.items()[11].enabled,
             "500K target should be available below a 1M provider limit");
         targetMenu.items()[2].action();
-        targetMenu.items()[12].action();
+        targetMenu.items()[11].action();
         dismissContextMenus(root);
         root.tickTree(0.02);
         assert(root.requestContextBudgetForTesting(
@@ -2760,7 +2763,7 @@ int main(string[] args)
         driver.click(globalCenter(usageBadge));
         root.tickTree(0.02);
         targetMenu = cast(ContextMenu) currentTransientPopup(root);
-        assert(targetMenu !is null && !targetMenu.items()[12].enabled,
+        assert(targetMenu !is null && !targetMenu.items()[11].enabled,
             "Clicking the context badge should open targets and disable " ~
             "those above the provider limit");
         dismissContextMenus(root);

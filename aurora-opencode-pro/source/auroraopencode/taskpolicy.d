@@ -93,7 +93,6 @@ string taskWorkspace(const ref ChatSession session, string projectWorkspace)
     remember(result);
     return result;
 }
-
 bool sameCheckout(string first, string second)
 {
     return first.length && second.length && checkoutIdentity(first) == checkoutIdentity(second);
@@ -192,24 +191,4 @@ string scopedResumePrompt(string ownerPrompt, bool ownsRebuild)
         "conversation's own durable objective, checklist and recorded evidence. " ~
         "Another conversation's rebuild does not change this task or verify its " ~
         "outputs. Apply only this conversation's queued guidance.";
-}
-
-int workingContextBudget(int selected, bool toolsEnabled, int toolRounds)
-{
-    if (!toolsEnabled || toolRounds < 32 || selected <= 0) return selected;
-    import std.process : environment;
-    import std.conv : to;
-    int target = 128_000;
-    try
-    {
-        const configured = environment.get("AURORA_WORKING_CONTEXT_TOKENS", "");
-        if (configured.length)
-        {
-            const value = to!int(configured);
-            if (value == 0) return selected;
-            if (value >= 16_000) target = value;
-        }
-    }
-    catch (Exception) {}
-    return selected < target ? selected : target;
 }
