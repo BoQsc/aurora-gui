@@ -1,0 +1,464 @@
+[
+  {
+    "axis": "X",
+    "point": 0,
+    "aurora": 540.0,
+    "native": 536.016,
+    "original_aurora": 540
+  },
+  {
+    "axis": "X",
+    "point": 1,
+    "aurora": 80.0,
+    "native": 80.0,
+    "original_aurora": 80
+  },
+  {
+    "axis": "X",
+    "point": 2,
+    "aurora": 80.0,
+    "native": 80.0,
+    "original_aurora": 80
+  },
+  {
+    "axis": "X",
+    "point": 3,
+    "aurora": 262.0,
+    "native": 258.988,
+    "original_aurora": 262
+  },
+  {
+    "axis": "X",
+    "point": 4,
+    "aurora": 306.0,
+    "native": 302.988,
+    "original_aurora": 306
+  },
+  {
+    "axis": "X",
+    "point": 5,
+    "aurora": 362.0,
+    "native": 358.988,
+    "original_aurora": 362
+  },
+  {
+    "axis": "X",
+    "point": 6,
+    "aurora": 393.0,
+    "native": 389.016,
+    "original_aurora": 393
+  },
+  {
+    "axis": "X",
+    "point": 7,
+    "aurora": 404.0,
+    "native": 400.016,
+    "original_aurora": 404
+  },
+  {
+    "axis": "X",
+    "point": 8,
+    "aurora": 404.0,
+    "native": 400.016,
+    "original_aurora": 404
+  },
+  {
+    "axis": "X",
+    "point": 9,
+    "aurora": 404.0,
+    "native": 400.016,
+    "original_aurora": 404
+  },
+  {
+    "axis": "X",
+    "point": 10,
+    "aurora": 390.0,
+    "native": 386.016,
+    "original_aurora": 390
+  },
+  {
+    "axis": "X",
+    "point": 11,
+    "aurora": 361.0,
+    "native": 357.988,
+    "original_aurora": 361
+  },
+  {
+    "axis": "X",
+    "point": 12,
+    "aurora": 315.0,
+    "native": 311.988,
+    "original_aurora": 315
+  },
+  {
+    "axis": "X",
+    "point": 13,
+    "aurora": 282.0,
+    "native": 280.996,
+    "original_aurora": 282
+  },
+  {
+    "axis": "X",
+    "point": 14,
+    "aurora": 238.0,
+    "native": 236.996,
+    "original_aurora": 238
+  },
+  {
+    "axis": "X",
+    "point": 15,
+    "aurora": 165.0,
+    "native": 165.0,
+    "original_aurora": 165
+  },
+  {
+    "axis": "X",
+    "point": 16,
+    "aurora": 135.0,
+    "native": 135.0,
+    "original_aurora": 135
+  },
+  {
+    "axis": "X",
+    "point": 17,
+    "aurora": 84.0,
+    "native": 84.0,
+    "original_aurora": 84
+  },
+  {
+    "axis": "X",
+    "point": 18,
+    "aurora": 123.0,
+    "native": 123.0,
+    "original_aurora": 123
+  },
+  {
+    "axis": "X",
+    "point": 19,
+    "aurora": 227.0,
+    "native": 224.992,
+    "original_aurora": 227
+  },
+  {
+    "axis": "X",
+    "point": 20,
+    "aurora": 295.0,
+    "native": 292.992,
+    "original_aurora": 295
+  },
+  {
+    "axis": "X",
+    "point": 21,
+    "aurora": 341.0,
+    "native": 338.992,
+    "original_aurora": 341
+  },
+  {
+    "axis": "X",
+    "point": 22,
+    "aurora": 418.0,
+    "native": 414.988,
+    "original_aurora": 418
+  },
+  {
+    "axis": "X",
+    "point": 23,
+    "aurora": 473.0,
+    "native": 469.988,
+    "original_aurora": 473
+  },
+  {
+    "axis": "X",
+    "point": 24,
+    "aurora": 504.0,
+    "native": 500.016,
+    "original_aurora": 504
+  },
+  {
+    "axis": "X",
+    "point": 25,
+    "aurora": 504.0,
+    "native": 500.016,
+    "original_aurora": 504
+  },
+  {
+    "axis": "X",
+    "point": 26,
+    "aurora": 504.0,
+    "native": 500.016,
+    "original_aurora": 504
+  },
+  {
+    "axis": "X",
+    "point": 27,
+    "aurora": 483.0,
+    "native": 479.016,
+    "original_aurora": 483
+  },
+  {
+    "axis": "X",
+    "point": 28,
+    "aurora": 440.0,
+    "native": 436.988,
+    "original_aurora": 440
+  },
+  {
+    "axis": "X",
+    "point": 29,
+    "aurora": 376.0,
+    "native": 373.992,
+    "original_aurora": 376
+  },
+  {
+    "axis": "X",
+    "point": 30,
+    "aurora": 332.0,
+    "native": 329.992,
+    "original_aurora": 332
+  },
+  {
+    "axis": "X",
+    "point": 31,
+    "aurora": 208.0,
+    "native": 208.0,
+    "original_aurora": 208
+  },
+  {
+    "axis": "X",
+    "point": 32,
+    "aurora": 540.0,
+    "native": 536.016,
+    "original_aurora": 540
+  },
+  {
+    "axis": "Y",
+    "point": 0,
+    "aurora": 0.0,
+    "native": 0.0,
+    "original_aurora": 0
+  },
+  {
+    "axis": "Y",
+    "point": 1,
+    "aurora": 0.0,
+    "native": 0.0,
+    "original_aurora": 0
+  },
+  {
+    "axis": "Y",
+    "point": 2,
+    "aurora": 59.0,
+    "native": 59.0,
+    "original_aurora": 59
+  },
+  {
+    "axis": "Y",
+    "point": 3,
+    "aurora": 256.0,
+    "native": 257.004,
+    "original_aurora": 256
+  },
+  {
+    "axis": "Y",
+    "point": 4,
+    "aurora": 305.0,
+    "native": 305.0,
+    "original_aurora": 305
+  },
+  {
+    "axis": "Y",
+    "point": 5,
+    "aurora": 369.0,
+    "native": 369.0,
+    "original_aurora": 369
+  },
+  {
+    "axis": "Y",
+    "point": 6,
+    "aurora": 421.0,
+    "native": 421.0,
+    "original_aurora": 421
+  },
+  {
+    "axis": "Y",
+    "point": 7,
+    "aurora": 468.0,
+    "native": 468.0,
+    "original_aurora": 468
+  },
+  {
+    "axis": "Y",
+    "point": 8,
+    "aurora": 495.0,
+    "native": 495.0,
+    "original_aurora": 495
+  },
+  {
+    "axis": "Y",
+    "point": 9,
+    "aurora": 524.0,
+    "native": 524.0,
+    "original_aurora": 524
+  },
+  {
+    "axis": "Y",
+    "point": 10,
+    "aurora": 577.0,
+    "native": 577.0,
+    "original_aurora": 577
+  },
+  {
+    "axis": "Y",
+    "point": 11,
+    "aurora": 617.0,
+    "native": 617.0,
+    "original_aurora": 617
+  },
+  {
+    "axis": "Y",
+    "point": 12,
+    "aurora": 640.0,
+    "native": 640.0,
+    "original_aurora": 640
+  },
+  {
+    "axis": "Y",
+    "point": 13,
+    "aurora": 640.0,
+    "native": 640.0,
+    "original_aurora": 640
+  },
+  {
+    "axis": "Y",
+    "point": 14,
+    "aurora": 640.0,
+    "native": 640.0,
+    "original_aurora": 640
+  },
+  {
+    "axis": "Y",
+    "point": 15,
+    "aurora": 604.0,
+    "native": 604.0,
+    "original_aurora": 604
+  },
+  {
+    "axis": "Y",
+    "point": 16,
+    "aurora": 576.0,
+    "native": 576.0,
+    "original_aurora": 576
+  },
+  {
+    "axis": "Y",
+    "point": 17,
+    "aurora": 627.0,
+    "native": 627.0,
+    "original_aurora": 627
+  },
+  {
+    "axis": "Y",
+    "point": 18,
+    "aurora": 662.0,
+    "native": 662.0,
+    "original_aurora": 662
+  },
+  {
+    "axis": "Y",
+    "point": 19,
+    "aurora": 704.0,
+    "native": 704.0,
+    "original_aurora": 704
+  },
+  {
+    "axis": "Y",
+    "point": 20,
+    "aurora": 704.0,
+    "native": 704.0,
+    "original_aurora": 704
+  },
+  {
+    "axis": "Y",
+    "point": 21,
+    "aurora": 704.0,
+    "native": 704.0,
+    "original_aurora": 704
+  },
+  {
+    "axis": "Y",
+    "point": 22,
+    "aurora": 674.0,
+    "native": 675.004,
+    "original_aurora": 674
+  },
+  {
+    "axis": "Y",
+    "point": 23,
+    "aurora": 620.0,
+    "native": 621.004,
+    "original_aurora": 620
+  },
+  {
+    "axis": "Y",
+    "point": 24,
+    "aurora": 542.0,
+    "native": 543.004,
+    "original_aurora": 542
+  },
+  {
+    "axis": "Y",
+    "point": 25,
+    "aurora": 494.0,
+    "native": 494.0,
+    "original_aurora": 494
+  },
+  {
+    "axis": "Y",
+    "point": 26,
+    "aurora": 452.0,
+    "native": 452.0,
+    "original_aurora": 452
+  },
+  {
+    "axis": "Y",
+    "point": 27,
+    "aurora": 381.0,
+    "native": 382.004,
+    "original_aurora": 381
+  },
+  {
+    "axis": "Y",
+    "point": 28,
+    "aurora": 311.0,
+    "native": 311.0,
+    "original_aurora": 311
+  },
+  {
+    "axis": "Y",
+    "point": 29,
+    "aurora": 236.0,
+    "native": 236.0,
+    "original_aurora": 236
+  },
+  {
+    "axis": "Y",
+    "point": 30,
+    "aurora": 191.0,
+    "native": 192.004,
+    "original_aurora": 191
+  },
+  {
+    "axis": "Y",
+    "point": 31,
+    "aurora": 64.0,
+    "native": 64.0,
+    "original_aurora": 64
+  },
+  {
+    "axis": "Y",
+    "point": 32,
+    "aurora": 64.0,
+    "native": 64.0,
+    "original_aurora": 64
+  }
+]

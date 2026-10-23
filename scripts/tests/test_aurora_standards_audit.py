@@ -44,6 +44,8 @@ class AuroraStandardsAuditTests(unittest.TestCase):
             "native-weight grayscale contrast is the atlas default", contracts)
         self.assertIn("foreground-aware text coverage is the atlas default", contracts)
         self.assertIn("natural grayscale hinting is the shared font default", contracts)
+        self.assertIn("refined D is the shared text rendering default", contracts)
+        self.assertIn("atlas and Vulkan share text coverage policy", contracts)
 
     def test_dependency_based_host_is_audited(self):
         packages = {p["manifest"]: p for p in self.result["packages"]}

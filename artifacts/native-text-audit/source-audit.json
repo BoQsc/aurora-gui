@@ -1,0 +1,43 @@
+{
+  "current_source_sha256": {
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\hinter.d": "8ad3e661db415ae20c359203e8b6205ed6db05e93d7c78b70d6e652eaf848cdb",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\truetype.d": "188636cc8067393cf3f6f571208d98e20d74b43006307e112940cf29f03581c6",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\rasterizer.d": "51c30a2986f300438f34fd023a9a662eb6351e57104d63d8dd48f469dd39615d",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\atlas.d": "b979842ca491a4d1c1edc67e3de88027263f048f3a8d854c4ac147d6d04c75b0",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\alphacorrection.d": "1862931b6dc1462360fc855fee86fce706179f4b15c9ef129cd2dd1235876530",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\text\\fontprofile.d": "077942f300652ee82fee819a25c759596b3ca7af3067593c2321f7f5e1e0305f",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\font.d": "c43e986fc645d63446707cd4c46caf06847f1a7d305018abeefb48a39391cafc",
+    "vendor\\aurora-d-0.4.5\\tests\\font_quality.d": "0c223ed3e6bd29154058d1a14f0789d0ffaa3b5611acca4e8e7cb890dc2b4959",
+    "scripts\\compare-font-rendering.py": "41faa02d4237c798edd92c03ab435d745116bc98924e4d136d4ff2b5d04c5f1b",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\render\\vulkan.d": "589124cf0803d08b6dfbf007a566256a2c5985c9ac8fdff6761bc91193f86e5d",
+    "vendor\\aurora-d-0.4.5\\source\\aurora\\vulkan\\shaders.d": "e8f9415212360c8b0a570655dc39b9eeb8fb2a809738067ba566220ff7bdb546",
+    "vendor\\aurora-d-0.4.5\\tools\\make_spirv.py": "abcd33cf58822346b17854f641d61ec31c6cd069d7e0de02dca1ac8709a8f623",
+    "vendor\\aurora-d-0.4.5\\licenses\\Microsoft-Terminal-MIT.txt": "5d177f23ecfeb0ea8e050b6a5a16355e1ae9a0b286436ca8f83ed08b3795be6b"
+  },
+  "before_source": {
+    "git_revision": "ac99ba030dd4e4613057b82036191fae6ec98c55",
+    "sha256": {
+      "alphacorrection.d": "1862931b6dc1462360fc855fee86fce706179f4b15c9ef129cd2dd1235876530",
+      "atlas.d": "b979842ca491a4d1c1edc67e3de88027263f048f3a8d854c4ac147d6d04c75b0",
+      "coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83",
+      "fontprofile.d": "077942f300652ee82fee819a25c759596b3ca7af3067593c2321f7f5e1e0305f",
+      "hinter.d": "09162e47af0bee7135a59bedcd40fd9dd7a7f6f0acedd7688d89292696168bb3",
+      "rasterizer.d": "1a2ee3a522ff617413b1f65b1ac189ddf48ccab080c2ee052fd2994c9a1976ae",
+      "truetype.d": "31bedd1bddcb799419f3cf93320560b3eee2d7cde9726bb33678b59f2a2016d7"
+    }
+  },
+  "C_D_144_image_corpora_unchanged": true,
+  "protected_D_review_images_verified": 22,
+  "earlier_refinement_files_verified": 133,
+  "prior_glyph_files_verified": 175,
+  "prior_glyph_presentation_corrections": 3,
+  "glyph_origins_and_ids_unchanged": true,
+  "approved_C_character_sheets_included": true,
+  "original_sheet_count": 102,
+  "documentation_sha256": {
+    "AURORA-PATCHES.md": "bbdbbd319977f58e1cf339ca7d95feb33af3b6b53253da2eb0e58ee44c6aa618",
+    "AURORA-QUALITY-RATCHET.md": "f5ba33bdb3291c05e71eb3b0017abff680c48ef4dbcf14b8f4418ba01fa2ce64",
+    "vendor\\aurora-d-0.4.5\\docs\\FONTS.md": "319156c03af7528208aeaddd7d5284ecb8a76171534629072b25508311c4f24c"
+  }
+}

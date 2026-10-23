@@ -112,8 +112,16 @@ def verify_core_contracts(errors: list[Finding]) -> list[str]:
             'environment.get("AURORA_TEXT_COVERAGE", "foreground")',
         ),
         "natural grayscale hinting is the shared font default": (
-            CORE_SOURCE / "aurora" / "text" / "truetype.d",
+            CORE_SOURCE / "aurora" / "text" / "renderpolicy.d",
             'environment.get("AURORA_HINTING", "natural")',
+        ),
+        "refined D is the shared text rendering default": (
+            CORE_SOURCE / "aurora" / "text" / "renderpolicy.d",
+            'environment.get("AURORA_TEXT_EXPERIMENT", "native-refined")',
+        ),
+        "atlas and Vulkan share text coverage policy": (
+            CORE_SOURCE / "aurora" / "render" / "vulkan.d",
+            'const refinedText = refinedTextCoverage();',
         ),
         "invalid frame deltas are sanitized before widget ticks": (
             CORE_SOURCE / "aurora" / "window.d",

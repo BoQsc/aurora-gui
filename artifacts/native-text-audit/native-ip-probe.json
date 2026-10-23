@@ -1,0 +1,98 @@
+[
+  {
+    "axis": "x",
+    "target_design_units": 64,
+    "original_range_design_units": 256,
+    "current_range_26dot6": 127,
+    "before": 0.6666666666666666,
+    "after": 0.6666666666666666
+  },
+  {
+    "axis": "x",
+    "target_design_units": 23,
+    "original_range_design_units": 555,
+    "current_range_26dot6": 760,
+    "before": 0.6666666666666666,
+    "after": 0.6666666666666666
+  },
+  {
+    "axis": "x",
+    "target_design_units": 11,
+    "original_range_design_units": 277,
+    "current_range_26dot6": 276,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "target_design_units": 203,
+    "original_range_design_units": 710,
+    "current_range_26dot6": 448,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "target_design_units": -64,
+    "original_range_design_units": 256,
+    "current_range_26dot6": 127,
+    "before": 85.0,
+    "after": 85.0
+  },
+  {
+    "axis": "x",
+    "target_design_units": 64,
+    "original_range_design_units": -256,
+    "current_range_26dot6": 127,
+    "before": 0.6666666666666666,
+    "after": 0.6666666666666666
+  },
+  {
+    "axis": "y",
+    "target_design_units": 64,
+    "original_range_design_units": 256,
+    "current_range_26dot6": 127,
+    "before": 170.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "target_design_units": 23,
+    "original_range_design_units": 555,
+    "current_range_26dot6": 760,
+    "before": 170.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "target_design_units": 11,
+    "original_range_design_units": 277,
+    "current_range_26dot6": 276,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "target_design_units": 203,
+    "original_range_design_units": 710,
+    "current_range_26dot6": 448,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "target_design_units": -64,
+    "original_range_design_units": 256,
+    "current_range_26dot6": 127,
+    "before": 170.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "target_design_units": 64,
+    "original_range_design_units": -256,
+    "current_range_26dot6": 127,
+    "before": 170.0,
+    "after": 0.0
+  }
+]

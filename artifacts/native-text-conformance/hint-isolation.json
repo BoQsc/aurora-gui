@@ -1,0 +1,119 @@
+[
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 16,
+      "mean_absolute_error": 85.75
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 21,
+      "mean_absolute_error": 68.42857142857143
+    }
+  },
+  {
+    "font": "verdana",
+    "size": 17,
+    "character": ">",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 34,
+      "mean_absolute_error": 87.17647058823529
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 43,
+      "mean_absolute_error": 117.09302325581395
+    }
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 15,
+      "mean_absolute_error": 83.0
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 22,
+      "mean_absolute_error": 150.5909090909091
+    }
+  },
+  {
+    "font": "courier",
+    "size": 17,
+    "character": "g",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 55,
+      "mean_absolute_error": 46.14545454545455
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 54,
+      "mean_absolute_error": 62.01851851851852
+    }
+  },
+  {
+    "font": "courier",
+    "size": 17,
+    "character": "3",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 39,
+      "mean_absolute_error": 46.23076923076923
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 35,
+      "mean_absolute_error": 40.02857142857143
+    }
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 19,
+      "mean_absolute_error": 83.73684210526316
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 16,
+      "mean_absolute_error": 43.875
+    }
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 60,
+      "mean_absolute_error": 65.43333333333334
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 60,
+      "mean_absolute_error": 19.6
+    }
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 39,
+      "mean_absolute_error": 9.0
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 40,
+      "mean_absolute_error": 23.0
+    }
+  },
+  {
+    "font": "segoe",
+    "size": 12,
+    "character": "?",
+    "aurora_vs_native_raw": {
+      "ink_pixels": 21,
+      "mean_absolute_error": 13.714285714285714
+    },
+    "native_vs_native_no_hints": {
+      "ink_pixels": 25,
+      "mean_absolute_error": 76.56
+    }
+  }
+]

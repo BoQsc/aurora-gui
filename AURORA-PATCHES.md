@@ -1,3 +1,63 @@
+## Refined D shared default (2026-10-23)
+
+- The owner requested “Make D default”. The latest refined D now applies without
+  an environment override throughout Aurora's shared core. One policy selects
+  glyph sampling, hinting/curves, atlas alpha correction and Vulkan blending.
+  `AURORA_TEXT_EXPERIMENT=compatible-c` retains C; `native-next` retains the
+  original D review. Diagnostic hinting modes retain their behavior.
+- OpenCode Pro's rebuilt binary matched its current inputs but still selected C,
+  leaving the refined repairs disabled. Its chat smoke test incorrectly assumed
+  that an unset hinting variable meant off. The test now reports the effective
+  mode and retains its missing-stroke assertion. The chat's actual markdown and
+  default system fonts are included in the promotion checks.
+- Native conformance remains incomplete. Default promotion does not certify
+  every glyph, size, font, script or platform. Historical comparison packages
+  remain unchanged; new evidence is in
+  [the promotion record](artifacts/native-text-default-d/README.md).
+
+## Native text instruction and curve conformance (2026-10-22)
+
+- The owner chose to continue the portable pure-D renderer on every platform.
+  C remains the shared default; all new behavior is confined to refined D.
+- Corrected current/original line vectors, diagonal rounding and CVT cut-in,
+  axis-relative original distances, and IUP ratios and signed rounding. IUP
+  retains native rounded interval guards. At 1px the experiment retains the
+  initial scaled grid while skipping glyph instructions, as the native probes
+  demonstrate; all 846 sampled real-font glyphs at that size are unchanged.
+- FLIP point/range instructions now survive into the rendered outline, and
+  their range operands use the correct order. Quadratic intersections use the
+  monotone segment direction to avoid selecting the wrong root after a split
+  at a horizontal extremum. Native generated fonts cover these defects.
+- The new strict gates enumerate every glyph in nine fonts at 13/17/26px,
+  94 visible ASCII characters at every integer size from 1 to 96px, and all eight phases
+  in both themes at 17px. They still fail exact native parity. Every failed
+  case and individual error increase is retained; no promotion is proposed.
+- Native dropout controls, composite child hinting, legacy gasp selection and
+  other outline/coverage differences remain unresolved. See the
+  [conformance evidence](artifacts/native-text-conformance/README.md).
+
+## Damaged glyph audit and precision fixes (2026-10-22)
+
+- The owner reported visibly damaged digits and letters in both comparison
+  images and applications. The earlier whole-line averages and numeral-only
+  checks missed a misplaced Consolas 17px `e` crossbar. Those measurements
+  remain valid for their limited corpus; they did not establish glyph fidelity.
+- Refined D now preserves precise interpolation ratios, including the initial
+  rounding of phantom points, and rounds IP results before later grid fitting.
+  Coarse quadratic chords are replaced by exact monotone curve intersections.
+  Uninstructed simple outlines retain their design heights; composites and
+  failed-hint fallbacks retain their existing alignment. Curve controls follow
+  vertical alignment when it applies. These changes remain experimental.
+- C stays the shared default. Reviewed D and its evidence retain their pixels.
+  Gamma, contrast, font selection and the approved 0.039 ink guard are unchanged.
+  The expanded audit exposes every character regression; it does not certify
+  the experiment as ready for promotion. Courier New and other native shape,
+  sampling and hinting gaps remain open.
+- See [the character audit](artifacts/native-text-audit/README.md) for original
+  pixels, all 94 printable ASCII glyphs, phase/theme sweeps, independent Windows
+  probes, isolated builds and live host/Pad++ checks. Default binaries are not
+  replaced. The earlier glyph report now links to this correction.
+
 ## Refined D: horizontal stem distances and 17px numerals (2026-10-20)
 
 - The owner requested the remaining Courier New regressions and Consolas 17px

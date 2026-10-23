@@ -1,0 +1,61 @@
+{
+  "regression_assertions": "pass",
+  "native_parity": "FAIL",
+  "note": "Control assertions are distinct from exact parity; all residuals remain recorded.",
+  "sets": [
+    {
+      "file": "native-vector-probe.json",
+      "cases": 24,
+      "zero_neutral_ink_error": 15,
+      "lower_error": 18,
+      "higher_error": 0,
+      "remaining_nonzero_error": 9,
+      "largest_remaining_ink_error": 64.0
+    },
+    {
+      "file": "native-diagonal-probe.json",
+      "cases": 60,
+      "zero_neutral_ink_error": 54,
+      "lower_error": 24,
+      "higher_error": 0,
+      "remaining_nonzero_error": 6,
+      "largest_remaining_ink_error": 0.5
+    },
+    {
+      "file": "native-curve-probe.json",
+      "cases": 15,
+      "zero_neutral_ink_error": 2,
+      "lower_error": 15,
+      "higher_error": 0,
+      "remaining_nonzero_error": 13,
+      "largest_remaining_ink_error": 0.5121951219512195
+    },
+    {
+      "file": "native-original-distance-probe.json",
+      "cases": 120,
+      "zero_neutral_ink_error": 120,
+      "lower_error": 6,
+      "higher_error": 0,
+      "remaining_nonzero_error": 0,
+      "largest_remaining_ink_error": 0.0
+    },
+    {
+      "file": "native-iup-initial-probe.json",
+      "cases": 288,
+      "zero_neutral_ink_error": 250,
+      "lower_error": 92,
+      "higher_error": 0,
+      "remaining_nonzero_error": 38,
+      "largest_remaining_ink_error": 255.0
+    },
+    {
+      "file": "native-iup-asymmetric-probe.json",
+      "cases": 144,
+      "zero_neutral_ink_error": 144,
+      "lower_error": 34,
+      "higher_error": 0,
+      "remaining_nonzero_error": 0,
+      "largest_remaining_ink_error": 0.0
+    }
+  ]
+}

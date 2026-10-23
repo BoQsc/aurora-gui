@@ -1,0 +1,1237 @@
+{
+  "font": "courier",
+  "font_sha256": "93c3ff526c19d03496c01c6a1bfd1031f97af021a13e859a89dfc717a0b6b6ec",
+  "glyph_count": 3763,
+  "tested": 64,
+  "exact": 3,
+  "failed": 61,
+  "failures": [
+    {
+      "exact": false,
+      "different_pixels": 40,
+      "maximum_channel_error": 48,
+      "ink_mae": 24.375,
+      "different_bounds": [
+        29,
+        35,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 0,
+      "codepoints": []
+    },
+    {
+      "exact": false,
+      "different_pixels": 18,
+      "maximum_channel_error": 53,
+      "ink_mae": 21.61111111111111,
+      "different_bounds": [
+        33,
+        35,
+        35,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 4,
+      "codepoints": [
+        33
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 19,
+      "maximum_channel_error": 53,
+      "ink_mae": 15.807692307692308,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        40
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 5,
+      "codepoints": [
+        34
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 38,
+      "maximum_channel_error": 88,
+      "ink_mae": 28.32,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        47
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 6,
+      "codepoints": [
+        35
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 41,
+      "maximum_channel_error": 154,
+      "ink_mae": 31.711111111111112,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        48
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 7,
+      "codepoints": [
+        36
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 47,
+      "maximum_channel_error": 91,
+      "ink_mae": 29.081632653061224,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 8,
+      "codepoints": [
+        37
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 37,
+      "maximum_channel_error": 85,
+      "ink_mae": 25.775,
+      "different_bounds": [
+        31,
+        37,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 9,
+      "codepoints": [
+        38
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 8,
+      "maximum_channel_error": 34,
+      "ink_mae": 12.454545454545455,
+      "different_bounds": [
+        33,
+        35,
+        36,
+        40
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 10,
+      "codepoints": [
+        39
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 24,
+      "maximum_channel_error": 56,
+      "ink_mae": 22.444444444444443,
+      "different_bounds": [
+        33,
+        35,
+        37,
+        48
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 11,
+      "codepoints": [
+        40
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 28,
+      "maximum_channel_error": 118,
+      "ink_mae": 59.035714285714285,
+      "different_bounds": [
+        31,
+        35,
+        35,
+        48
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 12,
+      "codepoints": [
+        41
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 29,
+      "maximum_channel_error": 185,
+      "ink_mae": 49.3,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        42
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 13,
+      "codepoints": [
+        42
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 18,
+      "maximum_channel_error": 34,
+      "ink_mae": 12.52,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        45
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 14,
+      "codepoints": [
+        43
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 10,
+      "maximum_channel_error": 56,
+      "ink_mae": 16.53846153846154,
+      "different_bounds": [
+        31,
+        43,
+        35,
+        48
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 15,
+      "codepoints": [
+        44
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 2,
+      "maximum_channel_error": 89,
+      "ink_mae": 12.75,
+      "different_bounds": [
+        30,
+        41,
+        38,
+        42
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 16,
+      "codepoints": [
+        45,
+        173
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 8,
+      "maximum_channel_error": 48,
+      "ink_mae": 17.125,
+      "different_bounds": [
+        32,
+        44,
+        36,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 17,
+      "codepoints": [
+        46
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 25,
+      "maximum_channel_error": 44,
+      "ink_mae": 18.08,
+      "different_bounds": [
+        30,
+        34,
+        38,
+        47
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 18,
+      "codepoints": [
+        47
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 40,
+      "maximum_channel_error": 130,
+      "ink_mae": 41.41463414634146,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 19,
+      "codepoints": [
+        48
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 124,
+      "ink_mae": 39.064516129032256,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 20,
+      "codepoints": [
+        49
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 35,
+      "maximum_channel_error": 75,
+      "ink_mae": 23.13953488372093,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 21,
+      "codepoints": [
+        50
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 35,
+      "maximum_channel_error": 91,
+      "ink_mae": 46.41025641025641,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 22,
+      "codepoints": [
+        51
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 27,
+      "maximum_channel_error": 36,
+      "ink_mae": 16.314285714285713,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 23,
+      "codepoints": [
+        52
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 30,
+      "maximum_channel_error": 85,
+      "ink_mae": 25.333333333333332,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 24,
+      "codepoints": [
+        53
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 44,
+      "maximum_channel_error": 119,
+      "ink_mae": 30.93617021276596,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 25,
+      "codepoints": [
+        54
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 24,
+      "maximum_channel_error": 93,
+      "ink_mae": 33.1,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 26,
+      "codepoints": [
+        55
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 42,
+      "maximum_channel_error": 116,
+      "ink_mae": 29.0,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 27,
+      "codepoints": [
+        56
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 48,
+      "maximum_channel_error": 134,
+      "ink_mae": 44.36734693877551,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 28,
+      "codepoints": [
+        57
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 16,
+      "maximum_channel_error": 21,
+      "ink_mae": 13.75,
+      "different_bounds": [
+        32,
+        38,
+        36,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 29,
+      "codepoints": [
+        58
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 13,
+      "maximum_channel_error": 75,
+      "ink_mae": 15.9375,
+      "different_bounds": [
+        31,
+        38,
+        36,
+        47
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 30,
+      "codepoints": [
+        59,
+        894
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 33,
+      "maximum_channel_error": 85,
+      "ink_mae": 39.75757575757576,
+      "different_bounds": [
+        29,
+        37,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 31,
+      "codepoints": [
+        60
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 4,
+      "maximum_channel_error": 78,
+      "ink_mae": 11.2,
+      "different_bounds": [
+        29,
+        39,
+        39,
+        43
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 32,
+      "codepoints": [
+        61
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 33,
+      "maximum_channel_error": 107,
+      "ink_mae": 43.60606060606061,
+      "different_bounds": [
+        30,
+        37,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 33,
+      "codepoints": [
+        62
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 124,
+      "ink_mae": 38.44827586206897,
+      "different_bounds": [
+        31,
+        36,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 34,
+      "codepoints": [
+        63
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 55,
+      "maximum_channel_error": 75,
+      "ink_mae": 24.916666666666668,
+      "different_bounds": [
+        30,
+        34,
+        38,
+        47
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 35,
+      "codepoints": [
+        64
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 40,
+      "maximum_channel_error": 103,
+      "ink_mae": 30.849056603773583,
+      "different_bounds": [
+        28,
+        36,
+        40,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 36,
+      "codepoints": [
+        65
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 31,
+      "maximum_channel_error": 91,
+      "ink_mae": 28.170212765957448,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 37,
+      "codepoints": [
+        66
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 37,
+      "maximum_channel_error": 124,
+      "ink_mae": 35.256410256410255,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 38,
+      "codepoints": [
+        67
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 42,
+      "maximum_channel_error": 129,
+      "ink_mae": 45.8,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 39,
+      "codepoints": [
+        68
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 21,
+      "maximum_channel_error": 60,
+      "ink_mae": 12.421052631578947,
+      "different_bounds": [
+        29,
+        36,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 40,
+      "codepoints": [
+        69
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 53,
+      "ink_mae": 23.0,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 41,
+      "codepoints": [
+        70
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 38,
+      "maximum_channel_error": 135,
+      "ink_mae": 32.627906976744185,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 42,
+      "codepoints": [
+        71
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 31,
+      "maximum_channel_error": 61,
+      "ink_mae": 16.177777777777777,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 43,
+      "codepoints": [
+        72
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 20,
+      "maximum_channel_error": 48,
+      "ink_mae": 12.125,
+      "different_bounds": [
+        30,
+        36,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 44,
+      "codepoints": [
+        73
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 27,
+      "maximum_channel_error": 89,
+      "ink_mae": 27.09090909090909,
+      "different_bounds": [
+        30,
+        36,
+        40,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 45,
+      "codepoints": [
+        74
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 37,
+      "maximum_channel_error": 91,
+      "ink_mae": 32.91489361702128,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 46,
+      "codepoints": [
+        75
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 18,
+      "maximum_channel_error": 88,
+      "ink_mae": 29.419354838709676,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 47,
+      "codepoints": [
+        76
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 46,
+      "maximum_channel_error": 61,
+      "ink_mae": 20.203703703703702,
+      "different_bounds": [
+        28,
+        36,
+        40,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 48,
+      "codepoints": [
+        77
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 55,
+      "maximum_channel_error": 83,
+      "ink_mae": 20.311475409836067,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 49,
+      "codepoints": [
+        78
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 45,
+      "maximum_channel_error": 70,
+      "ink_mae": 23.148936170212767,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 50,
+      "codepoints": [
+        79
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 32,
+      "maximum_channel_error": 130,
+      "ink_mae": 39.44186046511628,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 51,
+      "codepoints": [
+        80
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 60,
+      "maximum_channel_error": 82,
+      "ink_mae": 26.29230769230769,
+      "different_bounds": [
+        30,
+        36,
+        39,
+        49
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 52,
+      "codepoints": [
+        81
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 31,
+      "maximum_channel_error": 60,
+      "ink_mae": 18.930232558139537,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 53,
+      "codepoints": [
+        82
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 43,
+      "maximum_channel_error": 91,
+      "ink_mae": 38.276595744680854,
+      "different_bounds": [
+        30,
+        36,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 54,
+      "codepoints": [
+        83
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 25,
+      "maximum_channel_error": 68,
+      "ink_mae": 28.333333333333332,
+      "different_bounds": [
+        30,
+        36,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 55,
+      "codepoints": [
+        84
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 42,
+      "maximum_channel_error": 131,
+      "ink_mae": 37.42,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 56,
+      "codepoints": [
+        85
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 40,
+      "maximum_channel_error": 76,
+      "ink_mae": 26.0,
+      "different_bounds": [
+        29,
+        36,
+        40,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 57,
+      "codepoints": [
+        86
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 60,
+      "maximum_channel_error": 123,
+      "ink_mae": 33.84848484848485,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 58,
+      "codepoints": [
+        87
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 44,
+      "maximum_channel_error": 76,
+      "ink_mae": 21.71153846153846,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 59,
+      "codepoints": [
+        88
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 29,
+      "maximum_channel_error": 56,
+      "ink_mae": 16.486486486486488,
+      "different_bounds": [
+        29,
+        36,
+        39,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 60,
+      "codepoints": [
+        89
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 30,
+      "maximum_channel_error": 80,
+      "ink_mae": 33.048780487804876,
+      "different_bounds": [
+        30,
+        36,
+        38,
+        46
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 61,
+      "codepoints": [
+        90
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 53,
+      "ink_mae": 14.4,
+      "different_bounds": [
+        33,
+        35,
+        37,
+        48
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 62,
+      "codepoints": [
+        91
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 25,
+      "maximum_channel_error": 44,
+      "ink_mae": 19.4,
+      "different_bounds": [
+        30,
+        34,
+        38,
+        47
+      ],
+      "font": "courier",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 63,
+      "codepoints": [
+        92
+      ]
+    }
+  ],
+  "worst_sheets": [
+    [
+      59.035714285714285,
+      "17-p0-light-g0"
+    ]
+  ],
+  "seconds": 0.3876147999544628
+}

@@ -1,0 +1,72 @@
+{
+  "default": "owner-approved C",
+  "host_sha256": "bc8646e4bfa4f90c4f4366eb61437110c8e6c0d9e3c59cb7b8495473f1c3b9ad",
+  "checks": [
+    {
+      "name": "host-C",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "experiments/aurora-host/tools/verify_experiment.py"
+          ],
+          "exit_code": 0,
+          "output": "generated reference: current\nUI reference: reproducible 1x projection verified\nhost boundary: dependencies, imports, and leaf status verified\nheadless host: built\nwindowed host: built\nCRT imports: Windows msvcrt.dll only\nversion/capabilities: verified\nscene check: valid accepted, invalid rejected\nheadless render: binary PPM produced\ncontrol demo: click, tree update, and live screenshot verified\neditor control: text, state, selection, events, wrap, action, and screenshot verified\nUI depth: menus, cascade submenu, tabs, toolbar, context menu, and pixels verified\ntext weight: approved natural hinting C; minimum ink 0.039\ncanvas: retained shapes, colors, and text pixels verified\ncanvas control: live setCanvas redraw verified\nsurface: input reserve, diagnostics, stale policy, and pixels verified\nCRT edge cases: Unicode argv/environment, locale, time, and paths verified\naurora-host experiment verification passed\n"
+        }
+      ]
+    },
+    {
+      "name": "padpp-C",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "-u",
+            "-B",
+            "padpp.py",
+            "--self-test",
+            "--host",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-audit\\host-release\\aurora-host-experiment.exe"
+          ],
+          "exit_code": 0,
+          "output": "{\n  \"large_file\": {\n    \"name\": \"large-2000.txt\",\n    \"bytes\": 214000,\n    \"lines\": 2001,\n    \"load_seconds\": 0.09302019997267053,\n    \"roundtrip_seconds\": 0.012504099984653294,\n    \"switch_seconds\": 0.09965139999985695,\n    \"find_seconds\": 0.05702810001093894,\n    \"load_mib_per_second\": 2.19399983843185,\n    \"roundtrip_mib_per_second\": 16.321550848235344\n  },\n  \"host_working_set_mb\": 297.66015625,\n  \"screenshot_pixels\": {\n    \"width\": 1475,\n    \"height\": 950,\n    \"samples\": 82427,\n    \"dark_fraction\": 0.029601950817086633,\n    \"bright_fraction\": 0.9293192764506776,\n    \"mean_luminance\": 236.84535477452778,\n    \"quantized_colors\": 47\n  },\n  \"chrome_heights\": {\n    \"menubar\": 30,\n    \"toolbar\": 42,\n    \"docs\": 34,\n    \"findbar\": 38,\n    \"statusbar\": 26\n  },\n  \"editor_gutter\": {\n    \"dark_pixels\": 572,\n    \"sample_width\": 45\n  },\n  \"file_menu\": {\n    \"width\": 209,\n    \"height\": 146,\n    \"items\": 8\n  },\n  \"editor_context_menu\": {\n    \"width\": 216,\n    \"height\": 216,\n    \"items\": 12\n  },\n  \"tabs\": 4,\n  \"dirty_after_save\": false,\n  \"screenshot\": \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n  \"screenshots\": [\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-menu.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-context.png\"\n  ]\n}\naurora pad++ self-test passed\nself-test: startup\nself-test: File menu and new tab\nself-test: document tab clicks\nself-test: menu screenshot\nself-test: language menu\nself-test: editor context menu and find\nself-test: delayed hover hints\nself-test: find-bar replace and view toggles\nself-test: live find counts, whole word, and find previous\nself-test: checked menu state and zoom\nself-test: save and open\nself-test: large document benchmark\nbenchmark: capture current editor (214000 chars target)\nbenchmark: setText\nbenchmark: loaded in 0.09s {'setText': 0.012249699968378991, 'setSelection': 0.08076480001909658}; getText\nbenchmark: round trip in 0.01s; switch\nbenchmark: switch in 0.10s; find\nbenchmark: find in 0.057s\nself-test: screenshot\n"
+        }
+      ]
+    },
+    {
+      "name": "host-refined-D",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "experiments/aurora-host/tools/verify_experiment.py"
+          ],
+          "exit_code": 0,
+          "output": "generated reference: current\nUI reference: reproducible 1x projection verified\nhost boundary: dependencies, imports, and leaf status verified\nheadless host: built\nwindowed host: built\nCRT imports: Windows msvcrt.dll only\nversion/capabilities: verified\nscene check: valid accepted, invalid rejected\nheadless render: binary PPM produced\ncontrol demo: click, tree update, and live screenshot verified\neditor control: text, state, selection, events, wrap, action, and screenshot verified\nUI depth: menus, cascade submenu, tabs, toolbar, context menu, and pixels verified\ntext weight: approved natural hinting C; minimum ink 0.039\ncanvas: retained shapes, colors, and text pixels verified\ncanvas control: live setCanvas redraw verified\nsurface: input reserve, diagnostics, stale policy, and pixels verified\nCRT edge cases: Unicode argv/environment, locale, time, and paths verified\naurora-host experiment verification passed\n"
+        }
+      ]
+    },
+    {
+      "name": "padpp-refined-D",
+      "records": [
+        {
+          "command": [
+            "C:\\Users\\windows10\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe",
+            "-u",
+            "-B",
+            "padpp.py",
+            "--self-test",
+            "--host",
+            "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-audit\\host-release\\aurora-host-experiment.exe"
+          ],
+          "exit_code": 0,
+          "output": "{\n  \"large_file\": {\n    \"name\": \"large-2000.txt\",\n    \"bytes\": 214000,\n    \"lines\": 2001,\n    \"load_seconds\": 0.11639130004914477,\n    \"roundtrip_seconds\": 0.012352499994449317,\n    \"switch_seconds\": 0.13540379999903962,\n    \"find_seconds\": 0.06049290002556518,\n    \"load_mib_per_second\": 1.7534498164791064,\n    \"roundtrip_mib_per_second\": 16.521862279105047\n  },\n  \"host_working_set_mb\": 298.38671875,\n  \"screenshot_pixels\": {\n    \"width\": 1475,\n    \"height\": 950,\n    \"samples\": 82427,\n    \"dark_fraction\": 0.030851541363873487,\n    \"bright_fraction\": 0.9278149150157109,\n    \"mean_luminance\": 236.41197395270967,\n    \"quantized_colors\": 47\n  },\n  \"chrome_heights\": {\n    \"menubar\": 30,\n    \"toolbar\": 42,\n    \"docs\": 34,\n    \"findbar\": 38,\n    \"statusbar\": 26\n  },\n  \"editor_gutter\": {\n    \"dark_pixels\": 792,\n    \"sample_width\": 45\n  },\n  \"file_menu\": {\n    \"width\": 209,\n    \"height\": 146,\n    \"items\": 8\n  },\n  \"editor_context_menu\": {\n    \"width\": 216,\n    \"height\": 216,\n    \"items\": 12\n  },\n  \"tabs\": 4,\n  \"dirty_after_save\": false,\n  \"screenshot\": \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n  \"screenshots\": [\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-menu.png\",\n    \"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\experiments\\\\aurora-host-notepadpp\\\\build\\\\padpp-context.png\"\n  ]\n}\naurora pad++ self-test passed\nself-test: startup\nself-test: File menu and new tab\nself-test: document tab clicks\nself-test: menu screenshot\nself-test: language menu\nself-test: editor context menu and find\nself-test: delayed hover hints\nself-test: find-bar replace and view toggles\nself-test: live find counts, whole word, and find previous\nself-test: checked menu state and zoom\nself-test: save and open\nself-test: large document benchmark\nbenchmark: capture current editor (214000 chars target)\nbenchmark: setText\nbenchmark: loaded in 0.12s {'setText': 0.014823800011072308, 'setSelection': 0.10156239999923855}; getText\nbenchmark: round trip in 0.01s; switch\nbenchmark: switch in 0.14s; find\nbenchmark: find in 0.060s\nself-test: screenshot\n"
+        }
+      ]
+    }
+  ],
+  "C_live_pixels_unchanged": true,
+  "live_dpi": 120,
+  "prior_review_dpi": 120,
+  "desktop_DPI_changed_since_D_review": false
+}

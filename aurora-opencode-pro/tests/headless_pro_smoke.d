@@ -54,14 +54,12 @@ private int headerRateTenths(string header)
     return to!int(num[0 .. dot]) * 10 + to!int(num[dot + 1 .. $]);
 }
 
-/// Guard against the experimental TrueType `natural` hinter, whose grid
-/// fitting rewrote real glyph outlines (Consolas `X` lost its lower-left arm
-/// at 17px). The app must render with hinting off plus the contrast curve.
+/// Keep the historical missing-stroke guard on the actual shared renderer.
+/// An unset AURORA_HINTING means natural, and refined D is Aurora's default.
 private void verifyNativeTextGlyphs()
 {
-    const mode = environment.get("AURORA_HINTING", "");
-    assert(mode != "natural" && mode != "1",
-        "Native text rendering must not enable the experimental hinter");
+    import aurora.text.renderpolicy : configuredHintingMode;
+    const mode = configuredHintingMode();
     auto fonts = new FontSystem();
     auto face = fonts.monospaceFace;
     auto atlas = new GlyphAtlas(2048, 1024);
@@ -83,7 +81,7 @@ private void verifyNativeTextGlyphs()
     assert(quadrants[0] && quadrants[1] && quadrants[2] && quadrants[3],
         "Mono 'X' is missing a stroke (broken glyph rasterization)");
     writeln("Native text: mono X keeps all four strokes, hinting=",
-        mode.length == 0 ? "off" : mode);
+        mode);
 }
 
 /// Regression: an inline-code run is split into several pill segments whose

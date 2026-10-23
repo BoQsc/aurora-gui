@@ -24,7 +24,11 @@ int main(string[] args)
     environment.remove("AURORA_TEXT_COVERAGE");
     environment.remove("AURORA_TEXT_CONTRAST");
     environment.remove("AURORA_TEXT_GAMMA");
-    assert(!(new GlyphAtlas()).nativeAlphaCorrection(), "Approved C must remain the default");
+    assert((new GlyphAtlas()).nativeAlphaCorrection(), "Refined D must be the shared default");
+    environment["AURORA_TEXT_EXPERIMENT"] = "";
+    assert((new GlyphAtlas()).nativeAlphaCorrection(), "An empty override must use the shared default");
+    environment["AURORA_TEXT_EXPERIMENT"] = "compatible-c";
+    assert(!(new GlyphAtlas()).nativeAlphaCorrection(), "C must remain available explicitly");
     environment["AURORA_TEXT_EXPERIMENT"] = "native-next";
     assert(!(new GlyphAtlas()).nativeAlphaCorrection(), "Reviewed D must retain its transfer");
     environment["AURORA_TEXT_EXPERIMENT"] = "native-refined";

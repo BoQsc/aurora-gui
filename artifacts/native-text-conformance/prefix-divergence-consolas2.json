@@ -1,0 +1,106 @@
+[
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 41,
+    "opcode": "0x3f",
+    "error": 0.10256410256410256
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 42,
+    "opcode": "0xed",
+    "error": 1.5609756097560976
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 44,
+    "opcode": "0x3f",
+    "error": 0.85
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 48,
+    "opcode": "0xfd",
+    "error": 2.4871794871794872
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 49,
+    "opcode": "0xc6",
+    "error": 2.4871794871794872
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 52,
+    "opcode": "0xd6",
+    "error": 3.3076923076923075
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 53,
+    "opcode": "0xe1",
+    "error": 2.5128205128205128
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 54,
+    "opcode": "0xcd",
+    "error": 3.282051282051282
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 57,
+    "opcode": "0x2f",
+    "error": 7.3076923076923075
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 58,
+    "opcode": "0x2f",
+    "error": 6.538461538461538
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 59,
+    "opcode": "0xe1",
+    "error": 9.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 60,
+    "opcode": "0x31",
+    "error": 9.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "character": "2",
+    "end_byte": 61,
+    "opcode": "0x30",
+    "error": 9.0
+  }
+]

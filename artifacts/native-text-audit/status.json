@@ -1,0 +1,11 @@
+{
+  "default": "C",
+  "default_changed": false,
+  "promotion_proposed": false,
+  "status": "character-audit-incomplete",
+  "remaining_character_regressions": {
+    "broad": 555,
+    "focused-17": 255
+  },
+  "exact_native_parity": false
+}

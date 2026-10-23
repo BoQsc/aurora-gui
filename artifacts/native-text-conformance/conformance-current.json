@@ -1,0 +1,31 @@
+{
+  "status": "FAIL",
+  "font_count": 9,
+  "tested": 111192,
+  "exact": 2581,
+  "failed": 108611,
+  "sizes": [
+    13,
+    17,
+    26
+  ],
+  "phases": [
+    0
+  ],
+  "themes": [
+    "light"
+  ],
+  "all_glyphs": true,
+  "charset": "all",
+  "compiled_hinter_text_sha256": "2dbfc88e9452cac42a3f813385077af76cc2325ee9c99a3444d933abcf783d9c",
+  "shared_source_sha256": {
+    "hinter.d": "fd26f751ef3e9d7f7649fadb3d60539453e53d875cafd762ef933064abdfedb5",
+    "rasterizer.d": "de9c6c2fbf64ac475bcffd75a57e8ee90f90456bca4f444e86c109a8b7337f57",
+    "truetype.d": "afaca1642a71c4a97040f832bfc174617ff88e76e38a9edf5fa6d6f6bb81cee1",
+    "atlas.d": "b979842ca491a4d1c1edc67e3de88027263f048f3a8d854c4ac147d6d04c75b0",
+    "alphacorrection.d": "1862931b6dc1462360fc855fee86fce706179f4b15c9ef129cd2dd1235876530",
+    "coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83",
+    "fontprofile.d": "077942f300652ee82fee819a25c759596b3ca7af3067593c2321f7f5e1e0305f"
+  },
+  "fixture_sha256": "ee1f01d0b775b4c24e13bd0f07e4dd0806dc98b615f14f99a19b8918d1fa2cf2"
+}

@@ -1316,11 +1316,10 @@ final class VulkanRenderer : RenderBackend
 
     private void createPipelines()
     {
-        // The refined text experiment rounds opacity to A8 before blending,
-        // matching software text. Approved C and reviewed D keep their shader.
-        const refinedText = environment.get("AURORA_HINTING", "natural") == "natural" &&
-            environment.get("AURORA_TEXT_COVERAGE", "foreground") == "foreground" &&
-            environment.get("AURORA_TEXT_EXPERIMENT", "") == "native-refined";
+        // Use the same coverage policy as the atlas. Refined D is the shared
+        // default and rounds opacity to A8 to match software text blending.
+        import aurora.text.renderpolicy : refinedTextCoverage;
+        const refinedText = refinedTextCoverage();
         _pipeline = createGraphicsPipeline(refinedText ? quantizedFragmentShaderSpirv : fragmentShaderSpirv,
             "creating the Vulkan glyph graphics pipeline (check embedded SPIR-V compatibility)");
         _imagePipeline = createGraphicsPipeline(imageFragmentShaderSpirv,

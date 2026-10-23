@@ -1,0 +1,194 @@
+[
+  {
+    "opcode": "SPVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 79.75,
+    "after": 0.0
+  },
+  {
+    "opcode": "SPVTL[0]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 31.75,
+    "after": 0.25
+  },
+  {
+    "opcode": "SPVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": false,
+    "before": 143.5,
+    "after": 0.0
+  },
+  {
+    "opcode": "SPVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 233.66666666666666,
+    "after": 0.0
+  },
+  {
+    "opcode": "SPVTL[1]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 223.0,
+    "after": 0.0
+  },
+  {
+    "opcode": "SPVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": false,
+    "before": 223.25,
+    "after": 0.25
+  },
+  {
+    "opcode": "SFVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 79.75,
+    "after": 0.0
+  },
+  {
+    "opcode": "SFVTL[0]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 31.75,
+    "after": 0.25
+  },
+  {
+    "opcode": "SFVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": false,
+    "before": 143.5,
+    "after": 0.0
+  },
+  {
+    "opcode": "SFVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 233.66666666666666,
+    "after": 0.0
+  },
+  {
+    "opcode": "SFVTL[1]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 223.0,
+    "after": 0.0
+  },
+  {
+    "opcode": "SFVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": false,
+    "before": 223.25,
+    "after": 0.25
+  },
+  {
+    "opcode": "SDPVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 79.75,
+    "after": 0.0
+  },
+  {
+    "opcode": "SDPVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": true,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "opcode": "SDPVTL[0]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 31.75,
+    "after": 0.25
+  },
+  {
+    "opcode": "SDPVTL[0]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": true,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "opcode": "SDPVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": false,
+    "before": 143.5,
+    "after": 0.0
+  },
+  {
+    "opcode": "SDPVTL[0]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": true,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "opcode": "SDPVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 233.66666666666666,
+    "after": 0.0
+  },
+  {
+    "opcode": "SDPVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 128,
+    "measure_original": true,
+    "before": 64.0,
+    "after": 64.0
+  },
+  {
+    "opcode": "SDPVTL[1]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": false,
+    "before": 223.0,
+    "after": 0.0
+  },
+  {
+    "opcode": "SDPVTL[1]",
+    "line_dx": 256,
+    "current_line_dy": 128,
+    "measure_original": true,
+    "before": 64.0,
+    "after": 64.0
+  },
+  {
+    "opcode": "SDPVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": false,
+    "before": 223.25,
+    "after": 0.25
+  },
+  {
+    "opcode": "SDPVTL[1]",
+    "line_dx": 128,
+    "current_line_dy": 256,
+    "measure_original": true,
+    "before": 64.0,
+    "after": 64.0
+  }
+]

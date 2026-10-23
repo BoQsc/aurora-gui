@@ -1,0 +1,46 @@
+[
+  {
+    "fixture": "filesystem_host",
+    "stage": "compile",
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "fixture": "chat_consistency_smoke",
+    "stage": "compile",
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "fixture": "chat_consistency_smoke",
+    "stage": "run",
+    "binary_sha256": "097bbbf9ee38ddde2084bdb07be62690a97153553ce205e01eccbdc6df21b024",
+    "exit_code": 1,
+    "output": "\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\chat_consistency_smoke.d(26): Latest activity is missing\n----------------\n0x00000001403B8E87\n0x00000001403B8A9B\n0x0000000140001755\n0x0000000140002018\n0x00000001403E1463\n0x00000001403E12BF\n0x00000001403E13BF\n0x00000001403E12BF\n0x00000001403E11CE\n0x00000001403B8DC9\n0x00000001400046C2\n0x000000014043F3BE\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n"
+  },
+  {
+    "fixture": "chat_consistency_smoke",
+    "stage": "C-control",
+    "exit_code": 1,
+    "output": "\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\chat_consistency_smoke.d(26): Latest activity is missing\n----------------\n0x00000001403B8E87\n0x00000001403B8A9B\n0x0000000140001755\n0x0000000140002018\n0x00000001403E1463\n0x00000001403E12BF\n0x00000001403E13BF\n0x00000001403E12BF\n0x00000001403E11CE\n0x00000001403B8DC9\n0x00000001400046C2\n0x000000014043F3BE\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n"
+  },
+  {
+    "fixture": "headless_pro_smoke",
+    "stage": "compile",
+    "exit_code": 0,
+    "output": ""
+  },
+  {
+    "fixture": "headless_pro_smoke",
+    "stage": "run",
+    "binary_sha256": "185afa248b3378f8c8e316d4be471849ce472e396d0cf4ead03610f5cb7f0fae",
+    "exit_code": 1,
+    "output": "Native text: mono X keeps all four strokes, hinting=natural\nInline code pill: X keeps both strokes\nIncremental markdown compose matches a full compose\nNo trailing gap below the last markdown block\nSettled markdown compositions keep their own items\nStray bracket does not slice past the document\nMarkdown table renders and composes incrementally\n[marker] smoke main entered\n[marker] args: [\"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\build-validation\\\\native-text-default-d\\\\pro\\\\headless_pro_smoke.exe\"]\nChanges view opens from the Checkpoint menu without Git\nContext badge initially: 0%\nRestored sessions: 3\nFiltered rows: 1\nHeader rows fit inside the search column: 4 rows, 127 px\nRenamed session title: Renamed chat\nSessions after delete: 2\nHover archive button archives and unarchives with a naming tooltip\nTitle tooltip closes when the pointer leaves the window\nDuplicated conversation: New chat (copy)\nPro markdown bubble painted\nThinking blocks collapse by default and expand on click\nEdit & resend prefilled input: A new user message.\nContext menu targets its own message (no foreach capture bug)\nDouble-click selects a word, triple-click selects the run\nMessage text selection + copy works from the context menu\nCtrl+C copies transcript selection and Ctrl+V pastes into composer\nDropped file becomes a removable attachment chip\nLarge paste becomes a text attachment; chips remove cleanly\nChat-quality pill stays on the latest assistant reply\nSent image remains visible as a display-only attachment pill\n\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\headless_pro_smoke.d(1384): Continuing on a restored branch did not append to it\n----------------\n0x000000014042C427\n0x000000014042C03B\n0x000000014003B9A0\n0x0000000140454AA3\n0x00000001404548FF\n0x00000001404549FF\n0x00000001404548FF\n0x000000014045480E\n0x000000014042C369\n0x0000000140061152\n0x00000001404B0A4E\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n"
+  },
+  {
+    "fixture": "headless_pro_smoke",
+    "stage": "C-control",
+    "exit_code": 1,
+    "output": "Native text: mono X keeps all four strokes, hinting=natural\nInline code pill: X keeps both strokes\nIncremental markdown compose matches a full compose\nNo trailing gap below the last markdown block\nSettled markdown compositions keep their own items\nStray bracket does not slice past the document\nMarkdown table renders and composes incrementally\n[marker] smoke main entered\n[marker] args: [\"C:\\\\Users\\\\windows10\\\\Documents\\\\github_repositories\\\\aurora-gui\\\\build-validation\\\\native-text-default-d\\\\pro\\\\headless_pro_smoke.exe\"]\nChanges view opens from the Checkpoint menu without Git\nContext badge initially: 0%\nRestored sessions: 3\nFiltered rows: 1\nHeader rows fit inside the search column: 4 rows, 127 px\nRenamed session title: Renamed chat\nSessions after delete: 2\nHover archive button archives and unarchives with a naming tooltip\nTitle tooltip closes when the pointer leaves the window\nDuplicated conversation: New chat (copy)\nPro markdown bubble painted\nThinking blocks collapse by default and expand on click\nEdit & resend prefilled input: A new user message.\nContext menu targets its own message (no foreach capture bug)\nDouble-click selects a word, triple-click selects the run\nMessage text selection + copy works from the context menu\nCtrl+C copies transcript selection and Ctrl+V pastes into composer\nDropped file becomes a removable attachment chip\nLarge paste becomes a text attachment; chips remove cleanly\nChat-quality pill stays on the latest assistant reply\nSent image remains visible as a display-only attachment pill\n\ncore.exception.AssertError@C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\tests\\headless_pro_smoke.d(1384): Continuing on a restored branch did not append to it\n----------------\n0x000000014042C427\n0x000000014042C03B\n0x000000014003B9A0\n0x0000000140454AA3\n0x00000001404548FF\n0x00000001404549FF\n0x00000001404548FF\n0x000000014045480E\n0x000000014042C369\n0x0000000140061152\n0x00000001404B0A4E\n0x00007FF837137124 in BaseThreadInitThunk\n0x00007FF83909CC91 in RtlUserThreadStart\n"
+  }
+]

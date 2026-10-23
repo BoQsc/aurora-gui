@@ -2,12 +2,73 @@ module aurora.text.rasterizer;
 
 import std.algorithm : min, max;
 import std.algorithm.sorting : sort;
-import std.math : ceil, floor;
+import std.math : ceil, floor, sqrt;
 
 /// A directed outline segment in bitmap pixel coordinates (y points down).
 struct OutlineEdge
 {
     double x0, y0, x1, y1;
+    double cx = 0, cy = 0;
+    bool quadratic;
+
+    /// Quadratic edges must be monotone in y (split at their y extremum).
+    double parameterAtY(double y) const
+    {
+        if (!quadratic) return (y - y0) / (y1 - y0);
+        const a = y0 - 2 * cy + y1;
+        const b = 2 * (cy - y0);
+        const delta = y - y0;
+        double t;
+        if (a == 0) t = delta / b;
+        else
+        {
+            // The rationalized quadratic root avoids cancellation on curves
+            // that are almost lines. Its sign follows the monotone direction.
+            const root = sqrt(max(0.0, b * b + 4 * a * delta));
+            // Splitting at an extremum can leave a tiny derivative of the
+            // opposite sign through floating-point cancellation. Choose the
+            // root from the monotone segment's direction, not that derivative.
+            const denominator = b + (y1 < y0 ? -root : root);
+            t = denominator == 0 ? 0 : 2 * delta / denominator;
+        }
+        return max(0.0, min(1.0, t));
+    }
+
+    double xAtY(double y) const
+    {
+        const t = parameterAtY(y);
+        if (!quadratic) return x0 + t * (x1 - x0);
+        const s = 1 - t;
+        return s * s * x0 + 2 * s * t * cx + t * t * x1;
+    }
+
+    void splitAt(double t, out OutlineEdge first, out OutlineEdge second) const
+    {
+        const ax = x0 + t * (cx - x0);
+        const ay = y0 + t * (cy - y0);
+        const bx = cx + t * (x1 - cx);
+        const by = cy + t * (y1 - cy);
+        const mx = ax + t * (bx - ax);
+        const my = ay + t * (by - ay);
+        first = OutlineEdge(x0, y0, mx, my, ax, ay, true);
+        second = OutlineEdge(mx, my, x1, y1, bx, by, true);
+    }
+}
+
+/// Preserve a quadratic exactly, splitting only to make scanline winding well-defined.
+void appendQuadraticEdges(OutlineEdge edge, ref OutlineEdge[] edges)
+{
+    edge.quadratic = true;
+    const denominator = edge.y0 - 2 * edge.cy + edge.y1;
+    const split = denominator == 0 ? -1 : (edge.y0 - edge.cy) / denominator;
+    if (split > 0 && split < 1)
+    {
+        OutlineEdge first, second;
+        edge.splitAt(split, first, second);
+        edges ~= first;
+        edges ~= second;
+    }
+    else edges ~= edge;
 }
 
 /// Conservative vertical alignment for small text. The font supplies its
@@ -42,16 +103,43 @@ struct VerticalAlignment
     }
 }
 
-/// Fit flattened edges, then recompute bounds so aligned tops cannot clip.
+/// Fit outline edges, then recompute bounds so aligned tops cannot clip.
+/// Quadratics are split at zone boundaries before the piecewise affine map.
 void alignVertically(ref OutlineEdge[] edges, ref int bearingY,
     ref int height, VerticalAlignment alignment)
 {
     if (!alignment.enabled() || edges.length == 0) return;
+    // Transforming endpoints alone changes curve geometry. Each retained curve
+    // must lie in one alignment zone, so its control point receives the same
+    // affine map as every point on the curve. Straight legacy edges keep their
+    // existing behavior, preserving the approved renderer.
+    bool hasCurves;
+    foreach (edge; edges) hasCurves |= edge.quadratic;
+    if (hasCurves)
+        foreach (boundary; [cast(double) bearingY, bearingY - alignment.xHeight,
+                            bearingY - alignment.capHeight])
+        {
+            OutlineEdge[] split;
+            foreach (edge; edges)
+            {
+                if (edge.quadratic && boundary > min(edge.y0, edge.y1) &&
+                    boundary < max(edge.y0, edge.y1))
+                {
+                    OutlineEdge first, second;
+                    edge.splitAt(edge.parameterAtY(boundary), first, second);
+                    split ~= first;
+                    split ~= second;
+                }
+                else split ~= edge;
+            }
+            edges = split;
+        }
     double minY = double.infinity, maxY = -double.infinity;
     foreach (ref edge; edges)
     {
         edge.y0 = alignment.fit(bearingY - edge.y0);
         edge.y1 = alignment.fit(bearingY - edge.y1);
+        if (edge.quadratic) edge.cy = alignment.fit(bearingY - edge.cy);
         minY = min(minY, min(edge.y0, edge.y1));
         maxY = max(maxY, max(edge.y0, edge.y1));
     }
@@ -61,6 +149,7 @@ void alignVertically(ref OutlineEdge[] edges, ref int bearingY,
     {
         edge.y0 = bearingY - edge.y0;
         edge.y1 = bearingY - edge.y1;
+        if (edge.quadratic) edge.cy = bearingY - edge.cy;
     }
 }
 
@@ -237,8 +326,7 @@ private void rasterizeNativeSampledCoverage(const(OutlineEdge)[] edges, ubyte[] 
             foreach (edge; edges)
             {
                 if (yc < min(edge.y0, edge.y1) || yc >= max(edge.y0, edge.y1)) continue;
-                const t = (yc - edge.y0) / (edge.y1 - edge.y0);
-                crossings ~= Crossing(edge.x0 + t * (edge.x1 - edge.x0), edge.y1 > edge.y0 ? 1 : -1);
+                crossings ~= Crossing(edge.xAtY(yc), edge.y1 > edge.y0 ? 1 : -1);
             }
             crossings.sort!((a, b) => a.x < b.x);
             int winding;
@@ -266,6 +354,78 @@ private void rasterizeNativeSampledCoverage(const(OutlineEdge)[] edges, ubyte[] 
             alpha[cast(size_t) y * width + x] =
                 cast(ubyte) ((counts[x] * 255 + (total - 1) / 2) / total);
     }
+}
+
+unittest
+{
+    // The control point of a split curve can differ from its endpoint by an
+    // ulp. Both directions must retain the interior root near a horizontal tip.
+    foreach (epsilon; [0.0, 2.220446049250313e-16, -2.220446049250313e-16])
+    {
+        import std.math : abs;
+        auto descending = OutlineEdge(0, 1, 2, 0, 1, 1 + epsilon, true);
+        auto ascending = OutlineEdge(2, 0, 0, 1, 1, 1 + epsilon, true);
+        assert(abs(descending.xAtY(0.75) - 1) < 1e-12);
+        assert(abs(ascending.xAtY(0.75) - 1) < 1e-12);
+        assert(abs(descending.parameterAtY(0.75) - 0.5) < 1e-12);
+        assert(abs(ascending.parameterAtY(0.75) - 0.5) < 1e-12);
+    }
+}
+
+unittest
+{
+    import std.math : abs;
+    const alignment = VerticalAlignment(6.5, 9.1);
+    // An unhinted curve crossing every zone must preserve its original x at
+    // each transformed height, including when the contour runs backwards.
+    foreach (original; [OutlineEdge(0, 13, 4, 1, 3, 9, true),
+                       OutlineEdge(4, 1, 0, 13, 3, 9, true)])
+    {
+        OutlineEdge[] edges = [original];
+        int bearingY = 12, height = 14;
+        alignVertically(edges, bearingY, height, alignment);
+        assert(edges.length == 4);
+        foreach (step; 1 .. 120)
+        {
+            const y = 1 + step / 10.0;
+            const fitted = bearingY - alignment.fit(12 - y);
+            bool found;
+            foreach (edge; edges)
+                if (fitted >= min(edge.y0, edge.y1) && fitted <= max(edge.y0, edge.y1))
+                {
+                    assert(abs(edge.xAtY(fitted) - original.xAtY(y)) < 1e-10);
+                    found = true;
+                }
+            assert(found);
+        }
+    }
+}
+
+unittest
+{
+    import std.math : abs;
+    // y=t^2 and x=t: invert both ascending and descending curves exactly.
+    const curve = OutlineEdge(0, 0, 1, 1, 0.5, 0, true);
+    const reverse = OutlineEdge(1, 1, 0, 0, 0.5, 0, true);
+    foreach (y; [0.0, 0.0625, 0.25, 0.5625, 1.0])
+    {
+        assert(abs(curve.xAtY(y) - sqrt(y)) < 1e-12);
+        assert(abs(reverse.xAtY(y) - sqrt(y)) < 1e-12);
+    }
+    // A closed curve whose endpoint y values coincide must still contribute
+    // two crossings. Splitting at its extremum preserves both directions.
+    OutlineEdge[] split;
+    appendQuadraticEdges(OutlineEdge(0, 0, 2, 0, 1, 2, true), split);
+    assert(split.length == 2 && split[0].x1 == 1 && split[0].y1 == 1);
+    assert(split[1].x0 == split[0].x1 && split[1].y0 == split[0].y1);
+    assert(abs(split[0].xAtY(0.75) - 0.5) < 1e-12);
+    assert(abs(split[1].xAtY(0.75) - 1.5) < 1e-12);
+    // Area bounded by x=y^2: the 4x4 lattice contains exactly six samples.
+    OutlineEdge[] outline = [OutlineEdge(0, 0, 1, 1, 0, 0.5, true),
+        OutlineEdge(1, 1, 0, 1), OutlineEdge(0, 1, 0, 0)];
+    ubyte[] alpha = new ubyte[1];
+    rasterizeSampledCoverage(outline, alpha, 1, 1, 4, 4, true);
+    assert(alpha[0] == 96, "A quadratic must not be replaced by its endpoint chord");
 }
 
 unittest

@@ -1,0 +1,55 @@
+{
+  "updated": [
+    "source/aurora/text/hinter.d",
+    "source/aurora/text/truetype.d",
+    "source/aurora/text/rasterizer.d",
+    "docs/FONTS.md"
+  ],
+  "updated_files_verified": true,
+  "unrelated_preexisting_mismatches": [
+    {
+      "file": "source/aurora/platform/base.d",
+      "recorded": "809ec240a370412896b0dcd12b074a80baa63aa69b519a73aff8d1ecf5ba0dd4",
+      "actual": "a66b0d150c47f07d0e7cb4183cb7d35e2d3ca05041c22491d363e9c0128fa564"
+    },
+    {
+      "file": "source/aurora/platform/win32.d",
+      "recorded": "65d223d33361b2f3b38f37ce229bec5f95ef9c66ea5dafec467245125380d16d",
+      "actual": "b8b4b7358a09e3f12fc9bc3065fffa93816b99f514eb83cfe37b00617cca3d38"
+    },
+    {
+      "file": "source/aurora/window.d",
+      "recorded": "a6ce9b22a4d60c2b0d92dbf0107b1307b44b3bcce5197901fe105760f702199e",
+      "actual": "1394f941ed0d9a3eda8680b19b30e60d44157a348e609b177478f41fbf6366bb"
+    }
+  ],
+  "inherited_baseline": {
+    "git_revision": "ac99ba030dd4e4613057b82036191fae6ec98c55",
+    "manifest_and_unrelated_sources_match_git_baseline_ignoring_checkout_line_endings": true,
+    "mismatches": [
+      {
+        "file": "source/aurora/platform/base.d",
+        "recorded": "809ec240a370412896b0dcd12b074a80baa63aa69b519a73aff8d1ecf5ba0dd4",
+        "actual": "a66b0d150c47f07d0e7cb4183cb7d35e2d3ca05041c22491d363e9c0128fa564"
+      },
+      {
+        "file": "source/aurora/platform/win32.d",
+        "recorded": "65d223d33361b2f3b38f37ce229bec5f95ef9c66ea5dafec467245125380d16d",
+        "actual": "b8b4b7358a09e3f12fc9bc3065fffa93816b99f514eb83cfe37b00617cca3d38"
+      },
+      {
+        "file": "source/aurora/window.d",
+        "recorded": "a6ce9b22a4d60c2b0d92dbf0107b1307b44b3bcce5197901fe105760f702199e",
+        "actual": "1394f941ed0d9a3eda8680b19b30e60d44157a348e609b177478f41fbf6366bb"
+      }
+    ]
+  },
+  "preexisting_debt_in_touched_Vulkan_file": [
+    {
+      "file": "source/aurora/render/vulkan.d",
+      "recorded": "ab70a1e2afddc1496a6bfb953bb37bb2d7b189a9cfb8939ca1407d9de3e792fa",
+      "actual": "9b3dec46a1fb1563576bdef91689b9fb071af60dbb44a04e9294193299d38159"
+    }
+  ],
+  "debt_note": "Vulkan already differed from the vendor manifest before this experiment. Re-digesting the new optional shader selection does not certify those earlier changes."
+}

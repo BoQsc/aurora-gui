@@ -1,0 +1,43 @@
+{
+  "updated": [
+    {
+      "file": "docs/FONTS.md",
+      "before": "319156c03af7528208aeaddd7d5284ecb8a76171534629072b25508311c4f24c",
+      "after": "237302b7297707a201ec55a0a60c6a72e28d71a0099c76fef523361747b30786"
+    },
+    {
+      "file": "source/aurora/text/hinter.d",
+      "before": "8ad3e661db415ae20c359203e8b6205ed6db05e93d7c78b70d6e652eaf848cdb",
+      "after": "c6ab0cc78458a8e6024b6c9c4e98a409f1c48bd5c6e5c408ea8ed0a5294401de"
+    },
+    {
+      "file": "source/aurora/text/rasterizer.d",
+      "before": "51c30a2986f300438f34fd023a9a662eb6351e57104d63d8dd48f469dd39615d",
+      "after": "de9c6c2fbf64ac475bcffd75a57e8ee90f90456bca4f444e86c109a8b7337f57"
+    },
+    {
+      "file": "source/aurora/text/truetype.d",
+      "before": "188636cc8067393cf3f6f571208d98e20d74b43006307e112940cf29f03581c6",
+      "after": "afaca1642a71c4a97040f832bfc174617ff88e76e38a9edf5fa6d6f6bb81cee1"
+    }
+  ],
+  "owned_entries_verified": true,
+  "unrelated_preexisting_mismatches": [
+    {
+      "file": "source/aurora/platform/base.d",
+      "recorded": "809ec240a370412896b0dcd12b074a80baa63aa69b519a73aff8d1ecf5ba0dd4",
+      "actual": "a66b0d150c47f07d0e7cb4183cb7d35e2d3ca05041c22491d363e9c0128fa564"
+    },
+    {
+      "file": "source/aurora/platform/win32.d",
+      "recorded": "65d223d33361b2f3b38f37ce229bec5f95ef9c66ea5dafec467245125380d16d",
+      "actual": "b8b4b7358a09e3f12fc9bc3065fffa93816b99f514eb83cfe37b00617cca3d38"
+    },
+    {
+      "file": "source/aurora/window.d",
+      "recorded": "a6ce9b22a4d60c2b0d92dbf0107b1307b44b3bcce5197901fe105760f702199e",
+      "actual": "1394f941ed0d9a3eda8680b19b30e60d44157a348e609b177478f41fbf6366bb"
+    }
+  ],
+  "note": "Existing unrelated manifest debt was retained without redigesting it."
+}

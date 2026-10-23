@@ -1,0 +1,11 @@
+{
+  "javascript_syntax": "pass",
+  "image_files_verified": 432,
+  "image_dimensions": [
+    800,
+    348
+  ],
+  "interactive_browser_check": "unavailable",
+  "reason": "Local browser use is disabled in Work settings. Viewer controls were not exercised; pixel images were inspected directly.",
+  "html_sha256": "ea75d490708ef7c20c24d52865f05a4c5e9ae5001eae760fa4bfb086e5b4a4d9"
+}

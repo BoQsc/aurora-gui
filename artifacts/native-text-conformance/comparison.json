@@ -1,0 +1,166 @@
+{
+  "final": {
+    "scope": "final",
+    "fonts": [
+      {
+        "font": "arial",
+        "tested": 13509,
+        "exact": 298,
+        "improved": 2922,
+        "equal_error": 10326,
+        "increased_error": 261
+      },
+      {
+        "font": "calibri",
+        "tested": 20862,
+        "exact": 374,
+        "improved": 5080,
+        "equal_error": 15629,
+        "increased_error": 153
+      },
+      {
+        "font": "consolas",
+        "tested": 9090,
+        "exact": 410,
+        "improved": 2132,
+        "equal_error": 6879,
+        "increased_error": 79
+      },
+      {
+        "font": "courier",
+        "tested": 11289,
+        "exact": 10,
+        "improved": 2480,
+        "equal_error": 7704,
+        "increased_error": 1105
+      },
+      {
+        "font": "inter",
+        "tested": 8811,
+        "exact": 95,
+        "improved": 0,
+        "equal_error": 8811,
+        "increased_error": 0
+      },
+      {
+        "font": "segoe",
+        "tested": 16032,
+        "exact": 398,
+        "improved": 3830,
+        "equal_error": 11864,
+        "increased_error": 338
+      },
+      {
+        "font": "tahoma",
+        "tested": 13353,
+        "exact": 380,
+        "improved": 3247,
+        "equal_error": 9864,
+        "increased_error": 242
+      },
+      {
+        "font": "times",
+        "tested": 14055,
+        "exact": 309,
+        "improved": 3754,
+        "equal_error": 9974,
+        "increased_error": 327
+      },
+      {
+        "font": "verdana",
+        "tested": 4191,
+        "exact": 524,
+        "improved": 966,
+        "equal_error": 3122,
+        "increased_error": 103
+      }
+    ],
+    "totals": {
+      "improved": 24411,
+      "equal_error": 84173,
+      "increased_error": 2608
+    }
+  },
+  "final-sizes": {
+    "scope": "final-sizes",
+    "fonts": [
+      {
+        "font": "arial",
+        "tested": 9024,
+        "exact": 309,
+        "improved": 4443,
+        "equal_error": 4462,
+        "increased_error": 119
+      },
+      {
+        "font": "calibri",
+        "tested": 9024,
+        "exact": 261,
+        "improved": 6107,
+        "equal_error": 2897,
+        "increased_error": 20
+      },
+      {
+        "font": "consolas",
+        "tested": 9024,
+        "exact": 246,
+        "improved": 4508,
+        "equal_error": 4473,
+        "increased_error": 43
+      },
+      {
+        "font": "courier",
+        "tested": 9024,
+        "exact": 1,
+        "improved": 5164,
+        "equal_error": 2429,
+        "increased_error": 1431
+      },
+      {
+        "font": "inter",
+        "tested": 9024,
+        "exact": 97,
+        "improved": 0,
+        "equal_error": 9024,
+        "increased_error": 0
+      },
+      {
+        "font": "segoe",
+        "tested": 9024,
+        "exact": 305,
+        "improved": 5079,
+        "equal_error": 3438,
+        "increased_error": 507
+      },
+      {
+        "font": "tahoma",
+        "tested": 9024,
+        "exact": 244,
+        "improved": 3914,
+        "equal_error": 5026,
+        "increased_error": 84
+      },
+      {
+        "font": "times",
+        "tested": 9024,
+        "exact": 187,
+        "improved": 5982,
+        "equal_error": 2964,
+        "increased_error": 78
+      },
+      {
+        "font": "verdana",
+        "tested": 9024,
+        "exact": 351,
+        "improved": 5364,
+        "equal_error": 3138,
+        "increased_error": 522
+      }
+    ],
+    "totals": {
+      "improved": 40561,
+      "equal_error": 37851,
+      "increased_error": 2804
+    }
+  }
+}

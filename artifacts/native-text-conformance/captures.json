@@ -1,0 +1,701 @@
+{
+  "C_app_pixels_unchanged": true,
+  "cases": [
+    {
+      "case": "notepad-light-96",
+      "C_pixels_unchanged": true,
+      "C_sha256": "7330414150b7d8071ecaf62417637b431d2802ae1058654f3b3a9b5eb0f58002",
+      "refined_sha256": "0e658c58598689ff7537d722606759b7d4bd338c2f4b891b60a1a359696e3738"
+    },
+    {
+      "case": "notepad-light-120",
+      "C_pixels_unchanged": true,
+      "C_sha256": "d3c6aae1953ff244d24a5bf3fe0ce7368d929e0294c40a7b292c0a7a50c0fb1a",
+      "refined_sha256": "54c04fe7d2060a344e45902ec23291b1bd1bd211d50d9252f87ab598a6258300"
+    },
+    {
+      "case": "notepad-light-144",
+      "C_pixels_unchanged": true,
+      "C_sha256": "c2a748f7fa331181b611663ae7e11ad21073dd45ddf551010d621c73d79ea633",
+      "refined_sha256": "fd8e3bbec90149dc285026cef58cc7cde509ff496759fe72c4a8d61bb1591f09"
+    },
+    {
+      "case": "notepad-dark-96",
+      "C_pixels_unchanged": true,
+      "C_sha256": "40b173cad72e6e6e9c5bd4f3f21761c6d4325cd0208e832f829d070254e4a1cb",
+      "refined_sha256": "06e4a894364c7c9fef45d22f50e9ad6fa541128f3bc8a868cd8dab9783aedc59"
+    },
+    {
+      "case": "notepad-dark-120",
+      "C_pixels_unchanged": true,
+      "C_sha256": "33ea2789d3c6b27186b7783ec5fedc2a83e2fc1e3b49705d4f4d0efb68bce20d",
+      "refined_sha256": "c4fae5f84e3573e9f8c4e772b7a06eace0dabc9a6bd44d501847c04bb569eb5d"
+    },
+    {
+      "case": "notepad-dark-144",
+      "C_pixels_unchanged": true,
+      "C_sha256": "035a7c0e9a470f5c9eeaa541db373376c953e706290ae9850f5f60c0e972a511",
+      "refined_sha256": "1f3beb387c09ad4ad9c5b61a1e2b5fe43c6193f9660dee8cda378109a7550445"
+    },
+    {
+      "case": "host-light-96",
+      "C_pixels_unchanged": true,
+      "C_sha256": "7d065c5d1f740506f408c6266a9603323b5678e50d298c83d8ac8cd6e88b7bda",
+      "refined_sha256": "be09e7b416144cc85bb539b1d9af1bbb93b68dfc25ed5dd2ee39e85446b9ec1b"
+    },
+    {
+      "case": "host-light-120",
+      "C_pixels_unchanged": true,
+      "C_sha256": "94a64bc7916f01cb56f18b978e78f44fec33b99cdf85e10ae17311fe9e571d44",
+      "refined_sha256": "e85f332478b31da3a72454853ee63c9299dcb9c5cc5e3a00dd0a1cf345be92ea"
+    },
+    {
+      "case": "host-light-144",
+      "C_pixels_unchanged": true,
+      "C_sha256": "5b563d2bd5c5cce8f66a184bb485b23a90ce4bd8bd7d931b99fb57305976bb9c",
+      "refined_sha256": "19c8284211f616ad92d59cd7ae8137049440edbdcb96d0b9647b398842a0babe"
+    },
+    {
+      "case": "host-dark-96",
+      "C_pixels_unchanged": true,
+      "C_sha256": "cc4800f5fe57a051d6c8e42440ab3db0ac2d97f1ac1598e3bb4c172d1bbe276d",
+      "refined_sha256": "a535cb166276cbc28b612d041d6ab0c5a482a7d69e316aba9c9a03ce36a3bab9"
+    },
+    {
+      "case": "host-dark-120",
+      "C_pixels_unchanged": true,
+      "C_sha256": "331dde90debe23340765723a8d40744451c646abd57192337551dde4740d00e6",
+      "refined_sha256": "9599cdb9080a9af4dfff05f2276c2c88239f379082b10e701ce3604f6fff587c"
+    },
+    {
+      "case": "host-dark-144",
+      "C_pixels_unchanged": true,
+      "C_sha256": "a5e2b5ee548b44ef4ef4460dbcae7ded2e7360b43d60b0c71f0af70f7e75d822",
+      "refined_sha256": "21d65452ec1800cf8ae3962a2ba67669f8d0e068be367fe6bf2df8ef3f22179d"
+    },
+    {
+      "case": "padpp-light-96",
+      "C_pixels_unchanged": true,
+      "C_sha256": "d1e8e2f5673e44efc62f10478100db076da8addb7e24eefba479eb78e3dda818",
+      "refined_sha256": "87483b45d76a210f87ae7f9a5086a088ea7f971258136f23f24fba9ad25a1155"
+    },
+    {
+      "case": "padpp-light-120",
+      "C_pixels_unchanged": true,
+      "C_sha256": "92dd711f2f2cfc3cdaca9a16072c2528a04d2cb3dfa68a9551690467314ce8f3",
+      "refined_sha256": "8ec2affcdcec87ff0c503528e6ac43e0e1df685934721c8ccc30be14f359aaf6"
+    },
+    {
+      "case": "padpp-light-144",
+      "C_pixels_unchanged": true,
+      "C_sha256": "ad4b8c967bcbb89baa7e5473bfeff6feccd1e29eae58311e78fdf4ecff09cc58",
+      "refined_sha256": "438e9a2343c68dd67cf526bc78a17e86949a0ddf7c13e06829a584e362c853e5"
+    }
+  ],
+  "gpu": [
+    {
+      "profile": "C",
+      "stage": 0,
+      "equal": true
+    },
+    {
+      "profile": "C",
+      "stage": 1,
+      "equal": true
+    },
+    {
+      "profile": "refined-D",
+      "stage": 0,
+      "equal": true
+    },
+    {
+      "profile": "refined-D",
+      "stage": 1,
+      "equal": true
+    }
+  ],
+  "records": [
+    {
+      "command": [
+        "dmd",
+        "-i",
+        "-O",
+        "-JC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\assets",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\generated",
+        "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before",
+        "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\capture.d",
+        "user32.lib",
+        "gdi32.lib",
+        "shell32.lib",
+        "wininet.lib",
+        "-version=AuroraHeadless"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "dmd",
+        "-i",
+        "-O",
+        "-JC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\assets",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\generated",
+        "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current",
+        "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\capture.d",
+        "user32.lib",
+        "gdi32.lib",
+        "shell32.lib",
+        "wininet.lib",
+        "-version=AuroraHeadless"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "dmd",
+        "-i",
+        "-O",
+        "-JC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\assets",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-d-0.4.5\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\vendor\\aurora-standard\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-notepad\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\source",
+        "-IC:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\experiments\\aurora-host\\generated",
+        "-od=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\native",
+        "-of=C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\native\\capture.exe",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\artifacts\\text-coverage-candidate\\capture.d",
+        "user32.lib",
+        "gdi32.lib",
+        "shell32.lib",
+        "wininet.lib"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-96-before",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-96-current",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-96-refined",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-120-before",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 120 DPI; atlas=512x512; rasterizations=259\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-120-current",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 120 DPI; atlas=512x512; rasterizations=259\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-120-refined",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 120 DPI; atlas=512x512; rasterizations=259\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-144-before",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-144-current",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-light-144-refined",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad light 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-96-before",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-96-current",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-96-refined",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 96 DPI; atlas=512x512; rasterizations=255\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-120-before",
+        "dark",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 120 DPI; atlas=512x512; rasterizations=259\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-120-current",
+        "dark",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 120 DPI; atlas=512x512; rasterizations=259\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-120-refined",
+        "dark",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 120 DPI; atlas=512x512; rasterizations=259\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-144-before",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-144-current",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "notepad",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\notepad-dark-144-refined",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "notepad dark 144 DPI; atlas=512x512; rasterizations=210\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-96-before",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host light 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-96-current",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host light 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-96-refined",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host light 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-120-before",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "host light 120 DPI; atlas=512x512; rasterizations=159\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-120-current",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "host light 120 DPI; atlas=512x512; rasterizations=159\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-120-refined",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "host light 120 DPI; atlas=512x512; rasterizations=159\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-144-before",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host light 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-144-current",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host light 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-light-144-refined",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host light 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-96-before",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host dark 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-96-current",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host dark 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-96-refined",
+        "dark",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "host dark 96 DPI; atlas=512x512; rasterizations=191\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-120-before",
+        "dark",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "host dark 120 DPI; atlas=512x512; rasterizations=159\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-120-current",
+        "dark",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "host dark 120 DPI; atlas=512x512; rasterizations=159\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-120-refined",
+        "dark",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "host dark 120 DPI; atlas=512x512; rasterizations=159\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-144-before",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host dark 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-144-current",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host dark 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "host",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\host-dark-144-refined",
+        "dark",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "host dark 144 DPI; atlas=512x512; rasterizations=154\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-96-before",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 96 DPI; atlas=512x512; rasterizations=368\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-96-current",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 96 DPI; atlas=512x512; rasterizations=368\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-96-refined",
+        "light",
+        "96"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 96 DPI; atlas=512x512; rasterizations=368\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-120-before",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 120 DPI; atlas=512x512; rasterizations=389\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-120-current",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 120 DPI; atlas=512x512; rasterizations=389\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-120-refined",
+        "light",
+        "120"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 120 DPI; atlas=512x512; rasterizations=389\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\before\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-144-before",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 144 DPI; atlas=512x512; rasterizations=327\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-144-current",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 144 DPI; atlas=512x512; rasterizations=327\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\current\\capture.exe",
+        "padpp",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\padpp-light-144-refined",
+        "light",
+        "144"
+      ],
+      "exit_code": 0,
+      "output": "padpp light 144 DPI; atlas=512x512; rasterizations=327\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\native\\capture.exe",
+        "native",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\gpu-C"
+      ],
+      "exit_code": 0,
+      "output": "Vulkan screen capture: two validated live states; DPI=120; differing pixels=0; maximum channel error=0; rejected frames=0\n"
+    },
+    {
+      "command": [
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\native\\capture.exe",
+        "native",
+        "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\build-validation\\native-text-conformance\\apps\\gpu-refined-D"
+      ],
+      "exit_code": 0,
+      "output": "Vulkan screen capture: two validated live states; DPI=120; differing pixels=0; maximum channel error=0; rejected frames=1\n"
+    }
+  ]
+}

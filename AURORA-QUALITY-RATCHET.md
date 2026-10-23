@@ -78,9 +78,34 @@ project owner; generating it never authorizes a standard change.
 For a visual change, provide at minimum the default light and dark themes at
 100% and 150% DPI, plus one older and one newer affected application. Font
 changes also need the text regression corpus and both software and Vulkan
-captures when those renderers do not produce identical pixels.
+captures when those renderers do not produce identical pixels. A lower
+whole-line average does not establish glyph fidelity: inspect isolated letters,
+digits and punctuation at native size and nearest-neighbor enlargement, include
+fractional phases, and disclose individual regressions. Functional test passes
+are separate from visual quality approval.
 
 ## Current promotion backlog
+
+The C-default statements in the dated records below describe the decisions at
+those dates. The owner approved refined D as the shared default on 2026-10-23.
+This changes the shipping policy; it does not close the native conformance gaps.
+
+- **Pure-D text conformance — incomplete, 2026-10-22.** Native instruction and
+  generated-font probes exposed additional diagonal, relative-distance, IUP,
+  curve-flag and quadratic-root defects. The refinement fixes these without
+  changing C. Strict per-glyph comparisons still fail, including individual
+  regressions. Native dropout controls and composite child hint programs remain
+  open. The [conformance report](artifacts/native-text-conformance/README.md)
+  lists finite tested scopes, original pixels and every failure; passing
+  functional or semantic regression checks does not establish text quality.
+
+- **Damaged glyph audit — incomplete, 2026-10-22.** The owner's report exposed
+  a misplaced Consolas 17px `e` crossbar and remaining Courier shape errors
+  missed by whole-line averages. Refined D contains precision/curve fixes;
+  every remaining character regression is exposed in
+  [the audit](artifacts/native-text-audit/README.md). C remains the default,
+  with no promotion proposed. Earlier aggregate improvements do not certify
+  letters or numerals as correct.
 
 - **Native scan-conversion compatibility — D under refinement, 2026-10-20.** Closing-edge
   samples, native half-alpha quantization and recognized VacuFormRound behavior
@@ -103,10 +128,18 @@ found; remove it only after the behavior and its regression test live in Aurora.
 
 ## Approved promotions
 
+- **Refined D — approved 2026-10-23.** The owner requested “Make D default”.
+  Aurora now selects the latest pure-D refinement for glyph hints, exact curves,
+  coverage correction and Vulkan opacity blending through one shared policy.
+  Explicit C, original D and diagnostic hinting remain available. The
+  [promotion record](artifacts/native-text-default-d/README.md) separates default
+  equivalence, application checks and known native parity failures.
+
 - **Natural grayscale hinting — C approved 2026-10-20.** The owner selected
   “Make C the default” after the live Pad++ B/C review. Repaired instructions,
   font-selected sampling and matching phases improve all 144 native comparisons.
-  C is now the shared default; `AURORA_HINTING=0` restores unhinted B behavior.
+  C was the shared default until refined D's approval on 2026-10-23;
+  `AURORA_HINTING=0` restores unhinted B behavior.
   The reviewed 125% fixture and DPI sweep justify the ink guard change from
   0.045 to 0.039. Exact Windows parity remains unachieved. See the
   [decision record](artifacts/native-text-progress/decision.json).

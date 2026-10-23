@@ -1,0 +1,682 @@
+[
+  {
+    "font": "arial",
+    "size": 12,
+    "slot": 2,
+    "aurora_ink": 492660,
+    "native_ink": 492660,
+    "aurora_bounds": [
+      8,
+      109,
+      330,
+      115
+    ],
+    "native_bounds": [
+      8,
+      109,
+      330,
+      115
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 12,
+    "slot": 18,
+    "aurora_ink": 1530,
+    "native_ink": 1530,
+    "aurora_bounds": [
+      8,
+      109,
+      9,
+      115
+    ],
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 12,
+    "slot": 19,
+    "aurora_ink": 1530,
+    "native_ink": 1530,
+    "aurora_bounds": [
+      8,
+      109,
+      9,
+      115
+    ],
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 12,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 192,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 12,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 192,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "slot": 2,
+    "aurora_ink": 738990,
+    "native_ink": 738990,
+    "aurora_bounds": [
+      8,
+      131,
+      330,
+      140
+    ],
+    "native_bounds": [
+      8,
+      131,
+      330,
+      140
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "slot": 18,
+    "aurora_ink": 2295,
+    "native_ink": 2295,
+    "aurora_bounds": [
+      8,
+      131,
+      9,
+      140
+    ],
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "slot": 19,
+    "aurora_ink": 2295,
+    "native_ink": 2295,
+    "aurora_bounds": [
+      8,
+      131,
+      9,
+      140
+    ],
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 288,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 288,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 12,
+    "slot": 2,
+    "aurora_ink": 492660,
+    "native_ink": 492660,
+    "aurora_bounds": [
+      8,
+      111,
+      330,
+      117
+    ],
+    "native_bounds": [
+      8,
+      111,
+      330,
+      117
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 12,
+    "slot": 18,
+    "aurora_ink": 1530,
+    "native_ink": 1530,
+    "aurora_bounds": [
+      8,
+      111,
+      9,
+      117
+    ],
+    "native_bounds": [
+      8,
+      111,
+      9,
+      117
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 12,
+    "slot": 19,
+    "aurora_ink": 1530,
+    "native_ink": 1530,
+    "aurora_bounds": [
+      8,
+      111,
+      9,
+      117
+    ],
+    "native_bounds": [
+      8,
+      111,
+      9,
+      117
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 12,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 192,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      111,
+      9,
+      117
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 12,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 192,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      111,
+      9,
+      117
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 17,
+    "slot": 2,
+    "aurora_ink": 738990,
+    "native_ink": 738990,
+    "aurora_bounds": [
+      8,
+      133,
+      330,
+      142
+    ],
+    "native_bounds": [
+      8,
+      133,
+      330,
+      142
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 17,
+    "slot": 18,
+    "aurora_ink": 2295,
+    "native_ink": 2295,
+    "aurora_bounds": [
+      8,
+      133,
+      9,
+      142
+    ],
+    "native_bounds": [
+      8,
+      133,
+      9,
+      142
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 17,
+    "slot": 19,
+    "aurora_ink": 2295,
+    "native_ink": 2295,
+    "aurora_bounds": [
+      8,
+      133,
+      9,
+      142
+    ],
+    "native_bounds": [
+      8,
+      133,
+      9,
+      142
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 17,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 288,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      133,
+      9,
+      142
+    ]
+  },
+  {
+    "font": "tahoma",
+    "size": 17,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 288,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      133,
+      9,
+      142
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "slot": 2,
+    "aurora_ink": 688500,
+    "native_ink": 492852,
+    "aurora_bounds": [
+      8,
+      108,
+      458,
+      114
+    ],
+    "native_bounds": [
+      8,
+      108,
+      331,
+      114
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "slot": 18,
+    "aurora_ink": 1530,
+    "native_ink": 1722,
+    "aurora_bounds": [
+      8,
+      108,
+      9,
+      114
+    ],
+    "native_bounds": [
+      8,
+      108,
+      10,
+      114
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "slot": 19,
+    "aurora_ink": 1530,
+    "native_ink": 1722,
+    "aurora_bounds": [
+      8,
+      108,
+      9,
+      114
+    ],
+    "native_bounds": [
+      8,
+      108,
+      10,
+      114
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 384,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      108,
+      9,
+      114
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 384,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      108,
+      9,
+      114
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 17,
+    "slot": 2,
+    "aurora_ink": 975150,
+    "native_ink": 739278,
+    "aurora_bounds": [
+      8,
+      130,
+      458,
+      139
+    ],
+    "native_bounds": [
+      8,
+      130,
+      331,
+      139
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 17,
+    "slot": 18,
+    "aurora_ink": 2167,
+    "native_ink": 2583,
+    "aurora_bounds": [
+      8,
+      130,
+      9,
+      139
+    ],
+    "native_bounds": [
+      8,
+      130,
+      10,
+      139
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 17,
+    "slot": 19,
+    "aurora_ink": 2167,
+    "native_ink": 2583,
+    "aurora_bounds": [
+      8,
+      130,
+      9,
+      139
+    ],
+    "native_bounds": [
+      8,
+      130,
+      10,
+      139
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 17,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 576,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      130,
+      9,
+      139
+    ]
+  },
+  {
+    "font": "courier",
+    "size": 17,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 576,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      130,
+      9,
+      139
+    ]
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "slot": 2,
+    "aurora_ink": 492660,
+    "native_ink": 492660,
+    "aurora_bounds": [
+      8,
+      109,
+      330,
+      115
+    ],
+    "native_bounds": [
+      8,
+      109,
+      330,
+      115
+    ]
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "slot": 18,
+    "aurora_ink": 1530,
+    "native_ink": 1530,
+    "aurora_bounds": [
+      8,
+      109,
+      9,
+      115
+    ],
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "slot": 19,
+    "aurora_ink": 1530,
+    "native_ink": 1530,
+    "aurora_bounds": [
+      8,
+      109,
+      9,
+      115
+    ],
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 192,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 192,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      109,
+      9,
+      115
+    ]
+  },
+  {
+    "font": "times",
+    "size": 17,
+    "slot": 2,
+    "aurora_ink": 738990,
+    "native_ink": 738990,
+    "aurora_bounds": [
+      8,
+      131,
+      330,
+      140
+    ],
+    "native_bounds": [
+      8,
+      131,
+      330,
+      140
+    ]
+  },
+  {
+    "font": "times",
+    "size": 17,
+    "slot": 18,
+    "aurora_ink": 2295,
+    "native_ink": 2295,
+    "aurora_bounds": [
+      8,
+      131,
+      9,
+      140
+    ],
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  },
+  {
+    "font": "times",
+    "size": 17,
+    "slot": 19,
+    "aurora_ink": 2295,
+    "native_ink": 2295,
+    "aurora_bounds": [
+      8,
+      131,
+      9,
+      140
+    ],
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  },
+  {
+    "font": "times",
+    "size": 17,
+    "slot": 22,
+    "aurora_ink": 0,
+    "native_ink": 288,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  },
+  {
+    "font": "times",
+    "size": 17,
+    "slot": 24,
+    "aurora_ink": 0,
+    "native_ink": 288,
+    "aurora_bounds": null,
+    "native_bounds": [
+      8,
+      131,
+      9,
+      140
+    ]
+  }
+]

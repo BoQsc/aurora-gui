@@ -1,0 +1,65 @@
+[
+  {
+    "font": "segoe",
+    "tested": 94,
+    "exact": 35,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "consolas",
+    "tested": 94,
+    "exact": 26,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "arial",
+    "tested": 94,
+    "exact": 35,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "calibri",
+    "tested": 94,
+    "exact": 40,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "tahoma",
+    "tested": 94,
+    "exact": 25,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "verdana",
+    "tested": 94,
+    "exact": 25,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "courier",
+    "tested": 94,
+    "exact": 0,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "times",
+    "tested": 94,
+    "exact": 31,
+    "improve": 0,
+    "regress": 0
+  },
+  {
+    "font": "inter",
+    "tested": 94,
+    "exact": 12,
+    "improve": 0,
+    "regress": 0
+  }
+]

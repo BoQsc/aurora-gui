@@ -1,0 +1,662 @@
+[
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "cutin",
+    "value_26dot6": 40,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "cutin",
+    "value_26dot6": 72,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "cutin",
+    "value_26dot6": 96,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "cutin",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "cutin",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "round",
+    "value_26dot6": 40,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "round",
+    "value_26dot6": 72,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "round",
+    "value_26dot6": 96,
+    "before": 0.5,
+    "after": 0.5
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "round",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      16384,
+      0
+    ],
+    "mode": "round",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 40,
+    "before": 77.75,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 72,
+    "before": 37.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 96,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 128,
+    "before": 23.90909090909091,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 40,
+    "before": 64.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 72,
+    "before": 32.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 96,
+    "before": 63.5,
+    "after": 0.5
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 40,
+    "before": 61.8125,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 72,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 96,
+    "before": 23.181818181818183,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 128,
+    "before": 52.11538461538461,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 40,
+    "before": 64.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 72,
+    "before": 32.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 96,
+    "before": 63.5,
+    "after": 0.5
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "x",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 40,
+    "before": 61.8125,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 72,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 96,
+    "before": 23.181818181818183,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 128,
+    "before": 52.11538461538461,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "cutin",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 40,
+    "before": 64.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 72,
+    "before": 32.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 96,
+    "before": 63.5,
+    "after": 0.5
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      13107,
+      9830
+    ],
+    "mode": "round",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 40,
+    "before": 77.75,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 72,
+    "before": 37.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 96,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 128,
+    "before": 23.90909090909091,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "cutin",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 40,
+    "before": 64.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 72,
+    "before": 32.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 96,
+    "before": 63.5,
+    "after": 0.5
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      9830,
+      13107
+    ],
+    "mode": "round",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "cutin",
+    "value_26dot6": 40,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "cutin",
+    "value_26dot6": 72,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "cutin",
+    "value_26dot6": 96,
+    "before": 0.5,
+    "after": 0.5
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "cutin",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "cutin",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "round",
+    "value_26dot6": 40,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "round",
+    "value_26dot6": 72,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "round",
+    "value_26dot6": 96,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "round",
+    "value_26dot6": 128,
+    "before": 0.0,
+    "after": 0.0
+  },
+  {
+    "axis": "y",
+    "projection": [
+      0,
+      16384
+    ],
+    "mode": "round",
+    "value_26dot6": 192,
+    "before": 0.0,
+    "after": 0.0
+  }
+]

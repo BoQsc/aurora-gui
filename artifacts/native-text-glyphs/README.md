@@ -1,3 +1,10 @@
+> **Correction, 22 October 2026:** the owner's inspection found damaged letters
+> and numerals in both the images and running applications. The measurements
+> below cover the stated lines/digits; they did not establish general glyph
+> fidelity. The expanded [character audit](../native-text-audit/README.md)
+> reproduces a misplaced Consolas `e` crossbar, applies further experimental
+> fixes, and exposes every remaining character regression. C stays the default.
+
 # Refined D: Courier regressions and Consolas 17px numerals
 
 20 October 2026. **C remains the approved default**, as requested. The existing

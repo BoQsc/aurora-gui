@@ -1,0 +1,26 @@
+{
+  "status": "FAIL",
+  "font_count": 9,
+  "tested": 111192,
+  "exact": 2581,
+  "failed": 108611,
+  "sizes": [
+    13,
+    17,
+    26
+  ],
+  "phases": [
+    0
+  ],
+  "themes": [
+    "light"
+  ],
+  "all_glyphs": true,
+  "charset": "all",
+  "compiled_hinter_text_sha256": "a58671725814a8110c0122847935e7d8f1a1fe436d7d0ca579be804617d350aa",
+  "shared_source_sha256": {
+    "hinter.d": "52c5816600f9671de1d8505a74fcbce57a6353928a4d2c2c1785f8d2934b2691",
+    "rasterizer.d": "51c30a2986f300438f34fd023a9a662eb6351e57104d63d8dd48f469dd39615d",
+    "truetype.d": "188636cc8067393cf3f6f571208d98e20d74b43006307e112940cf29f03581c6"
+  }
+}

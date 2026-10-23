@@ -1,0 +1,122 @@
+[
+  {
+    "opcode": "FLIPPT[ ]",
+    "low": 2,
+    "high": 2,
+    "size": 11,
+    "before": 18.88888888888889,
+    "candidate": 0.5121951219512195
+  },
+  {
+    "opcode": "FLIPPT[ ]",
+    "low": 2,
+    "high": 2,
+    "size": 13,
+    "before": 19.16393442622951,
+    "candidate": 0.39285714285714285
+  },
+  {
+    "opcode": "FLIPPT[ ]",
+    "low": 2,
+    "high": 2,
+    "size": 17,
+    "before": 18.524752475247524,
+    "candidate": 0.26595744680851063
+  },
+  {
+    "opcode": "FLIPPT[ ]",
+    "low": 2,
+    "high": 2,
+    "size": 26,
+    "before": 18.610091743119266,
+    "candidate": 0.00975609756097561
+  },
+  {
+    "opcode": "FLIPPT[ ]",
+    "low": 2,
+    "high": 2,
+    "size": 34,
+    "before": 18.243243243243242,
+    "candidate": 0.0
+  },
+  {
+    "opcode": "FLIPRGOFF[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 11,
+    "before": 18.866666666666667,
+    "candidate": 0.11363636363636363
+  },
+  {
+    "opcode": "FLIPRGOFF[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 13,
+    "before": 18.114754098360656,
+    "candidate": 0.1206896551724138
+  },
+  {
+    "opcode": "FLIPRGOFF[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 17,
+    "before": 18.04950495049505,
+    "candidate": 0.25773195876288657
+  },
+  {
+    "opcode": "FLIPRGOFF[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 26,
+    "before": 18.610091743119266,
+    "candidate": 0.009615384615384616
+  },
+  {
+    "opcode": "FLIPRGOFF[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 34,
+    "before": 18.06756756756757,
+    "candidate": 0.10256410256410256
+  },
+  {
+    "opcode": "FLIPRGON[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 11,
+    "before": 37.68888888888889,
+    "candidate": 0.1111111111111111
+  },
+  {
+    "opcode": "FLIPRGON[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 13,
+    "before": 37.49180327868852,
+    "candidate": 0.09836065573770492
+  },
+  {
+    "opcode": "FLIPRGON[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 17,
+    "before": 39.554455445544555,
+    "candidate": 0.07920792079207921
+  },
+  {
+    "opcode": "FLIPRGON[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 26,
+    "before": 41.72935779816514,
+    "candidate": 0.07339449541284404
+  },
+  {
+    "opcode": "FLIPRGON[ ]",
+    "low": 1,
+    "high": 2,
+    "size": 34,
+    "before": 41.648648648648646,
+    "candidate": 0.0
+  }
+]

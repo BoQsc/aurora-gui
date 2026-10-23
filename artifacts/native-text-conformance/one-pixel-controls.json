@@ -1,0 +1,65 @@
+[
+  {
+    "font": "segoe",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "3659e8ac1b7c80426ad7ae2fb69844e533e2d2a3fec240f7fe2f89e17a3285ab",
+    "current_sha256": "3659e8ac1b7c80426ad7ae2fb69844e533e2d2a3fec240f7fe2f89e17a3285ab"
+  },
+  {
+    "font": "consolas",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "b8e2d72a057bc67164197c0885be95bcf4210f4f11c41559532be4366497dc1a",
+    "current_sha256": "b8e2d72a057bc67164197c0885be95bcf4210f4f11c41559532be4366497dc1a"
+  },
+  {
+    "font": "arial",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "f3f082078b249a98f6b51037f51b410aee18f26acc1c09d22b1a7ff6474e1871",
+    "current_sha256": "f3f082078b249a98f6b51037f51b410aee18f26acc1c09d22b1a7ff6474e1871"
+  },
+  {
+    "font": "calibri",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "9a4d46c4de8e468888a9090892a4ce33d9d6b4c9992a8ea9c8da498c2211ad44",
+    "current_sha256": "9a4d46c4de8e468888a9090892a4ce33d9d6b4c9992a8ea9c8da498c2211ad44"
+  },
+  {
+    "font": "tahoma",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "05b7d514c7bafcb6d7e8b92c0bc399fffe9edc37af4093262d72f3a92c6e17d3",
+    "current_sha256": "05b7d514c7bafcb6d7e8b92c0bc399fffe9edc37af4093262d72f3a92c6e17d3"
+  },
+  {
+    "font": "verdana",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "8fb8d2e771e3a8ca7cb937ce4b619850d6effd220a79fcf84cd9124ef8fd8114",
+    "current_sha256": "8fb8d2e771e3a8ca7cb937ce4b619850d6effd220a79fcf84cd9124ef8fd8114"
+  },
+  {
+    "font": "courier",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "cf85414ae1fbbdb300b836891b75856e995a304569741e4ce0bb6679893675ba",
+    "current_sha256": "cf85414ae1fbbdb300b836891b75856e995a304569741e4ce0bb6679893675ba"
+  },
+  {
+    "font": "times",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "225db2f62f3efecda0fee505a79774bbc82a4dde96fdd0df5d36d5210a444e42",
+    "current_sha256": "225db2f62f3efecda0fee505a79774bbc82a4dde96fdd0df5d36d5210a444e42"
+  },
+  {
+    "font": "inter",
+    "glyphs": 94,
+    "pixels_unchanged": true,
+    "before_sha256": "b3b493f96fbfc66e5a02a62f905f57f1a613b1e82443123f3ca8decd41a2bd04",
+    "current_sha256": "b3b493f96fbfc66e5a02a62f905f57f1a613b1e82443123f3ca8decd41a2bd04"
+  }
+]

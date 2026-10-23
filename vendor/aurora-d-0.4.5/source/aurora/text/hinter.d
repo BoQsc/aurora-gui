@@ -23,7 +23,7 @@ module aurora.text.hinter;
  * never blank glyphs.
  */
 
-import std.math : sqrt;
+import std.math : abs, sqrt;
 import std.format;
 
 struct HintingCounters
@@ -96,6 +96,18 @@ private long mulDiv(long a, long b, long c) @safe pure nothrow @nogc
 {
     if (c == 0) return 0;
     return cast(int) (cast(long) a * b / c);
+}
+
+/// Preserve the nearest F26Dot6 interpolation result before later grid rounding.
+/// Truncation can put an exact half-pixel on the wrong side of the boundary.
+private long roundedMulDiv(long a, long b, long c) @safe pure nothrow @nogc
+{
+    if (c == 0) return 0;
+    const product = a * b;
+    const numerator = product < 0 ? -product : product;
+    const denominator = c < 0 ? -c : c;
+    const value = (numerator + denominator / 2) / denominator;
+    return (product < 0) != (c < 0) ? -value : value;
 }
 
 /// Scale design units directly to F26Dot6 without truncating the scale first.
@@ -172,6 +184,10 @@ private struct Pt
     bool touchX;
     bool touchY;
     bool onCurve;
+    // Exact scaled coordinates, with unitsPerEm as their shared denominator.
+    // IP needs the design-point ratio while phantom points retain their
+    // initial physical-grid rounding. Keep other instructions' state separate.
+    long ipOriginalX, ipOriginalY;
 }
 
 /// A point zone (glyph zone or twilight zone).
@@ -492,7 +508,8 @@ private final class Context
     {
         // Asymmetric supersampling changes rounding, not the outline's aspect
         // ratio. ROUND in the size program still uses the physical pixel grid.
-        const finerGrid = naturalGrid && glyphProgram && projVectorY == 0;
+        const finerGrid = naturalGrid && glyphProgram &&
+            (refinedTextExperiment ? projVectorX != 0 : projVectorY == 0);
         if (finerGrid)
             return roundPhysicalDistance(distance * 16, compensation * 16) / 16;
         return roundPhysicalDistance(distance, compensation);
@@ -505,7 +522,8 @@ private final class Context
 
     int effectiveCutIn() const @safe pure nothrow @nogc
     {
-        return naturalGrid && projVectorY == 0 ? controlValueCutIn / 16 : controlValueCutIn;
+        return naturalGrid && (refinedTextExperiment ? projVectorX != 0 : projVectorY == 0) ?
+            controlValueCutIn / 16 : controlValueCutIn;
     }
 
     private long roundPhysicalDistance(long distance, long compensation) const @safe pure nothrow @nogc
@@ -605,8 +623,12 @@ private final class Context
         const point = cast(int) pop();
         auto zone = zone1Ref();
         ensurePoint(zone, point);
-        const orgDist = dualProject2(zone.points[point].orgX, zone.points[point].orgY,
-            zone0Ref().points[rp0].orgX, zone0Ref().points[rp0].orgY);
+        // Form axis distances before rounding either original endpoint. At
+        // 17px, e.g. 147..1008 design units, that early rounding crosses a
+        // natural-grid half-step and moves the entire stroke to the right.
+        const orgDist = refinedTextExperiment && naturalGrid && (projVectorX == 0 || projVectorY == 0) && zoneSelect0 == 1 && zoneSelect1 == 1 ?
+            roundedMulDiv(interpolationOriginalDistance(zone.points[point],zone0Ref().points[rp0],false),1,unitsPerEm) :
+            dualProject2(zone.points[point].orgX,zone.points[point].orgY,zone0Ref().points[rp0].orgX,zone0Ref().points[rp0].orgY);
 
         long distance = orgDist;
         if (singleWidthCutIn > 0 &&
@@ -691,6 +713,21 @@ private final class Context
         rp1 = rp0;
         rp2 = point;
         if ((opcode & 16) != 0) rp0 = point;
+    }
+
+    // Do not quantize outline endpoints before forming the interpolation ratio.
+    // The precise representation also preserves rounded phantom coordinates.
+    long interpolationOriginalDistance(ref const Pt point, ref const Pt reference, bool twilight)
+    {
+        if (twilight)
+            return dualProject2(point.orgX, point.orgY, reference.orgX, reference.orgY);
+        if (refinedTextExperiment)
+        {
+            const product = (point.ipOriginalX - reference.ipOriginalX) * dualVectorX +
+                (point.ipOriginalY - reference.ipOriginalY) * dualVectorY;
+            return (product + 0x2000 + (product >> 63)) >> 14;
+        }
+        return dualProject2(point.orusX, point.orusY, reference.orusX, reference.orusY);
     }
 
     void deltaP(int opcode)
@@ -840,7 +877,7 @@ final class TrueTypeHinter
         {
             const x = ctx.scaleDesign(input.xs[i]);
             const y = ctx.scaleDesign(input.ys[i]);
-            ctx.zone0.points[i] = Pt(x, y, x, y, x, y, false, false, input.onCurve[i]);
+            ctx.zone0.points[i] = Pt(x, y, x, y, x, y, false, false, input.onCurve[i], cast(long) input.xs[i] * input.pixelSize * 64, cast(long) input.ys[i] * input.pixelSize * 64);
             ctx.zone1.points[i] = ctx.zone0.points[i];
             ctx.zone2.points[i] = ctx.zone0.points[i];
             if (input.xs[i] < xMin) xMin = input.xs[i];
@@ -857,10 +894,10 @@ final class TrueTypeHinter
         pp3y = (pp3y + 32) & ~63;
         pp4y = (pp4y + 32) & ~63;
 
-        Pt phantom1 = Pt(pp1x, 0, pp1x, 0, pp1x, 0, false, false, true);
-        Pt phantom2 = Pt(pp2x, 0, pp2x, 0, pp2x, 0, false, false, true);
-        Pt phantom3 = Pt(0, pp3y, 0, pp3y, 0, pp3y, false, false, true);
-        Pt phantom4 = Pt(0, pp4y, 0, pp4y, 0, pp4y, false, false, true);
+        Pt phantom1 = Pt(pp1x, 0, pp1x, 0, pp1x, 0, false, false, true, cast(long) pp1x * input.unitsPerEm, 0);
+        Pt phantom2 = Pt(pp2x, 0, pp2x, 0, pp2x, 0, false, false, true, cast(long) pp2x * input.unitsPerEm, 0);
+        Pt phantom3 = Pt(0, pp3y, 0, pp3y, 0, pp3y, false, false, true, 0, cast(long) pp3y * input.unitsPerEm);
+        Pt phantom4 = Pt(0, pp4y, 0, pp4y, 0, pp4y, false, false, true, 0, cast(long) pp4y * input.unitsPerEm);
         ctx.zone0.points[n] = phantom1;
         ctx.zone0.points[n + 1] = phantom2;
         ctx.zone0.points[n + 2] = phantom3;
@@ -876,7 +913,10 @@ final class TrueTypeHinter
         foreach (ref pt; ctx.twilight.points[])
             pt = Pt(0, 0, 0, 0, 0, 0, false, false, true);
 
-        if (input.instructions.length > 0 && (ctx.instructControl & 1) == 0 &&
+        // At one physical pixel the native reference skips glyph instructions,
+        // while retaining the initial scaled point grid. Prep still runs.
+        if (input.instructions.length > 0 && (!_naturalGrid || !_refinedTextExperiment || input.pixelSize > 1) &&
+            (ctx.instructControl & 1) == 0 &&
             (!_naturalGrid || _naturalGridFit))
         {
             ctx.glyphProgram = true;
@@ -898,7 +938,9 @@ final class TrueTypeHinter
             result.ys26Dot6[i] = ctx.zone2.points[i].curY;
             result.xs[i] = cast(int) (ctx.zone2.points[i].curX >> 6);
             result.ys[i] = cast(int) (ctx.zone2.points[i].curY >> 6);
-            result.onCurve[i] = input.onCurve[i];
+            // FLIPPT/FLIPRGON/FLIPRGOFF redefine the curve without moving a
+            // point. Returning the input flags discards those instructions.
+            result.onCurve[i] = _refinedTextExperiment ? ctx.zone2.points[i].onCurve : input.onCurve[i];
             if (result.xs[i] < result.xMin) result.xMin = result.xs[i];
             if (result.xs[i] > result.xMax) result.xMax = result.xs[i];
             if (result.ys[i] < result.yMin) result.yMin = result.ys[i];
@@ -1192,12 +1234,14 @@ final class TrueTypeHinter
             case 0x04: case 0x05: ctx.setFreedom(opcode & 1); return;
             case 0x06: case 0x07: case 0x08: case 0x09:
             {
+                // SPVTL/SFVTL follow the line after preceding hint movements.
+                // Original coordinates are used only by the separate dual vector.
                 const p1 = cast(int) ctx.pop();
                 const p2 = cast(int) ctx.pop();
-                const p1x = ctx.zone2Ref().points[p1].orgX;
-                const p1y = ctx.zone2Ref().points[p1].orgY;
-                const p2x = ctx.zone1Ref().points[p2].orgX;
-                const p2y = ctx.zone1Ref().points[p2].orgY;
+                const p1x = (ctx.refinedTextExperiment ? ctx.zone2Ref().points[p1].curX : ctx.zone2Ref().points[p1].orgX);
+                const p1y = (ctx.refinedTextExperiment ? ctx.zone2Ref().points[p1].curY : ctx.zone2Ref().points[p1].orgY);
+                const p2x = (ctx.refinedTextExperiment ? ctx.zone1Ref().points[p2].curX : ctx.zone1Ref().points[p2].orgX);
+                const p2y = (ctx.refinedTextExperiment ? ctx.zone1Ref().points[p2].curY : ctx.zone1Ref().points[p2].orgY);
                 const dx = cast(double) p2x - p1x;
                 const dy = cast(double) p2y - p1y;
                 const length = sqrt(dx * dx + dy * dy);
@@ -1231,8 +1275,21 @@ final class TrueTypeHinter
                 int uy = cast(int) (dy * 0x4000 / length);
                 const perpendicular = (opcode & 1) != 0;
                 if (perpendicular) { const ox = ux; const oy = uy; ux = -oy; uy = ox; }
-                ctx.dualVectorX = ux; ctx.dualVectorY = uy;
-                ctx.setProjectionVector(ux, uy);
+                if (ctx.refinedTextExperiment)
+                {
+                    // Projection follows the moved line; dual projection retains
+                    // the original line for measuring uninstructed distances.
+                    const currentX = ctx.zone1Ref().points[p2].curX - ctx.zone2Ref().points[p1].curX;
+                    const currentY = ctx.zone1Ref().points[p2].curY - ctx.zone2Ref().points[p1].curY;
+                    ctx.setProjectionVector(cast(int) (perpendicular ? -currentY : currentX),
+                        cast(int) (perpendicular ? currentX : currentY));
+                    ctx.dualVectorX = ux; ctx.dualVectorY = uy;
+                }
+                else
+                {
+                    ctx.dualVectorX = ux; ctx.dualVectorY = uy;
+                    ctx.setProjectionVector(ux, uy);
+                }
                 return;
             }
             case 0x10: ctx.rp0 = cast(int) ctx.pop(); return;
@@ -1482,16 +1539,20 @@ final class TrueTypeHinter
             }
             case 0x81:
             {
-                const low = cast(int) ctx.pop();
-                const high = cast(int) ctx.pop();
+                const top = cast(int) ctx.pop();
+                const bottom = cast(int) ctx.pop();
+                const low = ctx.refinedTextExperiment ? bottom : top;
+                const high = ctx.refinedTextExperiment ? top : bottom;
                 foreach (i; low .. high + 1)
                     if (i >= 0 && i < ctx.zone0Ref().points.length) ctx.zone0Ref().points[i].onCurve = true;
                 return;
             }
             case 0x82:
             {
-                const low = cast(int) ctx.pop();
-                const high = cast(int) ctx.pop();
+                const top = cast(int) ctx.pop();
+                const bottom = cast(int) ctx.pop();
+                const low = ctx.refinedTextExperiment ? bottom : top;
+                const high = ctx.refinedTextExperiment ? top : bottom;
                 foreach (i; low .. high + 1)
                     if (i >= 0 && i < ctx.zone0Ref().points.length) ctx.zone0Ref().points[i].onCurve = false;
                 return;
@@ -1687,15 +1748,8 @@ final class TrueTypeHinter
                 const rp2ok = ctx.rp2 >= 0 && ctx.rp2 < ctx.zone1Ref().points.length;
                 if (rp2ok)
                 {
-                    oldRange = twilight
-                        ? ctx.dualProject2(cast(int) ctx.zone1Ref().points[ctx.rp2].orgX,
-                            cast(int) ctx.zone1Ref().points[ctx.rp2].orgY,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgX,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgY)
-                        : ctx.dualProject2(cast(int) ctx.zone1Ref().points[ctx.rp2].orusX,
-                            cast(int) ctx.zone1Ref().points[ctx.rp2].orusY,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusX,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusY);
+                    oldRange = ctx.interpolationOriginalDistance(
+                        ctx.zone1Ref().points[ctx.rp2], ctx.zone0Ref().points[ctx.rp1], twilight);
                     curRange = ctx.project(cast(int) ctx.zone1Ref().points[ctx.rp2].curX,
                         cast(int) ctx.zone1Ref().points[ctx.rp2].curY) -
                         ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp1].curX,
@@ -1707,22 +1761,18 @@ final class TrueTypeHinter
                     if (point < 0 || point >= ctx.zone2Ref().points.length ||
                         ctx.rp1 < 0 || ctx.rp1 >= ctx.zone0Ref().points.length)
                         continue;
-                    const orgDist = twilight
-                        ? ctx.dualProject2(cast(int) ctx.zone2Ref().points[point].orgX,
-                            cast(int) ctx.zone2Ref().points[point].orgY,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgX,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orgY)
-                        : ctx.dualProject2(cast(int) ctx.zone2Ref().points[point].orusX,
-                            cast(int) ctx.zone2Ref().points[point].orusY,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusX,
-                            cast(int) ctx.zone0Ref().points[ctx.rp1].orusY);
+                    const orgDist = ctx.interpolationOriginalDistance(
+                        ctx.zone2Ref().points[point], ctx.zone0Ref().points[ctx.rp1], twilight);
                     const curDist = ctx.project(cast(int) ctx.zone2Ref().points[point].curX,
                         cast(int) ctx.zone2Ref().points[point].curY) -
                         ctx.project(cast(int) ctx.zone0Ref().points[ctx.rp1].curX,
                             cast(int) ctx.zone0Ref().points[ctx.rp1].curY);
                     long newDist;
                     if (orgDist != 0)
-                        newDist = oldRange != 0 ? mulDiv(orgDist, curRange, oldRange) : orgDist;
+                        newDist = oldRange != 0 ?
+                            (ctx.refinedTextExperiment ? roundedMulDiv(orgDist, curRange, oldRange) :
+                                mulDiv(orgDist, curRange, oldRange)) :
+                                (ctx.refinedTextExperiment && !twilight ? roundedMulDiv(orgDist, 1, ctx.unitsPerEm) : orgDist);
                     else
                         newDist = 0;
                     ctx.movePoint(ctx.zone2Ref(), point, newDist - curDist);
@@ -1850,13 +1900,13 @@ final class TrueTypeHinter
         long orus1, orus2, org1, org2, cur1, cur2;
         if (xAxis)
         {
-            orus1 = zone.points[ref1].orusX; orus2 = zone.points[ref2].orusX;
+            orus1 = (ctx.refinedTextExperiment ? zone.points[ref1].ipOriginalX : zone.points[ref1].orusX); orus2 = (ctx.refinedTextExperiment ? zone.points[ref2].ipOriginalX : zone.points[ref2].orusX);
             org1 = zone.points[ref1].orgX; org2 = zone.points[ref2].orgX;
             cur1 = zone.points[ref1].curX; cur2 = zone.points[ref2].curX;
         }
         else
         {
-            orus1 = zone.points[ref1].orusY; orus2 = zone.points[ref2].orusY;
+            orus1 = (ctx.refinedTextExperiment ? zone.points[ref1].ipOriginalY : zone.points[ref1].orusY); orus2 = (ctx.refinedTextExperiment ? zone.points[ref2].ipOriginalY : zone.points[ref2].orusY);
             org1 = zone.points[ref1].orgY; org2 = zone.points[ref2].orgY;
             cur1 = zone.points[ref1].curY; cur2 = zone.points[ref2].curY;
         }
@@ -1866,7 +1916,7 @@ final class TrueTypeHinter
         }
         const delta1 = cur1 - org1;
         const delta2 = cur2 - org2;
-        const scale = orus2 != orus1 ? mulDiv(cast(int) (cur2 - cur1), 0x4000,
+        const scale = !ctx.refinedTextExperiment && orus2 != orus1 ? mulDiv(cast(int) (cur2 - cur1), 0x4000,
             cast(int) (orus2 - orus1)) : 0;
         foreach (i; p1 .. p2 + 1)
         {
@@ -1880,8 +1930,14 @@ final class TrueTypeHinter
                 value = cur1;
             else
             {
-                const orus = xAxis ? zone.points[i].orusX : zone.points[i].orusY;
-                value = cur1 + mulDiv(cast(int) (orus - orus1), scale, 0x4000);
+                const orus = ctx.refinedTextExperiment ? (xAxis ? zone.points[i].ipOriginalX : zone.points[i].ipOriginalY) : (xAxis ? zone.points[i].orusX : zone.points[i].orusY);
+                // Native IUP adds half the positive denominator before signed
+                // division. A decreasing interval therefore differs from the
+                // symmetric rounding used by IP. Keep the rounded org guards
+                // above: even distinct design points can share one grid point.
+                value = cur1 + (ctx.refinedTextExperiment ?
+                    ((orus - orus1) * (cur2 - cur1) + (orus2 - orus1) / 2) / (orus2 - orus1) :
+                    mulDiv(cast(int) (orus - orus1), scale, 0x4000));
             }
             if (xAxis) zone.points[i].curX = value;
             else zone.points[i].curY = value;
@@ -1950,6 +2006,160 @@ final class TrueTypeHinter
             default:
                 return 0;
         }
+    }
+}
+
+unittest
+{
+    // Native original-distance probes distinguish subtract-then-scale from
+    // rounding both endpoints first (458 versus 457 F26.6, then 460 vs 456).
+    foreach (refined; [false, true])
+    foreach (natural; [false, true])
+    {
+        auto engine = new TrueTypeHinter(null, 0, natural, true, refined);
+        HintInput input;
+        input.unitsPerEm = 2048; input.pixelSize = 17;
+        input.xs = [147, 147, 1008, 1008]; input.ys = [0, 1024, 1024, 0];
+        input.onCurve = [true, true, true, true]; input.contours = [3];
+        input.lsb = 147; input.advance = 2048;
+        input.instructions = cast(ubyte[]) [0x01, 0xB1, 0, 0, 0x48,
+            0xB1, 1, 0, 0x48, 0xB0, 0, 0x10, 0xB0, 2, 0xC4, 0xB0, 3, 0xC4];
+        auto result = engine.hint(input);
+        const expected = natural ? (refined ? 456 : 460) : 448;
+        assert(result.xs26Dot6[2] == expected && result.xs26Dot6[3] == expected);
+    }
+}
+
+unittest
+{
+    // Native IUP probes cover increasing/decreasing intervals, exact division,
+    // an outside point, and the rounded interval guard for collapsed positions.
+    foreach (xAxis; [false, true])
+    foreach (test; [[147, 1008, 610, 17, 0, 128, 69],
+                   [147, 1008, 610, 17, 256, 0, 119],
+                   [100, 300, 200, 16, 256, 0, 129],
+                   [147, 1008, 110, 17, 0, 128, -20],
+                   [147, 149, 148, 13, 0, 128, 0],
+                   [147, 149, 148, 17, 0, 128, 128]])
+    {
+        auto engine = new TrueTypeHinter(null, 0, true, true, true);
+        HintInput input;
+        input.unitsPerEm = 2048; input.pixelSize = test[3];
+        const originals = [test[0], test[2], test[1], test[0]];
+        input.xs = xAxis ? originals.dup : [0, 0, 1024, 1024];
+        input.ys = xAxis ? [0, 1024, 1024, -1024] : originals.dup;
+        input.onCurve = [true, true, true, true]; input.contours = [3];
+        input.advance = 2048;
+        input.instructions = cast(ubyte[]) [xAxis ? 0x01 : 0x00,
+            0xB9, 0, 0, (test[4] >> 8) & 255, test[4] & 255, 0x48,
+            0xB9, 0, 2, (test[5] >> 8) & 255, test[5] & 255, 0x48,
+            xAxis ? 0x31 : 0x30];
+        auto result = engine.hint(input);
+        assert((xAxis ? result.xs26Dot6[1] : result.ys26Dot6[1]) == test[6]);
+    }
+}
+
+unittest
+{
+    foreach (refined; [false, true])
+    foreach (natural; [false, true])
+    {
+        auto engine = new TrueTypeHinter(null, 0, natural, true, refined);
+        HintInput input;
+        input.unitsPerEm = 2048; input.pixelSize = 1;
+        input.xs = [0, 0, 1024, 1024]; input.ys = [0, 1024, 1024, 0];
+        input.onCurve = [true, true, true, true]; input.contours = [3];
+        input.advance = 2048;
+        input.instructions = cast(ubyte[]) [0x01, 0xB9, 0, 2, 1, 0, 0x48];
+        auto result = engine.hint(input);
+        assert(result.xs26Dot6[2] == (refined && natural ? 32 : 256),
+            "The refined 1px path retains scaling while skipping glyph instructions");
+    }
+}
+
+unittest
+{
+    foreach (refined; [false, true])
+    foreach (opcode; [0x80, 0x81, 0x82])
+    {
+        auto engine = new TrueTypeHinter(null, 0, true, true, refined);
+        HintInput input;
+        input.unitsPerEm = 2048; input.pixelSize = 16;
+        input.xs = [0, 0, 512, 1024, 1024];
+        input.ys = [0, 1024, 1536, 1024, 0];
+        input.onCurve = [true, opcode != 0x81, opcode != 0x81, true, true];
+        input.contours = [4]; input.advance = 2048;
+        input.instructions = opcode == 0x80 ? cast(ubyte[]) [0xB0, 2, 0x80] :
+            cast(ubyte[]) [0xB1, 1, 2, opcode];
+        auto result = engine.hint(input);
+        bool[] expected = input.onCurve.dup;
+        if (refined)
+        {
+            if (opcode == 0x80) expected[2] = false;
+            else expected[1] = expected[2] = opcode == 0x81;
+        }
+        assert(result.onCurve == expected, "Curve flags must survive the hint result");
+        assert(result.xs26Dot6 == [0L, 0, 256, 512, 512]);
+        assert(result.ys26Dot6 == [0L, 512, 768, 512, 0], "FLIP does not move points");
+    }
+}
+
+unittest
+{
+    // Native generated-font probes move a line endpoint before querying these
+    // vectors. SPVTL/SFVTL use the moved line; SDPVTL alone retains a second,
+    // original vector. Preserve the reviewed C/D behavior outside refined D.
+    foreach (refined; [false, true])
+    foreach (opcode; [0x06, 0x07, 0x08, 0x09, 0x86, 0x87])
+    {
+        auto engine = new TrueTypeHinter(null, 0, true, true, refined);
+        auto ctx = new Context(engine, null, null, 2048, 16);
+        ctx.zone0.points = [Pt(128, 0, 128, 128, 128, 0), Pt()];
+        ctx.zone1.points = ctx.zone2.points = ctx.zone0.points;
+        engine.runProgram(ctx, cast(ubyte[]) [0xB1, 0, 1, opcode]);
+        const perpendicular = (opcode & 1) != 0;
+        const expectedX = refined ? (perpendicular ? -11585 : 11585) :
+            (perpendicular ? 0 : 16384);
+        const expectedY = refined ? 11585 : (perpendicular ? 16384 : 0);
+        if (opcode == 0x08 || opcode == 0x09)
+        {
+            assert(abs(ctx.freeVectorX - expectedX) <= 1);
+            assert(abs(ctx.freeVectorY - expectedY) <= 1);
+            assert(ctx.projVectorX == 16384 && ctx.projVectorY == 0);
+        }
+        else
+        {
+            assert(abs(ctx.projVectorX - expectedX) <= 1);
+            assert(abs(ctx.projVectorY - expectedY) <= 1);
+            if (opcode == 0x86 || opcode == 0x87)
+            {
+                assert(ctx.dualVectorX == (perpendicular ? 0 : 16384));
+                assert(ctx.dualVectorY == (perpendicular ? 16384 : 0));
+            }
+            else
+                assert(ctx.dualVectorX == ctx.projVectorX && ctx.dualVectorY == ctx.projVectorY);
+        }
+    }
+}
+
+unittest
+{
+    // The additional x resolution applies to diagonal projections too. Native
+    // oracle fonts exercise both ROUND and MIRP with the freedom on each axis.
+    foreach (refined; [false, true])
+    {
+        auto engine = new TrueTypeHinter(null, 0, true, true, refined);
+        auto ctx = new Context(engine, null, null, 2048, 16);
+        ctx.setProjectionVector(13107, 9830);
+        assert(ctx.roundDistance(45, 0) == 64, "Prep rounds on physical pixels");
+        ctx.glyphProgram = true;
+        assert(ctx.roundDistance(45, 0) == (refined ? 44 : 64));
+        assert(ctx.roundDistance(-45, 0) == (refined ? -44 : -64));
+        assert(ctx.effectiveCutIn() == (refined ? 4 : 68));
+        ctx.setProjection(0);
+        assert(ctx.roundDistance(45, 0) == 64 && ctx.effectiveCutIn() == 68);
+        ctx.setProjection(1);
+        assert(ctx.roundDistance(45, 0) == 44 && ctx.effectiveCutIn() == 4);
     }
 }
 
@@ -2193,6 +2403,44 @@ unittest
         assert(ctx.zone1.points[1].curX == (difference > 4 ? 128 : 128 + difference),
             "Cut-in equality must retain the CVT request");
     }
+}
+
+unittest
+{
+    // IP before MDAP must not discard a fractional F26Dot6 result. 31.75
+    // rounds to 32, which MDAP then places at 64; truncating IP placed it at 0.
+    // Consolas 17px 'e' exposed this as a visibly misplaced crossbar.
+    foreach (refined; [false, true])
+    {
+        auto engine = new TrueTypeHinter(null, 0, true, true, refined);
+        auto ctx = new Context(engine, null, null, 2048, 17);
+        ctx.glyphProgram = true;
+        ctx.setVectors(0);
+        ctx.zone0.points = [Pt(), Pt(0, 4, 0, 127, 0, 4, false, false, false, 0, 8192),
+            Pt(0, 1, 0, 1, 0, 1, false, false, false, 0, 2048)];
+        ctx.zone1.points = ctx.zone0.points;
+        ctx.zone2.points = ctx.zone0.points;
+        ctx.rp1 = 0;
+        ctx.rp2 = 1;
+        engine.runProgram(ctx, cast(ubyte[]) [0xB0, 2, 0x39]);
+        assert(ctx.zone2.points[2].curY == (refined ? 32 : 31));
+        engine.runProgram(ctx, cast(ubyte[]) [0xB0, 2, 0x2F]);
+        assert(ctx.zone2.points[2].curY == (refined ? 64 : 0));
+    }
+    assert(roundedMulDiv(1, 127, 4) == 32 && roundedMulDiv(-1, 127, 4) == -32);
+    assert(roundedMulDiv(1, 127, -4) == -32 && roundedMulDiv(-1, 127, -4) == 32);
+    assert(roundedMulDiv(5, 7, 0) == 0);
+
+    // Subtracting already-quantized positions changes this ratio from
+    // 23/555 to 12/278. Preserve it even when the reference point is a
+    // rounded phantom point, rather than restoring the unrounded advance.
+    auto engine = new TrueTypeHinter(null, 0, true, true, true);
+    auto ctx = new Context(engine, null, null, 2048, 16);
+    ctx.setVectors(0);
+    const point = Pt(0, 12, 0, 12, 0, 12, false, false, true, 0, 23 * 1024);
+    const reference = Pt(0, 278, 0, 278, 0, 278, false, false, true, 0, 555 * 1024);
+    assert(ctx.interpolationOriginalDistance(point, reference, false) == -532 * 1024);
+    assert(ctx.interpolationOriginalDistance(point, reference, true) == -266);
 }
 
 unittest

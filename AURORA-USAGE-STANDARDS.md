@@ -122,6 +122,11 @@ scheduled work still ran (see `headless_smoke` `notificationRefreshCountForTesti
   the text's luminance, retaining the established near-white transfer.
   `AURORA_TEXT_COVERAGE=legacy` restores the prior color-independent transfer.
   Applications must inherit this policy rather than copy a private override.
+- Inherit refined D text rendering from Aurora-D; it is the owner-approved
+  shared default as of 2026-10-23. Applications must not set a private rendering
+  profile. `AURORA_TEXT_EXPERIMENT=compatible-c` explicitly selects the former
+  C renderer for compatibility; `native-next` preserves the original D review.
+  Native pixel parity remains incomplete.
 - Inherit natural grayscale hinting from Aurora-D. The shared renderer follows
   the font's smoothing grid and uses matching Canvas phases. `AURORA_HINTING=0`
   restores unhinted B behavior; `1` selects the older diagnostic interpreter.

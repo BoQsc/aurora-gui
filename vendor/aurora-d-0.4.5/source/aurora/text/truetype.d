@@ -20,26 +20,9 @@ import std.exception : enforce;
 import std.file : read;
 import std.math : abs, ceil, floor, sqrt;
 import std.process : environment;
-
-// One policy for face initialization, glyph hinting, and subpixel sampling.
-// AURORA_HINTING=0 retains the previous unhinted renderer; =1 is diagnostic.
-private string configuredHintingMode()
-{
-    return environment.get("AURORA_HINTING", "natural");
-}
-
-private bool nativeTextExperiment()
-{
-    const experiment = environment.get("AURORA_TEXT_EXPERIMENT", "");
-    return configuredHintingMode() == "natural" &&
-        (experiment == "native-next" || experiment == "native-refined");
-}
-
-private bool refinedTextExperiment()
-{
-    return configuredHintingMode() == "natural" &&
-        environment.get("AURORA_TEXT_EXPERIMENT", "") == "native-refined";
-}
+import aurora.text.renderpolicy : configuredHintingMode,
+    nativeTextExperiment = nativeGlyphSampling,
+    refinedTextExperiment = refinedTextRendering;
 
 private enum uint tag(string value) =
     (cast(uint) value[0] << 24) | (cast(uint) value[1] << 16) |
@@ -364,6 +347,7 @@ final class TrueTypeFace
                     fitXs[i] = (fitted.xs26Dot6[i] - fitted.originX26Dot6) / 64.0;
                     fitYs[i] = fitted.ys26Dot6[i] / 64.0;
                 }
+                if (refinedTextExperiment()) rawOnCurve = fitted.onCurve;
                 fitAdvance = fitted.advance;
                 hintedCoords = true;
                 bitmap.advance = max(0, fitAdvance);
@@ -435,8 +419,13 @@ final class TrueTypeFace
         {
             edge.x0 += shiftX;
             edge.x1 += shiftX;
+            if (edge.quadratic) edge.cx += shiftX;
         }
-        if (fitVertical && !hintedCoords)
+        // The native reference retains design geometry for uninstructed
+        // outlines. Applying Aurora's legacy alignment zones here changes
+        // stem positions and numeral heights, especially in variable fonts.
+        if (fitVertical && !hintedCoords &&
+            !(refinedTextExperiment() && !composite && glyphIns.length == 0))
             alignVertically(edges, bitmap.bearingY, bitmap.height, verticalAlignment(pixelSize));
 
         // Shared grayscale area coverage for TrueType and CFF outlines.
@@ -1232,6 +1221,14 @@ final class TrueTypeFace
     private static void appendQuadratic(OutlinePoint from, OutlinePoint control, OutlinePoint to,
         double scale, int bearingX, int bearingY, ref Edge[] edges)
     {
+        if (refinedTextExperiment())
+        {
+            import aurora.text.rasterizer : appendQuadraticEdges;
+            appendQuadraticEdges(Edge(from.x * scale - bearingX, bearingY - from.y * scale,
+                to.x * scale - bearingX, bearingY - to.y * scale,
+                control.x * scale - bearingX, bearingY - control.y * scale, true), edges);
+            return;
+        }
         const estimate = (sqrt((control.x - from.x) ^^ 2 + (control.y - from.y) ^^ 2) +
             sqrt((to.x - control.x) ^^ 2 + (to.y - control.y) ^^ 2)) * scale;
         int segments = cast(int) ceil(estimate / 3.0);

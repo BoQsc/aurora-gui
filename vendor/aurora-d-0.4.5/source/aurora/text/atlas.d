@@ -8,6 +8,7 @@ import aurora.text.alphacorrection : NativeCoverageClasses, nativeCoverageClass,
 import aurora.text.glyph : GlyphBitmap;
 import aurora.text.fontcollection : FontCollection;
 import aurora.text.layout : TextLayoutEngine;
+import aurora.text.renderpolicy : refinedTextCoverage;
 import aurora.types : Rect, maxInt;
 import std.conv : to;
 import std.math : floor, isFinite;
@@ -128,9 +129,7 @@ final class GlyphAtlas
         // The prior transfer remains available as an explicit compatibility mode.
         _foregroundCoverage = environment.get("AURORA_TEXT_COVERAGE", "foreground") ==
             "foreground";
-        _nativeAlpha = _foregroundCoverage &&
-            environment.get("AURORA_HINTING", "natural") == "natural" &&
-            environment.get("AURORA_TEXT_EXPERIMENT", "") == "native-refined";
+        _nativeAlpha = refinedTextCoverage();
         if (_nativeAlpha)
         {
             try _nativeGamma = to!float(environment.get("AURORA_TEXT_GAMMA", "1.8"));

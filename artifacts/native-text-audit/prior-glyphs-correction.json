@@ -1,0 +1,22 @@
+{
+  "reason": "User reports damaged letters and numerals; prior line/digit corpus insufficient for glyph-fidelity assessment",
+  "changed_only_presentation_and_status": [
+    {
+      "file": "artifacts\\native-text-glyphs\\index.html",
+      "previous_sha256": "9b61666302cef9db9db8a2365a62acd71b6b2d4e5f104de1e37309349173dbf1",
+      "corrected_sha256": "d413e747474ee8bea7a36024dbe9b107729f63d4890038c1244932694e889a1e"
+    },
+    {
+      "file": "artifacts\\native-text-glyphs\\README.md",
+      "previous_sha256": "6f023365028955909af2e495a9f4aa591f6707cead45d6b84a69bcec73e9ea97",
+      "corrected_sha256": "b66810c35f61c6c9eb5104871a75b69ca6b6f360ef0f1534b7950000eb1235d3"
+    },
+    {
+      "file": "artifacts\\native-text-glyphs\\status.json",
+      "previous_sha256": "761d4b0219f7c8ad2586957367324840494416b35727e98e39b2b6334278c0d2",
+      "corrected_sha256": "cdf21aba42305963be61b6b48ec8591cc680893da5bdb0ed5eadaa311d3f3f37"
+    }
+  ],
+  "measurement_and_image_files_unchanged": true,
+  "original_manifest": "prior-glyphs-manifest.json"
+}

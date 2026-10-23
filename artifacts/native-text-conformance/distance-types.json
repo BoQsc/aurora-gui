@@ -1,0 +1,506 @@
+[
+  {
+    "axis": "x",
+    "distance": 40,
+    "color": 0,
+    "ink": 1528,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 40,
+    "color": 1,
+    "ink": 1528,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 40,
+    "color": 2,
+    "ink": 1528,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 63,
+    "color": 0,
+    "ink": 2040,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 63,
+    "color": 1,
+    "ink": 2040,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 63,
+    "color": 2,
+    "ink": 2040,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 64,
+    "color": 0,
+    "ink": 2040,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 64,
+    "color": 1,
+    "ink": 2040,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 64,
+    "color": 2,
+    "ink": 2040,
+    "bounds": [
+      8,
+      24,
+      9,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 72,
+    "color": 0,
+    "ink": 2552,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 72,
+    "color": 1,
+    "ink": 2552,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 72,
+    "color": 2,
+    "ink": 2552,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 96,
+    "color": 0,
+    "ink": 3064,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 96,
+    "color": 1,
+    "ink": 3064,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 96,
+    "color": 2,
+    "ink": 3064,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 127,
+    "color": 0,
+    "ink": 4080,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 127,
+    "color": 1,
+    "ink": 4080,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 127,
+    "color": 2,
+    "ink": 4080,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 128,
+    "color": 0,
+    "ink": 4080,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 128,
+    "color": 1,
+    "ink": 4080,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "x",
+    "distance": 128,
+    "color": 2,
+    "ink": 4080,
+    "bounds": [
+      8,
+      24,
+      10,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 40,
+    "color": 0,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 40,
+    "color": 1,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 40,
+    "color": 2,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 63,
+    "color": 0,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 63,
+    "color": 1,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 63,
+    "color": 2,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 64,
+    "color": 0,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 64,
+    "color": 1,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 64,
+    "color": 2,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 72,
+    "color": 0,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 72,
+    "color": 1,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 72,
+    "color": 2,
+    "ink": 2040,
+    "bounds": [
+      8,
+      31,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 96,
+    "color": 0,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 96,
+    "color": 1,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 96,
+    "color": 2,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 127,
+    "color": 0,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 127,
+    "color": 1,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 127,
+    "color": 2,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 128,
+    "color": 0,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 128,
+    "color": 1,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  },
+  {
+    "axis": "y",
+    "distance": 128,
+    "color": 2,
+    "ink": 4080,
+    "bounds": [
+      8,
+      30,
+      16,
+      32
+    ]
+  }
+]

@@ -1,0 +1,698 @@
+[
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 205,
+    "opcode": "0x2b",
+    "error": 73.17647058823529
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 207,
+    "opcode": "0xf6",
+    "error": 79.75
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 214,
+    "opcode": "0xed",
+    "error": 75.11764705882354
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 215,
+    "opcode": "0xfc",
+    "error": 75.11764705882354
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 224,
+    "opcode": "0x2f",
+    "error": 65.6470588235294
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 227,
+    "opcode": "0xed",
+    "error": 43.9375
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 230,
+    "opcode": "0xfd",
+    "error": 59.733333333333334
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 231,
+    "opcode": "0xfd",
+    "error": 53.333333333333336
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 234,
+    "opcode": "0xed",
+    "error": 36.333333333333336
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 238,
+    "opcode": "0xed",
+    "error": 51.06666666666667
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 239,
+    "opcode": "0xed",
+    "error": 15.0
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 240,
+    "opcode": "0x87",
+    "error": 15.0
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 241,
+    "opcode": "0x8",
+    "error": 15.0
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 242,
+    "opcode": "0x2e",
+    "error": 15.0
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 244,
+    "opcode": "0x2b",
+    "error": 23.533333333333335
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 248,
+    "opcode": "0xc4",
+    "error": 40.53333333333333
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 249,
+    "opcode": "0x87",
+    "error": 40.53333333333333
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 250,
+    "opcode": "0x8",
+    "error": 40.53333333333333
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 251,
+    "opcode": "0x2e",
+    "error": 40.53333333333333
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 253,
+    "opcode": "0x2b",
+    "error": 63.86666666666667
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 257,
+    "opcode": "0xc4",
+    "error": 80.86666666666666
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 259,
+    "opcode": "0x31",
+    "error": 80.86666666666666
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 260,
+    "opcode": "0x30",
+    "error": 80.86666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 472,
+    "opcode": "0x2b",
+    "error": 0.6
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 474,
+    "opcode": "0xf4",
+    "error": 0.6
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 478,
+    "opcode": "0xf4",
+    "error": 0.6229508196721312
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 481,
+    "opcode": "0xf4",
+    "error": 0.5901639344262295
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 485,
+    "opcode": "0xed",
+    "error": 1.1475409836065573
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 487,
+    "opcode": "0xed",
+    "error": 1.1290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 491,
+    "opcode": "0xed",
+    "error": 1.6290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 492,
+    "opcode": "0xed",
+    "error": 1.1290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 495,
+    "opcode": "0x3f",
+    "error": 3.283333333333333
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 498,
+    "opcode": "0xed",
+    "error": 3.283333333333333
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 499,
+    "opcode": "0x3f",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 500,
+    "opcode": "0xe4",
+    "error": 0.6229508196721312
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 503,
+    "opcode": "0xed",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 506,
+    "opcode": "0xed",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 507,
+    "opcode": "0x87",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 509,
+    "opcode": "0x2e",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 510,
+    "opcode": "0x2b",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 511,
+    "opcode": "0x2b",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 514,
+    "opcode": "0xc4",
+    "error": 1.1290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 515,
+    "opcode": "0x87",
+    "error": 1.1290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 516,
+    "opcode": "0x2e",
+    "error": 1.1290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 518,
+    "opcode": "0x2b",
+    "error": 0.65
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 519,
+    "opcode": "0x2b",
+    "error": 0.65
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 522,
+    "opcode": "0xc4",
+    "error": 0.6065573770491803
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 531,
+    "opcode": "0x87",
+    "error": 0.6229508196721312
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 533,
+    "opcode": "0xc4",
+    "error": 0.6229508196721312
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 534,
+    "opcode": "0xc4",
+    "error": 1.6833333333333333
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 536,
+    "opcode": "0xc4",
+    "error": 1.15
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 537,
+    "opcode": "0xc4",
+    "error": 1.15
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 538,
+    "opcode": "0x87",
+    "error": 1.15
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 541,
+    "opcode": "0xc4",
+    "error": 1.15
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 542,
+    "opcode": "0xc4",
+    "error": 1.15
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 544,
+    "opcode": "0xc4",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 545,
+    "opcode": "0xc4",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 546,
+    "opcode": "0x31",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 547,
+    "opcode": "0x30",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 588,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 589,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 590,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 591,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 592,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 593,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 594,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 595,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 596,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 597,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 598,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 599,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 600,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 601,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 602,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 603,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 604,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 605,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 606,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 607,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 608,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 609,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 610,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 611,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 612,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 613,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 614,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 615,
+    "opcode": "0x2b",
+    "error": 1.1666666666666667
+  }
+]

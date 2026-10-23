@@ -1,0 +1,7898 @@
+[
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "!",
+    "mae": 4.0
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "\"",
+    "mae": 3.5833333333333335
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "#",
+    "mae": 4.861111111111111
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "$",
+    "mae": 6.837209302325581
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "%",
+    "mae": 3.617021276595745
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "&",
+    "mae": 9.186046511627907
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "'",
+    "mae": 5.714285714285714
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "(",
+    "mae": 7.923076923076923
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": ")",
+    "mae": 15.92
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "*",
+    "mae": 30.933333333333334
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "+",
+    "mae": 0.3684210526315789
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": ",",
+    "mae": 1.0
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "-",
+    "mae": 0.4
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": ".",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "/",
+    "mae": 6.0476190476190474
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "0",
+    "mae": 4.317073170731708
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "1",
+    "mae": 3.347826086956522
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "2",
+    "mae": 5.407407407407407
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "3",
+    "mae": 3.8181818181818183
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "4",
+    "mae": 2.066666666666667
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "5",
+    "mae": 4.12
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "6",
+    "mae": 4.5625
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "7",
+    "mae": 2.4347826086956523
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "8",
+    "mae": 1.3235294117647058
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "9",
+    "mae": 1.59375
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": ":",
+    "mae": 12.333333333333334
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": ";",
+    "mae": 5.4375
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "<",
+    "mae": 3.933333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "=",
+    "mae": 5.0
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": ">",
+    "mae": 4.866666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "?",
+    "mae": 3.7
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "@",
+    "mae": 5.915254237288136
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "A",
+    "mae": 5.151515151515151
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "B",
+    "mae": 3.891891891891892
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "C",
+    "mae": 7.681818181818182
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "D",
+    "mae": 6.861111111111111
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "E",
+    "mae": 5.037037037037037
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "F",
+    "mae": 2.227272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "G",
+    "mae": 1.96875
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "H",
+    "mae": 7.2
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "I",
+    "mae": 0.2727272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "J",
+    "mae": 0.8181818181818182
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "K",
+    "mae": 6.34375
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "L",
+    "mae": 2.05
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "M",
+    "mae": 2.409090909090909
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "N",
+    "mae": 7.818181818181818
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "O",
+    "mae": 5.891891891891892
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "P",
+    "mae": 0.6333333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "Q",
+    "mae": 5.090909090909091
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "R",
+    "mae": 2.088235294117647
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "S",
+    "mae": 4.928571428571429
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "T",
+    "mae": 1.380952380952381
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "U",
+    "mae": 2.4571428571428573
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "V",
+    "mae": 3.78125
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "W",
+    "mae": 4.386363636363637
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "X",
+    "mae": 9.96774193548387
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "Y",
+    "mae": 2.68
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "Z",
+    "mae": 3.68
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "[",
+    "mae": 4.785714285714286
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "\\",
+    "mae": 2.6842105263157894
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "]",
+    "mae": 0.5714285714285714
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "^",
+    "mae": 19.6
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "_",
+    "mae": 0.125
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "`",
+    "mae": 21.666666666666668
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "a",
+    "mae": 3.3
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "b",
+    "mae": 0.8484848484848485
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "c",
+    "mae": 3.1875
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "d",
+    "mae": 2.7777777777777777
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "e",
+    "mae": 2.7916666666666665
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "f",
+    "mae": 5.44
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "g",
+    "mae": 1.75
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "h",
+    "mae": 2.3225806451612905
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "i",
+    "mae": 3.5
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "j",
+    "mae": 3.3870967741935485
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "k",
+    "mae": 8.96774193548387
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "l",
+    "mae": 1.9583333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "m",
+    "mae": 1.6842105263157894
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "n",
+    "mae": 2.84
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "o",
+    "mae": 3.2333333333333334
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "p",
+    "mae": 2.3636363636363638
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "q",
+    "mae": 3.6666666666666665
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "r",
+    "mae": 4.333333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "s",
+    "mae": 2.6
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "t",
+    "mae": 4.75
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "u",
+    "mae": 2.1481481481481484
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "v",
+    "mae": 4.409090909090909
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "w",
+    "mae": 1.7647058823529411
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "x",
+    "mae": 15.833333333333334
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "y",
+    "mae": 4.413793103448276
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "z",
+    "mae": 3.5
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "{",
+    "mae": 8.892857142857142
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "|",
+    "mae": 0.5
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "}",
+    "mae": 7.925925925925926
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "C",
+    "character": "~",
+    "mae": 1.3529411764705883
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "!",
+    "mae": 0.5555555555555556
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "\"",
+    "mae": 0.3333333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "#",
+    "mae": 0.3333333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "$",
+    "mae": 1.5714285714285714
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "%",
+    "mae": 2.7872340425531914
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "&",
+    "mae": 2.0714285714285716
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "'",
+    "mae": 0.5714285714285714
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "(",
+    "mae": 2.24
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ")",
+    "mae": 4.458333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "*",
+    "mae": 27.333333333333332
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "+",
+    "mae": 0.3684210526315789
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ",",
+    "mae": 2.3636363636363638
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "-",
+    "mae": 0.4
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ".",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "/",
+    "mae": 5.142857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "0",
+    "mae": 0.4878048780487805
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "1",
+    "mae": 1.173913043478261
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "2",
+    "mae": 1.037037037037037
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "3",
+    "mae": 1.2727272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "4",
+    "mae": 0.4
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "5",
+    "mae": 0.28
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "6",
+    "mae": 2.03125
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "7",
+    "mae": 2.0434782608695654
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "8",
+    "mae": 0.3235294117647059
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "9",
+    "mae": 0.4375
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ":",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ";",
+    "mae": 0.5
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "<",
+    "mae": 2.533333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "=",
+    "mae": 0.2857142857142857
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ">",
+    "mae": 2.933333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "?",
+    "mae": 0.4
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "@",
+    "mae": 1.6271186440677967
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "A",
+    "mae": 3.1818181818181817
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "B",
+    "mae": 1.4324324324324325
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "C",
+    "mae": 0.2727272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "D",
+    "mae": 0.4166666666666667
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "E",
+    "mae": 0.25925925925925924
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "F",
+    "mae": 0.2727272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "G",
+    "mae": 0.34375
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "H",
+    "mae": 0.45714285714285713
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "I",
+    "mae": 0.2727272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "J",
+    "mae": 0.36363636363636365
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "K",
+    "mae": 5.875
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "L",
+    "mae": 0.45
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "M",
+    "mae": 0.6363636363636364
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "N",
+    "mae": 0.5227272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "O",
+    "mae": 0.5
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "P",
+    "mae": 0.43333333333333335
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "Q",
+    "mae": 2.227272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "R",
+    "mae": 0.9411764705882353
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "S",
+    "mae": 0.4074074074074074
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "T",
+    "mae": 0.42857142857142855
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "U",
+    "mae": 0.5142857142857142
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "V",
+    "mae": 1.53125
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "W",
+    "mae": 0.5909090909090909
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "X",
+    "mae": 8.903225806451612
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "Y",
+    "mae": 2.44
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "Z",
+    "mae": 1.92
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "[",
+    "mae": 0.42857142857142855
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "\\",
+    "mae": 1.3157894736842106
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "]",
+    "mae": 0.42857142857142855
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "^",
+    "mae": 20.133333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "_",
+    "mae": 0.125
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "`",
+    "mae": 21.666666666666668
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "a",
+    "mae": 0.3793103448275862
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "b",
+    "mae": 1.606060606060606
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "c",
+    "mae": 0.125
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "d",
+    "mae": 0.4722222222222222
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "e",
+    "mae": 0.3333333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "f",
+    "mae": 2.64
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "g",
+    "mae": 0.275
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "h",
+    "mae": 1.064516129032258
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "i",
+    "mae": 1.4166666666666667
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "j",
+    "mae": 0.4838709677419355
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "k",
+    "mae": 7.032258064516129
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "l",
+    "mae": 0.375
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "m",
+    "mae": 0.47368421052631576
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "n",
+    "mae": 0.4
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "o",
+    "mae": 0.5333333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "p",
+    "mae": 0.3939393939393939
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "q",
+    "mae": 0.4722222222222222
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "r",
+    "mae": 0.3888888888888889
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "s",
+    "mae": 1.75
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "t",
+    "mae": 0.375
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "u",
+    "mae": 0.48148148148148145
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "v",
+    "mae": 3.227272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "w",
+    "mae": 0.5294117647058824
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "x",
+    "mae": 14.875
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "y",
+    "mae": 1.2413793103448276
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "z",
+    "mae": 0.2777777777777778
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "{",
+    "mae": 1.1851851851851851
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "|",
+    "mae": 0.5
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "}",
+    "mae": 2.5185185185185186
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "~",
+    "mae": 0.5294117647058824
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "!",
+    "mae": 30.678571428571427
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "\"",
+    "mae": 46.76190476190476
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "#",
+    "mae": 25.88095238095238
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "$",
+    "mae": 30.839285714285715
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "%",
+    "mae": 43.16393442622951
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "&",
+    "mae": 20.728813559322035
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "'",
+    "mae": 39.92857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "(",
+    "mae": 37.833333333333336
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ")",
+    "mae": 39.857142857142854
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "*",
+    "mae": 46.46666666666667
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "+",
+    "mae": 34.208333333333336
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ",",
+    "mae": 18.6
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "-",
+    "mae": 47.4
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ".",
+    "mae": 19.714285714285715
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "/",
+    "mae": 34.03333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "0",
+    "mae": 30.24137931034483
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "1",
+    "mae": 25.06451612903226
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "2",
+    "mae": 41.945945945945944
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "3",
+    "mae": 56.61538461538461
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "4",
+    "mae": 37.19512195121951
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "5",
+    "mae": 53.02564102564103
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "6",
+    "mae": 32.5531914893617
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "7",
+    "mae": 60.71875
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "8",
+    "mae": 44.56896551724138
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "9",
+    "mae": 38.869565217391305
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ":",
+    "mae": 25.0
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ";",
+    "mae": 20.272727272727273
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "<",
+    "mae": 30.72
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "=",
+    "mae": 43.285714285714285
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ">",
+    "mae": 32.7037037037037
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "?",
+    "mae": 42.064516129032256
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "@",
+    "mae": 41.714285714285715
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "A",
+    "mae": 36.15909090909091
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "B",
+    "mae": 44.22222222222222
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "C",
+    "mae": 40.1219512195122
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "D",
+    "mae": 37.55555555555556
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "E",
+    "mae": 60.97142857142857
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "F",
+    "mae": 74.23333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "G",
+    "mae": 44.01923076923077
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "H",
+    "mae": 39.92857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "I",
+    "mae": 50.4
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "J",
+    "mae": 50.774193548387096
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "K",
+    "mae": 32.62
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "L",
+    "mae": 19.772727272727273
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "M",
+    "mae": 29.90740740740741
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "N",
+    "mae": 27.09433962264151
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "O",
+    "mae": 31.08
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "P",
+    "mae": 38.44736842105263
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "Q",
+    "mae": 32.05084745762712
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "R",
+    "mae": 42.044444444444444
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "S",
+    "mae": 43.84444444444444
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "T",
+    "mae": 64.46428571428571
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "U",
+    "mae": 26.547619047619047
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "V",
+    "mae": 36.92307692307692
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "W",
+    "mae": 25.46
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "X",
+    "mae": 38.54545454545455
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "Y",
+    "mae": 42.65714285714286
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "Z",
+    "mae": 54.027027027027025
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "[",
+    "mae": 49.85294117647059
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "\\",
+    "mae": 32.464285714285715
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "]",
+    "mae": 48.76470588235294
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "^",
+    "mae": 40.416666666666664
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "_",
+    "mae": 69.8125
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "`",
+    "mae": 96.55555555555556
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "a",
+    "mae": 27.475
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "b",
+    "mae": 14.738095238095237
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "c",
+    "mae": 16.0
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "d",
+    "mae": 12.56
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "e",
+    "mae": 33.4390243902439
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "f",
+    "mae": 72.36111111111111
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "g",
+    "mae": 24.862745098039216
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "h",
+    "mae": 11.621621621621621
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "i",
+    "mae": 30.51851851851852
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "j",
+    "mae": 38.44736842105263
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "k",
+    "mae": 23.166666666666668
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "l",
+    "mae": 38.857142857142854
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "m",
+    "mae": 13.642857142857142
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "n",
+    "mae": 7.620689655172414
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "o",
+    "mae": 10.972222222222221
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "p",
+    "mae": 11.64102564102564
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "q",
+    "mae": 10.12
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "r",
+    "mae": 16.041666666666668
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "s",
+    "mae": 19.875
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "t",
+    "mae": 24.448275862068964
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "u",
+    "mae": 7.0
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "v",
+    "mae": 17.692307692307693
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "w",
+    "mae": 14.38888888888889
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "x",
+    "mae": 21.266666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "y",
+    "mae": 22.62162162162162
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "z",
+    "mae": 24.217391304347824
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "{",
+    "mae": 43.94444444444444
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "|",
+    "mae": 19.6
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "}",
+    "mae": 44.885714285714286
+  },
+  {
+    "font": "consolas",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "~",
+    "mae": 49.5
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "!",
+    "mae": 67.6969696969697
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "\"",
+    "mae": 7.1
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "#",
+    "mae": 6.56140350877193
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "$",
+    "mae": 50.86440677966102
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "%",
+    "mae": 4.3
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "&",
+    "mae": 9.514705882352942
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "'",
+    "mae": 0.9090909090909091
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "(",
+    "mae": 7.625
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": ")",
+    "mae": 9.86111111111111
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "*",
+    "mae": 19.419354838709676
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "+",
+    "mae": 18.11111111111111
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": ",",
+    "mae": 2.375
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "-",
+    "mae": 7.5
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": ".",
+    "mae": 5.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "/",
+    "mae": 2.2
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "0",
+    "mae": 4.354838709677419
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "1",
+    "mae": 67.96969696969697
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "2",
+    "mae": 39.87179487179487
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "3",
+    "mae": 2.5277777777777777
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "4",
+    "mae": 9.963636363636363
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "5",
+    "mae": 40.189189189189186
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "6",
+    "mae": 3.5714285714285716
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "7",
+    "mae": 1.7878787878787878
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "8",
+    "mae": 68.47540983606558
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "9",
+    "mae": 5.32
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": ":",
+    "mae": 5.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": ";",
+    "mae": 3.0454545454545454
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "<",
+    "mae": 6.04
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "=",
+    "mae": 0.875
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": ">",
+    "mae": 6.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "?",
+    "mae": 42.206896551724135
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "@",
+    "mae": 4.136363636363637
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "A",
+    "mae": 5.716981132075472
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "B",
+    "mae": 3.4150943396226414
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "C",
+    "mae": 48.22222222222222
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "D",
+    "mae": 35.01587301587302
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "E",
+    "mae": 1.2
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "F",
+    "mae": 1.5853658536585367
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "G",
+    "mae": 32.166666666666664
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "H",
+    "mae": 5.372881355932203
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "I",
+    "mae": 0.9024390243902439
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "J",
+    "mae": 10.384615384615385
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "K",
+    "mae": 4.795918367346939
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "L",
+    "mae": 1.894736842105263
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "M",
+    "mae": 6.484848484848484
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "N",
+    "mae": 4.434782608695652
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "O",
+    "mae": 4.788461538461538
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "P",
+    "mae": 34.97727272727273
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "Q",
+    "mae": 75.73239436619718
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "R",
+    "mae": 51.45614035087719
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "S",
+    "mae": 61.214285714285715
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "T",
+    "mae": 1.6666666666666667
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "U",
+    "mae": 5.314814814814815
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "V",
+    "mae": 2.5384615384615383
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "W",
+    "mae": 2.2058823529411766
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "X",
+    "mae": 6.333333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "Y",
+    "mae": 31.133333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "Z",
+    "mae": 2.1578947368421053
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "[",
+    "mae": 1.1020408163265305
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "\\",
+    "mae": 3.46875
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "]",
+    "mae": 10.25
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "^",
+    "mae": 6.65
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "_",
+    "mae": 0.2
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "`",
+    "mae": 36.42857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "a",
+    "mae": 18.7027027027027
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "b",
+    "mae": 3.02
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "c",
+    "mae": 6.76
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "d",
+    "mae": 2.8260869565217392
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "e",
+    "mae": 63.292682926829265
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "f",
+    "mae": 7.142857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "g",
+    "mae": 24.228070175438596
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "h",
+    "mae": 2.977272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "i",
+    "mae": 2.5483870967741935
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "j",
+    "mae": 0.3611111111111111
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "k",
+    "mae": 29.282608695652176
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "l",
+    "mae": 1.696969696969697
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "m",
+    "mae": 10.983333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "n",
+    "mae": 2.9166666666666665
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "o",
+    "mae": 3.3658536585365852
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "p",
+    "mae": 3.872340425531915
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "q",
+    "mae": 2.5
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "r",
+    "mae": 1.6666666666666667
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "s",
+    "mae": 4.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "t",
+    "mae": 3.1794871794871793
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "u",
+    "mae": 1.6944444444444444
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "v",
+    "mae": 9.88888888888889
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "w",
+    "mae": 1.6458333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "x",
+    "mae": 12.658536585365853
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "y",
+    "mae": 3.697674418604651
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "z",
+    "mae": 0.7142857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "{",
+    "mae": 6.7368421052631575
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "|",
+    "mae": 1.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "}",
+    "mae": 6.864864864864865
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "C",
+    "character": "~",
+    "mae": 1.263157894736842
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "!",
+    "mae": 1.5517241379310345
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "\"",
+    "mae": 0.35
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "#",
+    "mae": 0.3392857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "$",
+    "mae": 1.0526315789473684
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "%",
+    "mae": 2.157142857142857
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "&",
+    "mae": 1.6818181818181819
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "'",
+    "mae": 0.36363636363636365
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "(",
+    "mae": 3.871794871794872
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ")",
+    "mae": 2.4444444444444446
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "*",
+    "mae": 17.096774193548388
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "+",
+    "mae": 18.037037037037038
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ",",
+    "mae": 1.6875
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "-",
+    "mae": 0.16666666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ".",
+    "mae": 0.16666666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "/",
+    "mae": 1.5333333333333334
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "0",
+    "mae": 0.9032258064516129
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "1",
+    "mae": 1.9696969696969697
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "2",
+    "mae": 1.3846153846153846
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "3",
+    "mae": 0.3888888888888889
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "4",
+    "mae": 0.45454545454545453
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "5",
+    "mae": 0.35135135135135137
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "6",
+    "mae": 0.9795918367346939
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "7",
+    "mae": 0.8484848484848485
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "8",
+    "mae": 0.625
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "9",
+    "mae": 0.4489795918367347
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ":",
+    "mae": 4.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ";",
+    "mae": 2.1363636363636362
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "<",
+    "mae": 4.6
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "=",
+    "mae": 0.125
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ">",
+    "mae": 5.72
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "?",
+    "mae": 0.8620689655172413
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "@",
+    "mae": 0.3977272727272727
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "A",
+    "mae": 0.4339622641509434
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "B",
+    "mae": 0.1320754716981132
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "C",
+    "mae": 0.3888888888888889
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "D",
+    "mae": 0.46774193548387094
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "E",
+    "mae": 0.4222222222222222
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "F",
+    "mae": 0.4878048780487805
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "G",
+    "mae": 0.7547169811320755
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "H",
+    "mae": 0.5423728813559322
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "I",
+    "mae": 0.43902439024390244
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "J",
+    "mae": 0.5128205128205128
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "K",
+    "mae": 3.061224489795918
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "L",
+    "mae": 0.5789473684210527
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "M",
+    "mae": 5.696969696969697
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "N",
+    "mae": 0.5217391304347826
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "O",
+    "mae": 0.36538461538461536
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "P",
+    "mae": 0.16279069767441862
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "Q",
+    "mae": 1.6923076923076923
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "R",
+    "mae": 0.5370370370370371
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "S",
+    "mae": 2.1463414634146343
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "T",
+    "mae": 0.5384615384615384
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "U",
+    "mae": 0.5
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "V",
+    "mae": 1.4807692307692308
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "W",
+    "mae": 0.45588235294117646
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "X",
+    "mae": 5.425925925925926
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "Y",
+    "mae": 2.7333333333333334
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "Z",
+    "mae": 0.7894736842105263
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "[",
+    "mae": 0.5714285714285714
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "\\",
+    "mae": 2.25
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "]",
+    "mae": 0.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "^",
+    "mae": 5.55
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "_",
+    "mae": 0.1
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "`",
+    "mae": 36.857142857142854
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "a",
+    "mae": 0.6756756756756757
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "b",
+    "mae": 0.24
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "c",
+    "mae": 1.72
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "d",
+    "mae": 0.34782608695652173
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "e",
+    "mae": 0.3055555555555556
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "f",
+    "mae": 0.17142857142857143
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "g",
+    "mae": 0.2857142857142857
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "h",
+    "mae": 0.8409090909090909
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "i",
+    "mae": 1.064516129032258
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "j",
+    "mae": 0.3611111111111111
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "k",
+    "mae": 4.826086956521739
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "l",
+    "mae": 0.06060606060606061
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "m",
+    "mae": 0.3898305084745763
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "n",
+    "mae": 0.2222222222222222
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "o",
+    "mae": 0.43902439024390244
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "p",
+    "mae": 0.1956521739130435
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "q",
+    "mae": 0.3181818181818182
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "r",
+    "mae": 0.5454545454545454
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "s",
+    "mae": 0.3
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "t",
+    "mae": 0.8974358974358975
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "u",
+    "mae": 0.25
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "v",
+    "mae": 9.222222222222221
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "w",
+    "mae": 0.375
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "x",
+    "mae": 12.804878048780488
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "y",
+    "mae": 1.5813953488372092
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "z",
+    "mae": 0.32142857142857145
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "{",
+    "mae": 1.25
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "|",
+    "mae": 0.5
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "}",
+    "mae": 0.7567567567567568
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "~",
+    "mae": 0.42105263157894735
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "!",
+    "mae": 9.676470588235293
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "\"",
+    "mae": 32.041666666666664
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "#",
+    "mae": 18.72463768115942
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "$",
+    "mae": 34.78666666666667
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "%",
+    "mae": 23.674418604651162
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "&",
+    "mae": 38.22352941176471
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "'",
+    "mae": 25.666666666666668
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "(",
+    "mae": 25.183673469387756
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ")",
+    "mae": 22.4
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "*",
+    "mae": 55.5609756097561
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "+",
+    "mae": 29.71794871794872
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ",",
+    "mae": 38.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "-",
+    "mae": 46.166666666666664
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ".",
+    "mae": 34.90909090909091
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "/",
+    "mae": 11.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "0",
+    "mae": 23.048192771084338
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "1",
+    "mae": 24.266666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "2",
+    "mae": 27.24074074074074
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "3",
+    "mae": 30.516129032258064
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "4",
+    "mae": 28.936507936507937
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "5",
+    "mae": 49.7
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "6",
+    "mae": 42.84848484848485
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "7",
+    "mae": 30.044444444444444
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "8",
+    "mae": 24.5
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "9",
+    "mae": 24.985294117647058
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ":",
+    "mae": 21.863636363636363
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ";",
+    "mae": 33.8125
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "<",
+    "mae": 26.294117647058822
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "=",
+    "mae": 73.6875
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ">",
+    "mae": 27.02777777777778
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "?",
+    "mae": 47.116279069767444
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "@",
+    "mae": 38.88495575221239
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "A",
+    "mae": 29.183333333333334
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "B",
+    "mae": 25.205882352941178
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "C",
+    "mae": 30.473684210526315
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "D",
+    "mae": 24.73611111111111
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "E",
+    "mae": 26.42105263157895
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "F",
+    "mae": 34.857142857142854
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "G",
+    "mae": 28.44736842105263
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "H",
+    "mae": 12.053333333333333
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "I",
+    "mae": 25.081632653061224
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "J",
+    "mae": 24.41176470588235
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "K",
+    "mae": 11.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "L",
+    "mae": 16.6046511627907
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "M",
+    "mae": 18.095890410958905
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "N",
+    "mae": 16.61904761904762
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "O",
+    "mae": 22.972602739726028
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "P",
+    "mae": 25.59259259259259
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "Q",
+    "mae": 22.094117647058823
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "R",
+    "mae": 24.901639344262296
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "S",
+    "mae": 34.87692307692308
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "T",
+    "mae": 26.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "U",
+    "mae": 10.38888888888889
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "V",
+    "mae": 6.685185185185185
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "W",
+    "mae": 9.887323943661972
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "X",
+    "mae": 15.26984126984127
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "Y",
+    "mae": 15.470588235294118
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "Z",
+    "mae": 39.578947368421055
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "[",
+    "mae": 16.694915254237287
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "\\",
+    "mae": 11.64102564102564
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "]",
+    "mae": 29.434782608695652
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "^",
+    "mae": 50.93103448275862
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "_",
+    "mae": 71.5
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "`",
+    "mae": 54.81818181818182
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "a",
+    "mae": 31.566037735849058
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "b",
+    "mae": 15.4375
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "c",
+    "mae": 27.952380952380953
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "d",
+    "mae": 14.830508474576272
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "e",
+    "mae": 29.816666666666666
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "f",
+    "mae": 32.82608695652174
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "g",
+    "mae": 31.329268292682926
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "h",
+    "mae": 11.75
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "i",
+    "mae": 17.162790697674417
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "j",
+    "mae": 30.76
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "k",
+    "mae": 15.509803921568627
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "l",
+    "mae": 15.714285714285714
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "m",
+    "mae": 16.421875
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "n",
+    "mae": 12.375
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "o",
+    "mae": 16.724137931034484
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "p",
+    "mae": 18.390625
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "q",
+    "mae": 17.0
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "r",
+    "mae": 9.731707317073171
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "s",
+    "mae": 23.096153846153847
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "t",
+    "mae": 15.553571428571429
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "u",
+    "mae": 10.6875
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "v",
+    "mae": 13.24390243902439
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "w",
+    "mae": 12.928571428571429
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "x",
+    "mae": 16.456521739130434
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "y",
+    "mae": 24.6
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "z",
+    "mae": 28.25581395348837
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "{",
+    "mae": 22.736842105263158
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "|",
+    "mae": 7.462962962962963
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "}",
+    "mae": 22.28846153846154
+  },
+  {
+    "font": "consolas",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "~",
+    "mae": 27.88
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "!",
+    "mae": 11.25
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "\"",
+    "mae": 23.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "#",
+    "mae": 4.257142857142857
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "$",
+    "mae": 4.6
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "%",
+    "mae": 7.901960784313726
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "&",
+    "mae": 3.72
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "'",
+    "mae": 0.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "(",
+    "mae": 11.590909090909092
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": ")",
+    "mae": 15.238095238095237
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "*",
+    "mae": 11.615384615384615
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "+",
+    "mae": 1.8461538461538463
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": ",",
+    "mae": 1.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "-",
+    "mae": 0.6
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": ".",
+    "mae": 27.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "/",
+    "mae": 10.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "0",
+    "mae": 17.324324324324323
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "1",
+    "mae": 3.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "2",
+    "mae": 10.25
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "3",
+    "mae": 6.115384615384615
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "4",
+    "mae": 8.03125
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "5",
+    "mae": 5.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "6",
+    "mae": 2.108108108108108
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "7",
+    "mae": 2.9545454545454546
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "8",
+    "mae": 1.4054054054054055
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "9",
+    "mae": 2.0555555555555554
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": ":",
+    "mae": 27.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": ";",
+    "mae": 14.25
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "<",
+    "mae": 20.625
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "=",
+    "mae": 3.7142857142857144
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": ">",
+    "mae": 15.4375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "?",
+    "mae": 23.8
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "@",
+    "mae": 11.690140845070422
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "A",
+    "mae": 3.972972972972973
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "B",
+    "mae": 6.4
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "C",
+    "mae": 19.06896551724138
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "D",
+    "mae": 9.609756097560975
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "E",
+    "mae": 3.259259259259259
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "F",
+    "mae": 3.7916666666666665
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "G",
+    "mae": 9.921052631578947
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "H",
+    "mae": 1.935483870967742
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "I",
+    "mae": 3.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "J",
+    "mae": 5.35
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "K",
+    "mae": 8.025641025641026
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "L",
+    "mae": 3.5238095238095237
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "M",
+    "mae": 2.7704918032786887
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "N",
+    "mae": 2.94
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "O",
+    "mae": 13.627906976744185
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "P",
+    "mae": 7.53125
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "Q",
+    "mae": 12.404255319148936
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "R",
+    "mae": 9.18421052631579
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "S",
+    "mae": 7.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "T",
+    "mae": 1.8695652173913044
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "U",
+    "mae": 11.974358974358974
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "V",
+    "mae": 3.3529411764705883
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "W",
+    "mae": 2.8870967741935485
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "X",
+    "mae": 11.405405405405405
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "Y",
+    "mae": 2.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "Z",
+    "mae": 5.933333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "[",
+    "mae": 2.5833333333333335
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "\\",
+    "mae": 4.666666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "]",
+    "mae": 3.8333333333333335
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "^",
+    "mae": 9.875
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "_",
+    "mae": 0.3333333333333333
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "`",
+    "mae": 27.75
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "a",
+    "mae": 14.148148148148149
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "b",
+    "mae": 6.166666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "c",
+    "mae": 8.2
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "d",
+    "mae": 9.157894736842104
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "e",
+    "mae": 9.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "f",
+    "mae": 1.608695652173913
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "g",
+    "mae": 13.738095238095237
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "h",
+    "mae": 6.285714285714286
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "i",
+    "mae": 5.8125
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "j",
+    "mae": 9.166666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "k",
+    "mae": 6.457142857142857
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "l",
+    "mae": 0.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "m",
+    "mae": 12.065217391304348
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "n",
+    "mae": 3.4482758620689653
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "o",
+    "mae": 9.357142857142858
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "p",
+    "mae": 6.166666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "q",
+    "mae": 8.789473684210526
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "r",
+    "mae": 2.375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "s",
+    "mae": 4.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "t",
+    "mae": 6.217391304347826
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "u",
+    "mae": 16.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "v",
+    "mae": 3.6153846153846154
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "w",
+    "mae": 6.295454545454546
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "x",
+    "mae": 12.461538461538462
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "y",
+    "mae": 3.59375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "z",
+    "mae": 1.8571428571428572
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "{",
+    "mae": 4.136363636363637
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "|",
+    "mae": 2.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "}",
+    "mae": 7.863636363636363
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "C",
+    "character": "~",
+    "mae": 13.833333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "!",
+    "mae": 2.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "\"",
+    "mae": 5.666666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "#",
+    "mae": 0.4
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "$",
+    "mae": 0.7428571428571429
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "%",
+    "mae": 9.636363636363637
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "&",
+    "mae": 1.54
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "'",
+    "mae": 0.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "(",
+    "mae": 4.863636363636363
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ")",
+    "mae": 4.2105263157894735
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "*",
+    "mae": 8.846153846153847
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "+",
+    "mae": 0.15384615384615385
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ",",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "-",
+    "mae": 0.4
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ".",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "/",
+    "mae": 5.0476190476190474
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "0",
+    "mae": 0.4594594594594595
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "1",
+    "mae": 2.95
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "2",
+    "mae": 7.642857142857143
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "3",
+    "mae": 1.7307692307692308
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "4",
+    "mae": 0.40625
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "5",
+    "mae": 0.3076923076923077
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "6",
+    "mae": 0.4594594594594595
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "7",
+    "mae": 0.4090909090909091
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "8",
+    "mae": 0.43243243243243246
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "9",
+    "mae": 0.9166666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ":",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ";",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "<",
+    "mae": 15.5625
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "=",
+    "mae": 0.2857142857142857
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": ">",
+    "mae": 16.5625
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "?",
+    "mae": 9.25
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "@",
+    "mae": 0.4264705882352941
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "A",
+    "mae": 2.945945945945946
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "B",
+    "mae": 0.358974358974359
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "C",
+    "mae": 4.551724137931035
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "D",
+    "mae": 0.375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "E",
+    "mae": 0.2222222222222222
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "F",
+    "mae": 0.2916666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "G",
+    "mae": 0.39473684210526316
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "H",
+    "mae": 0.25806451612903225
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "I",
+    "mae": 0.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "J",
+    "mae": 0.47368421052631576
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "K",
+    "mae": 5.641025641025641
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "L",
+    "mae": 0.38095238095238093
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "M",
+    "mae": 0.47540983606557374
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "N",
+    "mae": 0.6122448979591837
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "O",
+    "mae": 0.4883720930232558
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "P",
+    "mae": 2.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "Q",
+    "mae": 2.74468085106383
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "R",
+    "mae": 8.421052631578947
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "S",
+    "mae": 0.36666666666666664
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "T",
+    "mae": 0.391304347826087
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "U",
+    "mae": 0.4594594594594595
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "V",
+    "mae": 0.9705882352941176
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "W",
+    "mae": 0.7419354838709677
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "X",
+    "mae": 6.621621621621622
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "Y",
+    "mae": 1.6785714285714286
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "Z",
+    "mae": 5.066666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "[",
+    "mae": 0.375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "\\",
+    "mae": 3.7142857142857144
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "]",
+    "mae": 0.375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "^",
+    "mae": 8.0625
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "_",
+    "mae": 0.16666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "`",
+    "mae": 26.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "a",
+    "mae": 1.8518518518518519
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "b",
+    "mae": 6.277777777777778
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "c",
+    "mae": 0.45
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "d",
+    "mae": 7.184210526315789
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "e",
+    "mae": 0.35714285714285715
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "f",
+    "mae": 0.391304347826087
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "g",
+    "mae": 6.619047619047619
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "h",
+    "mae": 0.8857142857142857
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "i",
+    "mae": 0.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "j",
+    "mae": 0.4782608695652174
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "k",
+    "mae": 6.228571428571429
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "l",
+    "mae": 0.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "m",
+    "mae": 13.106382978723405
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "n",
+    "mae": 0.9655172413793104
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "o",
+    "mae": 0.32142857142857145
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "p",
+    "mae": 6.277777777777778
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "q",
+    "mae": 6.7631578947368425
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "r",
+    "mae": 1.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "s",
+    "mae": 0.4
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "t",
+    "mae": 0.43478260869565216
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "u",
+    "mae": 1.0333333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "v",
+    "mae": 2.3461538461538463
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "w",
+    "mae": 0.9090909090909091
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "x",
+    "mae": 9.26923076923077
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "y",
+    "mae": 0.46875
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "z",
+    "mae": 0.2857142857142857
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "{",
+    "mae": 0.4090909090909091
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "|",
+    "mae": 0.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "}",
+    "mae": 0.45454545454545453
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "refined-D",
+    "character": "~",
+    "mae": 7.583333333333333
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "!",
+    "mae": 21.8
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "\"",
+    "mae": 42.55555555555556
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "#",
+    "mae": 30.3
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "$",
+    "mae": 30.34090909090909
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "%",
+    "mae": 33.74647887323944
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "&",
+    "mae": 29.041666666666668
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "'",
+    "mae": 50.333333333333336
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "(",
+    "mae": 20.4
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ")",
+    "mae": 18.08
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "*",
+    "mae": 24.928571428571427
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "+",
+    "mae": 58.55
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ",",
+    "mae": 41.125
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "-",
+    "mae": 97.4
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ".",
+    "mae": 40.42857142857143
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "/",
+    "mae": 24.076923076923077
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "0",
+    "mae": 19.96078431372549
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "1",
+    "mae": 18.91304347826087
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "2",
+    "mae": 29.41025641025641
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "3",
+    "mae": 47.833333333333336
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "4",
+    "mae": 33.92307692307692
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "5",
+    "mae": 22.583333333333332
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "6",
+    "mae": 19.367346938775512
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "7",
+    "mae": 28.2
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "8",
+    "mae": 48.925925925925924
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "9",
+    "mae": 42.17307692307692
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ":",
+    "mae": 40.42857142857143
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ";",
+    "mae": 40.333333333333336
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "<",
+    "mae": 46.46153846153846
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "=",
+    "mae": 19.19047619047619
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": ">",
+    "mae": 42.851851851851855
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "?",
+    "mae": 35.375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "@",
+    "mae": 35.08988764044944
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "A",
+    "mae": 31.181818181818183
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "B",
+    "mae": 27.80851063829787
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "C",
+    "mae": 36.61904761904762
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "D",
+    "mae": 19.085106382978722
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "E",
+    "mae": 27.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "F",
+    "mae": 26.14814814814815
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "G",
+    "mae": 27.576923076923077
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "H",
+    "mae": 24.19607843137255
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "I",
+    "mae": 2.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "J",
+    "mae": 11.869565217391305
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "K",
+    "mae": 19.953488372093023
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "L",
+    "mae": 4.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "M",
+    "mae": 12.196969696969697
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "N",
+    "mae": 9.384615384615385
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "O",
+    "mae": 24.949152542372882
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "P",
+    "mae": 40.189189189189186
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "Q",
+    "mae": 26.850746268656717
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "R",
+    "mae": 15.933333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "S",
+    "mae": 37.422222222222224
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "T",
+    "mae": 12.565217391304348
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "U",
+    "mae": 15.571428571428571
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "V",
+    "mae": 7.17948717948718
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "W",
+    "mae": 9.594202898550725
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "X",
+    "mae": 26.77777777777778
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "Y",
+    "mae": 29.9375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "Z",
+    "mae": 17.102564102564102
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "[",
+    "mae": 14.62962962962963
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "\\",
+    "mae": 22.692307692307693
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "]",
+    "mae": 12.703703703703704
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "^",
+    "mae": 30.45
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "_",
+    "mae": 28.5
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "`",
+    "mae": 34.333333333333336
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "a",
+    "mae": 20.536585365853657
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "b",
+    "mae": 13.177777777777777
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "c",
+    "mae": 19.903225806451612
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "d",
+    "mae": 16.755555555555556
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "e",
+    "mae": 22.452380952380953
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "f",
+    "mae": 17.73076923076923
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "g",
+    "mae": 18.92452830188679
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "h",
+    "mae": 14.923076923076923
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "i",
+    "mae": 30.42105263157895
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "j",
+    "mae": 23.366666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "k",
+    "mae": 15.594594594594595
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "l",
+    "mae": 13.15
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "m",
+    "mae": 17.9811320754717
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "n",
+    "mae": 10.970588235294118
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "o",
+    "mae": 14.375
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "p",
+    "mae": 11.377777777777778
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "q",
+    "mae": 14.844444444444445
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "r",
+    "mae": 9.55
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "s",
+    "mae": 20.735294117647058
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "t",
+    "mae": 15.64
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "u",
+    "mae": 11.323529411764707
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "v",
+    "mae": 8.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "w",
+    "mae": 8.326530612244898
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "x",
+    "mae": 11.333333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "y",
+    "mae": 11.23076923076923
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "z",
+    "mae": 12.26923076923077
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "{",
+    "mae": 24.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "|",
+    "mae": 21.77777777777778
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "}",
+    "mae": 28.0
+  },
+  {
+    "font": "segoe",
+    "size": 13,
+    "profile": "unhinted",
+    "character": "~",
+    "mae": 17.833333333333332
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "!",
+    "mae": 14.090909090909092
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "\"",
+    "mae": 10.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "#",
+    "mae": 3.2641509433962264
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "$",
+    "mae": 7.046153846153846
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "%",
+    "mae": 10.441558441558442
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "&",
+    "mae": 6.2894736842105265
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "'",
+    "mae": 1.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "(",
+    "mae": 22.181818181818183
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": ")",
+    "mae": 18.066666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "*",
+    "mae": 12.238095238095237
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "+",
+    "mae": 1.619047619047619
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": ",",
+    "mae": 1.3333333333333333
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "-",
+    "mae": 1.4
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": ".",
+    "mae": 53.5
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "/",
+    "mae": 3.774193548387097
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "0",
+    "mae": 11.629032258064516
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "1",
+    "mae": 15.024390243902438
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "2",
+    "mae": 2.9
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "3",
+    "mae": 16.73170731707317
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "4",
+    "mae": 2.8
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "5",
+    "mae": 2.2325581395348837
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "6",
+    "mae": 4.520833333333333
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "7",
+    "mae": 1.3529411764705883
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "8",
+    "mae": 6.557377049180328
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "9",
+    "mae": 4.872727272727273
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": ":",
+    "mae": 48.75
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": ";",
+    "mae": 14.461538461538462
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "<",
+    "mae": 2.6956521739130435
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "=",
+    "mae": 0.4444444444444444
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": ">",
+    "mae": 2.75
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "?",
+    "mae": 21.555555555555557
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "@",
+    "mae": 12.504950495049505
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "A",
+    "mae": 5.648148148148148
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "B",
+    "mae": 5.0344827586206895
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "C",
+    "mae": 12.772727272727273
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "D",
+    "mae": 5.824561403508772
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "E",
+    "mae": 1.1282051282051282
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "F",
+    "mae": 1.2941176470588236
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "G",
+    "mae": 13.321428571428571
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "H",
+    "mae": 1.6296296296296295
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "I",
+    "mae": 2.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "J",
+    "mae": 16.307692307692307
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "K",
+    "mae": 5.535714285714286
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "L",
+    "mae": 1.6206896551724137
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "M",
+    "mae": 2.880434782608696
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "N",
+    "mae": 3.1566265060240966
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "O",
+    "mae": 9.885245901639344
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "P",
+    "mae": 6.5227272727272725
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "Q",
+    "mae": 12.235294117647058
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "R",
+    "mae": 3.3214285714285716
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "S",
+    "mae": 7.162790697674419
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "T",
+    "mae": 1.5714285714285714
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "U",
+    "mae": 6.935483870967742
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "V",
+    "mae": 2.5576923076923075
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "W",
+    "mae": 1.7157894736842105
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "X",
+    "mae": 5.637931034482759
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "Y",
+    "mae": 2.3777777777777778
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "Z",
+    "mae": 3.4
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "[",
+    "mae": 1.0588235294117647
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "\\",
+    "mae": 4.172413793103448
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "]",
+    "mae": 12.147058823529411
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "^",
+    "mae": 6.36
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "_",
+    "mae": 6.125
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "`",
+    "mae": 18.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "a",
+    "mae": 7.266666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "b",
+    "mae": 7.827586206896552
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "c",
+    "mae": 14.575757575757576
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "d",
+    "mae": 6.706896551724138
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "e",
+    "mae": 8.804347826086957
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "f",
+    "mae": 3.3333333333333335
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "g",
+    "mae": 8.2
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "h",
+    "mae": 3.5714285714285716
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "i",
+    "mae": 6.818181818181818
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "j",
+    "mae": 11.303030303030303
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "k",
+    "mae": 5.081632653061225
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "l",
+    "mae": 2.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "m",
+    "mae": 28.064935064935064
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "n",
+    "mae": 4.804878048780488
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "o",
+    "mae": 14.34
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "p",
+    "mae": 7.827586206896552
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "q",
+    "mae": 6.120689655172414
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "r",
+    "mae": 5.826086956521739
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "s",
+    "mae": 4.088235294117647
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "t",
+    "mae": 5.410256410256411
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "u",
+    "mae": 5.244897959183674
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "v",
+    "mae": 2.189189189189189
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "w",
+    "mae": 3.5303030303030303
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "x",
+    "mae": 6.725
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "y",
+    "mae": 11.714285714285714
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "z",
+    "mae": 1.46875
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "{",
+    "mae": 9.333333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "|",
+    "mae": 2.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "}",
+    "mae": 12.682926829268293
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "C",
+    "character": "~",
+    "mae": 30.6
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "!",
+    "mae": 0.5454545454545454
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "\"",
+    "mae": 0.25
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "#",
+    "mae": 1.2264150943396226
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "$",
+    "mae": 0.4461538461538462
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "%",
+    "mae": 3.1153846153846154
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "&",
+    "mae": 3.763157894736842
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "'",
+    "mae": 0.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "(",
+    "mae": 3.3
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ")",
+    "mae": 5.133333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "*",
+    "mae": 11.095238095238095
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "+",
+    "mae": 0.3333333333333333
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ",",
+    "mae": 0.5555555555555556
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "-",
+    "mae": 0.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ".",
+    "mae": 4.5
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "/",
+    "mae": 2.6129032258064515
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "0",
+    "mae": 5.466666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "1",
+    "mae": 0.6097560975609756
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "2",
+    "mae": 0.3
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "3",
+    "mae": 6.3076923076923075
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "4",
+    "mae": 1.1851851851851851
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "5",
+    "mae": 0.4418604651162791
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "6",
+    "mae": 0.3333333333333333
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "7",
+    "mae": 1.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "8",
+    "mae": 2.433333333333333
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "9",
+    "mae": 1.7037037037037037
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ":",
+    "mae": 2.25
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ";",
+    "mae": 0.38461538461538464
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "<",
+    "mae": 0.30434782608695654
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "=",
+    "mae": 0.1111111111111111
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": ">",
+    "mae": 0.4166666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "?",
+    "mae": 9.62962962962963
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "@",
+    "mae": 0.67
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "A",
+    "mae": 0.9629629629629629
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "B",
+    "mae": 0.3620689655172414
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "C",
+    "mae": 0.38636363636363635
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "D",
+    "mae": 0.40350877192982454
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "E",
+    "mae": 0.3333333333333333
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "F",
+    "mae": 0.38235294117647056
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "G",
+    "mae": 5.327272727272727
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "H",
+    "mae": 0.4444444444444444
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "I",
+    "mae": 0.5
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "J",
+    "mae": 14.56
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "K",
+    "mae": 3.982142857142857
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "L",
+    "mae": 0.41379310344827586
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "M",
+    "mae": 0.32608695652173914
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "N",
+    "mae": 1.9879518072289157
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "O",
+    "mae": 0.4262295081967213
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "P",
+    "mae": 0.3409090909090909
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "Q",
+    "mae": 2.588235294117647
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "R",
+    "mae": 1.9821428571428572
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "S",
+    "mae": 3.097560975609756
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "T",
+    "mae": 1.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "U",
+    "mae": 0.4262295081967213
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "V",
+    "mae": 1.2692307692307692
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "W",
+    "mae": 0.5894736842105263
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "X",
+    "mae": 3.7719298245614037
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "Y",
+    "mae": 1.6222222222222222
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "Z",
+    "mae": 1.1111111111111112
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "[",
+    "mae": 0.4411764705882353
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "\\",
+    "mae": 2.8275862068965516
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "]",
+    "mae": 0.5
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "^",
+    "mae": 1.96
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "_",
+    "mae": 0.125
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "`",
+    "mae": 17.857142857142858
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "a",
+    "mae": 1.2444444444444445
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "b",
+    "mae": 0.2631578947368421
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "c",
+    "mae": 0.48484848484848486
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "d",
+    "mae": 2.3275862068965516
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "e",
+    "mae": 0.4222222222222222
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "f",
+    "mae": 0.5476190476190477
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "g",
+    "mae": 4.046153846153846
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "h",
+    "mae": 1.2
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "i",
+    "mae": 0.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "j",
+    "mae": 0.12121212121212122
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "k",
+    "mae": 3.6122448979591835
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "l",
+    "mae": 0.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "m",
+    "mae": 27.467532467532468
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "n",
+    "mae": 0.24390243902439024
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "o",
+    "mae": 7.42
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "p",
+    "mae": 0.2631578947368421
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "q",
+    "mae": 2.8620689655172415
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "r",
+    "mae": 0.045454545454545456
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "s",
+    "mae": 0.4117647058823529
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "t",
+    "mae": 0.5641025641025641
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "u",
+    "mae": 0.5208333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "v",
+    "mae": 0.8918918918918919
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "w",
+    "mae": 0.6666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "x",
+    "mae": 4.725
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "y",
+    "mae": 5.26530612244898
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "z",
+    "mae": 0.25
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "{",
+    "mae": 0.42424242424242425
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "|",
+    "mae": 0.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "}",
+    "mae": 0.5853658536585366
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "refined-D",
+    "character": "~",
+    "mae": 30.466666666666665
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "!",
+    "mae": 18.774193548387096
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "\"",
+    "mae": 30.0625
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "#",
+    "mae": 30.583333333333332
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "$",
+    "mae": 23.094594594594593
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "%",
+    "mae": 23.745283018867923
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "&",
+    "mae": 31.354545454545455
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "'",
+    "mae": 29.25
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "(",
+    "mae": 20.257142857142856
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ")",
+    "mae": 18.47222222222222
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "*",
+    "mae": 47.62068965517241
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "+",
+    "mae": 39.59375
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ",",
+    "mae": 13.692307692307692
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "-",
+    "mae": 104.8
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ".",
+    "mae": 19.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "/",
+    "mae": 7.916666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "0",
+    "mae": 18.210526315789473
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "1",
+    "mae": 22.666666666666668
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "2",
+    "mae": 33.94915254237288
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "3",
+    "mae": 29.741935483870968
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "4",
+    "mae": 22.926470588235293
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "5",
+    "mae": 26.508196721311474
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "6",
+    "mae": 34.10666666666667
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "7",
+    "mae": 11.755555555555556
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "8",
+    "mae": 26.78048780487805
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "9",
+    "mae": 21.87012987012987
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ":",
+    "mae": 19.125
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ";",
+    "mae": 16.45
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "<",
+    "mae": 56.37837837837838
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "=",
+    "mae": 137.02777777777777
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": ">",
+    "mae": 61.97142857142857
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "?",
+    "mae": 24.714285714285715
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "@",
+    "mae": 53.92307692307692
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "A",
+    "mae": 18.78787878787879
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "B",
+    "mae": 26.763157894736842
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "C",
+    "mae": 25.721311475409838
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "D",
+    "mae": 24.253333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "E",
+    "mae": 25.491525423728813
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "F",
+    "mae": 24.65909090909091
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "G",
+    "mae": 31.275
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "H",
+    "mae": 16.181818181818183
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "I",
+    "mae": 12.5
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "J",
+    "mae": 21.636363636363637
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "K",
+    "mae": 17.984126984126984
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "L",
+    "mae": 23.88235294117647
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "M",
+    "mae": 10.555555555555555
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "N",
+    "mae": 9.551724137931034
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "O",
+    "mae": 23.397590361445783
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "P",
+    "mae": 21.649122807017545
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "Q",
+    "mae": 29.225806451612904
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "R",
+    "mae": 28.102941176470587
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "S",
+    "mae": 32.56060606060606
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "T",
+    "mae": 10.375
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "U",
+    "mae": 13.871428571428572
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "V",
+    "mae": 9.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "W",
+    "mae": 8.527777777777779
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "X",
+    "mae": 15.47887323943662
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "Y",
+    "mae": 27.666666666666668
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "Z",
+    "mae": 21.25
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "[",
+    "mae": 18.833333333333332
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "\\",
+    "mae": 9.4
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "]",
+    "mae": 10.194444444444445
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "^",
+    "mae": 33.35294117647059
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "_",
+    "mae": 92.75
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "`",
+    "mae": 41.25
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "a",
+    "mae": 27.903225806451612
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "b",
+    "mae": 12.942028985507246
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "c",
+    "mae": 20.217391304347824
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "d",
+    "mae": 11.666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "e",
+    "mae": 23.65
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "f",
+    "mae": 16.404255319148938
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "g",
+    "mae": 16.05
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "h",
+    "mae": 11.446428571428571
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "i",
+    "mae": 9.875
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "j",
+    "mae": 16.36842105263158
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "k",
+    "mae": 9.655172413793103
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "l",
+    "mae": 4.230769230769231
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "m",
+    "mae": 21.344827586206897
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "n",
+    "mae": 11.666666666666666
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "o",
+    "mae": 17.689655172413794
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "p",
+    "mae": 12.173913043478262
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "q",
+    "mae": 10.869565217391305
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "r",
+    "mae": 13.0
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "s",
+    "mae": 20.12962962962963
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "t",
+    "mae": 22.085106382978722
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "u",
+    "mae": 10.30188679245283
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "v",
+    "mae": 5.75
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "w",
+    "mae": 7.424657534246576
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "x",
+    "mae": 11.659574468085106
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "y",
+    "mae": 13.444444444444445
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "z",
+    "mae": 21.391304347826086
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "{",
+    "mae": 32.175
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "|",
+    "mae": 9.833333333333334
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "}",
+    "mae": 32.54347826086956
+  },
+  {
+    "font": "segoe",
+    "size": 17,
+    "profile": "unhinted",
+    "character": "~",
+    "mae": 43.34615384615385
+  }
+]

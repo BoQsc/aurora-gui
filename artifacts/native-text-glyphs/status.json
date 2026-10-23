@@ -4,5 +4,7 @@
   "default_changed": false,
   "promotion_proposed": false,
   "reported_Courier_regressions_removed": true,
-  "Courier_isolated_numeral_outlines_improved": false
+  "Courier_isolated_numeral_outlines_improved": false,
+  "assessment_superseded_by": "../native-text-audit/index.html",
+  "character_fidelity_established": false
 }

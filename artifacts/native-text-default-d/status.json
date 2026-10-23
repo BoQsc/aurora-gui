@@ -1,0 +1,17 @@
+{
+  "date": "2026-10-23",
+  "default": "refined D",
+  "owner_approved": true,
+  "native_parity": "FAIL \u2014 incomplete, see frozen conformance report",
+  "promotion_default_glyphs": 93906,
+  "default_matches_preserved_refined_D": true,
+  "compatibility_sheets": 288,
+  "framework_checks": "pass",
+  "app_captures": 15,
+  "Vulkan_software_equal": true,
+  "host_and_padpp_workflows": "pass",
+  "pro_text_and_markdown_checks": "pass",
+  "pro_full_smoke": "FAIL \u2014 restored branch continuation, also fails C",
+  "pro_consistency": "FAIL \u2014 missing activity widget, also fails C",
+  "production_delivery": "pending"
+}

@@ -1,0 +1,11 @@
+{
+  "vendor/aurora-d-0.4.5/source/aurora/text/alphacorrection.d": "1862931b6dc1462360fc855fee86fce706179f4b15c9ef129cd2dd1235876530",
+  "vendor/aurora-d-0.4.5/source/aurora/text/atlas.d": "267867aeb8c94457e73e7fabf86f371e5beff1d33fb75ba260e144e140c31661",
+  "vendor/aurora-d-0.4.5/source/aurora/text/coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83",
+  "vendor/aurora-d-0.4.5/source/aurora/text/fontprofile.d": "077942f300652ee82fee819a25c759596b3ca7af3067593c2321f7f5e1e0305f",
+  "vendor/aurora-d-0.4.5/source/aurora/text/hinter.d": "c6ab0cc78458a8e6024b6c9c4e98a409f1c48bd5c6e5c408ea8ed0a5294401de",
+  "vendor/aurora-d-0.4.5/source/aurora/text/rasterizer.d": "de9c6c2fbf64ac475bcffd75a57e8ee90f90456bca4f444e86c109a8b7337f57",
+  "vendor/aurora-d-0.4.5/source/aurora/text/renderpolicy.d": "e7ed75802ee680aaf8bcfb125e2179a520723b4d5afe38fbd62da4c8144fb81a",
+  "vendor/aurora-d-0.4.5/source/aurora/text/truetype.d": "7f67e453755338bb6d4b5796be4ec55c9148bd6b1cd34b3494a84eebe3829de0",
+  "vendor/aurora-d-0.4.5/source/aurora/render/vulkan.d": "69325c4f8924d6de99a3ed8ec474fe05874c142533660c834afa34984189a021"
+}

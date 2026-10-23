@@ -1,0 +1,1235 @@
+{
+  "font": "consolas",
+  "font_sha256": "c6e6ce8119fdd47ec6a5449a08e2d2ad7f41ea03143aae193068ed9fa58eaebc",
+  "glyph_count": 3030,
+  "tested": 64,
+  "exact": 3,
+  "failed": 61,
+  "failures": [
+    {
+      "exact": false,
+      "different_pixels": 31,
+      "maximum_channel_error": 35,
+      "ink_mae": 1.8695652173913044,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 0,
+      "codepoints": []
+    },
+    {
+      "exact": false,
+      "different_pixels": 23,
+      "maximum_channel_error": 71,
+      "ink_mae": 8.169811320754716,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 4,
+      "codepoints": [
+        65
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 9,
+      "maximum_channel_error": 36,
+      "ink_mae": 1.4528301886792452,
+      "different_bounds": [
+        35,
+        37,
+        38,
+        45
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 5,
+      "codepoints": [
+        66
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 14,
+      "maximum_channel_error": 35,
+      "ink_mae": 1.3333333333333333,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 6,
+      "codepoints": [
+        67
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 5,
+      "maximum_channel_error": 27,
+      "ink_mae": 0.5,
+      "different_bounds": [
+        34,
+        36,
+        38,
+        45
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 7,
+      "codepoints": [
+        68
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 2,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.044444444444444446,
+      "different_bounds": [
+        36,
+        35,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 8,
+      "codepoints": [
+        69
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 1,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.024390243902439025,
+      "different_bounds": [
+        36,
+        35,
+        37,
+        36
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 9,
+      "codepoints": [
+        70
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 8,
+      "maximum_channel_error": 34,
+      "ink_mae": 1.3703703703703705,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 10,
+      "codepoints": [
+        71
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 11,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.1864406779661017,
+      "different_bounds": [
+        37,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 11,
+      "codepoints": [
+        72
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 2,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.04878048780487805,
+      "different_bounds": [
+        36,
+        35,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 12,
+      "codepoints": [
+        73
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 18,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.46153846153846156,
+      "different_bounds": [
+        30,
+        35,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 13,
+      "codepoints": [
+        74
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 9,
+      "maximum_channel_error": 58,
+      "ink_mae": 3.142857142857143,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 14,
+      "codepoints": [
+        75
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 1,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.02631578947368421,
+      "different_bounds": [
+        37,
+        45,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 15,
+      "codepoints": [
+        76
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 36,
+      "maximum_channel_error": 36,
+      "ink_mae": 7.757575757575758,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 16,
+      "codepoints": [
+        77
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 16,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.2318840579710145,
+      "different_bounds": [
+        31,
+        36,
+        36,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 17,
+      "codepoints": [
+        78
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 17,
+      "maximum_channel_error": 30,
+      "ink_mae": 0.8846153846153846,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 18,
+      "codepoints": [
+        79
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 8,
+      "maximum_channel_error": 36,
+      "ink_mae": 3.2790697674418605,
+      "different_bounds": [
+        35,
+        35,
+        38,
+        42
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 19,
+      "codepoints": [
+        80
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 61,
+      "ink_mae": 2.876923076923077,
+      "different_bounds": [
+        29,
+        35,
+        39,
+        49
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 20,
+      "codepoints": [
+        81
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 18,
+      "maximum_channel_error": 34,
+      "ink_mae": 1.537037037037037,
+      "different_bounds": [
+        31,
+        36,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 21,
+      "codepoints": [
+        82
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 15,
+      "maximum_channel_error": 28,
+      "ink_mae": 2.292682926829268,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 22,
+      "codepoints": [
+        83
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 1,
+      "maximum_channel_error": 28,
+      "ink_mae": 0.717948717948718,
+      "different_bounds": [
+        29,
+        35,
+        30,
+        36
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 23,
+      "codepoints": [
+        84
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 10,
+      "maximum_channel_error": 34,
+      "ink_mae": 0.7962962962962963,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        45
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 24,
+      "codepoints": [
+        85
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 20,
+      "maximum_channel_error": 36,
+      "ink_mae": 1.5576923076923077,
+      "different_bounds": [
+        29,
+        35,
+        39,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 25,
+      "codepoints": [
+        86
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 27,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.39705882352941174,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 26,
+      "codepoints": [
+        87
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 16,
+      "maximum_channel_error": 71,
+      "ink_mae": 6.666666666666667,
+      "different_bounds": [
+        29,
+        35,
+        39,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 27,
+      "codepoints": [
+        88
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 10,
+      "maximum_channel_error": 61,
+      "ink_mae": 3.066666666666667,
+      "different_bounds": [
+        29,
+        35,
+        39,
+        41
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 28,
+      "codepoints": [
+        89
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 10,
+      "maximum_channel_error": 36,
+      "ink_mae": 1.1842105263157894,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 29,
+      "codepoints": [
+        90
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 34,
+      "maximum_channel_error": 255,
+      "ink_mae": 33.333333333333336,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 30,
+      "codepoints": [
+        192
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 34,
+      "maximum_channel_error": 255,
+      "ink_mae": 34.33846153846154,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 31,
+      "codepoints": [
+        193
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 36,
+      "maximum_channel_error": 255,
+      "ink_mae": 33.13235294117647,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 32,
+      "codepoints": [
+        194
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 36,
+      "maximum_channel_error": 255,
+      "ink_mae": 32.77142857142857,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 33,
+      "codepoints": [
+        195
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 36,
+      "maximum_channel_error": 255,
+      "ink_mae": 29.681159420289855,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 34,
+      "codepoints": [
+        196
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 35,
+      "maximum_channel_error": 255,
+      "ink_mae": 46.56521739130435,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 35,
+      "codepoints": [
+        256
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 33,
+      "maximum_channel_error": 255,
+      "ink_mae": 30.044776119402986,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 36,
+      "codepoints": [
+        258
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 42,
+      "maximum_channel_error": 255,
+      "ink_mae": 44.75,
+      "different_bounds": [
+        30,
+        31,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 37,
+      "codepoints": [
+        197
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 48,
+      "maximum_channel_error": 255,
+      "ink_mae": 62.32051282051282,
+      "different_bounds": [
+        30,
+        30,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 38,
+      "codepoints": [
+        506
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 71,
+      "ink_mae": 6.786885245901639,
+      "different_bounds": [
+        31,
+        35,
+        38,
+        48
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 39,
+      "codepoints": [
+        260
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 16,
+      "maximum_channel_error": 27,
+      "ink_mae": 0.6774193548387096,
+      "different_bounds": [
+        28,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 40,
+      "codepoints": [
+        198
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 105,
+      "ink_mae": 8.579710144927537,
+      "different_bounds": [
+        28,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 41,
+      "codepoints": [
+        508
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 32,
+      "maximum_channel_error": 219,
+      "ink_mae": 34.36,
+      "different_bounds": [
+        29,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 42,
+      "codepoints": [
+        262
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 33,
+      "maximum_channel_error": 219,
+      "ink_mae": 33.19230769230769,
+      "different_bounds": [
+        29,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 43,
+      "codepoints": [
+        264
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 33,
+      "maximum_channel_error": 219,
+      "ink_mae": 32.23076923076923,
+      "different_bounds": [
+        29,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 44,
+      "codepoints": [
+        268
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 28,
+      "maximum_channel_error": 219,
+      "ink_mae": 30.387755102040817,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 45,
+      "codepoints": [
+        266
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 15,
+      "maximum_channel_error": 36,
+      "ink_mae": 2.0,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        48
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 46,
+      "codepoints": [
+        199
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 22,
+      "maximum_channel_error": 219,
+      "ink_mae": 18.63013698630137,
+      "different_bounds": [
+        30,
+        32,
+        38,
+        45
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 47,
+      "codepoints": [
+        270
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 16,
+      "maximum_channel_error": 35,
+      "ink_mae": 1.490909090909091,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 48,
+      "codepoints": [
+        208
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 29,
+      "maximum_channel_error": 221,
+      "ink_mae": 20.80701754385965,
+      "different_bounds": [
+        30,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 49,
+      "codepoints": [
+        272
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 8,
+      "maximum_channel_error": 71,
+      "ink_mae": 4.365384615384615,
+      "different_bounds": [
+        30,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 50,
+      "codepoints": [
+        200
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 8,
+      "maximum_channel_error": 116,
+      "ink_mae": 5.078431372549019,
+      "different_bounds": [
+        32,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 51,
+      "codepoints": [
+        201
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 10,
+      "maximum_channel_error": 70,
+      "ink_mae": 5.185185185185185,
+      "different_bounds": [
+        31,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 52,
+      "codepoints": [
+        202
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 7,
+      "maximum_channel_error": 67,
+      "ink_mae": 4.37037037037037,
+      "different_bounds": [
+        31,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 53,
+      "codepoints": [
+        282
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 10,
+      "maximum_channel_error": 34,
+      "ink_mae": 1.3636363636363635,
+      "different_bounds": [
+        31,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 54,
+      "codepoints": [
+        203
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 9,
+      "maximum_channel_error": 255,
+      "ink_mae": 22.545454545454547,
+      "different_bounds": [
+        31,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 55,
+      "codepoints": [
+        274
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 7,
+      "maximum_channel_error": 34,
+      "ink_mae": 0.7547169811320755,
+      "different_bounds": [
+        31,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 56,
+      "codepoints": [
+        276
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 5,
+      "maximum_channel_error": 34,
+      "ink_mae": 0.7450980392156863,
+      "different_bounds": [
+        32,
+        32,
+        37,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 57,
+      "codepoints": [
+        278
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 3,
+      "maximum_channel_error": 1,
+      "ink_mae": 0.05660377358490566,
+      "different_bounds": [
+        35,
+        35,
+        37,
+        47
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 58,
+      "codepoints": [
+        280
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 31,
+      "maximum_channel_error": 219,
+      "ink_mae": 24.485294117647058,
+      "different_bounds": [
+        29,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 59,
+      "codepoints": [
+        284
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 28,
+      "maximum_channel_error": 219,
+      "ink_mae": 21.34328358208955,
+      "different_bounds": [
+        29,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 60,
+      "codepoints": [
+        286
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 26,
+      "maximum_channel_error": 219,
+      "ink_mae": 21.96923076923077,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 61,
+      "codepoints": [
+        288
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 29,
+      "maximum_channel_error": 219,
+      "ink_mae": 23.75,
+      "different_bounds": [
+        29,
+        35,
+        38,
+        49
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 62,
+      "codepoints": [
+        290
+      ]
+    },
+    {
+      "exact": false,
+      "different_pixels": 18,
+      "maximum_channel_error": 70,
+      "ink_mae": 8.441176470588236,
+      "different_bounds": [
+        31,
+        32,
+        38,
+        46
+      ],
+      "font": "consolas",
+      "size": 17,
+      "phase_eighths": 0,
+      "theme": "light",
+      "glyph_id": 63,
+      "codepoints": [
+        292
+      ]
+    }
+  ],
+  "worst_sheets": [
+    [
+      62.32051282051282,
+      "17-p0-light-g0"
+    ]
+  ],
+  "seconds": 0.3909567999653518
+}

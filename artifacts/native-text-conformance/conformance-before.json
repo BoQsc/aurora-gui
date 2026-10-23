@@ -1,0 +1,20 @@
+{
+  "status": "FAIL",
+  "font_count": 9,
+  "tested": 111192,
+  "exact": 2578,
+  "failed": 108614,
+  "sizes": [
+    13,
+    17,
+    26
+  ],
+  "phases": [
+    0
+  ],
+  "themes": [
+    "light"
+  ],
+  "all_glyphs": true,
+  "hinter_sha256": "2b1565779ded85fee6769a7ed9a4a5b57880664926a1bed6fa7ddadfef831b3c"
+}

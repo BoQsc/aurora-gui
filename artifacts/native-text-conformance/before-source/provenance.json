@@ -1,0 +1,13 @@
+{
+  "git_revision": "ac99ba030dd4e4613057b82036191fae6ec98c55",
+  "includes_prior_uncommitted_glyph_audit": true,
+  "sha256": {
+    "alphacorrection.d": "1862931b6dc1462360fc855fee86fce706179f4b15c9ef129cd2dd1235876530",
+    "atlas.d": "b979842ca491a4d1c1edc67e3de88027263f048f3a8d854c4ac147d6d04c75b0",
+    "coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83",
+    "fontprofile.d": "077942f300652ee82fee819a25c759596b3ca7af3067593c2321f7f5e1e0305f",
+    "hinter.d": "8ad3e661db415ae20c359203e8b6205ed6db05e93d7c78b70d6e652eaf848cdb",
+    "rasterizer.d": "51c30a2986f300438f34fd023a9a662eb6351e57104d63d8dd48f469dd39615d",
+    "truetype.d": "188636cc8067393cf3f6f571208d98e20d74b43006307e112940cf29f03581c6"
+  }
+}

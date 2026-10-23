@@ -1,0 +1,590 @@
+[
+  {
+    "end_byte": 205,
+    "axis": "x",
+    "point": 0,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 205,
+    "axis": "x",
+    "point": 1,
+    "aurora": 16.06,
+    "native": 16.06
+  },
+  {
+    "end_byte": 205,
+    "axis": "x",
+    "point": 2,
+    "aurora": 16.06,
+    "native": 16.06
+  },
+  {
+    "end_byte": 205,
+    "axis": "x",
+    "point": 3,
+    "aurora": 359.91,
+    "native": 359.91
+  },
+  {
+    "end_byte": 205,
+    "axis": "x",
+    "point": 4,
+    "aurora": 16.06,
+    "native": 16.06
+  },
+  {
+    "end_byte": 205,
+    "axis": "x",
+    "point": 5,
+    "aurora": 16.06,
+    "native": 16.06
+  },
+  {
+    "end_byte": 205,
+    "axis": "x",
+    "point": 6,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 205,
+    "axis": "y",
+    "point": 0,
+    "aurora": 247.97,
+    "native": 247.97
+  },
+  {
+    "end_byte": 205,
+    "axis": "y",
+    "point": 1,
+    "aurora": 72.03,
+    "native": 72.03
+  },
+  {
+    "end_byte": 205,
+    "axis": "y",
+    "point": 2,
+    "aurora": 103.91,
+    "native": 103.91
+  },
+  {
+    "end_byte": 205,
+    "axis": "y",
+    "point": 3,
+    "aurora": 256.0,
+    "native": 256.0
+  },
+  {
+    "end_byte": 205,
+    "axis": "y",
+    "point": 4,
+    "aurora": 408.09,
+    "native": 408.09
+  },
+  {
+    "end_byte": 205,
+    "axis": "y",
+    "point": 5,
+    "aurora": 439.97,
+    "native": 439.97
+  },
+  {
+    "end_byte": 205,
+    "axis": "y",
+    "point": 6,
+    "aurora": 264.03,
+    "native": 264.03
+  },
+  {
+    "end_byte": 239,
+    "axis": "x",
+    "point": 0,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 239,
+    "axis": "x",
+    "point": 1,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 239,
+    "axis": "x",
+    "point": 2,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 239,
+    "axis": "x",
+    "point": 3,
+    "aurora": 351.87,
+    "native": 352.13
+  },
+  {
+    "end_byte": 239,
+    "axis": "x",
+    "point": 4,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 239,
+    "axis": "x",
+    "point": 5,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 239,
+    "axis": "x",
+    "point": 6,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 239,
+    "axis": "y",
+    "point": 0,
+    "aurora": 256.0,
+    "native": 256.0
+  },
+  {
+    "end_byte": 239,
+    "axis": "y",
+    "point": 1,
+    "aurora": 128.0,
+    "native": 128.0
+  },
+  {
+    "end_byte": 239,
+    "axis": "y",
+    "point": 2,
+    "aurora": 192.0,
+    "native": 192.0
+  },
+  {
+    "end_byte": 239,
+    "axis": "y",
+    "point": 3,
+    "aurora": 287.87,
+    "native": 288.13
+  },
+  {
+    "end_byte": 239,
+    "axis": "y",
+    "point": 4,
+    "aurora": 384.0,
+    "native": 384.0
+  },
+  {
+    "end_byte": 239,
+    "axis": "y",
+    "point": 5,
+    "aurora": 448.0,
+    "native": 448.0
+  },
+  {
+    "end_byte": 239,
+    "axis": "y",
+    "point": 6,
+    "aurora": 320.0,
+    "native": 320.0
+  },
+  {
+    "end_byte": 244,
+    "axis": "x",
+    "point": 0,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 244,
+    "axis": "x",
+    "point": 1,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 244,
+    "axis": "x",
+    "point": 2,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 244,
+    "axis": "x",
+    "point": 3,
+    "aurora": 384.0,
+    "native": 392.03
+  },
+  {
+    "end_byte": 244,
+    "axis": "x",
+    "point": 4,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 244,
+    "axis": "x",
+    "point": 5,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 244,
+    "axis": "x",
+    "point": 6,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 244,
+    "axis": "y",
+    "point": 0,
+    "aurora": 256.0,
+    "native": 256.0
+  },
+  {
+    "end_byte": 244,
+    "axis": "y",
+    "point": 1,
+    "aurora": 128.0,
+    "native": 128.0
+  },
+  {
+    "end_byte": 244,
+    "axis": "y",
+    "point": 2,
+    "aurora": 192.0,
+    "native": 192.0
+  },
+  {
+    "end_byte": 244,
+    "axis": "y",
+    "point": 3,
+    "aurora": 280.09,
+    "native": 280.09
+  },
+  {
+    "end_byte": 244,
+    "axis": "y",
+    "point": 4,
+    "aurora": 384.0,
+    "native": 384.0
+  },
+  {
+    "end_byte": 244,
+    "axis": "y",
+    "point": 5,
+    "aurora": 448.0,
+    "native": 448.0
+  },
+  {
+    "end_byte": 244,
+    "axis": "y",
+    "point": 6,
+    "aurora": 320.0,
+    "native": 320.0
+  },
+  {
+    "end_byte": 248,
+    "axis": "x",
+    "point": 0,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 248,
+    "axis": "x",
+    "point": 1,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 248,
+    "axis": "x",
+    "point": 2,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 248,
+    "axis": "x",
+    "point": 3,
+    "aurora": 384.0,
+    "native": 392.03
+  },
+  {
+    "end_byte": 248,
+    "axis": "x",
+    "point": 4,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 248,
+    "axis": "x",
+    "point": 5,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 248,
+    "axis": "x",
+    "point": 6,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 248,
+    "axis": "y",
+    "point": 0,
+    "aurora": 256.0,
+    "native": 256.0
+  },
+  {
+    "end_byte": 248,
+    "axis": "y",
+    "point": 1,
+    "aurora": 128.0,
+    "native": 128.0
+  },
+  {
+    "end_byte": 248,
+    "axis": "y",
+    "point": 2,
+    "aurora": 159.87,
+    "native": 160.13
+  },
+  {
+    "end_byte": 248,
+    "axis": "y",
+    "point": 3,
+    "aurora": 280.09,
+    "native": 280.09
+  },
+  {
+    "end_byte": 248,
+    "axis": "y",
+    "point": 4,
+    "aurora": 384.0,
+    "native": 384.0
+  },
+  {
+    "end_byte": 248,
+    "axis": "y",
+    "point": 5,
+    "aurora": 448.0,
+    "native": 448.0
+  },
+  {
+    "end_byte": 248,
+    "axis": "y",
+    "point": 6,
+    "aurora": 320.0,
+    "native": 320.0
+  },
+  {
+    "end_byte": 253,
+    "axis": "x",
+    "point": 0,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 253,
+    "axis": "x",
+    "point": 1,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 253,
+    "axis": "x",
+    "point": 2,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 253,
+    "axis": "x",
+    "point": 3,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 253,
+    "axis": "x",
+    "point": 4,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 253,
+    "axis": "x",
+    "point": 5,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 253,
+    "axis": "x",
+    "point": 6,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 253,
+    "axis": "y",
+    "point": 0,
+    "aurora": 256.0,
+    "native": 256.0
+  },
+  {
+    "end_byte": 253,
+    "axis": "y",
+    "point": 1,
+    "aurora": 128.0,
+    "native": 128.0
+  },
+  {
+    "end_byte": 253,
+    "axis": "y",
+    "point": 2,
+    "aurora": 159.87,
+    "native": 160.13
+  },
+  {
+    "end_byte": 253,
+    "axis": "y",
+    "point": 3,
+    "aurora": 287.87,
+    "native": 288.13
+  },
+  {
+    "end_byte": 253,
+    "axis": "y",
+    "point": 4,
+    "aurora": 384.0,
+    "native": 384.0
+  },
+  {
+    "end_byte": 253,
+    "axis": "y",
+    "point": 5,
+    "aurora": 448.0,
+    "native": 448.0
+  },
+  {
+    "end_byte": 253,
+    "axis": "y",
+    "point": 6,
+    "aurora": 320.0,
+    "native": 320.0
+  },
+  {
+    "end_byte": 257,
+    "axis": "x",
+    "point": 0,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 257,
+    "axis": "x",
+    "point": 1,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 257,
+    "axis": "x",
+    "point": 2,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 257,
+    "axis": "x",
+    "point": 3,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 257,
+    "axis": "x",
+    "point": 4,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 257,
+    "axis": "x",
+    "point": 5,
+    "aurora": 8.03,
+    "native": 8.03
+  },
+  {
+    "end_byte": 257,
+    "axis": "x",
+    "point": 6,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 257,
+    "axis": "y",
+    "point": 0,
+    "aurora": 256.0,
+    "native": 256.0
+  },
+  {
+    "end_byte": 257,
+    "axis": "y",
+    "point": 1,
+    "aurora": 128.0,
+    "native": 128.0
+  },
+  {
+    "end_byte": 257,
+    "axis": "y",
+    "point": 2,
+    "aurora": 159.87,
+    "native": 160.13
+  },
+  {
+    "end_byte": 257,
+    "axis": "y",
+    "point": 3,
+    "aurora": 287.87,
+    "native": 288.13
+  },
+  {
+    "end_byte": 257,
+    "axis": "y",
+    "point": 4,
+    "aurora": 415.87,
+    "native": 416.13
+  },
+  {
+    "end_byte": 257,
+    "axis": "y",
+    "point": 5,
+    "aurora": 448.0,
+    "native": 448.0
+  },
+  {
+    "end_byte": 257,
+    "axis": "y",
+    "point": 6,
+    "aurora": 320.0,
+    "native": 320.0
+  }
+]

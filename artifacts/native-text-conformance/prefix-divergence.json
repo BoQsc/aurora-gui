@@ -1,0 +1,938 @@
+[
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 472,
+    "opcode": "0x2b",
+    "error": 0.6
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 474,
+    "opcode": "0xf4",
+    "error": 0.6
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 478,
+    "opcode": "0xf4",
+    "error": 0.6229508196721312
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 481,
+    "opcode": "0xf4",
+    "error": 0.5901639344262295
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 485,
+    "opcode": "0xed",
+    "error": 1.1475409836065573
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 487,
+    "opcode": "0xed",
+    "error": 1.1290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 491,
+    "opcode": "0xed",
+    "error": 1.6290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 492,
+    "opcode": "0xed",
+    "error": 1.1290322580645162
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 495,
+    "opcode": "0x3f",
+    "error": 3.283333333333333
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 498,
+    "opcode": "0xed",
+    "error": 3.283333333333333
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 499,
+    "opcode": "0x3f",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 500,
+    "opcode": "0xe4",
+    "error": 0.6229508196721312
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 503,
+    "opcode": "0xed",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 506,
+    "opcode": "0xed",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 507,
+    "opcode": "0x87",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 509,
+    "opcode": "0x2e",
+    "error": 1.1311475409836065
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 510,
+    "opcode": "0x2b",
+    "error": 22.049180327868854
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 511,
+    "opcode": "0x2b",
+    "error": 22.049180327868854
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 514,
+    "opcode": "0xc4",
+    "error": 31.451612903225808
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 515,
+    "opcode": "0x87",
+    "error": 31.451612903225808
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 516,
+    "opcode": "0x2e",
+    "error": 31.451612903225808
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 518,
+    "opcode": "0x2b",
+    "error": 50.03333333333333
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 519,
+    "opcode": "0x2b",
+    "error": 50.03333333333333
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 522,
+    "opcode": "0xc4",
+    "error": 59.114754098360656
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 531,
+    "opcode": "0x87",
+    "error": 59.131147540983605
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 533,
+    "opcode": "0xc4",
+    "error": 59.131147540983605
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 534,
+    "opcode": "0xc4",
+    "error": 61.166666666666664
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 536,
+    "opcode": "0xc4",
+    "error": 61.7
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 537,
+    "opcode": "0xc4",
+    "error": 62.766666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 538,
+    "opcode": "0x87",
+    "error": 62.766666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 541,
+    "opcode": "0xc4",
+    "error": 62.766666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 542,
+    "opcode": "0xc4",
+    "error": 64.88333333333334
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 544,
+    "opcode": "0xc4",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 545,
+    "opcode": "0xc4",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 546,
+    "opcode": "0x31",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 547,
+    "opcode": "0x30",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 588,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 589,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 590,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 591,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 592,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 593,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 594,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 595,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 596,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 597,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 598,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 599,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 600,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 601,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 602,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 603,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 604,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 605,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 606,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 607,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 608,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 609,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 610,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 611,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 612,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 613,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 614,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "arial",
+    "size": 17,
+    "character": "A",
+    "end_byte": 615,
+    "opcode": "0x2b",
+    "error": 64.36666666666666
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 64,
+    "opcode": "0x2f",
+    "error": 0.15789473684210525
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 67,
+    "opcode": "0x2f",
+    "error": 0.15789473684210525
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 69,
+    "opcode": "0x3f",
+    "error": 9.11111111111111
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 71,
+    "opcode": "0x2f",
+    "error": 10.263157894736842
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 76,
+    "opcode": "0x31",
+    "error": 8.666666666666666
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 77,
+    "opcode": "0x30",
+    "error": 8.666666666666666
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 78,
+    "opcode": "0x87",
+    "error": 8.666666666666666
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 80,
+    "opcode": "0x2e",
+    "error": 8.666666666666666
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 81,
+    "opcode": "0x2b",
+    "error": 32.0
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 82,
+    "opcode": "0x8",
+    "error": 32.0
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 85,
+    "opcode": "0xc4",
+    "error": 28.0
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 86,
+    "opcode": "0x87",
+    "error": 28.0
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 88,
+    "opcode": "0x2e",
+    "error": 28.0
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 90,
+    "opcode": "0x2b",
+    "error": 34.0
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 91,
+    "opcode": "0x8",
+    "error": 34.0
+  },
+  {
+    "font": "tahoma",
+    "size": 13,
+    "character": "^",
+    "end_byte": 94,
+    "opcode": "0xc4",
+    "error": 44.0
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 37,
+    "opcode": "0x2f",
+    "error": 73.17647058823529
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 38,
+    "opcode": "0x2f",
+    "error": 73.17647058823529
+  },
+  {
+    "font": "times",
+    "size": 12,
+    "character": ">",
+    "end_byte": 39,
+    "opcode": "0x2b",
+    "error": 73.17647058823529
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 197,
+    "opcode": "0x2b",
+    "error": 54.0
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 200,
+    "opcode": "0xf4",
+    "error": 60.15384615384615
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 203,
+    "opcode": "0xf4",
+    "error": 60.15384615384615
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 206,
+    "opcode": "0xed",
+    "error": 52.76923076923077
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 208,
+    "opcode": "0xfd",
+    "error": 60.15384615384615
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 213,
+    "opcode": "0xed",
+    "error": 57.69230769230769
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 217,
+    "opcode": "0xed",
+    "error": 57.69230769230769
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 219,
+    "opcode": "0xed",
+    "error": 54.0
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 223,
+    "opcode": "0xed",
+    "error": 55.857142857142854
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 226,
+    "opcode": "0x3f",
+    "error": 62.0
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 230,
+    "opcode": "0xed",
+    "error": 62.94117647058823
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 232,
+    "opcode": "0x3f",
+    "error": 71.3529411764706
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 233,
+    "opcode": "0xe4",
+    "error": 77.88235294117646
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 234,
+    "opcode": "0x3f",
+    "error": 77.88235294117646
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 250,
+    "opcode": "0x87",
+    "error": 77.75
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 251,
+    "opcode": "0x2e",
+    "error": 77.75
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 252,
+    "opcode": "0x2b",
+    "error": 80.6875
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 256,
+    "opcode": "0xc4",
+    "error": 89.625
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 257,
+    "opcode": "0x87",
+    "error": 89.625
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 259,
+    "opcode": "0x2e",
+    "error": 79.6470588235294
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 261,
+    "opcode": "0x2b",
+    "error": 81.47058823529412
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 262,
+    "opcode": "0x8",
+    "error": 81.47058823529412
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 265,
+    "opcode": "0xc4",
+    "error": 78.77777777777777
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 266,
+    "opcode": "0x87",
+    "error": 78.77777777777777
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 268,
+    "opcode": "0x2e",
+    "error": 76.11111111111111
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 270,
+    "opcode": "0x2b",
+    "error": 73.73684210526316
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 271,
+    "opcode": "0x8",
+    "error": 73.73684210526316
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 274,
+    "opcode": "0xc4",
+    "error": 78.0
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 275,
+    "opcode": "0x87",
+    "error": 78.0
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 277,
+    "opcode": "0x2e",
+    "error": 78.0
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 279,
+    "opcode": "0x2b",
+    "error": 87.15789473684211
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 283,
+    "opcode": "0xc4",
+    "error": 88.84210526315789
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 301,
+    "opcode": "0x31",
+    "error": 85.77777777777777
+  },
+  {
+    "font": "courier",
+    "size": 12,
+    "character": "*",
+    "end_byte": 302,
+    "opcode": "0x30",
+    "error": 80.5
+  }
+]

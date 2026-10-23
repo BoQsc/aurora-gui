@@ -192,6 +192,17 @@ filtering or a native font rasterizer. Natural grayscale bytecode hinting is
 now the owner-approved shared default. `AURORA_HINTING=0` restores unhinted B
 rendering; `1` selects the older diagnostic interpreter mode.
 
+As of 2026-10-23 the owner-approved shared profile is **refined D**. No
+environment override is needed. `aurora.text.renderpolicy` selects it for font
+geometry, atlas coverage and Vulkan blending. The explicit
+`AURORA_TEXT_EXPERIMENT=native-refined` alias selects the same profile; an empty
+value also uses the default. `compatible-c` selects the former C profile and
+`native-next` selects the original D review. Unknown values use the default.
+Set overrides before creating fonts, atlases and renderers; switching an
+existing cache is unsupported. These are portable pure-D implementations.
+Approval of the default does not establish exact native rendering: dropout
+scan conversion, composite child hinting, legacy gasp and other gaps remain.
+
 ### Foreground-aware coverage (default)
 
 `AURORA_TEXT_COVERAGE=foreground` is the approved foreground-luminance
@@ -201,20 +212,19 @@ a window/font system; applications should not install this environment override
 in startup code.
 
 The atlas retains raw coverage and selects a corrected mask when Canvas
-draws text. Dark foregrounds receive less of the contrast boost; near-white
-foregrounds retain the existing transfer. Sixteen encoded-luminance classes
-bound the additional cache entries. Opacity is applied after mask correction,
-so changing only opacity reuses the same coverage. Layout, glyph metrics, color
-glyphs, and image/geometry blending are unchanged. Both renderers consume the
-same corrected A8 masks, without a shader or native-library dependency.
+draws text. Refined D uses the gamma/foreground model described below; explicit
+C uses sixteen encoded-luminance classes. Opacity is applied after mask
+correction, so changing only opacity reuses the same coverage. Both renderers
+consume the same corrected A8 masks. Refined D's Vulkan shader also rounds
+glyph opacity to A8 to match software. No native-library dependency is added.
 
 `AURORA_TEXT_CONTRAST` remains the maximum transfer strength, and `0` remains
 linear for all colors. To compare with the framework baseline, explicitly use
 `AURORA_TEXT_CONTRAST=0.5`; the host now inherits this default without an
 application override. The policy uses foreground color, not the sampled target
-background; this is not full native gamma correction or a hinting fix. It may
-allocate raw coverage plus up to fifteen additional masks per glyph/size/phase, and still
-shares the atlas's 4096x4096 limit. No extra outline rasterization is needed for
+background. All profiles share the atlas's 4096x4096 limit; explicit C may
+allocate raw coverage plus up to fifteen additional masks per glyph/size/phase.
+Refined D's bound is given below. No extra outline rasterization is needed for
 a color change. Further policy changes require quality, atlas-growth and
 application-weight review. Tests: `dub run --config=text-coverage-test`.
 
@@ -254,47 +264,67 @@ improves in all 144 cases against B, including the bundled Inter font.
 The repository-root `artifacts/native-text-progress/README.md` records the full
 comparison and historical regressions. Exact native pixel parity remains unachieved.
 
-## Native compatibility candidate D (opt-in)
+## Original D compatibility profile
 
 Set `AURORA_TEXT_EXPERIMENT=native-next` before creating fonts/atlases to review
 closing-edge sample inclusion, native half-alpha quantization and recognized
-post-IUP VacuFormRound compatibility. C remains the approved default with this
-variable unset. The experiment only applies with natural hinting, and leaves
+post-IUP VacuFormRound compatibility. This preserves the original D review;
+the latest refined D is now the default. This profile applies with natural hinting, and leaves
 the coverage policy, contrast, metrics, layout and atlas color classes intact.
 The repository-root `artifacts/native-text-next/README.md` records the C/D
 comparison, regressions and limits. It is not an exact native-parity claim.
 
-## Refined native color candidate (opt-in)
+## Refined D coverage model (default)
 
-The owner's choice after D review was to keep C and continue refinement.
-`AURORA_TEXT_EXPERIMENT=native-refined` is a separate experiment with D's masks
-and a pure-D adaptation of Microsoft Terminal's grayscale alpha correction.
-It requires natural hinting and foreground coverage. Set the override before
-creating fonts, atlases or renderers; switching profiles on a live cache is
-unsupported. `native-next` retains its reviewed pixels and correction policy.
+After initially keeping C, the owner approved the latest refined D on
+2026-10-23. Its pure-D adaptation of Microsoft Terminal's grayscale alpha
+correction requires natural hinting and foreground coverage. The geometry
+refinements also apply when legacy coverage is explicitly requested.
+`native-next` retains its reviewed pixels and correction policy.
 
 The refined model uses foreground intensity and brightness classes, plus
 OpenType family metadata for the six known legacy thin families. It excludes
 opacity from the key and reuses raw outlines across colors. The upper bound is
 136 corrected variants per glyph/size/phase, allocated only when requested;
-the two thin/normal lookup banks occupy 68 KiB per experimental atlas. The
-approved C atlas still uses its existing 16 classes and 4 KiB lookup bank.
-`AURORA_TEXT_GAMMA` is experimental, defaults to 1.8, rounds to 0.1 steps and
+the two thin/normal lookup banks occupy 68 KiB per refined D atlas. The
+explicit C atlas still uses its existing 16 classes and 4 KiB lookup bank.
+`AURORA_TEXT_GAMMA` defaults to 1.8, rounds to 0.1 steps and
 clamps to 1.0–2.2. Invalid values use 1.8; contrast zero still gives raw masks.
 This does not read system monitor settings or promise parity on other machines.
 
 The refined Vulkan glyph shader rounds opacity to A8 before blending, matching
-software. C/D retain the original shader; RGBA image rendering is unchanged.
+software. Explicit C/original D retain the original shader; RGBA image rendering is unchanged.
 Run `dub run --config=native-alpha-test` for cache/growth/profile/Canvas checks.
 The initial `artifacts/native-text-refined/README.md` preserves the native RGB
 corpus, live GPU tests and its Courier New regressions. A subsequent refined-only
 fix applies horizontal CVT cut-in to unrounded MIRP. This removes those measured
 regressions and corrects Consolas 17px numeral stems without changing metrics,
 gamma, per-family policy or C/D pixels. Signed, vertical and compatibility
-instruction tests plus generated-font native probes cover the fix. The current
+instruction tests plus generated-font native probes cover the fix. The historical
 `artifacts/native-text-glyphs/README.md` records individual digits at all eight
-17px phases, remaining Courier shape differences and rejected curve experiments.
+17px phases. The owner's subsequent report exposed damaged letters missed by
+that scope. `artifacts/native-text-audit/README.md` records the expanded character
+audit and current refinement: precise IP ratios with rounded phantom points,
+nearest F26.6 interpolation, exact monotone quadratic crossings, and design
+heights for uninstructed simple TrueType outlines. Composite/failed-hint
+alignment remains in place, including correct curve-control transformation.
+C/D pixels remain unchanged. Individual regressions and substantial Courier
+shape differences remain; lower averages do not establish visual approval.
 The adapted alpha model's license is in `licenses/Microsoft-Terminal-MIT.txt`.
+
+The subsequent `artifacts/native-text-conformance/README.md` records the
+pure-D instruction and curve audit. Refined D uses moved line coordinates for
+SPVTL/SFVTL and SDPVTL projection, with a separate original dual vector. It
+retains original-point ratios for axis MDRP and IUP, native signed IUP rounding,
+and the rounded IUP interval guards. At 1px it skips glyph instructions while
+retaining initial scaling. FLIP instructions reach the rasterizer, and exact
+quadratic intersections remain stable at extrema. C and reviewed D retain
+their behavior. The strict glyph/size/phase gates still fail native parity;
+dropout scan conversion, composite child hinting and legacy gasp behavior are
+among the remaining gaps. Windows reference results do not certify shaping,
+fallback or rendering on every platform. These are historical finite-scope
+results; the 2026-10-23 default promotion and OpenCode Pro chat checks are in
+`artifacts/native-text-default-d/README.md`.
 
 ## Current font boundaries
 

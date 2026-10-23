@@ -1,0 +1,65 @@
+[
+  {
+    "font": "segoe",
+    "tested": 94,
+    "exact": 34,
+    "improve": 5,
+    "regress": 7
+  },
+  {
+    "font": "consolas",
+    "tested": 94,
+    "exact": 23,
+    "improve": 5,
+    "regress": 14
+  },
+  {
+    "font": "arial",
+    "tested": 94,
+    "exact": 35,
+    "improve": 5,
+    "regress": 8
+  },
+  {
+    "font": "calibri",
+    "tested": 94,
+    "exact": 38,
+    "improve": 1,
+    "regress": 7
+  },
+  {
+    "font": "tahoma",
+    "tested": 94,
+    "exact": 24,
+    "improve": 0,
+    "regress": 10
+  },
+  {
+    "font": "verdana",
+    "tested": 94,
+    "exact": 22,
+    "improve": 4,
+    "regress": 6
+  },
+  {
+    "font": "courier",
+    "tested": 94,
+    "exact": 0,
+    "improve": 4,
+    "regress": 16
+  },
+  {
+    "font": "times",
+    "tested": 94,
+    "exact": 27,
+    "improve": 4,
+    "regress": 11
+  },
+  {
+    "font": "inter",
+    "tested": 94,
+    "exact": 12,
+    "improve": 0,
+    "regress": 0
+  }
+]

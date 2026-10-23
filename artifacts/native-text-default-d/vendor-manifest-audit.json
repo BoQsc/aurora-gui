@@ -1,0 +1,19 @@
+{
+  "inherited_mismatches": [
+    {
+      "path": "source/aurora/platform/base.d",
+      "expected": "809ec240a370412896b0dcd12b074a80baa63aa69b519a73aff8d1ecf5ba0dd4",
+      "actual": "a66b0d150c47f07d0e7cb4183cb7d35e2d3ca05041c22491d363e9c0128fa564"
+    },
+    {
+      "path": "source/aurora/platform/win32.d",
+      "expected": "65d223d33361b2f3b38f37ce229bec5f95ef9c66ea5dafec467245125380d16d",
+      "actual": "b8b4b7358a09e3f12fc9bc3065fffa93816b99f514eb83cfe37b00617cca3d38"
+    },
+    {
+      "path": "source/aurora/window.d",
+      "expected": "a6ce9b22a4d60c2b0d92dbf0107b1307b44b3bcce5197901fe105760f702199e",
+      "actual": "1394f941ed0d9a3eda8680b19b30e60d44157a348e609b177478f41fbf6366bb"
+    }
+  ]
+}

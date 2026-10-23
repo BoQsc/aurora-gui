@@ -1,0 +1,151 @@
+{
+  "status": "exploratory variants, not acceptance evidence",
+  "raw_outputs": "build-validation/native-text-audit/exploration (ignored local files)",
+  "experiments": [
+    {
+      "file": "initial-hypotheses.json",
+      "interpretation": "Raw X or unconditional delta suppression does not establish correct contours.",
+      "metrics": {
+        "raw-x": {
+          "count": 846,
+          "mean": 13.994582970494426,
+          "worst": 76.95121951219512
+        },
+        "no-delta": {
+          "count": 846,
+          "mean": 13.21742842414402,
+          "worst": 177.4
+        }
+      }
+    },
+    {
+      "file": "math-hypotheses.json",
+      "interpretation": "Nearest IP using quantized endpoints fixes e but damages other letters.",
+      "metrics": {
+        "rounded-math": {
+          "count": 846,
+          "mean": 12.168659714532724,
+          "worst": 68.69565217391305
+        },
+        "rounded-IP": {
+          "count": 846,
+          "mean": 12.213794247078049,
+          "worst": 68.69565217391305
+        }
+      }
+    },
+    {
+      "file": "curve-hypotheses.json",
+      "interpretation": "Exact curves improve bowls, but broader original-coordinate replacement changes unrelated instruction behavior.",
+      "metrics": {
+        "exact-curves-IP": {
+          "count": 846,
+          "mean": 10.562974434193935,
+          "worst": 68.69565217391305
+        },
+        "exact-curves": {
+          "count": 846,
+          "mean": 10.697076067719376,
+          "worst": 74.78048780487805
+        },
+        "original-IP": {
+          "count": 846,
+          "mean": 14.322921609721048,
+          "worst": 68.0
+        }
+      }
+    },
+    {
+      "file": "legacy-grid-hypotheses.json",
+      "interpretation": "8x1 fallback worsens small Courier asterisks and several fractional-phase glyphs.",
+      "metrics": {
+        "legacy-grid": {
+          "count": 846,
+          "mean": 11.33849413079437,
+          "worst": 92.28571428571429
+        },
+        "legacy-grid-curves-IP": {
+          "count": 846,
+          "mean": 9.601458245280716,
+          "worst": 93.19047619047619
+        }
+      }
+    },
+    {
+      "file": "no-thin-hypothesis.json",
+      "interpretation": "Removing legacy thin-family coverage boost is not a structural correction.",
+      "metrics": {
+        "candidate": {
+          "count": 846,
+          "mean": 9.640732897816006,
+          "worst": 90.19047619047619
+        }
+      }
+    },
+    {
+      "file": "ablations.json",
+      "interpretation": "Character ablations attribute regressions to IP precision, curves or unhinted vertical alignment.",
+      "metrics": {
+        "IP-only": {
+          "count": 6768,
+          "mean": 10.026662489558548,
+          "worst": 86.70588235294117
+        },
+        "curves-only": {
+          "count": 6768,
+          "mean": 8.8830671063642,
+          "worst": 87.70588235294117
+        },
+        "no-align-only": {
+          "count": 6768,
+          "mean": 9.179052765675626,
+          "worst": 87.70588235294117
+        }
+      }
+    },
+    {
+      "file": "design-IP-hypothesis.json",
+      "interpretation": "Original outline ratios without rounded phantom points damage W, 4 and other glyphs.",
+      "metrics": {
+        "candidate": {
+          "count": 5076,
+          "mean": 9.821523071604327,
+          "worst": 86.70588235294117
+        }
+      }
+    },
+    {
+      "file": "distance-IP-hypothesis.json",
+      "interpretation": "Rounding outline distances before interpolation still loses necessary precision.",
+      "metrics": {
+        "candidate": {
+          "count": 6768,
+          "mean": 8.895388054798032,
+          "worst": 86.70588235294117
+        }
+      }
+    },
+    {
+      "file": "dual-IP-hypothesis.json",
+      "interpretation": "Changing dual/projection setup does not repair the phantom-point mismatch and is outside this fix.",
+      "metrics": {
+        "candidate": {
+          "count": 5076,
+          "mean": 9.665081025618184,
+          "worst": 86.1311475409836
+        }
+      }
+    },
+    {
+      "file": "precise-IP-hypothesis.json",
+      "interpretation": "Precise scaled outline numerators and rounded phantom numerators are retained in the final implementation.",
+      "metrics": {
+        "candidate": {
+          "count": 6768,
+          "mean": 7.845588052774953,
+          "worst": 86.70588235294117
+        }
+      }
+    }
+  ]
+}

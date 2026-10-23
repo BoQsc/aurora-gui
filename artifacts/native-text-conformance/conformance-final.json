@@ -1,0 +1,40 @@
+{
+  "status": "FAIL",
+  "font_count": 9,
+  "tested": 111192,
+  "exact": 2798,
+  "failed": 108394,
+  "sizes": [
+    13,
+    17,
+    26
+  ],
+  "phases": [
+    0
+  ],
+  "themes": [
+    "light"
+  ],
+  "all_glyphs": true,
+  "charset": "all",
+  "compiled_hinter_text_sha256": "1bfe543d63ccf02eb52322fc1647787b5c284ad6b916e98ef3d4bccfb0322a1c",
+  "shared_source_sha256": {
+    "hinter.d": "c6ab0cc78458a8e6024b6c9c4e98a409f1c48bd5c6e5c408ea8ed0a5294401de",
+    "rasterizer.d": "de9c6c2fbf64ac475bcffd75a57e8ee90f90456bca4f444e86c109a8b7337f57",
+    "truetype.d": "afaca1642a71c4a97040f832bfc174617ff88e76e38a9edf5fa6d6f6bb81cee1",
+    "atlas.d": "b979842ca491a4d1c1edc67e3de88027263f048f3a8d854c4ac147d6d04c75b0",
+    "alphacorrection.d": "1862931b6dc1462360fc855fee86fce706179f4b15c9ef129cd2dd1235876530",
+    "coverage.d": "4590dbfec6a2defd5706d91ad58123646e8725b07237dcdc84e0938202520a83",
+    "fontprofile.d": "077942f300652ee82fee819a25c759596b3ca7af3067593c2321f7f5e1e0305f"
+  },
+  "fixture_sha256": "5a60a7b151c27ab59fac1a489779d50119780b1b5d3d5c2cf5ea04e77ab29768",
+  "compiled_module_sha256": {
+    "alphacorrection.d": "eafa2e18c9d90fde7e42fe9f2d78467628bbe4eaf25b3566d0873e10f5459614",
+    "atlas.d": "455fe3e9796f3b11f16f0c988dba0568f175f1f512ccaf1607641ae6d80db4d5",
+    "coverage.d": "e4c114e0df7dff7043ba853401423970e72ffb5151d7fc238c1466da916bedeb",
+    "fontprofile.d": "b5086420b2e4b6867827e8370739252fe6d8cd49f6eab7d7fd50def97862adce",
+    "hinter.d": "c6ab0cc78458a8e6024b6c9c4e98a409f1c48bd5c6e5c408ea8ed0a5294401de",
+    "rasterizer.d": "de9c6c2fbf64ac475bcffd75a57e8ee90f90456bca4f444e86c109a8b7337f57",
+    "truetype.d": "afaca1642a71c4a97040f832bfc174617ff88e76e38a9edf5fa6d6f6bb81cee1"
+  }
+}
