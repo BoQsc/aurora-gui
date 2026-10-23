@@ -10,7 +10,7 @@ import core.thread : Thread;
 import core.time : MonoTime, msecs;
 import std.datetime : Clock;
 import std.conv : to;
-import std.file : mkdirRecurse, tempDir;
+import std.file : mkdirRecurse, tempDir, write;
 import std.path : buildPath, absolutePath;
 import std.string : indexOf;
 import std.stdio : writeln;
@@ -62,7 +62,13 @@ int main()
     mkdirRecurse(state); setOpencodeStateDirectoryForTesting(state);
     Settings settings; settings.baseUrl = "http://127.0.0.1:1/v1"; settings.apiKey = "fixture";
     settings.workspace = state; settings.toolsEnabled = false; settings.quickTitle = false;
-    assert(!settings.experimentalFollowUpDivider, "Experimental follow-up UI must be off by default");
+    assert(settings.experimentalFollowUpDivider, "Experimental follow-up UI must be on by default");
+    assert(loadSettings().experimentalFollowUpDivider, "Fresh settings lost the enabled default");
+    write(buildPath(state, "settings.json"), `{"toolsEnabled":false}`);
+    assert(loadSettings().experimentalFollowUpDivider, "Older settings without the option lost the enabled default");
+    saveSettings(settings);
+    assert(loadSettings().experimentalFollowUpDivider);
+    settings.experimentalFollowUpDivider = false;
     saveSettings(settings);
     assert(!loadSettings().experimentalFollowUpDivider);
     WindowOptions options; options.width = 1100; options.height = 820;
@@ -176,6 +182,6 @@ int main()
     section = cast(AutomaticFollowUpSection) find(root, "oc-automatic-follow-up");
     assert(section !is null && section.collapsed(), "Paging dropped the automatic follow-up boundary");
     assert(root.followUpAnswerVisibleForTesting());
-    writeln("PASS experimental option defaults off, actual Settings toggle persists and applies immediately without changing history; divider, timer, search, reload and both layouts");
+    writeln("PASS experimental option defaults on for fresh/older settings, saved off remains honored; Settings toggle persists and applies immediately without changing history; divider, timer, search, reload and both layouts");
     return 0;
 }

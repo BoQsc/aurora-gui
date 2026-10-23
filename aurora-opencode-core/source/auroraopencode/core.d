@@ -1514,7 +1514,7 @@ public struct Settings
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
     bool experimentalChatRedesign; // highly experimental presentation, off by default
-    bool experimentalFollowUpDivider; // opt-in collapsible automatic follow-up UI
+    bool experimentalFollowUpDivider = true; // collapsible automatic follow-up UI, on by default
     bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
     // experimental: planmode - stricter, non-templating plan upkeep. Off by
     // default; the Settings dialog owns this switch.
