@@ -1,0 +1,45 @@
+{
+  "name": "aurora-mesh",
+  "description": "A small software-projected 3D mesh editor with a humanoid base mesh",
+  "authors": [
+    "Aurora experiments"
+  ],
+  "copyright": "Copyright (C) 2026 Aurora mesh contributors",
+  "license": "0BSD",
+  "targetName": "aurora-mesh",
+  "targetType": "executable",
+  "mainSourceFile": "source/auroramesh/main.d",
+  "sourcePaths": [
+    "source"
+  ],
+  "dependencies": {
+    "aurora-d": {
+      "path": "../../vendor/aurora-d-0.4.5"
+    },
+    "aurora-standard": {
+      "path": "../../vendor/aurora-standard"
+    }
+  },
+  "dflags-windows": [
+    "-mscrtlib=msvcrt"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ]
+}

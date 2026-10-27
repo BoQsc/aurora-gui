@@ -1,0 +1,44 @@
+{
+  "inputs": [
+    "experiments/aurora-mesh/source",
+    "experiments/aurora-mesh/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": ["build", "--build=debug", "--dest=build/verify"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "dub",
+        "args": ["test", "--build=debug"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/verify/aurora-mesh.exe",
+        "args": ["--check"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 60000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "build/verify/aurora-mesh.exe",
+        "args": ["--render", "build/verify-human.ppm", "--width", "800", "--height", "600"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 120000
+      }
+    }
+  ]
+}
