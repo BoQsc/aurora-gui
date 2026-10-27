@@ -44,7 +44,7 @@ import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.json : JSONType, parseJSON;
 import std.path : baseName, buildPath, buildNormalizedPath, dirName;
-import std.process : Config, spawnProcess, wait;
+import std.process : Config, environment, spawnProcess, wait;
 import std.stdio : File, stderr, stdin, stdout;
 import std.string : indexOf, lastIndexOf, replace, startsWith, strip, toLower;
 import std.utf : toUTF16, toUTF8;
@@ -1531,10 +1531,9 @@ private string lastPublishLine(string output)
 }
 
 /**
- * Attempt release publication after a successful build. DUB already runs the
- * publisher in its post-build step, but that step is optional and exits zero on
- * skips. The helper repeats the attempt and records an explicit result so a
- * local rebuild never silently looks like a published update.
+ * Attempt release publication after a successful build and install. The helper
+ * suppresses DUB's post-build publisher while compiling, so nothing can upload
+ * before both stages succeed. The explicit result is recorded in the ledger.
  */
 private PublishResult publishRelease(in HelperJob job)
 {
@@ -1973,7 +1972,15 @@ int runRebuildHelperMode(string[] args)
     // Downloads can be renamed (for example "Aurora (1).exe"); DUB's
     // output name is still the package target, not the installed filename.
     const builtImage = buildPath(job.packageDir, "aurora-opencode-pro.exe");
-    bool built = runDub(job, dubArgv(job), builtImage, true, exitCode, errors);
+    // Keep DUB's post-build publisher from uploading a build that has not yet
+    // installed successfully. The helper publishes only after both stages pass.
+    const previousPublishSkip = environment.get("FORGE_PUBLISH_SKIP", "");
+    bool built;
+    environment["FORGE_PUBLISH_SKIP"] = "1";
+    try
+        built = runDub(job, dubArgv(job), builtImage, true, exitCode, errors);
+    finally
+        environment["FORGE_PUBLISH_SKIP"] = previousPublishSkip;
     PublishResult publication;
     if (built)
     {
