@@ -109,9 +109,34 @@ int main()
     assert(taskContinuation(session, true).action == TaskContinuationAction.continueWork);
     session.verificationStatus = "passed";
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
+
+    // A verification-only task cannot keep auto-continuing forever when the
+    // checker never produces an acceptable receipt.
+    session = pending();
+    session.taskSteps[0].status = "completed";
+    session.taskSteps[1].status = "completed";
+    session.verificationStatus = "required";
+    foreach (i; 0 .. taskVerificationAttemptLimit)
+    {
+        decision = taskContinuation(session, true);
+        assert(decision.action == TaskContinuationAction.continueWork);
+        assert(decision.verificationAttempts == i + 1);
+        append(session, "user", decision.guidance(), true);
+        append(session, "tool", "Rerun " ~ to!string(i), false, "run",
+            "run-" ~ to!string(i));
+    }
+    decision = taskContinuation(session, true);
+    assert(decision.action == TaskContinuationAction.settle,
+        "Verification-only churn did not stop");
+    assert(decision.verificationAttempts > taskVerificationAttemptLimit);
+
     session = pending();
     append(session, "user", "What happened to the unfinished plan?");
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
+    session = pending();
+    append(session, "user", "So what's the future of this project?");
+    assert(taskContinuation(session, true).action == TaskContinuationAction.settle,
+        "Conversation follow-up resumed unfinished work");
     foreach (question; ["What is left?", "How would we fix it?", "Why did it stop?"])
         assert(answerOnlyRequest(question));
     foreach (request; ["Can you fix the remaining work?", "Could you implement it?",

@@ -2,7 +2,7 @@ module auroraopencode.taskcontinuation;
 
 import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.taskcontext : taskExcerpt;
-import auroraopencode.requestintent : answerOnlyRequest;
+import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestIntent;
 import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
 import auroraopencode.workevidence : observedResultKey;
 import std.digest.sha : sha256Of;
@@ -13,6 +13,7 @@ import std.regex : matchFirst;
 
 enum taskContinuationMarker = "Continuation: unfinished authorized work\n";
 enum taskStallLimit = 3;
+enum taskVerificationAttemptLimit = 3;
 
 enum TaskContinuationAction { settle, continueWork, replan }
 
@@ -24,6 +25,7 @@ struct TaskContinuation
     bool verified;
     int stalled;
     int replans;
+    int verificationAttempts;
     string[] evidence;
     bool verificationRequired;
     string remaining;
@@ -36,6 +38,7 @@ struct TaskContinuation
         state["verified"] = verified;
         state["stalled"] = action == TaskContinuationAction.replan ? 0 : stalled;
         state["replans"] = replans + (action == TaskContinuationAction.replan ? 1 : 0);
+        state["verificationAttempts"] = verificationAttempts;
         state["evidence"] = JSONValue(evidence);
         if (action == TaskContinuationAction.replan)
             return taskContinuationMarker ~ state.toString() ~ "\n" ~
@@ -80,6 +83,29 @@ bool unfinishedTask(const ref ChatSession session)
         session.verificationStatus == "failed";
 }
 
+/// True when every outcome is complete and the only outstanding requirement is
+/// a verification receipt. Repeated receipt churn must not run forever.
+private bool verificationOnly(const ref ChatSession session)
+{
+    auto evidenceIndex = taskEvidenceIndex(session, false);
+    const requireEvidence = session.contract.id.length > 0;
+    foreach (step; session.taskSteps)
+        if (step.status != "completed" ||
+            (requireEvidence && !supportedStep(session, step, evidenceIndex)))
+            return false;
+    foreach (plan; session.nestedPlans)
+        foreach (step; plan.steps)
+            if (step.status != "completed" ||
+                (requireEvidence && !supportedStep(session, step, evidenceIndex)))
+                return false;
+    foreach (item; session.contract.workItems)
+        if (item.required && (item.step.status != "completed" ||
+            (requireEvidence && !supportedStep(session, item.step, evidenceIndex))))
+            return false;
+    return session.verificationStatus == "required" ||
+        session.verificationStatus == "failed";
+}
+
 /// Derive recovery checkpoints from the selected, durable branch. Prose, failed
 /// calls, novel searches and plan rewrites cannot reset it. Completed outcomes
 /// and accepted verification can. Stalls change diagnosis; they never exhaust
@@ -99,9 +125,11 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
             request = session.messages[index].content;
         }
     if (!request.length && session.parentSessionId.length) request = session.contract.requestedOutcome;
-    if (!request.length || answerOnlyRequest(request)) return result;
+    if (!request.length || answerOnlyRequest(request) ||
+        requestIntent(request) == RequestIntent.conversation) return result;
 
     JSONValue previous;
+    int previousVerificationAttempts;
     bool[string] evidence;
     foreach (index; path[begin .. $])
     {
@@ -123,6 +151,10 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
                      snapshot["verified"].type == JSONType.false_) &&
                     snapshot["stalled"].type == JSONType.integer)
                     previous = snapshot;
+                if (snapshot.type == JSONType.object)
+                    if (auto value = "verificationAttempts" in snapshot.object)
+                        if (value.type == JSONType.integer)
+                            previousVerificationAttempts = cast(int) value.integer;
             }
             catch (Exception) {}
         }
@@ -162,6 +194,9 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     foreach (id; completedEvidence.keys) result.evidence ~= id;
     result.verified = session.verificationStatus == "passed";
     result.verificationRequired = session.verificationStatus == "required" || session.verificationStatus == "failed";
+    const onlyVerification = verificationOnly(session);
+    if (onlyVerification && result.verificationRequired && !result.verified)
+        result.verificationAttempts = previousVerificationAttempts + 1;
     if (!session.taskSteps.length && taskRequiresPlan(session))
         result.remaining ~= "This task now requires an outcome checklist. Record the already requested outcomes " ~
             "with update_plan and cite successful tool-call IDs for completed work; do not invent extra work. ";
@@ -199,9 +234,12 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
             if (auto value = "replans" in previous.object)
                 if (value.type == JSONType.integer) result.replans = cast(int) value.integer;
     }
-    result.action = result.stalled >= taskStallLimit
-        ? TaskContinuationAction.replan
-        : TaskContinuationAction.continueWork;
+    result.action = onlyVerification &&
+        result.verificationAttempts > taskVerificationAttemptLimit
+        ? TaskContinuationAction.settle
+        : result.stalled >= taskStallLimit
+            ? TaskContinuationAction.replan
+            : TaskContinuationAction.continueWork;
     return result;
 }
 
