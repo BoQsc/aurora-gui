@@ -11845,7 +11845,7 @@ private string _suggestExcludeId;
                 rebuildReport = outcome.report.length > 0
                     ? outcome.report : incompleteRebuildReport(outcome);
             else
-                buildStamp = rebuildSuccessStamp();
+                buildStamp = rebuildSuccessStamp() ~ rebuildPublicationStamp(outcome);
         }
         if (target >= 0 && noteSession.length && _sessions[target].id == noteSession &&
             cause == "rebuild" && rebuildReport.length == 0 &&
@@ -12116,6 +12116,27 @@ private string _suggestExcludeId;
             baseName(newestName) ~ " changed later (" ~
             formatStamp(newestTime) ~ "); the build may be stale — rebuild " ~
             "again.";
+    }
+
+    /// Publication is part of delivery, not a silent side effect. The rebuild
+    /// helper records success, skips and failures in the same durable ledger.
+    private static string rebuildPublicationStamp(in RebuildOutcome outcome)
+    {
+        if (!outcome.publishStatus.length) return "";
+        if (outcome.publishStatus == "published")
+            return "\n\nRelease publication: uploaded and publicly verified; " ~
+                "other users can update now.";
+        if (outcome.publishStatus == "unchanged")
+            return "\n\nRelease publication: the public release is already " ~
+                "current and publicly verified.";
+        const label = outcome.publishStatus == "skipped" ? "skipped" : "failed";
+        string note = "\n\nRelease publication " ~ label ~ ": " ~
+            (outcome.publishDetail.length ? outcome.publishDetail : "no detail recorded") ~
+            "\nThe local rebuild is live, but other users cannot receive it " ~
+            "until publication succeeds.";
+        if (outcome.publishLog.length)
+            note ~= "\n(publish log: " ~ outcome.publishLog ~ ")";
+        return note;
     }
 
     /// The package directory that owns the shared rebuild state and artifacts,

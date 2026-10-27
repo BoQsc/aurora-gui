@@ -122,6 +122,12 @@ string buildLogPath(string dir)
     return dir.length > 0 ? buildPath(dir, "build.log") : "";
 }
 
+/// The publisher transcript for the most recent rebuild.
+string publishLogPath(string dir)
+{
+    return dir.length > 0 ? buildPath(dir, "publish.log") : "";
+}
+
 /// A snapshot of `rebuildstate.json`. Absent or unknown fields default empty.
 struct RebuildState
 {
@@ -139,6 +145,10 @@ struct RebuildState
     long durationMs;
     int exitCode;
     string[] errors;
+    /// Release publication outcome: published, unchanged, skipped or failed.
+    string publishStatus;
+    string publishDetail;
+    string publishLog;
 }
 
 /// Read the persisted lifecycle. Missing or unreadable state is `none`, so a
@@ -180,6 +190,12 @@ RebuildState readRebuildState(string dir)
                 foreach (entry; field.array)
                     if (entry.type == JSONType.string)
                         state.errors ~= entry.str;
+        if (auto field = "publishStatus" in root)
+            if (field.type == JSONType.string) state.publishStatus = field.str;
+        if (auto field = "publishDetail" in root)
+            if (field.type == JSONType.string) state.publishDetail = field.str;
+        if (auto field = "publishLog" in root)
+            if (field.type == JSONType.string) state.publishLog = field.str;
     }
     catch (Exception) {}
     return state;
@@ -210,7 +226,10 @@ bool writeRebuildState(string dir, in RebuildState state)
         if (index) json ~= ", ";
         json ~= jsonString(line);
     }
-    json ~= "]\n";
+    json ~= "],\n";
+    json ~= "  \"publishStatus\": " ~ jsonString(state.publishStatus) ~ ",\n";
+    json ~= "  \"publishDetail\": " ~ jsonString(state.publishDetail) ~ ",\n";
+    json ~= "  \"publishLog\": " ~ jsonString(state.publishLog) ~ "\n";
     json ~= "}\n";
     try
     {
@@ -260,6 +279,9 @@ struct RebuildOutcome
     long durationMs;
     int exitCode;
     string[] errors;
+    string publishStatus;
+    string publishDetail;
+    string publishLog;
     /// The failed-build report text ("" otherwise).
     string report;
     /// Where the build transcript lives, for pointing the agent at the detail.
@@ -313,6 +335,9 @@ RebuildOutcome readRebuildOutcome(string dir)
     outcome.durationMs = state.durationMs;
     outcome.exitCode = state.exitCode;
     outcome.errors = state.errors;
+    outcome.publishStatus = state.publishStatus;
+    outcome.publishDetail = state.publishDetail;
+    outcome.publishLog = state.publishLog;
     outcome.buildLog = buildLogPath(dir);
     if (state.status == RebuildStatus.failed)
     {
@@ -1197,7 +1222,8 @@ private void appendLine(string logPath, string text)
  * transition of one rebuild names the same start; `began` measures elapsed.
  */
 private void writeJobState(in HelperJob job, RebuildStatus status, string phase,
-    string startedAt, int exitCode, string[] errors, MonoTime began)
+    string startedAt, int exitCode, string[] errors, MonoTime began,
+    string publishStatus = "", string publishDetail = "", string publishLog = "")
 {
     RebuildState state;
     state.status = status;
@@ -1212,6 +1238,9 @@ private void writeJobState(in HelperJob job, RebuildStatus status, string phase,
         state.durationMs = (MonoTime.currTime - began).total!"msecs";
     state.exitCode = exitCode;
     state.errors = errors;
+    state.publishStatus = publishStatus;
+    state.publishDetail = publishDetail;
+    state.publishLog = publishLog.length ? publishLog : publishLogPath(stateRoot(job));
     writeRebuildState(stateRoot(job), state);
 }
 
@@ -1472,6 +1501,125 @@ private bool runDub(in HelperJob job, string[] argv, string targetExe,
         catch (Exception) {}
     }
     return true;
+}
+
+private struct PublishResult
+{
+    string status;
+    string detail;
+    string logPath;
+
+    bool succeeded() const
+    {
+        return status == "published" || status == "unchanged";
+    }
+}
+
+/// The last non-empty line of publisher output, bounded for the ledger.
+private string lastPublishLine(string output)
+{
+    auto value = strip(output);
+    while (value.length)
+    {
+        const end = value.lastIndexOf('\n');
+        auto line = end >= 0 ? strip(value[end + 1 .. $]) : value;
+        if (line.length) return tailText(line, 500);
+        if (end < 0) break;
+        value = value[0 .. end];
+    }
+    return "";
+}
+
+/**
+ * Attempt release publication after a successful build. DUB already runs the
+ * publisher in its post-build step, but that step is optional and exits zero on
+ * skips. The helper repeats the attempt and records an explicit result so a
+ * local rebuild never silently looks like a published update.
+ */
+private PublishResult publishRelease(in HelperJob job)
+{
+    PublishResult result;
+    result.logPath = publishLogPath(stateRoot(job));
+    const script = buildPath(job.packageDir, "tools", "publish-forge.py");
+    if (!exists(script))
+    {
+        result.status = "skipped";
+        result.detail = "publisher script is missing";
+        return result;
+    }
+
+    // Avoid a second upload when DUB's post-build step already verified it.
+    const buildLog = buildLogPath(stateRoot(job));
+    if (exists(buildLog))
+    {
+        const output = readText(buildLog);
+        if (output.indexOf("Published and publicly verified") >= 0)
+        {
+            result.status = "published";
+            result.detail = "published and publicly verified by the build post-step";
+            result.logPath = buildLog;
+            return result;
+        }
+        if (output.indexOf("Forge release unchanged; public download verified") >= 0)
+        {
+            result.status = "unchanged";
+            result.detail = "public release already current and verified";
+            result.logPath = buildLog;
+            return result;
+        }
+    }
+
+    File sink;
+    bool haveSink;
+    if (result.logPath.length > 0)
+    {
+        try
+        {
+            mkdirRecurse(dirName(result.logPath));
+            sink = File(result.logPath, "w");
+            haveSink = true;
+        }
+        catch (Exception) {}
+    }
+    appendLine(job.logPath, "publishing release: " ~ script);
+    int code;
+    try
+    {
+        auto pid = spawnProcess(["python", script, "--required"], stdin,
+            haveSink ? sink : stdout, haveSink ? sink : stderr, null,
+            Config.suppressConsole, job.packageDir);
+        code = wait(pid);
+    }
+    catch (Exception error)
+    {
+        if (haveSink) sink.close();
+        result.status = "failed";
+        result.detail = "publisher could not be started: " ~ error.msg;
+        appendLine(job.logPath, "release publication failed: " ~ result.detail);
+        return result;
+    }
+    if (haveSink) sink.close();
+
+    string output;
+    if (result.logPath.length > 0 && exists(result.logPath))
+        try output = readText(result.logPath);
+        catch (Exception) {}
+    if (output.indexOf("Published and publicly verified") >= 0)
+        result.status = "published";
+    else if (output.indexOf("Forge release unchanged; public download verified") >= 0)
+        result.status = "unchanged";
+    else if (output.indexOf("Forge publish skipped") >= 0)
+        result.status = "skipped";
+    else if (code == 0)
+        result.status = "published";
+    else
+        result.status = "failed";
+    result.detail = lastPublishLine(output);
+    if (!result.detail.length)
+        result.detail = "publisher exited " ~ to!string(code);
+    appendLine(job.logPath,
+        "release publication " ~ result.status ~ ": " ~ result.detail);
+    return result;
 }
 
 private bool waitForUnlock(string exePath, int timeoutSeconds)
@@ -1826,6 +1974,7 @@ int runRebuildHelperMode(string[] args)
     // output name is still the package target, not the installed filename.
     const builtImage = buildPath(job.packageDir, "aurora-opencode-pro.exe");
     bool built = runDub(job, dubArgv(job), builtImage, true, exitCode, errors);
+    PublishResult publication;
     if (built)
     {
         string installError;
@@ -1835,9 +1984,12 @@ int runRebuildHelperMode(string[] args)
     if (built)
     {
         appendLine(job.logPath, "build succeeded");
-        setProgress("Rebuild finished. Starting...", "", 1.0);
+        setProgress("Publishing update...", "uploading to the configured channel", -1.0);
+        publication = publishRelease(job);
+        setProgress(publication.succeeded() ? "Update published. Starting..." :
+            "Update not published. Starting locally...", publication.detail, 1.0);
         writeJobState(job, RebuildStatus.ok, "relaunching", startedAt, 0, null,
-            began);
+            began, publication.status, publication.detail, publication.logPath);
     }
     else
     {

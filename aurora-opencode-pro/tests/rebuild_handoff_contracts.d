@@ -1,6 +1,7 @@
 module rebuild_handoff_contracts;
 import rebuild : writeSupervisorHandoff, consumeSupervisorHandoff, clearSupervisorHandoff, errorLines,
-    runSupervisedChild, runRebuildHelperMode, rebuildHelperFlag;
+    runSupervisedChild, runRebuildHelperMode, rebuildHelperFlag, writeRebuildState,
+    readRebuildOutcome, RebuildState, RebuildStatus;
 import auroraopencode.checkout : canonicalPath;
 import core.time : MonoTime;
 import std.conv : to;
@@ -42,6 +43,17 @@ int main(string[] args)
     clearSupervisorHandoff(state, 123);
     assert(!consumeSupervisorHandoff(state, image, 123));
     assert(!writeSupervisorHandoff("", image, 123));
+    RebuildState record;
+    record.status = RebuildStatus.ok;
+    record.phase = "relaunching";
+    record.publishStatus = "failed";
+    record.publishDetail = "publisher config missing";
+    record.publishLog = buildPath(state, "publish.log");
+    assert(writeRebuildState(state, record));
+    const outcome = readRebuildOutcome(state);
+    assert(outcome.publishStatus == "failed" &&
+        outcome.publishDetail == "publisher config missing" &&
+        outcome.publishLog == record.publishLog);
     const child = buildPath(state, "handoff-child.exe");
     copy(thisExePath(), child);
     bool handedOff;
