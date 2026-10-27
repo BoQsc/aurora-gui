@@ -137,7 +137,17 @@ applying a revision. Edits are rebuilt in the viewport immediately.
     {"type": "pose", "node": "RightArm",
      "rotation": [0.0, 0.382683, 0.0, 0.92388]},
     {"type": "object", "shape": "rifle", "node": "RightHand",
-     "offset": [0.0, 0.0, 0.0], "scale": 0.35},
+     "offset": [0.0, 0.0, 0.0], "rotation": [0, 0, 0.382683, 0.92388],
+     "scale": 0.35, "color": [0.45, 0.28, 0.12]},
+    {"type": "new-animation", "name": "ArmWave", "duration": 2.0,
+     "loop": true, "tracks": [
+       {"node": "RightArm", "keys": [
+         {"time": 0.0, "rotation": [0, 0, 0, 1]},
+         {"time": 1.0, "rotation": [0, 0, 0.966, 0.259]},
+         {"time": 2.0, "rotation": [0, 0, 0, 1]}
+       ]}
+     ]},
+    {"type": "save", "path": "build/live-export.glb"},
     {"type": "clear"}
   ]
 }
@@ -150,12 +160,18 @@ applying a revision. Edits are rebuilt in the viewport immediately.
 - `object` creates an owned procedural object. Supported shapes are `box`,
   `sphere`, `rifle`, and `weapon`. With `node`, the object is attached to that
   baked bone and `offset` is bone-local; otherwise `position` is world-space.
+  `path` imports an OBJ instead of a built-in shape. `rotation` is a local
+  quaternion, `color` is RGB, and `save` writes the current baked mesh to GLB
+  after the revision rebuild.
+- `new-animation` authors a named, loopable bone clip from local keyframes.
+  `Space` plays/pauses it, `N` restarts it, and `[` / `]` scrub it.
 - `clear` removes pose overrides and live objects.
 
 This is a live authoring and preview path, not a complete scene editor.
-Objects are procedural, poses are node-local overrides, and edits are not
-serialized back into a live skinned scene. Arbitrary imported meshes, CSG,
-undo transactions, and scene export are the next production steps.
+Objects are procedural or OBJ, poses are node-local overrides, and edits are
+not serialized back into a live skinned scene. GLB scene injection, CSG, undo
+transactions, and a live scene graph/network protocol are the next production
+steps.
 
 ## Remaining gaps
 
@@ -167,7 +183,8 @@ undo transactions, and scene export are the next production steps.
 - Missing glTF rendering features: metallic/roughness, normal, emissive, and
   occlusion maps; texture transforms; advanced material extensions; animation
   blending/events; cameras; lights; and non-triangle primitive rendering.
-- Missing asset forms/compression: Draco, BasisU/KTX2, meshopt, quantization
+- Missing asset forms/compression: arbitrary GLB scene injection, Draco,
+  BasisU/KTX2, meshopt, quantization
   extensions, and external URI images/buffers.
 - Full scene authoring is absent. Loaded scenes support pass-through save and
   baked static export, but edited hierarchies, skins, animations, and morphs

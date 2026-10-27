@@ -6,6 +6,7 @@ import aurora.image : RgbaImage, encodePng;
 import std.array : join;
 import std.conv : to;
 import std.format : format;
+import std.math : isFinite;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.math : abs, cos, sin, sqrt;
 import std.string : strip;
@@ -284,6 +285,14 @@ ubyte[] toGlb(Mesh source)
     Mesh mesh = source;
     if (mesh.normals.length != mesh.vertices.length)
         computeSmoothNormals(mesh);
+    foreach (ref vertex; mesh.vertices)
+        if (!isFinite(vertex.x) || !isFinite(vertex.y) ||
+            !isFinite(vertex.z))
+            vertex = Vec3(0, 0, 0);
+    foreach (ref normal; mesh.normals)
+        if (!isFinite(normal.x) || !isFinite(normal.y) ||
+            !isFinite(normal.z))
+            normal = Vec3(0, 0, 1);
     if (mesh.faces.length == 0)
         throw new Exception("cannot export an empty mesh to GLB");
 

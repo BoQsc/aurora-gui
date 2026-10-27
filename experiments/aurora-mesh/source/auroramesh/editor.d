@@ -4,11 +4,12 @@ import auroramesh.camera : Camera, project;
 import auroramesh.edit : pickNearest, screenDelta;
 import auroramesh.glb : fromGlb, toGlb;
 import auroramesh.gltf_scene : GltfScene, Mat4, PoseOverride, bakeGltfFrame,
-    gltfAnimationDuration, gltfTransformNormal, gltfTransformPoint,
-    loadGltfScene;
+    gltfAnimationDuration, gltfRotateVector, gltfTransformNormal,
+    gltfTransformPoint, loadGltfScene;
 import auroramesh.live : liveObject;
 import auroramesh.mesh : Material, MaterialSlot, Mesh, Vec2, Vec3,
-    meshAdd = add, humanBaseMesh, meshMaximum, meshMinimum, parseObj, toObj;
+    meshAdd = add, computeSmoothNormals, humanBaseMesh, meshMaximum,
+    meshMinimum, parseObj, toObj;
 import auroramesh.human_v2 : humanBaseMeshV2;
 import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh;
@@ -17,10 +18,10 @@ import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
     MouseButton, Point, Rect, VerticalAlign, Widget;
 import std.file : exists, read, readText, write;
-import std.algorithm : max, min;
+import std.algorithm : max, min, sort;
 import std.conv : to;
 import std.format : format;
-import std.math : abs;
+import std.math : abs, sqrt;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.utf : toUTF32;
 
@@ -45,6 +46,34 @@ private struct LiveExtra
     Mesh mesh;
     int node = -1;
     Vec3 offset;
+    double[4] rotation = [0, 0, 0, 1];
+    bool hasRotation;
+    Vec3 color = Vec3(0.66, 0.69, 0.74);
+}
+
+private struct LiveKey
+{
+    double time;
+    bool hasTranslation;
+    Vec3 translation;
+    bool hasRotation;
+    double[4] rotation = [0, 0, 0, 1];
+    bool hasScale;
+    Vec3 scale;
+}
+
+private struct LiveTrack
+{
+    int node = -1;
+    LiveKey[] keys;
+}
+
+private struct LiveClip
+{
+    string name;
+    double duration;
+    bool loop = true;
+    LiveTrack[] tracks;
 }
 
 /**
@@ -87,6 +116,9 @@ final class MeshEditor : Widget
     private string _liveText;
     private long _liveRevision;
     private string _liveStatus;
+    private string _pendingSavePath;
+    private LiveClip _liveClip;
+    private bool _hasLiveAnimation;
 
     this(Mesh mesh, string objPath)
     {
@@ -115,6 +147,8 @@ final class MeshEditor : Widget
     void setMesh(Mesh mesh)
     {
         _hasScene = false;
+        _hasLiveAnimation = false;
+        _liveClip = LiveClip();
         _poseOverrides.length = 0;
         _liveExtras.length = 0;
         _liveStatus = "";
@@ -135,6 +169,8 @@ final class MeshEditor : Widget
             animation : 0;
         _time = time;
         _playing = false;
+        _hasLiveAnimation = false;
+        _liveClip = LiveClip();
         _poseOverrides.length = 0;
         _liveExtras.length = 0;
         _status = _scene.animations.length > 0 ?
@@ -147,6 +183,22 @@ final class MeshEditor : Widget
 
     void advance(double delta)
     {
+        if (_hasLiveAnimation)
+        {
+            if (!_playing)
+                return;
+            _time += delta;
+            if (_liveClip.duration > 0)
+            {
+                if (_liveClip.loop)
+                    while (_time >= _liveClip.duration)
+                        _time -= _liveClip.duration;
+                else if (_time > _liveClip.duration)
+                    _time = _liveClip.duration;
+            }
+            rebuildGltfMesh();
+            return;
+        }
         if (!_hasScene || !_playing || _scene.animations.length == 0)
             return;
         _time += delta;
@@ -155,6 +207,95 @@ final class MeshEditor : Widget
             while (_time > duration)
                 _time -= duration;
         rebuildGltfMesh();
+    }
+
+    private static double[4] normalizeRotation(double[4] value)
+    {
+        const magnitude = sqrt(value[0] * value[0] + value[1] * value[1] +
+            value[2] * value[2] + value[3] * value[3]);
+        if (magnitude <= 1e-12)
+            return [0, 0, 0, 1];
+        return [value[0] / magnitude, value[1] / magnitude,
+            value[2] / magnitude, value[3] / magnitude];
+    }
+
+    private static double[4] blendRotation(double[4] a, double[4] b,
+        double amount)
+    {
+        double dotValue = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] +
+            a[3] * b[3];
+        const sign = dotValue < 0 ? -1.0 : 1.0;
+        return normalizeRotation([
+            a[0] + (b[0] * sign - a[0]) * amount,
+            a[1] + (b[1] * sign - a[1]) * amount,
+            a[2] + (b[2] * sign - a[2]) * amount,
+            a[3] + (b[3] * sign - a[3]) * amount]);
+    }
+
+    private PoseOverride sampleLiveTrack(const LiveTrack track, double time)
+    {
+        PoseOverride result;
+        result.node = track.node;
+        if (track.keys.length == 0)
+            return result;
+        LiveKey first = track.keys[0];
+        LiveKey second = first;
+        double fraction;
+        if (time <= track.keys[0].time)
+            first = second = track.keys[0];
+        else if (time >= track.keys[$ - 1].time)
+            first = second = track.keys[$ - 1];
+        else
+            foreach (index; 1 .. track.keys.length)
+                if (time <= track.keys[index].time)
+                {
+                    first = track.keys[index - 1];
+                    second = track.keys[index];
+                    const span = second.time - first.time;
+                    fraction = span <= 1e-12 ? 0 :
+                        (time - first.time) / span;
+                    break;
+                }
+        if (first.hasTranslation)
+        {
+            result.hasTranslation = true;
+            result.translation = Vec3(
+                first.translation.x + (second.translation.x -
+                    first.translation.x) * fraction,
+                first.translation.y + (second.translation.y -
+                    first.translation.y) * fraction,
+                first.translation.z + (second.translation.z -
+                    first.translation.z) * fraction);
+        }
+        if (first.hasScale)
+        {
+            result.hasScale = true;
+            result.scale = Vec3(
+                first.scale.x + (second.scale.x - first.scale.x) * fraction,
+                first.scale.y + (second.scale.y - first.scale.y) * fraction,
+                first.scale.z + (second.scale.z - first.scale.z) * fraction);
+        }
+        if (first.hasRotation)
+        {
+            result.hasRotation = true;
+            result.rotation = blendRotation(first.rotation, second.rotation,
+                fraction);
+        }
+        return result;
+    }
+
+    private PoseOverride[] effectivePoseOverrides()
+    {
+        PoseOverride[] result = _poseOverrides.dup;
+        if (_hasLiveAnimation)
+            foreach (track; _liveClip.tracks)
+            {
+                const sampled = sampleLiveTrack(track, _time);
+                if (sampled.hasTranslation || sampled.hasRotation ||
+                    sampled.hasScale)
+                    result ~= sampled;
+            }
+        return result;
     }
 
     void setLivePath(string path)
@@ -197,11 +338,21 @@ final class MeshEditor : Widget
             _status = format("Live: %d object(s), %d pose override(s)",
                 _liveExtras.length, _poseOverrides.length);
         }
+        if (_pendingSavePath.length > 0)
+        {
+            try
+                write(_pendingSavePath, toGlb(_mesh));
+            catch (Exception)
+            {
+            }
+            _pendingSavePath.length = 0;
+        }
         _liveStatus = "Live revision " ~ to!string(revision);
         try
             write("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d}`,
-                revision, _liveExtras.length, _poseOverrides.length));
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s"}`,
+                revision, _liveExtras.length, _poseOverrides.length,
+                _hasLiveAnimation ? _liveClip.name : ""));
         catch (Exception)
         {
         }
@@ -214,7 +365,7 @@ final class MeshEditor : Widget
             return;
         Mat4[] worlds;
         _mesh = bakeGltfFrame(_scene, _animation, _time, true,
-            _poseOverrides, &worlds);
+            effectivePoseOverrides(), &worlds);
         if (_liveExtras.length > 0)
         {
             foreach (extra; _liveExtras)
@@ -222,10 +373,19 @@ final class MeshEditor : Widget
                 if (extra.mesh.vertices.length == 0)
                     continue;
                 Mesh extraMesh = extra.mesh;
+                if (extra.hasRotation)
+                    foreach (ref vertex; extraMesh.vertices)
+                        vertex = gltfRotateVector(extra.rotation, vertex);
+                if (extra.hasRotation &&
+                    extraMesh.normals.length == extraMesh.vertices.length)
+                    foreach (ref normal; extraMesh.normals)
+                        normal = gltfRotateVector(extra.rotation, normal);
+                foreach (ref vertex; extraMesh.vertices)
+                    vertex = meshAdd(vertex, extra.offset);
                 if (extra.node >= 0 && extra.node < worlds.length)
                     foreach (ref vertex; extraMesh.vertices)
                         vertex = gltfTransformPoint(worlds[extra.node],
-                            meshAdd(vertex, extra.offset));
+                            vertex);
                 if (extraMesh.normals.length == extraMesh.vertices.length &&
                     extra.node >= 0 && extra.node < worlds.length)
                     foreach (ref normal; extraMesh.normals)
@@ -237,7 +397,7 @@ final class MeshEditor : Widget
                     foreach (vertex; extraMesh.vertices)
                         _mesh.uvs ~= Vec2(0, 0);
                 MaterialSlot slot;
-                slot.baseColor = Vec3(0.66, 0.69, 0.74);
+                slot.baseColor = extra.color;
                 slot.doubleSided = true;
                 const materialIndex = cast(int) _mesh.materials.length;
                 _mesh.materials ~= slot;
@@ -264,6 +424,9 @@ final class MeshEditor : Widget
         {
             _liveExtras.length = 0;
             _poseOverrides.length = 0;
+            _hasLiveAnimation = false;
+            _liveClip = LiveClip();
+            _playing = false;
             changed = true;
         }
         const commands = liveChild(document, "commands");
@@ -282,8 +445,13 @@ final class MeshEditor : Widget
         {
             _liveExtras.length = 0;
             _poseOverrides.length = 0;
+            _hasLiveAnimation = false;
+            _liveClip = LiveClip();
+            _playing = false;
             return true;
         }
+        if (type == "new-animation")
+            return applyLiveAnimation(command);
         if (type == "animation")
         {
             int index = -1;
@@ -301,6 +469,8 @@ final class MeshEditor : Widget
             _animation = index;
             _time = liveNumber(liveChild(command, "time"));
             _playing = false;
+            _hasLiveAnimation = false;
+            _liveClip = LiveClip();
             return true;
         }
         if (type == "time")
@@ -314,6 +484,7 @@ final class MeshEditor : Widget
             const position = liveVector(liveChild(command, "position"),
                 Vec3(0, 1.2, 0));
             const scale = liveNumber(liveChild(command, "scale"), 1.0);
+            const path = liveString(liveChild(command, "path"));
             const nodeName = liveString(liveChild(command, "node"));
             int node = -1;
             foreach (index, value; _scene.nodes)
@@ -325,12 +496,41 @@ final class MeshEditor : Widget
             if (node < 0 && liveHas(command, "node"))
                 node = cast(int) liveInteger(liveChild(command, "node"));
             LiveExtra extra;
-            extra.mesh = liveObject(shape,
-                node >= 0 ? Vec3(0, 0, 0) : position, scale);
+            if (path.length > 0)
+            {
+                try
+                    extra.mesh = parseObj(readText(path));
+                catch (Exception)
+                    return false;
+                foreach (ref vertex; extra.mesh.vertices)
+                    vertex = Vec3(vertex.x * scale, vertex.y * scale,
+                        vertex.z * scale);
+                computeSmoothNormals(extra.mesh);
+            }
+            else
+                extra.mesh = liveObject(shape, Vec3(0, 0, 0), scale);
             extra.node = node;
             extra.offset = liveVector(liveChild(command, "offset"), position);
+            const rotation = liveNumbers(liveChild(command, "rotation"));
+            if (rotation.length >= 4)
+            {
+                extra.hasRotation = true;
+                extra.rotation = [rotation[0], rotation[1], rotation[2],
+                    rotation[3]];
+            }
+            const color = liveNumbers(liveChild(command, "color"));
+            if (color.length >= 3)
+                extra.color = Vec3(color[0], color[1], color[2]);
             _liveExtras ~= extra;
             return true;
+        }
+        if (type == "save")
+        {
+            const path = liveString(liveChild(command, "path"));
+            if (path.length == 0)
+                return false;
+            _pendingSavePath = path;
+            return false;
         }
         if (type == "pose")
         {
@@ -397,6 +597,81 @@ final class MeshEditor : Widget
             return true;
         }
         return false;
+    }
+
+    private bool applyLiveAnimation(JSONValue command)
+    {
+        const name = liveString(liveChild(command, "name"), "Live animation");
+        const tracksValue = liveChild(command, "tracks");
+        if (tracksValue.type != JSONType.array)
+            return false;
+        LiveTrack[] tracks;
+        double maxTime;
+        foreach (trackValue; tracksValue.array)
+        {
+            const nodeName = liveString(liveChild(trackValue, "node"));
+            int node = -1;
+            foreach (index, value; _scene.nodes)
+                if (value.name == nodeName)
+                {
+                    node = cast(int) index;
+                    break;
+                }
+            if (node < 0 && liveHas(trackValue, "node"))
+                node = cast(int) liveInteger(liveChild(trackValue, "node"));
+            if (node < 0 || node >= _scene.nodes.length)
+                continue;
+            const keysValue = liveChild(trackValue, "keys");
+            if (keysValue.type != JSONType.array)
+                continue;
+            LiveTrack track;
+            track.node = node;
+            foreach (keyValue; keysValue.array)
+            {
+                LiveKey key;
+                key.time = liveNumber(liveChild(keyValue, "time"));
+                const translation = liveNumbers(
+                    liveChild(keyValue, "translation"));
+                if (translation.length >= 3)
+                {
+                    key.hasTranslation = true;
+                    key.translation = Vec3(translation[0], translation[1],
+                        translation[2]);
+                }
+                const rotation = liveNumbers(liveChild(keyValue, "rotation"));
+                if (rotation.length >= 4)
+                {
+                    key.hasRotation = true;
+                    key.rotation = [rotation[0], rotation[1], rotation[2],
+                        rotation[3]];
+                }
+                const scale = liveNumbers(liveChild(keyValue, "scale"));
+                if (scale.length >= 3)
+                {
+                    key.hasScale = true;
+                    key.scale = Vec3(scale[0], scale[1], scale[2]);
+                }
+                track.keys ~= key;
+                maxTime = max(maxTime, key.time);
+            }
+            if (track.keys.length == 0)
+                continue;
+            track.keys.sort!((a, b) => a.time < b.time);
+            tracks ~= track;
+        }
+        if (tracks.length == 0)
+            return false;
+        _liveClip = LiveClip();
+        _liveClip.name = name;
+        _liveClip.tracks = tracks;
+        _liveClip.duration = liveNumber(liveChild(command, "duration"),
+            maxTime > 0 ? maxTime : 1.0);
+        _liveClip.loop = !(liveHas(command, "loop") &&
+            liveChild(command, "loop").type == JSONType.false_);
+        _hasLiveAnimation = true;
+        _playing = true;
+        _time = 0;
+        return true;
     }
 
     private static bool liveHas(JSONValue value, string key)
@@ -518,9 +793,10 @@ final class MeshEditor : Widget
         label(canvas, Rect(left, 176, inner, 20),
             format("TOOL  %s%s", toolName(), _symmetry ? " · mirror X" : ""),
             _symmetry ? accent : white, 1);
-        if (_hasScene && _scene.animations.length > 0)
+        if (_hasLiveAnimation || (_hasScene && _scene.animations.length > 0))
             label(canvas, Rect(left, 196, inner, 20),
                 format("ANIM  %s  %.2fs%s",
+                    _hasLiveAnimation ? _liveClip.name :
                     _scene.animations[_animation].name, _time,
                     _playing ? "  playing" : "  paused"), accent, 1);
 
@@ -798,17 +1074,28 @@ final class MeshEditor : Widget
                 invalidate();
                 return true;
             case Key.space:
-                if (_hasScene && _scene.animations.length > 0)
+                if (_hasLiveAnimation ||
+                    (_hasScene && _scene.animations.length > 0))
                 {
                     _playing = !_playing;
                     _status = _playing ? "Playing " ~
-                        _scene.animations[_animation].name :
+                        (_hasLiveAnimation ? _liveClip.name :
+                            _scene.animations[_animation].name) :
                         "Animation paused";
                     invalidate();
                     return true;
                 }
                 return false;
             case Key.n:
+                if (_hasLiveAnimation)
+                {
+                    _time = 0;
+                    _playing = true;
+                    rebuildGltfMesh();
+                    _status = "Animation: " ~ _liveClip.name;
+                    invalidate();
+                    return true;
+                }
                 if (_hasScene && _scene.animations.length > 0)
                 {
                     _animation = (_animation + 1) %
@@ -823,6 +1110,21 @@ final class MeshEditor : Widget
                 return false;
             case Key.leftBracket:
             case Key.rightBracket:
+                if (_hasLiveAnimation)
+                {
+                    _time += event.key == Key.leftBracket ? -0.1 : 0.1;
+                    if (_liveClip.duration > 0)
+                    {
+                        while (_time < 0)
+                            _time += _liveClip.duration;
+                        while (_time >= _liveClip.duration)
+                            _time -= _liveClip.duration;
+                    }
+                    rebuildGltfMesh();
+                    _status = format("Animation time %.2fs", _time);
+                    invalidate();
+                    return true;
+                }
                 if (_hasScene && _scene.animations.length > 0)
                 {
                     _time += event.key == Key.leftBracket ? -0.1 : 0.1;

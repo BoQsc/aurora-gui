@@ -8,7 +8,7 @@ import std.base64 : Base64;
 import std.conv : to;
 import std.format : format;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.math : abs, atan2, cos, floor, sqrt, sin;
+import std.math : abs, atan2, cos, floor, isFinite, sqrt, sin;
 import std.string : endsWith, indexOf, startsWith, strip;
 
 struct Mat4
@@ -106,6 +106,12 @@ private Mat4 trsMatrix(Vec3 translation, double[] rotation, Vec3 scaleValue)
     result.m[13] = translation.y;
     result.m[14] = translation.z;
     return result;
+}
+
+Vec3 gltfRotateVector(double[] rotation, Vec3 value)
+{
+    const matrix = trsMatrix(Vec3(0, 0, 0), rotation, Vec3(1, 1, 1));
+    return transformNormal(matrix, value);
 }
 
 private Vec3 vec3(JSONValue value, Vec3 fallback)
@@ -1301,6 +1307,14 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
     }
     if (mesh.vertices.length == 0)
         throw new Exception("GLB scene contains no triangles");
+    foreach (ref vertex; mesh.vertices)
+        if (!isFinite(vertex.x) || !isFinite(vertex.y) ||
+            !isFinite(vertex.z))
+            vertex = Vec3(0, 0, 0);
+    foreach (ref normal; mesh.normals)
+        if (!isFinite(normal.x) || !isFinite(normal.y) ||
+            !isFinite(normal.z))
+            normal = Vec3(0, 0, 1);
     computeSmoothNormals(mesh);
     return mesh;
 }
