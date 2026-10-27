@@ -107,8 +107,9 @@ PNG/JPEG/WebP images, sparse accessors, morph targets, skins/weights, and
 animation clips. `--glb-anim` and `--glb-time` select a clip and time; the
 editor uses `Space`, `N`, `[` and `]` for playback. Alpha mask/blend, sampler
 wrap modes, cubic-spline animation, and morph-target parsing are implemented.
-`--glb-morph` enables animated morph weights; skeleton animation is the safe
-default because the reference body's 228 targets still deform the skin.
+`--glb-morph` enables animated morph weights. Large corrective sets such as
+the reference body's 228-target set are skipped to preserve the skin; facial
+and other small-target sets animate. `--glb-no-morph` disables them.
 
 The reference `Human.AK47.r12.glb` scene imports with 155 nodes, 45 meshes,
 33 materials, 30 textures, 24 images, 2 skins, and 22 animations. Its
@@ -117,9 +118,27 @@ The reference `Human.AK47.r12.glb` scene imports with 155 nodes, 45 meshes,
 `Save GLB` on a loaded scene writes the original binary unchanged, preserving
 features the editor does not author. `--export-static-glb` bakes a frame with
 embedded UVs, PNG textures, and materials. `--export-glb` for generated human
-meshes writes a static geometry/material GLB. Full scene mutation/export,
-Draco, BasisU, full PBR/material extensions, normal/emissive maps, alpha
-blending, cameras, and lights are not implemented yet.
+meshes writes a static geometry/material GLB. Loaded-scene mutation/export,
+Draco, BasisU, full PBR/material extensions, normal/emissive maps, cameras, and
+lights are not implemented yet.
+
+## Remaining gaps
+
+- The v3 body is a repaired CC0 reference body, not a from-scratch result and
+  not a rigged, game-ready asset. Further anatomy and silhouette refinement is
+  still needed for a final character.
+- Animated corrective sets larger than 64 targets are skipped to protect the
+  reference skin. Large body/vehicle morph animation is therefore incomplete.
+- Missing glTF rendering features: metallic/roughness, normal, emissive, and
+  occlusion maps; texture transforms; advanced material extensions; animation
+  blending/events; cameras; lights; and non-triangle primitive rendering.
+- Missing asset forms/compression: Draco, BasisU/KTX2, meshopt, quantization
+  extensions, and external URI images/buffers.
+- Full scene authoring is absent. Loaded scenes support pass-through save and
+  baked static export, but edited hierarchies, skins, animations, and morphs
+  cannot be serialized back as a live scene.
+- The editor still does not author UVs, skeletons, skin weights, morph targets,
+  materials, extrusion, loop cuts, subdivision, or multi-object scenes.
 
 ## Files
 
@@ -154,5 +173,5 @@ counts. `dub test` covers v1/v2/v3 generation, SDF primitives, sculpting,
 GLB/OBJ I/O, projection, rasterizer, picking, and axis-locked drag math.
 
 This first editor intentionally does not provide extrusion, loop cuts,
-subdivision, UVs, skinning, undo, or multi-object scenes. It is a usable
-selection-and-transform base mesh editor, not a replacement for Blender.
+subdivision, authored UVs/skinning/animation, or multi-object scenes. It is a
+usable selection-and-transform base mesh editor, not a replacement for Blender.

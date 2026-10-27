@@ -54,7 +54,7 @@ int main(string[] args)
     string glbAnimation;
     double glbTime;
     int selectedAnimation;
-    bool noMorph = true;
+    bool noMorph;
     string screenshotPath;
     string objPath = "mesh.obj";
     bool check;
