@@ -116,7 +116,14 @@ aurora-host-experiment.exe --render samples/hello.scene.json --out out/hello.ppm
 aurora-host-experiment.exe --render samples/image.scene.json --out out/image.ppm
 aurora-host-experiment.exe --run samples/hello.scene.json
 aurora-host-experiment.exe --run samples/hello.scene.json --control
+aurora-host-experiment.exe --dev
+aurora-host-experiment.exe --dev samples/hello.scene.json
+aurora-host-experiment.exe --dev samples/hello.scene.json --listen 8795
 ```
+
+`--dev` is the developer mode: it opens the host-owned scene source panel and,
+with no scene path, creates `aurora-scene.json` from the embedded starter in
+the current directory. It needs no Python or external IDE.
 
 `--check`, `--render`, and `--run` accept a path relative to the current
 directory or an absolute path. `--run --control` writes `READY` when the control

@@ -101,6 +101,38 @@ source rebuilds cannot close or block the visible window. Pass `--exe` to use an
 already-built host, and `--replace PID` to close the old window only after the
 new copy is running.
 
+For a persistent scene-building session with a host-native control socket, use
+[LIVE-BUILDING.md](LIVE-BUILDING.md):
+
+```text
+aurora-host-experiment.exe --dev samples/live-lab.scene.json --listen 8791
+python -B tools/live_cli.py --port 8791 '{"command":"ping"}'
+```
+
+The legacy `tools/live_bridge.py` remains available for PNG conversion and
+layout snapshots; it is not required for control.
+
+The host itself now carries a single-executable development mode:
+
+```text
+aurora-host-experiment.exe --dev
+```
+
+It creates `aurora-scene.json` from an embedded starter when no path is given
+and opens the host-owned scene source panel. No Python or external IDE is
+required. Live is on by default: edits apply after a short pause, and the Live
+button pauses or resumes automatic application. See
+[LIVE-BUILDING.md](LIVE-BUILDING.md).
+
+The host also exposes the JSON-lines control channel directly:
+
+```text
+aurora-host-experiment.exe --dev samples/live-lab.scene.json --listen 8795
+python -B tools/live_cli.py --port 8795 '{"command":"ping"}'
+```
+
+`--listen` removes the need for the Python bridge in automation.
+
 `samples/notepad-icon.scene.json` embeds the notepad ICO as base64. Replace
 `window.icon` or regenerate the scene from an ICO with:
 

@@ -1,13 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "",
-  "command": "dub build --build=release --force",
+  "reason": "Verify the success gate on the live helper: inner DUB publication must be skipped, and the explicit post-install publisher must verify/upload.",
+  "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-10-23 07:11:37.9643449 UTC",
-  "finishedAt": "2026-10-23 07:13:11.9317813 UTC",
-  "durationMs": 93967,
+  "startedAt": "2026-10-27 18:29:12.8149454 UTC",
+  "finishedAt": "2026-10-27 18:30:06.8798839 UTC",
+  "durationMs": 54065,
   "exitCode": 0,
-  "errors": []
+  "errors": [],
+  "publishStatus": "published",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (fbf42cae4eb1).",
+  "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

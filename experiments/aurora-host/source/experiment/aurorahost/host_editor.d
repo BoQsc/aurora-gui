@@ -194,6 +194,15 @@ class HostTextEditor : Widget
     }
     size_t cursorIndex() const @safe pure nothrow @nogc { return _cursor; }
     size_t selectionAnchor() const @safe pure nothrow @nogc { return _anchor; }
+    int scrollLine() const @safe pure nothrow @nogc { return _scrollLine; }
+
+    void restoreScrollLine(int line)
+    {
+        _scrollLine = clampInt(line, 0, maxScrollLine());
+        if (_verticalScrollbar !is null)
+            _verticalScrollbar.setValue(_scrollLine, false);
+        invalidate();
+    }
     bool hasSelection() const @safe pure nothrow @nogc { return _cursor != _anchor; }
     const(dchar)[] textView() const @safe pure nothrow @nogc { return _buffer; }
     Scrollbar verticalScrollbar() @safe pure nothrow @nogc

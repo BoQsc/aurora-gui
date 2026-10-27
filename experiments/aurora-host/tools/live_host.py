@@ -39,7 +39,11 @@ def terminate_process(pid: int) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scene", default="samples/notepad.scene.json")
+    parser.add_argument("--scene",
+                        help="scene path; defaults to the notepad sample, or the "
+                             "embedded starter in --dev mode")
+    parser.add_argument("--dev", action="store_true",
+                        help="open the host-owned scene source panel")
     parser.add_argument("--exe", type=Path,
                         help="use an already-built host instead of running dub build")
     parser.add_argument("--replace", type=int,
@@ -71,7 +75,20 @@ def main() -> int:
     extra = args.host_args
     if extra and extra[0] == "--":
         extra = extra[1:]
-    command = [str(runtime_exe), "--run", args.scene, "--watch", *extra]
+    scene = None
+    if args.scene:
+        scene = Path(args.scene)
+        if not scene.is_absolute():
+            scene = ROOT / scene
+    if args.dev:
+        command = [str(runtime_exe), "--dev"]
+        if scene is not None:
+            command.append(str(scene))
+        command.extend(extra)
+    else:
+        if scene is None:
+            scene = ROOT / "samples" / "notepad.scene.json"
+        command = [str(runtime_exe), "--run", str(scene), "--watch", *extra]
     process = subprocess.Popen(command, cwd=ROOT)
     time.sleep(1.0)
     if process.poll() is not None:

@@ -1,0 +1,43 @@
+{
+  "inputs": [
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/tools/live_bridge.py",
+    "experiments/aurora-host/tools/live_cli.py",
+    "experiments/aurora-host/tools/live_bridge_test.py",
+    "experiments/aurora-host/samples/live-lab.scene.json",
+    "experiments/aurora-host/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": [
+          "build",
+          "--config=host",
+          "--build=release",
+          "--dest=build/live-harness/host"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "tools/live_bridge_test.py",
+          "--port",
+          "8799"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 180000
+      }
+    }
+  ]
+}

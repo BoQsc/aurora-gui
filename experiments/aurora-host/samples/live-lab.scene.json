@@ -1,0 +1,587 @@
+{
+  "schemaVersion": 2,
+  "window": {
+    "title": "Aurora Live Scene Lab",
+    "width": 1180,
+    "height": 800,
+    "theme": "dark"
+  },
+  "root": {
+    "id": "root",
+    "type": "column",
+    "spacing": 0,
+    "padding": 0,
+    "background": "#0b1020",
+    "children": [
+      {
+        "id": "titlebar",
+        "type": "titleBar",
+        "text": "Aurora Live Scene Lab",
+        "height": 44,
+        "background": "#0f172a",
+        "border": "#1e293b",
+        "textColor": "#e2e8f0"
+      },
+      {
+        "id": "toolbar",
+        "type": "row",
+        "spacing": 6,
+        "padding": 8,
+        "height": 46,
+        "background": "#0f172a",
+        "border": "#1e293b",
+        "children": [
+          {
+            "id": "view-overview",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "home",
+            "text": "Overview",
+            "width": 108,
+            "height": 28,
+            "action": "view.overview",
+            "tooltip": "Show the overview panel"
+          },
+          {
+            "id": "view-canvas",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "image",
+            "text": "Canvas",
+            "width": 100,
+            "height": 28,
+            "action": "view.canvas",
+            "tooltip": "Focus the live canvas"
+          },
+          {
+            "id": "view-editor",
+            "type": "button",
+            "style": "toolbar",
+            "icon": "terminal",
+            "text": "Editor",
+            "width": 96,
+            "height": 28,
+            "action": "view.editor",
+            "tooltip": "Focus the session notes"
+          },
+          {
+            "id": "view-theme",
+            "type": "button",
+            "style": "toolbar",
+            "text": "Theme",
+            "width": 96,
+            "height": 28,
+            "action": "theme.toggle",
+            "tooltip": "Ask for a light or dark theme"
+          },
+          {
+            "type": "separator",
+            "orientation": "vertical"
+          },
+          {
+            "id": "live-label",
+            "type": "label",
+            "text": "LIVE",
+            "scale": 1,
+            "textColor": "#34d399",
+            "tooltip": "Connected to the live scene bridge"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "id": "frame-label",
+            "type": "label",
+            "text": "1180 × 800 · dark",
+            "scale": 1,
+            "align": "right",
+            "textColor": "#64748b"
+          }
+        ]
+      },
+      {
+        "id": "content",
+        "type": "row",
+        "flex": 1,
+        "spacing": 0,
+        "padding": 0,
+        "children": [
+          {
+            "id": "sidebar",
+            "type": "column",
+            "width": 230,
+            "spacing": 10,
+            "padding": 18,
+            "background": "#0b1220",
+            "border": "#1e293b",
+            "children": [
+              {
+                "id": "scene-kicker",
+                "type": "label",
+                "text": "SCENE",
+                "scale": 1,
+                "textColor": "#64748b"
+              },
+              {
+                "id": "scene-title",
+                "type": "label",
+                "text": "Aurora Live Lab",
+                "scale": 2,
+                "textColor": "#e2e8f0"
+              },
+              {
+                "id": "window-meta",
+                "type": "label",
+                "text": "1180 × 800 · dark",
+                "scale": 1,
+                "textColor": "#94a3b8"
+              },
+              {
+                "type": "separator",
+                "orientation": "horizontal"
+              },
+              {
+                "id": "state-kicker",
+                "type": "label",
+                "text": "LIVE STATE",
+                "scale": 1,
+                "textColor": "#64748b"
+              },
+              {
+                "id": "node-count",
+                "type": "label",
+                "text": "Nodes 47",
+                "scale": 1,
+                "textColor": "#94a3b8"
+              },
+              {
+                "id": "last-action",
+                "type": "label",
+                "text": "Scene reloaded",
+                "scale": 1,
+                "textColor": "#94a3b8"
+              },
+              {
+                "id": "scene-mode",
+                "type": "label",
+                "text": "Mode idle",
+                "scale": 1,
+                "textColor": "#94a3b8"
+              },
+              {
+                "type": "spacer",
+                "flex": 1
+              },
+              {
+                "id": "live-note",
+                "type": "label",
+                "text": "This window is real.",
+                "scale": 1,
+                "textColor": "#34d399"
+              },
+              {
+                "id": "live-hint",
+                "type": "label",
+                "text": "Ask in chat for any change.",
+                "scale": 1,
+                "textColor": "#64748b"
+              }
+            ]
+          },
+          {
+            "id": "main",
+            "type": "column",
+            "flex": 1,
+            "spacing": 14,
+            "padding": 24,
+            "children": [
+              {
+                "id": "heading-row",
+                "type": "row",
+                "spacing": 12,
+                "children": [
+                  {
+                    "id": "heading",
+                    "type": "label",
+                    "text": "Live Scene Lab · connected",
+                    "scale": 4,
+                    "textColor": "#2dd4bf"
+                  },
+                  {
+                    "type": "spacer",
+                    "flex": 1
+                  },
+                  {
+                    "id": "badge",
+                    "type": "label",
+                    "text": "LIVE",
+                    "scale": 1,
+                    "align": "right",
+                    "textColor": "#34d399"
+                  }
+                ]
+              },
+              {
+                "id": "subtitle",
+                "type": "label",
+                "text": "This window is the canvas. Describe a change and the scene reloads in place.",
+                "scale": 1,
+                "textColor": "#94a3b8"
+              },
+              {
+                "id": "changelog",
+                "type": "row",
+                "spacing": 10,
+                "padding": 10,
+                "background": "#0b1220",
+                "border": "#1e293b",
+                "radius": 8,
+                "children": [
+                  {
+                    "id": "changelog-kicker",
+                    "type": "label",
+                    "text": "LIVE EDIT 01",
+                    "scale": 1,
+                    "textColor": "#34d399"
+                  },
+                  {
+                    "id": "changelog-text",
+                    "type": "label",
+                    "text": "The heading is teal. This card was added by editing the scene file.",
+                    "scale": 1,
+                    "textColor": "#94a3b8"
+                  }
+                ]
+              },
+              {
+                "id": "workbench",
+                "type": "row",
+                "height": 340,
+                "spacing": 14,
+                "children": [
+                  {
+                    "id": "preview",
+                    "type": "canvas",
+                    "flex": 1,
+                    "height": 320,
+                    "background": "#0f172a",
+                    "border": "#1e293b",
+                    "radius": 12,
+                    "commands": [
+                      {
+                        "op": "roundedRect",
+                        "x": 16,
+                        "y": 16,
+                        "width": 576,
+                        "height": 288,
+                        "radius": 16,
+                        "color": "#111c33"
+                      },
+                      {
+                        "op": "line",
+                        "x": 72,
+                        "y": 16,
+                        "x2": 72,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 128,
+                        "y": 16,
+                        "x2": 128,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 184,
+                        "y": 16,
+                        "x2": 184,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 240,
+                        "y": 16,
+                        "x2": 240,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 296,
+                        "y": 16,
+                        "x2": 296,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 352,
+                        "y": 16,
+                        "x2": 352,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 408,
+                        "y": 16,
+                        "x2": 408,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 464,
+                        "y": 16,
+                        "x2": 464,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 520,
+                        "y": 16,
+                        "x2": 520,
+                        "y2": 304,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 16,
+                        "y": 64,
+                        "x2": 592,
+                        "y2": 64,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 16,
+                        "y": 112,
+                        "x2": 592,
+                        "y2": 112,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 16,
+                        "y": 160,
+                        "x2": 592,
+                        "y2": 160,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 16,
+                        "y": 208,
+                        "x2": 592,
+                        "y2": 208,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "line",
+                        "x": 16,
+                        "y": 256,
+                        "x2": 592,
+                        "y2": 256,
+                        "color": "#172033",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "ring",
+                        "x": 304,
+                        "y": 160,
+                        "radius": 86,
+                        "color": "#1e3a5f",
+                        "thickness": 1
+                      },
+                      {
+                        "op": "ring",
+                        "x": 304,
+                        "y": 160,
+                        "radius": 62,
+                        "color": "#34d399",
+                        "thickness": 4
+                      },
+                      {
+                        "op": "circle",
+                        "x": 304,
+                        "y": 160,
+                        "radius": 30,
+                        "color": "#38bdf8"
+                      },
+                      {
+                        "op": "line",
+                        "x": 96,
+                        "y": 160,
+                        "x2": 210,
+                        "y2": 160,
+                        "color": "#334155",
+                        "thickness": 2
+                      },
+                      {
+                        "op": "line",
+                        "x": 398,
+                        "y": 160,
+                        "x2": 512,
+                        "y2": 160,
+                        "color": "#334155",
+                        "thickness": 2
+                      },
+                      {
+                        "op": "text",
+                        "x": 244,
+                        "y": 272,
+                        "text": "LIVE PREVIEW",
+                        "color": "#64748b",
+                        "scale": 2
+                      },
+                      {
+                        "op": "text",
+                        "x": 24,
+                        "y": 288,
+                        "text": "608 × 320",
+                        "color": "#475569",
+                        "scale": 1
+                      }
+                    ]
+                  },
+                  {
+                    "id": "controls",
+                    "type": "column",
+                    "width": 280,
+                    "spacing": 10,
+                    "padding": 16,
+                    "background": "#0b1220",
+                    "border": "#1e293b",
+                    "radius": 12,
+                    "children": [
+                      {
+                        "id": "control-kicker",
+                        "type": "label",
+                        "text": "CONTROL",
+                        "scale": 1,
+                        "textColor": "#64748b"
+                      },
+                      {
+                        "id": "pulse",
+                        "type": "button",
+                        "style": "toolbar",
+                        "icon": "refresh",
+                        "text": "Pulse",
+                        "width": 248,
+                        "height": 32,
+                        "action": "demo.pulse",
+                        "tooltip": "Emit a pulse action"
+                      },
+                      {
+                        "id": "add-card",
+                        "type": "button",
+                        "style": "toolbar",
+                        "icon": "new",
+                        "text": "Add card",
+                        "width": 248,
+                        "height": 32,
+                        "action": "demo.addCard",
+                        "tooltip": "Ask for another card"
+                      },
+                      {
+                        "id": "reset",
+                        "type": "button",
+                        "style": "toolbar",
+                        "icon": "trash",
+                        "text": "Reset",
+                        "width": 248,
+                        "height": 32,
+                        "action": "demo.reset",
+                        "tooltip": "Ask to reset the scene"
+                      },
+                      {
+                        "id": "command",
+                        "type": "textField",
+                        "text": "make the heading teal",
+                        "width": 248,
+                        "height": 34,
+                        "tooltip": "Type a change request for Aurora"
+                      },
+                      {
+                        "id": "control-hint",
+                        "type": "label",
+                        "text": "Actions emit events to the bridge.",
+                        "scale": 1,
+                        "textColor": "#64748b"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "notes",
+                "type": "textArea",
+                "text": "Session notes\n- The host owns the window and the scene.\n- Aurora edits the scene file; the window reloads in place.\n- Ask for any visual or layout change.",
+                "height": 140,
+                "background": "#0b1220",
+                "border": "#1e293b",
+                "radius": 8,
+                "textColor": "#cbd5e1",
+                "lineNumbers": true,
+                "highlightCurrentLine": true,
+                "events": [
+                  "change",
+                  "cursor"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "statusbar",
+        "type": "row",
+        "spacing": 8,
+        "padding": 8,
+        "height": 34,
+        "background": "#0f172a",
+        "border": "#1e293b",
+        "children": [
+          {
+            "id": "status",
+            "type": "label",
+            "text": "Scene reloaded — structural edit applied",
+            "scale": 1,
+            "textColor": "#94a3b8"
+          },
+          {
+            "type": "spacer",
+            "flex": 1
+          },
+          {
+            "id": "status-meta",
+            "type": "label",
+            "text": "1180 × 800 · dark",
+            "scale": 1,
+            "align": "right",
+            "textColor": "#64748b"
+          }
+        ]
+      }
+    ]
+  }
+}

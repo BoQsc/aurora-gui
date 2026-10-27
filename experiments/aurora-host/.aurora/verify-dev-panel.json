@@ -1,0 +1,45 @@
+{
+  "inputs": [
+    "experiments/aurora-host/source",
+    "experiments/aurora-host/generated",
+    "experiments/aurora-host/protocol",
+    "experiments/aurora-host/assets",
+    "experiments/aurora-host/tools/image_io.py",
+    "experiments/aurora-host/tools/dev_panel_test.py",
+    "experiments/aurora-host/samples/live-lab.scene.json",
+    "experiments/aurora-host/dub.json"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": [
+          "build",
+          "--config=host",
+          "--build=release",
+          "--dest=build/live-harness/host"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "tools/dev_panel_test.py",
+          "--exe",
+          "build/live-harness/host/aurora-host-experiment.exe",
+          "--port",
+          "8798"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 180000
+      }
+    }
+  ]
+}

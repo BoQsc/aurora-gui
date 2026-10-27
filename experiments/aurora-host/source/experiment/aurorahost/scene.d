@@ -115,6 +115,7 @@ class NodeRegistry
     private string[string] _types;
     private string[string] _texts;
     private string[string] _tooltips;
+    private bool[string] _quiet;
     private string[] _order;
     private SurfaceWidget[] _surfaces;
 
@@ -134,6 +135,8 @@ class NodeRegistry
     void delegate(string) onActivate;
     void delegate(string node, string action) onAction;
     void delegate(HostEvent) onEvent;
+    void delegate() onAfterApply;
+    void delegate(double) onService;
 
     void reset()
     {
@@ -141,6 +144,7 @@ class NodeRegistry
         _types = null;
         _texts = null;
         _tooltips = null;
+        _quiet = null;
         _order.length = 0;
         _surfaces.length = 0;
     }
@@ -186,6 +190,58 @@ class NodeRegistry
     {
         if (id in _widgets)
             _tooltips[id] = tooltip;
+    }
+
+    /** Hide a node's verbose text from the diagnostic tree. */
+    void setQuiet(string id)
+    {
+        _quiet[id] = true;
+    }
+
+    struct EditorSnapshot
+    {
+        string id;
+        bool focused;
+        size_t anchor;
+        size_t cursor;
+        int scrollLine;
+    }
+
+    EditorSnapshot[] captureEditorState()
+    {
+        EditorSnapshot[] snapshots;
+        foreach (id; _order)
+        {
+            auto editor = cast(HostTextEditor) _widgets[id];
+            if (editor is null)
+                continue;
+            snapshots ~= EditorSnapshot(id, editor.focused(),
+                editor.selectionAnchor(), editor.cursorIndex(),
+                editor.scrollLine());
+        }
+        return snapshots;
+    }
+
+    void restoreEditorState(EditorSnapshot[] snapshots)
+    {
+        foreach (snapshot; snapshots)
+        {
+            auto widget = snapshot.id in _widgets;
+            if (widget is null)
+                continue;
+            auto editor = cast(HostTextEditor) *widget;
+            if (editor is null)
+                continue;
+            const length = editor.textView.length;
+            const anchor = snapshot.anchor > length ? length : snapshot.anchor;
+            const cursor = snapshot.cursor > length ? length : snapshot.cursor;
+            if (snapshot.focused)
+            {
+                editor.requestFocus();
+                editor.setSelection(anchor, cursor);
+            }
+            editor.restoreScrollLine(snapshot.scrollLine);
+        }
     }
 
     /**
@@ -400,7 +456,9 @@ class NodeRegistry
         foreach (id; _order)
         {
             string text = _texts[id];
-            if (auto editor = cast(HostTextEditor) _widgets[id])
+            if (id in _quiet)
+                text = "<dev source>";
+            else if (auto editor = cast(HostTextEditor) _widgets[id])
                 text = editor.textUtf8();
             else if (auto editor = cast(TextEditor) _widgets[id])
                 text = editor.textUtf8();
@@ -1613,6 +1671,7 @@ GuiWindow createWindow(const Scene scene, NodeRegistry registry)
 
 void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
 {
+    auto editorState = registry.captureEditorState();
     registry.window = window;
     registry.reset();
     registry.assetBase = scene.assetBase;
@@ -1631,6 +1690,9 @@ void applyScene(GuiWindow window, const Scene scene, NodeRegistry registry)
     window.setDecorated(scene.window.decorated);
     window.setFrameDark(scene.window.theme == "dark");
     window.setTheme(themeWithOverrides(scene));
+    if (registry.onAfterApply !is null)
+        registry.onAfterApply();
+    registry.restoreEditorState(editorState);
 }
 
 private void registerTooltips(const SceneNode node, NodeRegistry registry)

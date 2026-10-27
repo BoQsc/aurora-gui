@@ -4,6 +4,8 @@ version (Windows)
     import experiment.aurorahost.crt.msvcrt_shim;
 
 import experiment.aurorahost.control : ControlServer;
+import experiment.aurorahost.dev_panel : DevPanel, DevProject;
+import experiment.aurorahost.tcp_control : TcpControl;
 import experiment.aurorahost.events : HostEvent;
 import experiment.aurorahost.protocol : Capabilities, ExperimentVersion,
     NodeTypes, ProtocolVersion, SchemaVersion;
@@ -16,9 +18,11 @@ import std.algorithm : canFind;
 import std.array : join;
 import std.conv : to;
 import std.datetime : SysTime;
-import std.file : mkdirRecurse, timeLastModified;
-import std.path : dirName;
+import std.file : exists, getcwd, mkdirRecurse, readText, timeLastModified, write;
+import std.path : buildPath, dirName;
 import std.stdio : stderr, stdout, writeln;
+
+private enum StarterScene = import("starter.scene.json");
 
 private void usage()
 {
@@ -29,6 +33,8 @@ private void usage()
     writeln("  --check <scene>");
     writeln("  --render <scene> [--out <file.ppm>]");
     writeln("  --run <scene> [--control] [--watch]");
+    writeln("  --dev [scene] [--control] [--listen <port>]");
+    writeln("  --run <scene> [--listen <port>]");
 }
 
 private string optionValue(string[] args, string name, string fallback)
@@ -92,12 +98,13 @@ private class SceneWatcher
 }
 
 private int runWindowed(GuiWindow window, NodeRegistry registry, bool control,
-    string scenePath, bool watch)
+    string scenePath, bool watch, ushort listenPort = 0)
 {
     ControlServer server;
-    if (control)
+    if (control || listenPort != 0)
     {
         server = new ControlServer(window, registry, scenePath);
+        server.stdoutEnabled(control);
         registry.onActivate = delegate(string id)
         {
             server.eventActivated(id);
@@ -111,13 +118,21 @@ private int runWindowed(GuiWindow window, NodeRegistry registry, bool control,
             server.eventInput(event);
         };
     }
+    TcpControl tcp;
+    if (listenPort != 0)
+    {
+        tcp = new TcpControl(server, listenPort);
+        tcp.start();
+    }
     SceneWatcher watcher;
     if (watch)
         watcher = new SceneWatcher(scenePath, window, registry);
-    if (control || watch)
+    if (control || listenPort != 0 || watch || registry.onService !is null)
     {
         window.applicationService = delegate(double delta)
         {
+            if (registry.onService !is null)
+                registry.onService(delta);
             if (watcher !is null)
                 watcher.poll();
             if (server !is null)
@@ -131,9 +146,13 @@ private int runWindowed(GuiWindow window, NodeRegistry registry, bool control,
     {
         server.start();
         writeln("READY");
+        if (listenPort != 0)
+            writeln("LISTEN 127.0.0.1:", listenPort);
         stdout.flush();
     }
     const result = window.run();
+    if (tcp !is null)
+        tcp.stop();
     if (server !is null)
         server.stop();
     return result;
@@ -149,6 +168,16 @@ int main(string[] args)
 
     try
     {
+        ushort listenPort = 0;
+        foreach (index, arg; args)
+        {
+            if (arg == "--listen")
+            {
+                if (index + 1 >= args.length)
+                    throw new Exception("--listen requires a port");
+                listenPort = to!ushort(args[index + 1]);
+            }
+        }
         switch (args[1])
         {
             case "--version":
@@ -197,7 +226,35 @@ int main(string[] args)
                 auto registry = new NodeRegistry();
                 auto window = createWindow(scene, registry);
                 return runWindowed(window, registry, args.canFind("--control"),
-                    args[2], args.canFind("--watch"));
+                    args[2], args.canFind("--watch"), listenPort);
+            }
+
+            case "--dev":
+            {
+                string scenePath;
+                if (args.length >= 3 && args[2].length > 0 && args[2][0] != '-')
+                    scenePath = args[2];
+                else
+                    scenePath = buildPath(getcwd(), "aurora-scene.json");
+                if (!exists(scenePath))
+                    write(scenePath, StarterScene);
+                const scene = loadScene(scenePath);
+                auto registry = new NodeRegistry();
+                auto window = createWindow(scene, registry);
+                auto project = new DevProject(window, registry, scenePath,
+                    StarterScene);
+                auto panel = new DevPanel(project, readText(scenePath));
+                registry.onAfterApply = delegate()
+                {
+                    panel.attach(window.root);
+                };
+                registry.onService = delegate(double delta)
+                {
+                    panel.service(delta);
+                };
+                panel.attach(window.root);
+                return runWindowed(window, registry, args.canFind("--control"),
+                    scenePath, false, listenPort);
             }
 
 

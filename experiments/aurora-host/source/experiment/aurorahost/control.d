@@ -48,6 +48,8 @@ class ControlServer
     private ControlCommand[] _queue;
     private Thread _reader;
     private bool _running = true;
+    private void delegate(string) _mirror;
+    private bool _stdoutEnabled = true;
     private HostTooltip _tooltip;
     private string _tooltipNode;
     private MonoTime _tooltipShownAt;
@@ -227,20 +229,50 @@ class ControlServer
         }
     }
 
-    private void enqueue(string line)
+    private void enqueue(string line, bool wake = true)
     {
         synchronized (_mutex)
             _queue ~= ControlCommand(line);
-        auto wake = _window.serviceWake();
-        if (wake !is null)
-            wake();
+        if (!wake)
+            return;
+        auto wakeService = _window.serviceWake();
+        if (wakeService !is null)
+            wakeService();
+    }
+
+    /** Accept a line from another transport, such as the loopback server. */
+    void submit(string line)
+    {
+        enqueue(line, false);
+    }
+
+    /** Mirror every response and event to another transport. */
+    void mirror(void delegate(string) sink)
+    {
+        _mirror = sink;
+    }
+
+    /** Keep stdout for the inherited control pipe only when requested. */
+    void stdoutEnabled(bool value)
+    {
+        _stdoutEnabled = value;
     }
 
     private void emit(string prefix, JSONValue[string] payload)
     {
         JSONValue encoded = JSONValue(payload);
-        stdout.writeln(prefix ~ " " ~ toJSON(encoded));
-        stdout.flush();
+        auto line = prefix ~ " " ~ toJSON(encoded);
+        if (_stdoutEnabled)
+        {
+            try
+            {
+                stdout.writeln(line);
+                stdout.flush();
+            }
+            catch (Exception) {}
+        }
+        if (_mirror !is null)
+            _mirror(line);
     }
 
     private void respond(long id, bool ok, string error = null,
