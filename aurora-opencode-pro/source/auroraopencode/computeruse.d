@@ -35,6 +35,10 @@ import auroraopencode.computerprogress : DesktopClickProgress, DesktopDragProgre
     observeDesktop, desktopVisiblyChanged, cropDesktop;
 import auroraopencode.requestintent : explanationOnlyRequest;
 import auroraopencode.attachments : attachmentImageForData;
+// experimental: reactive paragraph - a loop that repeats the same click on a
+// frozen frame burns a round and moves nothing, so the reply says when the
+// desktop did not move.
+import auroraopencode.reactiveparagraph : experimentalReactiveParagraphEnabled;
 import std.algorithm : canFind, min;
 import std.array : appender;
 import std.conv : to;
@@ -163,6 +167,8 @@ private __gshared uint computerUseObservedGeneration;
 private __gshared string computerUseProgressSession;
 private __gshared DesktopClickProgress desktopClickProgress;
 private __gshared DesktopDragProgress desktopDragProgress;
+private __gshared ulong computerUseLastFrameSignature;
+private __gshared bool computerUseHasLastFrame;
 
 /// A diagnostic follow-up must neither lift a stop nor resume desktop input.
 /// Advance the generation here; the worker resets its state under its mutex.
@@ -171,6 +177,7 @@ public void beginComputerUseUserRequest(string text)
     if (text.strip().length == 0) return;
     computerUseExplanationOnly = explanationOnlyRequest(text);
     ++computerUseRequestGeneration;
+    computerUseHasLastFrame = false;
     if (!computerUseExplanationOnly) clearComputerUseAbort();
 }
 
@@ -1948,6 +1955,18 @@ version (Windows)
         // This frame is now the one the model has seen.
         result.images = [attachmentImageForData("image/jpeg", "screen.jpg",
             jpeg)];
+        // experimental: reactive paragraph - unchanged frame, unchanged advice.
+        if (experimentalReactiveParagraphEnabled())
+        {
+            const signature = frameSignature(capture.rgb);
+            if (computerUseHasLastFrame &&
+                signature == computerUseLastFrameSignature)
+                result.output ~= " The screen is unchanged since the previous " ~
+                    "observation: do not repeat the last action; take a " ~
+                    "different one or report where you are stuck.";
+            computerUseLastFrameSignature = signature;
+            computerUseHasLastFrame = true;
+        }
         return result;
     }
 

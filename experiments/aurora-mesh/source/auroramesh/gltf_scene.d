@@ -64,6 +64,16 @@ private Vec3 transformNormal(const Mat4 matrix, Vec3 normal)
             matrix.m[10] * normal.z);
 }
 
+Vec3 gltfTransformPoint(const Mat4 matrix, Vec3 point)
+{
+    return transformPoint(matrix, point);
+}
+
+Vec3 gltfTransformNormal(const Mat4 matrix, Vec3 normal)
+{
+    return transformNormal(matrix, normal);
+}
+
 private double[] quatNormalize(double[] q)
 {
     const magnitude = sqrt(q[0] * q[0] + q[1] * q[1] +
@@ -935,7 +945,8 @@ double gltfAnimationDuration(GltfScene scene, int animationIndex)
 
 /** Bake the full scene at an animation time into a textured editable mesh. */
 Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
-    bool applyMorph = true, PoseOverride[] poseOverrides = null)
+    bool applyMorph = true, PoseOverride[] poseOverrides = null,
+    Mat4[]* worldOut = null)
 {
     Mesh mesh;
     mesh.materials.length = scene.materials.length;
@@ -1067,6 +1078,8 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
     foreach (index; 0 .. scene.nodes.length)
         if (!visited[index])
             visit(cast(int) index, Mat4.identity());
+    if (worldOut !is null)
+        *worldOut = world;
 
     Mat4[][] skinMatrices = new Mat4[][scene.skins.length];
     foreach (skinIndex, skin; scene.skins)

@@ -3,8 +3,9 @@ module auroramesh.editor;
 import auroramesh.camera : Camera, project;
 import auroramesh.edit : pickNearest, screenDelta;
 import auroramesh.glb : fromGlb, toGlb;
-import auroramesh.gltf_scene : GltfScene, PoseOverride, bakeGltfFrame,
-    gltfAnimationDuration, loadGltfScene;
+import auroramesh.gltf_scene : GltfScene, Mat4, PoseOverride, bakeGltfFrame,
+    gltfAnimationDuration, gltfTransformNormal, gltfTransformPoint,
+    loadGltfScene;
 import auroramesh.live : liveObject;
 import auroramesh.mesh : Material, MaterialSlot, Mesh, Vec2, Vec3,
     meshAdd = add, humanBaseMesh, meshMaximum, meshMinimum, parseObj, toObj;
@@ -38,6 +39,13 @@ private enum string[] ButtonLabels = [
     "Save GLB",
     "Load GLB",
 ];
+
+private struct LiveExtra
+{
+    Mesh mesh;
+    int node = -1;
+    Vec3 offset;
+}
 
 /**
  * A small retained 3D viewport and edit surface.
@@ -74,7 +82,7 @@ final class MeshEditor : Widget
     private double _time;
     private bool _playing;
     private PoseOverride[] _poseOverrides;
-    private Mesh[] _liveExtras;
+    private LiveExtra[] _liveExtras;
     private string _livePath = "build/live.json";
     private string _liveText;
     private long _liveRevision;
@@ -204,26 +212,36 @@ final class MeshEditor : Widget
     {
         if (!_hasScene)
             return;
+        Mat4[] worlds;
         _mesh = bakeGltfFrame(_scene, _animation, _time, true,
-            _poseOverrides);
+            _poseOverrides, &worlds);
         if (_liveExtras.length > 0)
         {
             foreach (extra; _liveExtras)
             {
-                if (extra.vertices.length == 0)
+                if (extra.mesh.vertices.length == 0)
                     continue;
+                Mesh extraMesh = extra.mesh;
+                if (extra.node >= 0 && extra.node < worlds.length)
+                    foreach (ref vertex; extraMesh.vertices)
+                        vertex = gltfTransformPoint(worlds[extra.node],
+                            meshAdd(vertex, extra.offset));
+                if (extraMesh.normals.length == extraMesh.vertices.length &&
+                    extra.node >= 0 && extra.node < worlds.length)
+                    foreach (ref normal; extraMesh.normals)
+                        normal = gltfTransformNormal(worlds[extra.node], normal);
                 const offset = cast(int) _mesh.vertices.length;
-                _mesh.vertices ~= extra.vertices;
-                _mesh.normals ~= extra.normals;
+                _mesh.vertices ~= extraMesh.vertices;
+                _mesh.normals ~= extraMesh.normals;
                 if (_mesh.uvs.length == offset)
-                    foreach (vertex; extra.vertices)
+                    foreach (vertex; extraMesh.vertices)
                         _mesh.uvs ~= Vec2(0, 0);
                 MaterialSlot slot;
                 slot.baseColor = Vec3(0.66, 0.69, 0.74);
                 slot.doubleSided = true;
                 const materialIndex = cast(int) _mesh.materials.length;
                 _mesh.materials ~= slot;
-                foreach (face; extra.faces)
+                foreach (face; extraMesh.faces)
                 {
                     const before = _mesh.faces.length;
                     _mesh.addTriangle(offset + face.a, offset + face.b,
@@ -296,7 +314,22 @@ final class MeshEditor : Widget
             const position = liveVector(liveChild(command, "position"),
                 Vec3(0, 1.2, 0));
             const scale = liveNumber(liveChild(command, "scale"), 1.0);
-            _liveExtras ~= liveObject(shape, position, scale);
+            const nodeName = liveString(liveChild(command, "node"));
+            int node = -1;
+            foreach (index, value; _scene.nodes)
+                if (value.name == nodeName)
+                {
+                    node = cast(int) index;
+                    break;
+                }
+            if (node < 0 && liveHas(command, "node"))
+                node = cast(int) liveInteger(liveChild(command, "node"));
+            LiveExtra extra;
+            extra.mesh = liveObject(shape,
+                node >= 0 ? Vec3(0, 0, 0) : position, scale);
+            extra.node = node;
+            extra.offset = liveVector(liveChild(command, "offset"), position);
+            _liveExtras ~= extra;
             return true;
         }
         if (type == "pose")

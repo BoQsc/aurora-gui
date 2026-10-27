@@ -24,7 +24,7 @@ import core.time : MonoTime, msecs;
 import std.algorithm.searching : startsWith;
 import std.conv : to;
 import std.process : environment;
-import std.string : strip;
+import std.string : indexOf, strip;
 
 private __gshared bool _enabled;
 
@@ -113,6 +113,30 @@ public string reactiveParagraphStatus(const ReactivePace pace)
     return text;
 }
 
+/// Loop discipline appended to the system prompt while the switch is on. The
+/// point of the variant is that the paragraph is not narration: each sentence
+/// either reads the desktop or acts on it.
+public string reactiveParagraphPromptModule()
+{
+    if (!experimentalReactiveParagraphEnabled()) return "";
+    return "\n# Reactive paragraph loop\n" ~
+        "This conversation drives a real desktop through the `computer` tool. " ~
+        "Write one ongoing paragraph of short sentences, and make every " ~
+        "sentence earn its place: after each sentence either read the screen " ~
+        "(the screenshot a `computer` call already returns, or `action: " ~
+        "\"screen\"`) or act on what you just read (click, type, key, scroll). " ~
+        "Never describe a plan you have not looked at, and never claim an " ~
+        "outcome you have not seen in a screenshot. " ~
+        "A game window reads raw device input, so pass `input_mode: native` " ~
+        "for it; posted messages never reach it. " ~
+        "When the next several moves are already known, send them as one " ~
+        "batched `steps` call and read the frame it returns instead of " ~
+        "spending a round per click. " ~
+        "If a frame comes back marked unchanged, do not repeat the action: " ~
+        "re-read the screen, then either take a different action or stop and " ~
+        "say where you are stuck.\n";
+}
+
 private string stepText(long ms)
 {
     if (ms < 1000) return to!string(ms) ~ " ms";
@@ -149,10 +173,15 @@ unittest
     const status = reactiveParagraphStatus(second);
     assert(status.startsWith("Reactive paragraph · round 2"));
 
+    // The loop discipline travels with the switch.
+    assert(reactiveParagraphPromptModule().indexOf("every sentence") >= 0);
+    assert(reactiveParagraphPromptModule().indexOf("input_mode: native") >= 0);
+
     // Off means no status text and no accounting.
     setReactiveParagraphSetting(false);
     reactiveParagraphReset();
     reactiveParagraphRoundStarted();
     assert(reactiveParagraphPace().round == 0);
     assert(reactiveParagraphStatus(reactiveParagraphPace()).length == 0);
+    assert(reactiveParagraphPromptModule().length == 0);
 }

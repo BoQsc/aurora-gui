@@ -62,7 +62,8 @@ import auroraopencode.computeruse :
 import auroraopencode.reactiveparagraph :
     experimentalReactiveParagraphEnabled, reactiveParagraphContinues,
     reactiveParagraphFirstDelta, reactiveParagraphPace,
-    reactiveParagraphReset, reactiveParagraphRoundStarted,
+    reactiveParagraphPromptModule, reactiveParagraphReset,
+    reactiveParagraphRoundStarted,
     reactiveParagraphStatus, setReactiveParagraphSetting;
 // experimental: orchestrator - delete with source/auroraopencode/orchestrator.d
 import auroraopencode.orchestrator : setOrchestratorSetting,
@@ -19574,6 +19575,11 @@ private void pollButtonSuggestionRequest()
     /// client's event queue as toolResult events.
     private void handleToolCalls(const OpenCodeEvent event)
     {
+        // experimental: reactive paragraph - a round that answers with a tool
+        // call has produced its visible output, so it closes the step too. A
+        // computer-use round often emits no prose at all, and without this the
+        // pace readout stayed silent in exactly the mode it exists to measure.
+        reactiveParagraphFirstDelta();
         _preparingToolCalls.length = 0;
         // Some providers stream a tool call without an id, and a few reuse one
         // id across calls in the same turn. The result ledger pairs each worker
@@ -22637,10 +22643,15 @@ private void pollButtonSuggestionRequest()
         key.put(experimentalWebSearchEnabled() ? "|web" : "|no-web");
         key.put(experimentalComputerUseEnabled() ? "|computer" : "|no-computer");
         key.put(experimentalStrictPlanEnabled() ? "|plan" : "|no-plan");
+        // experimental: reactive paragraph - the loop discipline is part of the
+        // prompt, so the switch must invalidate the cached render.
+        key.put(experimentalReactiveParagraphEnabled()
+            ? "|reactive" : "|no-reactive");
         if (_systemPromptCache.length > 0 && key.data == _systemPromptCacheKey)
             return _systemPromptCache;
-        const rendered = buildSystemPrompt(nativeOnly, workspace, platform,
+        auto rendered = buildSystemPrompt(nativeOnly, workspace, platform,
             verbosity);
+        rendered ~= reactiveParagraphPromptModule();
         _systemPromptCacheKey = key.data;
         _systemPromptCache = rendered;
         return rendered;
@@ -25373,26 +25384,6 @@ private void pollButtonSuggestionRequest()
         computerRow.add(computerCheck);
         optionsBody.add(computerRow);
 
-        // experimental: reactive paragraph - delete with
-        // source/auroraopencode/reactiveparagraph.d. Off by default: a tool
-        // round after a tool result continues the paragraph above it instead of
-        // opening a new bubble, and the status row reports the loop's pace.
-        auto reactiveRow = new HBox(8);
-        reactiveRow.layoutHints().preferredHeight = 32;
-        auto reactiveCheck = new CheckBox(
-            "Experimental reactive paragraph (one live reply across tool rounds)");
-        reactiveCheck.setId("oc-reactiveparagraph");
-        reactiveCheck.setChecked(_settings.experimentalReactiveParagraph, false);
-        reactiveCheck.onChanged = delegate(bool value)
-        {
-            _settings.experimentalReactiveParagraph = value;
-            setReactiveParagraphSetting(value);
-            saveSettingsNow();
-            if (_current >= 0) rebuildMessageColumn();
-        };
-        reactiveRow.add(reactiveCheck);
-        optionsBody.add(reactiveRow);
-
         // experimental: computer use without disturbing the user. The agent
         // draws a ghost cursor and posts input messages instead of moving the
         // real pointer or stealing focus. Off by default.
@@ -25411,6 +25402,35 @@ private void pollButtonSuggestionRequest()
         };
         virtualPointerRow.add(virtualPointerCheck);
         optionsBody.add(virtualPointerRow);
+
+        // experimental: reactive paragraph - delete with
+        // source/auroraopencode/reactiveparagraph.d. ONE switch for the whole
+        // loop: it also turns on the `computer` tool, its kill switch and native
+        // input, because a game window reads raw device state and posted window
+        // messages never reach it. Turning it off puts all of that back.
+        auto reactiveRow = new HBox(8);
+        reactiveRow.layoutHints().preferredHeight = 32;
+        auto reactiveCheck = new CheckBox(
+            "Experimental reactive paragraph (drive this desktop)");
+        reactiveCheck.setId("oc-reactiveparagraph");
+        reactiveCheck.setChecked(_settings.experimentalReactiveParagraph, false);
+        reactiveCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalReactiveParagraph = value;
+            setReactiveParagraphSetting(value);
+            _settings.experimentalComputerUse = value;
+            setComputerUseSetting(value);
+            if (value) startComputerUseKillSwitch();
+            else stopComputerUseKillSwitch();
+            computerCheck.setChecked(value, false);
+            _settings.experimentalComputerUseVirtualPointer = false;
+            setComputerUseVirtualPointer(false);
+            virtualPointerCheck.setChecked(false, false);
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        reactiveRow.add(reactiveCheck);
+        optionsBody.add(reactiveRow);
 
         // experimental: orchestrator - delete with
         // source/auroraopencode/orchestrator.d. Off by default: adds the

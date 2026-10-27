@@ -136,8 +136,8 @@ applying a revision. Edits are rebuilt in the viewport immediately.
     {"type": "animation", "name": "AK47_Run", "time": 1.0},
     {"type": "pose", "node": "RightArm",
      "rotation": [0.0, 0.382683, 0.0, 0.92388]},
-    {"type": "object", "shape": "rifle",
-     "position": [0.38, 1.05, 0.42], "scale": 0.85},
+    {"type": "object", "shape": "rifle", "node": "RightHand",
+     "offset": [0.0, 0.0, 0.0], "scale": 0.35},
     {"type": "clear"}
   ]
 }
@@ -148,14 +148,14 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   to a named bone. Repeating the node replaces its override; `reset: true`
   clears it.
 - `object` creates an owned procedural object. Supported shapes are `box`,
-  `sphere`, `rifle`, and `weapon`; position is world-space.
+  `sphere`, `rifle`, and `weapon`. With `node`, the object is attached to that
+  baked bone and `offset` is bone-local; otherwise `position` is world-space.
 - `clear` removes pose overrides and live objects.
 
 This is a live authoring and preview path, not a complete scene editor.
 Objects are procedural, poses are node-local overrides, and edits are not
-serialized back into a live skinned scene. Attachments to bones, arbitrary
-imported meshes, CSG, undo transactions, and scene export are the next
-production steps.
+serialized back into a live skinned scene. Arbitrary imported meshes, CSG,
+undo transactions, and scene export are the next production steps.
 
 ## Remaining gaps
 
