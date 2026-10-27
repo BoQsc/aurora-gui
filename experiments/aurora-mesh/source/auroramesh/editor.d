@@ -115,7 +115,7 @@ final class MeshEditor : Widget
             animation : 0;
         _time = time;
         _playing = false;
-        _mesh = bakeGltfFrame(_scene, _animation, _time);
+        _mesh = bakeGltfFrame(_scene, _animation, _time, false);
         _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
         _status = _scene.animations.length > 0 ?
             "GLB scene · " ~ _scene.animations[_animation].name :
@@ -133,7 +133,7 @@ final class MeshEditor : Widget
         if (duration > 0)
             while (_time > duration)
                 _time -= duration;
-        _mesh = bakeGltfFrame(_scene, _animation, _time);
+        _mesh = bakeGltfFrame(_scene, _animation, _time, false);
         _dirty = true;
         invalidate();
     }
@@ -498,7 +498,7 @@ final class MeshEditor : Widget
                     _animation = (_animation + 1) %
                         cast(int) _scene.animations.length;
                     _time = 0;
-                    _mesh = bakeGltfFrame(_scene, _animation, _time);
+                    _mesh = bakeGltfFrame(_scene, _animation, _time, false);
                     _dirty = true;
                     _status = "Animation: " ~
                         _scene.animations[_animation].name;
@@ -515,7 +515,7 @@ final class MeshEditor : Widget
                     if (duration > 0)
                         while (_time < 0)
                             _time += duration;
-                    _mesh = bakeGltfFrame(_scene, _animation, _time);
+                    _mesh = bakeGltfFrame(_scene, _animation, _time, false);
                     _dirty = true;
                     _status = format("Animation time %.2fs", _time);
                     invalidate();

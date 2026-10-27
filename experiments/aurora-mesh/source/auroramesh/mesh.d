@@ -91,7 +91,11 @@ struct MaterialSlot
 {
     Vec3 baseColor = Vec3(1, 1, 1);
     double alpha = 1;
+    double alphaCutoff = 0.5;
+    int alphaMode;
     int texture = -1;
+    int wrapS = 10497;
+    int wrapT = 10497;
     bool doubleSided;
 }
 

@@ -355,6 +355,8 @@ struct GMaterial
 {
     Vec3 baseColor = Vec3(1, 1, 1);
     double alpha = 1;
+    double alphaCutoff = 0.5;
+    string alphaMode = "OPAQUE";
     int baseTexture = -1;
     bool doubleSided;
 }
@@ -368,6 +370,8 @@ struct GImage
 struct GTexture
 {
     int image = -1;
+    int wrapS = 10497;
+    int wrapT = 10497;
 }
 
 struct GSkin
@@ -499,11 +503,20 @@ GltfScene loadGltfScene(ubyte[] bytes)
             scene.images ~= result;
         }
     const textureValues = child(document, "textures");
+    const samplerValues = child(document, "samplers");
     if (textureValues.type == JSONType.array)
         foreach (texture; textureValues.array)
         {
             GTexture result;
             result.image = integer(child(texture, "source"), -1);
+            const samplerIndex = integer(child(texture, "sampler"), -1);
+            if (samplerValues.type == JSONType.array && samplerIndex >= 0 &&
+                samplerIndex < samplerValues.array.length)
+            {
+                const sampler = samplerValues[samplerIndex];
+                result.wrapS = integer(child(sampler, "wrapS"), 10497);
+                result.wrapT = integer(child(sampler, "wrapT"), 10497);
+            }
             scene.textures ~= result;
         }
 
@@ -525,6 +538,11 @@ GltfScene loadGltfScene(ubyte[] bytes)
                         "baseColorTexture"), "index"), -1);
             }
             result.doubleSided = integer(child(material, "doubleSided"), 0) != 0;
+            result.alphaMode = has(material, "alphaMode") ?
+                material["alphaMode"].str : "OPAQUE";
+            result.alphaCutoff = number(child(material, "alphaCutoff"));
+            if (!has(material, "alphaCutoff"))
+                result.alphaCutoff = 0.5;
             scene.materials ~= result;
         }
 
@@ -767,29 +785,115 @@ private double[] sampleChannel(GltfScene scene, GChannel channel, double time)
     int valuesPerKey = components;
     if (channel.interpolation == "CUBICSPLINE")
         valuesPerKey = components * 3;
-    const firstBase = first * valuesPerKey +
+    const firstValue = first * valuesPerKey +
         (channel.interpolation == "CUBICSPLINE" ? components : 0);
-    const secondBase = second * valuesPerKey +
+    const secondValue = second * valuesPerKey +
         (channel.interpolation == "CUBICSPLINE" ? components : 0);
+    const firstOut = first * valuesPerKey + components * 2;
+    const secondIn = second * valuesPerKey;
+    const span = times.values[second] - times.values[first];
     double[] result;
     result.length = components;
     foreach (component; 0 .. components)
     {
-        const a = firstBase + component < values.values.length ?
-            values.values[firstBase + component] : 0;
-        const b = secondBase + component < values.values.length ?
-            values.values[secondBase + component] : a;
-        result[component] = channel.interpolation == "STEP" ? a :
-            a + (b - a) * fraction;
+        const a = firstValue + component < values.values.length ?
+            values.values[firstValue + component] : 0;
+        const b = secondValue + component < values.values.length ?
+            values.values[secondValue + component] : a;
+        if (channel.interpolation == "CUBICSPLINE" &&
+            firstOut + component < values.values.length &&
+            secondIn + component < values.values.length)
+        {
+            const p0 = a;
+            const p1 = b;
+            const m0 = values.values[firstOut + component] * span;
+            const m1 = values.values[secondIn + component] * span;
+            const t2 = fraction * fraction;
+            const t3 = t2 * fraction;
+            result[component] =
+                (2 * t3 - 3 * t2 + 1) * p0 +
+                (t3 - 2 * t2 + fraction) * m0 +
+                (-2 * t3 + 3 * t2) * p1 +
+                (t3 - t2) * m1;
+        }
+        else
+            result[component] = channel.interpolation == "STEP" ? a :
+                a + (b - a) * fraction;
     }
     if (channel.path == "rotation" && result.length >= 4)
     {
-        double[] a = firstBase + 3 < values.values.length ?
-            cast(double[]) values.values[firstBase .. firstBase + 4] :
+        double[] a = firstValue + 3 < values.values.length ?
+            cast(double[]) values.values[firstValue .. firstValue + 4] :
             [0.0, 0.0, 0.0, 1.0];
-        double[] b = secondBase + 3 < values.values.length ?
-            cast(double[]) values.values[secondBase .. secondBase + 4] : a;
+        double[] b = secondValue + 3 < values.values.length ?
+            cast(double[]) values.values[secondValue .. secondValue + 4] : a;
         result = slerp(a, b, fraction);
+    }
+    return result;
+}
+
+private double[] sampleWeights(GltfScene scene, GChannel channel, double time)
+{
+    const times = readAccessor(scene.document, scene.buffers, channel.input);
+    const values = readAccessor(scene.document, scene.buffers, channel.output);
+    if (times.count == 0 || values.count == 0)
+        return [];
+    int first;
+    int second;
+    double fraction;
+    if (time <= times.values[0])
+    {
+        first = 0;
+        second = 0;
+    }
+    else if (time >= times.values[times.count - 1])
+    {
+        first = times.count - 1;
+        second = first;
+    }
+    else
+    {
+        foreach (index; 1 .. times.count)
+            if (time <= times.values[index])
+            {
+                first = index - 1;
+                second = index;
+                const span = times.values[second] - times.values[first];
+                fraction = span <= 1e-12 ? 0 :
+                    (time - times.values[first]) / span;
+                break;
+            }
+    }
+    const cubic = channel.interpolation == "CUBICSPLINE";
+    const perKey = values.count / times.count;
+    const targetCount = cubic ? perKey / 3 : perKey;
+    double[] result;
+    result.length = targetCount;
+    const firstBase = first * perKey + (cubic ? targetCount : 0);
+    const secondBase = second * perKey + (cubic ? targetCount : 0);
+    const firstOut = first * perKey + targetCount * 2;
+    const secondIn = second * perKey;
+    const span = times.values[second] - times.values[first];
+    foreach (index; 0 .. targetCount)
+    {
+        const a = firstBase + index < values.values.length ?
+            values.values[firstBase + index] : 0;
+        const b = secondBase + index < values.values.length ?
+            values.values[secondBase + index] : a;
+        if (cubic && firstOut + index < values.values.length &&
+            secondIn + index < values.values.length)
+        {
+            const t2 = fraction * fraction;
+            const t3 = t2 * fraction;
+            result[index] = (2 * t3 - 3 * t2 + 1) * a +
+                (t3 - 2 * t2 + fraction) *
+                    values.values[firstOut + index] * span +
+                (-2 * t3 + 3 * t2) * b +
+                (t3 - t2) * values.values[secondIn + index] * span;
+        }
+        else
+            result[index] = channel.interpolation == "STEP" ? a :
+                a + (b - a) * fraction;
     }
     return result;
 }
@@ -819,7 +923,8 @@ double gltfAnimationDuration(GltfScene scene, int animationIndex)
 }
 
 /** Bake the full scene at an animation time into a textured editable mesh. */
-Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
+Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
+    bool applyMorph = true)
 {
     Mesh mesh;
     mesh.materials.length = scene.materials.length;
@@ -831,10 +936,17 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
         MaterialSlot slot;
         slot.baseColor = material.baseColor;
         slot.alpha = material.alpha;
+        slot.alphaMode = material.alphaMode == "MASK" ? 1 :
+            material.alphaMode == "BLEND" ? 2 : 0;
+        slot.alphaCutoff = material.alphaCutoff;
         slot.doubleSided = material.doubleSided;
         if (material.baseTexture >= 0 &&
             material.baseTexture < scene.textures.length)
+        {
             slot.texture = scene.textures[material.baseTexture].image;
+            slot.wrapS = scene.textures[material.baseTexture].wrapS;
+            slot.wrapT = scene.textures[material.baseTexture].wrapT;
+        }
         mesh.materials[index] = slot;
     }
 
@@ -871,6 +983,16 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
         {
             if (channel.node < 0 || channel.node >= poses.length)
                 continue;
+            if (channel.path == "weights")
+            {
+                const weights = sampleWeights(scene, channel, time);
+                const meshIndex = scene.nodes[channel.node].mesh;
+                if (meshIndex >= 0 && meshIndex < meshWeights.length)
+                    foreach (index, value; weights)
+                        if (index < meshWeights[meshIndex].length)
+                            meshWeights[meshIndex][index] = value;
+                continue;
+            }
             const values = sampleChannel(scene, channel, time);
             if (values.length == 0)
                 continue;
@@ -883,16 +1005,7 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
             else if (channel.path == "rotation" && values.length >= 4)
                 poses[channel.node].rotation = [values[0], values[1],
                     values[2], values[3]];
-            else if (channel.path == "weights")
-            {
-                const meshIndex = scene.nodes[channel.node].mesh;
-                if (meshIndex >= 0 && meshIndex < meshWeights.length)
-                {
-                    foreach (index, value; values)
-                        if (index < meshWeights[meshIndex].length)
-                            meshWeights[meshIndex][index] = value;
-                }
-            }
+
         }
     }
 
@@ -976,8 +1089,56 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
                 primitive.indices);
             if (positions.count == 0 || positions.components < 3)
                 continue;
+            AccessorData[] targetPositionData;
+            AccessorData[] targetNormalData;
+            targetPositionData.length = primitive.targetPositions.length;
+            targetNormalData.length = primitive.targetNormals.length;
+            // Large corrective sets (the reference body has 228 targets) are
+            // not safe to drive until their authored target ranges are mapped;
+            // small facial sets remain animated.
+            const canMorph = primitive.targetPositions.length <= 64;
+            if (applyMorph && canMorph && node.mesh < meshWeights.length)
+                foreach (targetIndex, targetWeight; meshWeights[node.mesh])
+                {
+                    if (targetIndex >= primitive.targetPositions.length ||
+                        targetWeight == 0)
+                        continue;
+                    targetPositionData[targetIndex] = readAccessor(
+                        scene.document, scene.buffers,
+                        primitive.targetPositions[targetIndex][0]);
+                    if (targetIndex < primitive.targetNormals.length)
+                        targetNormalData[targetIndex] = readAccessor(
+                            scene.document, scene.buffers,
+                            primitive.targetNormals[targetIndex][0]);
+                }
+            int[] vertexMap;
+            vertexMap.length = positions.count;
+            foreach (ref value; vertexMap)
+                value = -1;
+            int[] sourceVertices;
+            if (indices.count > 0 && indices.components == 1)
+            {
+                foreach (index; 0 .. indices.count)
+                {
+                    const source = cast(int) indices.values[index];
+                    if (source < 0 || source >= positions.count ||
+                        vertexMap[source] >= 0)
+                        continue;
+                    vertexMap[source] = cast(int) sourceVertices.length;
+                    sourceVertices ~= source;
+                }
+            }
+            else
+            {
+                sourceVertices.length = positions.count;
+                foreach (index; 0 .. positions.count)
+                {
+                    sourceVertices[index] = cast(int) index;
+                    vertexMap[index] = cast(int) index;
+                }
+            }
             const base = cast(int) mesh.vertices.length;
-            foreach (vertexIndex; 0 .. positions.count)
+            foreach (usedIndex, vertexIndex; sourceVertices)
             {
                 Vec3 position = Vec3(
                     positions.values[vertexIndex * 3],
@@ -989,16 +1150,14 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
                         normals.values[vertexIndex * 3 + 1],
                         normals.values[vertexIndex * 3 + 2]) :
                     Vec3(0, 0, 0);
-                if (node.mesh < meshWeights.length)
+                if (applyMorph && canMorph && node.mesh < meshWeights.length)
                     foreach (targetIndex, targetWeight;
                         meshWeights[node.mesh])
                     {
                         if (targetIndex >= primitive.targetPositions.length ||
                             targetWeight == 0)
                             continue;
-                        const delta = readAccessor(scene.document,
-                            scene.buffers,
-                            primitive.targetPositions[targetIndex][0]);
+                        const delta = targetPositionData[targetIndex];
                         if (delta.components >= 3 &&
                             vertexIndex * 3 + 2 < delta.values.length)
                             position.x += delta.values[vertexIndex * 3] *
@@ -1011,9 +1170,7 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
                             position.z += delta.values[vertexIndex * 3 + 2] *
                                 targetWeight;
                         }
-                        const normalDelta = readAccessor(scene.document,
-                            scene.buffers,
-                            primitive.targetNormals[targetIndex][0]);
+                        const normalDelta = targetNormalData[targetIndex];
                         if (normalDelta.components >= 3 &&
                             vertexIndex * 3 + 2 < normalDelta.values.length)
                         {
@@ -1077,8 +1234,14 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time)
                         a >= positions.count || b >= positions.count ||
                         c >= positions.count)
                         continue;
+                    const mappedA = vertexMap[a];
+                    const mappedB = vertexMap[b];
+                    const mappedC = vertexMap[c];
+                    if (mappedA < 0 || mappedB < 0 || mappedC < 0)
+                        continue;
                     const count = mesh.faces.length;
-                    mesh.addTriangle(base + a, base + b, base + c,
+                    mesh.addTriangle(base + mappedA, base + mappedB,
+                        base + mappedC,
                         Material.cloth);
                     if (mesh.faces.length > count)
                         mesh.faceMaterials ~= materialIndex;

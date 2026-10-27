@@ -26,6 +26,8 @@ aurora-mesh.exe --screenshot build/editor.ppm --width 1400 --height 860
 aurora-mesh.exe --obj mesh.obj
 aurora-mesh.exe --glb mesh.glb
 aurora-mesh.exe --glb character.glb --glb-anim AK47_Run --glb-time 1.0
+aurora-mesh.exe --glb character.glb --glb-anim AK47_Run --glb-morph
+aurora-mesh.exe --glb character.glb --export-static-glb baked.glb
 aurora-mesh.exe --v1
 aurora-mesh.exe --v2
 aurora-mesh.exe --v3
@@ -103,15 +105,19 @@ See `assets/PROVENANCE.md`.
 transforms, meshes, indexed triangles, materials, base-color textures, UVs,
 PNG/JPEG/WebP images, sparse accessors, morph targets, skins/weights, and
 animation clips. `--glb-anim` and `--glb-time` select a clip and time; the
-editor uses `Space`, `N`, `[` and `]` for playback.
+editor uses `Space`, `N`, `[` and `]` for playback. Alpha mask/blend, sampler
+wrap modes, cubic-spline animation, and morph-target parsing are implemented.
+`--glb-morph` enables animated morph weights; skeleton animation is the safe
+default because the reference body's 228 targets still deform the skin.
 
 The reference `Human.AK47.r12.glb` scene imports with 155 nodes, 45 meshes,
 33 materials, 30 textures, 24 images, 2 skins, and 22 animations. Its
 `AK47_Run` clip at 1.0 s renders with the skeleton and textures applied.
 
 `Save GLB` on a loaded scene writes the original binary unchanged, preserving
-features the editor does not author. `--export-glb` for generated human meshes
-still writes a static geometry/material GLB. Full scene mutation/export,
+features the editor does not author. `--export-static-glb` bakes a frame with
+embedded UVs, PNG textures, and materials. `--export-glb` for generated human
+meshes writes a static geometry/material GLB. Full scene mutation/export,
 Draco, BasisU, full PBR/material extensions, normal/emissive maps, alpha
 blending, cameras, and lights are not implemented yet.
 

@@ -2,6 +2,7 @@ module auroramesh.glb;
 
 import auroramesh.mesh : Face, Material, Mesh, Vec3, add, computeSmoothNormals,
     cross, dot, length, normalize, scale, sub;
+import aurora.image : RgbaImage, encodePng;
 import std.array : join;
 import std.conv : to;
 import std.format : format;
@@ -286,6 +287,22 @@ ubyte[] toGlb(Mesh source)
     if (mesh.faces.length == 0)
         throw new Exception("cannot export an empty mesh to GLB");
 
+    const customMaterials = mesh.materials.length > 0 &&
+        mesh.faceMaterials.length == mesh.faces.length;
+    const materialCount = customMaterials ? mesh.materials.length : 5;
+    int[][] indices;
+    indices.length = materialCount;
+    foreach (faceIndex, face; mesh.faces)
+    {
+        const materialIndex = customMaterials ? mesh.faceMaterials[faceIndex] :
+            cast(int) face.material;
+        const safeMaterial = materialIndex >= 0 &&
+            materialIndex < indices.length ? materialIndex : 0;
+        indices[safeMaterial] ~= face.a;
+        indices[safeMaterial] ~= face.b;
+        indices[safeMaterial] ~= face.c;
+    }
+
     ubyte[] binary;
     foreach (vertex; mesh.vertices)
     {
@@ -301,28 +318,30 @@ ubyte[] toGlb(Mesh source)
         appendF32(binary, cast(float) normal.z);
     }
     const normalLength = binary.length - positionLength;
-
-    Material[] materials = [
-        Material.skin, Material.cloth, Material.accent, Material.neutral,
-        Material.eye];
-    int[][] indices;
-    indices.length = materials.length;
-    foreach (face; mesh.faces)
+    const hasUv = mesh.uvs.length == mesh.vertices.length;
+    size_t uvOffset;
+    size_t uvLength;
+    if (hasUv)
     {
-        const materialIndex = cast(int) face.material;
-        indices[materialIndex] ~= face.a;
-        indices[materialIndex] ~= face.b;
-        indices[materialIndex] ~= face.c;
+        uvOffset = binary.length;
+        foreach (uv; mesh.uvs)
+        {
+            appendF32(binary, cast(float) uv.x);
+            appendF32(binary, cast(float) uv.y);
+        }
+        uvLength = binary.length - uvOffset;
     }
 
-    string[] primitiveJson;
-    string[] materialJson;
     string[] bufferViewJson = [
         format(`{"buffer":0,"byteOffset":0,"byteLength":%d,"target":34962}`,
             positionLength),
         format(`{"buffer":0,"byteOffset":%d,"byteLength":%d,"target":34962}`,
             positionLength, normalLength),
     ];
+    if (hasUv)
+        bufferViewJson ~= format(
+            `{"buffer":0,"byteOffset":%d,"byteLength":%d,"target":34962}`,
+            uvOffset, uvLength);
     string[] accessorJson = [
         format(`{"bufferView":0,"componentType":5126,"count":%d,"type":"VEC3","min":[%s,%s,%s],"max":[%s,%s,%s]}`,
             mesh.vertices.length, fixed(meshMinimum(mesh).x),
@@ -332,8 +351,13 @@ ubyte[] toGlb(Mesh source)
         format(`{"bufferView":1,"componentType":5126,"count":%d,"type":"VEC3"}`,
             mesh.normals.length),
     ];
-    size_t bufferViewIndex = 2;
-    foreach (materialIndex, material; materials)
+    if (hasUv)
+        accessorJson ~= format(
+            `{"bufferView":2,"componentType":5126,"count":%d,"type":"VEC2"}`,
+            mesh.uvs.length);
+
+    string[] primitiveJson;
+    foreach (materialIndex; 0 .. materialCount)
     {
         const list = indices[materialIndex];
         if (list.length == 0)
@@ -342,26 +366,90 @@ ubyte[] toGlb(Mesh source)
         foreach (index; list)
             appendU32(binary, cast(uint) index);
         const byteLength = binary.length - byteOffset;
+        const viewIndex = bufferViewJson.length;
         bufferViewJson ~= format(
             `{"buffer":0,"byteOffset":%d,"byteLength":%d,"target":34963}`,
             byteOffset, byteLength);
+        const accessorIndex = accessorJson.length;
         accessorJson ~= format(
             `{"bufferView":%d,"componentType":5125,"count":%d,"type":"SCALAR"}`,
-            bufferViewIndex, list.length);
+            viewIndex, list.length);
         primitiveJson ~= format(
-            `{"attributes":{"POSITION":0,"NORMAL":1},"indices":%d,"material":%d,"mode":4}`,
-            bufferViewIndex, materialIndex);
-        const color = materialColor(material);
-        materialJson ~= format(
-            `{"name":"%s","doubleSided":true,"pbrMetallicRoughness":{"baseColorFactor":%s,"metallicFactor":0,"roughnessFactor":0.85}}`,
-            materialName(material), colorJson(color));
-        ++bufferViewIndex;
+            `{"attributes":{"POSITION":0,"NORMAL":1%s},"indices":%d,"material":%d,"mode":4}`,
+            hasUv ? `,"TEXCOORD_0":2` : "", accessorIndex, materialIndex);
     }
 
+    int[] textureIndexBySlot;
+    textureIndexBySlot.length = mesh.textures.length;
+    foreach (ref value; textureIndexBySlot)
+        value = -1;
+    string[] imageJson;
+    string[] textureJson;
+    foreach (textureIndex, texture; mesh.textures)
+    {
+        if (texture is null)
+            continue;
+        const png = encodePng(texture);
+        while (binary.length % 4 != 0)
+            binary ~= 0;
+        const byteOffset = binary.length;
+        binary ~= png;
+        const viewIndex = bufferViewJson.length;
+        bufferViewJson ~= format(
+            `{"buffer":0,"byteOffset":%d,"byteLength":%d}`, byteOffset,
+            png.length);
+        const imageIndex = imageJson.length;
+        imageJson ~= format(`{"bufferView":%d,"mimeType":"image/png"}`,
+            viewIndex);
+        textureIndexBySlot[textureIndex] = cast(int) textureJson.length;
+        textureJson ~= format(`{"source":%d,"sampler":0}`, imageIndex);
+    }
+
+    string[] materialJson;
+    if (customMaterials)
+    {
+        foreach (index, slot; mesh.materials)
+        {
+            string pbr = format(
+                `{"baseColorFactor":[%s,%s,%s,%s],"metallicFactor":0,"roughnessFactor":0.85`,
+                fixed(slot.baseColor.x), fixed(slot.baseColor.y),
+                fixed(slot.baseColor.z), fixed(slot.alpha));
+            if (slot.texture >= 0 &&
+                slot.texture < textureIndexBySlot.length &&
+                textureIndexBySlot[slot.texture] >= 0)
+                pbr ~= format(`,"baseColorTexture":{"index":%d}`,
+                    textureIndexBySlot[slot.texture]);
+            pbr ~= "}";
+            string material = format(
+                `{"name":"material%d","doubleSided":%s,"pbrMetallicRoughness":%s`,
+                index, slot.doubleSided ? "true" : "false", pbr);
+            if (slot.alpha < 1)
+                material ~= `,"alphaMode":"BLEND"`;
+            material ~= "}";
+            materialJson ~= material;
+        }
+    }
+    else
+    {
+        foreach (materialIndex; 0 .. materialCount)
+        {
+            const material = cast(Material) materialIndex;
+            materialJson ~= format(
+                `{"name":"%s","doubleSided":true,"pbrMetallicRoughness":{"baseColorFactor":%s,"metallicFactor":0,"roughnessFactor":0.85}}`,
+                materialName(material), colorJson(materialColor(material)));
+        }
+    }
+
+    string extras;
+    if (imageJson.length > 0)
+        extras = format(
+            `,"images":[%s],"textures":[%s],"samplers":[{"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}]`,
+            imageJson.join(","), textureJson.join(","));
     const json = format(
-        `{"asset":{"version":"2.0","generator":"aurora-mesh"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"name":"Human"}],"meshes":[{"name":"Human","primitives":[%s]}],"materials":[%s],"accessors":[%s],"bufferViews":[%s],"buffers":[{"byteLength":%d}]}`,
+        `{"asset":{"version":"2.0","generator":"aurora-mesh"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"name":"Human"}],"meshes":[{"name":"Human","primitives":[%s]}],"materials":[%s],"accessors":[%s],"bufferViews":[%s],"buffers":[{"byteLength":%d}]%s}`,
         primitiveJson.join(","), materialJson.join(","),
-        accessorJson.join(","), bufferViewJson.join(","), binary.length);
+        accessorJson.join(","), bufferViewJson.join(","), binary.length,
+        extras);
     return buildGlb(json, binary);
 }
 

@@ -133,19 +133,29 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
                     continue;
                 const z = wa * pa.z + wb * pb.z + wc * pc.z;
                 Vec3 sampled;
+                double alpha = 1;
                 if (hasUv)
                 {
                     const u = wa * mesh.uvs[face.a].x +
                         wb * mesh.uvs[face.b].x + wc * mesh.uvs[face.c].x;
                     const v = wa * mesh.uvs[face.a].y +
                         wb * mesh.uvs[face.b].y + wc * mesh.uvs[face.c].y;
-                    sampled = sampleTexture(texture, u, v);
+                    const texel = sampleTexture(texture, u, v, slot.wrapS,
+                        slot.wrapT);
+                    sampled = Vec3(texel[0], texel[1], texel[2]);
+                    alpha = hasMaterial && slot.alphaMode != 0 ?
+                        texel[3] : 1;
                 }
                 else if (legacyBase is null)
                     sampled = base;
                 else
                     sampled = Vec3(legacyBase[0] / 255.0,
                         legacyBase[1] / 255.0, legacyBase[2] / 255.0);
+                if (hasMaterial)
+                    alpha *= slot.alpha;
+                if (hasMaterial && slot.alphaMode == 1 &&
+                    alpha < slot.alphaCutoff)
+                    continue;
                 const index = y * width + x;
                 if (z >= depth[index])
                     continue;
@@ -157,9 +167,22 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
                 const green = clampByte(sampled.y * intensity * 255);
                 const blue = clampByte(sampled.z * intensity * 255);
                 const pixel = index * 3;
-                frame.pixels[pixel] = red;
-                frame.pixels[pixel + 1] = green;
-                frame.pixels[pixel + 2] = blue;
+                if (hasMaterial && slot.alphaMode == 2 && alpha < 0.999)
+                {
+                    const inverse = 1 - alpha;
+                    frame.pixels[pixel] = clampByte(
+                        frame.pixels[pixel] * inverse + red * alpha);
+                    frame.pixels[pixel + 1] = clampByte(
+                        frame.pixels[pixel + 1] * inverse + green * alpha);
+                    frame.pixels[pixel + 2] = clampByte(
+                        frame.pixels[pixel + 2] * inverse + blue * alpha);
+                }
+                else
+                {
+                    frame.pixels[pixel] = red;
+                    frame.pixels[pixel + 1] = green;
+                    frame.pixels[pixel + 2] = blue;
+                }
             }
         }
     }
@@ -217,20 +240,33 @@ private ubyte clampByte(double value)
     return cast(ubyte) value;
 }
 
-private Vec3 sampleTexture(const(RgbaImage) image, double u, double v)
+private double wrapCoordinate(double value, int mode)
+{
+    if (mode == 33071)
+        return value < 0 ? 0 : value > 1 ? 1 : value;
+    if (mode == 33648)
+    {
+        const wrapped = value - 2 * floor(value / 2);
+        return wrapped > 1 ? 2 - wrapped : wrapped;
+    }
+    return value - floor(value);
+}
+
+private double[4] sampleTexture(const(RgbaImage) image, double u, double v,
+    int wrapS, int wrapT)
 {
     const width = image.width;
     const height = image.height;
     if (width <= 0 || height <= 0)
-        return Vec3(1, 1, 1);
-    const tx = cast(int) ((u - floor(u)) * width) % width;
-    const ty = cast(int) ((v - floor(v)) * height) % height;
+        return [1.0, 1.0, 1.0, 1.0];
+    const tx = cast(int) (wrapCoordinate(u, wrapS) * width) % width;
+    const ty = cast(int) (wrapCoordinate(v, wrapT) * height) % height;
     const x = tx < 0 ? tx + width : tx;
     const y = ty < 0 ? ty + height : ty;
     const pixels = image.pixels;
     const offset = (y * width + x) * 4;
-    return Vec3(pixels[offset] / 255.0, pixels[offset + 1] / 255.0,
-        pixels[offset + 2] / 255.0);
+    return [pixels[offset] / 255.0, pixels[offset + 1] / 255.0,
+        pixels[offset + 2] / 255.0, pixels[offset + 3] / 255.0];
 }
 
 private double shade(Vec3 normal, Vec3 light)

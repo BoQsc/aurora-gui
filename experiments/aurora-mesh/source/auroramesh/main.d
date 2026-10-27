@@ -29,10 +29,12 @@ private void usage()
     writeln("  aurora-mesh --check                  validate and print mesh statistics");
     writeln("  aurora-mesh --export-obj <file.obj>  write the human base mesh");
     writeln("  aurora-mesh --export-glb <file.glb>  write a glTF 2.0 binary mesh");
+    writeln("  aurora-mesh --export-static-glb <file.glb>  bake textures/UVs into a static GLB");
     writeln("  aurora-mesh --obj <file.obj>         load a mesh into the editor");
     writeln("  aurora-mesh --glb <file.glb>         load a GLB mesh into the editor");
     writeln("  --glb-anim <name|index>              select a GLB animation clip");
     writeln("  --glb-time <seconds>                 set the GLB animation time");
+    writeln("  --glb-morph                          enable animated morph weights");
     writeln("  --v3                                 use the natural low-poly human (default)");
     writeln("  --v2                                 use the organic generated human");
     writeln("  --v1                                 use the original primitive human");
@@ -46,11 +48,13 @@ int main(string[] args)
     string loadPath;
     string glbLoadPath;
     string glbExportPath;
+    string staticGlbExportPath;
     GltfScene gltfScene;
     bool hasGltfScene;
     string glbAnimation;
     double glbTime;
     int selectedAnimation;
+    bool noMorph = true;
     string screenshotPath;
     string objPath = "mesh.obj";
     bool check;
@@ -93,6 +97,14 @@ int main(string[] args)
                 }
                 glbExportPath = args[index];
                 break;
+            case "--export-static-glb":
+                if (++index >= args.length)
+                {
+                    stderr.writeln("--export-static-glb needs a path");
+                    return 2;
+                }
+                staticGlbExportPath = args[index];
+                break;
             case "--obj":
                 if (++index >= args.length)
                 {
@@ -125,6 +137,12 @@ int main(string[] args)
                     return 2;
                 }
                 glbTime = to!double(args[index]);
+                break;
+            case "--glb-no-morph":
+                noMorph = true;
+                break;
+            case "--glb-morph":
+                noMorph = false;
                 break;
             case "--screenshot":
                 if (++index >= args.length)
@@ -180,7 +198,9 @@ int main(string[] args)
             gltfScene = loadGltfScene(cast(ubyte[]) read(glbLoadPath));
             hasGltfScene = true;
             int animationIndex;
-            if (glbAnimation.length > 0)
+            if (glbAnimation == "none")
+                animationIndex = -1;
+            else if (glbAnimation.length > 0)
             {
                 bool found;
                 foreach (index, animation; gltfScene.animations)
@@ -194,7 +214,7 @@ int main(string[] args)
                     animationIndex = to!int(glbAnimation);
             }
             selectedAnimation = animationIndex;
-            mesh = bakeGltfFrame(gltfScene, animationIndex, glbTime);
+            mesh = bakeGltfFrame(gltfScene, animationIndex, glbTime, !noMorph);
         }
         catch (Exception error)
         {
@@ -303,6 +323,20 @@ int main(string[] args)
             return 1;
         }
         writeln("wrote " ~ glbExportPath);
+        return 0;
+    }
+
+    if (staticGlbExportPath.length > 0)
+    {
+        ensureParent(staticGlbExportPath);
+        try
+            write(staticGlbExportPath, toGlb(mesh));
+        catch (Exception error)
+        {
+            stderr.writeln("Static GLB export failed: " ~ error.msg);
+            return 1;
+        }
+        writeln("wrote " ~ staticGlbExportPath);
         return 0;
     }
 
