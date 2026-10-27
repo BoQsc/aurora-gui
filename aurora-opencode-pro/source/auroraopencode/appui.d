@@ -57,6 +57,13 @@ import auroraopencode.computeruse :
     stopComputerUseKillSwitch, computerUseAbortActive,
     setComputerUseVirtualPointer, beginComputerUseUserRequest,
     setComputerUseExplanationOnly;
+// experimental: reactive paragraph - delete with
+// source/auroraopencode/reactiveparagraph.d
+import auroraopencode.reactiveparagraph :
+    experimentalReactiveParagraphEnabled, reactiveParagraphContinues,
+    reactiveParagraphFirstDelta, reactiveParagraphPace,
+    reactiveParagraphReset, reactiveParagraphRoundStarted,
+    reactiveParagraphStatus, setReactiveParagraphSetting;
 // experimental: orchestrator - delete with source/auroraopencode/orchestrator.d
 import auroraopencode.orchestrator : setOrchestratorSetting,
     experimentalOrchestratorEnabled,
@@ -816,6 +823,10 @@ private final class MessageBubble : Widget
     // bottom inset: the markdown line box already carries enough descent, and
     // keeping the full inset made this transition look one row-gap too wide.
     private bool _compactBottom;
+    // experimental: reactive paragraph - this reply follows a tool result, so it
+    // continues the paragraph above it instead of starting a fresh block. Only
+    // the top inset changes; the message itself stays its own durable row.
+    private bool _continuation;
     private bool _failed;
     private bool _toolDeferred;
     private string _error;
@@ -1464,6 +1475,18 @@ private final class MessageBubble : Widget
         if (_compactBottom == value) return;
         _compactBottom = value;
         invalidate();
+    }
+
+    void setContinuation(bool value)
+    {
+        if (_continuation == value) return;
+        _continuation = value;
+        invalidate();
+    }
+
+    private int topInset() const
+    {
+        return _continuation ? 0 : padV;
     }
 
     void setImages(const(ChatImageAttachment)[] images)
@@ -2218,7 +2241,7 @@ private final class MessageBubble : Widget
         const innerWidth = maxInt(24, available.width - 2 * padH);
         const bottomPad = _compactBottom && _role == "assistant" &&
             _content.length > 0 && !_failed && !footerVisible() ? 0 : padV;
-        int height = padV + bottomPad;
+        int height = topInset() + bottomPad;
         if (hasThinking() && !_reasoningInActivity)
         {
             // Thinking header (slim) always; full reasoning only when expanded.
@@ -2379,7 +2402,7 @@ private final class MessageBubble : Widget
         }
 
         const innerWidth = maxInt(1, width - 2 * padH);
-        int y = padV;
+        int y = topInset();
 
         if (hasThinking() && !_reasoningInActivity)
         {
@@ -10606,6 +10629,10 @@ public final class OpenCodeRoot : VBox
         size_t index, position, total;
         int sessionIndex;
         bool latest, hideHunkHeaders, groupSameAction;
+        // experimental: reactive paragraph - participates in the retained-row
+        // key so flipping the switch re-renders the transcript instead of
+        // keeping bubbles cached in their old shape.
+        bool continuation;
         string thinking, search, workspace;
     }
     private StableRowCache!(MessageBubble, BubbleVersion) _bubbleCache;
@@ -11515,6 +11542,8 @@ private string _suggestExcludeId;
         // experimental: computer use - mirror the persisted switch into the
         // toolset/prompt gate before any request or toolset build.
         setComputerUseSetting(_settings.experimentalComputerUse);
+        // experimental: reactive paragraph
+        setReactiveParagraphSetting(_settings.experimentalReactiveParagraph);
         setComputerUseVirtualPointer(
             _settings.experimentalComputerUseVirtualPointer);
         // experimental: orchestrator - apply the persisted switch before any
@@ -17696,6 +17725,18 @@ private void pollButtonSuggestionRequest()
         return session.messages[found - 1].id;
     }
 
+    /// experimental: reactive paragraph - the message at `index` continues the
+    /// paragraph above it when the row before it is a tool result.
+    private bool continuationFor(size_t index)
+    {
+        if (!experimentalReactiveParagraphEnabled()) return false;
+        if (_current < 0 || _current >= cast(int) _sessions.length) return false;
+        const messages = _sessions[_current].messages;
+        if (index == 0 || index >= messages.length) return false;
+        return reactiveParagraphContinues(messages[index - 1].role,
+            messages[index].role);
+    }
+
     /// Build the retained bubble for one message, wiring its context menu,
     /// collapse callback and usage footer. Shared by the plain and grouped
     /// paths in rebuildMessageColumn.
@@ -17706,6 +17747,7 @@ private void pollButtonSuggestionRequest()
         BubbleVersion presentation;
         presentation.message = cast(ChatMessage) message;
         presentation.index = index;
+        presentation.continuation = continuationFor(index);
         presentation.sessionIndex = _current;
         presentation.position = index < versionPositions.length ? versionPositions[index] : 0;
         presentation.total = index < versionTotals.length ? versionTotals[index] : 0;
@@ -17780,6 +17822,7 @@ private void pollButtonSuggestionRequest()
             if (auto retained = _bubbleCache.find(message.id, presentation)) return retained;
         auto bubble = new MessageBubble();
         bubble.setRole(message.role);
+        bubble.setContinuation(presentation.continuation);
         bubble.setMessageIndex(cast(int) index);
         // Edited prompts / regenerated replies have sibling runs; show the
         // `< n/m >` branch switcher so the user can flip back and continue.
@@ -18250,6 +18293,9 @@ private void pollButtonSuggestionRequest()
         message.role = "assistant";
         message.time = currentTimestamp();
         appendMessage(*session, message);
+        // experimental: reactive paragraph - count the round before the
+        // visibility check so a background conversation keeps its pace honest.
+        reactiveParagraphRoundStarted();
 
         if (_current != sessionIndex)
         {
@@ -18261,6 +18307,12 @@ private void pollButtonSuggestionRequest()
         _streamBubble = new MessageBubble();
         _streamBubble.setRole("assistant");
         _streamBubble.setStreaming(true);
+        // experimental: reactive paragraph - a round that answers a tool result
+        // continues the paragraph above it, so a screenshot/act loop reads as
+        // one reply instead of a stack of them.
+        _streamBubble.setContinuation(continuationFor(session.messages.length - 1));
+        const reactiveStatus = reactiveParagraphStatus(reactiveParagraphPace());
+        if (reactiveStatus.length > 0) updateStatus(reactiveStatus);
         _streamBubble.setWorkspace(workspaceForSession(sessionIndex));
         // The durable assistant message must exist now, but an empty visual
         // bubble must not reserve padding above the activity/tool row. Reveal
@@ -18312,6 +18364,9 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
         _lastStreamOutputAt = MonoTime.currTime;
+        // experimental: reactive paragraph - the first visible text of this
+        // round closes the previous step's measurement.
+        reactiveParagraphFirstDelta();
         if (_lastStreamSilenceSeconds >= 30)
             updateStatus("Generating…");
         _lastStreamSilenceSeconds = -1;
@@ -22461,6 +22516,11 @@ private void pollButtonSuggestionRequest()
             return;
         }
         if (_turnTiming) freezeTurnTiming();
+        // experimental: reactive paragraph - one user turn is one loop, so the
+        // round counter and step pace start over here, not per request (a tool
+        // round is a request too, and resetting there pinned the readout at
+        // round 1).
+        reactiveParagraphReset();
         _turnStartedAt = MonoTime.currTime;
         _turnUserId = userId;
         _turnSessionIndex = sessionIndex;
@@ -25312,6 +25372,26 @@ private void pollButtonSuggestionRequest()
         };
         computerRow.add(computerCheck);
         optionsBody.add(computerRow);
+
+        // experimental: reactive paragraph - delete with
+        // source/auroraopencode/reactiveparagraph.d. Off by default: a tool
+        // round after a tool result continues the paragraph above it instead of
+        // opening a new bubble, and the status row reports the loop's pace.
+        auto reactiveRow = new HBox(8);
+        reactiveRow.layoutHints().preferredHeight = 32;
+        auto reactiveCheck = new CheckBox(
+            "Experimental reactive paragraph (one live reply across tool rounds)");
+        reactiveCheck.setId("oc-reactiveparagraph");
+        reactiveCheck.setChecked(_settings.experimentalReactiveParagraph, false);
+        reactiveCheck.onChanged = delegate(bool value)
+        {
+            _settings.experimentalReactiveParagraph = value;
+            setReactiveParagraphSetting(value);
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        reactiveRow.add(reactiveCheck);
+        optionsBody.add(reactiveRow);
 
         // experimental: computer use without disturbing the user. The agent
         // draws a ghost cursor and posts input messages instead of moving the

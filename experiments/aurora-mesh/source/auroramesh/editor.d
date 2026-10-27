@@ -3,10 +3,11 @@ module auroramesh.editor;
 import auroramesh.camera : Camera, project;
 import auroramesh.edit : pickNearest, screenDelta;
 import auroramesh.glb : fromGlb, toGlb;
-import auroramesh.gltf_scene : GltfScene, bakeGltfFrame,
+import auroramesh.gltf_scene : GltfScene, PoseOverride, bakeGltfFrame,
     gltfAnimationDuration, loadGltfScene;
-import auroramesh.mesh : Mesh, Vec3, meshAdd = add, humanBaseMesh,
-    meshMaximum, meshMinimum, parseObj, toObj;
+import auroramesh.live : liveObject;
+import auroramesh.mesh : Material, MaterialSlot, Mesh, Vec2, Vec3,
+    meshAdd = add, humanBaseMesh, meshMaximum, meshMinimum, parseObj, toObj;
 import auroramesh.human_v2 : humanBaseMeshV2;
 import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh;
@@ -16,8 +17,10 @@ import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
     MouseButton, Point, Rect, VerticalAlign, Widget;
 import std.file : exists, read, readText, write;
 import std.algorithm : max, min;
+import std.conv : to;
 import std.format : format;
 import std.math : abs;
+import std.json : JSONType, JSONValue, parseJSON;
 import std.utf : toUTF32;
 
 private enum int SidebarWidth = 300;
@@ -70,6 +73,12 @@ final class MeshEditor : Widget
     private int _animation;
     private double _time;
     private bool _playing;
+    private PoseOverride[] _poseOverrides;
+    private Mesh[] _liveExtras;
+    private string _livePath = "build/live.json";
+    private string _liveText;
+    private long _liveRevision;
+    private string _liveStatus;
 
     this(Mesh mesh, string objPath)
     {
@@ -98,6 +107,9 @@ final class MeshEditor : Widget
     void setMesh(Mesh mesh)
     {
         _hasScene = false;
+        _poseOverrides.length = 0;
+        _liveExtras.length = 0;
+        _liveStatus = "";
         _mesh = mesh;
         _undo.length = 0;
         _selected = -1;
@@ -115,12 +127,13 @@ final class MeshEditor : Widget
             animation : 0;
         _time = time;
         _playing = false;
-        _mesh = bakeGltfFrame(_scene, _animation, _time, true);
-        _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
+        _poseOverrides.length = 0;
+        _liveExtras.length = 0;
         _status = _scene.animations.length > 0 ?
             "GLB scene · " ~ _scene.animations[_animation].name :
             "GLB scene loaded";
-        _dirty = true;
+        rebuildGltfMesh();
+        _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
         invalidate();
     }
 
@@ -133,9 +146,279 @@ final class MeshEditor : Widget
         if (duration > 0)
             while (_time > duration)
                 _time -= duration;
-        _mesh = bakeGltfFrame(_scene, _animation, _time, true);
+        rebuildGltfMesh();
+    }
+
+    void setLivePath(string path)
+    {
+        _livePath = path;
+    }
+
+    void tickLive()
+    {
+        if (!_hasScene || _livePath.length == 0 || !exists(_livePath))
+            return;
+        string text;
+        try
+            text = readText(_livePath);
+        catch (Exception)
+            return;
+        if (text == _liveText)
+            return;
+        _liveText = text;
+        JSONValue document;
+        try
+            document = parseJSON(text);
+        catch (Exception error)
+        {
+            _liveStatus = "Live JSON error";
+            _status = _liveStatus;
+            invalidate();
+            return;
+        }
+        long revision;
+        if (liveHas(document, "revision"))
+            revision = liveInteger(document.object["revision"]);
+        if (revision > 0 && revision == _liveRevision)
+            return;
+        _liveRevision = revision;
+        const changed = applyLiveDocument(document);
+        if (changed)
+        {
+            rebuildGltfMesh();
+            _status = format("Live: %d object(s), %d pose override(s)",
+                _liveExtras.length, _poseOverrides.length);
+        }
+        _liveStatus = "Live revision " ~ to!string(revision);
+        try
+            write("build/live-ack.json", format(
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d}`,
+                revision, _liveExtras.length, _poseOverrides.length));
+        catch (Exception)
+        {
+        }
+        invalidate();
+    }
+
+    private void rebuildGltfMesh()
+    {
+        if (!_hasScene)
+            return;
+        _mesh = bakeGltfFrame(_scene, _animation, _time, true,
+            _poseOverrides);
+        if (_liveExtras.length > 0)
+        {
+            foreach (extra; _liveExtras)
+            {
+                if (extra.vertices.length == 0)
+                    continue;
+                const offset = cast(int) _mesh.vertices.length;
+                _mesh.vertices ~= extra.vertices;
+                _mesh.normals ~= extra.normals;
+                if (_mesh.uvs.length == offset)
+                    foreach (vertex; extra.vertices)
+                        _mesh.uvs ~= Vec2(0, 0);
+                MaterialSlot slot;
+                slot.baseColor = Vec3(0.66, 0.69, 0.74);
+                slot.doubleSided = true;
+                const materialIndex = cast(int) _mesh.materials.length;
+                _mesh.materials ~= slot;
+                foreach (face; extra.faces)
+                {
+                    const before = _mesh.faces.length;
+                    _mesh.addTriangle(offset + face.a, offset + face.b,
+                        offset + face.c, Material.neutral);
+                    if (_mesh.faces.length > before)
+                        _mesh.faceMaterials ~= materialIndex;
+                }
+            }
+        }
         _dirty = true;
         invalidate();
+    }
+
+    private bool applyLiveDocument(JSONValue document)
+    {
+        bool changed;
+        if (liveHas(document, "clear") &&
+            document.object["clear"].type == JSONType.true_ &&
+            document.object["clear"].boolean)
+        {
+            _liveExtras.length = 0;
+            _poseOverrides.length = 0;
+            changed = true;
+        }
+        const commands = liveChild(document, "commands");
+        if (commands.type == JSONType.array)
+            foreach (command; commands.array)
+                changed = applyLiveCommand(command) || changed;
+        else
+            changed = applyLiveCommand(document) || changed;
+        return changed;
+    }
+
+    private bool applyLiveCommand(JSONValue command)
+    {
+        const type = liveString(liveChild(command, "type"));
+        if (type == "clear")
+        {
+            _liveExtras.length = 0;
+            _poseOverrides.length = 0;
+            return true;
+        }
+        if (type == "animation")
+        {
+            int index = -1;
+            const name = liveString(liveChild(command, "name"));
+            foreach (candidate, animation; _scene.animations)
+                if (animation.name == name)
+                {
+                    index = cast(int) candidate;
+                    break;
+                }
+            if (index < 0 && liveHas(command, "index"))
+                index = cast(int) liveInteger(liveChild(command, "index"));
+            if (index < 0 || index >= _scene.animations.length)
+                return false;
+            _animation = index;
+            _time = liveNumber(liveChild(command, "time"));
+            _playing = false;
+            return true;
+        }
+        if (type == "time")
+        {
+            _time = liveNumber(liveChild(command, "time"));
+            return true;
+        }
+        if (type == "object")
+        {
+            const shape = liveString(liveChild(command, "shape"), "box");
+            const position = liveVector(liveChild(command, "position"),
+                Vec3(0, 1.2, 0));
+            const scale = liveNumber(liveChild(command, "scale"), 1.0);
+            _liveExtras ~= liveObject(shape, position, scale);
+            return true;
+        }
+        if (type == "pose")
+        {
+            const nodeName = liveString(liveChild(command, "node"));
+            int node = -1;
+            foreach (index, value; _scene.nodes)
+                if (value.name == nodeName)
+                {
+                    node = cast(int) index;
+                    break;
+                }
+            if (node < 0 && liveHas(command, "node"))
+                node = cast(int) liveInteger(liveChild(command, "node"));
+            if (node < 0 || node >= _scene.nodes.length)
+                return false;
+            if (liveHas(command, "reset") &&
+                liveChild(command, "reset").type == JSONType.true_ &&
+                liveChild(command, "reset").boolean)
+            {
+                foreach (index, overrideValue; _poseOverrides)
+                    if (overrideValue.node == node)
+                    {
+                        _poseOverrides = _poseOverrides[0 .. index] ~
+                            _poseOverrides[index + 1 .. $];
+                        break;
+                    }
+                return true;
+            }
+            PoseOverride overrideValue;
+            overrideValue.node = node;
+            const translation = liveNumbers(liveChild(command, "translation"));
+            if (translation.length >= 3)
+            {
+                overrideValue.hasTranslation = true;
+                overrideValue.translation = Vec3(translation[0],
+                    translation[1], translation[2]);
+            }
+            const rotation = liveNumbers(liveChild(command, "rotation"));
+            if (rotation.length >= 4)
+            {
+                overrideValue.hasRotation = true;
+                overrideValue.rotation = [rotation[0], rotation[1],
+                    rotation[2], rotation[3]];
+            }
+            const scale = liveNumbers(liveChild(command, "scale"));
+            if (scale.length >= 3)
+            {
+                overrideValue.hasScale = true;
+                overrideValue.scale = Vec3(scale[0], scale[1], scale[2]);
+            }
+            if (!overrideValue.hasTranslation && !overrideValue.hasRotation &&
+                !overrideValue.hasScale)
+                return false;
+            bool replaced;
+            foreach (ref existing; _poseOverrides)
+                if (existing.node == node)
+                {
+                    existing = overrideValue;
+                    replaced = true;
+                    break;
+                }
+            if (!replaced)
+                _poseOverrides ~= overrideValue;
+            return true;
+        }
+        return false;
+    }
+
+    private static bool liveHas(JSONValue value, string key)
+    {
+        return value.type == JSONType.object && (key in value.object);
+    }
+
+    private static JSONValue liveChild(JSONValue value, string key)
+    {
+        if (!liveHas(value, key))
+            return JSONValue();
+        return value.object[key];
+    }
+
+    private static string liveString(JSONValue value, string fallback = "")
+    {
+        return value.type == JSONType.string ? value.str : fallback;
+    }
+
+    private static double liveNumber(JSONValue value, double fallback = 0)
+    {
+        switch (value.type)
+        {
+            case JSONType.integer:
+                return cast(double) value.integer;
+            case JSONType.uinteger:
+                return cast(double) value.uinteger;
+            case JSONType.float_:
+                return value.floating;
+            default:
+                return fallback;
+        }
+    }
+
+    private static long liveInteger(JSONValue value)
+    {
+        return value.type == JSONType.integer ? value.integer :
+            value.type == JSONType.uinteger ? cast(long) value.uinteger : 0;
+    }
+
+    private static double[] liveNumbers(JSONValue value)
+    {
+        double[] result;
+        if (value.type != JSONType.array)
+            return result;
+        foreach (item; value.array)
+            result ~= liveNumber(item);
+        return result;
+    }
+
+    private static Vec3 liveVector(JSONValue value, Vec3 fallback)
+    {
+        const values = liveNumbers(value);
+        return values.length >= 3 ? Vec3(values[0], values[1], values[2]) :
+            fallback;
     }
 
     override protected void onPaint(ref Canvas canvas)
@@ -498,8 +781,7 @@ final class MeshEditor : Widget
                     _animation = (_animation + 1) %
                         cast(int) _scene.animations.length;
                     _time = 0;
-                    _mesh = bakeGltfFrame(_scene, _animation, _time, true);
-                    _dirty = true;
+                    rebuildGltfMesh();
                     _status = "Animation: " ~
                         _scene.animations[_animation].name;
                     invalidate();
@@ -515,8 +797,7 @@ final class MeshEditor : Widget
                     if (duration > 0)
                         while (_time < 0)
                             _time += duration;
-                    _mesh = bakeGltfFrame(_scene, _animation, _time, true);
-                    _dirty = true;
+                    rebuildGltfMesh();
                     _status = format("Animation time %.2fs", _time);
                     invalidate();
                     return true;

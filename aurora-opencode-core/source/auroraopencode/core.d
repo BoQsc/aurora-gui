@@ -1528,6 +1528,11 @@ public struct Settings
     // pointer / stealing focus, so the person keeps using mouse and keyboard.
     // Off by default; only meaningful while experimentalComputerUse is on.
     bool experimentalComputerUseVirtualPointer;
+    // Experimental: render a tool round as a continuation of the paragraph above
+    // it (no fresh bubble inset) and report the loop's pace in the status row.
+    // Presentation only; the durable message model is unchanged. Off by default;
+    // the Settings dialog owns this switch.
+    bool experimentalReactiveParagraph;
     // Highly experimental opt-in: expose the orchestrator routing tools
     // (`assign`/`ask_user`/`finish`) that let one participant hand work to
     // others. Off by default; the Settings dialog owns this switch. See
@@ -1966,6 +1971,10 @@ public Settings loadSettings()
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalComputerUseVirtualPointer =
                             found.type == JSONType.true_;
+                if (auto found = "experimentalReactiveParagraph" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.experimentalReactiveParagraph =
+                            found.type == JSONType.true_;
                 if (auto found = "experimentalOrchestrator" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalOrchestrator =
@@ -2290,6 +2299,7 @@ public void saveSettings(const ref Settings settings)
     root["experimentalComputerUse"] = settings.experimentalComputerUse;
     root["experimentalComputerUseVirtualPointer"] =
         settings.experimentalComputerUseVirtualPointer;
+    root["experimentalReactiveParagraph"] = settings.experimentalReactiveParagraph;
     root["experimentalOrchestrator"] = settings.experimentalOrchestrator;
     root["floatingMiniChat"] = settings.floatingMiniChat;
     root["floatingMiniChatLines"] = settings.floatingMiniChatLines;

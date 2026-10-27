@@ -28,6 +28,7 @@ aurora-mesh.exe --glb mesh.glb
 aurora-mesh.exe --glb character.glb --glb-anim AK47_Run --glb-time 1.0
 aurora-mesh.exe --glb character.glb --glb-anim AK47_Run --glb-morph
 aurora-mesh.exe --glb character.glb --export-static-glb baked.glb
+aurora-mesh.exe --glb character.glb --live build/live.json
 aurora-mesh.exe --v1
 aurora-mesh.exe --v2
 aurora-mesh.exe --v3
@@ -122,6 +123,40 @@ meshes writes a static geometry/material GLB. Loaded-scene mutation/export,
 Draco, BasisU, full PBR/material extensions, normal/emissive maps, cameras, and
 lights are not implemented yet.
 
+## Live authoring
+
+The running editor watches a local JSON command file. `--live <path>` selects
+it; the default is `build/live.json`. It writes `build/live-ack.json` after
+applying a revision. Edits are rebuilt in the viewport immediately.
+
+```json
+{
+  "revision": 3,
+  "commands": [
+    {"type": "animation", "name": "AK47_Run", "time": 1.0},
+    {"type": "pose", "node": "RightArm",
+     "rotation": [0.0, 0.382683, 0.0, 0.92388]},
+    {"type": "object", "shape": "rifle",
+     "position": [0.38, 1.05, 0.42], "scale": 0.85},
+    {"type": "clear"}
+  ]
+}
+```
+
+- `animation` selects a clip by name/index and sets time.
+- `pose` applies a node-local translation, quaternion rotation, and/or scale
+  to a named bone. Repeating the node replaces its override; `reset: true`
+  clears it.
+- `object` creates an owned procedural object. Supported shapes are `box`,
+  `sphere`, `rifle`, and `weapon`; position is world-space.
+- `clear` removes pose overrides and live objects.
+
+This is a live authoring and preview path, not a complete scene editor.
+Objects are procedural, poses are node-local overrides, and edits are not
+serialized back into a live skinned scene. Attachments to bones, arbitrary
+imported meshes, CSG, undo transactions, and scene export are the next
+production steps.
+
 ## Remaining gaps
 
 - The v3 body is a repaired CC0 reference body, not a from-scratch result and
@@ -153,6 +188,7 @@ lights are not implemented yet.
 - `assets/PROVENANCE.md` — CC0 reference provenance and repair steps.
 - `source/auroramesh/glb.d` — GLB 2.0 container, accessor, node-transform, and material I/O.
 - `source/auroramesh/gltf_scene.d` — full scene import, textures, skinning, morphs, and animation baking.
+- `source/auroramesh/live.d` — owned procedural live-authoring objects.
 - `source/auroramesh/camera.d` — orbit camera and perspective projection.
 - `source/auroramesh/renderer.d` — z-buffered shaded rasterizer, grid, wireframe.
 - `source/auroramesh/edit.d` — vertex picking and constrained screen drag.

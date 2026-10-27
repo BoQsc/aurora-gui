@@ -1,0 +1,17 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source",
+    "aurora-opencode-core/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "dub",
+        "args": ["test"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 1800000
+      }
+    }
+  ]
+}

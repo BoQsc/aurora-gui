@@ -35,6 +35,7 @@ private void usage()
     writeln("  --glb-anim <name|index>              select a GLB animation clip");
     writeln("  --glb-time <seconds>                 set the GLB animation time");
     writeln("  --glb-morph                          enable animated morph weights");
+    writeln("  --live <file.json>                   watch a live authoring command file");
     writeln("  --v3                                 use the natural low-poly human (default)");
     writeln("  --v2                                 use the organic generated human");
     writeln("  --v1                                 use the original primitive human");
@@ -56,6 +57,7 @@ int main(string[] args)
     int selectedAnimation;
     bool noMorph;
     string screenshotPath;
+    string livePath = "build/live.json";
     string objPath = "mesh.obj";
     bool check;
     int humanVersion = 3;
@@ -143,6 +145,14 @@ int main(string[] args)
                 break;
             case "--glb-morph":
                 noMorph = false;
+                break;
+            case "--live":
+                if (++index >= args.length)
+                {
+                    stderr.writeln("--live needs a JSON path");
+                    return 2;
+                }
+                livePath = args[index];
                 break;
             case "--screenshot":
                 if (++index >= args.length)
@@ -366,16 +376,19 @@ int main(string[] args)
     options.darkTitleBar = true;
     auto window = new GuiWindow(options, Theme.dark());
     auto editor = new MeshEditor(mesh, objPath);
+    editor.setLivePath(livePath);
     if (hasGltfScene)
         editor.setGltfScene(gltfScene, selectedAnimation, glbTime);
     window.setRoot(editor);
 
     if (screenshotPath.length > 0 || hasGltfScene)
     {
-        ensureParent(screenshotPath);
+        if (screenshotPath.length > 0)
+            ensureParent(screenshotPath);
         auto frames = 0;
         window.applicationService = delegate(double delta)
         {
+            editor.tickLive();
             if (hasGltfScene)
                 editor.advance(delta);
             frames++;

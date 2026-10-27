@@ -395,6 +395,17 @@ struct GAnimation
     GChannel[] channels;
 }
 
+struct PoseOverride
+{
+    int node = -1;
+    bool hasTranslation;
+    Vec3 translation;
+    bool hasRotation;
+    double[4] rotation;
+    bool hasScale;
+    Vec3 scale;
+}
+
 struct GltfScene
 {
     string name;
@@ -924,7 +935,7 @@ double gltfAnimationDuration(GltfScene scene, int animationIndex)
 
 /** Bake the full scene at an animation time into a textured editable mesh. */
 Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
-    bool applyMorph = true)
+    bool applyMorph = true, PoseOverride[] poseOverrides = null)
 {
     Mesh mesh;
     mesh.materials.length = scene.materials.length;
@@ -1008,6 +1019,21 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
 
         }
     }
+    if (poseOverrides !is null)
+        foreach (overrideValue; poseOverrides)
+        {
+            if (overrideValue.node < 0 ||
+                overrideValue.node >= poses.length)
+                continue;
+            if (overrideValue.hasTranslation)
+                poses[overrideValue.node].translation =
+                    overrideValue.translation;
+            if (overrideValue.hasRotation)
+                poses[overrideValue.node].rotation =
+                    overrideValue.rotation;
+            if (overrideValue.hasScale)
+                poses[overrideValue.node].scale = overrideValue.scale;
+        }
 
     Mat4[] world = new Mat4[scene.nodes.length];
     bool[] visited = new bool[scene.nodes.length];

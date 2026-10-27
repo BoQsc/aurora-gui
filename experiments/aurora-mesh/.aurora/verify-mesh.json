@@ -58,6 +58,33 @@
         "workdir": "experiments/aurora-mesh",
         "timeout": 120000
       }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "python",
+        "args": ["-c", "import json;from pathlib import Path;Path('build/verify-live.json').write_text(json.dumps({'revision':1,'commands':[{'type':'object','shape':'box','position':[0,1.6,0],'scale':0.5}]}))"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 30000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/verify/aurora-mesh.exe",
+        "args": ["--glb", "build/verify-human.glb", "--live", "build/verify-live.json", "--screenshot", "build/verify-live.ppm", "--width", "800", "--height", "600"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-c", "import json;from pathlib import Path;a=json.loads(Path('build/live-ack.json').read_text());assert a.get('revision')==1 and a.get('objects')==1;a"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 30000
+      }
     }
   ]
 }
