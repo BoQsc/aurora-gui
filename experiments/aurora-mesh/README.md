@@ -165,7 +165,15 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   after the revision rebuild.
 - `new-animation` authors a named, loopable bone clip from local keyframes.
   `Space` plays/pauses it, `N` restarts it, and `[` / `]` scrub it.
+- `check` reruns the collision audit at the current pose.
 - `clear` removes pose overrides and live objects.
+
+The acknowledgement reports `collisions`, `collisionSample`, and
+`collisionFaces`. The audit uses a spatial grid and triangle intersection over
+the baked mesh; adjacent faces are ignored. Overlaps can be intentional, such
+as layered clothing or eye shells, so treat the count as a warning to inspect,
+not an automatic failure. A `check` command forces a fresh scan; revisions that
+change geometry or poses also scan once.
 
 This is a live authoring and preview path, not a complete scene editor.
 Objects are procedural or OBJ, poses are node-local overrides, and edits are

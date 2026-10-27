@@ -1,6 +1,7 @@
 module auroramesh.editor;
 
 import auroramesh.camera : Camera, project;
+import auroramesh.collision : CollisionReport, findSelfIntersections;
 import auroramesh.edit : pickNearest, screenDelta;
 import auroramesh.glb : fromGlb, toGlb;
 import auroramesh.gltf_scene : GltfScene, Mat4, PoseOverride, bakeGltfFrame,
@@ -119,6 +120,8 @@ final class MeshEditor : Widget
     private string _pendingSavePath;
     private LiveClip _liveClip;
     private bool _hasLiveAnimation;
+    private CollisionReport _collisions;
+    private bool _checkCollisions;
 
     this(Mesh mesh, string objPath)
     {
@@ -338,6 +341,16 @@ final class MeshEditor : Widget
             _status = format("Live: %d object(s), %d pose override(s)",
                 _liveExtras.length, _poseOverrides.length);
         }
+        if (changed || _checkCollisions)
+        {
+            _collisions = findSelfIntersections(_mesh, 4096);
+            _checkCollisions = false;
+            _status = format(
+                "Live: %d object(s), %d pose override(s) · %d collisions",
+                _liveExtras.length, _poseOverrides.length, _collisions.pairs);
+        }
+        if (_collisions.faceA < 0)
+            _collisions.sample = Vec3(0, 0, 0);
         if (_pendingSavePath.length > 0)
         {
             try
@@ -350,9 +363,11 @@ final class MeshEditor : Widget
         _liveStatus = "Live revision " ~ to!string(revision);
         try
             write("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s"}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","collisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
                 revision, _liveExtras.length, _poseOverrides.length,
-                _hasLiveAnimation ? _liveClip.name : ""));
+                _hasLiveAnimation ? _liveClip.name : "",
+                _collisions.pairs, _collisions.sample.x, _collisions.sample.y,
+                _collisions.sample.z, _collisions.faceA, _collisions.faceB));
         catch (Exception)
         {
         }
@@ -448,6 +463,11 @@ final class MeshEditor : Widget
             _hasLiveAnimation = false;
             _liveClip = LiveClip();
             _playing = false;
+            return true;
+        }
+        if (type == "check")
+        {
+            _checkCollisions = true;
             return true;
         }
         if (type == "new-animation")

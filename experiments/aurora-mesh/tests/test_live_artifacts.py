@@ -19,6 +19,8 @@ class LiveArtifactTests(unittest.TestCase):
         self.assertEqual(ack["status"], "ok")
         self.assertGreaterEqual(ack["objects"], 1)
         self.assertEqual(ack.get("clip"), "ArmWave")
+        self.assertIn("collisions", ack)
+        self.assertGreaterEqual(ack["collisions"], 0)
 
     def test_obj_injection_source(self):
         obj = (ROOT / "build" / "live-cube.obj").read_text().splitlines()
