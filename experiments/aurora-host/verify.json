@@ -73,6 +73,26 @@
       "command": {
         "program": "python",
         "args": [
+          "-u",
+          "-B",
+          "-m",
+          "unittest",
+          "discover",
+          "-s",
+          "tests",
+          "-p",
+          "test_notepad_close_pixel.py",
+          "-v"
+        ],
+        "workdir": "experiments/aurora-host",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
           "-B",
           "experiments/aurora-host/tools/verify_experiment.py"
         ],
