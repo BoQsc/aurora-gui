@@ -1,8 +1,9 @@
 module auroramesh.renderer;
 
 import auroramesh.camera : Camera, Projected, project;
-import auroramesh.mesh : Face, Material, Mesh, Vec3, cross, dot, length, normalize,
-    sub;
+import auroramesh.mesh : Face, Material, MaterialSlot, Mesh, Vec2, Vec3, cross,
+    dot, length, normalize, sub;
+import aurora.image : RgbaImage;
 import std.algorithm : max, min;
 import std.file : write;
 import std.format : format;
@@ -64,7 +65,7 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
 
     const light = normalize(Vec3(0.35, 0.85, 0.55));
     const smooth = mesh.normals.length == mesh.vertices.length;
-    foreach (face; mesh.faces)
+    foreach (faceIndex, face; mesh.faces)
     {
         const pa = projected[face.a];
         const pb = projected[face.b];
@@ -93,7 +94,21 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
                 sub(mesh.vertices[face.c], mesh.vertices[face.a])));
             flatIntensity = shade(normal, light);
         }
-        const base = materialColor(face.material);
+        const materialIndex = mesh.faceMaterials.length == mesh.faces.length ?
+            mesh.faceMaterials[faceIndex] : -1;
+        const hasMaterial = materialIndex >= 0 &&
+            materialIndex < mesh.materials.length;
+        MaterialSlot slot;
+        if (hasMaterial)
+            slot = mesh.materials[materialIndex];
+        else
+            slot.baseColor = Vec3(0, 0, 0);
+        const base = hasMaterial ? slot.baseColor : Vec3(0, 0, 0);
+        const legacyBase = hasMaterial ? null : materialColor(face.material);
+        const texture = hasMaterial && slot.texture >= 0 &&
+            slot.texture < mesh.textures.length ?
+            mesh.textures[slot.texture] : null;
+        const hasUv = mesh.uvs.length == mesh.vertices.length && texture !is null;
 
         const minX = max(0, cast(int) floor(min(pa.x, min(pb.x, pc.x))));
         const maxX = min(width - 1, cast(int) ceil(max(pa.x, max(pb.x, pc.x))));
@@ -117,6 +132,20 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
                 if (!positive && !negative)
                     continue;
                 const z = wa * pa.z + wb * pb.z + wc * pc.z;
+                Vec3 sampled;
+                if (hasUv)
+                {
+                    const u = wa * mesh.uvs[face.a].x +
+                        wb * mesh.uvs[face.b].x + wc * mesh.uvs[face.c].x;
+                    const v = wa * mesh.uvs[face.a].y +
+                        wb * mesh.uvs[face.b].y + wc * mesh.uvs[face.c].y;
+                    sampled = sampleTexture(texture, u, v);
+                }
+                else if (legacyBase is null)
+                    sampled = base;
+                else
+                    sampled = Vec3(legacyBase[0] / 255.0,
+                        legacyBase[1] / 255.0, legacyBase[2] / 255.0);
                 const index = y * width + x;
                 if (z >= depth[index])
                     continue;
@@ -124,9 +153,9 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
                 const intensity = smooth ?
                     wa * intensityA + wb * intensityB + wc * intensityC :
                     flatIntensity;
-                const red = cast(ubyte) min(255.0, base[0] * intensity);
-                const green = cast(ubyte) min(255.0, base[1] * intensity);
-                const blue = cast(ubyte) min(255.0, base[2] * intensity);
+                const red = clampByte(sampled.x * intensity * 255);
+                const green = clampByte(sampled.y * intensity * 255);
+                const blue = clampByte(sampled.z * intensity * 255);
                 const pixel = index * 3;
                 frame.pixels[pixel] = red;
                 frame.pixels[pixel + 1] = green;
@@ -177,6 +206,31 @@ private double edge(double ax, double ay, double bx, double by, double px,
     double py)
 {
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+}
+
+private ubyte clampByte(double value)
+{
+    if (value <= 0)
+        return 0;
+    if (value >= 255)
+        return 255;
+    return cast(ubyte) value;
+}
+
+private Vec3 sampleTexture(const(RgbaImage) image, double u, double v)
+{
+    const width = image.width;
+    const height = image.height;
+    if (width <= 0 || height <= 0)
+        return Vec3(1, 1, 1);
+    const tx = cast(int) ((u - floor(u)) * width) % width;
+    const ty = cast(int) ((v - floor(v)) * height) % height;
+    const x = tx < 0 ? tx + width : tx;
+    const y = ty < 0 ? ty + height : ty;
+    const pixels = image.pixels;
+    const offset = (y * width + x) * 4;
+    return Vec3(pixels[offset] / 255.0, pixels[offset + 1] / 255.0,
+        pixels[offset + 2] / 255.0);
 }
 
 private double shade(Vec3 normal, Vec3 light)

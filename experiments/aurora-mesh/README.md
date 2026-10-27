@@ -1,6 +1,7 @@
 # Aurora Mesh
 
-A small software-projected 3D mesh editor with a procedural human base mesh.
+A small software-projected 3D mesh editor with a natural low-poly human base
+mesh and an owned sculpting pipeline.
 It runs on Aurora's normal window, font, and input stack; the 3D viewport is a
 z-buffered software rasterizer.
 
@@ -11,9 +12,8 @@ dub build
 aurora-mesh.exe
 ```
 
-The editor opens with the watertight v2 human base mesh. `mesh.obj` in this
-directory is the default Save/Load target. v3 is selectable but still
-experimental.
+The editor opens with the watertight v3 human base mesh. `mesh.obj` and
+`mesh.glb` are the default Save/Load targets.
 
 Headless tools:
 
@@ -21,8 +21,11 @@ Headless tools:
 aurora-mesh.exe --check
 aurora-mesh.exe --render build/human.ppm --width 1100 --height 800
 aurora-mesh.exe --export-obj build/human.obj
+aurora-mesh.exe --export-glb build/human.glb
 aurora-mesh.exe --screenshot build/editor.ppm --width 1400 --height 860
 aurora-mesh.exe --obj mesh.obj
+aurora-mesh.exe --glb mesh.glb
+aurora-mesh.exe --glb character.glb --glb-anim AK47_Run --glb-time 1.0
 aurora-mesh.exe --v1
 aurora-mesh.exe --v2
 aurora-mesh.exe --v3
@@ -46,16 +49,32 @@ aurora-mesh.exe --v3
 - `B`: cycle Grab, Smooth, and Inflate sculpt tools.
 - `M`: toggle X symmetry for sculpting and vertex drags.
 - `U`: undo the last edit.
+- `G` / `F`: save / load the GLB file.
+- `Space`: play/pause a loaded GLB animation.
+- `N`: next GLB animation clip.
+- `[` / `]`: step animation time.
 
 The sidebar has Human v3, Human v2, Human v1, Reset view, Wireframe, Save OBJ,
-and Load OBJ buttons. The sculpt tools are keyboard-driven; the current tool
-and mirror state are shown in the sidebar.
+Load OBJ, Save GLB, and Load GLB buttons. The sculpt tools are keyboard-driven;
+the current tool and mirror state are shown in the sidebar.
 
 ## Human base mesh
 
-The default v2 mesh is one blended SDF surface, extracted with surface nets and
-smoothed. Torso, pelvis, shoulders, arms, legs, head, jaw, chin, nose, ears,
-eye sockets, hands, and feet all share one continuous skin instead of
+The default v3 mesh is a natural T-pose body with an anatomically shaped skull,
+face, hands, fingers, feet, and separate eyes. It is a single welded body
+surface at a game-like triangle budget:
+
+```text
+vertices 4953
+faces    9966
+height   1.804 m
+watertight yes (0 boundary, 0 non-manifold)
+```
+
+The organic v2 mesh is still available. It is one blended SDF surface extracted
+with surface nets and smoothed. Torso, pelvis, shoulders, arms, legs, head,
+jaw, chin, nose, ears, eye sockets, hands, and feet all share one continuous
+skin instead of
 intersecting primitive parts. It is still a stylized base/blockout, not an
 anatomical final character.
 
@@ -71,11 +90,30 @@ Human v1 button, `1`, or `--v1`. Its counts are 1,030 vertices and 1,860 faces.
 
 ## v3 status
 
-v3 is a decimation experiment: currently 6,122 vertices and 12,200 faces.
-It is intentionally not the default. Its silhouette is still a blockout, and
-its boundary edges are not yet clean enough to call watertight. The modeling
-tools above are the route to fixing that by hand rather than trusting more
-automatic voxel detail.
+v3 is the default. Its body geometry comes from the user-provided CC0
+`Human.AK47.r12.glb` reference (`Reference_High_Mesh.001.ThirdPerson`), with
+the gear and clothing excluded. Our own pipeline separated, welded, repaired,
+and validated the body, then added the separate eye shells. It is a natural
+base body, not a from-scratch SDF rebuild and not a game-ready rigged asset.
+See `assets/PROVENANCE.md`.
+
+## GLB
+
+`--glb` imports a full glTF 2.0 binary scene: node hierarchy and matrix/TRS
+transforms, meshes, indexed triangles, materials, base-color textures, UVs,
+PNG/JPEG/WebP images, sparse accessors, morph targets, skins/weights, and
+animation clips. `--glb-anim` and `--glb-time` select a clip and time; the
+editor uses `Space`, `N`, `[` and `]` for playback.
+
+The reference `Human.AK47.r12.glb` scene imports with 155 nodes, 45 meshes,
+33 materials, 30 textures, 24 images, 2 skins, and 22 animations. Its
+`AK47_Run` clip at 1.0 s renders with the skeleton and textures applied.
+
+`Save GLB` on a loaded scene writes the original binary unchanged, preserving
+features the editor does not author. `--export-glb` for generated human meshes
+still writes a static geometry/material GLB. Full scene mutation/export,
+Draco, BasisU, full PBR/material extensions, normal/emissive maps, alpha
+blending, cameras, and lights are not implemented yet.
 
 ## Files
 
@@ -85,7 +123,11 @@ automatic voxel detail.
 - `source/auroramesh/human_v2.d` — v2 anatomy and materials.
 - `source/auroramesh/sculpt.d` — smooth/inflate brushes, symmetry lookup, undo snapshots.
 - `source/auroramesh/decimate.d` — edge-collapse decimation experiment for v3.
-- `source/auroramesh/human_v3.d` — experimental low-poly v3.
+- `source/auroramesh/human_v3.d` — embedded natural low-poly v3 body.
+- `assets/human_v3.obj` — v3 body asset.
+- `assets/PROVENANCE.md` — CC0 reference provenance and repair steps.
+- `source/auroramesh/glb.d` — GLB 2.0 container, accessor, node-transform, and material I/O.
+- `source/auroramesh/gltf_scene.d` — full scene import, textures, skinning, morphs, and animation baking.
 - `source/auroramesh/camera.d` — orbit camera and perspective projection.
 - `source/auroramesh/renderer.d` — z-buffered shaded rasterizer, grid, wireframe.
 - `source/auroramesh/edit.d` — vertex picking and constrained screen drag.
@@ -102,8 +144,8 @@ aurora-mesh.exe --screenshot build/editor.ppm
 ```
 
 `--check` validates indices, bounds, OBJ round-trip, watertightness, and edge
-counts. `dub test` covers the procedural mesh, SDF primitives, projection,
-rasterizer, OBJ parsing, picking, and axis-locked drag math.
+counts. `dub test` covers v1/v2/v3 generation, SDF primitives, sculpting,
+GLB/OBJ I/O, projection, rasterizer, picking, and axis-locked drag math.
 
 This first editor intentionally does not provide extrusion, loop cuts,
 subdivision, UVs, skinning, undo, or multi-object scenes. It is a usable

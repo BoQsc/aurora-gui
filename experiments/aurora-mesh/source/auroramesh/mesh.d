@@ -4,6 +4,7 @@ import std.conv : to;
 import std.format : format;
 import std.math : PI, abs, cos, isFinite, sin, sqrt;
 import std.string : indexOf, split, splitLines, startsWith, strip;
+import aurora.image : RgbaImage;
 
 struct Vec3
 {
@@ -16,6 +17,18 @@ struct Vec3
         this.x = x;
         this.y = y;
         this.z = z;
+    }
+}
+
+struct Vec2
+{
+    double x;
+    double y;
+
+    this(double x, double y)
+    {
+        this.x = x;
+        this.y = y;
     }
 }
 
@@ -74,6 +87,14 @@ enum Material : ubyte
     eye,
 }
 
+struct MaterialSlot
+{
+    Vec3 baseColor = Vec3(1, 1, 1);
+    double alpha = 1;
+    int texture = -1;
+    bool doubleSided;
+}
+
 struct Face
 {
     int a;
@@ -95,6 +116,10 @@ struct Mesh
     Vec3[] vertices;
     Face[] faces;
     Vec3[] normals;
+    Vec2[] uvs;
+    int[] faceMaterials;
+    MaterialSlot[] materials;
+    RgbaImage[] textures;
 
     int addVertex(Vec3 point)
     {

@@ -12,6 +12,9 @@
   "sourcePaths": [
     "source"
   ],
+  "stringImportPaths": [
+    "assets"
+  ],
   "dependencies": {
     "aurora-d": {
       "path": "../../vendor/aurora-d-0.4.5"

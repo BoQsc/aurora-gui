@@ -2,6 +2,9 @@ module auroramesh.editor;
 
 import auroramesh.camera : Camera, project;
 import auroramesh.edit : pickNearest, screenDelta;
+import auroramesh.glb : fromGlb, toGlb;
+import auroramesh.gltf_scene : GltfScene, bakeGltfFrame,
+    gltfAnimationDuration, loadGltfScene;
 import auroramesh.mesh : Mesh, Vec3, meshAdd = add, humanBaseMesh,
     meshMaximum, meshMinimum, parseObj, toObj;
 import auroramesh.human_v2 : humanBaseMeshV2;
@@ -11,7 +14,7 @@ import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
     smoothVertices;
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
     MouseButton, Point, Rect, VerticalAlign, Widget;
-import std.file : exists, readText, write;
+import std.file : exists, read, readText, write;
 import std.algorithm : max, min;
 import std.format : format;
 import std.math : abs;
@@ -29,6 +32,8 @@ private enum string[] ButtonLabels = [
     "Wireframe",
     "Save OBJ",
     "Load OBJ",
+    "Save GLB",
+    "Load GLB",
 ];
 
 /**
@@ -43,6 +48,7 @@ final class MeshEditor : Widget
     private Mesh _mesh;
     private Camera _camera;
     private string _objPath;
+    private string _glbPath = "mesh.glb";
     private RgbFrame _frame;
     private int _frameWidth;
     private int _frameHeight;
@@ -59,6 +65,11 @@ final class MeshEditor : Widget
     private int _tool;
     private bool _symmetry;
     private Mesh[] _undo;
+    private GltfScene _scene;
+    private bool _hasScene;
+    private int _animation;
+    private double _time;
+    private bool _playing;
 
     this(Mesh mesh, string objPath)
     {
@@ -86,12 +97,44 @@ final class MeshEditor : Widget
 
     void setMesh(Mesh mesh)
     {
+        _hasScene = false;
         _mesh = mesh;
         _undo.length = 0;
         _selected = -1;
         _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
         _dirty = true;
         _status = "Mesh loaded";
+        invalidate();
+    }
+
+    void setGltfScene(GltfScene scene, int animation = 0, double time = 0)
+    {
+        _scene = scene;
+        _hasScene = true;
+        _animation = animation >= 0 && animation < _scene.animations.length ?
+            animation : 0;
+        _time = time;
+        _playing = false;
+        _mesh = bakeGltfFrame(_scene, _animation, _time);
+        _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
+        _status = _scene.animations.length > 0 ?
+            "GLB scene · " ~ _scene.animations[_animation].name :
+            "GLB scene loaded";
+        _dirty = true;
+        invalidate();
+    }
+
+    void advance(double delta)
+    {
+        if (!_hasScene || !_playing || _scene.animations.length == 0)
+            return;
+        _time += delta;
+        const duration = gltfAnimationDuration(_scene, _animation);
+        if (duration > 0)
+            while (_time > duration)
+                _time -= duration;
+        _mesh = bakeGltfFrame(_scene, _animation, _time);
+        _dirty = true;
         invalidate();
     }
 
@@ -159,8 +202,13 @@ final class MeshEditor : Widget
         label(canvas, Rect(left, 176, inner, 20),
             format("TOOL  %s%s", toolName(), _symmetry ? " · mirror X" : ""),
             _symmetry ? accent : white, 1);
+        if (_hasScene && _scene.animations.length > 0)
+            label(canvas, Rect(left, 196, inner, 20),
+                format("ANIM  %s  %.2fs%s",
+                    _scene.animations[_animation].name, _time,
+                    _playing ? "  playing" : "  paused"), accent, 1);
 
-        label(canvas, Rect(left, 194, inner, 20), "CONTROLS", muted, 1);
+        label(canvas, Rect(left, 218, inner, 20), "CONTROLS", muted, 1);
         immutable string[] help = [
             "Drag empty: orbit",
             "Drag vertex: move",
@@ -169,12 +217,11 @@ final class MeshEditor : Widget
             "X / Y / Z: axis lock",
             "Esc: free · R: reset",
             "B: tool · M: symmetry",
-            "Grab / Smooth / Inflate",
             "U: undo",
-            "W: wire · S/L: OBJ",
+            "W wire · S/L OBJ · G/F GLB",
         ];
         foreach (index, line; help)
-            label(canvas, Rect(left, 216 + cast(int) index * 22, inner, 20), line,
+            label(canvas, Rect(left, 240 + cast(int) index * 20, inner, 20), line,
                 white, 1);
 
         const buttons = buttonRects();
@@ -413,6 +460,12 @@ final class MeshEditor : Widget
             case Key.l:
                 loadObj();
                 return true;
+            case Key.g:
+                saveGlb();
+                return true;
+            case Key.f:
+                loadGlb();
+                return true;
             case Key.x:
                 _axis = _axis == 1 ? 0 : 1;
                 _status = _axis == 1 ? "Axis: X" : "Axis: free";
@@ -428,6 +481,47 @@ final class MeshEditor : Widget
                 _status = _axis == 3 ? "Axis: Z" : "Axis: free";
                 invalidate();
                 return true;
+            case Key.space:
+                if (_hasScene && _scene.animations.length > 0)
+                {
+                    _playing = !_playing;
+                    _status = _playing ? "Playing " ~
+                        _scene.animations[_animation].name :
+                        "Animation paused";
+                    invalidate();
+                    return true;
+                }
+                return false;
+            case Key.n:
+                if (_hasScene && _scene.animations.length > 0)
+                {
+                    _animation = (_animation + 1) %
+                        cast(int) _scene.animations.length;
+                    _time = 0;
+                    _mesh = bakeGltfFrame(_scene, _animation, _time);
+                    _dirty = true;
+                    _status = "Animation: " ~
+                        _scene.animations[_animation].name;
+                    invalidate();
+                    return true;
+                }
+                return false;
+            case Key.leftBracket:
+            case Key.rightBracket:
+                if (_hasScene && _scene.animations.length > 0)
+                {
+                    _time += event.key == Key.leftBracket ? -0.1 : 0.1;
+                    const duration = gltfAnimationDuration(_scene, _animation);
+                    if (duration > 0)
+                        while (_time < 0)
+                            _time += duration;
+                    _mesh = bakeGltfFrame(_scene, _animation, _time);
+                    _dirty = true;
+                    _status = format("Animation time %.2fs", _time);
+                    invalidate();
+                    return true;
+                }
+                return false;
             case Key.escape:
                 _selected = -1;
                 _axis = 0;
@@ -473,6 +567,12 @@ final class MeshEditor : Widget
             case 6:
                 loadObj();
                 break;
+            case 7:
+                saveGlb();
+                break;
+            case 8:
+                loadGlb();
+                break;
             default:
                 break;
         }
@@ -514,6 +614,51 @@ final class MeshEditor : Widget
         }
         catch (Exception error)
             _status = "Load failed: " ~ error.msg;
+        invalidate();
+    }
+
+    private void saveGlb()
+    {
+        try
+        {
+            if (_hasScene && _scene.source.length > 0)
+            {
+                write(_glbPath, _scene.source);
+                _status = "Saved original GLB scene " ~ _glbPath;
+            }
+            else
+            {
+                write(_glbPath, toGlb(_mesh));
+                _status = "Saved " ~ _glbPath;
+            }
+        }
+        catch (Exception error)
+            _status = "GLB save failed: " ~ error.msg;
+        invalidate();
+    }
+
+    private void loadGlb()
+    {
+        try
+        {
+            if (!exists(_glbPath))
+            {
+                _status = "No GLB at " ~ _glbPath;
+                invalidate();
+                return;
+            }
+            auto scene = loadGltfScene(cast(ubyte[]) read(_glbPath));
+            if (scene.meshes.length == 0)
+            {
+                _status = "GLB has no meshes";
+                invalidate();
+                return;
+            }
+            setGltfScene(scene);
+            _status = "Loaded " ~ _glbPath;
+        }
+        catch (Exception error)
+            _status = "GLB load failed: " ~ error.msg;
         invalidate();
     }
 

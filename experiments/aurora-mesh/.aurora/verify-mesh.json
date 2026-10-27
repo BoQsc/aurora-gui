@@ -1,7 +1,8 @@
 {
   "inputs": [
     "experiments/aurora-mesh/source",
-    "experiments/aurora-mesh/dub.json"
+    "experiments/aurora-mesh/dub.json",
+    "experiments/aurora-mesh/assets"
   ],
   "steps": [
     {
@@ -29,6 +30,24 @@
         "args": ["--check"],
         "workdir": "experiments/aurora-mesh",
         "timeout": 60000
+      }
+    },
+    {
+      "kind": "prepare",
+      "command": {
+        "program": "build/verify/aurora-mesh.exe",
+        "args": ["--export-glb", "build/verify-human.glb"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 120000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/verify/aurora-mesh.exe",
+        "args": ["--glb", "build/verify-human.glb", "--check"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 120000
       }
     },
     {
