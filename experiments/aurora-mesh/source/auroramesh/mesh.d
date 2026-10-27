@@ -71,6 +71,7 @@ enum Material : ubyte
     cloth,
     accent,
     neutral,
+    eye,
 }
 
 struct Face
@@ -93,6 +94,7 @@ struct Mesh
 {
     Vec3[] vertices;
     Face[] faces;
+    Vec3[] normals;
 
     int addVertex(Vec3 point)
     {
@@ -114,8 +116,8 @@ struct Mesh
     }
 }
 
-/** A low-poly, symmetric humanoid in a relaxed A-pose. */
-Mesh humanBaseMesh()
+/** A low-poly, symmetric humanoid in a relaxed A-pose (v1). */
+Mesh humanBaseMeshV1()
 {
     Mesh mesh;
     const int segments = 14;
@@ -178,6 +180,12 @@ Mesh humanBaseMesh()
     }
 
     return mesh;
+}
+
+/** Stable v1 entry point used by existing callers and tests. */
+Mesh humanBaseMesh()
+{
+    return humanBaseMeshV1();
 }
 
 void bodyTube(ref Mesh mesh, Vec3 center, double y0, double y1, double rx0,
@@ -311,7 +319,207 @@ bool validMesh(const Mesh mesh)
             face.c >= mesh.vertices.length)
             return false;
     }
+    if (mesh.normals.length != 0 &&
+        mesh.normals.length != mesh.vertices.length)
+        return false;
     return true;
+}
+
+void computeSmoothNormals(ref Mesh mesh)
+{
+    Vec3[] sums = new Vec3[mesh.vertices.length];
+    foreach (ref value; sums)
+        value = Vec3(0, 0, 0);
+    foreach (face; mesh.faces)
+    {
+        const normal = cross(
+            sub(mesh.vertices[face.b], mesh.vertices[face.a]),
+            sub(mesh.vertices[face.c], mesh.vertices[face.a]));
+        if (length(normal) < 1.0e-12)
+            continue;
+        sums[face.a] = add(sums[face.a], normal);
+        sums[face.b] = add(sums[face.b], normal);
+        sums[face.c] = add(sums[face.c], normal);
+    }
+    mesh.normals = new Vec3[mesh.vertices.length];
+    foreach (index, normal; sums)
+    {
+        auto normalized = normalize(normal);
+        if (length(normalized) < 0.5)
+            normalized = Vec3(0, 0, 1);
+        mesh.normals[index] = normalized;
+    }
+}
+
+bool watertight(const Mesh mesh)
+{
+    int[ulong] edges;
+    foreach (face; mesh.faces)
+    {
+        const indices = [face.a, face.b, face.c];
+        foreach (offset; 0 .. 3)
+        {
+            int first = indices[offset];
+            int second = indices[(offset + 1) % 3];
+            if (first > second)
+            {
+                const int swap = first;
+                first = second;
+                second = swap;
+            }
+            const key = (cast(ulong) first << 32) | cast(uint) second;
+            edges[key] = (key in edges) ? edges[key] + 1 : 1;
+        }
+    }
+    foreach (count; edges)
+        if (count != 2)
+            return false;
+    return edges.length > 0;
+}
+
+struct EdgeStats
+{
+    size_t boundary;
+    size_t nonManifold;
+}
+
+EdgeStats meshEdgeStats(const Mesh mesh)
+{
+    int[ulong] edges;
+    foreach (face; mesh.faces)
+    {
+        const indices = [face.a, face.b, face.c];
+        foreach (offset; 0 .. 3)
+        {
+            int first = indices[offset];
+            int second = indices[(offset + 1) % 3];
+            if (first > second)
+            {
+                const int swap = first;
+                first = second;
+                second = swap;
+            }
+            const key = (cast(ulong) first << 32) | cast(uint) second;
+            edges[key] = (key in edges) ? edges[key] + 1 : 1;
+        }
+    }
+    EdgeStats stats;
+    foreach (count; edges)
+    {
+        if (count == 1)
+            stats.boundary++;
+        else if (count > 2)
+            stats.nonManifold++;
+    }
+    return stats;
+}
+
+private ulong edgeKey(int first, int second)
+{
+    if (first > second)
+    {
+        const int swap = first;
+        first = second;
+        second = swap;
+    }
+    return (cast(ulong) first << 32) | cast(uint) second;
+}
+
+/**
+ * Close small boundary loops left by a low-resolution isosurface extraction.
+ * Each loop gets a center vertex and a triangle fan.
+ */
+bool fillBoundaryHoles(ref Mesh mesh, Material material = Material.neutral)
+{
+    int[ulong] counts;
+    foreach (face; mesh.faces)
+    {
+        const indices = [face.a, face.b, face.c];
+        foreach (offset; 0 .. 3)
+        {
+            const key = edgeKey(indices[offset], indices[(offset + 1) % 3]);
+            if (auto existing = key in counts)
+                ++*existing;
+            else
+                counts[key] = 1;
+        }
+    }
+
+    int[][int] adjacency;
+    foreach (key, count; counts)
+    {
+        if (count != 1)
+            continue;
+        const first = cast(int) (key >> 32);
+        const second = cast(int) (key & 0xffffffff);
+        adjacency[first] ~= second;
+        adjacency[second] ~= first;
+    }
+    if (adjacency.length == 0)
+        return false;
+
+    bool[ulong] used;
+    bool filled;
+    foreach (key, count; counts)
+    {
+        if (count != 1 || (key in used))
+            continue;
+        const start = cast(int) (key >> 32);
+        int[] loop;
+        int current = start;
+        loop ~= current;
+        while (true)
+        {
+            int next = -1;
+            if (current in adjacency)
+                foreach (neighbor; adjacency[current])
+                {
+                    const candidate = edgeKey(current, neighbor);
+                    if (candidate in used)
+                        continue;
+                    next = neighbor;
+                    break;
+                }
+            if (next < 0)
+                break;
+            used[edgeKey(current, next)] = true;
+            if (next == start)
+                break;
+            loop ~= next;
+            current = next;
+            if (loop.length > mesh.vertices.length)
+                break;
+        }
+        if (loop.length < 3 || loop[$ - 1] == start)
+            continue;
+
+        Vec3 center = Vec3(0, 0, 0);
+        foreach (index; loop)
+            center = add(center, mesh.vertices[index]);
+        center = scale(center, 1.0 / loop.length);
+        const centerIndex = mesh.addVertex(center);
+        foreach (index; 0 .. loop.length)
+        {
+            const a = loop[index];
+            const b = loop[(index + 1) % loop.length];
+            const pa = mesh.vertices[a];
+            const pb = mesh.vertices[b];
+            const normal = cross(sub(pb, pa), sub(center, pa));
+            Vec3 average = Vec3(0, 0, 0);
+            if (a < mesh.normals.length)
+                average = add(average, mesh.normals[a]);
+            if (b < mesh.normals.length)
+                average = add(average, mesh.normals[b]);
+            if (dot(normal, average) < 0)
+                mesh.addTriangle(centerIndex, b, a, material);
+            else
+                mesh.addTriangle(centerIndex, a, b, material);
+        }
+        filled = true;
+    }
+    if (filled)
+        computeSmoothNormals(mesh);
+    return filled;
 }
 
 string toObj(const Mesh mesh)
@@ -373,6 +581,7 @@ Mesh parseObj(string text)
             }
         }
     }
+    computeSmoothNormals(mesh);
     return mesh;
 }
 

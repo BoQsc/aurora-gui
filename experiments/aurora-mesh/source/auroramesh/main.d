@@ -5,13 +5,16 @@ version (Windows)
 
 import auroramesh.camera : Camera;
 import auroramesh.editor : MeshEditor;
-import auroramesh.mesh : Mesh, humanBaseMesh, meshMaximum, meshMinimum, parseObj,
-    toObj, validMesh;
+import auroramesh.mesh : Mesh, humanBaseMesh, meshEdgeStats, meshMaximum,
+    meshMinimum, parseObj, toObj, validMesh, watertight;
+import auroramesh.human_v2 : humanBaseMeshV2;
+import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RenderOptions, renderMesh, writePpm;
 import aurora : GuiWindow, Theme, WindowOptions;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, readText, write;
 import std.format : format;
+import std.math : isFinite;
 import std.path : dirName;
 import std.stdio : stderr, writeln;
 
@@ -24,6 +27,9 @@ private void usage()
     writeln("  aurora-mesh --check                  validate and print mesh statistics");
     writeln("  aurora-mesh --export-obj <file.obj>  write the human base mesh");
     writeln("  aurora-mesh --obj <file.obj>         load a mesh into the editor");
+    writeln("  --v3                                 use the experimental low-poly human");
+    writeln("  --v2                                 use the organic human (default)");
+    writeln("  --v1                                 use the original primitive human");
     writeln("  options: --width <pixels> --height <pixels>");
 }
 
@@ -35,6 +41,7 @@ int main(string[] args)
     string screenshotPath;
     string objPath = "mesh.obj";
     bool check;
+    int humanVersion = 2;
     int width = 1400;
     int height = 860;
 
@@ -98,6 +105,15 @@ int main(string[] args)
                 }
                 height = to!int(args[index]);
                 break;
+            case "--v1":
+                humanVersion = 1;
+                break;
+            case "--v2":
+                humanVersion = 2;
+                break;
+            case "--v3":
+                humanVersion = 3;
+                break;
             default:
                 stderr.writeln("unknown option: " ~ args[index]);
                 usage();
@@ -105,7 +121,8 @@ int main(string[] args)
         }
     }
 
-    Mesh mesh = humanBaseMesh();
+    Mesh mesh = humanVersion == 1 ? humanBaseMesh() :
+        humanVersion == 2 ? humanBaseMeshV2() : humanBaseMeshV3();
     if (loadPath.length > 0)
     {
         if (!exists(loadPath))
@@ -131,18 +148,45 @@ int main(string[] args)
         }
         if (!validMesh(mesh))
         {
-            stderr.writeln("mesh validation failed");
+            stderr.writeln(format(
+                "mesh validation failed: vertices=%d faces=%d normals=%d",
+                mesh.vertices.length, mesh.faces.length, mesh.normals.length));
+            if (mesh.vertices.length > 0)
+            {
+                const first = mesh.vertices[0];
+                writeln(format("first vertex: %.3f %.3f %.3f", first.x,
+                    first.y, first.z));
+            }
+            size_t nonFinite;
+            foreach (vertex; mesh.vertices)
+                if (!isFinite(vertex.x) || !isFinite(vertex.y) ||
+                    !isFinite(vertex.z))
+                    ++nonFinite;
+            writeln("non-finite vertices: ", nonFinite);
+            size_t invalidFaces;
+            foreach (face; mesh.faces)
+                if (face.a < 0 || face.b < 0 || face.c < 0 ||
+                    face.a >= mesh.vertices.length ||
+                    face.b >= mesh.vertices.length ||
+                    face.c >= mesh.vertices.length)
+                    ++invalidFaces;
+            writeln("invalid faces: ", invalidFaces);
             return 1;
         }
         const minimum = meshMinimum(mesh);
         const maximum = meshMaximum(mesh);
-        writeln(format("human base mesh: vertices=%d faces=%d",
+        writeln(format("human base mesh (%s): vertices=%d faces=%d",
+            humanVersion == 1 ? "v1" : humanVersion == 2 ? "v2" : "v3",
             mesh.vertices.length, mesh.faces.length));
         writeln(format("bounds: %.3f..%.3f x, %.3f..%.3f y, %.3f..%.3f z",
             minimum.x, maximum.x, minimum.y, maximum.y, minimum.z, maximum.z));
         writeln("obj round-trip: " ~
             (parseObj(toObj(mesh)).faces.length == mesh.faces.length ?
                 "ok" : "mismatch"));
+        writeln("watertight: " ~ (watertight(mesh) ? "yes" : "no"));
+        const edges = meshEdgeStats(mesh);
+        writeln("boundary edges: ", edges.boundary,
+            ", non-manifold edges: ", edges.nonManifold);
         return 0;
     }
 

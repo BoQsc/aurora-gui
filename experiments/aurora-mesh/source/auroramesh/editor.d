@@ -1,10 +1,14 @@
 module auroramesh.editor;
 
-import auroramesh.camera : Camera;
+import auroramesh.camera : Camera, project;
 import auroramesh.edit : pickNearest, screenDelta;
-import auroramesh.mesh : Mesh, meshAdd = add, humanBaseMesh, meshMaximum,
-    meshMinimum, parseObj, toObj;
+import auroramesh.mesh : Mesh, Vec3, meshAdd = add, humanBaseMesh,
+    meshMaximum, meshMinimum, parseObj, toObj;
+import auroramesh.human_v2 : humanBaseMeshV2;
+import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh;
+import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
+    smoothVertices;
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
     MouseButton, Point, Rect, VerticalAlign, Widget;
 import std.file : exists, readText, write;
@@ -14,10 +18,13 @@ import std.math : abs;
 import std.utf : toUTF32;
 
 private enum int SidebarWidth = 300;
-private enum int ButtonHeight = 38;
-private enum int ButtonGap = 8;
+private enum int ButtonHeight = 34;
+private enum int ButtonGap = 6;
+private enum int BrushRadius = 42;
 private enum string[] ButtonLabels = [
-    "Human base",
+    "Human v3",
+    "Human v2",
+    "Human v1",
     "Reset view",
     "Wireframe",
     "Save OBJ",
@@ -49,6 +56,9 @@ final class MeshEditor : Widget
     private Point _last;
     private string _status = "Human base mesh loaded";
     private int _hotButton = -1;
+    private int _tool;
+    private bool _symmetry;
+    private Mesh[] _undo;
 
     this(Mesh mesh, string objPath)
     {
@@ -77,6 +87,7 @@ final class MeshEditor : Widget
     void setMesh(Mesh mesh)
     {
         _mesh = mesh;
+        _undo.length = 0;
         _selected = -1;
         _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
         _dirty = true;
@@ -145,6 +156,9 @@ final class MeshEditor : Widget
             _axis == 0 ? "AXIS  free" :
             _axis == 1 ? "AXIS  X" : _axis == 2 ? "AXIS  Y" : "AXIS  Z",
             _axis == 0 ? muted : accent, 1);
+        label(canvas, Rect(left, 176, inner, 20),
+            format("TOOL  %s%s", toolName(), _symmetry ? " · mirror X" : ""),
+            _symmetry ? accent : white, 1);
 
         label(canvas, Rect(left, 194, inner, 20), "CONTROLS", muted, 1);
         immutable string[] help = [
@@ -154,6 +168,9 @@ final class MeshEditor : Widget
             "Wheel: zoom",
             "X / Y / Z: axis lock",
             "Esc: free · R: reset",
+            "B: tool · M: symmetry",
+            "Grab / Smooth / Inflate",
+            "U: undo",
             "W: wire · S/L: OBJ",
         ];
         foreach (index, line; help)
@@ -226,11 +243,21 @@ final class MeshEditor : Widget
 
         if (event.button == MouseButton.left)
         {
+            if (_tool != 0)
+            {
+                pushUndo();
+                _dragging = true;
+                _last = event.position;
+                applyBrush(event.position);
+                captureMouse();
+                return true;
+            }
             const picked = pickNearest(_mesh, _camera,
                 max(1, bounds().width - SidebarWidth), max(1, bounds().height),
                 event.position.x, event.position.y);
             if (picked >= 0)
             {
+                pushUndo();
                 _selected = picked;
                 _dragging = true;
                 _status = format("Selected vertex %d", picked);
@@ -260,13 +287,22 @@ final class MeshEditor : Widget
     {
         const dx = event.position.x - _last.x;
         const dy = event.position.y - _last.y;
-        if (_dragging && _selected >= 0 &&
+        if (_dragging && _tool != 0)
+        {
+            applyBrush(event.position);
+        }
+        else if (_dragging && _selected >= 0 &&
             _selected < _mesh.vertices.length)
         {
             const height = max(1, bounds().height);
             auto offset = screenDelta(_camera, height, dx, dy, _axis);
+            const mirrored = _symmetry ?
+                mirrorVertex(_mesh, _selected) : -1;
             _mesh.vertices[_selected] = meshAdd(_mesh.vertices[_selected],
                 offset);
+            if (mirrored >= 0 && mirrored != _selected)
+                _mesh.vertices[mirrored] = meshAdd(_mesh.vertices[mirrored],
+                    Vec3(-offset.x, offset.y, offset.z));
             const vertex = _mesh.vertices[_selected];
             _status = format("V%d  %.2f  %.2f  %.2f", _selected, vertex.x,
                 vertex.y, vertex.z);
@@ -326,8 +362,37 @@ final class MeshEditor : Widget
         switch (event.key)
         {
             case Key.h:
+                setMesh(humanBaseMeshV3());
+                _status = "Human v3 regenerated";
+                return true;
+            case Key.v:
+                setMesh(humanBaseMeshV2());
+                _status = "Human v2 loaded";
+                return true;
+            case Key.digit1:
                 setMesh(humanBaseMesh());
-                _status = "Human base mesh regenerated";
+                _status = "Human v1 loaded";
+                return true;
+            case Key.digit2:
+                setMesh(humanBaseMeshV2());
+                _status = "Human v2 loaded";
+                return true;
+            case Key.digit3:
+                setMesh(humanBaseMeshV3());
+                _status = "Human v3 loaded";
+                return true;
+            case Key.b:
+                _tool = (_tool + 1) % 3;
+                _status = "Sculpt tool: " ~ toolName();
+                invalidate();
+                return true;
+            case Key.m:
+                _symmetry = !_symmetry;
+                _status = _symmetry ? "Mirror X on" : "Mirror X off";
+                invalidate();
+                return true;
+            case Key.u:
+                undoLast();
                 return true;
             case Key.r:
                 _camera.reset();
@@ -380,24 +445,32 @@ final class MeshEditor : Widget
         switch (button)
         {
             case 0:
-                setMesh(humanBaseMesh());
-                _status = "Human base mesh regenerated";
+                setMesh(humanBaseMeshV3());
+                _status = "Human v3 regenerated";
                 break;
             case 1:
+                setMesh(humanBaseMeshV2());
+                _status = "Human v2 regenerated";
+                break;
+            case 2:
+                setMesh(humanBaseMesh());
+                _status = "Human v1 loaded";
+                break;
+            case 3:
                 _camera.reset();
                 _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
                 _dirty = true;
                 _status = "View reset";
                 break;
-            case 2:
+            case 4:
                 _wireframe = !_wireframe;
                 _dirty = true;
                 _status = _wireframe ? "Wireframe on" : "Wireframe off";
                 break;
-            case 3:
+            case 5:
                 saveObj();
                 break;
-            case 4:
+            case 6:
                 loadObj();
                 break;
             default:
@@ -441,6 +514,70 @@ final class MeshEditor : Widget
         }
         catch (Exception error)
             _status = "Load failed: " ~ error.msg;
+        invalidate();
+    }
+
+    private string toolName() const
+    {
+        return _tool == 0 ? "grab" : _tool == 1 ? "smooth" : "inflate";
+    }
+
+    private void pushUndo()
+    {
+        if (_undo.length >= 16)
+            _undo = _undo[1 .. $];
+        _undo ~= cloneMesh(_mesh);
+    }
+
+    private void undoLast()
+    {
+        if (_undo.length == 0)
+        {
+            _status = "Nothing to undo";
+            invalidate();
+            return;
+        }
+        _mesh = _undo[$ - 1];
+        _undo = _undo[0 .. $ - 1];
+        _selected = -1;
+        _dirty = true;
+        _status = "Undo";
+        invalidate();
+    }
+
+    private void applyBrush(Point point)
+    {
+        const width = max(1, bounds().width - SidebarWidth);
+        const height = max(1, bounds().height);
+        int[] selected;
+        foreach (index, vertex; _mesh.vertices)
+        {
+            const projected = project(vertex, _camera, width, height);
+            if (!projected.visible)
+                continue;
+            const dx = projected.x - point.x;
+            const dy = projected.y - point.y;
+            if (dx * dx + dy * dy <= BrushRadius * BrushRadius)
+                selected ~= cast(int) index;
+        }
+        if (_symmetry)
+        {
+            const original = selected.dup;
+            foreach (index; original)
+            {
+                const mirrored = mirrorVertex(_mesh, index);
+                if (mirrored >= 0 && mirrored != index)
+                    selected ~= mirrored;
+            }
+        }
+        if (selected.length == 0)
+            return;
+        if (_tool == 1)
+            smoothVertices(_mesh, selected, 0.30);
+        else if (_tool == 2)
+            inflateVertices(_mesh, selected, 0.006);
+        _dirty = true;
+        _status = format("%s  %d vertices", toolName(), selected.length);
         invalidate();
     }
 

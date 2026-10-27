@@ -63,6 +63,7 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
         projected[index] = project(vertex, camera, width, height);
 
     const light = normalize(Vec3(0.35, 0.85, 0.55));
+    const smooth = mesh.normals.length == mesh.vertices.length;
     foreach (face; mesh.faces)
     {
         const pa = projected[face.a];
@@ -75,14 +76,24 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
         if (abs(area) < 1.0e-8)
             continue;
 
-        auto normal = normalize(cross(
-            sub(mesh.vertices[face.b], mesh.vertices[face.a]),
-            sub(mesh.vertices[face.c], mesh.vertices[face.a])));
-        const intensity = 0.28 + 0.72 * abs(dot(normal, light));
+        double intensityA;
+        double intensityB;
+        double intensityC;
+        double flatIntensity;
+        if (smooth)
+        {
+            intensityA = shade(mesh.normals[face.a], light);
+            intensityB = shade(mesh.normals[face.b], light);
+            intensityC = shade(mesh.normals[face.c], light);
+        }
+        else
+        {
+            const normal = normalize(cross(
+                sub(mesh.vertices[face.b], mesh.vertices[face.a]),
+                sub(mesh.vertices[face.c], mesh.vertices[face.a])));
+            flatIntensity = shade(normal, light);
+        }
         const base = materialColor(face.material);
-        ubyte red = cast(ubyte) min(255.0, base[0] * intensity);
-        ubyte green = cast(ubyte) min(255.0, base[1] * intensity);
-        ubyte blue = cast(ubyte) min(255.0, base[2] * intensity);
 
         const minX = max(0, cast(int) floor(min(pa.x, min(pb.x, pc.x))));
         const maxX = min(width - 1, cast(int) ceil(max(pa.x, max(pb.x, pc.x))));
@@ -110,6 +121,12 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
                 if (z >= depth[index])
                     continue;
                 depth[index] = cast(float) z;
+                const intensity = smooth ?
+                    wa * intensityA + wb * intensityB + wc * intensityC :
+                    flatIntensity;
+                const red = cast(ubyte) min(255.0, base[0] * intensity);
+                const green = cast(ubyte) min(255.0, base[1] * intensity);
+                const blue = cast(ubyte) min(255.0, base[2] * intensity);
                 const pixel = index * 3;
                 frame.pixels[pixel] = red;
                 frame.pixels[pixel + 1] = green;
@@ -162,6 +179,11 @@ private double edge(double ax, double ay, double bx, double by, double px,
     return (bx - ax) * (py - ay) - (by - ay) * (px - ax);
 }
 
+private double shade(Vec3 normal, Vec3 light)
+{
+    return 0.28 + 0.72 * abs(dot(normal, light));
+}
+
 private double[] materialColor(Material material)
 {
     final switch (material)
@@ -174,6 +196,8 @@ private double[] materialColor(Material material)
             return [151.0, 99.0, 60.0];
         case Material.neutral:
             return [148.0, 160.0, 178.0];
+        case Material.eye:
+            return [38.0, 52.0, 68.0];
     }
 }
 
