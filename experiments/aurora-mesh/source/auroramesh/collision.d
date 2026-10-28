@@ -9,6 +9,7 @@ struct CollisionReport
     Vec3 sample;
     int faceA = -1;
     int faceB = -1;
+    ulong[] keys;
 }
 
 private struct Aabb
@@ -84,7 +85,8 @@ private bool trianglesIntersect(Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 e,
 }
 
 /** Spatial-grid self-intersection audit. Adjacent faces and shared edges are ignored. */
-CollisionReport findSelfIntersections(const Mesh mesh, int maximumPairs = 4096)
+CollisionReport findSelfIntersections(const Mesh mesh, int maximumPairs = 4096,
+    const bool[ulong] ignore = null)
 {
     CollisionReport report;
     report.sample = Vec3(0, 0, 0);
@@ -134,8 +136,7 @@ CollisionReport findSelfIntersections(const Mesh mesh, int maximumPairs = 4096)
                     continue;
                 const low = first < second ? first : second;
                 const high = first < second ? second : first;
-                const key = cast(ulong) low *
-                    cast(ulong) mesh.faces.length + cast(ulong) high;
+                const key = (cast(ulong) low << 32) | cast(ulong) high;
                 if (key in seen)
                     continue;
                 seen[key] = true;
@@ -161,7 +162,10 @@ CollisionReport findSelfIntersections(const Mesh mesh, int maximumPairs = 4096)
                 const f = mesh.vertices[secondFace.c];
                 if (!trianglesIntersect(a, b, c, d, e, f))
                     continue;
+                if (ignore !is null && key in ignore)
+                    continue;
                 report.pairs++;
+                report.keys ~= key;
                 if (report.faceA < 0)
                 {
                     report.faceA = low;

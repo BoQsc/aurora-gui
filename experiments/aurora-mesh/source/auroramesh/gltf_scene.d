@@ -84,6 +84,16 @@ private double[] quatNormalize(double[] q)
         q[3] / magnitude];
 }
 
+private double[4] quatMultiply(double[4] a, double[4] b)
+{
+    const q = quatNormalize([
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]]);
+    return [q[0], q[1], q[2], q[3]];
+}
+
 private Mat4 trsMatrix(Vec3 translation, double[] rotation, Vec3 scaleValue)
 {
     const q = quatNormalize(rotation.length >= 4 ? rotation :
@@ -420,6 +430,7 @@ struct PoseOverride
     double[4] rotation;
     bool hasScale;
     Vec3 scale;
+    bool additive;
 }
 
 struct GltfScene
@@ -1047,7 +1058,9 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
                     overrideValue.translation;
             if (overrideValue.hasRotation)
                 poses[overrideValue.node].rotation =
-                    overrideValue.rotation;
+                    overrideValue.additive ?
+                    quatMultiply(poses[overrideValue.node].rotation,
+                        overrideValue.rotation) : overrideValue.rotation;
             if (overrideValue.hasScale)
                 poses[overrideValue.node].scale = overrideValue.scale;
         }

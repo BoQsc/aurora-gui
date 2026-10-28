@@ -74,6 +74,7 @@ private struct LiveClip
     string name;
     double duration;
     bool loop = true;
+    bool additive;
     LiveTrack[] tracks;
 }
 
@@ -122,6 +123,8 @@ final class MeshEditor : Widget
     private bool _hasLiveAnimation;
     private CollisionReport _collisions;
     private bool _checkCollisions;
+    private bool[ulong] _baselineCollisionKeys;
+    private int _baselineCollisionCount;
 
     this(Mesh mesh, string objPath)
     {
@@ -154,6 +157,9 @@ final class MeshEditor : Widget
         _liveClip = LiveClip();
         _poseOverrides.length = 0;
         _liveExtras.length = 0;
+        _baselineCollisionKeys = null;
+        _baselineCollisionCount = 0;
+        buildCollisionBaseline();
         _liveStatus = "";
         _mesh = mesh;
         _undo.length = 0;
@@ -243,7 +249,7 @@ final class MeshEditor : Widget
             return result;
         LiveKey first = track.keys[0];
         LiveKey second = first;
-        double fraction;
+        double fraction = 0;
         if (time <= track.keys[0].time)
             first = second = track.keys[0];
         else if (time >= track.keys[$ - 1].time)
@@ -289,16 +295,97 @@ final class MeshEditor : Widget
 
     private PoseOverride[] effectivePoseOverrides()
     {
+        return effectivePoseOverridesAt(_time);
+    }
+
+    private PoseOverride[] effectivePoseOverridesAt(double time)
+    {
         PoseOverride[] result = _poseOverrides.dup;
         if (_hasLiveAnimation)
             foreach (track; _liveClip.tracks)
             {
-                const sampled = sampleLiveTrack(track, _time);
+                auto sampled = sampleLiveTrack(track, time);
+                sampled.additive = _liveClip.additive;
                 if (sampled.hasTranslation || sampled.hasRotation ||
                     sampled.hasScale)
                     result ~= sampled;
             }
         return result;
+    }
+
+    private int collisionCountAt(double time)
+    {
+        const baked = bakeGltfFrame(_scene, _animation, time, true,
+            effectivePoseOverridesAt(time));
+        const report = findSelfIntersections(baked, 4096,
+            _baselineCollisionKeys);
+        return report.pairs;
+    }
+
+    private void avoidAnimationCollisions()
+    {
+        if (!_hasLiveAnimation)
+            return;
+        double[] times;
+        foreach (track; _liveClip.tracks)
+            foreach (key; track.keys)
+            {
+                bool known;
+                foreach (existing; times)
+                    if (abs(existing - key.time) < 1e-6)
+                    {
+                        known = true;
+                        break;
+                    }
+                if (!known)
+                    times ~= key.time;
+            }
+        times.sort();
+        if (times.length > 6)
+        {
+            double[] reduced;
+            foreach (index; 0 .. 6)
+                reduced ~= times[index * (times.length - 1) / 5];
+            times = reduced;
+        }
+        int peak;
+        foreach (time; times)
+            peak = max(peak, collisionCountAt(time));
+        if (peak > 100)
+        {
+            foreach (ref track; _liveClip.tracks)
+                foreach (ref key; track.keys)
+                    if (key.hasRotation)
+                        key.rotation = normalizeRotation([
+                            key.rotation[0] * 0.65,
+                            key.rotation[1] * 0.65,
+                            key.rotation[2] * 0.65,
+                            key.rotation[3] * 0.65 + 0.35]);
+        }
+    }
+
+    private void buildCollisionBaseline()
+    {
+        buildCollisionBaselineAt(0.0);
+    }
+
+    private void buildCollisionBaselineAt(double time)
+    {
+        _baselineCollisionKeys = null;
+        _baselineCollisionCount = 0;
+        if (!_hasScene)
+            return;
+        try
+        {
+            const baseline = bakeGltfFrame(_scene, _animation, time, true);
+            const report = findSelfIntersections(baseline, 100000);
+            _baselineCollisionCount = report.pairs;
+            foreach (key; report.keys)
+                _baselineCollisionKeys[key] = true;
+        }
+        catch (Exception)
+        {
+        }
     }
 
     void setLivePath(string path)
@@ -341,9 +428,11 @@ final class MeshEditor : Widget
             _status = format("Live: %d object(s), %d pose override(s)",
                 _liveExtras.length, _poseOverrides.length);
         }
-        if (changed || _checkCollisions)
+        if (_checkCollisions)
         {
-            _collisions = findSelfIntersections(_mesh, 4096);
+            buildCollisionBaselineAt(_time);
+            _collisions = findSelfIntersections(_mesh, 4096,
+                _baselineCollisionKeys);
             _checkCollisions = false;
             _status = format(
                 "Live: %d object(s), %d pose override(s) · %d collisions",
@@ -363,10 +452,11 @@ final class MeshEditor : Widget
         _liveStatus = "Live revision " ~ to!string(revision);
         try
             write("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","collisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
                 revision, _liveExtras.length, _poseOverrides.length,
                 _hasLiveAnimation ? _liveClip.name : "",
-                _collisions.pairs, _collisions.sample.x, _collisions.sample.y,
+                _collisions.pairs, _baselineCollisionCount,
+                _collisions.sample.x, _collisions.sample.y,
                 _collisions.sample.z, _collisions.faceA, _collisions.faceB));
         catch (Exception)
         {
@@ -491,11 +581,23 @@ final class MeshEditor : Widget
             _playing = false;
             _hasLiveAnimation = false;
             _liveClip = LiveClip();
+            buildCollisionBaseline();
             return true;
         }
         if (type == "time")
         {
             _time = liveNumber(liveChild(command, "time"));
+            return true;
+        }
+        if (type == "frame")
+        {
+            _time = liveNumber(liveChild(command, "frame")) / 30.0;
+            _playing = false;
+            return true;
+        }
+        if (type == "pause")
+        {
+            _playing = false;
             return true;
         }
         if (type == "object")
@@ -688,9 +790,15 @@ final class MeshEditor : Widget
             maxTime > 0 ? maxTime : 1.0);
         _liveClip.loop = !(liveHas(command, "loop") &&
             liveChild(command, "loop").type == JSONType.false_);
+        _liveClip.additive = liveHas(command, "additive") &&
+            liveChild(command, "additive").type == JSONType.true_;
         _hasLiveAnimation = true;
         _playing = true;
         _time = 0;
+        const avoid = liveHas(command, "avoidCollisions") &&
+            liveChild(command, "avoidCollisions").type == JSONType.true_;
+        if (avoid)
+            avoidAnimationCollisions();
         return true;
     }
 
@@ -1154,6 +1262,31 @@ final class MeshEditor : Widget
                             _time += duration;
                     rebuildGltfMesh();
                     _status = format("Animation time %.2fs", _time);
+                    invalidate();
+                    return true;
+                }
+                return false;
+            case Key.comma:
+            case Key.period:
+                if (_hasLiveAnimation || (_hasScene &&
+                    _scene.animations.length > 0))
+                {
+                    _playing = false;
+                    const duration = _hasLiveAnimation ? _liveClip.duration :
+                        gltfAnimationDuration(_scene, _animation);
+                    _time += event.key == Key.period ? 1.0 / 30.0 :
+                        -1.0 / 30.0;
+                    if (duration > 0)
+                    {
+                        while (_time < 0)
+                            _time += duration;
+                        while (_time >= duration)
+                            _time -= duration;
+                    }
+                    rebuildGltfMesh();
+                    _status = format("Frame %d / %d",
+                        cast(int) (_time * 30 + 0.5),
+                        duration > 0 ? cast(int) (duration * 30 + 0.5) : 0);
                     invalidate();
                     return true;
                 }

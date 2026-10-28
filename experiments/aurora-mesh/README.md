@@ -56,6 +56,7 @@ aurora-mesh.exe --v3
 - `Space`: play/pause a loaded GLB animation.
 - `N`: next GLB animation clip.
 - `[` / `]`: step animation time.
+- `,` / `.`: step one 1/30-second frame and pause.
 
 The sidebar has Human v3, Human v2, Human v1, Reset view, Wireframe, Save OBJ,
 Load OBJ, Save GLB, and Load GLB buttons. The sculpt tools are keyboard-driven;
@@ -165,15 +166,20 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   after the revision rebuild.
 - `new-animation` authors a named, loopable bone clip from local keyframes.
   `Space` plays/pauses it, `N` restarts it, and `[` / `]` scrub it.
+  `additive: true` treats the rotations as deltas on the base GLB clip instead
+  of replacing the base pose.
 - `check` reruns the collision audit at the current pose.
+- `frame` sets a frame number (1/30-second steps) and pauses; `pause` pauses.
 - `clear` removes pose overrides and live objects.
 
-The acknowledgement reports `collisions`, `collisionSample`, and
-`collisionFaces`. The audit uses a spatial grid and triangle intersection over
-the baked mesh; adjacent faces are ignored. Overlaps can be intentional, such
-as layered clothing or eye shells, so treat the count as a warning to inspect,
-not an automatic failure. A `check` command forces a fresh scan; revisions that
-change geometry or poses also scan once.
+The acknowledgement separates `baselineCollisions` (same-frame base animation
+overlap) from `collisions` (new animation/object overlap), and includes
+`collisionSample` and `collisionFaces`. The audit uses a spatial grid and
+triangle intersection over the baked mesh; adjacent faces are ignored.
+Overlaps can still be intentional, such as layered clothing or eye shells, so
+treat the new-pair count as a warning to inspect, not an automatic failure. A
+`check` command forces a fresh scan; revisions that change geometry or poses
+also scan once.
 
 This is a live authoring and preview path, not a complete scene editor.
 Objects are procedural or OBJ, poses are node-local overrides, and edits are
