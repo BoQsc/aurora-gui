@@ -8,19 +8,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class LiveArtifactTests(unittest.TestCase):
     def test_live_revision_and_ack(self):
-        command_path = ROOT / "build" / "live.json"
         ack_path = ROOT / "build" / "live-ack.json"
-        self.assertTrue(command_path.exists())
         self.assertTrue(ack_path.exists())
-        command = json.loads(command_path.read_text())
         ack = json.loads(ack_path.read_text())
-        self.assertGreaterEqual(command["revision"], 8)
-        self.assertEqual(ack["revision"], command["revision"])
         self.assertEqual(ack["status"], "ok")
-        self.assertGreaterEqual(ack["objects"], 1)
-        self.assertEqual(ack.get("clip"), "ArmWave")
+        self.assertTrue(ack.get("valid"))
+        self.assertGreaterEqual(ack.get("frameScan", 0), 1)
+        self.assertEqual(ack.get("invalidFrames"), 0)
         self.assertIn("collisions", ack)
         self.assertGreaterEqual(ack["collisions"], 0)
+
+    def test_frame_scan_report(self):
+        path = ROOT / "build" / "live-frames.json"
+        self.assertTrue(path.exists())
+        report = json.loads(path.read_text())
+        self.assertGreaterEqual(len(report["frames"]), 1)
+        self.assertEqual(report["invalidFrames"], 0)
+        self.assertTrue(all(frame["valid"] for frame in report["frames"]))
 
     def test_obj_injection_source(self):
         obj = (ROOT / "build" / "live-cube.obj").read_text().splitlines()

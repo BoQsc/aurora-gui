@@ -19,10 +19,11 @@ import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
     MouseButton, Point, Rect, VerticalAlign, Widget;
 import std.file : exists, read, readText, write;
-import std.algorithm : max, min, sort;
+import std.algorithm : filter, max, min, sort;
+import std.array : array, join;
 import std.conv : to;
 import std.format : format;
-import std.math : abs, sqrt;
+import std.math : abs, isFinite, sqrt;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.utf : toUTF32;
 
@@ -125,6 +126,13 @@ final class MeshEditor : Widget
     private bool _checkCollisions;
     private bool[ulong] _baselineCollisionKeys;
     private int _baselineCollisionCount;
+    private int _auditNonFinite;
+    private int _auditInvalidFaces;
+    private string[] _auditWarnings;
+    private bool _auditValid = true;
+    private int _scanFrameCount;
+    private int _scanInvalidFrames;
+    private bool _scanRequested;
 
     this(Mesh mesh, string objPath)
     {
@@ -388,6 +396,231 @@ final class MeshEditor : Widget
         }
     }
 
+    private int animationTrackCount()
+    {
+        if (_hasLiveAnimation)
+            return cast(int) _liveClip.tracks.length;
+        return _hasScene ? cast(int) _scene.animations.length : 0;
+    }
+
+    private int animationKeyCount()
+    {
+        if (!_hasLiveAnimation)
+            return 0;
+        int count;
+        foreach (track; _liveClip.tracks)
+            count += cast(int) track.keys.length;
+        return count;
+    }
+
+    private int animationFrameCount()
+    {
+        const duration = _hasLiveAnimation ? _liveClip.duration :
+            (_hasScene && _scene.animations.length > 0 ?
+                gltfAnimationDuration(_scene, _animation) : 0);
+        return duration > 0 ? cast(int) (duration * 30 + 0.5) : 0;
+    }
+
+    private void auditCurrent()
+    {
+        _auditNonFinite = 0;
+        _auditInvalidFaces = 0;
+        _auditWarnings = null;
+        foreach (vertex; _mesh.vertices)
+            if (!isFinite(vertex.x) || !isFinite(vertex.y) ||
+                !isFinite(vertex.z))
+                _auditNonFinite++;
+        foreach (normal; _mesh.normals)
+            if (!isFinite(normal.x) || !isFinite(normal.y) ||
+                !isFinite(normal.z))
+                _auditNonFinite++;
+        foreach (face; _mesh.faces)
+            if (face.a < 0 || face.b < 0 || face.c < 0 ||
+                face.a >= _mesh.vertices.length ||
+                face.b >= _mesh.vertices.length ||
+                face.c >= _mesh.vertices.length)
+                _auditInvalidFaces++;
+        if (_auditNonFinite > 0)
+            _auditWarnings ~= "non-finite mesh data";
+        if (_auditInvalidFaces > 0)
+            _auditWarnings ~= "invalid faces";
+        if (_hasLiveAnimation)
+        {
+            if (_liveClip.tracks.length == 0)
+                _auditWarnings ~= "clip has no tracks";
+            if (_liveClip.duration <= 0)
+                _auditWarnings ~= "clip duration is zero";
+            foreach (track; _liveClip.tracks)
+            {
+                if (track.keys.length == 0)
+                    _auditWarnings ~= "empty track";
+                foreach (index, key; track.keys)
+                {
+                    if (key.time < 0 || key.time > _liveClip.duration)
+                        _auditWarnings ~= "key outside duration";
+                    if (index > 0 && key.time < track.keys[index - 1].time)
+                        _auditWarnings ~= "unsorted keys";
+                }
+            }
+        }
+        _auditValid = _auditNonFinite == 0 &&
+            _auditInvalidFaces == 0 && _auditWarnings.length == 0;
+    }
+
+    private void writeAuditReport()
+    {
+        try
+            write("build/live-audit.json", format(
+                `{"frame":%d,"frames":%d,"time":%.4f,"clip":"%s","tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s"}`,
+                cast(int) (_time * 30 + 0.5), animationFrameCount(), _time,
+                _hasLiveAnimation ? _liveClip.name : "",
+                animationTrackCount(), animationKeyCount(),
+                _auditValid ? "true" : "false", _auditNonFinite,
+                _auditInvalidFaces, _auditWarnings.join("|")));
+        catch (Exception)
+        {
+        }
+    }
+
+    private void scanAnimationFrames()
+    {
+        _scanRequested = false;
+        _scanFrameCount = max(1, animationFrameCount());
+        _scanInvalidFrames = 0;
+        const originalTime = _time;
+        string report = `{"frames":[`;
+        foreach (frame; 0 .. _scanFrameCount)
+        {
+            _time = cast(double) frame / 30.0;
+            rebuildGltfMesh();
+            auditCurrent();
+            if (!_auditValid)
+                _scanInvalidFrames++;
+            if (frame > 0)
+                report ~= ",";
+            report ~= format(
+                `{"frame":%d,"time":%.4f,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s"}`,
+                frame, _time, _auditValid ? "true" : "false",
+                _auditNonFinite, _auditInvalidFaces,
+                _auditWarnings.join("|"));
+        }
+        report ~= format(`],"invalidFrames":%d}`, _scanInvalidFrames);
+        try
+            write("build/live-frames.json", report);
+        catch (Exception)
+        {
+        }
+        _time = originalTime;
+        rebuildGltfMesh();
+        auditCurrent();
+        _status = format("Frame scan: %d frame(s), %d invalid",
+            _scanFrameCount, _scanInvalidFrames);
+    }
+
+    private int liveNodeIndex(string name)
+    {
+        foreach (index, node; _scene.nodes)
+            if (node.name == name)
+                return cast(int) index;
+        try
+            return to!int(name);
+        catch (Exception)
+            return -1;
+    }
+
+    private bool applyLiveKeyframe(JSONValue command, bool remove)
+    {
+        const nodeName = liveString(liveChild(command, "node"));
+        int node = liveNodeIndex(nodeName);
+        if (node < 0 && liveHas(command, "node"))
+            node = cast(int) liveInteger(liveChild(command, "node"));
+        if (node < 0 || node >= _scene.nodes.length)
+            return false;
+        const time = liveHas(command, "time") ?
+            liveNumber(liveChild(command, "time")) : _time;
+        if (!_hasLiveAnimation)
+        {
+            if (remove)
+                return false;
+            _liveClip = LiveClip();
+            _liveClip.name = "LiveEdit";
+            _liveClip.duration = 2.0;
+            _liveClip.loop = true;
+            _liveClip.additive = true;
+            _hasLiveAnimation = true;
+        }
+        int trackIndex = -1;
+        foreach (index, track; _liveClip.tracks)
+            if (track.node == node)
+            {
+                trackIndex = cast(int) index;
+                break;
+            }
+        if (remove)
+        {
+            if (trackIndex < 0)
+                return false;
+            auto keys = _liveClip.tracks[trackIndex].keys;
+            keys = keys.filter!(key => abs(key.time - time) >= 1e-6).array;
+            _liveClip.tracks[trackIndex].keys = keys;
+            if (keys.length == 0)
+                _liveClip.tracks = _liveClip.tracks[0 .. trackIndex] ~
+                    _liveClip.tracks[trackIndex + 1 .. $];
+            _playing = false;
+            return true;
+        }
+        if (trackIndex < 0)
+        {
+            LiveTrack track;
+            track.node = node;
+            _liveClip.tracks ~= track;
+            trackIndex = cast(int) _liveClip.tracks.length - 1;
+        }
+        LiveKey key;
+        key.time = time;
+        const translation = liveNumbers(liveChild(command, "translation"));
+        if (translation.length >= 3)
+        {
+            key.hasTranslation = true;
+            key.translation = Vec3(translation[0], translation[1],
+                translation[2]);
+        }
+        const rotation = liveNumbers(liveChild(command, "rotation"));
+        if (rotation.length >= 4)
+        {
+            key.hasRotation = true;
+            key.rotation = [rotation[0], rotation[1], rotation[2],
+                rotation[3]];
+        }
+        const scale = liveNumbers(liveChild(command, "scale"));
+        if (scale.length >= 3)
+        {
+            key.hasScale = true;
+            key.scale = Vec3(scale[0], scale[1], scale[2]);
+        }
+        if (!key.hasTranslation && !key.hasRotation && !key.hasScale)
+            return false;
+        bool replaced;
+        foreach (ref existing; _liveClip.tracks[trackIndex].keys)
+            if (abs(existing.time - time) < 1e-6)
+            {
+                existing = key;
+                replaced = true;
+                break;
+            }
+        if (!replaced)
+            _liveClip.tracks[trackIndex].keys ~= key;
+        _liveClip.tracks[trackIndex].keys.sort!((a, b) => a.time < b.time);
+        double maximumTime;
+        foreach (track; _liveClip.tracks)
+            foreach (existing; track.keys)
+                maximumTime = max(maximumTime, existing.time);
+        if (_liveClip.duration < maximumTime)
+            _liveClip.duration = maximumTime;
+        _playing = false;
+        return true;
+    }
+
     void setLivePath(string path)
     {
         _livePath = path;
@@ -440,6 +673,10 @@ final class MeshEditor : Widget
         }
         if (_collisions.faceA < 0)
             _collisions.sample = Vec3(0, 0, 0);
+        auditCurrent();
+        writeAuditReport();
+        if (_scanRequested)
+            scanAnimationFrames();
         if (_pendingSavePath.length > 0)
         {
             try
@@ -452,9 +689,14 @@ final class MeshEditor : Widget
         _liveStatus = "Live revision " ~ to!string(revision);
         try
             write("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"frameScanPath":"build/live-frames.json","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
                 revision, _liveExtras.length, _poseOverrides.length,
                 _hasLiveAnimation ? _liveClip.name : "",
+                cast(int) (_time * 30 + 0.5), animationFrameCount(),
+                animationTrackCount(), animationKeyCount(),
+                _auditValid ? "true" : "false", _auditNonFinite,
+                _auditInvalidFaces, _auditWarnings.join("|"),
+                _scanFrameCount, _scanInvalidFrames,
                 _collisions.pairs, _baselineCollisionCount,
                 _collisions.sample.x, _collisions.sample.y,
                 _collisions.sample.z, _collisions.faceA, _collisions.faceB));
@@ -558,6 +800,17 @@ final class MeshEditor : Widget
         if (type == "check")
         {
             _checkCollisions = true;
+            return true;
+        }
+        if (type == "keyframe")
+            return applyLiveKeyframe(command, false);
+        if (type == "remove-keyframe")
+            return applyLiveKeyframe(command, true);
+        if (type == "audit")
+            return true;
+        if (type == "scan-frames")
+        {
+            _scanRequested = true;
             return true;
         }
         if (type == "new-animation")
@@ -965,6 +1218,16 @@ final class MeshEditor : Widget
         label(canvas, Rect(left, statusY, inner, 20), _status, muted, 1);
         label(canvas, Rect(14, 12, 260, 22),
             "PERSPECTIVE · SOFTWARE 3D", Color.rgba(148, 163, 184, 210), 1);
+        if (_hasLiveAnimation || (_hasScene && _scene.animations.length > 0))
+            label(canvas, Rect(14, 36, 620, 20),
+                format("F %d/%d · %s · %d trk / %d keys · %s",
+                    cast(int) (_time * 30 + 0.5), animationFrameCount(),
+                    _hasLiveAnimation ? _liveClip.name :
+                    _scene.animations[_animation].name,
+                    animationTrackCount(), animationKeyCount(),
+                    _auditValid ? "OK" : _auditWarnings.join(" / ")),
+                _auditValid ? Color.rgba(45, 212, 191, 235) :
+                Color.rgba(251, 191, 36, 235), 1);
     }
 
     private Rect[] buttonRects() const

@@ -170,6 +170,13 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   of replacing the base pose.
 - `check` reruns the collision audit at the current pose.
 - `frame` sets a frame number (1/30-second steps) and pauses; `pause` pauses.
+- `keyframe` inserts/replaces a keyframe at the current (or supplied) time:
+  `{"type":"keyframe","node":"RightHand","time":1.0,"rotation":[0,0,0,1]}`.
+  `remove-keyframe` removes one.
+- `audit` validates mesh indices/normals, key ordering, duration, and track
+  integrity, then writes `build/live-audit.json`.
+- `scan-frames` bakes and validates every 1/30-second frame, then writes
+  `build/live-frames.json` with per-frame validity and invalid-frame count.
 - `clear` removes pose overrides and live objects.
 
 The acknowledgement separates `baselineCollisions` (same-frame base animation
