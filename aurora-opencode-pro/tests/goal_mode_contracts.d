@@ -1,7 +1,7 @@
 module goal_mode_contracts;
 
-import auroraopencode.core : ChatSession, Settings, TaskStep,
-    goalHistoryFromJson, goalHistoryToJson;
+import auroraopencode.core : ChatMessage, ChatSession, Settings, TaskStep,
+    ensureMessageGraph, goalHistoryFromJson, goalHistoryToJson;
 import auroraopencode.goalmode;
 import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
@@ -15,6 +15,15 @@ import std.utf : toUTF32;
 void require(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+ChatMessage msg(string role, string content, bool internal = false)
+{
+    ChatMessage result;
+    result.role = role;
+    result.content = content;
+    result.internal = internal;
+    return result;
 }
 
 int main()
@@ -109,6 +118,33 @@ int main()
     require(history.goalHistory.length == 3,
         "reusing a completed goal text did not create a new history entry");
     writeln("PASS every goal set is retained in per-conversation history");
+
+    ChatSession humanHelp;
+    humanHelp.goal = "finish the task";
+    humanHelp.goalStatus = "active";
+    humanHelp.messages ~= msg("user", "Install and verify the app.");
+    humanHelp.messages ~= msg("assistant",
+        "I need you to provide the signing certificate before I can continue.");
+    ensureMessageGraph(humanHelp);
+    require(goalNeedsHumanInput(humanHelp),
+        "a goal blocked on human action was not detected");
+    humanHelp.messages ~= msg("user",
+        "The user action above is still required.", true);
+    humanHelp.messages ~= msg("assistant",
+        "I need you to provide the signing certificate before I can continue.");
+    ensureMessageGraph(humanHelp);
+    require(goalNeedsHumanInput(humanHelp),
+        "a repeated human-action request was not detected");
+    ChatSession progressing;
+    progressing.goal = "finish the task";
+    progressing.goalStatus = "active";
+    progressing.messages ~= msg("user", "Install and verify the app.");
+    progressing.messages ~= msg("assistant",
+        "Installed, ran the checks, and verified the result.");
+    ensureMessageGraph(progressing);
+    require(!goalNeedsHumanInput(progressing),
+        "normal completion prose was mistaken for a human-help request");
+    writeln("PASS repeated human-action requests stop goal continuation");
 
     foreach (definitions; [nativeOnlyToolDefinitions(), builtinToolDefinitions()])
     {

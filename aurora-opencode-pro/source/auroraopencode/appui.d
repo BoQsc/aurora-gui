@@ -92,7 +92,8 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
     taskBlockerError, taskInputError, taskAwaitingInput, proactiveActionGuidance;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
     clampGoalText, goalCompletionError, goalContinuationInstruction,
-    goalPromptBlock, maxGoalLength, maxGoalTurns, parseGoalCommand,
+    goalNeedsHumanInput, goalPromptBlock, maxGoalLength, maxGoalTurns,
+    parseGoalCommand,
     recordGoalOutcome, recordGoalSet, syncGoalHistory;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
@@ -18949,6 +18950,28 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
+        // A goal that needs the user must not start another autonomous turn.
+        // The last prose answer asked for human action, so pause and stop here
+        // instead of repeating the same request every continuation.
+        if (goalNeedsHumanInput(*session))
+        {
+            if (goalActive(*session))
+            {
+                session.goalStatus = "paused";
+                recordGoalOutcome(*session, "paused",
+                    Clock.currTime.toUnixTime());
+            }
+            session.turnStatus = "completed";
+            session.taskStatus = "waiting_input";
+            session.contract.blocker =
+                "Waiting for the user's action requested in the last answer.";
+            publishThreadUpdated(*session);
+            markDirty();
+            updateGoalBar();
+            updateStatus("Stopped for your input. The goal is paused; act, then press Start.");
+            markUnreadIfBackground(sessionIndex);
+            return;
+        }
         const proactiveGuidance = toolsEnabledForSession(*session)
             ? proactiveActionGuidance(*session) : "";
         if (taskContinuation(*session, toolsEnabledForSession(*session)).action ==
@@ -19176,6 +19199,7 @@ private void pollButtonSuggestionRequest()
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
         if (session.queuedGuidance.length > 0) return true;
+        if (goalNeedsHumanInput(session)) return false;
         if (goalActive(session) && session.queuedFollowUps.length == 0 &&
             !taskAwaitingInput(session) && session.goalTurns < maxGoalTurns)
             return true;
@@ -20485,17 +20509,23 @@ private void pollButtonSuggestionRequest()
         else if (acceptedVerification)
         {
             invalidateChangedWorkspaceEvidence();
-            const evidenceKey = buildNormalizedPath(event.verificationWorkspace).toLower();
+            const evidenceKey = buildNormalizedPath(verificationWorkspace).toLower();
             // The scheduler may advance after the recipe settles (for example,
             // while this result is being applied). Adopt the revision that is
             // current now; restoring the older event revision would make this
             // successful check invalidate itself on the next service tick.
             const currentRevision =
-                toolWorkspaceRevision(event.verificationWorkspace);
+                toolWorkspaceRevision(verificationWorkspace);
             _observedWorkspaceRevisions[evidenceKey] = currentRevision;
             _execution.verificationRecorded = true;
-            _execution.verifiedWorkspace = event.verificationWorkspace;
+            _execution.verifiedWorkspace = verificationWorkspace;
             _execution.verifiedWorkspaceRevision = currentRevision;
+            if (auto tracked = session.id in _conversationRuntimes)
+            {
+                (*tracked).verificationRecorded = true;
+                (*tracked).verifiedWorkspace = verificationWorkspace;
+                (*tracked).verifiedWorkspaceRevision = currentRevision;
+            }
             session.verificationStatus = "passed";
             if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
                 session.taskStatus = hasIncompleteTaskSteps(*session) ? "active" : "completed";

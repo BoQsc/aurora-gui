@@ -1,9 +1,9 @@
 module auroraopencode.goalmode;
 
-import auroraopencode.core : ChatSession, GoalHistoryEntry;
-import std.array : appender;
+import auroraopencode.core : ChatSession, GoalHistoryEntry, activeMessagePath;
+import std.array : appender, join, split;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.string : startsWith, strip, toLower;
+import std.string : indexOf, startsWith, strip, toLower;
 import std.utf : toUTF32, toUTF8;
 
 /// Claude Code caps a goal condition at 4,000 characters. Keep the same bound
@@ -14,6 +14,52 @@ public enum size_t maxGoalLength = 4000;
 /// A safety bound for autonomous continuations. The normal stop condition is
 /// the model's evidence-backed `goal_complete` call or the user pressing Stop.
 public enum int maxGoalTurns = 64;
+
+/// Detect a goal turn that cannot progress without the user. Repeating the
+/// same request for human action used to start another automatic goal turn
+/// until the safety limit; this lets the UI pause immediately instead.
+public bool goalNeedsHumanInput(const ref ChatSession session)
+{
+    if (session.goal.length == 0 || session.goalStatus != "active")
+        return false;
+    string last;
+    string previous;
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role == "user" && !message.internal) break;
+        if (message.role != "assistant" || message.internal || message.failed ||
+            message.toolCalls.length > 0) continue;
+        if (!last.length) last = message.content;
+        else if (!previous.length) previous = message.content;
+    }
+    if (!last.length) return false;
+    const text = last.toLower().split().join(" ");
+    foreach (phrase; humanHelpPhrases)
+        if (text.indexOf(phrase) >= 0) return true;
+    // A repeated appeal is also a stop signal even if its wording is not in
+    // the phrase table. Neutral repeated progress prose does not qualify.
+    if (!previous.length) return false;
+    return text == previous.toLower().split().join(" ") &&
+        (text.indexOf("you") >= 0 || text.indexOf("need") >= 0);
+}
+
+private static immutable string[] humanHelpPhrases = [
+    "i need you to", "i need your", "you need to provide",
+    "you need to send", "you need to share", "you need to run",
+    "you need to install", "you need to open", "you need to approve",
+    "you need to confirm", "you need to sign in", "you need to log in",
+    "you will need to", "you'll need to", "you must ",
+    "waiting for you", "waiting for your", "requires your",
+    "requires human", "human intervention", "manual intervention",
+    "manual step", "please provide", "please send", "please share",
+    "please confirm", "please approve", "please grant",
+    "let me know once", "let me know when", "once you have",
+    "once you provide", "after you ", "until you ",
+    "i can't proceed until", "i cannot proceed until",
+    "i can't continue until", "i cannot continue until",
+    "blocked until you"
+];
 
 /// Bound the goal by characters without splitting a UTF-8 sequence.
 public string clampGoalText(string text)

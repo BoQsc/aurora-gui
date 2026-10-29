@@ -16,6 +16,8 @@ import auroramesh.mesh : Material, MaterialSlot, Mesh, Vec2, Vec3,
 import auroramesh.human_v2 : humanBaseMeshV2;
 import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh, writePpm;
+import auroramesh.reshape : RegionEdit, regionBox, regionVertices, reshapeRegion;
+import core.time : MonoTime;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
     smoothVertices;
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
@@ -44,6 +46,8 @@ private enum string[] ButtonLabels = [
     "Load OBJ",
     "Save GLB",
     "Load GLB",
+    "Feet",
+    "Boots",
 ];
 
 private struct LiveExtra
@@ -227,6 +231,7 @@ final class MeshEditor : Widget
         _liveStatus = "";
         _mesh = mesh;
         _undo.length = 0;
+        _reshapecs.length = 0;
         _selected = -1;
         _camera.focus(meshMinimum(_mesh), meshMaximum(_mesh));
         _dirty = true;
@@ -1647,11 +1652,94 @@ final class MeshEditor : Widget
         invalidate();
     }
 
+    // Region edits are state, not a one-off operation: the mesh is rebaked for
+    // every animation frame, so each edit is replayed onto the fresh mesh.
+    private RegionEdit[] _reshapecs;
+    private string _lastReshape;
+    private int _lastReshaped;
+    private double _lastReshapeMs = 0.0; // D floats default to NaN
+    private int _reshapeRuns;
+
+    /**
+     * Replay recorded region edits onto the current mesh.
+     *
+     * Only the vertices inside a region move, which is what keeps a replay cheap
+     * enough to sit inside a frame instead of a reload.
+     */
+    private void applyReshapes()
+    {
+        if (_reshapecs.length == 0 || _mesh.vertices.length == 0)
+            return;
+        const start = MonoTime.currTime();
+        const beforeIndices = regionVertices(_mesh, regionBox("feet"));
+        const beforeFeet = beforeIndices.length;
+        ++_reshapeRuns;
+        double lowY = double.max;
+        double highY = -double.max;
+        foreach (vertex; _mesh.vertices)
+        {
+            lowY = vertex.y < lowY ? vertex.y : lowY;
+            highY = vertex.y > highY ? vertex.y : highY;
+        }
+        int moved;
+        foreach (edit; _reshapecs)
+            moved += reshapeRegion(_mesh, edit.region, edit.style,
+                edit.strength);
+        _lastReshaped = moved;
+        _lastReshapeMs = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
+        // A reshaped region that draws dark usually means the per-face material
+        // table no longer lines up with the faces, so record both.
+        int downward;
+        int zeroLength;
+        double meanUp;
+        const feet = regionVertices(_mesh, regionBox("feet"));
+        foreach (index; feet)
+        {
+            if (index < 0 || index >= _mesh.normals.length)
+                continue;
+            const normal = _mesh.normals[index];
+            const size = length(normal);
+            if (size < 1.0e-9)
+                ++zeroLength;
+            meanUp += normal.y;
+            if (normal.y < -0.2)
+                ++downward;
+        }
+        double regionLowY = double.max;
+        double regionHighY = -double.max;
+        double regionWideX = 0.0;
+        foreach (index; beforeIndices)
+        {
+            if (index < 0 || index >= _mesh.vertices.length)
+                continue;
+            const vertex = _mesh.vertices[index];
+            regionLowY = vertex.y < regionLowY ? vertex.y : regionLowY;
+            regionHighY = vertex.y > regionHighY ? vertex.y : regionHighY;
+            const wideX = vertex.x < 0 ? -vertex.x : vertex.x;
+            regionWideX = wideX > regionWideX ? wideX : regionWideX;
+        }
+        if (feet.length > 0)
+            meanUp /= feet.length;
+        try
+            write("build/reshape-stats.json", format(
+                `{"faces":%d,"faceMaterials":%d,"materials":%d,"vertices":%d,"skin":%.3f,%.3f,%.3f,"feet":%d,"downward":%d,"zeroLength":%d,"meanUp":%.3f,"beforeFeet":%d,"lowY":%.4f,"highY":%.4f,"runs":%d,"regionLowY":%.4f,"regionHighY":%.4f,"regionWideX":%.4f}`,
+                _mesh.faces.length, _mesh.faceMaterials.length,
+                _mesh.materials.length, _mesh.vertices.length,
+                _mesh.materials.length > 0 ? _mesh.materials[0].baseColor.x : -1.0,
+                _mesh.materials.length > 0 ? _mesh.materials[0].baseColor.y : -1.0,
+                _mesh.materials.length > 0 ? _mesh.materials[0].baseColor.z : -1.0,
+                feet.length, downward, zeroLength, meanUp, beforeFeet, lowY,
+                highY, _reshapeRuns, regionLowY, regionHighY, regionWideX));
+        catch (Exception)
+        {
+        }
+    }
+
     private void writeLiveAck()
     {
         try
             writeReport("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f}`,
                 _liveRevision, _liveExtras.length, _poseOverrides.length,
                 jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
@@ -1672,7 +1760,8 @@ final class MeshEditor : Widget
                 _collisions.pairs, _baselineCollisionCount,
                 _collisions.sample.x, _collisions.sample.y,
                 _collisions.sample.z, _collisions.faceA, _collisions.faceB,
-                _liveFollowCount, _baselineClusterFaces, _baselineStrayFaces));
+                _liveFollowCount, _baselineClusterFaces, _baselineStrayFaces,
+                jsonEscape(_lastReshape), _lastReshaped, _lastReshapeMs));
         catch (Exception)
         {
         }
@@ -1731,6 +1820,7 @@ final class MeshEditor : Widget
                 }
             }
         }
+        applyReshapes();
         _dirty = true;
         invalidate();
     }
@@ -1847,6 +1937,51 @@ final class MeshEditor : Widget
         }
         if (type == "pose-aim")
             return applyPoseAim(command);
+        if (type == "reshape")
+        {
+            const region = liveString(liveChild(command, "region"), "feet");
+            const style = liveString(liveChild(command, "style"), "toes");
+            const strength = liveNumber(liveChild(command, "strength"), 1.0);
+            // An unknown region would silently do nothing, so refuse it.
+            const box = regionBox(region);
+            if (box.minimum == box.maximum)
+                return false;
+            if (style == "none" || style == "reset")
+            {
+                foreach (index, edit; _reshapecs)
+                    if (edit.region == region)
+                    {
+                        _reshapecs = _reshapecs[0 .. index] ~
+                            _reshapecs[index + 1 .. $];
+                        break;
+                    }
+            }
+            else
+            {
+                // One edit per region: asking again for the same region
+                // replaces the style instead of stacking deformations.
+                bool replaced;
+                foreach (ref edit; _reshapecs)
+                    if (edit.region == region)
+                    {
+                        edit.style = style;
+                        edit.strength = strength;
+                        replaced = true;
+                    }
+                if (!replaced)
+                    _reshapecs ~= RegionEdit(region, style, strength);
+            }
+            _lastReshape = region ~ ":" ~ style;
+            // A scene mesh is rebaked per frame, so ask for a rebake and let it
+            // replay every recorded edit; a static mesh is edited in place.
+            if (_hasScene)
+                rebuildGltfMesh();
+            else
+                applyReshapes();
+            _dirty = true;
+            invalidate();
+            return _lastReshaped > 0;
+        }
         if (type == "capture")
         {
             _capturePath = liveString(liveChild(command, "path"),
@@ -2788,9 +2923,38 @@ final class MeshEditor : Widget
             case 8:
                 loadGlb();
                 break;
+            case 9:
+            case 10:
+                reshapeFeet(button == 9 ? "foot" : "boot");
+                break;
             default:
                 break;
         }
+        invalidate();
+    }
+
+    /// Re-form the feet in one click. Recorded as state, so the style survives
+    /// the next rebake instead of being lost with the old vertices.
+    private void reshapeFeet(string style)
+    {
+        bool replaced;
+        foreach (ref edit; _reshapecs)
+            if (edit.region == "feet")
+            {
+                edit.style = style;
+                replaced = true;
+            }
+        if (!replaced)
+            _reshapecs ~= RegionEdit("feet", style, 1.0);
+        _undo ~= cloneMesh(_mesh);
+        if (_hasScene)
+            rebuildGltfMesh();
+        else
+            applyReshapes();
+        _lastReshape = "feet:" ~ style;
+        _dirty = true;
+        _status = format("Feet: %s (%d vertices, %.1f ms)", style,
+            _lastReshaped, _lastReshapeMs);
         invalidate();
     }
 
