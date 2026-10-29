@@ -1,13 +1,25 @@
 module auroramesh.renderer;
 
-import auroramesh.camera : Camera, NearPlane, Projected, project;
+import auroramesh.camera : Camera, CameraBasis, NearPlane, Projected, cameraBasis,
+    project;
 import auroramesh.mesh : Face, Material, MaterialSlot, Mesh, Vec2, Vec3, cross,
     dot, humanBaseMesh, length, normalize, sub;
 import aurora.image : RgbaImage;
+import core.time : MonoTime;
 import std.algorithm : max, min;
 import std.file : write;
 import std.format : format;
 import std.math : abs, ceil, floor, tan;
+
+/// Where the last software frame spent its time, reported by `--bench`.
+struct SoftwareStats
+{
+    double backgroundMs;
+    double projectMs;
+    double rasterMs;
+}
+
+__gshared SoftwareStats softwareStats;
 
 struct RenderOptions
 {
@@ -36,7 +48,16 @@ private struct RasterVertex
     double light;
 }
 
-/** A triangle corner in camera space before the perspective divide. */
+/**
+ * One triangle handed to the GPU rasterizer: three screen-space corners holding
+ * x, y, inverse depth and depth-weighted light, then the surface colour.
+ */
+struct GpuTriangle
+{
+    float[16] data;
+}
+
+ /** A triangle corner in camera space before the perspective divide. */
 private struct FaceVertex
 {
     double viewX;
@@ -68,19 +89,23 @@ private struct Surface
     bool textured;
 }
 
-RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
-    RenderOptions options = RenderOptions())
-{
-    width = max(1, width);
-    height = max(1, height);
-    RgbFrame frame;
-    frame.width = width;
-    frame.height = height;
-    frame.pixels = new ubyte[width * height * 3];
-    // Inverse depth (0 = empty) so nearer fragments compare greater.
-    auto depth = new float[width * height];
+// Scratch buffers reused between frames: the viewport renders at a steady size,
+// so rebuilding these arrays on every frame is pure allocation churn.
+private __gshared float[] depthScratch;
+private __gshared Projected[] projectedScratch;
+private __gshared ubyte[] backgroundCache;
+private __gshared int backgroundWidth;
+private __gshared int backgroundHeight;
 
-    // Cool vertical studio gradient.
+/// The cool studio gradient only depends on the frame size, so build it once.
+private const(ubyte)[] background(int width, int height)
+{
+    if (backgroundWidth == width && backgroundHeight == height &&
+        backgroundCache.length == width * height * 3)
+        return backgroundCache;
+    backgroundWidth = width;
+    backgroundHeight = height;
+    backgroundCache = new ubyte[width * height * 3];
     foreach (y; 0 .. height)
     {
         const t = height <= 1 ? 0.0 : cast(double) y / (height - 1);
@@ -90,23 +115,45 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
         foreach (x; 0 .. width)
         {
             const index = (y * width + x) * 3;
-            frame.pixels[index] = r;
-            frame.pixels[index + 1] = g;
-            frame.pixels[index + 2] = b;
+            backgroundCache[index] = r;
+            backgroundCache[index + 1] = g;
+            backgroundCache[index + 2] = b;
         }
     }
+    return backgroundCache;
+}
+
+RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
+    RenderOptions options = RenderOptions(), GpuTriangle[]* triangleSink = null)
+{
+    width = max(1, width);
+    height = max(1, height);
+    const startTime = MonoTime.currTime();
+    RgbFrame frame;
+    frame.width = width;
+    frame.height = height;
+    frame.pixels = new ubyte[width * height * 3];
+    frame.pixels[] = background(width, height);
+    // Inverse depth (0 = empty) so nearer fragments compare greater.
+    depthScratch.length = width * height;
+    depthScratch[] = 0.0f;
+    auto depth = depthScratch;
 
     if (options.grid)
         drawGroundGrid(frame, camera);
+    const setupTime = MonoTime.currTime();
 
     if (mesh.vertices.length == 0 || mesh.faces.length == 0)
         return frame;
 
-    auto projected = new Projected[mesh.vertices.length];
+    projectedScratch.length = mesh.vertices.length;
+    auto projected = projectedScratch[];
+    const basis = cameraBasis(camera, height);
     foreach (index, vertex; mesh.vertices)
-        projected[index] = project(vertex, camera, width, height);
+        projected[index] = project(vertex, basis, width, height);
+    const projectTime = MonoTime.currTime();
 
-    const focal = (height * 0.5) / tan(camera.fov * 0.5);
+    const focal = basis.focal;
     const light = normalize(Vec3(0.35, 0.85, 0.55));
     const smooth = mesh.normals.length == mesh.vertices.length;
     const hasFaceMaterials = mesh.faceMaterials.length == mesh.faces.length;
@@ -230,8 +277,40 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
 
         const cull = options.cullBackfaces && !doubleSided;
         foreach (corner; 1 .. count - 1)
-            rasterizeTriangle(frame, depth, polygon[0], polygon[corner],
-                polygon[corner + 1], surface, cull);
+        {
+            if (triangleSink is null)
+            {
+                rasterizeTriangle(frame, depth, polygon[0], polygon[corner],
+                    polygon[corner + 1], surface, cull);
+                continue;
+            }
+            // The GPU path wants the same projected fan, culled the same way.
+            // Textured surfaces still need the CPU texel fetch, so they stay.
+            const fan = [polygon[0], polygon[corner], polygon[corner + 1]];
+            const area = edge(fan[0].x, fan[0].y, fan[1].x, fan[1].y,
+                fan[2].x, fan[2].y);
+            if (abs(area) < 1.0e-9 || (cull && area > 0))
+                continue;
+            if (surface.textured || surface.alphaMode == 2)
+            {
+                rasterizeTriangle(frame, depth, fan[0], fan[1], fan[2],
+                    surface, cull);
+                continue;
+            }
+            GpuTriangle triangle;
+            foreach (slot; 0 .. 3)
+            {
+                triangle.data[slot * 4] = cast(float) fan[slot].x;
+                triangle.data[slot * 4 + 1] = cast(float) fan[slot].y;
+                triangle.data[slot * 4 + 2] = cast(float) fan[slot].invZ;
+                triangle.data[slot * 4 + 3] = cast(float) fan[slot].light;
+            }
+            triangle.data[12] = cast(float) surface.color.x;
+            triangle.data[13] = cast(float) surface.color.y;
+            triangle.data[14] = cast(float) surface.color.z;
+            triangle.data[15] = cast(float) surface.alpha;
+            *triangleSink ~= triangle;
+        }
     }
 
     if (options.wireframe)
@@ -269,6 +348,11 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
             [ubyte(255), ubyte(157), ubyte(66)]);
     }
 
+    const endTime = MonoTime.currTime();
+    softwareStats.backgroundMs =
+        (setupTime - startTime).total!"usecs" / 1000.0;
+    softwareStats.projectMs = (projectTime - setupTime).total!"usecs" / 1000.0;
+    softwareStats.rasterMs = (endTime - projectTime).total!"usecs" / 1000.0;
     return frame;
 }
 

@@ -140,6 +140,16 @@ int main()
     menu.dismiss();
     root.tickTree(0.02);
     assert(driver.paint(), "dismissed goal history paint failed");
+    driver.moveTo(globalCenter(text));
+    foreach (_; 0 .. 20) root.tickTree(0.05);
+    assert(driver.paint(), "goal tooltip paint failed");
+    assert(root.buttonTooltipTextForTesting("oc-goal-text") ==
+        "keep the build green",
+        "hovering the goal text did not show its full text");
+    driver.moveTo(Point(4, 700));
+    root.tickTree(0.02);
+    assert(root.buttonTooltipTextForTesting("oc-goal-text").length == 0,
+        "goal tooltip stayed open after the pointer left");
     writeln("PASS saved goal shows text, Edit, Start and Clear");
 
     driver.click(globalCenter(edit));
@@ -220,6 +230,43 @@ int main()
     assert(root.goalHistoryTextsForTesting().length == 3,
         "original conversation lost its goal history");
     writeln("PASS goal history is retained per conversation across reload");
+
+    const longGoal = "Tooltip verification: this deliberately long goal " ~
+        "must be shown without dropping any part of its final marker.";
+    root.setGoalForTesting(longGoal, "paused");
+    root.tickTree(0.02);
+    assert(driver.paint(), "long-goal paint failed");
+    driver.moveTo(globalCenter(text));
+    foreach (_; 0 .. 20) root.tickTree(0.05);
+    assert(driver.paint(), "long-goal tooltip paint failed");
+    assert(root.buttonTooltipTextForTesting("oc-goal-text") == longGoal,
+        "goal tooltip did not contain the complete goal text");
+    driver.moveTo(Point(4, 700));
+    root.tickTree(0.02);
+    writeln("PASS goal tooltip shows the complete goal text");
+
+    root.setAutoGoalFromFirstMessageForTesting(true);
+    auto autoGoalCheck = root.autoGoalCheckboxForTesting();
+    assert(autoGoalCheck !is null && autoGoalCheck.checked(),
+        "Settings does not expose the enabled first-message goal option");
+    driver.pressKey(Key.escape);
+    root.tickTree(0.02);
+    assert(driver.paint(), "first-message goal settings paint failed");
+    root.newChatForTesting();
+    assert(root.adoptFirstMessageGoalForTesting("Ship the first-message goal"),
+        "first message did not become the goal");
+    assert(root.goalForTesting() == "Ship the first-message goal",
+        "adopted goal text was not saved");
+    assert(!root.adoptFirstMessageGoalForTesting("A later message"),
+        "a later message replaced the first-message goal");
+    assert(root.goalForTesting() == "Ship the first-message goal",
+        "later message changed the adopted goal");
+    root.setAutoGoalFromFirstMessageForTesting(false);
+    root.newChatForTesting();
+    assert(!root.adoptFirstMessageGoalForTesting("Disabled first message"),
+        "first-message goal was adopted while the setting was off");
+    root.setAutoGoalFromFirstMessageForTesting(true);
+    writeln("PASS first-message goal adoption follows its setting");
 
     root.shutdownClient();
     window.close();

@@ -10,8 +10,14 @@ import auroramesh.mesh : Mesh, humanBaseMesh, meshEdgeStats, meshMaximum,
 import auroramesh.human_v2 : humanBaseMeshV2;
 import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.glb : fromGlb, toGlb;
+import auroramesh.gpubackend : gpuAvailable, gpuDeviceName, gpuUnavailableReason,
+    gpuDeviceIndex, gpuProbeShaders, gpuSelfTest, gpuSelfTestOnly, gpuSmokeAurora,
+    gpuSmokeCompute, gpuSmokePair, gpuSmokePoint, gpuSmokeTest, gpuTrace,
+    gpuSmokeImage, gpuSmokeIndex, gpuSmokeRaster, renderFrame, shutdownGpu,
+    useGpu, viewportBackend,
+    viewportFallbackReason, viewportStats;
 import auroramesh.gltf_scene : GltfScene, bakeGltfFrame, loadGltfScene;
-import auroramesh.renderer : RenderOptions, renderMesh, writePpm;
+import auroramesh.renderer : RenderOptions, renderMesh, softwareStats, writePpm;
 import auroramesh.rig_fixture : buildRigFixture, rigFixtureGlb;
 import aurora : GuiWindow, RendererPreference, Theme, WindowOptions;
 import core.thread : Thread;
@@ -29,6 +35,19 @@ private void usage()
     writeln("  aurora-mesh                         open the editor");
     writeln("  aurora-mesh --screenshot <file.ppm>  render the editor window and exit");
     writeln("  aurora-mesh --render <file.ppm>      headless 3D render");
+    writeln("  aurora-mesh --gpu-info               report the viewport GPU backend");
+    writeln("  aurora-mesh --gpu-selftest           build a pipeline from Aurora's own shaders");
+    writeln("  aurora-mesh --gpu-smoke              draw a clip-space triangle and report the pixel");
+    writeln("  aurora-mesh --gpu-smoke-point        draw a constant point, no vertex buffer");
+    writeln("  aurora-mesh --gpu-smoke-aurora       draw with Aurora's vertex shader in this plumbing");
+    writeln("  aurora-mesh --gpu-smoke-pair         draw with Aurora's shader pair and a white texture");
+    writeln("  aurora-mesh --gpu-smoke-compute      dispatch a compute shader that stores a value");
+    writeln("  aurora-mesh --gpu-smoke-index        draw from gl_VertexIndex with no vertex buffer");
+    writeln("  aurora-mesh --gpu-smoke-image        paint pixels from a compute dispatch");
+    writeln("  --gpu-device <index>                 choose the Vulkan physical device");
+    writeln("  aurora-mesh --gpu-trace             trace device bring-up and frame setup");
+    writeln("  aurora-mesh --bench [frames]         time software and Vulkan viewport frames");
+    writeln("  --gpu / --no-gpu                     force the viewport backend");
     writeln("  aurora-mesh --check                  validate and print mesh statistics");
     writeln("  aurora-mesh --export-obj <file.obj>  write the human base mesh");
     writeln("  aurora-mesh --export-glb <file.glb>  write a glTF 2.0 binary mesh");
@@ -68,6 +87,21 @@ int main(string[] args)
     int humanVersion = 3;
     int width = 1400;
     int height = 860;
+    bool gpuDisabled;
+    bool gpuInfo;
+    bool gpuSelfTestRequested;
+    bool smokeRequested;
+    bool pointSmokeRequested;
+    bool auroraSmokeRequested;
+    bool pairSmokeRequested;
+    bool computeSmokeRequested;
+    bool indexSmokeRequested;
+    bool imageSmokeRequested;
+    bool rasterSmokeRequested;
+    int deviceIndexRequested = -1;
+    string[] probeArguments;
+    int benchFrames;
+    bool benchRequested;
 
     for (size_t index = 1; index < args.length; index++)
     {
@@ -79,6 +113,76 @@ int main(string[] args)
                 return 0;
             case "--check":
                 check = true;
+                break;
+            case "--gpu":
+                useGpu(true);
+                gpuDisabled = false;
+                break;
+            case "--no-gpu":
+                useGpu(false);
+                gpuDisabled = true;
+                break;
+            case "--gpu-info":
+                gpuInfo = true;
+                break;
+            case "--gpu-selftest":
+                gpuSelfTestRequested = true;
+                break;
+            case "--gpu-attempt":
+                if (++index >= args.length)
+                {
+                    stderr.writeln("--gpu-attempt needs a self-test name");
+                    return 2;
+                }
+                gpuSelfTestOnly = args[index];
+                gpuSelfTestRequested = true;
+                break;
+            case "--gpu-smoke":
+                smokeRequested = true;
+                break;
+            case "--gpu-smoke-point":
+                pointSmokeRequested = true;
+                break;
+            case "--gpu-smoke-aurora":
+                auroraSmokeRequested = true;
+                break;
+            case "--gpu-smoke-pair":
+                pairSmokeRequested = true;
+                break;
+            case "--gpu-smoke-compute":
+                computeSmokeRequested = true;
+                break;
+            case "--gpu-smoke-index":
+                indexSmokeRequested = true;
+                break;
+            case "--gpu-smoke-image":
+                imageSmokeRequested = true;
+                break;
+            case "--gpu-smoke-raster":
+                rasterSmokeRequested = true;
+                break;
+            case "--gpu-device":
+                if (index + 1 < args.length)
+                    deviceIndexRequested = to!int(args[++index]);
+                break;
+            case "--gpu-probe":
+                if (index + 2 >= args.length)
+                {
+                    stderr.writeln("--gpu-probe needs a vertex and fragment file");
+                    return 2;
+                }
+                probeArguments = [args[++index], args[++index]];
+                break;
+            case "--gpu-trace":
+                gpuTrace(true);
+                break;
+            case "--bench":
+                benchRequested = true;
+                if (index + 1 < args.length && args[index + 1].length > 0 &&
+                    args[index + 1][0] != '-')
+                    benchFrames = to!int(args[++index]);
+                if (benchFrames <= 0)
+                    benchFrames = 20;
                 break;
             case "--render":
                 if (++index >= args.length)
@@ -206,6 +310,9 @@ int main(string[] args)
                 return 2;
         }
     }
+
+    if (deviceIndexRequested >= 0)
+        gpuDeviceIndex = deviceIndexRequested;
 
     if (rigExportPath.length > 0)
     {
@@ -380,6 +487,132 @@ int main(string[] args)
     Camera camera;
     camera.focus(meshMinimum(mesh), meshMaximum(mesh));
 
+    if (gpuInfo)
+    {
+        writeln(gpuAvailable() ? "vulkan: " ~ gpuDeviceName() :
+            "vulkan: unavailable — " ~ gpuUnavailableReason());
+        return 0;
+    }
+
+    if (probeArguments.length == 2)
+    {
+        string report;
+        const ok = gpuProbeShaders(probeArguments[0], probeArguments[1],
+            report);
+        writeln((ok ? "shader accepted: " : "shader rejected: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (smokeRequested)
+    {
+        string report;
+        const ok = gpuSmokeTest(report);
+        writeln((ok ? "smoke aok: " : "smoke failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (pointSmokeRequested)
+    {
+        string report;
+        const ok = gpuSmokePoint(report);
+        writeln((ok ? "point aok: " : "point failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (auroraSmokeRequested)
+    {
+        string report;
+        const ok = gpuSmokeAurora(report);
+        writeln((ok ? "aurora aok: " : "aurora failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (pairSmokeRequested)
+    {
+        string report;
+        const ok = gpuSmokePair(report);
+        writeln((ok ? "pair aok: " : "pair failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (computeSmokeRequested)
+    {
+        string report;
+        const ok = gpuSmokeCompute(report);
+        writeln((ok ? "compute aok: " : "compute failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (indexSmokeRequested)
+    {
+        string report;
+        const ok = gpuSmokeIndex(report);
+        writeln((ok ? "index aok: " : "index failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (imageSmokeRequested)
+    {
+        string report;
+        const ok = gpuSmokeImage(report);
+        writeln((ok ? "image aok: " : "image failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (rasterSmokeRequested)
+    {
+        string report;
+        const ok = gpuSmokeRaster(report);
+        writeln((ok ? "raster aok: " : "raster failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (gpuSelfTestRequested)
+    {
+        string report;
+        const ok = gpuSelfTest(report);
+        writeln((ok ? "selftest ok: " : "selftest failed: ") ~ report);
+        return ok ? 0 : 1;
+    }
+
+    if (benchRequested)
+    {
+        width = width < 64 ? 900 : width;
+        height = height < 64 ? 700 : height;
+        RenderOptions benchOptions;
+        benchOptions.wireframe = false;
+        benchOptions.vertices = false;
+        useGpu(false);
+        renderFrame(mesh, camera, width, height, benchOptions);
+        auto clock = MonoTime.currTime();
+        foreach (frameIndex; 0 .. benchFrames)
+            renderFrame(mesh, camera, width, height, benchOptions);
+        const softwareMs = (MonoTime.currTime() - clock).total!"usecs" /
+            1000.0 / benchFrames;
+        writeln(format("software: %.2f ms/frame", softwareMs));
+        writeln(format("software phases: background %.2f, project %.2f, "
+            ~ "raster %.2f ms", softwareStats.backgroundMs,
+            softwareStats.projectMs, softwareStats.rasterMs));
+        if (gpuAvailable())
+        {
+            useGpu(true);
+            renderFrame(mesh, camera, width, height, benchOptions);
+            clock = MonoTime.currTime();
+            foreach (frameIndex; 0 .. benchFrames)
+                renderFrame(mesh, camera, width, height, benchOptions);
+            const gpuMs = (MonoTime.currTime() - clock).total!"usecs" /
+                1000.0 / benchFrames;
+            const stats = viewportStats();
+            writeln(format(
+                "vulkan: %.2f ms/frame (%s; upload %.2f, record %.2f, readback %.2f; %d draws, %d triangles)",
+                gpuMs, viewportBackend(), stats.uploadMs, stats.drawMs,
+                stats.readbackMs, stats.drawCalls, stats.triangles));
+        }
+        else
+            writeln("vulkan: unavailable — " ~ gpuUnavailableReason());
+        return 0;
+    }
+
     if (renderPath.length > 0)
     {
         ensureParent(renderPath);
@@ -388,9 +621,12 @@ int main(string[] args)
         auto options = RenderOptions();
         options.wireframe = false;
         options.vertices = false;
-        const frame = renderMesh(mesh, camera, width, height, options);
+        const frame = renderFrame(mesh, camera, width, height, options);
         writePpm(renderPath, frame);
-        writeln(format("wrote %s (%dx%d)", renderPath, width, height));
+        const stats = viewportStats();
+        writeln(format("wrote %s (%dx%d) via %s; %d draws, %d triangles",
+            renderPath, width, height, viewportBackend(), stats.drawCalls,
+            stats.triangles));
         return 0;
     }
 

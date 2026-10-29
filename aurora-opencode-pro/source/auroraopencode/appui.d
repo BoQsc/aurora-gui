@@ -8267,6 +8267,7 @@ private final class GoalBar : Widget
     string goalForTesting() const { return _goal; }
     string statusForTesting() const { return _status; }
     bool editingForTesting() const { return _editing; }
+    Widget goalTextWidget() { return _text; }
     static int layoutHeight() @safe pure nothrow @nogc { return barHeight; }
 
     protected override Size onMeasure(Size available)
@@ -14263,6 +14264,7 @@ private string _suggestExcludeId;
         _goalBar.onToggle = delegate() { toggleGoal(); };
         _goalBar.onClear = delegate() { clearGoal(); };
         _goalBar.onHistory = delegate() { showGoalHistory(); };
+        addButtonTooltip(_goalBar.goalTextWidget(), &goalTextTooltip, true);
         _goalCenter = new CenteredColumn(_goalBar, opencodeContentMaxWidth);
         _goalCenter.setId("oc-goal-center");
         // The split pane lays children out from hints instead of measuring the
@@ -20397,10 +20399,19 @@ private void pollButtonSuggestionRequest()
             goalError.length > 0 ? goalError :
             !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) :
             !toolFailed && event.toolName == "read_plan" ? planView : event.text;
+        // The recipe tool already rejects stale inputs and recipes, and it
+        // executes compile/test steps without a scheduler mutation revision.
+        // Adopt the current revision so its successful result can satisfy the
+        // same evidence gate as a direct checker command.
+        const verificationWorkspace = event.verificationWorkspace.length
+            ? event.verificationWorkspace : workspaceForSession(sessionIndex);
+        const verificationRevision = event.toolName == "verify"
+            ? toolWorkspaceRevision(verificationWorkspace)
+            : event.verificationRevision;
         const scopedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
             event.verificationCheck.length > 0 &&
-            sameCheckout(event.verificationWorkspace, workspaceForSession(sessionIndex)) &&
-            event.verificationRevision == toolWorkspaceRevision(event.verificationWorkspace);
+            sameCheckout(verificationWorkspace, workspaceForSession(sessionIndex)) &&
+            verificationRevision == toolWorkspaceRevision(verificationWorkspace);
         const checkerAttempt = event.verificationCheck.length || event.toolName == "verify";
         const coverage = checkerAttempt ? verificationCoverage(*session, scopedVerification ? event.verificationCheck : "") : "";
         const acceptedVerification = scopedVerification && satisfiesEvidence(coverage, requiredEvidence(*session));
@@ -21214,6 +21225,36 @@ private void pollButtonSuggestionRequest()
         session.taskStatus = "active";
     }
 
+    private static bool hasUserMessage(const ref ChatSession session)
+    {
+        foreach (message; session.messages)
+            if (message.role == "user" && !message.internal) return true;
+        return false;
+    }
+
+    /// Optional default behavior: the first user message becomes the durable
+    /// goal. Later messages never replace it; only an explicit /goal or the
+    /// goal-row Set/Edit controls change the goal after this point.
+    private bool maybeAdoptFirstMessageGoal(ref ChatSession session, string text)
+    {
+        if (!_settings.autoGoalFromFirstMessage || session.goal.length > 0 ||
+            hasUserMessage(session)) return false;
+        const goal = clampGoalText(text.strip());
+        if (!goal.length || goal.startsWith("/")) return false;
+        const now = Clock.currTime.toUnixTime();
+        session.goal = goal;
+        session.goalStatus = "active";
+        session.goalStartedAt = now;
+        session.goalTurns = 0;
+        session.updatedAt = now;
+        resetTaskForNewGoal(session);
+        recordGoalSet(session, now);
+        publishThreadUpdated(session);
+        markDirty();
+        updateGoalBar();
+        return true;
+    }
+
     /// Set or replace the one persistent goal for the current conversation.
     /// `activate` false is used when saving an edit while the goal is paused.
     private void setGoal(string raw, bool activate)
@@ -21625,6 +21666,7 @@ private void pollButtonSuggestionRequest()
             session.title = chatTitle(baseText);
             updateSessionList();
         }
+        maybeAdoptFirstMessageGoal(*session, baseText);
         session.model = _settings.model;
         session.thinking = _settings.thinking;
         // The objective describes the thread's durable purpose. Short
@@ -26355,6 +26397,21 @@ private void pollButtonSuggestionRequest()
         titleRow.add(titleCheck);
         optionsBody.add(titleRow);
 
+        // Optional: adopt the first user message as the conversation's durable
+        // goal. On by default; later messages never replace it.
+        auto autoGoalRow = new HBox(8);
+        autoGoalRow.layoutHints().preferredHeight = 32;
+        auto autoGoalCheck = new CheckBox("Goal from first message");
+        autoGoalCheck.setId("oc-autogoal");
+        autoGoalCheck.setChecked(_settings.autoGoalFromFirstMessage, false);
+        autoGoalCheck.onChanged = delegate(bool value)
+        {
+            _settings.autoGoalFromFirstMessage = value;
+            saveSettingsNow();
+        };
+        autoGoalRow.add(autoGoalCheck);
+        optionsBody.add(autoGoalRow);
+
         // >>> filecontext:begin
         auto fileContextRow = new HBox(8);
         fileContextRow.layoutHints().preferredHeight = 32;
@@ -27483,6 +27540,12 @@ private void pollButtonSuggestionRequest()
             : sendButtonTooltipText;
     }
 
+    private string goalTextTooltip()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return "";
+        return _sessions[_current].goal;
+    }
+
     /// Open/close one registered button tooltip. The panel never takes the
     /// pointer (it reports the anchor as its hit target), so the anchor stays
     /// hovered while the tooltip is shown.
@@ -27539,7 +27602,14 @@ private void pollButtonSuggestionRequest()
             }
             binding.hoverSeconds += deltaSeconds;
             if (binding.hoverSeconds >= buttonTooltipDelaySeconds)
+            {
+                if (!binding.tooltipText().length)
+                {
+                    binding.hoverSeconds = 0;
+                    continue;
+                }
                 setButtonTooltipOpen(binding, true);
+            }
         }
     }
 
@@ -35154,6 +35224,27 @@ private void pollButtonSuggestionRequest()
     {
         showSettingsDialog();
         return cast(CheckBox) findWidgetById(this, "oc-workedfor");
+    }
+
+    /// Test-only: open Settings and return the first-message goal checkbox.
+    public CheckBox autoGoalCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this, "oc-autogoal");
+    }
+
+    /// Test-only: toggle the first-message goal setting.
+    public void setAutoGoalFromFirstMessageForTesting(bool value)
+    {
+        _settings.autoGoalFromFirstMessage = value;
+        saveSettingsNow();
+    }
+
+    /// Test-only: run the same first-message adoption path `sendMessage` uses.
+    public bool adoptFirstMessageGoalForTesting(string text)
+    {
+        if (_current < 0) newChat();
+        return maybeAdoptFirstMessageGoal(_sessions[_current], text);
     }
 
     /// Test-only: toggle the Worked-for separator as the dialog checkbox does,

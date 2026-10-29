@@ -64,9 +64,9 @@
       "kind": "tests",
       "command": {
         "program": "python",
-        "args": ["-c", "d=open('build/verify-human.ppm','rb').read();parts=d.split(b'\\n',3);assert parts[1]==b'800 600',parts[1];px=parts[3];coverage=sum(1 for i in range(0,len(px),3) if px[i+1]>60 or px[i]>60);assert coverage>20000,coverage;coverage"],
+        "args": ["-c", "import subprocess\nd=open('build/verify-human.ppm','rb').read()\nparts=d.split(b'\\n',3)\nassert parts[1]==b'800 600',parts[1]\npx=parts[3]\ncoverage=sum(1 for i in range(0,len(px),3) if px[i+1]>60 or px[i]>60)\nassert coverage>20000,coverage\nout=subprocess.run(['build/verify/aurora-mesh.exe','--bench','6','--no-gpu'],capture_output=True,text=True).stdout\nline=[l for l in out.splitlines() if l.startswith('software:')][0]\nms=float(line.split()[1])\nassert ms<40.0,ms\ngpu=subprocess.run(['build/verify/aurora-mesh.exe','--render','build/gpu-check.ppm','--gpu','--width','800','--height','600'],capture_output=True,text=True)\nsoft_px=parts[3]\ngpu_px=open('build/gpu-check.ppm','rb').read().split(b'\\n',3)[3]\nassert len(gpu_px)==len(soft_px),(len(gpu_px),len(soft_px))\nif 'GPU frame was empty' in gpu.stderr:\n    assert gpu_px==soft_px,'the fallback must reproduce the software frame exactly'\n    print('coverage',coverage,'software ms/frame',ms,'parity skipped: device rasterizes nothing, fallback verified')\nelse:\n    mean=sum(abs(a-b) for a,b in zip(gpu_px[::7],soft_px[::7]))/len(soft_px[::7])\n    assert mean<8.0,mean\n    print('coverage',coverage,'software ms/frame',ms,'parity mean channel difference',round(mean,2))"],
         "workdir": "experiments/aurora-mesh",
-        "timeout": 30000
+        "timeout": 180000
       }
     },
     {

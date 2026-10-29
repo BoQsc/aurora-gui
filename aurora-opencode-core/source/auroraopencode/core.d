@@ -1651,6 +1651,10 @@ public struct Settings
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
     bool quickTitle = true;
+    // Write the persistent goal from a conversation's first user message. On by
+    // default; later messages never replace it unless the user explicitly uses
+    // /goal, Set goal, or Edit.
+    bool autoGoalFromFirstMessage = true;
     // Hide the `@@ -old,+new @@` hunk headers in rendered diffs: they carry no
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
@@ -1987,6 +1991,10 @@ public Settings loadSettings()
                 if (auto found = "quickTitle" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.quickTitle = found.type == JSONType.true_;
+                if (auto found = "autoGoalFromFirstMessage" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.autoGoalFromFirstMessage =
+                            found.type == JSONType.true_;
                 if (auto found = "autoRetireImages" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.autoRetireImages = found.type == JSONType.true_;
@@ -2342,6 +2350,7 @@ public void saveSettings(const ref Settings settings)
     root["legacyTools"] = settings.legacyTools;
     root["showWorkedFor"] = settings.showWorkedFor;
     root["quickTitle"] = settings.quickTitle;
+    root["autoGoalFromFirstMessage"] = settings.autoGoalFromFirstMessage;
     root["autoRetireImages"] = settings.autoRetireImages;
     root["diagnosticModel"] = settings.diagnosticModel;
     root["hideHunkHeaders"] = settings.hideHunkHeaders;

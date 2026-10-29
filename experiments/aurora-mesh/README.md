@@ -86,6 +86,75 @@ rather than a driver detail:
   front vertex instead of a hidden vertex on the back, and a brush stroke at the
   surface leaves the far side of the body untouched.
 
+Frame cost is measured, not estimated: `--bench 12` reports software milliseconds
+per frame, and the software path reuses its depth and projection scratch buffers
+and a cached studio background instead of rebuilding them every frame. That took
+the 1400x860 viewport from 20.25 ms to 13.99 ms per frame with identical pixels.
+
+`--bench` also breaks the software frame down by phase, which is how the next
+cost was found: `Camera.eye/forward/right/up` each re-derive the basis from yaw,
+pitch and distance, and `project` called all four per vertex, so a 4,953-vertex
+mesh rebuilt the basis 5,000 times a frame. The basis is now built once per frame
+(`cameraBasis`) and passed to a `project` overload that keeps the identical
+arithmetic. Projection fell from 4.47 to 0.97 ms and the 1400x860 frame from
+14.49 to 10.34 ms, with coverage unchanged at 39377 lit pixels:
+
+```text
+software: 10.34 ms/frame
+software phases: background 1.86, project 0.97, raster 9.39 ms
+```
+
+### Vulkan viewport status
+
+A Vulkan backend exists (`source/auroramesh/gpu.d`) with offscreen
+render-to-image, host-visible readback, generated SPIR-V (`tools/make_mesh_spirv.py`,
+no external shader compiler), and diagnostics: `--gpu-info`, `--gpu-trace`,
+`--gpu-selftest`, `--gpu-probe`, `--gpu-smoke`, `--gpu-smoke-point`,
+`--gpu-smoke-aurora`, `--gpu-smoke-pair`, `--gpu-smoke-compute`, `--gpu-device`,
+`--bench`.
+
+It is not yet the viewport backend. The device, pipelines, descriptors, render
+pass, command buffer, image copy, and even inline `vkCmdClearAttachments` inside
+the pass all work and reach the readback image, but every `vkCmdDraw` /
+`vkCmdDrawIndexed` covers zero samples - including a single constant-position
+point with no vertex input, and including Aurora's own proven shader pair with a
+white 1x1 texture.
+
+Pipeline statistics narrow it further: the mesh draw assembles 10,098 primitives
+and runs the vertex shader for them, every primitive survives clipping, and then
+`FRAGMENT_SHADER_INVOCATIONS` is exactly 0, while an occlusion query reports zero
+passing samples and no pixel in the 1400x860 readback differs from the clear
+colour. A fullscreen clip-space triangle with a pure passthrough vertex shader
+behaves the same way, with a full-extent static viewport and scissor, with the
+command buffer's dynamic viewport and scissor, and with both. Culling is off,
+there is no depth attachment, colorWriteMask is complete, and the pass is a plain
+single-colour-attachment pass. Nothing in this renderer is left to vary.
+
+The smallest case fails too, which is what rules the vertex pipeline out:
+`--gpu-smoke-point` draws one point at an exact pixel centre from a constant
+vertex shader, with no vertex buffer, no attributes, no transform and no
+descriptor set, and `--gpu-smoke-index` draws a triangle whose vertex positions
+come only from `gl_VertexIndex`. They report `primitives 1 vertices 1 fragments 0`
+and `primitives 1 vertices 3 fragments 0`, and no drawn pixels, so the vertex
+stage executes and the primitives assemble, but the rasterizer emits nothing at
+all. A compute dispatch on the same device writes the expected value, so the
+fault is the graphics rasterizer of this driver instance, not the app.
+
+Compute is not affected: `--gpu-smoke-compute` dispatches a generated GLCompute
+shader that stores a constant into a storage buffer and reads back the expected
+value, so SPIR-V, shader execution, descriptor binding, submission, and memory
+visibility are all proven good on this device. That isolates the defect to the
+rasterizer path of this driver instance. Shaders were disassembled instruction by
+instruction, and pipeline state, viewport/scissor (dynamic and static), depth
+state, subpass contents, pipeline layout, feature enablement, and optimization
+flags were all varied. The remaining cause needs a validation layer (not
+installed on this machine), a driver reinstall, or a second GPU to name.
+
+Because an empty frame is never acceptable, `renderFrame` detects a blank GPU
+frame and re-renders it with the software rasterizer, reporting the reason on
+stderr and through `viewportFallbackReason()`. The backend therefore stays safe
+to keep compiling and improving until the rasterization issue is identified.
+
 ## Human base mesh
 
 The default v3 mesh is a natural T-pose body with an anatomically shaped skull,
@@ -390,6 +459,7 @@ aurora-mesh.exe --check
 aurora-mesh.exe --render build/human.ppm
 aurora-mesh.exe --screenshot build/editor.ppm
 aurora-mesh.exe --export-rig build/rig.glb
+aurora-mesh.exe --bench 12 --no-gpu
 python -B tests/test_animation_clip.py
 python -u tests/replay_clip.py --clip assets/animations/right-snap-kick.json
 python -u tests/replay_clip.py --clip assets/animations/rifle-ready-idle.json

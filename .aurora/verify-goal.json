@@ -17,7 +17,7 @@
       "kind": "compile",
       "command": {
         "program": "dmd",
-        "args": ["-i", "-Isource", "-Ishared", "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source", "-Jassets", "-of=build/goal_mode_contracts.exe", "-Luser32.lib", "-Lgdi32.lib", "-Lshell32.lib", "-Lwininet.lib", "tests/goal_mode_contracts.d"],
+        "args": ["-i", "-Isource", "-Ishared", "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source", "-Jassets", "-od=C:/Users/windows10/AppData/Local/Temp/aurora-goal-verify", "-of=C:/Users/windows10/AppData/Local/Temp/aurora-goal-verify/goal_mode_contracts.exe", "-Luser32.lib", "-Lgdi32.lib", "-Lshell32.lib", "-Lwininet.lib", "tests/goal_mode_contracts.d"],
         "workdir": "aurora-opencode-pro",
         "timeout": 300000
       }
@@ -25,7 +25,7 @@
     {
       "kind": "tests",
       "command": {
-        "program": "build/goal_mode_contracts.exe",
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-goal-verify/goal_mode_contracts.exe",
         "args": [],
         "workdir": "aurora-opencode-pro",
         "timeout": 120000
@@ -35,7 +35,7 @@
       "kind": "compile",
       "command": {
         "program": "dmd",
-        "args": ["-i", "-Isource", "-Ishared", "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source", "-Jassets", "-of=build/goal_ui_smoke.exe", "-Luser32.lib", "-Lgdi32.lib", "-Lshell32.lib", "-Lwininet.lib", "tests/goal_ui_smoke.d"],
+        "args": ["-i", "-Isource", "-Ishared", "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source", "-Jassets", "-od=C:/Users/windows10/AppData/Local/Temp/aurora-goal-verify", "-of=C:/Users/windows10/AppData/Local/Temp/aurora-goal-verify/goal_ui_smoke.exe", "-Luser32.lib", "-Lgdi32.lib", "-Lshell32.lib", "-Lwininet.lib", "tests/goal_ui_smoke.d"],
         "workdir": "aurora-opencode-pro",
         "timeout": 300000
       }
@@ -43,7 +43,7 @@
     {
       "kind": "tests",
       "command": {
-        "program": "build/goal_ui_smoke.exe",
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-goal-verify/goal_ui_smoke.exe",
         "args": [],
         "workdir": "aurora-opencode-pro",
         "timeout": 120000

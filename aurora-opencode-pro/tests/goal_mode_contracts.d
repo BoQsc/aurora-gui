@@ -1,7 +1,7 @@
 module goal_mode_contracts;
 
-import auroraopencode.core : ChatSession, TaskStep, goalHistoryFromJson,
-    goalHistoryToJson;
+import auroraopencode.core : ChatSession, Settings, TaskStep,
+    goalHistoryFromJson, goalHistoryToJson;
 import auroraopencode.goalmode;
 import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
@@ -38,6 +38,9 @@ int main()
     const clamped = clampGoalText(longGoal);
     require(toUTF32(clamped).length == maxGoalLength,
         "goal clamp split or exceeded the character budget");
+    Settings defaults;
+    require(defaults.autoGoalFromFirstMessage,
+        "first-message goal adoption must be enabled by default");
     writeln("PASS goal commands set/show/pause/resume/clear");
 
     ChatSession session;

@@ -110,6 +110,47 @@ Projected project(Vec3 point, const Camera camera, int width, int height)
     return result;
 }
 
+/// The camera basis, built once so a frame can project many points.
+///
+/// Each accessor on `Camera` derives the basis from yaw, pitch and distance, so
+/// calling `project` per vertex rebuilt it five thousand times per frame.
+struct CameraBasis
+{
+    Vec3 eye;
+    Vec3 forward;
+    Vec3 right;
+    Vec3 up;
+    double focal;
+}
+
+CameraBasis cameraBasis(const Camera camera, int height)
+{
+    CameraBasis basis;
+    basis.eye = camera.eye();
+    basis.forward = camera.forward();
+    basis.right = camera.right();
+    basis.up = camera.up();
+    basis.focal = (height * 0.5) / tan(camera.fov * 0.5);
+    return basis;
+}
+
+/// Project with a basis built once per frame; the arithmetic matches `project`.
+Projected project(Vec3 point, const CameraBasis basis, int width, int height)
+{
+    Projected result;
+    const offset = sub(point, basis.eye);
+    const depth = dot(offset, basis.forward);
+    result.viewX = dot(offset, basis.right);
+    result.viewY = dot(offset, basis.up);
+    result.z = depth;
+    if (depth <= NearPlane)
+        return result;
+    result.x = width * 0.5 + result.viewX / depth * basis.focal;
+    result.y = height * 0.5 - result.viewY / depth * basis.focal;
+    result.visible = true;
+    return result;
+}
+
 private double clamp(double value, double minimum, double maximum)
 {
     if (value < minimum) return minimum;
