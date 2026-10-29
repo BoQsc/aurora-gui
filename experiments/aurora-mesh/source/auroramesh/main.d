@@ -82,6 +82,7 @@ int main(string[] args)
     bool noMorph;
     string screenshotPath;
     string livePath = "build/live.json";
+    bool liveProvided;
     string objPath = "mesh.obj";
     bool check;
     int humanVersion = 3;
@@ -270,6 +271,7 @@ int main(string[] args)
                     return 2;
                 }
                 livePath = args[index];
+                liveProvided = true;
                 break;
             case "--screenshot":
                 if (++index >= args.length)

@@ -5957,6 +5957,132 @@ private bool sourceGitResolutionCommand(const OpenCodeToolCall call, const ref J
         ["--continue", "--abort"].canFind(args[1]);
 }
 
+/// The executable a `run` payload names. Empty for shells (whose command line is
+/// a program of its own) and for inputs that name no program.
+private string commandProgram(const OpenCodeToolCall call, JSONValue input)
+{
+    if (call.name != "run" || input.type != JSONType.object) return "";
+    try return jsonString(input, "program");
+    catch (Exception) return "";
+}
+
+/// Programs that can rewrite, build or version-control a checkout. A command
+/// line that merely hands a repository path to any other program is a read: a
+/// viewer, player or converter opening a model or asset under the repository is
+/// not a source mutation and may be launched in the background.
+private bool sourceMutatingProgram(string program)
+{
+    // An unknown launcher gets the conservative answer.
+    if (program.length == 0) return true;
+    auto name = baseName(program).toLower();
+    if (name.length > 4 && name[$ - 4 .. $] == ".exe")
+        name = name[0 .. $ - 4];
+    switch (name)
+    {
+        case "git": case "dub": case "dmd": case "ldc2": case "ldmd2":
+        case "rdmd": case "gdc": case "make": case "cmake": case "ninja":
+        case "msbuild": case "cargo": case "rustc": case "go": case "dotnet":
+        case "npm": case "npx": case "yarn": case "pnpm": case "node":
+        case "python": case "python3": case "py": case "pip": case "pip3":
+        case "perl": case "ruby": case "php": case "java": case "mvn":
+        case "gradle": case "pwsh": case "powershell": case "bash": case "sh":
+        case "zsh": case "cmd": case "cp": case "mv": case "rm": case "del":
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// How the runner classifies one tool call against the developer checkout.
+/// Split out so the classification itself is inspectable (contracts fixtures
+/// assert on the flags instead of guessing from a refusal message).
+public struct SourceCommandClassification
+{
+    /// Explicit write targets that resolve inside the checkout.
+    string[] targets;
+    /// The command runs with its working directory inside the checkout.
+    bool workingDir;
+    /// The command's own program lives in the checkout.
+    bool program;
+    /// A build/VCS tool is handed the checkout path.
+    bool mutatingTool;
+
+    bool mutation() const
+    {
+        return targets.length > 0 || workingDir || program || mutatingTool;
+    }
+}
+
+/// Classify one call against `developerSource`.
+///
+/// A command that only *reads* a path inside the checkout is not a source
+/// mutation: launching a viewer, player or converter on a model or asset that
+/// happens to live in the repository writes somewhere else. A command counts as
+/// one when its working directory or its own program lives in the checkout, or
+/// when a build/VCS tool is pointed at it. Shells stay strict because their
+/// command line can do anything.
+public SourceCommandClassification classifySourceCommand(string developerSource,
+    string operationDir, string workspace, string[] targets,
+    in OpenCodeToolCall call, JSONValue input, bool command)
+{
+    SourceCommandClassification result;
+    const sourceIdentity = checkoutIdentity(developerSource);
+    foreach (path; targets)
+        if (checkoutIdentity(path) == sourceIdentity) result.targets ~= path;
+    if (!command) return result;
+    result.workingDir = checkoutIdentity(operationDir) == sourceIdentity;
+    if (result.workingDir) return result;
+    const program = commandProgram(call, input);
+    if (program.length > 0)
+    {
+        // Only a program that really exists inside the checkout makes this a
+        // source command. A bare command name resolves against the workspace to
+        // a path that names no file at all, so it cannot be a source binary.
+        const resolved = resolveToolPath(program, workspace);
+        result.program = resolved.length > 0 && exists(resolved) &&
+            checkoutIdentity(resolved) == sourceIdentity;
+        if (result.program) return result;
+    }
+    if (sourceMutatingProgram(program))
+        // Compare resolved paths instead of raw text: a command line may carry
+        // an 8.3 short name, a relative path or mixed separators and still point
+        // into the checkout.
+        foreach (candidate; jsonPathCandidates(input))
+            if (checkoutIdentity(resolveToolPath(candidate, workspace)) ==
+                sourceIdentity)
+            {
+                result.mutatingTool = true;
+                break;
+            }
+    return result;
+}
+
+/// Every string in a tool payload that looks like a path, so a command line is
+/// judged by what it names instead of by its raw text.
+private string[] jsonPathCandidates(JSONValue value)
+{
+    string[] found;
+    switch (value.type)
+    {
+        case JSONType.object:
+            foreach (key, child; value.object)
+                found ~= jsonPathCandidates(child);
+            break;
+        case JSONType.array:
+            foreach (child; value.array) found ~= jsonPathCandidates(child);
+            break;
+        case JSONType.string:
+            const text = value.str;
+            if (text.indexOf('\\') >= 0 || text.indexOf('/') >= 0 ||
+                text.indexOf(':') >= 0)
+                found ~= text;
+            break;
+        default:
+            break;
+    }
+    return found;
+}
+
 public ToolExecution executeTool(const OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation = null,
     ChangeContext changeContext = ChangeContext.init,
@@ -6014,13 +6140,10 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         string[] sourceTargets;
         if (developerSource.length)
         {
-            const sourceIdentity = checkoutIdentity(developerSource);
-            foreach (path; targets)
-                if (checkoutIdentity(path) == sourceIdentity) sourceTargets ~= path;
-            sourceMutation = sourceTargets.length > 0 || (command &&
-                (checkoutIdentity(operationDir) == sourceIdentity ||
-                 call.arguments.replace("\\\\", "/").replace('\\', '/').toLower().indexOf(
-                    sourceIdentity.replace('\\', '/')) >= 0));
+            const classified = classifySourceCommand(developerSource,
+                operationDir, workspace, targets, call, input, command);
+            sourceTargets = classified.targets.dup;
+            sourceMutation = classified.mutation();
         }
         if (sourceMutation)
         {

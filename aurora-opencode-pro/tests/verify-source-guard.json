@@ -1,0 +1,41 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/tools.d",
+    "aurora-opencode-pro/tests/source_background_guard.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/source_background_guard.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/bg-process-smoke/source_background_guard.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/bg-process-smoke/source_background_guard.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    }
+  ]
+}
