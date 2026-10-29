@@ -10,6 +10,7 @@ module auroramesh.reshape;
  */
 import auroramesh.mesh : Face, Mesh, Vec2, Vec3, add, computeSmoothNormals,
     length, normalize, scale, sub, watertight;
+
 import auroramesh.sculpt : smoothVertices;
 import std.math : PI, abs, cos, isFinite, sin, sqrt;
 
@@ -43,6 +44,8 @@ struct RegionEdit
     string region;
     string style;
     double strength = 1.0;
+    RegionBox box;
+    bool hasBox;
 }
 
 /// A box in model space; the region an edit is allowed to touch.
@@ -579,11 +582,22 @@ int refineRegion(ref Mesh mesh, string region, int target = 120,
 int reshapeRegion(ref Mesh mesh, string region, string style,
     double strength = 1.0)
 {
+    return reshapeBox(mesh, regionBox(region), region, style, strength,
+        false);
+}
+
+/**
+ * Same as reshapeRegion, but for an explicit volume rather than a named region.
+ * A live command can therefore ask for a foot, a boot or a sculpt on any part of
+ * the body without new code.
+ */
+int reshapeBox(ref Mesh mesh, const RegionBox box, string region, string style,
+    double strength = 1.0, bool explicitBox = true)
+{
     // A missing number in a command arrives as NaN, and one NaN in the strength
     // poisons every vertex of the region.
     if (!isFinite(strength) || strength <= 0.0)
         strength = 1.0;
-    const box = regionBox(region);
     if (mesh.vertices.length == 0 || mesh.faces.length == 0)
         return 0;
     if (box.minimum == box.maximum)
@@ -591,9 +605,8 @@ int reshapeRegion(ref Mesh mesh, string region, string style,
     const region_ = regionVertices(mesh, box);
     if (region_.length == 0)
         return 0;
-    // The shaped styles are foot styles. Other regions can still be relaxed,
-    // but shaping a head with a boot profile would only damage the mesh.
-    const footRegion = region == "feet" || region == "foot";
+
+    const footRegion = region == "feet" || region == "foot" || explicitBox;
     if (!footRegion)
     {
         modelSmooth(mesh, region_, strength);

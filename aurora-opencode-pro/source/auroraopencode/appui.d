@@ -8522,6 +8522,8 @@ private final class BackgroundProcessPanel : Widget
     void delegate() onTerminateAll;
     void delegate() onClearFinished;
     void delegate() onPinToggle;
+    /// Right-click on a row: the app offers that process's folder.
+    void delegate(SupervisedProcessInfo item, Point globalPosition) onRowContext;
 
     private SupervisedProcessInfo[] _items;
     private ProcessRowButton[] _rowButtons;
@@ -8531,6 +8533,12 @@ private final class BackgroundProcessPanel : Widget
     private bool _pinned;
     private string _signature;
     private int _headerTextWidth;
+    /// Row under the pointer (-1 when none). Its full command and folder are
+    /// shown beside the card, because the row itself has to shorten both.
+    private int _hoverRow = -1;
+    private HoverTooltip _rowTip;
+    /// Height of the footer hint that teaches the hover and right-click actions.
+    private static immutable int hintHeight = 16;
     /// Number of this card's buttons currently under the pointer. The card is
     /// "hovered" while either it or one of its controls is, so moving from the
     /// card onto a button never reads as leaving the card.
@@ -8611,6 +8619,101 @@ private final class BackgroundProcessPanel : Widget
         invalidate();
     }
 
+    /// Row index at a point inside the card (-1 for the header, the footer or
+    /// past the last rendered row).
+    private int rowAt(Point localPoint)
+    {
+        if (_items.length == 0) return -1;
+        const rows = _items.length > maxRows ? maxRows : _items.length;
+        const offset = localPoint.y - (padV + headerHeight);
+        if (offset < 0) return -1;
+        const index = offset / rowHeight;
+        if (index < 0 || index >= cast(int) rows) return -1;
+        return index;
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const row = rowAt(event.position);
+        if (row != _hoverRow)
+        {
+            _hoverRow = row;
+            syncRowDetail();
+            invalidate();
+        }
+        return false;
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (_hoverRow == -1) return;
+        _hoverRow = -1;
+        syncRowDetail();
+        invalidate();
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.right) return false;
+        const row = rowAt(event.position);
+        if (row < 0 || row >= cast(int) _items.length) return false;
+        if (onRowContext !is null)
+            onRowContext(_items[cast(size_t) row], event.globalPosition);
+        return true;
+    }
+
+    /// Show the hovered row's full command and folder beside the card, or
+    /// withdraw them. The detail wraps instead of clipping: the whole point is
+    /// reading a path the row had to shorten.
+    private void syncRowDetail()
+    {
+        if (_hoverRow < 0 || _hoverRow >= cast(int) _items.length)
+        {
+            hideRowDetail();
+            return;
+        }
+        const item = _items[cast(size_t) _hoverRow];
+        if (_rowTip is null)
+        {
+            _rowTip = new HoverTooltip(this);
+            _rowTip.setWrap(true);
+        }
+        _rowTip.setContent("Background process",
+            ["Command: " ~ item.command,
+             "Folder: " ~ (item.workdir.length ? item.workdir :
+                 "no working directory"),
+             item.id ~ " · " ~ item.state()]);
+        auto root = popupRoot(this);
+        if (root is null) return;
+        if (_rowTip.parent() is null) root.add(_rowTip);
+        root.bringChildToFront(_rowTip);
+        const measured = _rowTip.measure(Size(int.max, int.max));
+        const global = globalOrigin();
+        const rowY = global.y + padV + headerHeight + _hoverRow * rowHeight;
+        enum gap = 8;
+        int x = global.x - measured.width - gap;
+        if (x < gap) x = global.x + bounds().width + gap;
+        x = clampInt(x, gap, maxInt(gap, root.bounds().width - measured.width - gap));
+        int y = clampInt(rowY, gap,
+            maxInt(gap, root.bounds().height - measured.height - gap));
+        _rowTip.setBounds(Rect(x, y, measured.width, measured.height));
+    }
+
+    /// Withdraw the row detail (also used when the card itself is hidden).
+    void hideRowDetail()
+    {
+        if (_rowTip !is null && _rowTip.parent() !is null)
+            _rowTip.parent().remove(_rowTip);
+    }
+
+    /// Test-only: the full detail shown for the hovered row ("" when none).
+    string hoveredRowDetailForTesting() const
+    {
+        if (_hoverRow < 0 || _hoverRow >= cast(int) _items.length) return "";
+        const item = _items[cast(size_t) _hoverRow];
+        return "Command: " ~ item.command ~ "\nFolder: " ~ item.workdir;
+    }
+
     private void styleProcessButton(Button button, int width)
     {
         button.setFlat(true);
@@ -8655,7 +8758,7 @@ private final class BackgroundProcessPanel : Widget
         const rows = _items.length > maxRows ? maxRows : _items.length;
         const overflow = _items.length > maxRows ? 1 : 0;
         return padV * 2 + headerHeight +
-            cast(int) (rows + overflow) * rowHeight;
+            cast(int) (rows + overflow) * rowHeight + hintHeight;
     }
 
     /// Test-only: the ids currently listed, top to bottom.
@@ -8873,7 +8976,45 @@ private final class BackgroundProcessPanel : Widget
                     " more · use the process tool or Stop all"), opencodeMuted, 1,
                 HorizontalAlign.left, VerticalAlign.middle, true);
         }
+        // Footer hint: every row shortens its command and folder, so say where
+        // the whole path lives and how to reach its directory.
+        const hintY = padV + headerHeight +
+            cast(int) (rows + (_items.length > maxRows ? 1 : 0)) * rowHeight;
+        canvas.drawTextInRect(Rect(left + 10, hintY,
+                maxInt(0, bounds().width - 2 * padH - 10), hintHeight),
+            toUTF32("Hover a row for its full path · right-click opens the folder"),
+            opencodeMuted.withAlpha(200), 1, HorizontalAlign.left,
+            VerticalAlign.middle, true);
     }
+}
+
+/// The folder a supervised background process belongs to: its working directory,
+/// or the folder of the program it ran when it had none. Public so the contracts
+/// fixture can prove the right-click target without opening a file manager.
+public string processFolderPath(string workdir, string command)
+{
+    auto path = workdir.strip();
+    if (path.length == 0)
+    {
+        path = command.strip();
+        if (path.length > 1 && path[0] == '"')
+        {
+            const close = path.indexOf('"', 1);
+            if (close > 1) path = path[1 .. cast(size_t) close];
+        }
+        else
+        {
+            const space = path.indexOf(' ');
+            if (space > 0) path = path[0 .. cast(size_t) space];
+        }
+    }
+    if (path.length == 0) return "";
+    // A record can outlive its directory, and probing a missing tree throws on
+    // Windows rather than answering false.
+    bool directory;
+    try directory = isDir(path);
+    catch (Exception) directory = false;
+    return directory ? path : dirName(path);
 }
 
 /// Hover-revealed sub-button card for a toolbar cluster: the action lives here
@@ -14427,6 +14568,47 @@ private string _suggestExcludeId;
         showProcessPanel(false);
     }
 
+    /// Right-clicking a row offers that process's folder, at the pointer so it
+    /// works while the card is only a hover peek.
+    private void showBackgroundProcessRowMenu(SupervisedProcessInfo item,
+        Point globalPosition)
+    {
+        const folder = processFolderPath(item.workdir, item.command);
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("Open folder", IconKind.folder,
+            delegate() { openBackgroundProcessFolder(folder, item.command); });
+        showContextMenu(_processPanel, globalPosition, items);
+    }
+
+    /// Open the folder a supervised process belongs to. Resolved at click time,
+    /// because a finished record can outlive its directory.
+    private void openBackgroundProcessFolder(string folder, string command)
+    {
+        if (folder.length == 0)
+        {
+            updateStatus("This background process has no folder: " ~ command);
+            return;
+        }
+        bool present;
+        try present = exists(folder);
+        catch (Exception) present = false;
+        if (!present)
+        {
+            updateStatus("Folder is gone: " ~ folder);
+            return;
+        }
+        openFolderInExplorer(folder);
+        updateStatus("Opened " ~ folder);
+    }
+
+    /// Test-only: the full path detail for the row under the pointer ("" when no
+    /// row is hovered).
+    public string backgroundProcessRowDetailForTesting()
+    {
+        return _processPanel is null
+            ? "" : _processPanel.hoveredRowDetailForTesting();
+    }
+
     private bool exportRevealOpen()
     {
         return _exportReveal !is null && _exportReveal.parent() !is null;
@@ -14578,6 +14760,11 @@ private string _suggestExcludeId;
                 {
                     toggleProcessPanelPinned();
                 };
+                _processPanel.onRowContext = delegate(SupervisedProcessInfo item,
+                    Point globalPosition)
+                {
+                    showBackgroundProcessRowMenu(item, globalPosition);
+                };
             }
             _processPanel.setProcesses(listSupervisedProcesses());
             _processPanel.setPinned(_processPanelPinned);
@@ -14590,6 +14777,7 @@ private string _suggestExcludeId;
         }
         if (_processPanel !is null && _processPanel.parent() !is null)
         {
+            _processPanel.hideRowDetail();
             _processPanel.parent().remove(_processPanel);
             invalidate();
         }

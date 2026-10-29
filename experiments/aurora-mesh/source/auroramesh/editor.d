@@ -16,7 +16,8 @@ import auroramesh.mesh : Material, MaterialSlot, Mesh, Vec2, Vec3,
 import auroramesh.human_v2 : humanBaseMeshV2;
 import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh, writePpm;
-import auroramesh.reshape : RegionEdit, regionBox, regionVertices, reshapeRegion;
+import auroramesh.reshape : RegionBox, RegionEdit, regionBox, regionVertices,
+    reshapeBox, reshapeRegion;
 import core.time : MonoTime;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
     smoothVertices;
@@ -1660,6 +1661,7 @@ final class MeshEditor : Widget
     private double _lastReshapeMs = 0.0; // D floats default to NaN
     private int _reshapeRuns;
 
+
     /**
      * Replay recorded region edits onto the current mesh.
      *
@@ -1683,8 +1685,10 @@ final class MeshEditor : Widget
         }
         int moved;
         foreach (edit; _reshapecs)
-            moved += reshapeRegion(_mesh, edit.region, edit.style,
-                edit.strength);
+            moved += edit.hasBox ?
+                reshapeBox(_mesh, edit.box, edit.region, edit.style,
+                    edit.strength) :
+                reshapeRegion(_mesh, edit.region, edit.style, edit.strength);
         _lastReshaped = moved;
         _lastReshapeMs = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
         // A reshaped region that draws dark usually means the per-face material
@@ -1942,10 +1946,27 @@ final class MeshEditor : Widget
             const region = liveString(liveChild(command, "region"), "feet");
             const style = liveString(liveChild(command, "style"), "toes");
             const strength = liveNumber(liveChild(command, "strength"), 1.0);
-            // An unknown region would silently do nothing, so refuse it.
-            const box = regionBox(region);
-            if (box.minimum == box.maximum)
-                return false;
+            RegionEdit incoming;
+            incoming.region = region;
+            incoming.style = style;
+            incoming.strength = strength;
+            // A volume can be named or given outright, so any part of the body
+            // can be edited without new code.
+            const corners = liveNumbers(liveChild(command, "box"));
+            if (corners.length >= 6)
+            {
+                incoming.hasBox = true;
+                incoming.box = RegionBox(
+                    Vec3(corners[0], corners[1], corners[2]),
+                    Vec3(corners[3], corners[4], corners[5]));
+            }
+            else
+            {
+                // An unknown name would silently do nothing, so refuse it.
+                const box = regionBox(region);
+                if (box.minimum == box.maximum)
+                    return false;
+            }
             if (style == "none" || style == "reset")
             {
                 foreach (index, edit; _reshapecs)
@@ -1964,12 +1985,11 @@ final class MeshEditor : Widget
                 foreach (ref edit; _reshapecs)
                     if (edit.region == region)
                     {
-                        edit.style = style;
-                        edit.strength = strength;
+                        edit = incoming;
                         replaced = true;
                     }
                 if (!replaced)
-                    _reshapecs ~= RegionEdit(region, style, strength);
+                    _reshapecs ~= incoming;
             }
             _lastReshape = region ~ ":" ~ style;
             // A scene mesh is rebaked per frame, so ask for a rebake and let it

@@ -8,7 +8,7 @@ module background_process_ui_smoke;
 // it behind the closed window.
 
 import aurora;
-import auroraopencode.appui : OpenCodeRoot;
+import auroraopencode.appui : OpenCodeRoot, processFolderPath;
 import auroraopencode.core : OpenCodeToolCall, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
 import auroraopencode.tools : SupervisedProcessInfo, clearFinishedSupervisedProcesses,
@@ -16,9 +16,9 @@ import auroraopencode.tools : SupervisedProcessInfo, clearFinishedSupervisedProc
     listSupervisedProcesses, restoreDeveloperToolSource;
 import std.conv : to;
 import std.file : mkdirRecurse, tempDir, write;
-import std.path : buildPath;
+import std.path : absolutePath, buildPath;
 import std.stdio : writeln;
-import std.string : indexOf, startsWith;
+import std.string : indexOf, startsWith, toLower;
 import std.utf : toUTF8;
 import core.thread : Thread;
 import core.time : msecs;
@@ -178,6 +178,16 @@ int main()
         "the floating card is present before the pill is used");
     writeln("PASS background pill sits in the top toolbar left of Checkpoint");
 
+    // The right-click target is the process's own folder; a record without a
+    // working directory falls back to the folder its program ran from.
+    assert(processFolderPath(absolutePath(state), "ignored") ==
+        absolutePath(state),
+        "a supervised process should open its working directory");
+    const commandOnly = processFolderPath("", `"C:\tmp\a b\tool.exe" --flag`);
+    assert(toLower(commandOnly) == `c:\tmp\a b`,
+        "a command-only record should open the program's folder: " ~ commandOnly);
+    writeln("PASS the right-click folder is resolved from the process record");
+
     const background = startBackground(state, longRunJson());
     assert(processById(background).running,
         "a background command did not register as running");
@@ -244,6 +254,33 @@ int main()
     assert(toUTF8(requireWidget!Button(root, "oc-process-pin").text()) == "Unpin",
         "a pinned card should offer Unpin");
     writeln("PASS clicking the pill pins the card");
+
+    // Hovering a row reveals the full command and folder the row had to shorten.
+    const cardPos = requireWidget!Widget(root, "oc-processes-panel")
+        .localToGlobal(Point(0, 0));
+    const firstRowPoint = Point(cardPos.x + 40, cardPos.y + 44);
+    driver.moveTo(firstRowPoint);
+    root.tickTree(0.016);
+    assert(driver.paint(), "row-hover paint failed");
+    const detail = root.backgroundProcessRowDetailForTesting();
+    assert(detail.startsWith("Command: ") && detail.indexOf("Folder: ") > 0,
+        "hovering a row does not reveal its full path: '" ~ detail ~ "'");
+    assert(detail.indexOf(absolutePath(state)) >= 0,
+        "the row detail does not carry the full working directory: '" ~ detail ~
+        "'");
+    writeln("PASS hovering a row reveals its full path");
+
+    // Right-clicking the row offers its folder.
+    driver.rightClick(firstRowPoint);
+    root.tickTree(0.016);
+    assert(driver.paint(), "row-menu paint failed");
+    assert(currentTransientPopup(root) !is null,
+        "right-clicking a row offered no menu");
+    dismissTransientPopups(root);
+    driver.moveTo(Point(4, 690));
+    root.tickTree(0.016);
+    driver.paint();
+    writeln("PASS right-click on a row offers its folder");
 
     // One click on the row stops the command.
     driver.click(globalCenter(requireWidget!Button(root, "oc-process-stop-0")));
