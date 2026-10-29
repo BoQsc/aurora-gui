@@ -18,6 +18,11 @@ import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh, writePpm;
 import auroramesh.reshape : RegionBox, RegionEdit, regionBox, regionVertices,
     reshapeBox, reshapeRegion;
+import auroramesh.regions : RegionKind, RegionVolume, deformRegion, regionMask,
+    selectRegion;
+import auroramesh.remesh : addSdfShell, decimateTo, replaceChecked,
+    subdivideMesh;
+import auroramesh.sdf : SdfField, SdfShape, ellipsoid, sphere, taper;
 import core.time : MonoTime;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
     smoothVertices;
@@ -1739,11 +1744,228 @@ final class MeshEditor : Widget
         }
     }
 
+    // ---- Region editing ----------------------------------------------------
+    private RegionVolume[string] _regions;
+    private string _activeRegion;
+    private int _maskVertices;
+    private int _maskFaces;
+    private string _lastOp;
+    private double _lastOpMs = 0.0; // D floats default to NaN
+    private bool _lastReplaceOk = true;
+    private string _lastReplaceReason = "";
+    private Vec3 _shellLo = Vec3(0, 0, 0);
+    private Vec3 _shellHi = Vec3(0, 0, 0);
+    private int _shellFaces;
+    // Replacements are state, not a one-off: the mesh is rebaked for every frame,
+    // so each accepted replacement is replayed onto the fresh mesh.
+    private JSONValue[] _replaceCommands;
+
+    private RegionVolume* activeRegion()
+    {
+        if (_activeRegion.length == 0)
+            return null;
+        return _activeRegion in _regions;
+    }
+
+    /// Recount what the active region covers, for the ack and the status line.
+    private void refreshMaskStats()
+    {
+        _maskVertices = 0;
+        _maskFaces = 0;
+        auto region = activeRegion();
+        if (region is null || _mesh.vertices.length == 0)
+            return;
+        const selection = selectRegion(_mesh, *region);
+        _maskVertices = selection.count();
+        _maskFaces = cast(int) selection.faces.length;
+    }
+
+    /**
+     * Tint the faces inside the active region.
+     *
+     * The volume outline shows where the region is, but only the surface tint shows
+     * what will actually move: a box around a leg also contains the air behind it.
+     */
+    private void tintSelection()
+    {
+        auto region = activeRegion();
+        if (region is null || _mesh.faces.length == 0)
+            return;
+        if (_mesh.faceMaterials.length != _mesh.faces.length)
+            return;
+        int highlight = -1;
+        foreach (index, slot; _mesh.materials)
+            if (slot.baseColor.x > 0.18 && slot.baseColor.x < 0.22 &&
+                slot.baseColor.y > 0.83 && slot.baseColor.z > 0.68)
+                highlight = cast(int) index;
+        if (highlight < 0)
+        {
+            MaterialSlot slot;
+            slot.baseColor = Vec3(0.20, 0.85, 0.70);
+            highlight = cast(int) _mesh.materials.length;
+            _mesh.materials ~= slot;
+        }
+        foreach (index, face; _mesh.faces)
+        {
+            const middle = meshScale(meshAdd(meshAdd(_mesh.vertices[face.a],
+                _mesh.vertices[face.b]), _mesh.vertices[face.c]), 1.0 / 3.0);
+            if (regionMask(*region, middle) > 0.5)
+                _mesh.faceMaterials[index] = highlight;
+        }
+    }
+
+    /// Read SDF shapes from a live command array.
+    private void readSdfShapes(JSONValue array, ref SdfShape[] into)
+    {
+        if (array.type != JSONType.array)
+            return;
+        foreach (entry; array.array)
+        {
+            if (entry.type != JSONType.object)
+                continue;
+            const kind = liveString(liveChild(entry, "kind"), "ellipsoid");
+            if (kind == "sphere")
+            {
+                const centre = liveNumbers(liveChild(entry, "center"));
+                const radius = liveNumber(liveChild(entry, "radius"), 0.05);
+                if (centre.length >= 3)
+                    into ~= sphere(Vec3(centre[0], centre[1], centre[2]),
+                        radius);
+            }
+            else if (kind == "taper")
+            {
+                const start = liveNumbers(liveChild(entry, "a"));
+                const end = liveNumbers(liveChild(entry, "b"));
+                const startRadius = liveNumber(liveChild(entry, "r0"), 0.03);
+                const endRadius = liveNumber(liveChild(entry, "r1"), 0.03);
+                if (start.length >= 3 && end.length >= 3)
+                    into ~= taper(Vec3(start[0], start[1], start[2]),
+                        Vec3(end[0], end[1], end[2]), startRadius, endRadius);
+            }
+            else
+            {
+                const centre = liveNumbers(liveChild(entry, "center"));
+                const radii = liveNumbers(liveChild(entry, "radii"));
+                if (centre.length >= 3 && radii.length >= 3)
+                    into ~= ellipsoid(Vec3(centre[0], centre[1], centre[2]),
+                        Vec3(radii[0], radii[1], radii[2]));
+            }
+        }
+    }
+
+    /// Draw the active region's volume as a translucent wireframe over the view.
+    private void drawRegionOverlay(Canvas canvas, int width, int height)
+    {
+        auto region = activeRegion();
+        if (region is null || width <= 0 || height <= 0)
+            return;
+        auto low = Vec3(
+            region.a.x < region.b.x ? region.a.x : region.b.x,
+            region.a.y < region.b.y ? region.a.y : region.b.y,
+            region.a.z < region.b.z ? region.a.z : region.b.z);
+        auto high = Vec3(
+            region.a.x > region.b.x ? region.a.x : region.b.x,
+            region.a.y > region.b.y ? region.a.y : region.b.y,
+            region.a.z > region.b.z ? region.a.z : region.b.z);
+        if (region.kind != RegionKind.box)
+        {
+            const pad = Vec3(region.radius, region.radius, region.radius);
+            low = meshAdd(low, meshScale(pad, -1.0));
+            high = meshAdd(high, pad);
+        }
+        const Vec3[8] corners = [
+            Vec3(low.x, low.y, low.z), Vec3(high.x, low.y, low.z),
+            Vec3(high.x, high.y, low.z), Vec3(low.x, high.y, low.z),
+            Vec3(low.x, low.y, high.z), Vec3(high.x, low.y, high.z),
+            Vec3(high.x, high.y, high.z), Vec3(low.x, high.y, high.z),
+        ];
+        static immutable int[2][12] edges = [
+            [0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
+            [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7],
+        ];
+        const ink = Color.rgba(45, 212, 191, 110);
+        foreach (edge; edges)
+        {
+            const from = project(corners[edge[0]], _camera, width, height);
+            const to = project(corners[edge[1]], _camera, width, height);
+            if (!from.visible || !to.visible)
+                continue;
+            const steps = cast(int) max(abs(to.x - from.x), abs(to.y - from.y));
+            foreach (step; 0 .. steps + 1)
+            {
+                const t = steps == 0 ? 0.0 : cast(double) step / steps;
+                const x = cast(int) (from.x + (to.x - from.x) * t);
+                const y = cast(int) (from.y + (to.y - from.y) * t);
+                if (x >= 0 && y >= 0 && x < width && y < height)
+                    canvas.fillRect(Rect(x, y, 1, 1), ink);
+            }
+        }
+    }
+
+    /// Apply one replacement, optionally recording it so it survives a rebake.
+    private bool applyReplaceCommand(JSONValue command, bool record)
+    {
+        const kind = liveString(liveChild(command, "kind"), "subdivide");
+        const minimum = meshMinimum(_mesh);
+        const maximum = meshMaximum(_mesh);
+        auto candidate = cloneMesh(_mesh);
+        const start = MonoTime.currTime();
+        int changed;
+        if (kind == "subdivide")
+            changed = subdivideMesh(candidate,
+                cast(int) liveNumber(liveChild(command, "passes"), 1));
+        else if (kind == "decimate")
+            changed = decimateTo(candidate,
+                cast(int) liveNumber(liveChild(command, "faces"),
+                    cast(int) candidate.faces.length / 2));
+        else if (kind == "sdf")
+        {
+            const name = liveString(liveChild(command, "region"),
+                _activeRegion);
+            auto region = name in _regions;
+            if (region is null)
+            {
+                _lastReplaceOk = false;
+                _lastReplaceReason = "no region to place the shape";
+                return false;
+            }
+            SdfField field;
+            readSdfShapes(liveChild(command, "shapes"), field.shapes);
+            readSdfShapes(liveChild(command, "cuts"), field.cuts);
+            field.blend = liveNumber(liveChild(command, "blend"),
+                field.blend);
+            changed = addSdfShell(candidate, *region, field,
+                liveNumber(liveChild(command, "cell"), 0.006), _shellLo,
+                _shellHi, _shellFaces);
+        }
+        _lastOpMs = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
+        // Commit only if the result is still a sound mesh.
+        string reason;
+        const ok = changed != 0 &&
+            replaceChecked(_mesh, candidate, minimum, maximum, reason);
+        _lastReplaceOk = ok;
+        _lastReplaceReason = ok ? "ok" : (changed == 0 ?
+            "nothing to do" : reason);
+        _lastOp = kind;
+        if (ok && record)
+            _replaceCommands ~= command;
+        return ok;
+    }
+
+    /// Replay accepted replacements onto a freshly baked mesh.
+    private void applyReplacements()
+    {
+        if (_replaceCommands.length == 0)
+            return;
+        foreach (command; _replaceCommands)
+            applyReplaceCommand(command, false);
+    }
+
     private void writeLiveAck()
     {
         try
             writeReport("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f,"regions":%d,"region":"%s","maskVerts":%d,"maskFaces":%d,"op":"%s","opMs":%.2f,"replaceOk":%s,"replaceReason":"%s","shellFaces":%d,"shellLo":[%.3f,%.3f,%.3f],"shellHi":[%.3f,%.3f,%.3f]}`,
                 _liveRevision, _liveExtras.length, _poseOverrides.length,
                 jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
@@ -1765,7 +1987,12 @@ final class MeshEditor : Widget
                 _collisions.sample.x, _collisions.sample.y,
                 _collisions.sample.z, _collisions.faceA, _collisions.faceB,
                 _liveFollowCount, _baselineClusterFaces, _baselineStrayFaces,
-                jsonEscape(_lastReshape), _lastReshaped, _lastReshapeMs));
+                jsonEscape(_lastReshape), _lastReshaped, _lastReshapeMs,
+                _regions.length, jsonEscape(_activeRegion), _maskVertices,
+                _maskFaces, jsonEscape(_lastOp), _lastOpMs,
+                _lastReplaceOk ? "true" : "false",
+                jsonEscape(_lastReplaceReason), _shellFaces, _shellLo.x,
+                _shellLo.y, _shellLo.z, _shellHi.x, _shellHi.y, _shellHi.z));
         catch (Exception)
         {
         }
@@ -1825,6 +2052,9 @@ final class MeshEditor : Widget
             }
         }
         applyReshapes();
+        // Replacements are replayed onto the fresh bake, so an accepted shell or
+        // subdivision is not lost the next time the mesh is rebuilt.
+        applyReplacements();
         _dirty = true;
         invalidate();
     }
@@ -1858,6 +2088,10 @@ final class MeshEditor : Widget
         if (type == "clear")
         {
             _liveExtras.length = 0;
+            _replaceCommands.length = 0;
+            _reshapecs.length = 0;
+            _regions = null;
+            _activeRegion = "";
             _poseOverrides.length = 0;
             _hasLiveAnimation = false;
             _liveClip = LiveClip();
@@ -2001,6 +2235,74 @@ final class MeshEditor : Widget
             _dirty = true;
             invalidate();
             return _lastReshaped > 0;
+        }
+        if (type == "region")
+        {
+            const name = liveString(liveChild(command, "name"), "region");
+            RegionVolume volume;
+            volume.name = name;
+            const kind = liveString(liveChild(command, "kind"), "box");
+            volume.kind = kind == "sphere" ? RegionKind.sphere :
+                kind == "capsule" ? RegionKind.capsule : RegionKind.box;
+            const first = liveNumbers(liveChild(command, "a"));
+            const second = liveNumbers(liveChild(command, "b"));
+            if (first.length >= 3)
+                volume.a = Vec3(first[0], first[1], first[2]);
+            if (second.length >= 3)
+                volume.b = Vec3(second[0], second[1], second[2]);
+            volume.radius = liveNumber(liveChild(command, "radius"),
+                volume.radius);
+            volume.falloff = liveNumber(liveChild(command, "falloff"),
+                volume.falloff);
+            _regions[name] = volume;
+            _activeRegion = name;
+            refreshMaskStats();
+            tintSelection();
+            _dirty = true;
+            invalidate();
+            return true;
+        }
+        if (type == "region-clear")
+        {
+            _regions = null;
+            _activeRegion = "";
+            refreshMaskStats();
+            _dirty = true;
+            invalidate();
+            return true;
+        }
+        if (type == "deform")
+        {
+            const name = liveString(liveChild(command, "region"), _activeRegion);
+            auto region = name in _regions;
+            if (region is null)
+                return false;
+            const op = liveString(liveChild(command, "op"), "inflate");
+            const amount = liveNumber(liveChild(command, "amount"), 0.01);
+            const direction = liveNumbers(liveChild(command, "direction"));
+            const aim = direction.length >= 3 ?
+                Vec3(direction[0], direction[1], direction[2]) : Vec3(0, 0, 0);
+            // One snapshot per edit, so undo steps back a whole move.
+            _undo ~= cloneMesh(_mesh);
+            const start = MonoTime.currTime();
+            const moved = deformRegion(_mesh, *region, op, amount, aim);
+            _lastOpMs = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
+            _lastOp = op;
+            _activeRegion = name;
+            refreshMaskStats();
+            tintSelection();
+            _dirty = true;
+            invalidate();
+            return moved > 0;
+        }
+        if (type == "replace")
+        {
+            const ok = applyReplaceCommand(command, true);
+            refreshMaskStats();
+            tintSelection();
+            _dirty = true;
+            invalidate();
+            return ok;
         }
         if (type == "capture")
         {
@@ -2430,6 +2732,7 @@ final class MeshEditor : Widget
 
         canvas.drawRgbImage(Rect(0, 0, viewportWidth, viewportHeight),
             _frame.width, _frame.height, _frame.pixels, false);
+        drawRegionOverlay(canvas, viewportWidth, viewportHeight);
         canvas.fillRect(Rect(viewportWidth, 0, 1, height),
             Color.rgba(45, 212, 191, 90));
 

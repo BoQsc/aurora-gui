@@ -1,0 +1,38 @@
+{
+  "_comment": "Bare feet for the human base: a region plus an SDF replacement. Every number here is editable live; no code changes are needed to restyle the feet.",
+  "revision": 1,
+  "commands": [
+    {
+      "type": "region",
+      "name": "feet",
+      "kind": "box",
+      "a": [-0.32, -0.03, -0.20],
+      "b": [0.32, 0.17, 0.30],
+      "falloff": 0.20
+    },
+    {
+      "type": "replace",
+      "kind": "sdf",
+      "region": "feet",
+      "cell": 0.005,
+      "blend": 0.012,
+      "shapes": [
+        {"kind": "ellipsoid", "center": [-0.125, 0.050, -0.045], "radii": [0.048, 0.046, 0.055]},
+        {"kind": "taper", "a": [-0.125, 0.052, -0.030], "b": [-0.125, 0.030, 0.155], "r0": 0.046, "r1": 0.038},
+        {"kind": "sphere", "center": [-0.157, 0.022, 0.210], "radius": 0.0098},
+        {"kind": "sphere", "center": [-0.141, 0.022, 0.207], "radius": 0.0118},
+        {"kind": "sphere", "center": [-0.125, 0.022, 0.213], "radius": 0.0140},
+        {"kind": "sphere", "center": [-0.109, 0.022, 0.207], "radius": 0.0118},
+        {"kind": "sphere", "center": [-0.093, 0.022, 0.210], "radius": 0.0098},
+
+        {"kind": "ellipsoid", "center": [0.125, 0.050, -0.045], "radii": [0.048, 0.046, 0.055]},
+        {"kind": "taper", "a": [0.125, 0.052, -0.030], "b": [0.125, 0.030, 0.155], "r0": 0.046, "r1": 0.038},
+        {"kind": "sphere", "center": [0.157, 0.022, 0.210], "radius": 0.0098},
+        {"kind": "sphere", "center": [0.141, 0.022, 0.207], "radius": 0.0118},
+        {"kind": "sphere", "center": [0.125, 0.022, 0.213], "radius": 0.0140},
+        {"kind": "sphere", "center": [0.109, 0.022, 0.207], "radius": 0.0118},
+        {"kind": "sphere", "center": [0.093, 0.022, 0.210], "radius": 0.0098}
+      ]
+    }
+  ]
+}
