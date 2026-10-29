@@ -11,14 +11,14 @@ module auroramesh.remesh;
  */
 import auroramesh.decimate : decimateMesh;
 import auroramesh.mesh : Face, Material, Mesh, Vec3, computeSmoothNormals,
-    add, cross, dot, length, scale, sub;
+    add, cross, dot, length, normalize, scale, sub;
 import auroramesh.regions : RegionVolume;
 import auroramesh.regions : regionDistance;
-import auroramesh.sdf : SdfField;
+import auroramesh.sdf : SdfField, sphere;
 import auroramesh.surface_nets : surfaceNets;
 import std.array : join;
 import std.format : format;
-import std.math : abs, isFinite;
+import std.math : abs, atan2, cos, isFinite, sin;
 
 struct MeshHealth
 {
@@ -107,29 +107,68 @@ int carveRegion(ref Mesh mesh, const RegionVolume region, out int removed)
         if (visited[start])
             continue;
         int[] loop;
+        loop ~= start;
+        visited[start] = true;
+        int previous = -1;
         int current = start;
-        while (!visited[current])
+        while (true)
         {
-            visited[current] = true;
-            loop ~= current;
             int next = -1;
             foreach (candidate; neighbours[current])
-                if (!visited[candidate])
+                if (candidate != previous && !visited[candidate])
                 {
                     next = candidate;
                     break;
                 }
             if (next < 0)
                 break;
+            loop ~= next;
+            visited[next] = true;
+            previous = current;
             current = next;
         }
         if (loop.length < 3)
             continue;
+        // Fan around a centroid in angle order. A fan in walk order can span the
+        // loop and leave a thin sheet across the opening.
         auto sum = Vec3(0, 0, 0);
         foreach (index; loop)
             sum = add(sum, mesh.vertices[index]);
+        const middle = scale(sum, 1.0 / loop.length);
+        Vec3 normal;
+        foreach (position; 0 .. loop.length)
+        {
+            const here = mesh.vertices[loop[position]];
+            const next = mesh.vertices[loop[(position + 1) % loop.length]];
+            normal = add(normal, Vec3((here.y - next.y) * (here.z + next.z),
+                (here.z - next.z) * (here.x + next.x),
+                (here.x - next.x) * (here.y + next.y)));
+        }
+        normal = normalize(normal);
+        Vec3 axis = normalize(Vec3(1, 0, 0));
+        if (abs(dot(axis, normal)) > 0.9)
+            axis = normalize(Vec3(0, 0, 1));
+        const side = normalize(cross(normal, axis));
+        const up = normalize(cross(normal, side));
+        double[] angles;
+        foreach (index; loop)
+        {
+            const offset = sub(mesh.vertices[index], middle);
+            angles ~= atan2(dot(offset, up), dot(offset, side));
+        }
+        foreach (a; 0 .. loop.length)
+            foreach (b; a + 1 .. loop.length)
+                if (angles[b] < angles[a])
+                {
+                    const swapAngle = angles[a];
+                    angles[a] = angles[b];
+                    angles[b] = swapAngle;
+                    const swapIndex = loop[a];
+                    loop[a] = loop[b];
+                    loop[b] = swapIndex;
+                }
         const centre = cast(int) mesh.vertices.length;
-        mesh.vertices ~= scale(sum, 1.0 / loop.length);
+        mesh.vertices ~= middle;
         foreach (position; 0 .. loop.length)
         {
             const next = (position + 1) % loop.length;
@@ -364,33 +403,30 @@ Mesh sdfShell(const SdfField field, double cell,
             vertex.z > shellHi.z ? vertex.z : shellHi.z);
     }
 
-    // Surface nets has no fixed winding convention for an arbitrary field, and an
-    // inside-out shell renders black against the background. Point every face away
-    // from the shell's centre before it is used.
-    auto shellCentre = Vec3(0, 0, 0);
-    foreach (vertex; shell.vertices)
-        shellCentre = add(shellCentre, vertex);
-    shellCentre = Vec3(shellCentre.x / shell.vertices.length,
-        shellCentre.y / shell.vertices.length,
-        shellCentre.z / shell.vertices.length);
-    double outward = 0.0;
-    foreach (face; shell.faces)
+    // Surface nets has no winding convention, so each face is oriented against the
+    // field itself. One global flip is wrong as soon as a field has two lobes, and an
+    // inside-out shell renders as a hollow sheet with the far sides poking through.
+    const probe = cell * 0.25;
+    foreach (ref face; shell.faces)
     {
         const a = shell.vertices[face.a];
         const b = shell.vertices[face.b];
         const c = shell.vertices[face.c];
         const normal = cross(sub(b, a), sub(c, a));
+        if (length(normal) < 1.0e-12)
+            continue;
         const middle = Vec3((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0,
             (a.z + b.z + c.z) / 3.0);
-        outward += dot(normal, sub(middle, shellCentre));
-    }
-    if (outward < 0)
-        foreach (ref face; shell.faces)
+        const facing = normalize(normal);
+        const outside = field.eval(add(middle, scale(facing, probe)));
+        const inside = field.eval(sub(middle, scale(facing, probe)));
+        if (outside < inside)
         {
             const swap = face.b;
             face.b = face.c;
             face.c = swap;
         }
+    }
     return shell;
 }
 
@@ -507,4 +543,43 @@ unittest
     int removedAgain;
     carveRegion(again, slab, removedAgain);
     assert(removedAgain == 0, "a repeated carve must be a no-op");
+}
+
+unittest
+{
+    // A shell must face outwards. One global flip is enough for a single lobe but
+    // reverses a second one, which renders as a hollow sheet, so both are checked.
+    SdfField field;
+    field.shapes = [sphere(Vec3(0, 0, 0), 0.4)];
+    Vec3 low;
+    Vec3 high;
+    auto shell = sdfShell(field, 0.02, low, high);
+    assert(shell.faces.length > 100);
+    foreach (face; shell.faces)
+    {
+        const a = shell.vertices[face.a];
+        const b = shell.vertices[face.b];
+        const c = shell.vertices[face.c];
+        const normal = cross(sub(b, a), sub(c, a));
+        const middle = Vec3((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0,
+            (a.z + b.z + c.z) / 3.0);
+        assert(dot(normal, middle) > 0, "a sphere shell must face outwards");
+    }
+
+    field.shapes = [sphere(Vec3(0, 0, 0), 0.4), sphere(Vec3(1.2, 0, 0), 0.4)];
+    field.blend = 0.05;
+    auto pair = sdfShell(field, 0.02, low, high);
+    assert(pair.faces.length > 100);
+    foreach (face; pair.faces)
+    {
+        const a = pair.vertices[face.a];
+        const b = pair.vertices[face.b];
+        const c = pair.vertices[face.c];
+        const normal = cross(sub(b, a), sub(c, a));
+        const middle = Vec3((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0,
+            (a.z + b.z + c.z) / 3.0);
+        const reference = middle.x < 0.6 ? Vec3(0, 0, 0) : Vec3(1.2, 0, 0);
+        assert(dot(normal, sub(middle, reference)) > 0,
+            "each lobe of a two-lobe shell must face outwards");
+    }
 }

@@ -9,6 +9,7 @@ enum SdfKind : ubyte
     sphere,
     ellipsoid,
     taper,
+    plane,
 }
 
 struct SdfShape
@@ -40,6 +41,18 @@ SdfShape taper(Vec3 a, Vec3 b, double startRadius, double endRadius)
         Vec3(startRadius, startRadius, startRadius));
 }
 
+/**
+ * Half space below a plane through `point` facing `normal`.
+ *
+ * As a cut this trims a solid flat, which is what a sole is; a sphere or ellipsoid
+ * cut grazes the surface at a shallow angle and leaves a flap behind.
+ */
+SdfShape plane(Vec3 point, Vec3 normal)
+{
+    const unit = normalize(normal);
+    return SdfShape(SdfKind.plane, unit, point, 0, 0, Vec3(0, 0, 0));
+}
+
 double sdfShape(const SdfShape shape, Vec3 point)
 {
     final switch (shape.kind)
@@ -63,6 +76,10 @@ double sdfShape(const SdfShape shape, Vec3 point)
             const radius = shape.radius +
                 (shape.endRadius - shape.radius) * h;
             return length(sub(point, center)) - radius;
+
+        case SdfKind.plane:
+            // shape.a holds the normal, shape.b a point on the plane.
+            return dot(sub(point, shape.b), shape.a);
     }
 }
 
@@ -99,8 +116,8 @@ struct SdfField
         bool any;
         foreach (shape; shapes)
         {
-            Vec3 localLow;
-            Vec3 localHigh;
+            Vec3 localLow = Vec3(0, 0, 0);
+            Vec3 localHigh = Vec3(0, 0, 0);
             final switch (shape.kind)
             {
                 case SdfKind.sphere:
@@ -128,6 +145,10 @@ struct SdfField
                         max(shape.a.y, shape.b.y) + reach,
                         max(shape.a.z, shape.b.z) + reach);
                     break;
+
+                case SdfKind.plane:
+                    // A half space has no finite extent, so it cannot widen a box.
+                    continue;
             }
             if (!any)
             {

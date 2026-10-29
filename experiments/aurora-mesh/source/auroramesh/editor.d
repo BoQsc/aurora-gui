@@ -22,7 +22,7 @@ import auroramesh.regions : RegionKind, RegionVolume, deformRegion, regionMask,
     selectRegion;
 import auroramesh.remesh : appendMesh, carveRegion, decimateTo,
     replaceChecked, sdfShell, subdivideMesh;
-import auroramesh.sdf : SdfField, SdfShape, ellipsoid, sphere, taper;
+import auroramesh.sdf : SdfField, SdfShape, ellipsoid, plane, sphere, taper;
 import core.time : MonoTime;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
     smoothVertices;
@@ -1780,6 +1780,8 @@ final class MeshEditor : Widget
     // Meshed geometry is cached per replacement. Re-meshing an SDF field on every
     // rebuild is expensive enough that a fine field silently failed to reappear.
     private Mesh[] _replaceShells;
+    // Deforms are state too: a rebake would otherwise drop them silently.
+    private JSONValue[] _deformCommands;
 
     private RegionVolume* activeRegion()
     {
@@ -1862,6 +1864,14 @@ final class MeshEditor : Widget
                 if (start.length >= 3 && end.length >= 3)
                     into ~= taper(Vec3(start[0], start[1], start[2]),
                         Vec3(end[0], end[1], end[2]), startRadius, endRadius);
+            }
+            else if (kind == "plane")
+            {
+                const surface = liveNumbers(liveChild(entry, "point"));
+                const facing = liveNumbers(liveChild(entry, "normal"));
+                if (surface.length >= 3 && facing.length >= 3)
+                    into ~= plane(Vec3(surface[0], surface[1], surface[2]),
+                        Vec3(facing[0], facing[1], facing[2]));
             }
             else
             {
@@ -2052,6 +2062,37 @@ final class MeshEditor : Widget
         return ok;
     }
 
+    /// Apply one deform edit, optionally recording it so a rebake keeps it.
+    private bool applyDeformCommand(JSONValue command, bool record)
+    {
+        const name = liveString(liveChild(command, "region"), _activeRegion);
+        auto region = name in _regions;
+        if (region is null)
+            return false;
+        const op = liveString(liveChild(command, "op"), "inflate");
+        const amount = liveNumber(liveChild(command, "amount"), 0.01);
+        const direction = liveNumbers(liveChild(command, "direction"));
+        const aim = direction.length >= 3 ?
+            Vec3(direction[0], direction[1], direction[2]) : Vec3(0, 0, 0);
+        const start = MonoTime.currTime();
+        const moved = deformRegion(_mesh, *region, op, amount, aim);
+        if (record)
+        {
+            _lastOpMs = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
+            _lastOp = op;
+            if (moved > 0)
+                _deformCommands ~= command;
+        }
+        return moved > 0;
+    }
+
+    /// Replay recorded deform edits in the order they were given.
+    private void applyDeformEdits()
+    {
+        foreach (command; _deformCommands)
+            applyDeformCommand(command, false);
+    }
+
     /// Replay accepted replacements onto a freshly baked mesh.
     private void applyReplacements()
     {
@@ -2170,6 +2211,9 @@ final class MeshEditor : Widget
             }
         }
         applyReshapes();
+        // Region deforms are replayed before replacements, so a carved or shelled
+        // result is always built on the same deformed base.
+        applyDeformEdits();
         // Replacements are replayed onto the fresh bake, so an accepted shell or
         // subdivision is not lost the next time the mesh is rebuilt.
         applyReplacements();
@@ -2208,6 +2252,7 @@ final class MeshEditor : Widget
             _liveExtras.length = 0;
             _replaceCommands.length = 0;
             _replaceShells.length = 0;
+            _deformCommands.length = 0;
             _reshapecs.length = 0;
             _regions = null;
             _activeRegion = "";
@@ -2396,17 +2441,9 @@ final class MeshEditor : Widget
             auto region = name in _regions;
             if (region is null)
                 return false;
-            const op = liveString(liveChild(command, "op"), "inflate");
-            const amount = liveNumber(liveChild(command, "amount"), 0.01);
-            const direction = liveNumbers(liveChild(command, "direction"));
-            const aim = direction.length >= 3 ?
-                Vec3(direction[0], direction[1], direction[2]) : Vec3(0, 0, 0);
             // One snapshot per edit, so undo steps back a whole move.
             _undo ~= cloneMesh(_mesh);
-            const start = MonoTime.currTime();
-            const moved = deformRegion(_mesh, *region, op, amount, aim);
-            _lastOpMs = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
-            _lastOp = op;
+            const moved = applyDeformCommand(command, true);
             _activeRegion = name;
             refreshMaskStats();
             tintSelection();
