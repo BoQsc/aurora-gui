@@ -1,7 +1,8 @@
 module auroramesh.editor;
 
 import auroramesh.camera : Camera, project;
-import auroramesh.collision : CollisionReport, findSelfIntersections;
+import auroramesh.collision : CollisionReport, collisionClusters,
+    findSelfIntersections;
 import auroramesh.edit : brushVertices, pickNearest, screenDelta;
 import auroramesh.glb : fromGlb, toGlb;
 import auroramesh.gltf_scene : GltfScene, Mat4, PoseOverride, bakeGltfFrame,
@@ -157,6 +158,9 @@ final class MeshEditor : Widget
     private int _scanRightForeArm;
     private int _scanHips;
     private int _scanNeck;
+    private int _scanHead;
+    private string[] _scanIgnorePartNames;
+    private bool[int] _scanIgnoredParts;
     private Vec3 _scanPreviousLeft;
     private Vec3 _scanPreviousRight;
     private bool _scanHavePrevious;
@@ -173,6 +177,11 @@ final class MeshEditor : Widget
     private string _lastSheetPath;
     private bool _listBones;
     private int _liveFollowCount;
+    private int[] _baselineClusters;
+    private bool[ulong] _baselineRegions;
+    private int _baselineClusterFaces;
+    private int _baselineStrayFaces;
+    private bool[int] _baselineStrayParts;
     /**
      * The window callback and the headless driver thread both drive live
      * authoring, so a tick must read, author, bake, audit and report as one
@@ -382,7 +391,7 @@ final class MeshEditor : Widget
         const baked = bakeGltfFrame(_scene, _animation, time, true,
             effectivePoseOverridesAt(time));
         const report = findSelfIntersections(baked, 4096,
-            _baselineCollisionKeys);
+            _baselineCollisionKeys, _baselineClusters, _baselineRegions);
         return report.pairs;
     }
 
@@ -437,19 +446,171 @@ final class MeshEditor : Widget
     {
         _baselineCollisionKeys = null;
         _baselineCollisionCount = 0;
+        _baselineClusters = null;
+        _baselineRegions = null;
+        _baselineClusterFaces = 0;
         if (!_hasScene)
             return;
         try
         {
+            Mat4[] baselineWorlds;
             const baseline = bakeGltfFrame(_scene, _animation, time, true,
-                effectivePoseOverridesAt(time));
+                effectivePoseOverridesAt(time), &baselineWorlds);
             const report = findSelfIntersections(baseline, 100000);
             _baselineCollisionCount = report.pairs;
             foreach (key; report.keys)
                 _baselineCollisionKeys[key] = true;
+            if (report.pairs > 0)
+            {
+                // Group faces by body part, so the audit asks "did the
+                // animation make two parts touch that never touch at rest"
+                // instead of "did any face pair change", which a real
+                // character (shoulders inside a vest) can never satisfy.
+                auto parts = partPerFace(baseline);
+                if (parts.length > 0)
+                    _baselineClusters = parts;
+                else
+                    _baselineClusters = collisionClusters(
+                        _baselineCollisionKeys, baseline.faces.length);
+                findStrayBindings(baseline, baselineWorlds);
+                auto sizes = new int[baseline.faces.length];
+                foreach (cluster; _baselineClusters)
+                    if (cluster >= 0 && cluster < sizes.length)
+                        sizes[cluster]++;
+                foreach (size; sizes)
+                    _baselineClusterFaces = max(_baselineClusterFaces, size);
+                // Contacts that already exist between regions are expected;
+                // only new region contacts fail an animation.
+                foreach (key; report.keys)
+                {
+                    const low = cast(int) (key >> 32);
+                    const high = cast(int) (key & 0xffffffff);
+                    if (low < 0 || high < 0 ||
+                        low >= _baselineClusters.length ||
+                        high >= _baselineClusters.length)
+                        continue;
+                    const firstRegion = _baselineClusters[low] <
+                        _baselineClusters[high] ? _baselineClusters[low] :
+                        _baselineClusters[high];
+                    const secondRegion = _baselineClusters[low] <
+                        _baselineClusters[high] ? _baselineClusters[high] :
+                        _baselineClusters[low];
+                    _baselineRegions[(cast(ulong) firstRegion << 32) |
+                        cast(ulong) secondRegion] = true;
+                }
+                addAdjacentPartContacts();
+            }
         }
         catch (Exception)
         {
+        }
+    }
+
+    /**
+     * A bent joint pushes its own faces into the neighbouring segment's, so a
+     * parent/child part contact is articulation, not a collision. Register
+     * those pairs as expected contacts.
+     */
+    private void addAdjacentPartContacts()
+    {
+        if (!_hasScene || _baselineRegions is null)
+            return;
+        auto partOfNode = new int[_scene.nodes.length];
+        foreach (ref value; partOfNode)
+            value = -1;
+        foreach (skinIndex, skin; _scene.skins)
+            foreach (jointIndex, node; skin.joints)
+                if (node >= 0 && node < cast(int) partOfNode.length)
+                    partOfNode[node] = cast(int) skinIndex * 1024 +
+                        cast(int) jointIndex;
+        foreach (nodeIndex, node; _scene.nodes)
+        {
+            if (partOfNode[nodeIndex] < 0)
+                continue;
+            const parent = parentNode(cast(int) nodeIndex);
+            if (parent < 0 || parent >= cast(int) partOfNode.length ||
+                partOfNode[parent] < 0)
+                continue;
+            const a = partOfNode[nodeIndex];
+            const b = partOfNode[parent];
+            const lower = a < b ? a : b;
+            const upper = a < b ? b : a;
+            _baselineRegions[(cast(ulong) lower << 32) | cast(ulong) upper] =
+                true;
+        }
+    }
+
+    /**
+     * Parts excluded from the body audit because the clip declares them as held
+     * props: a weapon in the hands overlaps the gripping arm by design.
+     */
+    private void buildIgnoredParts()
+    {
+        _scanIgnoredParts = null;
+        if (!_hasScene)
+            return;
+        if (_baselineStrayParts !is null)
+            foreach (part, stray; _baselineStrayParts)
+                if (stray)
+                    _scanIgnoredParts[part] = true;
+        if (_scanIgnorePartNames.length == 0)
+            return;
+        auto ignored = new bool[_scene.nodes.length];
+        void mark(int current)
+        {
+            if (current < 0 || current >= cast(int) ignored.length ||
+                ignored[current])
+                return;
+            ignored[current] = true;
+            foreach (child; _scene.nodes[current].children)
+                mark(child);
+        }
+        foreach (name; _scanIgnorePartNames)
+            foreach (index, node; _scene.nodes)
+                if (node.name == name)
+                    mark(cast(int) index);
+        foreach (skinIndex, skin; _scene.skins)
+            foreach (jointIndex, node; skin.joints)
+                if (node >= 0 && node < cast(int) ignored.length &&
+                    ignored[node])
+                    _scanIgnoredParts[cast(int) skinIndex * 1024 +
+                        cast(int) jointIndex] = true;
+    }
+
+    /**
+     * Find faces whose dominant joint sits far from the face itself. A game
+     * asset can carry stray weights that bind geometry to a distant bone; those
+     * faces then sweep through the body when an unrelated bone moves, which
+     * would read as an animation collision. Report and exclude them instead.
+     */
+    private void findStrayBindings(const Mesh mesh, const Mat4[] worlds)
+    {
+        _baselineStrayFaces = 0;
+        _baselineStrayParts = null;
+        if (worlds.length == 0 || _baselineClusters is null)
+            return;
+        enum double StrayDistance = 0.45;
+        foreach (faceIndex, face; mesh.faces)
+        {
+            const part = _baselineClusters[faceIndex];
+            const node = partNode(part);
+            if (node < 0 || node >= cast(int) worlds.length)
+                continue;
+            const bone = Vec3(worlds[node].m[12], worlds[node].m[13],
+                worlds[node].m[14]);
+            const centroid = Vec3(
+                (mesh.vertices[face.a].x + mesh.vertices[face.b].x +
+                    mesh.vertices[face.c].x) / 3.0,
+                (mesh.vertices[face.a].y + mesh.vertices[face.b].y +
+                    mesh.vertices[face.c].y) / 3.0,
+                (mesh.vertices[face.a].z + mesh.vertices[face.b].z +
+                    mesh.vertices[face.c].z) / 3.0);
+            const delta = Vec3(centroid.x - bone.x, centroid.y - bone.y,
+                centroid.z - bone.z);
+            if (sqrt(dot(delta, delta)) <= StrayDistance)
+                continue;
+            _baselineStrayParts[part] = true;
+            _baselineStrayFaces++;
         }
     }
 
@@ -458,6 +619,78 @@ final class MeshEditor : Widget
         if (_hasLiveAnimation)
             return cast(int) _liveClip.tracks.length;
         return _hasScene ? cast(int) _scene.animations.length : 0;
+    }
+
+    /**
+     * Body part id per face, from the dominant skin joint the bake recorded.
+     * Faces with no binding fall back to a unique id so they keep behaving
+     * like individual faces.
+     */
+    private static int[] partPerFace(const Mesh mesh)
+    {
+        int[] parts;
+        if (mesh.vertexJoints.length != mesh.vertices.length ||
+            mesh.vertices.length == 0)
+            return parts;
+        parts.length = mesh.faces.length;
+        foreach (index, face; mesh.faces)
+        {
+            int part = -1;
+            foreach (vertex; [face.a, face.b, face.c])
+                if (vertex >= 0 && vertex < mesh.vertexJoints.length &&
+                    mesh.vertexJoints[vertex] >= 0)
+                {
+                    part = mesh.vertexJoints[vertex];
+                    break;
+                }
+            parts[index] = part >= 0 ? part : 1000000 + cast(int) index;
+        }
+        return parts;
+    }
+
+    /** Names of the first few new body-part contacts, for authoring feedback. */
+    private string contactPartNames(const CollisionReport report)
+    {
+        if (_baselineRegions is null)
+            return "";
+        string[] names;
+        foreach (key; report.keys)
+        {
+            if (names.length >= 4)
+                break;
+            names ~= format("%s/%s", partName(cast(int) (key >> 32)),
+                partName(cast(int) (key & 0xffffffff)));
+        }
+        return names.join(",");
+    }
+
+    /** Scene node index for a part id, or -1. */
+    private int partNode(int part)
+    {
+        if (part < 0 || part >= 1000000)
+            return -1;
+        const skinIndex = part / 1024;
+        const jointIndex = part % 1024;
+        if (!_hasScene || skinIndex >= cast(int) _scene.skins.length)
+            return -1;
+        const joints = _scene.skins[skinIndex].joints;
+        if (jointIndex >= cast(int) joints.length)
+            return -1;
+        return joints[jointIndex];
+    }
+
+    private string partName(int part)
+    {
+        if (part >= 1000000)
+            return "unbound";
+        const node = partNode(part);
+        if (node >= 0 && node < cast(int) _scene.nodes.length)
+        {
+            const name = _scene.nodes[node].name;
+            if (name.length > 0)
+                return name;
+        }
+        return format("part%d", part);
     }
 
     private int animationKeyCount()
@@ -606,6 +839,8 @@ final class MeshEditor : Widget
         _scanRightForeArm = liveNodeIndex("RightForeArm");
         _scanHips = liveNodeIndex("Hips");
         _scanNeck = liveNodeIndex("Neck");
+        _scanHead = liveNodeIndex("Head");
+        buildIgnoredParts();
         _scanPreviousLeft = Vec3(0, 0, 0);
         _scanPreviousRight = Vec3(0, 0, 0);
         _scanHavePrevious = false;
@@ -661,6 +896,24 @@ final class MeshEditor : Widget
                         limbHits++;
                 }
         }
+        if (_scanHead >= 0 && _scanHead < _nodeWorlds.length)
+        {
+            // A wave brings a hand toward the face, so audit the head too.
+            const headMatrix = _nodeWorlds[_scanHead];
+            const headBase = Vec3(headMatrix.m[12], headMatrix.m[13],
+                headMatrix.m[14]);
+            const headUp = normalize(Vec3(headMatrix.m[4], headMatrix.m[5],
+                headMatrix.m[6]));
+            const headTip = meshAdd(headBase, meshScale(headUp, 0.16));
+            foreach (node; [_scanLeftHand, _scanRightHand])
+                if (node >= 0 && node < _nodeWorlds.length)
+                {
+                    const position = Vec3(_nodeWorlds[node].m[12],
+                        _nodeWorlds[node].m[13], _nodeWorlds[node].m[14]);
+                    if (pointSegmentDistance(position, headBase, headTip) < 0.10)
+                        limbHits++;
+                }
+        }
         _scanLimbHits += limbHits;
         double jump = 0;
         if (_scanHavePrevious && _scanLeftHand >= 0 && _scanRightHand >= 0 &&
@@ -700,11 +953,14 @@ final class MeshEditor : Widget
             _auditValid = false;
         }
         int collisions;
+        string contactParts;
         if (_scanCollisions)
         {
             const collisionReport = findSelfIntersections(_mesh, 64,
-                _baselineCollisionKeys);
+                _baselineCollisionKeys, _baselineClusters, _baselineRegions,
+                _scanIgnoredParts);
             collisions = collisionReport.pairs;
+            contactParts = contactPartNames(collisionReport);
             _scanCollisionPairs += collisions;
             if (collisions > 0)
             {
@@ -718,10 +974,10 @@ final class MeshEditor : Widget
         if (frame > 0)
             _scanReport ~= ",";
         _scanReport ~= format(
-            `{"frame":%d,"time":%.4f,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"jump":%.4f,"limbHits":%d,"collisions":%d,"boundsValid":%s,"warnings":"%s"}`,
+            `{"frame":%d,"time":%.4f,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"jump":%.4f,"limbHits":%d,"collisions":%d,"parts":"%s","boundsValid":%s,"warnings":"%s"}`,
             frame, _time, _auditValid ? "true" : "false",
             _auditNonFinite, _auditInvalidFaces,
-            jump, limbHits, collisions,
+            jump, limbHits, collisions, jsonEscape(contactParts),
             maximumCoordinate <= 100 ? "true" : "false",
             _auditWarnings.join("|"));
         _scanCursor++;
@@ -1339,7 +1595,8 @@ final class MeshEditor : Widget
         {
             buildCollisionBaselineAt(_time);
             _collisions = findSelfIntersections(_mesh, 4096,
-                _baselineCollisionKeys);
+                _baselineCollisionKeys, _baselineClusters, _baselineRegions,
+                _scanIgnoredParts);
             _checkCollisions = false;
             _status = format(
                 "Live: %d object(s), %d pose override(s) · %d collisions",
@@ -1394,7 +1651,7 @@ final class MeshEditor : Widget
     {
         try
             writeReport("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d}`,
                 _liveRevision, _liveExtras.length, _poseOverrides.length,
                 jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
@@ -1415,7 +1672,7 @@ final class MeshEditor : Widget
                 _collisions.pairs, _baselineCollisionCount,
                 _collisions.sample.x, _collisions.sample.y,
                 _collisions.sample.z, _collisions.faceA, _collisions.faceB,
-                _liveFollowCount));
+                _liveFollowCount, _baselineClusterFaces, _baselineStrayFaces));
         catch (Exception)
         {
         }
@@ -1528,6 +1785,12 @@ final class MeshEditor : Widget
         {
             _scanCollisions = liveHas(command, "collisions") &&
                 liveChild(command, "collisions").type == JSONType.true_;
+            _scanIgnorePartNames.length = 0;
+            const ignoreParts = liveChild(command, "ignoreParts");
+            if (ignoreParts.type == JSONType.array)
+                foreach (entry; ignoreParts.array)
+                    if (entry.type == JSONType.string)
+                        _scanIgnorePartNames ~= entry.str;
             _scanIncremental = liveHas(command, "incremental") &&
                 liveChild(command, "incremental").type == JSONType.true_;
             _scanCancelRequested = false;

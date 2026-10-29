@@ -199,7 +199,10 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   `"follow": [{"node": "AK47_Mount", "target": "Spine2"}]` generates the socket
   track from a world-axis target track: the socket rotates with the target and
   orbits its pivot about it, which keeps a socketed prop rigidly in the hands.
-  Follow needs replace-mode clips and world-axis keys on the target.
+  Follow needs replace-mode clips and world-axis keys on the target. It
+  compensates the target's own rotation only, so keep the target's ancestors
+  static in that clip: leaning with `Spine` *and* `Spine2` while following
+  `Spine2` drifts the prop by about the parent's arc (42 mm in testing).
 - `check` reruns the collision audit at the current pose.
 - `frame` sets a frame number (1/30-second steps) and pauses; `pause` pauses.
 - `keyframe` inserts/replaces a keyframe at the current (or supplied) time:
@@ -209,7 +212,10 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   integrity, then writes `build/live-audit.json`.
 - `scan-frames` bakes and validates every 1/30-second frame, then writes
   `build/live-frames.json` with per-frame validity, bounds validity, hand-jump
-  distance, limb/torso proximity hits, and `awarenessValid`.
+  distance, limb/torso proximity hits (hands and forearms against the
+  hips-to-neck segment and the head), and `awarenessValid`. It accepts
+  `"collisions": true` for the self-intersection audit and `"ignoreParts"` for
+  held props.
 - `inspect-bone` writes `build/bone-info.json` with the named bone’s world
   position and world-space X/Y/Z axes. Use this before authoring a rotation.
 - `list-bones` writes `build/bones.json` with every node's index, name, parent,
@@ -219,8 +225,7 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   instead of a guessed quaternion.
 - `capture` writes the current viewport to a PPM without changing window focus:
   `{"type":"capture","path":"build/view.ppm"}`.
-- `scan-frames` accepts `"collisions": true` to run full triangle self-intersection
-  checks per frame, excluding the baseline collision keys.
+
 - `clear` removes pose overrides and live objects.
 
 Reports (`live-ack.json`, `live-audit.json`, `live-frames.json`,
@@ -230,14 +235,26 @@ invalid file, even with absolute Windows paths. A tick holds a mutex, so the
 window callback and the headless driver thread cannot interleave authoring,
 baking, scanning, and reporting.
 
-The acknowledgement separates `baselineCollisions` (same-frame base animation
-overlap) from `collisions` (new animation/object overlap), and includes
-`collisionSample` and `collisionFaces`. The audit uses a spatial grid and
-triangle intersection over the baked mesh; adjacent faces are ignored.
-Overlaps can still be intentional, such as layered clothing or eye shells, so
-treat the new-pair count as a warning to inspect, not an automatic failure. A
-`check` command forces a fresh scan; revisions that change geometry or poses
-also scan once.
+The collision audit compares against the baseline pose (the current pose when
+the scan starts). On a skinned scene it reports **new contacts between body
+parts** instead of new triangle pairs: the bake records each vertex's dominant
+joint, faces are grouped by that joint (two skins never share a part id), and a
+pair is ignored when
+
+- both faces belong to the same part, or
+- the parts are a skeleton parent/child pair, because a bent elbow always pushes
+  its own faces into the next segment, or
+- the clip declared that part as a held prop (`"ignoreParts"` on `scan-frames`),
+  because a weapon in the hands overlaps the grip by design, or
+- the same two regions already touch in the baseline pose.
+
+Faces bound to a joint more than 0.45 m away are counted in `strayFaces` and
+excluded: stray weights make unrelated geometry sweep through the body and
+would otherwise read as animation collisions. Every frame also records `parts`,
+the names of the first new contacts (`RightHand/Head`), which is what an author
+actually fixes. Unskinned meshes fall back to face-pair comparison, where
+`baselineCollisions` and `collisions` count pairs. A `check` command forces a
+fresh scan; revisions that change geometry or poses also scan once.
 
 This is a live authoring and preview path, not a complete scene editor.
 Objects are procedural or OBJ, poses are node-local overrides, and edits are
@@ -267,18 +284,35 @@ Optional blocks: `follow` (socket generation), `grip`
 (`pivotNode`/`socketNode` for the hand-drift check), `watch` (a node that must
 travel at least `minTravel` metres), `scene` (a rig other than the fixture), and
 `checks` (`{"collisions": false}` for assets whose base mesh already
-self-intersects).
+self-intersects), plus `ignoreParts` (held props, such as the rifle, excluded
+from the body self-intersection audit).
 
 `tests/replay_clip.py` wraps a clip into a live revision, scans every frame with
 collision checks, reads `build/live-frames.json`, renders a frame sheet, and
-fails on any invalid frame, collision pair, limb hit, bounds problem, short
-motion, or grip drift. `tests/probe_joint_limits.py` sweeps one joint to report
-the angle range that stays collision free, which is what a kick or lift should
-be designed against.
+fails on any invalid frame, new part contact, limb hit, bounds problem, short
+motion, or grip drift. Pass `--clip` more than once to replay several clips.
+`tests/probe_joint_limits.py` sweeps one joint to report the angle range that
+stays collision free, which is what a kick or lift should be designed against.
 
 `RightSnapKick` is a 36-frame right front snap kick: chamber, snap, retract, and
 recover. It changes only the kicking leg, the spine lean, and the arms, so the
 support foot stays exactly planted and the hips never slide.
+
+`HumanFriendlyWave` is the same authoring path on the CC0 reference character:
+the right hand leaves the rifle grip, the arm lifts out to the side (clear of
+the slung weapon), the forearm folds up so the hand stands beside the head, and
+the wrist waves three times before the arm drops back. `Spine2` leans into the
+greeting and the rifle is generated to follow that bone, which keeps it in the
+left hand and off the spine. The rifle and carbine are declared with
+`ignoreParts` because a held weapon always overlaps the gripping arm.
+
+`RifleReadyIdle` is the reference-rig idle used to prove socket follow: a waist
+twist, a neck breath, and a head scan, with the rifle following the waist at
+0.07 mm of grip drift.
+
+`HumanSnapKick` carries the kick onto the same character: the kicking leg, a
+`Spine2` lean, and no arm keys, so the rifle stays in both hands while the
+weapon follows the lean.
 
 ## Rig fixture
 

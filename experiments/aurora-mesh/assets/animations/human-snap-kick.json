@@ -69,24 +69,13 @@
       ]
     },
     {
-      "node": "Spine",
-      "comment": "counterbalance lean; the rifle follows this",
-      "keys": [
-        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
-        {"time": 0.3, "worldAxis": "x", "angle": -3.0},
-        {"time": 0.5, "worldAxis": "x", "angle": -5.0},
-        {"time": 0.75, "worldAxis": "x", "angle": -2.0},
-        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
-      ]
-    },
-    {
       "node": "Spine2",
-      "comment": "a little more lean at the top of the spine",
+      "comment": "counterbalance lean; the rifle follows this. Spine stays still because follow compensates the target's own rotation, not its ancestors.",
       "keys": [
         {"time": 0.0, "worldAxis": "x", "angle": 0.0},
-        {"time": 0.3, "worldAxis": "x", "angle": -2.0},
-        {"time": 0.5, "worldAxis": "x", "angle": -4.0},
-        {"time": 0.75, "worldAxis": "x", "angle": -1.5},
+        {"time": 0.3, "worldAxis": "x", "angle": -4.0},
+        {"time": 0.5, "worldAxis": "x", "angle": -6.5},
+        {"time": 0.75, "worldAxis": "x", "angle": -2.5},
         {"time": 1.2, "worldAxis": "x", "angle": 0.0}
       ]
     }

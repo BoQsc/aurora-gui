@@ -84,14 +84,66 @@ private bool trianglesIntersect(Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 e,
         edgeHitsTriangle(f, d, a, b, c);
 }
 
-/** Spatial-grid self-intersection audit. Adjacent faces and shared edges are ignored. */
+/**
+ * Cluster id per face, from a set of already intersecting face pairs.
+ *
+ * Faces that overlap in a baseline pose (layered clothing, a fist around a
+ * weapon) share a cluster. An animation audit can then ignore motion *inside*
+ * such a region while still reporting a contact between two regions, which is
+ * what makes the audit usable on a game asset that is never intersection free.
+ */
+int[] collisionClusters(const bool[ulong] keys, size_t faceCount)
+{
+    auto parent = new int[faceCount];
+    foreach (face; 0 .. faceCount)
+        parent[face] = cast(int) face;
+    int root(int face)
+    {
+        int current = face;
+        while (parent[current] != current)
+            current = parent[current];
+        while (parent[face] != current)
+        {
+            const next = parent[face];
+            parent[face] = current;
+            face = next;
+        }
+        return current;
+    }
+    foreach (key, present; keys)
+    {
+        if (!present)
+            continue;
+        const low = cast(int) (key >> 32);
+        const high = cast(int) (key & 0xffffffff);
+        if (low < 0 || high < 0 || low >= faceCount || high >= faceCount)
+            continue;
+        const a = root(low);
+        const b = root(high);
+        if (a != b)
+            parent[a] = b;
+    }
+    auto clusters = new int[faceCount];
+    foreach (face; 0 .. faceCount)
+        clusters[face] = root(cast(int) face);
+    return clusters;
+}
+
+/**
+ * Spatial-grid self-intersection audit. Adjacent faces and shared edges are
+ * ignored, as are pairs that lie inside one baseline cluster.
+ */
 CollisionReport findSelfIntersections(const Mesh mesh, int maximumPairs = 4096,
-    const bool[ulong] ignore = null)
+    const bool[ulong] ignore = null, const int[] clusters = null,
+    const bool[ulong] ignoreRegions = null, const bool[int] ignoredParts = null)
 {
     CollisionReport report;
     report.sample = Vec3(0, 0, 0);
     if (mesh.faces.length < 2)
         return report;
+    const bool byRegion = ignoreRegions !is null && clusters !is null &&
+        clusters.length == mesh.faces.length;
+    bool[ulong] seenRegions;
     enum double CellSize = 0.01;
     Aabb[] bounds;
     bounds.length = mesh.faces.length;
@@ -164,6 +216,41 @@ CollisionReport findSelfIntersections(const Mesh mesh, int maximumPairs = 4096,
                     continue;
                 if (ignore !is null && key in ignore)
                     continue;
+                if (clusters !is null && clusters.length == mesh.faces.length &&
+                    clusters[low] == clusters[high])
+                    continue;
+                if (byRegion)
+                {
+                    // Declared props (a held weapon) touch the holding body by
+                    // design, so they are outside a body self-intersection audit.
+                    if (ignoredParts !is null &&
+                        (clusters[low] in ignoredParts ||
+                         clusters[high] in ignoredParts))
+                        continue;
+                    // Report new contacts between body regions once each, so a
+                    // hand sliding inside its own glove does not saturate the
+                    // count while a hand entering another region still does.
+                    const firstRegion = clusters[low] < clusters[high] ?
+                        clusters[low] : clusters[high];
+                    const secondRegion = clusters[low] < clusters[high] ?
+                        clusters[high] : clusters[low];
+                    const regionKey = (cast(ulong) firstRegion << 32) |
+                        cast(ulong) secondRegion;
+                    if (regionKey in ignoreRegions || regionKey in seenRegions)
+                        continue;
+                    seenRegions[regionKey] = true;
+                    report.pairs++;
+                    report.keys ~= regionKey;
+                    if (report.faceA < 0)
+                    {
+                        report.faceA = low;
+                        report.faceB = high;
+                        report.sample = Vec3((a.x + b.x + c.x + d.x + e.x +
+                            f.x) / 6, (a.y + b.y + c.y + d.y + e.y + f.y) / 6,
+                            (a.z + b.z + c.z + d.z + e.z + f.z) / 6);
+                    }
+                    continue;
+                }
                 report.pairs++;
                 report.keys ~= key;
                 if (report.faceA < 0)

@@ -163,6 +163,23 @@ class ClipTests(unittest.TestCase):
                                           for component in vector)), 1.0)
                         self.assertLessEqual(abs(float(key["angle"])), 180)
 
+    def test_audit_profile(self):
+        """Clips may scope the audit; the declarations must stay well formed."""
+        for path in CLIPS:
+            clip = load(path)
+            with self.subTest(clip=path.name):
+                checks = clip.get("checks", {})
+                if "collisions" in checks:
+                    self.assertIsInstance(checks["collisions"], bool)
+                parts = clip.get("ignoreParts", [])
+                for part in parts:
+                    self.assertIsInstance(part, str)
+                    self.assertTrue(part, "ignored part names cannot be empty")
+                if parts:
+                    self.assertTrue(
+                        clip.get("scene") or clip.get("follow"),
+                        "prop exclusions belong to a prop carrying clip")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,102 @@
+{
+  "name": "HumanFriendlyWave",
+  "description": "Friendly two second wave on the CC0 reference human rig. The right hand leaves the rifle grip, the arm lifts out to the side (away from the slung rifle), the forearm folds up so the palm is beside the head, and the wrist waves three times before the arm drops back. The rifle is socketed to the rig root, so it is generated to follow the chest lean; that keeps it in the left hand and stops the stock from cutting into the spine.",
+  "scene": "build/full-scene-copy.glb",
+  "fps": 30,
+  "duration": 2.0,
+  "loop": true,
+  "additive": false,
+  "watch": {
+    "comment": "the waving hand must rise and sweep, not just jitter",
+    "node": "RightHand",
+    "minTravel": 0.3
+  },
+  "grip": {
+    "comment": "the left hand keeps the rifle as the chest leans",
+    "pivotNode": "Spine2",
+    "socketNode": "AK47_Mount"
+  },
+  "follow": [
+    {"node": "AK47_Mount", "target": "Spine2"},
+    {"node": "Weapon_Carbine", "target": "Spine2"}
+  ],
+  "ignoreParts": [
+    "Weapon_Carbine",
+    "AK47.Root"
+  ],
+  "tracks": [
+    {
+      "node": "RightArm",
+      "comment": "abduction out to the side on world Z, clear of the slung rifle",
+      "keys": [
+        {"time": 0.0, "worldAxis": "z", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "z", "angle": -62.0},
+        {"time": 0.5, "worldAxis": "z", "angle": -98.0},
+        {"time": 1.5, "worldAxis": "z", "angle": -98.0},
+        {"time": 1.72, "worldAxis": "z", "angle": -40.0},
+        {"time": 2.0, "worldAxis": "z", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "RightForeArm",
+      "comment": "fold the forearm up so the hand stands beside the head",
+      "keys": [
+        {"time": 0.0, "worldAxis": "z", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "z", "angle": 34.0},
+        {"time": 0.5, "worldAxis": "z", "angle": 78.0},
+        {"time": 1.5, "worldAxis": "z", "angle": 78.0},
+        {"time": 1.72, "worldAxis": "z", "angle": 30.0},
+        {"time": 2.0, "worldAxis": "z", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "RightHand",
+      "comment": "three friendly side to side wrist waves",
+      "keys": [
+        {"time": 0.0, "worldAxis": "z", "angle": 0.0},
+        {"time": 0.5, "worldAxis": "z", "angle": 0.0},
+        {"time": 0.62, "worldAxis": "z", "angle": 24.0},
+        {"time": 0.82, "worldAxis": "z", "angle": -20.0},
+        {"time": 1.02, "worldAxis": "z", "angle": 24.0},
+        {"time": 1.22, "worldAxis": "z", "angle": -20.0},
+        {"time": 1.42, "worldAxis": "z", "angle": 16.0},
+        {"time": 1.58, "worldAxis": "z", "angle": 0.0},
+        {"time": 2.0, "worldAxis": "z", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "Neck",
+      "comment": "turn toward the waving hand (the character's right is negative world Y)",
+      "keys": [
+        {"time": 0.0, "worldAxis": "y", "angle": 0.0},
+        {"time": 0.5, "worldAxis": "y", "angle": -7.0},
+        {"time": 1.5, "worldAxis": "y", "angle": -7.0},
+        {"time": 1.8, "worldAxis": "y", "angle": 0.0},
+        {"time": 2.0, "worldAxis": "y", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "Head",
+      "comment": "a small nod and tilt keeps the greeting warm",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.5, "worldAxis": "x", "angle": 3.0},
+        {"time": 1.0, "worldAxis": "x", "angle": -2.0},
+        {"time": 1.5, "worldAxis": "x", "angle": 2.0},
+        {"time": 1.8, "worldAxis": "x", "angle": 0.0},
+        {"time": 2.0, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "Spine2",
+      "comment": "slight lean into the greeting; the rifle follows this",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.5, "worldAxis": "x", "angle": 2.5},
+        {"time": 1.5, "worldAxis": "x", "angle": 2.5},
+        {"time": 1.8, "worldAxis": "x", "angle": 0.0},
+        {"time": 2.0, "worldAxis": "x", "angle": 0.0}
+      ]
+    }
+  ]
+}

@@ -126,25 +126,15 @@ def grip_offset(bones, grip):
             for col in range(3)]
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--scene", default=None,
-                        help="rigged GLB to animate (default: the fixture)")
-    parser.add_argument("--clip", default=str(DEFAULT_CLIP))
-    parser.add_argument("--timeout", type=float, default=600.0)
-    parser.add_argument("--sheet", default=None,
-                        help="frame sheet PPM path (default: build/replay-<clip>.ppm)")
-    args = parser.parse_args()
-
-    clip_path = Path(args.clip)
+def replay(clip_path, scene_override, timeout, sheet_override):
     clip = json.loads(clip_path.read_text())
-    scene = Path(args.scene or clip.get("scene") or FIXTURE)
+    scene = Path(scene_override or clip.get("scene") or FIXTURE)
     if not scene.is_absolute():
         scene = ROOT / scene
     if not scene.exists():
         print(f"skipped: rigged scene not present ({scene})")
-        return 0
-    sheet = Path(args.sheet) if args.sheet else (
+        return []
+    sheet = Path(sheet_override) if sheet_override else (
         ROOT / "build" / f"replay-{clip_path.stem}.ppm")
     exe = find_executable()
     for stale in (ACK, BONES, FRAMES):
@@ -155,9 +145,10 @@ def main():
 
     frames = round(clip["duration"] * clip.get("fps", 30))
     follow = clip.get("follow", [])
-    # A follow entry generates one socket track with a key per target key.
-    generated = sum(len(track["keys"]) for track in clip["tracks"]
-                    if any(entry["target"] == track["node"] for entry in follow))
+    # Each follow entry generates one socket track with a key per target key.
+    keyed = {track["node"]: track for track in clip["tracks"]}
+    generated = sum(len(keyed[entry["target"]]["keys"])
+                    for entry in follow if entry["target"] in keyed)
     expected_tracks = len(clip["tracks"]) + len(follow)
     expected_keys = sum(len(track["keys"]) for track in clip["tracks"]) \
         + generated
@@ -177,23 +168,26 @@ def main():
          "--live", str(LIVE), "--width", "900", "--height", "700"],
         cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
-        wait_for(lambda ack: BONES.exists(), args.timeout)
+        wait_for(lambda ack: BONES.exists(), timeout)
         rest = read_bones()
         if not rest:
             failures.append("rest bone inventory was not written")
             rest = {"nodes": []}
 
         # Revision 2: author the clip, scan every frame with collision checks.
+        scan = {"type": "scan-frames", "collisions": collision_audit}
+        if clip.get("ignoreParts"):
+            scan["ignoreParts"] = clip["ignoreParts"]
         write_live(2, [
             animation_command(clip),
-            {"type": "scan-frames", "collisions": collision_audit},
+            scan,
             {"type": "audit"},
             {"type": "capture-sheet", "path": str(sheet)},
         ])
         ack = wait_for(
             lambda a: a.get("revision") == 2 and a.get("frameScan") == frames
             and not a.get("scanRunning")
-            and len(read_frames().get("frames", [])) == frames, args.timeout)
+            and len(read_frames().get("frames", [])) == frames, timeout)
 
         check("revision", ack.get("revision") == 2, ack.get("revision"))
         check("status", ack.get("status") == "ok", ack.get("status"))
@@ -219,7 +213,7 @@ def main():
             check("follows", ack.get("follows") == len(follow),
                   ack.get("follows"))
         # The sheet is rendered after the scan, so wait for it to land.
-        deadline = time.time() + min(args.timeout, 300.0)
+        deadline = time.time() + min(timeout, 300.0)
         while time.time() < deadline and not sheet.exists():
             time.sleep(0.2)
         check("sheet", sheet.exists(), str(sheet.name))
@@ -266,8 +260,7 @@ def main():
                 {"type": "pause"},
                 {"type": "list-bones"},
             ])
-            wait_for(lambda a, rev=revision: a.get("revision") == rev,
-                     args.timeout)
+            wait_for(lambda a, rev=revision: a.get("revision") == rev, timeout)
             bones = read_bones()
             if not bones:
                 failures.append(f"sample {sample:.2f}s produced no bone list")
@@ -297,9 +290,34 @@ def main():
         print(f"animation {clip.get('name')} failed:")
         for failure in failures:
             print("  -", failure)
+    else:
+        print(f"animation {clip.get('name')} is clean: {frames} frames, "
+              f"{expected_tracks} tracks, {expected_keys} keys")
+    return failures
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scene", default=None,
+                        help="rigged GLB to animate (default: the fixture)")
+    parser.add_argument("--clip", action="append", default=None,
+                        help="clip file to replay; repeat for several clips")
+    parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument("--sheet", default=None,
+                        help="frame sheet PPM path (default: build/replay-<clip>.ppm)")
+    args = parser.parse_args()
+    clips = args.clip or [str(DEFAULT_CLIP)]
+    if args.sheet and len(clips) > 1:
+        raise SystemExit("--sheet needs a single --clip")
+    failures = []
+    for clip in clips:
+        print(f"== {Path(clip).name}")
+        failures += replay(Path(clip), args.scene, args.timeout, args.sheet)
+    if failures:
+        print("failed checks:")
+        for failure in failures:
+            print("  -", failure)
         return 1
-    print(f"animation {clip.get('name')} is clean: {frames} frames, "
-          f"{expected_tracks} tracks, {expected_keys} keys")
     return 0
 
 

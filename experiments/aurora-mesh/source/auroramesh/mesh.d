@@ -124,6 +124,9 @@ struct Mesh
     int[] faceMaterials;
     MaterialSlot[] materials;
     RgbaImage[] textures;
+    /// Dominant skin joint per baked vertex (skin index * 1024 + joint, or -1).
+    /// Lets audits group faces by body part instead of by connectivity.
+    int[] vertexJoints;
 
     int addVertex(Vec3 point)
     {

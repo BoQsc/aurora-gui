@@ -1252,6 +1252,8 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
                                 targetWeight;
                         }
                     }
+                int dominantJoint = -1;
+                double dominantWeight = 0;
                 if (node.skin >= 0 && node.skin < skinMatrices.length &&
                     joints.components >= 4 && weights.components >= 4)
                 {
@@ -1262,6 +1264,12 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
                         const jointIndex = cast(int) joints.values[
                             vertexIndex * 4 + component];
                         const weight = weights.values[vertexIndex * 4 + component];
+                        if (weight > dominantWeight)
+                        {
+                            dominantWeight = weight;
+                            dominantJoint = cast(int) joints.values[
+                                vertexIndex * 4 + component];
+                        }
                         if (jointIndex < 0 || jointIndex >= skinMatrices[node.skin].length ||
                             weight == 0)
                             continue;
@@ -1289,6 +1297,8 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
                     Vec2(uvs.values[vertexIndex * 2],
                         uvs.values[vertexIndex * 2 + 1]) : Vec2(0, 0);
                 mesh.normals ~= normal;
+                mesh.vertexJoints ~= dominantJoint >= 0 ?
+                    node.skin * 1024 + dominantJoint : -1;
             }
             const materialIndex = primitive.material;
             if (indices.count > 0 && indices.components == 1)

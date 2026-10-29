@@ -145,9 +145,9 @@
       "kind": "tests",
       "command": {
         "program": "python",
-        "args": ["-u", "tests/replay_clip.py", "--clip", "assets/animations/rifle-ready-idle.json", "--timeout", "900"],
+        "args": ["-u", "tests/replay_clip.py", "--clip", "assets/animations/human-friendly-wave.json", "--clip", "assets/animations/human-snap-kick.json", "--clip", "assets/animations/rifle-ready-idle.json", "--timeout", "900"],
         "workdir": "experiments/aurora-mesh",
-        "timeout": 1200000
+        "timeout": 3600000
       }
     }
   ]
