@@ -200,8 +200,11 @@ int main()
     assert(panel.bounds().width < root.bounds().width - 100,
         "the floating card should stay a small panel, not span the window: " ~
         to!string(panel.bounds().width));
-    assert(panelOrigin.y >= pillOrigin.y + pill.bounds().height,
-        "the floating card should open under the pill");
+    const pillBottom = pillOrigin.y + pill.bounds().height;
+    assert(panelOrigin.y <= pillBottom && panelOrigin.y >= pillBottom - 2,
+        "the floating card should sit flush under the pill so the peek has no " ~
+        "gap to cross: cardY=" ~ to!string(panelOrigin.y) ~
+        " pillBottom=" ~ to!string(pillBottom));
     assert(panelOrigin.x < pillOrigin.x + pill.bounds().width,
         "the floating card should be right-aligned to the pill");
     auto firstStop = requireWidget!Button(root, "oc-process-stop-0");
@@ -209,12 +212,23 @@ int main()
         "the listed row does not offer a one-click Stop");
     writeln("PASS hovering the pill peeks at the floating card");
 
-    // Leaving both closes the peek.
+    // The card is flush under the pill, so walking down into it keeps the peek
+    // open: hiding immediately must not fight the natural pointer path.
+    driver.moveTo(Point(globalCenter(pill).x, panelOrigin.y + 6));
+    root.tickTree(0.016);
+    assert(driver.paint(), "card-hover paint failed");
+    assert(findById(root, "oc-processes-panel") !is null,
+        "moving the pointer from the pill into the card hid it");
+    writeln("PASS stepping from the pill into the card keeps the peek");
+
+    // Leaving hides the peek at once: this is a pill with a popover, not a
+    // hover tooltip that lingers over the conversation.
     driver.moveTo(Point(4, 690));
-    waitUntil(root, driver,
-        delegate() { return findById(root, "oc-processes-panel") is null; },
-        "the hover peek to close");
-    writeln("PASS the card closes when the pointer leaves without pinning");
+    root.tickTree(0.016);
+    assert(driver.paint(), "dismissed-card paint failed");
+    assert(findById(root, "oc-processes-panel") is null,
+        "the hover peek lingered after the pointer left the pill");
+    writeln("PASS the card hides on the first frame after the pointer leaves");
 
     // Clicking the pill pins the card open.
     driver.moveTo(globalCenter(pill));

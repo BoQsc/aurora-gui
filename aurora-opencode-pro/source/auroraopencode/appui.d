@@ -11493,9 +11493,7 @@ public final class OpenCodeRoot : VBox
     private BackgroundProcessPanel _processPanel;
     private bool _processPanelPinned;
     private double _processHoverSeconds;
-    private double _processLeaveSeconds;
     private enum double processPanelHoverDelay = 0.18;
-    private enum double processPanelLeaveGrace = 0.30;
     // experimental: attachments - pending dropped files / large pastes and the
     // chip row that shows them. See source/auroraopencode/attachments.d.
     private Attachment[] _pendingAttachments;
@@ -14343,7 +14341,6 @@ private string _suggestExcludeId;
         if (_processPanelPinned)
         {
             _processHoverSeconds = 0;
-            _processLeaveSeconds = 0;
             showProcessPanel(true);
             return;
         }
@@ -14351,7 +14348,6 @@ private string _suggestExcludeId;
         const overCard = processPanelOpen() && _processPanel.hoverActive();
         if (overButton || overCard)
         {
-            _processLeaveSeconds = 0;
             if (processPanelOpen()) return;
             _processHoverSeconds += deltaSeconds;
             if (_processHoverSeconds >= processPanelHoverDelay)
@@ -14361,16 +14357,12 @@ private string _suggestExcludeId;
             }
             return;
         }
-        // The pointer may be travelling from the pill to the card, so the peek
-        // closes only after a short grace period away from both.
+        // The card sits flush under the pill, so there is no gap a pointer has
+        // to cross: leaving the pill or the card hides the peek immediately
+        // rather than lingering over the conversation.
         _processHoverSeconds = 0;
         if (!processPanelOpen()) return;
-        _processLeaveSeconds += deltaSeconds;
-        if (_processLeaveSeconds >= processPanelLeaveGrace)
-        {
-            _processLeaveSeconds = 0;
-            showProcessPanel(false);
-        }
+        showProcessPanel(false);
     }
 
     /// Test-only: "id:state" for each row the floating card currently renders.
@@ -14461,7 +14453,10 @@ private string _suggestExcludeId;
         const height = _processPanel.preferredCardHeight();
         int x = buttonRight - width;
         x = clampInt(x, 8, maxInt(8, root.bounds().width - width - 8));
-        int y = buttonBottom + 6;
+        // Flush under the pill (one pixel of overlap): the peek hides the moment
+        // the pointer leaves, so there must be no gap that a pointer travelling
+        // from the pill to the card could fall into.
+        int y = buttonBottom - 1;
         y = clampInt(y, 8, maxInt(8, root.bounds().height - height - 8));
         _processPanel.setBounds(Rect(x, y, width, height));
     }
@@ -14479,7 +14474,6 @@ private string _suggestExcludeId;
         else
         {
             if (_processPanel !is null) _processPanel.setPinned(false);
-            _processLeaveSeconds = 0;
             // While the pointer still rests on the pill or the card, the peek
             // stays: unpinning only withdraws the card once the pointer leaves.
             if (!_processButton.hovered() &&
