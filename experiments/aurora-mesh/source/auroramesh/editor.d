@@ -827,6 +827,22 @@ final class MeshEditor : Widget
      */
     private static void writeReport(string path, string text)
     {
+        // A window started from another folder has no ./build yet, and a report
+        // that silently fails makes a working live channel look dead.
+        size_t cut;
+        bool hasFolder;
+        foreach (index, character; path)
+            if (character == '/' || character == '\\')
+            {
+                cut = index;
+                hasFolder = true;
+            }
+        if (hasFolder && cut > 0)
+        {
+            const folder = path[0 .. cut];
+            if (!exists(folder))
+                mkdirRecurse(folder);
+        }
         const temporary = path ~ ".tmp";
         write(temporary, text);
         if (exists(path))
@@ -1965,7 +1981,7 @@ final class MeshEditor : Widget
     {
         try
             writeReport("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f,"regions":%d,"region":"%s","maskVerts":%d,"maskFaces":%d,"op":"%s","opMs":%.2f,"replaceOk":%s,"replaceReason":"%s","shellFaces":%d,"shellLo":[%.3f,%.3f,%.3f],"shellHi":[%.3f,%.3f,%.3f]}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f,"regions":%d,"region":"%s","maskVerts":%d,"maskFaces":%d,"op":"%s","opMs":%.2f,"replaceOk":%s,"replaceReason":"%s","shellFaces":%d,"shellLo":[%.3f,%.3f,%.3f],"shellHi":[%.3f,%.3f,%.3f],"camTarget":[%.3f,%.3f,%.3f],"camYaw":%.3f,"camPitch":%.3f,"camDistance":%.3f}`,
                 _liveRevision, _liveExtras.length, _poseOverrides.length,
                 jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
@@ -1992,7 +2008,9 @@ final class MeshEditor : Widget
                 _maskFaces, jsonEscape(_lastOp), _lastOpMs,
                 _lastReplaceOk ? "true" : "false",
                 jsonEscape(_lastReplaceReason), _shellFaces, _shellLo.x,
-                _shellLo.y, _shellLo.z, _shellHi.x, _shellHi.y, _shellHi.z));
+                _shellLo.y, _shellLo.z, _shellHi.x, _shellHi.y, _shellHi.z,
+                _camera.target.x, _camera.target.y, _camera.target.z,
+                _camera.yaw, _camera.pitch, _camera.distance));
         catch (Exception)
         {
         }
@@ -2303,6 +2321,23 @@ final class MeshEditor : Widget
             _dirty = true;
             invalidate();
             return ok;
+        }
+        if (type == "camera")
+        {
+            // Framing belongs to the live channel: without it a detail cannot be
+            // looked at from the running window, and every inspection turns into a
+            // separate headless run.
+            const target = liveNumbers(liveChild(command, "target"));
+            if (target.length >= 3)
+                _camera.target = Vec3(target[0], target[1], target[2]);
+            _camera.yaw = liveNumber(liveChild(command, "yaw"), _camera.yaw);
+            _camera.pitch = liveNumber(liveChild(command, "pitch"), _camera.pitch);
+            _camera.distance = liveNumber(liveChild(command, "distance"),
+                _camera.distance);
+            _camera.fov = liveNumber(liveChild(command, "fov"), _camera.fov);
+            _dirty = true;
+            invalidate();
+            return true;
         }
         if (type == "capture")
         {
