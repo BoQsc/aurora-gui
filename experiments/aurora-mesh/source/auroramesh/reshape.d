@@ -216,7 +216,7 @@ private void modelToes(ref Mesh mesh, const int[] foot, double strength)
     if (!(acrossSpan > 1.0e-4) || !(spanY > 1.0e-4) ||
         !(abs(front - heel) > 1.0e-4))
         return;
-    const toeRadius = acrossSpan * 0.13;
+    const toeRadius = acrossSpan * 0.15;
     foreach (toe; 0 .. Toes)
     {
         // The big toe is the widest, so it sits nearest the centre line.
@@ -232,7 +232,7 @@ private void modelToes(ref Mesh mesh, const int[] foot, double strength)
         const radius = toeRadius * (1.0 - abs(offset) / (acrossSpan * 0.75));
         // A toe reads as a few millimetres of relief at body scale. The region
         // is refined first, so the bumps have vertices to lift.
-        bumps ~= Bump(center, radius * 1.1, radius * 0.55 * strength);
+        bumps ~= Bump(center, radius * 1.3, radius * 0.85 * strength);
     }
     applyBumps(mesh, foot, bumps);
 }
@@ -419,6 +419,10 @@ private int refineOnce(ref Mesh mesh, const RegionBox box)
     Vec3[] grown;
     Vec2[] grownUvs;
     long[long] midpoints;
+    // Only faces that touch a split edge need an edge lookup; the rest are
+    // copied through untouched. Without this the rebuild hashes every edge of
+    // the whole mesh on every pass.
+    auto touched = new bool[vertexCount];
 
     int midpoint(int a, int b)
     {
@@ -446,6 +450,9 @@ private int refineOnce(ref Mesh mesh, const RegionBox box)
             midpoint(face.a, face.b);
             midpoint(face.b, face.c);
             midpoint(face.c, face.a);
+            touched[face.a] = true;
+            touched[face.b] = true;
+            touched[face.c] = true;
         }
     if (grown.length == 0)
         return 0;
@@ -458,6 +465,13 @@ private int refineOnce(ref Mesh mesh, const RegionBox box)
         const a = face.a;
         const b = face.b;
         const c = face.c;
+        if (!touched[a] && !touched[b] && !touched[c])
+        {
+            faces ~= face;
+            if (hasMaterials)
+                materials ~= mesh.faceMaterials[index];
+            continue;
+        }
         int ab = -1;
         int bc = -1;
         int ca = -1;
@@ -595,7 +609,7 @@ int reshapeRegion(ref Mesh mesh, string region, string style,
     // around as a blob.
     // Five toes need roughly twenty vertices across the foot, so the region is
     // grown well past what a silhouette needs.
-    refineRegion(mesh, region, 400, 4);
+    refineRegion(mesh, region, 700, 4);
     sanitizeNormals(mesh);
     const shaped = regionVertices(mesh, box);
     const refinedCount = shaped.length;
