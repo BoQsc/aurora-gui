@@ -1,0 +1,44 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/source/auroraopencode/taskflow.d",
+    "aurora-opencode-pro/source/auroraopencode/planhistory.d",
+    "aurora-opencode-pro/tests/plan_history_ui_contracts.d",
+    "aurora-opencode-core/source/auroraopencode/core.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/plan_history_ui_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/plan-history-smoke/plan_history_ui_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/plan-history-smoke/plan_history_ui_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    }
+  ]
+}

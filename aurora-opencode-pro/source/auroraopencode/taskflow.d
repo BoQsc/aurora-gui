@@ -3,6 +3,7 @@ module auroraopencode.taskflow;
 import auroraopencode.core;
 import auroraopencode.requestintent;
 import auroraopencode.planmode : experimentalStrictPlanEnabled;
+import auroraopencode.planhistory : recordPlanHistory;
 import auroraopencode.verification : verificationCheck;
 import auroraopencode.workevidence : observedResultKey;
 import std.algorithm : canFind, min;
@@ -286,6 +287,7 @@ void restoreBranchTask(ref ChatSession session)
         {
             restoreActiveTaskState(session, session.messages[index].taskStateJson);
             initializeLegacyTask(session);
+            recordPlanHistory(session, "branch_restore");
             return;
         }
     if (!session.contract.id.length) return; // Legacy state has no branch receipts.
@@ -299,6 +301,7 @@ void restoreBranchTask(ref ChatSession session)
             break;
         }
     session.taskArchive = archive;
+    recordPlanHistory(session, "branch_restore");
 }
 
 string evidenceKind(const ref ChatMessage message)

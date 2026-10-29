@@ -809,6 +809,21 @@ public struct GoalHistoryEntry
     long closedAt; // 0 while the goal is active or paused.
 }
 
+/// One immutable snapshot of a conversation's plan at the moment it changed.
+/// A plan is model-owned and rewritten many times during a task, so keeping
+/// every revision lets later diagnosis recover what the agent believed at each
+/// point instead of only the final checklist.
+public struct PlanHistoryEntry
+{
+    long at;            // Unix time the revision was recorded.
+    string source;      // What produced it ("update_plan", "subplan", ...).
+    string explanation; // Stated reason, when the model or app supplied one.
+    string objective;   // Plan objective after the revision.
+    string status;      // Conversation taskStatus after the revision.
+    TaskStep[] steps;
+    NestedPlan[] nestedPlans;
+}
+
 public JSONValue goalHistoryToJson(const(GoalHistoryEntry)[] history)
 {
     JSONValue result = JSONValue.emptyArray;
@@ -995,6 +1010,7 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
     root["taskArchive"] = JSONValue(session.taskArchive);
     root["taskSteps"] = taskStepsToJson(session.taskSteps);
     root["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
+    root["planHistory"] = planHistoryToJson(session.planHistory);
 }
 
 public void readTaskContract(ref ChatSession session, JSONValue root)
@@ -1048,6 +1064,8 @@ public void readTaskContract(ref ChatSession session, JSONValue root)
     if (auto value = "taskSteps" in root.object) session.taskSteps = taskStepsFromJson(*value);
     if (auto value = "nestedPlans" in root.object)
         session.nestedPlans = nestedPlansFromJson(*value, session.taskSteps.length);
+    if (auto value = "planHistory" in root.object)
+        session.planHistory = planHistoryFromJson(*value);
 }
 
 public void copyTaskContract(ref ChatSession target, const ref ChatSession source)
@@ -1065,6 +1083,9 @@ public string activeTaskStateJson(const ref ChatSession session)
     state["verificationStatus"] = session.verificationStatus;
     writeTaskContract(state, session);
     state.object.remove("taskArchive");
+    // An archived task snapshot is restored as a whole, so nesting the full
+    // plan history inside it would duplicate every revision on each reset.
+    state.object.remove("planHistory");
     return state.toString();
 }
 
@@ -1132,6 +1153,56 @@ public NestedPlan[] nestedPlansFromJson(JSONValue value, size_t parentCount)
     return plans;
 }
 
+/// Serialize the append-only plan history. Each entry is a complete snapshot:
+/// step ids, kinds, acceptance and evidence are kept so an old revision is
+/// readable without reconstructing it from transcript prose.
+public JSONValue planHistoryToJson(const(PlanHistoryEntry)[] history)
+{
+    JSONValue result = JSONValue(string[].init);
+    foreach (entry; history)
+    {
+        JSONValue item;
+        item["at"] = entry.at;
+        item["source"] = entry.source;
+        item["explanation"] = entry.explanation;
+        item["objective"] = entry.objective;
+        item["status"] = entry.status;
+        item["steps"] = taskStepsToJson(entry.steps);
+        item["nestedPlans"] = nestedPlansToJson(entry.nestedPlans);
+        result.array ~= item;
+    }
+    return result;
+}
+
+public PlanHistoryEntry[] planHistoryFromJson(JSONValue value)
+{
+    PlanHistoryEntry[] result;
+    if (value.type != JSONType.array) return result;
+    foreach (item; value.array)
+    {
+        if (item.type != JSONType.object) continue;
+        string field(string key)
+        {
+            if (auto f = key in item.object)
+                if (f.type == JSONType.string) return f.str;
+            return "";
+        }
+        PlanHistoryEntry entry;
+        if (auto f = "at" in item.object)
+            if (f.type == JSONType.integer) entry.at = f.integer;
+        entry.source = field("source");
+        entry.explanation = field("explanation");
+        entry.objective = field("objective");
+        entry.status = field("status");
+        if (auto f = "steps" in item.object) entry.steps = taskStepsFromJson(*f);
+        if (auto f = "nestedPlans" in item.object)
+            entry.nestedPlans = nestedPlansFromJson(*f, entry.steps.length);
+        if (entry.steps.length || entry.nestedPlans.length || entry.objective.length)
+            result ~= entry;
+    }
+    return result;
+}
+
 public struct ChatSession
 {
     // Stable runtime identity. Messages have always had graph ids, but an
@@ -1169,6 +1240,10 @@ public struct ChatSession
     bool unread;
     TaskStep[] taskSteps;
     NestedPlan[] nestedPlans;
+    // Append-only snapshots of every plan revision for this conversation.
+    // Bounded by the recorder so a long task cannot grow the session without
+    // limit; the newest entry is always the live plan.
+    PlanHistoryEntry[] planHistory;
     string verificationStatus; // "not_required" | "required" | "passed" | "failed"
     // Guidance entered with Enter while a turn is running steers it at the
     // next safe tool boundary. Keeping it here makes steering survive a crash.

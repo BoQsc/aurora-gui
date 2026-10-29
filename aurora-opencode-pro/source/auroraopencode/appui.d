@@ -38,9 +38,12 @@ import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
     fetchOpenCodeGoServiceAccountName, fetchUsageLimits,
     usageProviderForBaseUrl;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
-    changeRecordDiff, executeTool, listChangeRecords,
+    changeRecordDiff, clearFinishedSupervisedProcesses, executeTool,
+    killAllSupervisedProcesses, listChangeRecords, listSupervisedProcesses,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
-    previewToolDiffText,
+    previewToolDiffText, removeSupervisedProcess,
+    requestAllSupervisedProcessKills, requestSupervisedProcessKill,
+    SupervisedProcessInfo,
     rebuildRequestHandler, rebuildSourceCheckHandler, syncRequestHandler, revertChangeRecord,
     developerSourceDirectoryHandler, developerSourceEditCheckHandler, developerToolSourceDirectory,
     revertChangeRecords,
@@ -86,6 +89,7 @@ import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError, incrementalPlan,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
     restoreBranchTask, initializeLegacyTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
+import auroraopencode.planhistory : recordPlanHistory;
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction,
@@ -8348,6 +8352,530 @@ private final class GoalEditor : TextField
     }
 }
 
+// ---------------------------------------------------------------------------
+// Background process control
+// ---------------------------------------------------------------------------
+
+/// Button that reports its own hover state. A card built from several buttons
+/// needs this to tell "the pointer is on one of my controls" from "the pointer
+/// left the card": hovering a child clears the parent's hover flag.
+private class HoverAwareButton : Button
+{
+    void delegate(bool hovered) onHoverChanged;
+
+    this(string text = "")
+    {
+        super(text);
+    }
+
+    protected override void onMouseEnter()
+    {
+        if (onHoverChanged !is null) onHoverChanged(true);
+    }
+
+    protected override void onMouseLeave()
+    {
+        if (onHoverChanged !is null) onHoverChanged(false);
+    }
+}
+
+/// Row button that carries its own row number. The card reuses one button per
+/// row across refreshes, so the row must travel with the widget: a loop-captured
+/// index would be shared by every button and always address the last row.
+private final class ProcessRowButton : HoverAwareButton
+{
+    size_t row;
+    void delegate(size_t row) onRowAction;
+
+    this()
+    {
+        super("Stop");
+    }
+
+    override void activate()
+    {
+        if (!enabled()) return;
+        if (onRowAction !is null) onRowAction(row);
+    }
+}
+
+/// Toolbar pill for the supervised background commands: it reports how many are
+/// running, peeks at the floating card on hover, and pins the card on click. The
+/// pill stays present (muted) when nothing is registered, so the list is always
+/// one hover away instead of being a permanent row in the conversation.
+private final class BackgroundProcessButton : Widget
+{
+    private static immutable int pillWidth = 62;
+    private static immutable int pillHeight = 26;
+
+    void delegate() onTogglePinned;
+
+    private size_t _running;
+    private size_t _finished;
+    private bool _pinned;
+    private bool _hover;
+
+    this()
+    {
+        layoutHints().preferredWidth = pillWidth;
+        layoutHints().minWidth = pillWidth;
+        layoutHints().preferredHeight = pillHeight;
+        layoutHints().minHeight = pillHeight;
+        layoutHints().fillCrossAxis = false;
+        setCursor(CursorKind.hand);
+    }
+
+    void setState(size_t running, size_t finished, bool pinned)
+    {
+        if (running == _running && finished == _finished && pinned == _pinned)
+            return;
+        _running = running;
+        _finished = finished;
+        _pinned = pinned;
+        invalidate();
+    }
+
+    /// Test-only: the count drawn on the pill ("" when nothing is registered).
+    string labelForTesting() const
+    {
+        if (_running > 0) return to!string(_running);
+        return _finished > 0 ? to!string(_finished) : "";
+    }
+
+    bool pinnedForTesting() const { return _pinned; }
+
+    protected override Size onMeasure(Size available)
+    {
+        layoutHints().preferredWidth = pillWidth;
+        layoutHints().preferredHeight = pillHeight;
+        return Size(pillWidth, pillHeight);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const width = bounds().width;
+        const height = bounds().height;
+        const active = _running > 0;
+        const mark = active || _pinned ? opencodeAccent : opencodeMuted;
+        canvas.drawRoundedRect(Rect(0, 0, width, height), height / 2,
+            _pinned ? opencodeSelection :
+                (_hover ? opencodePressed : opencodeField),
+            active || _pinned ? opencodeAccent.withAlpha(_pinned ? 255 : 150)
+                : opencodeBorder, 1);
+        // Two stacked bars instead of a font glyph: no code page can turn this
+        // into a missing-character box.
+        const glyphX = 12;
+        const glyphY = height / 2 - 4;
+        canvas.drawLine(Point(glyphX, glyphY), Point(glyphX + 13, glyphY), mark, 2);
+        canvas.drawLine(Point(glyphX, glyphY + 7), Point(glyphX + 9, glyphY + 7),
+            mark, 2);
+        const label = labelForTesting();
+        if (label.length > 0)
+            canvas.drawTextInRect(Rect(glyphX + 18, 0, width - glyphX - 24, height),
+                toUTF32(label), active ? Color.rgb(255, 255, 255) : opencodeMuted,
+                1, HorizontalAlign.right, VerticalAlign.middle, false);
+    }
+
+    protected override void onMouseEnter()
+    {
+        _hover = true;
+        invalidate();
+    }
+
+    protected override void onMouseLeave()
+    {
+        _hover = false;
+        invalidate();
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button != MouseButton.left) return false;
+        if (onTogglePinned !is null) onTogglePinned();
+        return true;
+    }
+}
+
+/// Floating card under the toolbar pill listing the supervised background
+/// commands the agent left running. The agent keeps chatting while a command
+/// runs, so without this the command is an unaccounted process behind the
+/// conversation: every row terminates or clears its record in one click, and
+/// `Stop all` covers the rest. Hovering the pill peeks at the card; clicking it
+/// pins the card open.
+private final class BackgroundProcessPanel : Widget
+{
+    /// Width the card prefers; the app clamps it to the window.
+    static immutable int cardWidth = 460;
+
+    private static immutable int rowHeight = 24;
+    private static immutable int headerHeight = 26;
+    private static immutable int padH = 12;
+    private static immutable int padV = 6;
+    private static immutable int rowButtonWidth = 56;
+    private static immutable int metaWidth = 76;
+    private static immutable size_t maxRows = 4;
+    /// Rows reserved for the "nothing registered" explanation.
+    private static immutable size_t emptyRows = 2;
+
+    void delegate(string id) onTerminate;
+    void delegate(string id) onClear;
+    void delegate() onTerminateAll;
+    void delegate() onClearFinished;
+    void delegate() onPinToggle;
+
+    private SupervisedProcessInfo[] _items;
+    private ProcessRowButton[] _rowButtons;
+    private HoverAwareButton _stopAll;
+    private HoverAwareButton _clearFinished;
+    private HoverAwareButton _pin;
+    private bool _pinned;
+    private string _signature;
+    private int _headerTextWidth;
+    /// Number of this card's buttons currently under the pointer. The card is
+    /// "hovered" while either it or one of its controls is, so moving from the
+    /// card onto a button never reads as leaving the card.
+    private size_t _childHoverCount;
+
+    this()
+    {
+        // Floating card: the window root must never lay it out. Its bounds come
+        // from `positionProcessPanel`, exactly like the hover tooltips.
+        layoutHints().excludeFromLayout = true;
+        layoutHints().allowOverflow = true;
+        // One reused button per row: the card refreshes several times a second
+        // while a command runs, and rebuilding children each time would churn
+        // focus and pointer state.
+        foreach (index; 0 .. maxRows)
+        {
+            auto button = new ProcessRowButton();
+            button.row = index;
+            button.onRowAction = &rowAction;
+            button.onHoverChanged = &childHoverChanged;
+            button.setId("oc-process-stop-" ~ to!string(index));
+            styleProcessButton(button, rowButtonWidth);
+            add(button);
+            _rowButtons ~= button;
+        }
+
+        _stopAll = new HoverAwareButton("Stop all");
+        _stopAll.onHoverChanged = &childHoverChanged;
+        _stopAll.setId("oc-process-stop-all");
+        styleProcessButton(_stopAll, 92);
+        _stopAll.onClick = delegate()
+        {
+            if (onTerminateAll !is null) onTerminateAll();
+        };
+        add(_stopAll);
+
+        _clearFinished = new HoverAwareButton("Clear finished");
+        _clearFinished.onHoverChanged = &childHoverChanged;
+        _clearFinished.setId("oc-process-clear");
+        styleProcessButton(_clearFinished, 116);
+        _clearFinished.onClick = delegate()
+        {
+            if (onClearFinished !is null) onClearFinished();
+        };
+        add(_clearFinished);
+
+        _pin = new HoverAwareButton("Pin");
+        _pin.onHoverChanged = &childHoverChanged;
+        _pin.setId("oc-process-pin");
+        styleProcessButton(_pin, 60);
+        _pin.onClick = delegate()
+        {
+            if (onPinToggle !is null) onPinToggle();
+        };
+        add(_pin);
+
+        updateButtons();
+    }
+
+    /// Whether the pointer is on the card or any of its controls.
+    bool hoverActive() const
+    {
+        return hovered() || _childHoverCount > 0;
+    }
+
+    void setPinned(bool pinned)
+    {
+        if (_pinned == pinned) return;
+        _pinned = pinned;
+        updateButtons();
+        invalidate();
+    }
+
+    private void childHoverChanged(bool hovered)
+    {
+        if (hovered) ++_childHoverCount;
+        else if (_childHoverCount > 0) --_childHoverCount;
+        invalidate();
+    }
+
+    private void styleProcessButton(Button button, int width)
+    {
+        button.setFlat(true);
+        button.setTextPixelSize(opencodeFontSmall);
+        button.layoutHints().minWidth = width;
+        button.layoutHints().preferredWidth = width;
+        button.layoutHints().preferredHeight = rowHeight - 2;
+        button.layoutHints().minHeight = rowHeight - 2;
+        button.layoutHints().fillCrossAxis = false;
+    }
+
+    /// Publish a registry snapshot (newest first). Repaints only when the
+    /// rendered content changes; a running row's elapsed label ticks once a
+    /// second because the whole-second value is part of the signature.
+    void setProcesses(SupervisedProcessInfo[] processes)
+    {
+        auto signature = appender!string();
+        foreach (process; processes)
+        {
+            signature.put(process.id);
+            signature.put('|');
+            signature.put(process.state());
+            signature.put('|');
+            signature.put(to!string(process.elapsedMs / 1_000));
+            signature.put('|');
+            signature.put(to!string(process.exitCode));
+            signature.put('\n');
+        }
+        _items = processes;
+        if (signature.data == _signature) return;
+        _signature = signature.data;
+        updateButtons();
+        invalidate();
+    }
+
+    /// Height the card needs for its current records, including the empty-state
+    /// explanation. The app publishes this to the floating card's bounds.
+    int preferredCardHeight() const
+    {
+        if (_items.length == 0)
+            return padV * 2 + headerHeight + cast(int) emptyRows * rowHeight;
+        const rows = _items.length > maxRows ? maxRows : _items.length;
+        const overflow = _items.length > maxRows ? 1 : 0;
+        return padV * 2 + headerHeight +
+            cast(int) (rows + overflow) * rowHeight;
+    }
+
+    /// Test-only: the ids currently listed, top to bottom.
+    string[] listedIdsForTesting() const
+    {
+        string[] ids;
+        foreach (process; _items) ids ~= process.id;
+        return ids;
+    }
+
+    /// Test-only: "id:state" for each row the card currently renders.
+    string[] rowsForTesting() const
+    {
+        string[] rows;
+        foreach (process; _items) rows ~= process.id ~ ":" ~ process.state();
+        return rows;
+    }
+
+    private size_t runningCount() const
+    {
+        size_t count;
+        foreach (process; _items) if (process.running) ++count;
+        return count;
+    }
+
+    private size_t finishedCount() const
+    {
+        size_t count;
+        foreach (process; _items) if (!process.running) ++count;
+        return count;
+    }
+
+    private string headerText() const
+    {
+        const running = runningCount();
+        const finished = finishedCount();
+        auto text = appender!string("Background");
+        if (running > 0)
+            text.put(" · " ~ to!string(running) ~
+                (running == 1 ? " command running" : " commands running"));
+        if (finished > 0)
+            text.put(" · " ~ to!string(finished) ~ " finished");
+        return text.data;
+    }
+
+    private static string metaText(const SupervisedProcessInfo item)
+    {
+        const duration = formatTurnDuration(item.elapsedMs / 1_000.0);
+        switch (item.state())
+        {
+            case "running": return duration;
+            case "killed": return "stopped";
+            case "timed_out": return "timeout";
+            default:
+                return item.exitCode == 0
+                    ? "done " ~ duration
+                    : "exit " ~ to!string(item.exitCode);
+        }
+    }
+
+    private static Color rowColor(const SupervisedProcessInfo item)
+    {
+        switch (item.state())
+        {
+            case "running": return opencodeAccent;
+            case "killed": return opencodeKeyMissing;
+            case "timed_out": return opencodeKeyMissing;
+            default:
+                return item.exitCode == 0 ? opencodeKeyOk : opencodeErrorRed;
+        }
+    }
+
+    private void updateButtons()
+    {
+        const running = runningCount();
+        _stopAll.setVisible(running > 0);
+        _clearFinished.setVisible(finishedCount() > 0);
+        _stopAll.setText(running > 1
+            ? "Stop all (" ~ to!string(running) ~ ")" : "Stop all");
+        _pin.setText(_pinned ? "Unpin" : "Pin");
+        foreach (index, button; _rowButtons)
+        {
+            const shown = index < _items.length && index < maxRows;
+            button.setVisible(shown);
+            if (!shown) continue;
+            // The row action follows the row's state: a live command stops, a
+            // finished record clears so the strip can disappear again.
+            button.setText(_items[index].running ? "Stop" : "Clear");
+        }
+    }
+
+    /// One row's action, addressed by the row the button owns.
+    private void rowAction(size_t row)
+    {
+        if (row >= _items.length) return;
+        const item = _items[row];
+        if (item.running)
+        {
+            if (onTerminate !is null) onTerminate(item.id);
+        }
+        else if (onClear !is null) onClear(item.id);
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = minInt(cardWidth, maxInt(240, available.width));
+        const height = preferredCardHeight();
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        layoutHints().minHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onLayout()
+    {
+        const width = bounds().width;
+        const left = padH;
+        int right = maxInt(left, width - padH);
+
+        if (_clearFinished.visible())
+        {
+            const buttonWidth = maxInt(116,
+                _clearFinished.layoutHints().preferredWidth);
+            right -= buttonWidth;
+            _clearFinished.setBounds(
+                Rect(right, padV + 1, buttonWidth, headerHeight - 2));
+            right -= 6;
+        }
+        if (_stopAll.visible())
+        {
+            const buttonWidth = maxInt(92, _stopAll.layoutHints().preferredWidth);
+            right -= buttonWidth;
+            _stopAll.setBounds(
+                Rect(right, padV + 1, buttonWidth, headerHeight - 2));
+            right -= 6;
+        }
+        // The pin control is always offered: in hover mode it turns the peek
+        // into a pinned card, and while pinned it releases it again.
+        const pinWidth = maxInt(60, _pin.layoutHints().preferredWidth);
+        right -= pinWidth;
+        _pin.setBounds(Rect(right, padV + 1, pinWidth, headerHeight - 2));
+        right -= 6;
+        _headerTextWidth = maxInt(0, right - left);
+
+        int y = padV + headerHeight;
+        const rows = _items.length > maxRows ? maxRows : _items.length;
+        foreach (index, button; _rowButtons)
+        {
+            if (index >= rows)
+            {
+                button.setVisible(false);
+                continue;
+            }
+            const x = maxInt(left, width - padH - rowButtonWidth);
+            button.setBounds(Rect(x, y + 1, rowButtonWidth, rowHeight - 2));
+            y += rowHeight;
+        }
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const rect = Rect(0, 0, bounds().width, bounds().height);
+        if (rect.width <= 0 || rect.height <= 0) return;
+        canvas.drawRoundedRect(rect, 10, opencodeElevated,
+            runningCount() > 0 || _pinned ? opencodeAccent.withAlpha(180)
+                : opencodeBorder, 1);
+        const palette = theme();
+        const left = padH;
+        canvas.drawTextInRect(Rect(left, padV, _headerTextWidth, headerHeight),
+            toUTF32(headerText()),
+            runningCount() > 0 ? palette.text : opencodeMuted, 1,
+            HorizontalAlign.left, VerticalAlign.middle, true);
+
+        int y = padV + headerHeight;
+        if (_items.length == 0)
+        {
+            const textWidth = maxInt(0, bounds().width - 2 * padH - 10);
+            canvas.drawTextInRect(Rect(left + 10, y, textWidth, rowHeight),
+                toUTF32("No background commands."), palette.text, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+            y += rowHeight;
+            canvas.drawTextInRect(Rect(left + 10, y, textWidth, rowHeight),
+                toUTF32("Commands started with background:true appear here."),
+                opencodeMuted, 1, HorizontalAlign.left, VerticalAlign.middle, true);
+            return;
+        }
+        const rows = _items.length > maxRows ? maxRows : _items.length;
+        foreach (index; 0 .. rows)
+        {
+            const item = _items[index];
+            const color = rowColor(item);
+            canvas.drawLine(Point(left, y),
+                Point(maxInt(left, bounds().width - padH), y),
+                opencodeBorder.withAlpha(140), 1);
+            const buttonX = bounds().width - padH - rowButtonWidth;
+            const metaX = maxInt(left, buttonX - metaWidth - 8);
+            const textX = left + 10;
+            canvas.fillCircle(Point(left + 3, y + rowHeight / 2), 3, color);
+            canvas.drawTextInRect(
+                Rect(textX, y, maxInt(0, metaX - textX - 6), rowHeight),
+                toUTF32(item.command), item.running ? palette.text : opencodeMuted,
+                1, HorizontalAlign.left, VerticalAlign.middle, true);
+            canvas.drawTextInRect(Rect(metaX, y, metaWidth, rowHeight),
+                toUTF32(metaText(item)), color, 1, HorizontalAlign.right,
+                VerticalAlign.middle, false);
+            y += rowHeight;
+        }
+        if (_items.length > maxRows)
+        {
+            const extra = _items.length - maxRows;
+            canvas.drawTextInRect(
+                Rect(left + 10, y, maxInt(0, bounds().width - 2 * padH - 10),
+                    rowHeight),
+                toUTF32("+" ~ to!string(extra) ~
+                    " more · use the process tool or Stop all"), opencodeMuted, 1,
+                HorizontalAlign.left, VerticalAlign.middle, true);
+        }
+    }
+}
+
 /// Editable field used when a message is edited in place inside its own bubble.
 /// Enter saves (Shift+Enter inserts a newline) and Escape cancels, so the
 /// inline editor behaves like the composer without the trip to the bottom of
@@ -10957,6 +11485,17 @@ public final class OpenCodeRoot : VBox
     private ChatComposer _composer;
     private GoalBar _goalBar;
     private CenteredColumn _goalCenter;
+    // Toolbar pill and floating card for the agent's supervised background
+    // commands. See `refreshBackgroundProcesses`: hovering the pill peeks at the
+    // card, clicking it pins the card, so a running command stays accounted for
+    // and stoppable without taking a permanent row from the conversation.
+    private BackgroundProcessButton _processButton;
+    private BackgroundProcessPanel _processPanel;
+    private bool _processPanelPinned;
+    private double _processHoverSeconds;
+    private double _processLeaveSeconds;
+    private enum double processPanelHoverDelay = 0.18;
+    private enum double processPanelLeaveGrace = 0.30;
     // experimental: attachments - pending dropped files / large pastes and the
     // chip row that shows them. See source/auroraopencode/attachments.d.
     private Attachment[] _pendingAttachments;
@@ -12674,6 +13213,14 @@ private string _suggestExcludeId;
     /// Test-only / shutdown hook: release the shared network session.
     public void shutdownClient()
     {
+        // Terminate every supervised background command first: the monitor
+        // threads are daemons and the window is already closing, so a command
+        // the agent left running would otherwise survive the app with nothing
+        // accounting for it. Records are kept so the run reported its outcome.
+        const terminated = killAllSupervisedProcesses();
+        if (terminated > 0)
+            logInfo("terminated " ~ to!string(terminated) ~
+                " supervised background process(es) on shutdown");
         // Persist on the way out regardless of the debounce flag: a reply that
         // arrived moments before the window closed is otherwise lost, which is
         // why the last message could vanish across a restart.
@@ -13772,6 +14319,176 @@ private string _suggestExcludeId;
         box.layoutHints().minWidth = width;
     }
 
+    /// Drive the toolbar background-process control: poll the registry, then
+    /// open, reposition or close the floating card. Polling four times a second
+    /// costs a mutex and a few record copies; the pill and the card repaint only
+    /// when their rendered content changes.
+    private void refreshBackgroundProcesses(double deltaSeconds)
+    {
+        // Both surfaces deduplicate internally (`setState` and `setProcesses`
+        // compare with what they already show), so a snapshot per frame costs a
+        // mutex and a few string comparisons - never a repaint - and the card
+        // can never show an older state than the registry.
+        auto processes = listSupervisedProcesses();
+        size_t running;
+        foreach (process; processes) if (process.running) ++running;
+        _processButton.setState(running, processes.length - running,
+            _processPanelPinned);
+        if (processPanelOpen())
+        {
+            _processPanel.setProcesses(processes);
+            positionProcessPanel();
+        }
+
+        if (_processPanelPinned)
+        {
+            _processHoverSeconds = 0;
+            _processLeaveSeconds = 0;
+            showProcessPanel(true);
+            return;
+        }
+        const overButton = _processButton.hovered();
+        const overCard = processPanelOpen() && _processPanel.hoverActive();
+        if (overButton || overCard)
+        {
+            _processLeaveSeconds = 0;
+            if (processPanelOpen()) return;
+            _processHoverSeconds += deltaSeconds;
+            if (_processHoverSeconds >= processPanelHoverDelay)
+            {
+                _processHoverSeconds = 0;
+                showProcessPanel(true);
+            }
+            return;
+        }
+        // The pointer may be travelling from the pill to the card, so the peek
+        // closes only after a short grace period away from both.
+        _processHoverSeconds = 0;
+        if (!processPanelOpen()) return;
+        _processLeaveSeconds += deltaSeconds;
+        if (_processLeaveSeconds >= processPanelLeaveGrace)
+        {
+            _processLeaveSeconds = 0;
+            showProcessPanel(false);
+        }
+    }
+
+    /// Test-only: "id:state" for each row the floating card currently renders.
+    public string[] backgroundProcessRowsForTesting()
+    {
+        return _processPanel is null ? null : _processPanel.rowsForTesting();
+    }
+
+    private bool processPanelOpen()
+    {
+        return _processPanel !is null && _processPanel.parent() !is null;
+    }
+
+    /// Attach the floating card to the window overlay, or take it away again.
+    /// Hover keeps it open; pinning holds it there until the pill or the card's
+    /// own pin control releases it.
+    private void showProcessPanel(bool open)
+    {
+        if (open)
+        {
+            if (processPanelOpen()) return;
+            if (_processPanel is null)
+            {
+                _processPanel = new BackgroundProcessPanel();
+                _processPanel.setId("oc-processes-panel");
+                // The transcript is a composited layer, so the card must be one
+                // too or it would be painted beneath the conversation.
+                _processPanel.setComposited(true);
+                _processPanel.onTerminate = delegate(string id)
+                {
+                    if (requestSupervisedProcessKill(id))
+                        updateStatus("Stopping background process " ~ id ~ "…");
+                    else
+                        updateStatus("Background process " ~ id ~
+                            " already finished.");
+                };
+                _processPanel.onClear = delegate(string id)
+                {
+                    removeSupervisedProcess(id);
+                    refreshBackgroundProcesses(0.25);
+                };
+                _processPanel.onTerminateAll = delegate()
+                {
+                    const count = requestAllSupervisedProcessKills();
+                    updateStatus(count > 0
+                        ? "Stopping " ~ to!string(count) ~
+                          (count == 1 ? " background process…" :
+                           " background processes…")
+                        : "No background process is running.");
+                };
+                _processPanel.onClearFinished = delegate()
+                {
+                    clearFinishedSupervisedProcesses();
+                    refreshBackgroundProcesses(0.25);
+                };
+                _processPanel.onPinToggle = delegate()
+                {
+                    toggleProcessPanelPinned();
+                };
+            }
+            _processPanel.setProcesses(listSupervisedProcesses());
+            _processPanel.setPinned(_processPanelPinned);
+            auto root = popupRoot(this);
+            root.add(_processPanel);
+            root.bringChildToFront(_processPanel);
+            positionProcessPanel();
+            invalidate();
+            return;
+        }
+        if (_processPanel !is null && _processPanel.parent() !is null)
+        {
+            _processPanel.parent().remove(_processPanel);
+            invalidate();
+        }
+    }
+
+    /// Place the card right-aligned under the pill, clamped inside the window.
+    private void positionProcessPanel()
+    {
+        if (!processPanelOpen()) return;
+        auto root = popupRoot(this);
+        if (root is null) return;
+        const origin = _processButton.localToGlobal(Point(0, 0));
+        const buttonRight = origin.x + _processButton.bounds().width;
+        const buttonBottom = origin.y + _processButton.bounds().height;
+        const width = minInt(BackgroundProcessPanel.cardWidth,
+            maxInt(260, root.bounds().width - 16));
+        const height = _processPanel.preferredCardHeight();
+        int x = buttonRight - width;
+        x = clampInt(x, 8, maxInt(8, root.bounds().width - width - 8));
+        int y = buttonBottom + 6;
+        y = clampInt(y, 8, maxInt(8, root.bounds().height - height - 8));
+        _processPanel.setBounds(Rect(x, y, width, height));
+    }
+
+    /// Hover peeks at the card; a click on the pill pins it open, another click
+    /// releases it. Clicking the card's own pin control does the same.
+    private void toggleProcessPanelPinned()
+    {
+        _processPanelPinned = !_processPanelPinned;
+        if (_processPanelPinned)
+        {
+            showProcessPanel(true);
+            if (_processPanel !is null) _processPanel.setPinned(true);
+        }
+        else
+        {
+            if (_processPanel !is null) _processPanel.setPinned(false);
+            _processLeaveSeconds = 0;
+            // While the pointer still rests on the pill or the card, the peek
+            // stays: unpinning only withdraws the card once the pointer leaves.
+            if (!_processButton.hovered() &&
+                !(processPanelOpen() && _processPanel.hoverActive()))
+                showProcessPanel(false);
+        }
+        refreshBackgroundProcesses(0.25);
+    }
+
     private void buildUi()
     {
         // Frameless window: the vendored TitleBar is the whole top band and the
@@ -13863,6 +14580,12 @@ private string _suggestExcludeId;
         _timerBadge.setId("oc-timer");
 
         toolbar.add(new Spacer());
+
+        // The agent's supervised background commands live here, left of Export:
+        // hovering the pill peeks at them, clicking it pins the card open.
+        _processButton = toolbar.add(new BackgroundProcessButton());
+        _processButton.setId("oc-processes");
+        _processButton.onTogglePinned = delegate() { toggleProcessPanelPinned(); };
 
         auto exportButton = toolbar.add(new Button("Export", IconKind.save));
         exportButton.setId("oc-export");
@@ -15566,6 +16289,10 @@ private string _suggestExcludeId;
         payload["taskSteps"] = steps;
         payload["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
         writeTaskContract(payload, session);
+        // The journal repeats a thread payload on every turn and tool update;
+        // carrying the full plan history would multiply it across events. The
+        // session snapshot is the canonical store for that metadata.
+        payload.object.remove("planHistory");
         JSONValue guidance = JSONValue(string[].init);
         foreach (item; session.queuedGuidance) guidance.array ~= JSONValue(item);
         payload["queuedGuidance"] = guidance;
@@ -20735,6 +21462,7 @@ private void pollButtonSuggestionRequest()
                 ? "verifying" : "completed";
         else if (session.taskStatus != "reviewing")
             session.taskStatus = "active";
+        recordPlanHistory(session, "update_plan", root);
         publishThreadUpdated(session);
     }
 
@@ -20773,6 +21501,7 @@ private void pollButtonSuggestionRequest()
             {
                 rememberPlanRevision(session, root, nested.steps, steps);
                 nested.steps = steps;
+                recordPlanHistory(session, "subplan", root);
                 publishThreadUpdated(session);
                 markDirty();
                 return;
@@ -20781,6 +21510,7 @@ private void pollButtonSuggestionRequest()
         nested.parentStep = parent;
         nested.steps = steps;
         session.nestedPlans ~= nested;
+        recordPlanHistory(session, "subplan", root);
         publishThreadUpdated(session);
         markDirty();
     }
@@ -21247,6 +21977,8 @@ private void pollButtonSuggestionRequest()
     {
         if (session.objective.length > 0)
             session.taskArchive ~= activeTaskStateJson(session);
+        recordPlanHistory(session, "goal_changed",
+            "The goal changed; the previous plan was archived.");
         session.objective = session.goal;
         session.contract = TaskContract.init;
         session.taskSteps = null;
@@ -32035,6 +32767,10 @@ private void pollButtonSuggestionRequest()
             reconcileProjectManagerPins();
         }
         drainUpdateResult();
+        // Keep the toolbar background-process control current: a command the
+        // agent left running must stay visible (and stoppable) while the chat
+        // is idle, with the card following the pointer or a pin.
+        refreshBackgroundProcesses(deltaSeconds);
         drainSourceFetch();
         drainDeveloperPush();
         drainDeveloperUpstreamCheck();

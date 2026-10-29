@@ -2833,11 +2833,15 @@ private final class SupervisedProcess
     bool timedOut;
     int exitCode;
     long elapsedMs;
+    /// Start order. The registry is a hash map, so the UI cannot recover
+    /// "which one did I just launch" from iteration order.
+    ulong sequence;
 }
 
 private __gshared Mutex _processMutex;
 private __gshared SupervisedProcess[string] _processes;
 private __gshared ulong _processCounter;
+private __gshared ulong _processSequence;
 private __gshared Mutex _workspaceLocksMutex;
 private __gshared Mutex[string] _workspaceMutationLocks;
 
@@ -2927,6 +2931,7 @@ private ToolExecution startBackgroundProcess(string[] argv, string workdir,
     process.input = inputPipe.writeEnd;
     process.startedAt = MonoTime.currTime;
     _processMutex.lock();
+    process.sequence = ++_processSequence;
     _processes[id] = process;
     _processMutex.unlock();
 
@@ -3130,6 +3135,198 @@ private ToolExecution runProcessTool(string args)
     return ToolExecution("process",
         "Error: action must be list, status, output, write, kill, or remove.",
         true);
+}
+
+// ---------------------------------------------------------------------------
+// Public supervision surface
+// ---------------------------------------------------------------------------
+//
+// The `process` tool is the model-facing view of the supervised registry. The
+// host UI needs the same registry: a background command keeps running while the
+// conversation moves on, so without a visible list and a one-click terminate the
+// app can leave commands it started with nothing accounting for them. These
+// accessors are the UI's read/control path; they never take the workspace locks
+// the tool dispatch holds, so the UI thread can poll them.
+
+/// One supervised background command as the host UI sees it.
+public struct SupervisedProcessInfo
+{
+    string id;
+    string command;
+    string workdir;
+    bool running;
+    bool killRequested;
+    bool killed;
+    bool timedOut;
+    int exitCode;
+    long elapsedMs;
+    bool stdinClosed;
+    /// Start order; higher means more recent.
+    ulong sequence;
+
+    /// "running", "timed_out", "killed" or "exited".
+    string state() const
+    {
+        if (running) return "running";
+        if (timedOut) return "timed_out";
+        return killed ? "killed" : "exited";
+    }
+}
+
+private SupervisedProcessInfo supervisedProcessInfo(SupervisedProcess process)
+{
+    SupervisedProcessInfo info;
+    info.id = process.id;
+    info.command = process.command;
+    info.workdir = process.workdir;
+    info.running = process.running;
+    info.killRequested = process.killRequested;
+    info.killed = process.killed;
+    info.timedOut = process.timedOut;
+    info.exitCode = process.exitCode;
+    // A running record only has its start time: the monitor thread stamps the
+    // final duration when it exits, so an in-flight one is measured now.
+    info.elapsedMs = process.running
+        ? (MonoTime.currTime - process.startedAt).total!"msecs"
+        : process.elapsedMs;
+    info.stdinClosed = process.stdinClosed;
+    info.sequence = process.sequence;
+    return info;
+}
+
+/// Snapshot of every supervised process, newest first. Safe to call from the UI
+/// thread while monitor threads finish or replace records.
+public SupervisedProcessInfo[] listSupervisedProcesses()
+{
+    SupervisedProcessInfo[] result;
+    synchronized (_processMutex)
+    {
+        foreach (process; _processes)
+            result ~= supervisedProcessInfo(process);
+    }
+    // The registry is a hash map; order the snapshot by launch time so the UI
+    // lists the command that was just started at the top.
+    sort!((a, b) => a.sequence > b.sequence)(result);
+    return result;
+}
+
+/// Ask the monitor thread to terminate `id` and the tree it spawned. Returns
+/// false for an unknown id or a command that already finished.
+public bool requestSupervisedProcessKill(string id)
+{
+    synchronized (_processMutex)
+    {
+        auto found = id in _processes;
+        if (found is null) return false;
+        auto process = *found;
+        if (process is null || !process.running) return false;
+        process.killRequested = true;
+        return true;
+    }
+}
+
+/// Ask for every running supervised command to terminate. Returns how many were
+/// still running, so the caller can report an honest count.
+public size_t requestAllSupervisedProcessKills()
+{
+    size_t count;
+    synchronized (_processMutex)
+    {
+        foreach (process; _processes)
+        {
+            if (process is null || !process.running) continue;
+            process.killRequested = true;
+            ++count;
+        }
+    }
+    return count;
+}
+
+/// Terminate every running supervised command synchronously. This is the app
+/// shutdown path: the monitor threads are daemons and may never get another
+/// slice, so waiting for them would leave the command tree running after the
+/// window closed. Returns how many process trees were terminated.
+public size_t killAllSupervisedProcesses()
+{
+    Pid[] pids;
+    size_t count;
+    synchronized (_processMutex)
+    {
+        foreach (process; _processes)
+        {
+            if (process is null || !process.running) continue;
+            // Stamp the outcome before the tree is signalled: the monitor
+            // thread can observe the kill within one poll and would otherwise
+            // record this as an ordinary exit, hiding who stopped it.
+            process.killRequested = true;
+            process.killed = true;
+            process.running = false;
+            process.exitCode = 1;
+            process.elapsedMs =
+                (MonoTime.currTime - process.startedAt).total!"msecs";
+            if (!process.stdinClosed)
+            {
+                collectException(process.input.close());
+                process.stdinClosed = true;
+            }
+            pids ~= process.pid;
+            ++count;
+        }
+    }
+    foreach (pid; pids) killProcessTree(pid);
+    return count;
+}
+
+/// Drop a finished record (and the temp output it captured). A running command
+/// must be killed and observed first, so a record cannot vanish while its
+/// process is still alive.
+public bool removeSupervisedProcess(string id)
+{
+    string outputPath;
+    synchronized (_processMutex)
+    {
+        auto found = id in _processes;
+        if (found is null) return false;
+        auto process = *found;
+        if (process is null || process.running) return false;
+        if (!process.stdinClosed)
+        {
+            collectException(process.input.close());
+            process.stdinClosed = true;
+        }
+        outputPath = process.outputPath;
+        _processes.remove(id);
+    }
+    if (outputPath.length > 0) collectException(remove(outputPath));
+    return true;
+}
+
+/// Drop every finished record. Returns how many were removed.
+public size_t clearFinishedSupervisedProcesses()
+{
+    string[] outputPaths;
+    size_t count;
+    synchronized (_processMutex)
+    {
+        string[] finished;
+        foreach (id, process; _processes)
+            if (process !is null && !process.running) finished ~= id;
+        foreach (id; finished)
+        {
+            auto process = _processes[id];
+            if (!process.stdinClosed)
+            {
+                collectException(process.input.close());
+                process.stdinClosed = true;
+            }
+            outputPaths ~= process.outputPath;
+            _processes.remove(id);
+            ++count;
+        }
+    }
+    foreach (path; outputPaths)
+        if (path.length > 0) collectException(remove(path));
+    return count;
 }
 
 /// Set while the user has asked to stop the current turn. A command launched by
@@ -3427,6 +3624,7 @@ private Tuple!(string, bool) runProcess(string[] argv, string workdir,
                 process.pid = pid;
                 process.stdinClosed = true;
                 process.startedAt = MonoTime.currTime - stopwatch.peek;
+                process.sequence = ++_processSequence;
                 _processes[process.id] = process;
             }
             preserveOutput = true;
