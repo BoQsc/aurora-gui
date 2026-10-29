@@ -527,9 +527,24 @@ private OpenCodeToolDef taskBlockerToolDefinition()
         "Ask one focused question for an essential user-owned fact that cannot be obtained " ~
         "from available sources. First inspect local configuration and alternatives and complete " ~
         "all independent outcomes. Routine errors, unavailable tools, testing choices and stalled " ~
-        "approaches require internal recovery, not user intervention. Never ask permission to continue " ~
+        "approaches require internal recovery, not user intervention. Choose reasonable defaults for " ~
+        "routine implementation, file, test and verification choices; never ask permission to continue " ~
         "authorized work. A locked output, running process, or permission to close a window is a technical recovery choice: verify can isolate locked compiler outputs. Preserve unfinished outcomes while awaiting genuinely missing information.",
         `{"type":"object","properties":{"reason":{"type":"string"},"required_fact":{"type":"string","description":"The essential fact only the user can supply, such as an absent deployment destination"},"question":{"type":"string"},"checked":{"type":"array","items":{"type":"string"},"description":"Concrete sources and alternatives already inspected"},"independent_work_complete":{"type":"boolean","description":"True after completing all work that does not depend on the missing fact"},"blocked_steps":{"type":"array","items":{"type":"string"},"description":"IDs of every remaining outcome/action that genuinely depends on this missing fact. Finish all other work first; required when more than one outcome remains."}},"required":["reason","required_fact","question","checked","independent_work_complete"]}`);
+}
+
+/// Complete the user's persistent goal after auditing the real result. The UI
+/// validates this against the durable checklist and verification state before
+/// stopping automatic continuation.
+private OpenCodeToolDef goalCompleteToolDefinition()
+{
+    return OpenCodeToolDef("goal_complete",
+        "Mark the persistent goal complete after auditing the actual result. Use this only " ~
+        "when every requested outcome is finished and required checks pass. Provide a concise " ~
+        "summary and concrete evidence: successful tool-call IDs or accepted check receipts. " ~
+        "Prose, attempted actions, open checklist items or outstanding verification are not " ~
+        "completion. This does not finish a paused goal.",
+        `{"type":"object","properties":{"summary":{"type":"string","description":"Concise statement of the verified result"},"evidence":{"type":"array","items":{"type":"string"},"minItems":1,"description":"Successful tool-call IDs or accepted check receipts proving the completion condition"}},"required":["summary","evidence"]}`);
 }
 
 /// Record the visible plan, with at most one step in progress.
@@ -834,6 +849,7 @@ public OpenCodeToolDef[] builtinToolDefinitions()
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
         readPlanToolDefinition(),
+        goalCompleteToolDefinition(),
         taskBlockerToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
@@ -905,6 +921,7 @@ public OpenCodeToolDef[] nativeOnlyToolDefinitions()
         applyPatchToolDefinition(),
         updatePlanToolDefinition(),
         readPlanToolDefinition(),
+        goalCompleteToolDefinition(),
         taskBlockerToolDefinition(),
         updateSubplanToolDefinition(),
         rebuildToolDefinition(),
@@ -5757,7 +5774,8 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
         auto targets = mutationTargetPaths(call, workspace);
         auto leasePaths = targets.dup;
         const control = call.name == "calculate" || call.name == "process" || call.name == "tool_status" ||
-            call.name == "update_plan" || call.name == "update_subplan" || call.name == "open" ||
+            call.name == "update_plan" || call.name == "update_subplan" ||
+            call.name == "goal_complete" || call.name == "open" ||
             call.name == "retire_images" || call.name == "task_blocker" || call.name == "request_input";
         JSONValue input;
         try input = parseJSON(call.arguments); catch (Exception) {}
@@ -6397,6 +6415,24 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return ToolExecution("read_plan", "Reading this conversation's durable task state.", false);
         case "update_plan":
             return runUpdatePlan(call.arguments, workspace);
+        case "goal_complete":
+        {
+            JSONValue value;
+            try value = parseJSON(call.arguments);
+            catch (Exception) return ToolExecution(call.name,
+                "Error: goal_complete requires valid JSON.", true);
+            if (value.type != JSONType.object)
+                return ToolExecution(call.name,
+                    "Error: goal_complete requires a JSON object.", true);
+            const summary = jsonString(value, "summary").strip();
+            auto evidence = "evidence" in value.object;
+            if (!summary.length || evidence is null ||
+                evidence.type != JSONType.array || !evidence.array.length)
+                return ToolExecution(call.name,
+                    "Error: goal_complete requires a summary and concrete evidence.", true);
+            return ToolExecution(call.name,
+                "Goal completion recorded: " ~ summary, false);
+        }
         case "task_blocker":
         case "request_input":
         {

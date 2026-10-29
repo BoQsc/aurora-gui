@@ -81,6 +81,9 @@
         "optimize",
         "inline",
         "debugInfo"
+      ],
+      "dflags-windows-dmd": [
+        "-lowmem"
       ]
     },
     "portable-release": {

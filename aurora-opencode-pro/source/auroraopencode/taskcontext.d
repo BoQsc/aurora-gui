@@ -41,6 +41,9 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     line("Task: ", session.contract.id ~ " · intent: " ~ session.contract.intent ~ " · current request: " ~ session.contract.currentIntent, 256);
     const goalLimit = min(cast(size_t) 1200, budget / 8);
     line("Objective: ", goalExcerpt(session.objective, goalLimit), goalLimit);
+    if (session.goal.length > 0)
+        line("User goal (" ~ (session.goalStatus.length ? session.goalStatus : "active") ~ "): ",
+            goalExcerpt(session.goal, goalLimit), goalLimit);
     if (session.contract.requestedOutcome != session.objective) line("Requested outcome: ", goalExcerpt(session.contract.requestedOutcome, goalLimit), goalLimit);
     if (request != session.objective) line("Current request: ", goalExcerpt(request, goalLimit), goalLimit);
     const work = workContextForPlan(session, session.taskSteps);

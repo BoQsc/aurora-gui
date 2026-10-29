@@ -92,7 +92,7 @@ CollisionReport findSelfIntersections(const Mesh mesh, int maximumPairs = 4096,
     report.sample = Vec3(0, 0, 0);
     if (mesh.faces.length < 2)
         return report;
-    enum double CellSize = 0.08;
+    enum double CellSize = 0.01;
     Aabb[] bounds;
     bounds.length = mesh.faces.length;
     int[][long] cells;

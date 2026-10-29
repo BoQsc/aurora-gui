@@ -2,7 +2,7 @@ module auroramesh.editor;
 
 import auroramesh.camera : Camera, project;
 import auroramesh.collision : CollisionReport, findSelfIntersections;
-import auroramesh.edit : pickNearest, screenDelta;
+import auroramesh.edit : brushVertices, pickNearest, screenDelta;
 import auroramesh.glb : fromGlb, toGlb;
 import auroramesh.gltf_scene : GltfScene, Mat4, PoseOverride, bakeGltfFrame,
     gltfAnimationDuration, gltfRotateVector, gltfTransformNormal,
@@ -13,7 +13,7 @@ import auroramesh.mesh : Material, MaterialSlot, Mesh, Vec2, Vec3,
     meshMinimum, parseObj, toObj;
 import auroramesh.human_v2 : humanBaseMeshV2;
 import auroramesh.human_v3 : humanBaseMeshV3;
-import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh;
+import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh, writePpm;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
     smoothVertices;
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
@@ -23,7 +23,7 @@ import std.algorithm : filter, max, min, sort;
 import std.array : array, join;
 import std.conv : to;
 import std.format : format;
-import std.math : abs, isFinite, sqrt;
+import std.math : abs, cos, isFinite, sin, sqrt;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.utf : toUTF32;
 
@@ -97,6 +97,7 @@ final class MeshEditor : Widget
     private int _frameHeight;
     private bool _dirty = true;
     private bool _wireframe = false;
+    private bool _cull = true;
     private int _selected = -1;
     private int _axis;
     private bool _dragging;
@@ -132,7 +133,37 @@ final class MeshEditor : Widget
     private bool _auditValid = true;
     private int _scanFrameCount;
     private int _scanInvalidFrames;
+    private int _scanLimbHits;
+    private bool _scanCollisions;
+    private int _scanCollisionFrames;
+    private int _scanCollisionPairs;
     private bool _scanRequested;
+    private bool _scanIncremental;
+    private bool _scanRunning;
+    private bool _scanCancelRequested;
+    private int _scanCursor;
+    private string _scanReport;
+    private double _scanRestoreTime;
+    private int _scanLeftHand;
+    private int _scanRightHand;
+    private int _scanLeftForeArm;
+    private int _scanRightForeArm;
+    private int _scanHips;
+    private int _scanNeck;
+    private Vec3 _scanPreviousLeft;
+    private Vec3 _scanPreviousRight;
+    private bool _scanHavePrevious;
+    private int _scanTickCount;
+    private int _scanAdvanceCount;
+    private Mat4[] _nodeWorlds;
+    private int _inspectNode = -1;
+    private string _capturePath;
+    private string _lastCapturePath;
+    private string _rendererName = "unknown";
+    private bool _rendererHardware;
+    private string _rendererFallback;
+    private string _sheetPath;
+    private string _lastSheetPath;
 
     this(Mesh mesh, string objPath)
     {
@@ -190,6 +221,7 @@ final class MeshEditor : Widget
         _liveClip = LiveClip();
         _poseOverrides.length = 0;
         _liveExtras.length = 0;
+        buildCollisionBaselineAt(_time);
         _status = _scene.animations.length > 0 ?
             "GLB scene · " ~ _scene.animations[_animation].name :
             "GLB scene loaded";
@@ -214,6 +246,7 @@ final class MeshEditor : Widget
                     _time = _liveClip.duration;
             }
             rebuildGltfMesh();
+            invalidate();
             return;
         }
         if (!_hasScene || !_playing || _scene.animations.length == 0)
@@ -221,9 +254,10 @@ final class MeshEditor : Widget
         _time += delta;
         const duration = gltfAnimationDuration(_scene, _animation);
         if (duration > 0)
-            while (_time > duration)
-                _time -= duration;
+        while (_time > duration)
+            _time -= duration;
         rebuildGltfMesh();
+        invalidate();
     }
 
     private static double[4] normalizeRotation(double[4] value)
@@ -385,7 +419,8 @@ final class MeshEditor : Widget
             return;
         try
         {
-            const baseline = bakeGltfFrame(_scene, _animation, time, true);
+            const baseline = bakeGltfFrame(_scene, _animation, time, true,
+                effectivePoseOverridesAt(time));
             const report = findSelfIntersections(baseline, 100000);
             _baselineCollisionCount = report.pairs;
             foreach (key; report.keys)
@@ -434,6 +469,10 @@ final class MeshEditor : Widget
             if (!isFinite(normal.x) || !isFinite(normal.y) ||
                 !isFinite(normal.z))
                 _auditNonFinite++;
+        double maximumCoordinate = 0;
+        foreach (vertex; _mesh.vertices)
+            maximumCoordinate = max(maximumCoordinate,
+                max(abs(vertex.x), max(abs(vertex.y), abs(vertex.z))));
         foreach (face; _mesh.faces)
             if (face.a < 0 || face.b < 0 || face.c < 0 ||
                 face.a >= _mesh.vertices.length ||
@@ -444,6 +483,8 @@ final class MeshEditor : Widget
             _auditWarnings ~= "non-finite mesh data";
         if (_auditInvalidFaces > 0)
             _auditWarnings ~= "invalid faces";
+        if (maximumCoordinate > 100)
+            _auditWarnings ~= "mesh bounds out of range";
         if (_hasLiveAnimation)
         {
             if (_liveClip.tracks.length == 0)
@@ -487,34 +528,215 @@ final class MeshEditor : Widget
         _scanRequested = false;
         _scanFrameCount = max(1, animationFrameCount());
         _scanInvalidFrames = 0;
-        const originalTime = _time;
-        string report = `{"frames":[`;
-        foreach (frame; 0 .. _scanFrameCount)
+        _scanLimbHits = 0;
+        _scanCollisionFrames = 0;
+        _scanCollisionPairs = 0;
+        _scanRestoreTime = _time;
+        buildCollisionBaselineAt(_time);
+        _scanLeftHand = liveNodeIndex("LeftHand");
+        _scanRightHand = liveNodeIndex("RightHand");
+        _scanLeftForeArm = liveNodeIndex("LeftForeArm");
+        _scanRightForeArm = liveNodeIndex("RightForeArm");
+        _scanHips = liveNodeIndex("Hips");
+        _scanNeck = liveNodeIndex("Neck");
+        _scanPreviousLeft = Vec3(0, 0, 0);
+        _scanPreviousRight = Vec3(0, 0, 0);
+        _scanHavePrevious = false;
+        _scanReport = `{"frames":[`;
+        _scanCursor = 0;
+        if (_scanIncremental)
         {
-            _time = cast(double) frame / 30.0;
-            rebuildGltfMesh();
-            auditCurrent();
-            if (!_auditValid)
-                _scanInvalidFrames++;
-            if (frame > 0)
-                report ~= ",";
-            report ~= format(
-                `{"frame":%d,"time":%.4f,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s"}`,
-                frame, _time, _auditValid ? "true" : "false",
-                _auditNonFinite, _auditInvalidFaces,
-                _auditWarnings.join("|"));
+            _scanRunning = true;
+            _status = format("Scanning frame 0/%d", _scanFrameCount);
+            return;
         }
-        report ~= format(`],"invalidFrames":%d}`, _scanInvalidFrames);
+        while (_scanCursor < _scanFrameCount)
+            processScanFrame();
+        finishFrameScan();
+    }
+
+    private void processScanFrame()
+    {
+        const frame = _scanCursor;
+        _time = cast(double) frame / 30.0;
+        rebuildGltfMesh();
+        auditCurrent();
+        double maximumCoordinate = 0;
+        foreach (vertex; _mesh.vertices)
+            maximumCoordinate = max(maximumCoordinate,
+                max(abs(vertex.x), max(abs(vertex.y), abs(vertex.z))));
+        Vec3 left = Vec3(0, 0, 0);
+        Vec3 right = Vec3(0, 0, 0);
+        if (_scanLeftHand >= 0 && _scanLeftHand < _nodeWorlds.length)
+            left = Vec3(_nodeWorlds[_scanLeftHand].m[12],
+                _nodeWorlds[_scanLeftHand].m[13],
+                _nodeWorlds[_scanLeftHand].m[14]);
+        if (_scanRightHand >= 0 && _scanRightHand < _nodeWorlds.length)
+            right = Vec3(_nodeWorlds[_scanRightHand].m[12],
+                _nodeWorlds[_scanRightHand].m[13],
+                _nodeWorlds[_scanRightHand].m[14]);
+        int limbHits;
+        if (_scanHips >= 0 && _scanHips < _nodeWorlds.length &&
+            _scanNeck >= 0 && _scanNeck < _nodeWorlds.length)
+        {
+            const hipsPosition = Vec3(_nodeWorlds[_scanHips].m[12],
+                _nodeWorlds[_scanHips].m[13], _nodeWorlds[_scanHips].m[14]);
+            const neckPosition = Vec3(_nodeWorlds[_scanNeck].m[12],
+                _nodeWorlds[_scanNeck].m[13], _nodeWorlds[_scanNeck].m[14]);
+            foreach (node; [_scanLeftHand, _scanRightHand,
+                _scanLeftForeArm, _scanRightForeArm])
+                if (node >= 0 && node < _nodeWorlds.length)
+                {
+                    const position = Vec3(_nodeWorlds[node].m[12],
+                        _nodeWorlds[node].m[13], _nodeWorlds[node].m[14]);
+                    if (pointSegmentDistance(position, hipsPosition,
+                        neckPosition) < 0.10)
+                        limbHits++;
+                }
+        }
+        _scanLimbHits += limbHits;
+        double jump = 0;
+        if (_scanHavePrevious && _scanLeftHand >= 0 && _scanRightHand >= 0 &&
+            isFinite(left.x) && isFinite(left.y) && isFinite(left.z) &&
+            isFinite(right.x) && isFinite(right.y) && isFinite(right.z))
+        {
+            jump = max(
+                sqrt((left.x - _scanPreviousLeft.x) *
+                    (left.x - _scanPreviousLeft.x) +
+                    (left.y - _scanPreviousLeft.y) *
+                    (left.y - _scanPreviousLeft.y) +
+                    (left.z - _scanPreviousLeft.z) *
+                    (left.z - _scanPreviousLeft.z)),
+                sqrt((right.x - _scanPreviousRight.x) *
+                    (right.x - _scanPreviousRight.x) +
+                    (right.y - _scanPreviousRight.y) *
+                    (right.y - _scanPreviousRight.y) +
+                    (right.z - _scanPreviousRight.z) *
+                    (right.z - _scanPreviousRight.z)));
+        }
+        _scanPreviousLeft = left;
+        _scanPreviousRight = right;
+        _scanHavePrevious = true;
+        if (maximumCoordinate > 100)
+        {
+            _auditWarnings ~= "mesh bounds out of range";
+            _auditValid = false;
+        }
+        if (jump > 0.35)
+        {
+            _auditWarnings ~= "hand jump";
+            _auditValid = false;
+        }
+        if (limbHits > 0)
+        {
+            _auditWarnings ~= "limb/torso overlap";
+            _auditValid = false;
+        }
+        int collisions;
+        if (_scanCollisions)
+        {
+            const collisionReport = findSelfIntersections(_mesh, 64,
+                _baselineCollisionKeys);
+            collisions = collisionReport.pairs;
+            _scanCollisionPairs += collisions;
+            if (collisions > 0)
+            {
+                _scanCollisionFrames++;
+                _auditWarnings ~= "mesh collision";
+                _auditValid = false;
+            }
+        }
+        if (!_auditValid)
+            _scanInvalidFrames++;
+        if (frame > 0)
+            _scanReport ~= ",";
+        _scanReport ~= format(
+            `{"frame":%d,"time":%.4f,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"jump":%.4f,"limbHits":%d,"collisions":%d,"boundsValid":%s,"warnings":"%s"}`,
+            frame, _time, _auditValid ? "true" : "false",
+            _auditNonFinite, _auditInvalidFaces,
+            jump, limbHits, collisions,
+            maximumCoordinate <= 100 ? "true" : "false",
+            _auditWarnings.join("|"));
+        _scanCursor++;
+        if (_scanIncremental && _scanCursor < _scanFrameCount)
+            _status = format("Scanning frame %d/%d", _scanCursor,
+                _scanFrameCount);
+    }
+
+    private void finishFrameScan()
+    {
+        _scanRunning = false;
+        _scanReport ~= format(`],"invalidFrames":%d}`, _scanInvalidFrames);
         try
-            write("build/live-frames.json", report);
+            write("build/live-frames.json", _scanReport);
         catch (Exception)
         {
         }
-        _time = originalTime;
+        _time = _scanRestoreTime;
         rebuildGltfMesh();
         auditCurrent();
         _status = format("Frame scan: %d frame(s), %d invalid",
             _scanFrameCount, _scanInvalidFrames);
+    }
+
+    private void advanceFrameScan()
+    {
+        _scanAdvanceCount++;
+        if (!_scanRunning)
+            return;
+        if (_scanCancelRequested)
+        {
+            _scanCancelRequested = false;
+            _scanRunning = false;
+            _time = _scanRestoreTime;
+            rebuildGltfMesh();
+            auditCurrent();
+            _status = "Frame scan cancelled";
+            return;
+        }
+        processScanFrame();
+        if (_scanCursor >= _scanFrameCount)
+            finishFrameScan();
+    }
+
+    private void writeBoneInfo()
+    {
+        if (_inspectNode < 0 || _inspectNode >= _nodeWorlds.length)
+            return;
+        const matrix = _nodeWorlds[_inspectNode];
+        const position = Vec3(matrix.m[12], matrix.m[13], matrix.m[14]);
+        const axisX = gltfTransformNormal(matrix, Vec3(1, 0, 0));
+        const axisY = gltfTransformNormal(matrix, Vec3(0, 1, 0));
+        const axisZ = gltfTransformNormal(matrix, Vec3(0, 0, 1));
+        const name = _scene.nodes[_inspectNode].name;
+        try
+            write("build/bone-info.json", format(
+                `{"node":"%s","position":[%.5f,%.5f,%.5f],"axes":{"x":[%.5f,%.5f,%.5f],"y":[%.5f,%.5f,%.5f],"z":[%.5f,%.5f,%.5f]}}`,
+                name, position.x, position.y, position.z,
+                axisX.x, axisX.y, axisX.z,
+                axisY.x, axisY.y, axisY.z,
+                axisZ.x, axisZ.y, axisZ.z));
+        catch (Exception)
+        {
+        }
+        _status = "Bone axes: " ~ name ~ " · build/bone-info.json";
+        _inspectNode = -1;
+    }
+
+    private double pointSegmentDistance(Vec3 point, Vec3 start, Vec3 end)
+    {
+        const abx = end.x - start.x;
+        const aby = end.y - start.y;
+        const abz = end.z - start.z;
+        const lengthSquared = abx * abx + aby * aby + abz * abz;
+        double t = lengthSquared > 1e-12 ?
+            ((point.x - start.x) * abx + (point.y - start.y) * aby +
+                (point.z - start.z) * abz) / lengthSquared : 0;
+        t = min(1.0, max(0.0, t));
+        const dx = point.x - (start.x + abx * t);
+        const dy = point.y - (start.y + aby * t);
+        const dz = point.z - (start.z + abz * t);
+        return sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     private int liveNodeIndex(string name)
@@ -526,6 +748,140 @@ final class MeshEditor : Widget
             return to!int(name);
         catch (Exception)
             return -1;
+    }
+
+    private int parentNode(int childIndex)
+    {
+        foreach (index, node; _scene.nodes)
+            foreach (candidate; node.children)
+                if (candidate == childIndex)
+                    return cast(int) index;
+        return -1;
+    }
+
+    private double[4] quatEditorMultiply(double[4] a, double[4] b)
+    {
+        const result = [
+            a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+            a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+            a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+            a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+        const length = sqrt(result[0] * result[0] + result[1] * result[1] +
+            result[2] * result[2] + result[3] * result[3]);
+        return length > 1e-12 ?
+            [result[0] / length, result[1] / length,
+                result[2] / length, result[3] / length] :
+            [0.0, 0.0, 0.0, 1.0];
+    }
+
+    private double[4] quatEditorConjugate(double[4] q)
+    {
+        return [-q[0], -q[1], -q[2], q[3]];
+    }
+
+    private double[4] quatEditorFromMatrix(Mat4 matrix)
+    {
+        double xx = matrix.m[0], xy = matrix.m[4], xz = matrix.m[8];
+        double yx = matrix.m[1], yy = matrix.m[5], yz = matrix.m[9];
+        double zx = matrix.m[2], zy = matrix.m[6], zz = matrix.m[10];
+        const xLength = sqrt(xx * xx + yx * yx + zx * zx);
+        const yLength = sqrt(xy * xy + yy * yy + zy * zy);
+        const zLength = sqrt(xz * xz + yz * yz + zz * zz);
+        if (xLength > 1e-12)
+        {
+            xx /= xLength; yx /= xLength; zx /= xLength;
+        }
+        if (yLength > 1e-12)
+        {
+            xy /= yLength; yy /= yLength; zy /= yLength;
+        }
+        if (zLength > 1e-12)
+        {
+            xz /= zLength; yz /= zLength; zz /= zLength;
+        }
+        const trace = xx + yy + zz;
+        double[4] result;
+        if (trace > 0)
+        {
+            const s = sqrt(trace + 1.0) * 2;
+            result = [(zy - yz) / s, (xz - zx) / s,
+                (yx - xy) / s, 0.25 * s];
+        }
+        else if (xx > yy && xx > zz)
+        {
+            const s = sqrt(1.0 + xx - yy - zz) * 2;
+            result = [0.25 * s, (xy + yx) / s,
+                (xz + zx) / s, (zy - yz) / s];
+        }
+        else if (yy > zz)
+        {
+            const s = sqrt(1.0 + yy - xx - zz) * 2;
+            result = [(xy + yx) / s, 0.25 * s,
+                (yz + zy) / s, (xz - zx) / s];
+        }
+        else
+        {
+            const s = sqrt(1.0 + zz - xx - yy) * 2;
+            result = [(xz + zx) / s, (yz + zy) / s,
+                0.25 * s, (yx - xy) / s];
+        }
+        const length = sqrt(result[0] * result[0] + result[1] * result[1] +
+            result[2] * result[2] + result[3] * result[3]);
+        return length > 1e-12 ?
+            [result[0] / length, result[1] / length,
+                result[2] / length, result[3] / length] :
+            [0.0, 0.0, 0.0, 1.0];
+    }
+
+    private bool applyPoseAim(JSONValue command)
+    {
+        const name = liveString(liveChild(command, "node"));
+        const childName = liveString(liveChild(command, "child"));
+        const target = liveNumbers(liveChild(command, "target"));
+        const node = liveNodeIndex(name);
+        const child = liveNodeIndex(childName);
+        if (node < 0 || child < 0 || target.length < 3 ||
+            node >= _nodeWorlds.length || child >= _nodeWorlds.length)
+            return false;
+        const originMatrix = _nodeWorlds[node];
+        const childMatrix = _nodeWorlds[child];
+        const origin = Vec3(originMatrix.m[12], originMatrix.m[13],
+            originMatrix.m[14]);
+        const currentDirection = Vec3(childMatrix.m[12] - origin.x,
+            childMatrix.m[13] - origin.y, childMatrix.m[14] - origin.z);
+        const desiredDirection = Vec3(target[0] - origin.x,
+            target[1] - origin.y, target[2] - origin.z);
+        const currentLength = sqrt(currentDirection.x * currentDirection.x +
+            currentDirection.y * currentDirection.y +
+            currentDirection.z * currentDirection.z);
+        const desiredLength = sqrt(desiredDirection.x * desiredDirection.x +
+            desiredDirection.y * desiredDirection.y +
+            desiredDirection.z * desiredDirection.z);
+        if (currentLength < 1e-9 || desiredLength < 1e-9)
+            return false;
+        const a = Vec3(currentDirection.x / currentLength,
+            currentDirection.y / currentLength,
+            currentDirection.z / currentLength);
+        const b = Vec3(desiredDirection.x / desiredLength,
+            desiredDirection.y / desiredLength,
+            desiredDirection.z / desiredLength);
+        const cross = Vec3(a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+        const worldRotation = quatEditorMultiply([cross.x, cross.y, cross.z,
+            1.0 + a.x * b.x + a.y * b.y + a.z * b.z], [0, 0, 0, 1]);
+        const parent = parentNode(node);
+        const parentRotation = parent >= 0 && parent < _nodeWorlds.length ?
+            quatEditorFromMatrix(_nodeWorlds[parent]) : [0.0, 0.0, 0.0, 1.0];
+        const localRotation = quatEditorMultiply(
+            quatEditorMultiply(quatEditorConjugate(parentRotation),
+                worldRotation), parentRotation);
+        PoseOverride overrideValue;
+        overrideValue.node = node;
+        overrideValue.hasRotation = true;
+        overrideValue.rotation = localRotation;
+        overrideValue.preAdditive = true;
+        _poseOverrides ~= overrideValue;
+        return true;
     }
 
     private bool applyLiveKeyframe(JSONValue command, bool remove)
@@ -621,13 +977,98 @@ final class MeshEditor : Widget
         return true;
     }
 
+    private void captureViewport(string path)
+    {
+        const width = max(1, bounds().width - SidebarWidth);
+        const height = max(1, bounds().height);
+        RenderOptions options;
+        options.wireframe = _wireframe;
+        options.vertices = _wireframe;
+        options.cullBackfaces = _cull;
+        options.selectedVertex = _selected;
+        const frame = renderMesh(_mesh, _camera, width, height, options);
+        writePpm(path, frame);
+        _lastCapturePath = path;
+        _status = "Captured " ~ path;
+    }
+
+    private void writeAnimationSheet(string path)
+    {
+        const frames = max(1, animationFrameCount());
+        const columns = min(5, frames);
+        const rows = (frames + columns - 1) / columns;
+        const tileWidth = 220;
+        const tileHeight = 220;
+        const originalTime = _time;
+        RenderOptions options;
+        options.wireframe = _wireframe;
+        options.vertices = _wireframe;
+        options.cullBackfaces = _cull;
+        RgbFrame[] tiles;
+        foreach (frame; 0 .. frames)
+        {
+            _time = cast(double) frame / 30.0;
+            rebuildGltfMesh();
+            tiles ~= renderMesh(_mesh, _camera, tileWidth, tileHeight,
+                options);
+        }
+        _time = originalTime;
+        rebuildGltfMesh();
+        auditCurrent();
+        RgbFrame sheet;
+        sheet.width = columns * tileWidth;
+        sheet.height = rows * tileHeight;
+        sheet.pixels = new ubyte[sheet.width * sheet.height * 3];
+        foreach (frame, tile; tiles)
+        {
+            const column = frame % columns;
+            const row = frame / columns;
+            foreach (y; 0 .. tileHeight)
+                foreach (x; 0 .. tileWidth)
+                {
+                    const source = (y * tileWidth + x) * 3;
+                    const target = ((row * tileHeight + y) * sheet.width +
+                        column * tileWidth + x) * 3;
+                    sheet.pixels[target] = tile.pixels[source];
+                    sheet.pixels[target + 1] = tile.pixels[source + 1];
+                    sheet.pixels[target + 2] = tile.pixels[source + 2];
+                }
+        }
+        writePpm(path, sheet);
+        _lastSheetPath = path;
+        _status = format("Animation sheet: %d frames -> %s", frames, path);
+    }
+
     void setLivePath(string path)
     {
         _livePath = path;
     }
 
+    void setRendererInfo(string name, bool hardware, string fallback)
+    {
+        _rendererName = name;
+        _rendererHardware = hardware;
+        _rendererFallback = fallback;
+    }
+
+    void writeDriverState(string path)
+    {
+        try
+            write(path, format(
+                `{"time":%.4f,"frame":%d,"ticks":%d,"advances":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"invalidFrames":%d,"collisionFrames":%d,"collisionPairs":%d}`,
+                _time, cast(int) (_time * 30 + 0.5), _scanTickCount,
+                _scanAdvanceCount,
+                _scanRunning ? "true" : "false", _scanCursor,
+                _scanFrameCount, _scanInvalidFrames, _scanCollisionFrames,
+                _scanCollisionPairs));
+        catch (Exception)
+        {
+        }
+    }
+
     void tickLive()
     {
+        _scanTickCount++;
         if (!_hasScene || _livePath.length == 0 || !exists(_livePath))
             return;
         string text;
@@ -636,7 +1077,12 @@ final class MeshEditor : Widget
         catch (Exception)
             return;
         if (text == _liveText)
+        {
+            advanceFrameScan();
+            writeAuditReport();
+            writeLiveAck();
             return;
+        }
         _liveText = text;
         JSONValue document;
         try
@@ -675,8 +1121,28 @@ final class MeshEditor : Widget
             _collisions.sample = Vec3(0, 0, 0);
         auditCurrent();
         writeAuditReport();
+        if (_inspectNode >= 0)
+            writeBoneInfo();
         if (_scanRequested)
             scanAnimationFrames();
+        if (_capturePath.length > 0)
+        {
+            try
+                captureViewport(_capturePath);
+            catch (Exception)
+            {
+            }
+            _capturePath.length = 0;
+        }
+        if (_sheetPath.length > 0)
+        {
+            try
+                writeAnimationSheet(_sheetPath);
+            catch (Exception)
+            {
+            }
+            _sheetPath.length = 0;
+        }
         if (_pendingSavePath.length > 0)
         {
             try
@@ -687,23 +1153,37 @@ final class MeshEditor : Widget
             _pendingSavePath.length = 0;
         }
         _liveStatus = "Live revision " ~ to!string(revision);
+        writeLiveAck();
+        invalidate();
+    }
+
+    private void writeLiveAck()
+    {
         try
             write("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"frameScanPath":"build/live-frames.json","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
-                revision, _liveExtras.length, _poseOverrides.length,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
+                _liveRevision, _liveExtras.length, _poseOverrides.length,
                 _hasLiveAnimation ? _liveClip.name : "",
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
+                _playing ? "true" : "false",
                 animationTrackCount(), animationKeyCount(),
                 _auditValid ? "true" : "false", _auditNonFinite,
                 _auditInvalidFaces, _auditWarnings.join("|"),
-                _scanFrameCount, _scanInvalidFrames,
+                _scanFrameCount, _scanInvalidFrames, _scanLimbHits,
+                _scanCollisionFrames, _scanCollisionPairs,
+                _scanRunning ? "true" : "false", _scanCursor,
+                _scanFrameCount, _scanTickCount, _scanAdvanceCount,
+                _rendererName, _rendererHardware ? "true" : "false",
+                _rendererFallback,
+                _scanFrameCount > 0 && _scanInvalidFrames == 0 ? "true" : "false",
+                _lastCapturePath,
+                _lastSheetPath,
                 _collisions.pairs, _baselineCollisionCount,
                 _collisions.sample.x, _collisions.sample.y,
                 _collisions.sample.z, _collisions.faceA, _collisions.faceB));
         catch (Exception)
         {
         }
-        invalidate();
     }
 
     private void rebuildGltfMesh()
@@ -713,6 +1193,7 @@ final class MeshEditor : Widget
         Mat4[] worlds;
         _mesh = bakeGltfFrame(_scene, _animation, _time, true,
             effectivePoseOverrides(), &worlds);
+        _nodeWorlds = worlds;
         if (_liveExtras.length > 0)
         {
             foreach (extra; _liveExtras)
@@ -810,7 +1291,69 @@ final class MeshEditor : Widget
             return true;
         if (type == "scan-frames")
         {
+            _scanCollisions = liveHas(command, "collisions") &&
+                liveChild(command, "collisions").type == JSONType.true_;
+            _scanIncremental = liveHas(command, "incremental") &&
+                liveChild(command, "incremental").type == JSONType.true_;
+            _scanCancelRequested = false;
             _scanRequested = true;
+            return true;
+        }
+        if (type == "cancel-scan")
+        {
+            _scanCancelRequested = true;
+            return true;
+        }
+        if (type == "inspect-bone")
+        {
+            const name = liveString(liveChild(command, "node"));
+            int node = liveNodeIndex(name);
+            if (node < 0 && liveHas(command, "node"))
+                node = cast(int) liveInteger(liveChild(command, "node"));
+            if (node < 0 || node >= _scene.nodes.length)
+                return false;
+            _inspectNode = node;
+            return true;
+        }
+        if (type == "pose-axis")
+        {
+            const name = liveString(liveChild(command, "node"));
+            int node = liveNodeIndex(name);
+            if (node < 0 && liveHas(command, "node"))
+                node = cast(int) liveInteger(liveChild(command, "node"));
+            if (node < 0 || node >= _scene.nodes.length)
+                return false;
+            const axisName = liveString(liveChild(command, "axis"), "x");
+            const angle = liveNumber(liveChild(command, "angle")) *
+                3.141592653589793 / 180.0;
+            const half = angle * 0.5;
+            PoseOverride overrideValue;
+            overrideValue.node = node;
+            overrideValue.hasRotation = true;
+            overrideValue.rotation = [0.0, 0.0, 0.0, cos(half)];
+            if (axisName == "x")
+                overrideValue.rotation[0] = sin(half);
+            else if (axisName == "y")
+                overrideValue.rotation[1] = sin(half);
+            else
+                overrideValue.rotation[2] = sin(half);
+            overrideValue.additive = !(liveHas(command, "additive") &&
+                liveChild(command, "additive").type == JSONType.false_);
+            _poseOverrides ~= overrideValue;
+            return true;
+        }
+        if (type == "pose-aim")
+            return applyPoseAim(command);
+        if (type == "capture")
+        {
+            _capturePath = liveString(liveChild(command, "path"),
+                "build/live-capture.ppm");
+            return true;
+        }
+        if (type == "capture-sheet")
+        {
+            _sheetPath = liveString(liveChild(command, "path"),
+                "build/live-sheet.ppm");
             return true;
         }
         if (type == "new-animation")
@@ -1123,6 +1666,7 @@ final class MeshEditor : Widget
             RenderOptions options;
             options.wireframe = _wireframe;
             options.vertices = _wireframe;
+            options.cullBackfaces = _cull;
             options.selectedVertex = _selected;
             _frame = renderMesh(_mesh, _camera, viewportWidth, viewportHeight,
                 options);
@@ -1149,6 +1693,39 @@ final class MeshEditor : Widget
         const muted = Color.rgba(148, 163, 184, 255);
         const accent = Color.rgba(45, 212, 191, 255);
         const warn = Color.rgba(251, 146, 60, 255);
+        if (_hasLiveAnimation && _liveClip.duration > 0)
+        {
+            const barX = 18;
+            const barY = height - 54;
+            const barW = max(1, viewportWidth - 36);
+            canvas.fillRect(Rect(barX, barY, barW, 34),
+                Color.rgba(8, 15, 28, 225));
+            canvas.fillRect(Rect(barX, barY + 16, barW, 2),
+                Color.rgba(71, 85, 105, 220));
+            const frames = max(1, animationFrameCount());
+            foreach (frame; 0 .. frames + 1)
+            {
+                const x = barX + barW * frame / frames;
+                canvas.fillRect(Rect(x, barY + 12, 1, 8),
+                    Color.rgba(100, 116, 139, 150));
+            }
+            foreach (track; _liveClip.tracks)
+                foreach (key; track.keys)
+                {
+                    const x = barX + cast(int) (barW *
+                        (key.time / _liveClip.duration));
+                    canvas.fillRect(Rect(x, barY + 6, 2, 21), accent);
+                }
+            const playhead = barX + cast(int) (barW *
+                min(1.0, max(0.0, _time / _liveClip.duration)));
+            canvas.fillRect(Rect(playhead, barY + 2, 2, 29), warn);
+            label(canvas, Rect(barX, barY - 20, barW, 18),
+                format("%s  F %d/%d  ·  %d tracks / %d keys  ·  %s",
+                    _liveClip.name, cast(int) (_time * 30 + 0.5), frames,
+                    animationTrackCount(), animationKeyCount(),
+                    _auditValid ? "OK" : "CHECK WARNINGS"),
+                _auditValid ? accent : warn, 1);
+        }
         label(canvas, Rect(left, 22, inner, 28), "AURORA MESH", white, 2);
         label(canvas, Rect(left, 52, inner, 22),
             "Human base mesh · software 3D", muted, 1);
@@ -1172,7 +1749,8 @@ final class MeshEditor : Widget
             _axis == 1 ? "AXIS  X" : _axis == 2 ? "AXIS  Y" : "AXIS  Z",
             _axis == 0 ? muted : accent, 1);
         label(canvas, Rect(left, 176, inner, 20),
-            format("TOOL  %s%s", toolName(), _symmetry ? " · mirror X" : ""),
+            format("TOOL  %s%s%s", toolName(), _symmetry ? " · mirror X" : "",
+                _cull ? "" : " · culling off"),
             _symmetry ? accent : white, 1);
         if (_hasLiveAnimation || (_hasScene && _scene.animations.length > 0))
             label(canvas, Rect(left, 196, inner, 20),
@@ -1190,7 +1768,7 @@ final class MeshEditor : Widget
             "X / Y / Z: axis lock",
             "Esc: free · R: reset",
             "B: tool · M: symmetry",
-            "U: undo",
+            "U: undo · C: cull faces",
             "W wire · S/L OBJ · G/F GLB",
         ];
         foreach (index, line; help)
@@ -1435,6 +2013,13 @@ final class MeshEditor : Widget
                 _wireframe = !_wireframe;
                 _dirty = true;
                 _status = _wireframe ? "Wireframe on" : "Wireframe off";
+                invalidate();
+                return true;
+            case Key.c:
+                _cull = !_cull;
+                _dirty = true;
+                _status = _cull ? "Backface culling on" :
+                    "Backface culling off (all faces drawn)";
                 invalidate();
                 return true;
             case Key.s:
@@ -1726,17 +2311,8 @@ final class MeshEditor : Widget
     {
         const width = max(1, bounds().width - SidebarWidth);
         const height = max(1, bounds().height);
-        int[] selected;
-        foreach (index, vertex; _mesh.vertices)
-        {
-            const projected = project(vertex, _camera, width, height);
-            if (!projected.visible)
-                continue;
-            const dx = projected.x - point.x;
-            const dy = projected.y - point.y;
-            if (dx * dx + dy * dy <= BrushRadius * BrushRadius)
-                selected ~= cast(int) index;
-        }
+        int[] selected = brushVertices(_mesh, _camera, width, height,
+            point.x, point.y, BrushRadius);
         if (_symmetry)
         {
             const original = selected.dup;
@@ -1749,6 +2325,15 @@ final class MeshEditor : Widget
         }
         if (selected.length == 0)
             return;
+        auto unique = new bool[_mesh.vertices.length];
+        int[] distinct;
+        foreach (index; selected)
+            if (!unique[index])
+            {
+                unique[index] = true;
+                distinct ~= index;
+            }
+        selected = distinct;
         if (_tool == 1)
             smoothVertices(_mesh, selected, 0.30);
         else if (_tool == 2)

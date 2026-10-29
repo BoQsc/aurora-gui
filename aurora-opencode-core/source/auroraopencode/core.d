@@ -1097,6 +1097,15 @@ public struct ChatSession
     bool thinking;
     string projectId;  // owning project; empty/unknown maps to the sandbox
     string objective;
+    // Persistent user goal (Claude Code / Codex style). A goal is separate from
+    // the model-maintained plan objective: the user owns its text and pause
+    // state, while the model may keep refining `objective` and `taskSteps`.
+    // Empty `goal` means this conversation has no goal. `goalStatus` is one of
+    // "active", "paused" or "completed".
+    string goal;
+    string goalStatus;
+    long goalStartedAt; // Unix time when the current goal was set or resumed.
+    int goalTurns;      // Bounded goal-driven continuations since set/resume.
     TaskContract contract;
     string[] taskArchive; // Immutable JSON snapshots; transcript history stays intact.
     string taskStatus; // "idle" | "active" | "reviewing" | "verifying" | "completed" | "blocked"

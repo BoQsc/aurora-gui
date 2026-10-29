@@ -1,19 +1,20 @@
 module auroramesh.renderer;
 
-import auroramesh.camera : Camera, Projected, project;
+import auroramesh.camera : Camera, NearPlane, Projected, project;
 import auroramesh.mesh : Face, Material, MaterialSlot, Mesh, Vec2, Vec3, cross,
-    dot, length, normalize, sub;
+    dot, humanBaseMesh, length, normalize, sub;
 import aurora.image : RgbaImage;
 import std.algorithm : max, min;
 import std.file : write;
 import std.format : format;
-import std.math : abs, ceil, cos, floor, sin, sqrt;
+import std.math : abs, ceil, floor, tan;
 
 struct RenderOptions
 {
     bool wireframe = true;
     bool vertices = true;
     bool grid = true;
+    bool cullBackfaces = true;
     int selectedVertex = -1;
 }
 
@@ -22,6 +23,49 @@ struct RgbFrame
     int width;
     int height;
     ubyte[] pixels;
+}
+
+/** A clipped triangle corner in screen space with depth-weighted attributes. */
+private struct RasterVertex
+{
+    double x;
+    double y;
+    double invZ;
+    double u;
+    double v;
+    double light;
+}
+
+/** A triangle corner in camera space before the perspective divide. */
+private struct FaceVertex
+{
+    double viewX;
+    double viewY;
+    double depth;
+    double u;
+    double v;
+    double light;
+}
+
+private struct Texel
+{
+    double r;
+    double g;
+    double b;
+    double a;
+}
+
+/** Per-face surface state shared by every fragment of the face. */
+private struct Surface
+{
+    Vec3 color = Vec3(1, 1, 1);
+    RgbaImage texture;
+    int wrapS = 10497;
+    int wrapT = 10497;
+    double alpha = 1;
+    int alphaMode;
+    double cutoff = 0.5;
+    bool textured;
 }
 
 RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
@@ -33,9 +77,8 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
     frame.width = width;
     frame.height = height;
     frame.pixels = new ubyte[width * height * 3];
+    // Inverse depth (0 = empty) so nearer fragments compare greater.
     auto depth = new float[width * height];
-    foreach (ref value; depth)
-        value = float.max;
 
     // Cool vertical studio gradient.
     foreach (y; 0 .. height)
@@ -63,128 +106,132 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
     foreach (index, vertex; mesh.vertices)
         projected[index] = project(vertex, camera, width, height);
 
+    const focal = (height * 0.5) / tan(camera.fov * 0.5);
     const light = normalize(Vec3(0.35, 0.85, 0.55));
     const smooth = mesh.normals.length == mesh.vertices.length;
+    const hasFaceMaterials = mesh.faceMaterials.length == mesh.faces.length;
+    const hasUvs = mesh.uvs.length == mesh.vertices.length;
+
     foreach (faceIndex, face; mesh.faces)
     {
+        if (face.a < 0 || face.b < 0 || face.c < 0 ||
+            face.a >= projected.length || face.b >= projected.length ||
+            face.c >= projected.length)
+            continue;
         const pa = projected[face.a];
         const pb = projected[face.b];
         const pc = projected[face.c];
-        if (!pa.visible || !pb.visible || !pc.visible)
-            continue;
 
-        const area = edge(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y);
-        if (abs(area) < 1.0e-8)
-            continue;
+        Surface surface;
+        bool doubleSided;
+        const materialIndex = hasFaceMaterials ?
+            mesh.faceMaterials[faceIndex] : -1;
+        if (materialIndex >= 0 && materialIndex < mesh.materials.length)
+        {
+            const slot = mesh.materials[materialIndex];
+            surface.color = slot.baseColor;
+            surface.alpha = slot.alpha;
+            surface.alphaMode = slot.alphaMode;
+            surface.cutoff = slot.alphaCutoff;
+            surface.wrapS = slot.wrapS;
+            surface.wrapT = slot.wrapT;
+            doubleSided = slot.doubleSided;
+            if (slot.texture >= 0 && slot.texture < mesh.textures.length &&
+                hasUvs && mesh.textures[slot.texture] !is null)
+            {
+                // The renderer only reads texels; decoded images are immutable.
+                surface.texture = cast(RgbaImage) mesh.textures[slot.texture];
+                surface.textured = true;
+            }
+        }
+        else
+        {
+            surface.color = materialColor(face.material);
+        }
 
-        double intensityA;
-        double intensityB;
-        double intensityC;
-        double flatIntensity;
+        double lightA;
+        double lightB;
+        double lightC;
         if (smooth)
         {
-            intensityA = shade(mesh.normals[face.a], light);
-            intensityB = shade(mesh.normals[face.b], light);
-            intensityC = shade(mesh.normals[face.c], light);
+            lightA = shade(mesh.normals[face.a], light);
+            lightB = shade(mesh.normals[face.b], light);
+            lightC = shade(mesh.normals[face.c], light);
         }
         else
         {
             const normal = normalize(cross(
                 sub(mesh.vertices[face.b], mesh.vertices[face.a]),
                 sub(mesh.vertices[face.c], mesh.vertices[face.a])));
-            flatIntensity = shade(normal, light);
+            lightA = lightB = lightC = shade(normal, light);
         }
-        const materialIndex = mesh.faceMaterials.length == mesh.faces.length ?
-            mesh.faceMaterials[faceIndex] : -1;
-        const hasMaterial = materialIndex >= 0 &&
-            materialIndex < mesh.materials.length;
-        MaterialSlot slot;
-        if (hasMaterial)
-            slot = mesh.materials[materialIndex];
-        else
-            slot.baseColor = Vec3(0, 0, 0);
-        const base = hasMaterial ? slot.baseColor : Vec3(0, 0, 0);
-        const legacyBase = hasMaterial ? null : materialColor(face.material);
-        const texture = hasMaterial && slot.texture >= 0 &&
-            slot.texture < mesh.textures.length ?
-            mesh.textures[slot.texture] : null;
-        const hasUv = mesh.uvs.length == mesh.vertices.length && texture !is null;
 
-        const minX = max(0, cast(int) floor(min(pa.x, min(pb.x, pc.x))));
-        const maxX = min(width - 1, cast(int) ceil(max(pa.x, max(pb.x, pc.x))));
-        const minY = max(0, cast(int) floor(min(pa.y, min(pb.y, pc.y))));
-        const maxY = min(height - 1, cast(int) ceil(max(pa.y, max(pb.y, pc.y))));
-        if (minX > maxX || minY > maxY)
-            continue;
+        // Camera-space triangle, clipped against the near plane so a face that
+        // crosses the camera keeps its visible part instead of vanishing.
+        FaceVertex[3] corners;
+        corners[0] = FaceVertex(pa.viewX, pa.viewY, pa.z,
+            hasUvs ? mesh.uvs[face.a].x : 0.0,
+            hasUvs ? mesh.uvs[face.a].y : 0.0, lightA);
+        corners[1] = FaceVertex(pb.viewX, pb.viewY, pb.z,
+            hasUvs ? mesh.uvs[face.b].x : 0.0,
+            hasUvs ? mesh.uvs[face.b].y : 0.0, lightB);
+        corners[2] = FaceVertex(pc.viewX, pc.viewY, pc.z,
+            hasUvs ? mesh.uvs[face.c].x : 0.0,
+            hasUvs ? mesh.uvs[face.c].y : 0.0, lightC);
 
-        const inverseArea = 1.0 / area;
-        foreach (y; minY .. maxY + 1)
+        FaceVertex[4] clipped;
+        int count;
+        foreach (corner; 0 .. 3)
         {
-            foreach (x; minX .. maxX + 1)
+            const next = (corner + 1) % 3;
+            const inside = corners[corner].depth >= NearPlane;
+            const insideNext = corners[next].depth >= NearPlane;
+            if (inside)
             {
-                const px = x + 0.5;
-                const py = y + 0.5;
-                const wa = edge(pb.x, pb.y, pc.x, pc.y, px, py) * inverseArea;
-                const wb = edge(pc.x, pc.y, pa.x, pa.y, px, py) * inverseArea;
-                const wc = edge(pa.x, pa.y, pb.x, pb.y, px, py) * inverseArea;
-                const positive = wa >= 0 && wb >= 0 && wc >= 0;
-                const negative = wa <= 0 && wb <= 0 && wc <= 0;
-                if (!positive && !negative)
-                    continue;
-                const z = wa * pa.z + wb * pb.z + wc * pc.z;
-                Vec3 sampled;
-                double alpha = 1;
-                if (hasUv)
-                {
-                    const u = wa * mesh.uvs[face.a].x +
-                        wb * mesh.uvs[face.b].x + wc * mesh.uvs[face.c].x;
-                    const v = wa * mesh.uvs[face.a].y +
-                        wb * mesh.uvs[face.b].y + wc * mesh.uvs[face.c].y;
-                    const texel = sampleTexture(texture, u, v, slot.wrapS,
-                        slot.wrapT);
-                    sampled = Vec3(texel[0], texel[1], texel[2]);
-                    alpha = hasMaterial && slot.alphaMode != 0 ?
-                        texel[3] : 1;
-                }
-                else if (legacyBase is null)
-                    sampled = base;
-                else
-                    sampled = Vec3(legacyBase[0] / 255.0,
-                        legacyBase[1] / 255.0, legacyBase[2] / 255.0);
-                if (hasMaterial)
-                    alpha *= slot.alpha;
-                if (hasMaterial && slot.alphaMode == 1 &&
-                    alpha < slot.alphaCutoff)
-                    continue;
-                const index = y * width + x;
-                if (z >= depth[index])
-                    continue;
-                depth[index] = cast(float) z;
-                const intensity = smooth ?
-                    wa * intensityA + wb * intensityB + wc * intensityC :
-                    flatIntensity;
-                const red = clampByte(sampled.x * intensity * 255);
-                const green = clampByte(sampled.y * intensity * 255);
-                const blue = clampByte(sampled.z * intensity * 255);
-                const pixel = index * 3;
-                if (hasMaterial && slot.alphaMode == 2 && alpha < 0.999)
-                {
-                    const inverse = 1 - alpha;
-                    frame.pixels[pixel] = clampByte(
-                        frame.pixels[pixel] * inverse + red * alpha);
-                    frame.pixels[pixel + 1] = clampByte(
-                        frame.pixels[pixel + 1] * inverse + green * alpha);
-                    frame.pixels[pixel + 2] = clampByte(
-                        frame.pixels[pixel + 2] * inverse + blue * alpha);
-                }
-                else
-                {
-                    frame.pixels[pixel] = red;
-                    frame.pixels[pixel + 1] = green;
-                    frame.pixels[pixel + 2] = blue;
-                }
+                clipped[count] = corners[corner];
+                ++count;
+            }
+            if (inside != insideNext)
+            {
+                const t = (NearPlane - corners[corner].depth) /
+                    (corners[next].depth - corners[corner].depth);
+                clipped[count] = FaceVertex(
+                    corners[corner].viewX + (corners[next].viewX -
+                        corners[corner].viewX) * t,
+                    corners[corner].viewY + (corners[next].viewY -
+                        corners[corner].viewY) * t,
+                    NearPlane,
+                    corners[corner].u + (corners[next].u -
+                        corners[corner].u) * t,
+                    corners[corner].v + (corners[next].v -
+                        corners[corner].v) * t,
+                    corners[corner].light + (corners[next].light -
+                        corners[corner].light) * t);
+                ++count;
             }
         }
+        // One clip plane turns a triangle into a triangle or a quad.
+        if (count < 3 || count > 4)
+            continue;
+
+        RasterVertex[4] polygon;
+        foreach (corner; 0 .. count)
+        {
+            const inverse = 1.0 / clipped[corner].depth;
+            polygon[corner].x = width * 0.5 + clipped[corner].viewX * inverse *
+                focal;
+            polygon[corner].y = height * 0.5 - clipped[corner].viewY * inverse *
+                focal;
+            polygon[corner].invZ = inverse;
+            polygon[corner].u = clipped[corner].u * inverse;
+            polygon[corner].v = clipped[corner].v * inverse;
+            polygon[corner].light = clipped[corner].light * inverse;
+        }
+
+        const cull = options.cullBackfaces && !doubleSided;
+        foreach (corner; 1 .. count - 1)
+            rasterizeTriangle(frame, depth, polygon[0], polygon[corner],
+                polygon[corner + 1], surface, cull);
     }
 
     if (options.wireframe)
@@ -225,6 +272,95 @@ RgbFrame renderMesh(const Mesh mesh, const Camera camera, int width, int height,
     return frame;
 }
 
+/**
+ * Shade one already-clipped, projected triangle. Attribute interpolation is
+ * perspective correct: 1/z is linear in screen space, so UVs and shading are
+ * divided by depth before the weighted sum and multiplied back afterwards.
+ */
+private void rasterizeTriangle(ref RgbFrame frame, float[] depth,
+    const RasterVertex a, const RasterVertex b, const RasterVertex c,
+    const Surface surface, bool cull)
+{
+    const width = frame.width;
+    const height = frame.height;
+    const area = edge(a.x, a.y, b.x, b.y, c.x, c.y);
+    if (abs(area) < 1.0e-9)
+        return;
+    // Screen y grows downward, so camera-facing (counter-clockwise) triangles
+    // have a negative signed area.
+    if (cull && area > 0)
+        return;
+
+    const minX = max(0, cast(int) floor(min(a.x, min(b.x, c.x))));
+    const maxX = min(width - 1, cast(int) ceil(max(a.x, max(b.x, c.x))));
+    const minY = max(0, cast(int) floor(min(a.y, min(b.y, c.y))));
+    const maxY = min(height - 1, cast(int) ceil(max(a.y, max(b.y, c.y))));
+    if (minX > maxX || minY > maxY)
+        return;
+
+    const inverseArea = 1.0 / area;
+    const mask = surface.alphaMode == 1;
+    const blend = surface.alphaMode == 2;
+    foreach (y; minY .. maxY + 1)
+    {
+        foreach (x; minX .. maxX + 1)
+        {
+            const px = x + 0.5;
+            const py = y + 0.5;
+            const wa = edge(b.x, b.y, c.x, c.y, px, py) * inverseArea;
+            const wb = edge(c.x, c.y, a.x, a.y, px, py) * inverseArea;
+            const wc = edge(a.x, a.y, b.x, b.y, px, py) * inverseArea;
+            const positive = wa >= 0 && wb >= 0 && wc >= 0;
+            const negative = wa <= 0 && wb <= 0 && wc <= 0;
+            if (!positive && !negative)
+                continue;
+            const invZ = wa * a.invZ + wb * b.invZ + wc * c.invZ;
+            if (invZ <= 0)
+                continue;
+            const index = y * width + x;
+            if (invZ <= depth[index])
+                continue;
+            const z = 1.0 / invZ;
+            Vec3 sampled = surface.color;
+            double alpha = surface.alpha;
+            if (surface.textured)
+            {
+                const u = (wa * a.u + wb * b.u + wc * c.u) * z;
+                const v = (wa * a.v + wb * b.v + wc * c.v) * z;
+                const texel = sampleTexture(surface.texture, u, v,
+                    surface.wrapS, surface.wrapT);
+                sampled = Vec3(texel.r, texel.g, texel.b);
+                if (surface.alphaMode != 0)
+                    alpha *= texel.a;
+            }
+            if (mask && alpha < surface.cutoff)
+                continue;
+            depth[index] = cast(float) invZ;
+            const intensity = (wa * a.light + wb * b.light + wc * c.light) * z;
+            const red = clampByte(sampled.x * intensity * 255);
+            const green = clampByte(sampled.y * intensity * 255);
+            const blue = clampByte(sampled.z * intensity * 255);
+            const pixel = index * 3;
+            if (blend && alpha < 0.999)
+            {
+                const inverse = 1 - alpha;
+                frame.pixels[pixel] = clampByte(
+                    frame.pixels[pixel] * inverse + red * alpha);
+                frame.pixels[pixel + 1] = clampByte(
+                    frame.pixels[pixel + 1] * inverse + green * alpha);
+                frame.pixels[pixel + 2] = clampByte(
+                    frame.pixels[pixel + 2] * inverse + blue * alpha);
+            }
+            else
+            {
+                frame.pixels[pixel] = red;
+                frame.pixels[pixel + 1] = green;
+                frame.pixels[pixel + 2] = blue;
+            }
+        }
+    }
+}
+
 private double edge(double ax, double ay, double bx, double by, double px,
     double py)
 {
@@ -252,21 +388,25 @@ private double wrapCoordinate(double value, int mode)
     return value - floor(value);
 }
 
-private double[4] sampleTexture(const(RgbaImage) image, double u, double v,
+private Texel sampleTexture(const(RgbaImage) image, double u, double v,
     int wrapS, int wrapT)
 {
+    Texel result = Texel(1, 1, 1, 1);
     const width = image.width;
     const height = image.height;
     if (width <= 0 || height <= 0)
-        return [1.0, 1.0, 1.0, 1.0];
+        return result;
     const tx = cast(int) (wrapCoordinate(u, wrapS) * width) % width;
     const ty = cast(int) (wrapCoordinate(v, wrapT) * height) % height;
     const x = tx < 0 ? tx + width : tx;
     const y = ty < 0 ? ty + height : ty;
     const pixels = image.pixels;
     const offset = (y * width + x) * 4;
-    return [pixels[offset] / 255.0, pixels[offset + 1] / 255.0,
-        pixels[offset + 2] / 255.0, pixels[offset + 3] / 255.0];
+    result.r = pixels[offset] / 255.0;
+    result.g = pixels[offset + 1] / 255.0;
+    result.b = pixels[offset + 2] / 255.0;
+    result.a = pixels[offset + 3] / 255.0;
+    return result;
 }
 
 private double shade(Vec3 normal, Vec3 light)
@@ -274,20 +414,20 @@ private double shade(Vec3 normal, Vec3 light)
     return 0.28 + 0.72 * abs(dot(normal, light));
 }
 
-private double[] materialColor(Material material)
+private Vec3 materialColor(Material material)
 {
     final switch (material)
     {
         case Material.skin:
-            return [202.0, 154.0, 123.0];
+            return Vec3(202.0 / 255.0, 154.0 / 255.0, 123.0 / 255.0);
         case Material.cloth:
-            return [46.0, 111.0, 137.0];
+            return Vec3(46.0 / 255.0, 111.0 / 255.0, 137.0 / 255.0);
         case Material.accent:
-            return [151.0, 99.0, 60.0];
+            return Vec3(151.0 / 255.0, 99.0 / 255.0, 60.0 / 255.0);
         case Material.neutral:
-            return [148.0, 160.0, 178.0];
+            return Vec3(148.0 / 255.0, 160.0 / 255.0, 178.0 / 255.0);
         case Material.eye:
-            return [38.0, 52.0, 68.0];
+            return Vec3(38.0 / 255.0, 52.0 / 255.0, 68.0 / 255.0);
     }
 }
 
@@ -380,6 +520,38 @@ void writePpm(string path, const RgbFrame frame)
     write(path, data);
 }
 
+private int surfacePixelCount(const RgbFrame frame)
+{
+    int count;
+    foreach (offset; 0 .. frame.pixels.length / 3)
+    {
+        const index = offset * 3;
+        // The studio background is dark blue; surface pixels are brighter.
+        if (frame.pixels[index + 1] > 60 || frame.pixels[index] > 60)
+            ++count;
+    }
+    return count;
+}
+
+private Camera flatCamera()
+{
+    auto camera = Camera();
+    camera.target = Vec3(0, 0, 0);
+    camera.yaw = 0;
+    camera.pitch = 0;
+    camera.distance = 3.0;
+    return camera;
+}
+
+private RenderOptions surfaceOptions()
+{
+    RenderOptions options;
+    options.grid = false;
+    options.wireframe = false;
+    options.vertices = false;
+    return options;
+}
+
 unittest
 {
     auto mesh = Mesh();
@@ -400,4 +572,98 @@ unittest
             break;
         }
     assert(changed);
+}
+
+unittest
+{
+    // A quad stretched in depth must sample its texture by 1/z. Affine
+    // (perspective-incorrect) interpolation would sample green at the middle.
+    Mesh mesh;
+    const int a = mesh.addVertex(Vec3(0, -0.5, 2));
+    const int b = mesh.addVertex(Vec3(1, -0.5, -1));
+    const int c = mesh.addVertex(Vec3(1, 0.5, -1));
+    const int d = mesh.addVertex(Vec3(0, 0.5, 2));
+    mesh.addQuad(a, b, c, d, Material.neutral);
+    mesh.uvs = [Vec2(0, 0), Vec2(1, 0), Vec2(1, 1), Vec2(0, 1)];
+    MaterialSlot slot;
+    slot.baseColor = Vec3(1, 1, 1);
+    slot.texture = 0;
+    mesh.materials = [slot];
+    mesh.faceMaterials = [0, 0];
+    mesh.textures = [new RgbaImage(2, 1,
+        [ubyte(255), 0, 0, 255, 0, 255, 0, 255])];
+
+    const frame = renderMesh(mesh, flatCamera(), 200, 100, surfaceOptions());
+    const focal = 50.0 / tan(21.0 * 3.14159265358979323846 / 180.0);
+    const left = 104;
+    const middle = cast(int) (100 + focal / 8);
+    const right = cast(int) (100 + focal * 0.23);
+    int red(int x) { return frame.pixels[(50 * frame.width + x) * 3]; }
+    int green(int x) { return frame.pixels[(50 * frame.width + x) * 3 + 1]; }
+    assert(red(left) > green(left), "near edge must read the first texel");
+    assert(red(middle) > green(middle),
+        "midpoint must read the near texel under 1/z interpolation");
+    assert(green(right) > red(right), "far edge must read the second texel");
+}
+
+unittest
+{
+    // A face that crosses the camera keeps its visible part instead of being
+    // dropped, and back faces of single-sided materials are culled.
+    Mesh mesh;
+    const int a = mesh.addVertex(Vec3(0.6, -0.6, 2.5));
+    const int b = mesh.addVertex(Vec3(-0.6, -0.6, 4.0));
+    const int c = mesh.addVertex(Vec3(-0.6, 0.6, 4.0));
+    const int d = mesh.addVertex(Vec3(0.6, 0.6, 2.5));
+    mesh.addQuad(a, d, c, b, Material.cloth);
+    auto options = surfaceOptions();
+    const clipped = renderMesh(mesh, flatCamera(), 120, 120, options);
+    assert(surfacePixelCount(clipped) > 200,
+        "crossing face must be clipped, not dropped");
+
+    Mesh facing;
+    const int e = facing.addVertex(Vec3(0, -0.4, 0));
+    const int f = facing.addVertex(Vec3(0.4, -0.4, 0));
+    const int g = facing.addVertex(Vec3(0, 0.4, 0));
+    facing.addTriangle(e, f, g, Material.cloth);
+    const front = renderMesh(facing, flatCamera(), 60, 60, options);
+    assert(surfacePixelCount(front) > 100);
+
+    facing.faces[0] = Face(g, f, e, Material.cloth);
+    const back = renderMesh(facing, flatCamera(), 60, 60, options);
+    assert(surfacePixelCount(back) == 0, "back faces are culled");
+
+    MaterialSlot slot;
+    slot.baseColor = Vec3(1, 1, 1);
+    slot.doubleSided = true;
+    facing.materials = [slot];
+    facing.faceMaterials = [0];
+    const doubled = renderMesh(facing, flatCamera(), 60, 60, options);
+    assert(surfacePixelCount(doubled) > 100, "double-sided faces draw both ways");
+}
+
+unittest
+{
+    // Culling must not change a closed, outward-wound mesh: if it did, the
+    // winding convention or the sign test would be inverted.
+    auto mesh = humanBaseMesh();
+    auto camera = Camera();
+    auto options = surfaceOptions();
+    auto culled = renderMesh(mesh, camera, 160, 220, options);
+    options.cullBackfaces = false;
+    auto both = renderMesh(mesh, camera, 160, 220, options);
+    int differences;
+    foreach (offset; 0 .. culled.pixels.length / 3)
+        foreach (channel; 0 .. 3)
+        {
+            const index = offset * 3 + channel;
+            if (abs(cast(int) culled.pixels[index] -
+                cast(int) both.pixels[index]) > 12)
+            {
+                ++differences;
+                break;
+            }
+        }
+    assert(differences < culled.width * culled.height / 120,
+        "backface culling changed visible surfaces");
 }

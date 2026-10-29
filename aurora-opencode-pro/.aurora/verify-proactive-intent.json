@@ -1,0 +1,26 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/tests/conversation_quality_contracts.d",
+    "aurora-opencode-pro/tests/task_continuation_contracts.d",
+    "aurora-opencode-pro/tests/agent_workflow_contracts.d",
+    "aurora-opencode-pro/tests/work_brief_contracts.d",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-c",
+          "import os,sys,runpy; os.environ['PATH']=r'C:\\Users\\windows10\\AppData\\Local\\GitHubDesktop\\app-3.6.7\\resources\\app\\git\\cmd;'+os.environ['PATH']; sys.argv=['tests/run_architecture_checks.py','conversation_quality_contracts','task_continuation_contracts','agent_workflow_contracts','work_brief_contracts']; runpy.run_path('tests/run_architecture_checks.py', run_name='__main__')"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    }
+  ]
+}

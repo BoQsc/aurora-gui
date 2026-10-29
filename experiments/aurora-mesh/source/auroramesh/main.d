@@ -12,7 +12,9 @@ import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.glb : fromGlb, toGlb;
 import auroramesh.gltf_scene : GltfScene, bakeGltfFrame, loadGltfScene;
 import auroramesh.renderer : RenderOptions, renderMesh, writePpm;
-import aurora : GuiWindow, Theme, WindowOptions;
+import aurora : GuiWindow, RendererPreference, Theme, WindowOptions;
+import core.thread : Thread;
+import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
 import std.file : exists, mkdirRecurse, read, readText, write;
 import std.format : format;
@@ -374,20 +376,29 @@ int main(string[] args)
     options.width = width;
     options.height = height;
     options.darkTitleBar = true;
+    options.alwaysOnTop = true;
+    options.renderer = RendererPreference.vulkan;
     auto window = new GuiWindow(options, Theme.dark());
     auto editor = new MeshEditor(mesh, objPath);
     editor.setLivePath(livePath);
     if (hasGltfScene)
         editor.setGltfScene(gltfScene, selectedAnimation, glbTime);
     window.setRoot(editor);
+    editor.setRendererInfo(window.rendererName(), window.hardwareAccelerated(),
+        window.rendererFallbackReason());
 
     if (screenshotPath.length > 0 || hasGltfScene)
     {
         if (screenshotPath.length > 0)
             ensureParent(screenshotPath);
         auto frames = 0;
+        auto lastWake = MonoTime.currTime;
         window.applicationService = delegate(double delta)
         {
+            const now = MonoTime.currTime;
+            if (delta <= 0)
+                delta = (now - lastWake).total!"seconds";
+            lastWake = now;
             editor.tickLive();
             if (hasGltfScene)
                 editor.advance(delta);
@@ -398,6 +409,34 @@ int main(string[] args)
                 window.close();
             }
         };
+        auto wake = new Thread(delegate()
+        {
+            try
+            {
+                write("build/driver-start.txt", "started");
+                Thread.sleep(1.seconds);
+                int heartbeat;
+                while (true)
+                {
+                    Thread.sleep(16.msecs);
+                    editor.tickLive();
+                    if (hasGltfScene)
+                        editor.advance(0.016);
+                    editor.writeDriverState("build/driver-state.json");
+                    window.serviceWake();
+                    heartbeat++;
+                    if (heartbeat % 60 == 0)
+                        write("build/driver-heartbeat.txt",
+                            format("%d", heartbeat));
+                }
+            }
+            catch (Throwable error)
+            {
+                write("build/driver-error.txt", error.toString());
+            }
+        });
+        wake.isDaemon = true;
+        wake.start();
     }
 
     return window.run();

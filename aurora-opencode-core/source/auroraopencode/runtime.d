@@ -565,6 +565,14 @@ private void applyThreadPayload(ref ChatSession session, JSONValue payload)
         if (f.type == JSONType.string) session.activeLeafId = f.str;
     if (auto f = "objective" in payload.object)
         if (f.type == JSONType.string) session.objective = f.str;
+    if (auto f = "goal" in payload.object)
+        if (f.type == JSONType.string) session.goal = f.str;
+    if (auto f = "goalStatus" in payload.object)
+        if (f.type == JSONType.string) session.goalStatus = f.str;
+    if (auto f = "goalStartedAt" in payload.object)
+        if (f.type == JSONType.integer) session.goalStartedAt = f.integer;
+    if (auto f = "goalTurns" in payload.object)
+        if (f.type == JSONType.integer) session.goalTurns = cast(int) f.integer;
     if (auto f = "taskStatus" in payload.object)
         if (f.type == JSONType.string) session.taskStatus = f.str;
     if (auto f = "turnStatus" in payload.object)

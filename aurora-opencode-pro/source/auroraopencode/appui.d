@@ -88,7 +88,11 @@ import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateEr
     restoreBranchTask, initializeLegacyTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
-import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction, taskBlockerError, taskInputError, taskAwaitingInput;
+import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction,
+    taskBlockerError, taskInputError, taskAwaitingInput, proactiveActionGuidance;
+import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
+    clampGoalText, goalCompletionError, goalContinuationInstruction,
+    goalPromptBlock, maxGoalLength, maxGoalTurns, parseGoalCommand;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
@@ -8059,6 +8063,267 @@ private final class ChatInput : TextArea
     }
 }
 
+/// Single-line persistent-goal control above the composer. The row mirrors the
+/// Codex goal progress bar: the current objective stays visible, Stop pauses
+/// automatic continuation, Start resumes it, and Edit changes the condition.
+private final class GoalBar : Widget
+{
+    private static immutable int barHeight = 36;
+    private static immutable int padH = 10;
+    private static immutable int padV = 5;
+    private static immutable int prefixWidth = 132;
+    private static immutable int gap = 6;
+    private static immutable int buttonWidth = 52;
+    private static immutable int buttonHeight = 26;
+
+    private Label _prefix;
+    private Label _text;
+    private GoalEditor _editor;
+    private Button _edit;
+    private Button _toggle;
+    private Button _clear;
+    private Button _save;
+    private Button _cancel;
+    private string _goal;
+    private string _status;
+    private bool _editing;
+
+    void delegate(string text) onCommit;
+    void delegate() onToggle;
+    void delegate() onClear;
+
+    this()
+    {
+        setId("oc-goal");
+
+        _prefix = new Label("Goal");
+        _prefix.setId("oc-goal-prefix");
+        _prefix.setPixelSize(opencodeFontSmall);
+        _prefix.setColor(opencodeMuted);
+        add(_prefix);
+
+        _text = new Label("");
+        _text.setId("oc-goal-text");
+        _text.setPixelSize(opencodeFontSmall);
+        _text.setColor(opencodeMuted);
+        _text.setText(displayText());
+        add(_text);
+
+        _editor = new GoalEditor();
+        _editor.setId("oc-goal-field");
+        _editor.setPlaceholder("Goal: finish when…");
+        _editor.setPixelSizeOverride(opencodeFontSmall);
+        _editor.onSubmitted = delegate() { commit(); };
+        _editor.onCancel = delegate() { cancel(); };
+        add(_editor);
+
+        _edit = goalButton("oc-goal-edit", "Edit", buttonWidth);
+        _edit.onClick = delegate() { beginEdit(); };
+        add(_edit);
+        _toggle = goalButton("oc-goal-toggle", "Start", buttonWidth);
+        _toggle.onClick = delegate() { if (onToggle !is null) onToggle(); };
+        add(_toggle);
+        _clear = goalButton("oc-goal-clear", "Clear", buttonWidth);
+        _clear.onClick = delegate() { if (onClear !is null) onClear(); };
+        add(_clear);
+        _save = goalButton("oc-goal-save", "Save", buttonWidth);
+        _save.onClick = delegate() { commit(); };
+        add(_save);
+        _cancel = goalButton("oc-goal-cancel", "Cancel", buttonWidth);
+        _cancel.onClick = delegate() { cancel(); };
+        add(_cancel);
+
+        layoutHints().preferredHeight = barHeight;
+        layoutHints().minHeight = barHeight;
+        updateControls();
+    }
+
+    private Button goalButton(string id, string caption, int width)
+    {
+        auto button = new Button(caption);
+        button.setId(id);
+        button.setFlat(true);
+        button.setTextPixelSize(opencodeFontSmall);
+        button.layoutHints().minWidth = width;
+        if (button.layoutHints().preferredWidth < width)
+            button.layoutHints().preferredWidth = width;
+        button.layoutHints().preferredHeight = buttonHeight;
+        button.layoutHints().minHeight = buttonHeight;
+        button.layoutHints().fillCrossAxis = false;
+        return button;
+    }
+
+    private static int buttonLayoutWidth(Widget child)
+    {
+        return maxInt(buttonWidth, maxInt(child.layoutHints().minWidth,
+            child.layoutHints().preferredWidth));
+    }
+
+    void setState(string goal, string status)
+    {
+        const goalChanged = goal != _goal;
+        const statusChanged = status != _status;
+        _goal = goal;
+        _status = status;
+        if (goalChanged || statusChanged)
+        {
+            _editing = false;
+            if (_text.text() != toUTF32(displayText())) _text.setText(displayText());
+        }
+        updateControls();
+        invalidate();
+    }
+
+    void beginEdit()
+    {
+        _editing = true;
+        _editor.setText(_goal, false);
+        updateControls();
+        _editor.requestFocus();
+        invalidate();
+    }
+
+    private void cancel()
+    {
+        if (!_editing) return;
+        _editing = false;
+        updateControls();
+        invalidate();
+    }
+
+    private void commit()
+    {
+        if (!_editing) return;
+        const text = _editor.textUtf8().strip();
+        if (text.length == 0)
+        {
+            _editor.requestFocus();
+            return;
+        }
+        _editing = false;
+        updateControls();
+        if (onCommit !is null) onCommit(text);
+    }
+
+    private string displayText() const
+    {
+        if (_goal.length == 0) return "Set a persistent goal for this chat";
+        return _goal;
+    }
+
+    private string statusText() const
+    {
+        switch (_status)
+        {
+            case "active": return "Goal · active";
+            case "paused": return "Goal · paused";
+            case "completed": return "Goal · complete";
+            default: return "Goal";
+        }
+    }
+
+    private void updateControls()
+    {
+        const hasGoal = _goal.length > 0;
+        _prefix.setText(_editing ? "Goal" : statusText());
+        _prefix.setColor(!_editing && _status == "active"
+            ? opencodeAccent : opencodeMuted);
+        _text.setVisible(!_editing);
+        _text.setColor(hasGoal ? opencodeText : opencodeMuted);
+        _editor.setVisible(_editing);
+        _edit.setVisible(!_editing);
+        _toggle.setVisible(!_editing && hasGoal);
+        _clear.setVisible(!_editing && hasGoal);
+        _save.setVisible(_editing);
+        _cancel.setVisible(_editing);
+        _toggle.setText(_status == "active" ? "Stop" : "Start");
+        if (!_editing && !hasGoal)
+            _edit.setText("Set goal");
+        else if (!_editing)
+            _edit.setText("Edit");
+        invalidate();
+    }
+
+    string goalForTesting() const { return _goal; }
+    string statusForTesting() const { return _status; }
+    bool editingForTesting() const { return _editing; }
+    static int layoutHeight() @safe pure nothrow @nogc { return barHeight; }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = barHeight;
+        return Size(width, barHeight);
+    }
+
+    protected override void onLayout()
+    {
+        const width = bounds().width;
+        int x = padH;
+        const innerY = padV;
+        const innerH = buttonHeight;
+        _prefix.setBounds(Rect(x, innerY, prefixWidth, innerH));
+        x += prefixWidth + gap;
+
+        int right = maxInt(x, width - padH);
+        void placeRight(Widget child)
+        {
+            if (child is null || !child.visible()) return;
+            const childWidth = buttonLayoutWidth(child);
+            right -= childWidth;
+            child.setBounds(Rect(maxInt(x, right), innerY, childWidth, innerH));
+            right -= gap;
+        }
+        if (_editing)
+        {
+            placeRight(_cancel);
+            placeRight(_save);
+            _editor.setBounds(Rect(x, innerY, maxInt(0, right - x), innerH));
+        }
+        else
+        {
+            placeRight(_clear);
+            placeRight(_toggle);
+            placeRight(_edit);
+            _text.setBounds(Rect(x, innerY, maxInt(0, right - x), innerH));
+        }
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const rect = Rect(0, 0, bounds().width, bounds().height);
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const active = _status == "active" && _goal.length > 0;
+        canvas.drawRoundedRect(rect, 8, opencodeField,
+            active ? opencodeAccent.withAlpha(120) : opencodeBorder, 1);
+    }
+}
+
+/// The inline goal field: Enter saves and Escape cancels, matching the
+/// surrounding editor controls.
+private final class GoalEditor : TextField
+{
+    void delegate() onCancel;
+
+    this()
+    {
+        super("");
+        layoutHints().minHeight = 26;
+        layoutHints().preferredHeight = 26;
+    }
+
+    override bool onKeyDown(ref Event event)
+    {
+        if (event.key == Key.escape)
+        {
+            if (onCancel !is null) onCancel();
+            return true;
+        }
+        return super.onKeyDown(event);
+    }
+}
+
 /// Editable field used when a message is edited in place inside its own bubble.
 /// Enter saves (Shift+Enter inserts a newline) and Escape cancels, so the
 /// inline editor behaves like the composer without the trip to the bottom of
@@ -10666,6 +10931,8 @@ public final class OpenCodeRoot : VBox
     // none). Driven by the pending prompt's own "Send now" pill.
     private int _interruptSendSession = -1;
     private ChatComposer _composer;
+    private GoalBar _goalBar;
+    private CenteredColumn _goalCenter;
     // experimental: attachments - pending dropped files / large pastes and the
     // chip row that shows them. See source/auroraopencode/attachments.d.
     private Attachment[] _pendingAttachments;
@@ -11644,6 +11911,7 @@ private string _suggestExcludeId;
         updateSessionsHeader();
         updateKeyBadge();
         updateSendButton();
+        updateGoalBar();
         phase("session list/header");
         _client.fetchModels();
         _input.requestFocus();
@@ -11758,6 +12026,7 @@ private string _suggestExcludeId;
             if (session.messages.length > 0 && session.turnStatus == "running")
             {
                 session.turnStatus = "interrupted";
+                pauseActiveGoal(session);
                 recordInterruptedReads(session);
                 logInfo("turn marked interrupted by restart (no resume note): " ~
                     session.id);
@@ -12024,6 +12293,7 @@ private string _suggestExcludeId;
         }
         updateSessionList(false);
         rebuildMessageColumn();
+        updateGoalBar();
         markDirty();
     }
 
@@ -13901,7 +14171,7 @@ private string _suggestExcludeId;
         _input.setFocusDecoration(false);
         _input.setPadding(6);
         _input.setWordWrap(true);
-        _input.setPlaceholder("Ask anything…  @file · /btw · /review");
+        _input.setPlaceholder("Ask anything…  @file · /goal · /btw · /review");
         _input.onSendRequested = delegate()
         {
             if (_input.textUtf8().strip().length == 0 &&
@@ -13966,7 +14236,20 @@ private string _suggestExcludeId;
         // itself, so publish the composer's height here or it lays out to zero.
         syncComposerHeight();
 
+        _goalBar = new GoalBar();
+        _goalBar.onCommit = delegate(string text) { saveGoalEdit(text); };
+        _goalBar.onToggle = delegate() { toggleGoal(); };
+        _goalBar.onClear = delegate() { clearGoal(); };
+        _goalCenter = new CenteredColumn(_goalBar, opencodeContentMaxWidth);
+        _goalCenter.setId("oc-goal-center");
+        // The split pane lays children out from hints instead of measuring the
+        // centered column, so reserve the fixed row height here.
+        _goalCenter.layoutHints().preferredHeight = GoalBar.layoutHeight;
+        _goalCenter.layoutHints().minHeight = GoalBar.layoutHeight;
+        updateGoalBar();
+
         chatPanel.add(_messagesScroll);
+        chatPanel.add(_goalCenter);
         chatPanel.add(composerCenter);
 
         _sessionsSplit = new SplitPane(sidebar, chatPanel,
@@ -15098,6 +15381,7 @@ private string _suggestExcludeId;
         rebuildMessageColumn();
         updateSessionList();
         markDirty();
+        updateGoalBar();
         _input.requestFocus();
         // experimental: checkpoint - the conversation's first checkpoint, so
         // every file/folder change this chat makes can be undone at once.
@@ -15175,6 +15459,7 @@ private string _suggestExcludeId;
         updateStatus("");
         refreshUsageBadge();
         refreshTimerBadge(true);
+        updateGoalBar();
         // Re-list only when the unread dot cleared; opening a conversation does
         // not reorder a recency list.
         if (clearedUnread) updateSessionList();
@@ -15236,6 +15521,10 @@ private string _suggestExcludeId;
         payload["projectId"] = session.projectId;
         payload["activeLeafId"] = session.activeLeafId;
         payload["objective"] = session.objective;
+        payload["goal"] = session.goal;
+        payload["goalStatus"] = session.goalStatus;
+        payload["goalStartedAt"] = session.goalStartedAt;
+        payload["goalTurns"] = session.goalTurns;
         payload["taskStatus"] = session.taskStatus;
         payload["turnStatus"] = session.turnStatus;
         payload["verificationStatus"] = session.verificationStatus;
@@ -15276,9 +15565,11 @@ private string _suggestExcludeId;
         bool nestedEnabled)
     {
         if (session.objective.length == 0 && session.taskSteps.length == 0 &&
-            session.verificationStatus.length == 0) return "";
+            session.verificationStatus.length == 0 && session.goal.length == 0)
+            return "";
         auto prompt = appender!string();
         const currentRequest = latestActualUserRequest(session);
+        prompt.put(goalPromptBlock(session));
         prompt.put("\n\n# Durable Task State\n" ~ taskContext(session, currentRequest, nestedEnabled));
         const evidence = requiredEvidence(session);
         if (evidence.length)
@@ -18632,6 +18923,27 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
+        const proactiveGuidance = toolsEnabledForSession(*session)
+            ? proactiveActionGuidance(*session) : "";
+        if (taskContinuation(*session, toolsEnabledForSession(*session)).action ==
+                TaskContinuationAction.settle && proactiveGuidance.length)
+        {
+            ChatMessage guidance;
+            guidance.role = "user";
+            guidance.internal = true;
+            guidance.time = currentTimestamp();
+            guidance.content = proactiveGuidance;
+            appendMessage(*session, guidance);
+            session.turnStatus = "running";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            markDirty();
+            setTurnActiveMarker(true, session.id);
+            setTurnInFlight(true);
+            updateStatus("Choosing a reasonable default and continuing…");
+            startChatRequest(sessionIndex, false);
+            return;
+        }
         if (taskContinuation(*session, toolsEnabledForSession(*session)).action == TaskContinuationAction.settle &&
             completionHandoffNeeded(*session))
         {
@@ -18762,6 +19074,46 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
+        // A persistent goal is a second, independent stop condition. The plan
+        // may be settled while the user's goal still needs work, so start the
+        // next goal turn even when the task checklist has no continuation.
+        if (goalActive(*session) && session.queuedFollowUps.length == 0)
+        {
+            if (taskAwaitingInput(*session))
+            {
+                session.goalStatus = "paused";
+                publishThreadUpdated(*session);
+                markDirty();
+                updateGoalBar();
+            }
+            else if (session.goalTurns >= maxGoalTurns)
+            {
+                session.goalStatus = "paused";
+                publishThreadUpdated(*session);
+                markDirty();
+                updateGoalBar();
+                updateStatus("Goal paused at the safety turn limit. Press Start to continue.");
+            }
+            else
+            {
+                session.goalTurns++;
+                ChatMessage guidance;
+                guidance.role = "user";
+                guidance.internal = true;
+                guidance.time = currentTimestamp();
+                guidance.content = goalContinuationInstruction(*session);
+                appendMessage(*session, guidance);
+                session.turnStatus = "running";
+                session.taskStatus = "active";
+                publishThreadUpdated(*session);
+                markDirty();
+                setTurnActiveMarker(true, session.id);
+                setTurnInFlight(true);
+                updateStatus("Continuing toward the goal…");
+                startChatRequest(sessionIndex, false);
+                return;
+            }
+        }
         session.turnStatus = "completed";
         if (session.taskStatus == "waiting_input")
             updateStatus("Independent work complete · awaiting required information.");
@@ -18798,7 +19150,11 @@ private void pollButtonSuggestionRequest()
             sessionIndex >= cast(int) _sessions.length) return false;
         const session = _sessions[sessionIndex];
         if (session.queuedGuidance.length > 0) return true;
+        if (goalActive(session) && session.queuedFollowUps.length == 0 &&
+            !taskAwaitingInput(session) && session.goalTurns < maxGoalTurns)
+            return true;
         return taskContinuation(session, toolsEnabledForSession(session)).action != TaskContinuationAction.settle ||
+            (toolsEnabledForSession(session) && proactiveActionGuidance(session).length > 0) ||
             (!completionHandoffPending(session) && completionHandoffNeeded(session, finishReason));
     }
 
@@ -18829,6 +19185,7 @@ private void pollButtonSuggestionRequest()
             return;
         }
         auto session = &_sessions[sessionIndex];
+        pauseActiveGoal(*session);
         // Attach the failure to the reply the ACTIVE branch is waiting on, not
         // merely the last stored message. The two differ after a Retry: the
         // re-run branches from the abandoned reply's parent, so the old failed
@@ -18878,6 +19235,7 @@ private void pollButtonSuggestionRequest()
         rebuildMessageColumn();
         updateStatus("Request failed. See the conversation for details.");
         markDirty();
+        updateGoalBar();
         refreshBubbleActions();
     }
 
@@ -20002,12 +20360,17 @@ private void pollButtonSuggestionRequest()
         const planViewError = planView.startsWith("Error:") ? planView : "";
         const blockerError = !event.toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input")
             ? taskInputError(*session, toolArgs) : "";
+        const goalError = !event.toolFailed && event.toolName == "goal_complete"
+            ? goalCompletionError(*session, toolArgs) : "";
         const toolFailed = event.toolFailed || planError.length > 0 ||
-            subplanError.length > 0 || imageError.length > 0 || blockerError.length > 0 || planViewError.length > 0;
+            subplanError.length > 0 || imageError.length > 0 ||
+            blockerError.length > 0 || goalError.length > 0 ||
+            planViewError.length > 0;
         string toolText = planViewError.length > 0 ? planViewError : planError.length > 0 ? planError :
             subplanError.length > 0 ? subplanError :
             imageError.length > 0 ? imageError :
             blockerError.length > 0 ? blockerError :
+            goalError.length > 0 ? goalError :
             !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) :
             !toolFailed && event.toolName == "read_plan" ? planView : event.text;
         const scopedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
@@ -20064,6 +20427,8 @@ private void pollButtonSuggestionRequest()
         }
         if (!toolFailed && event.toolName == "update_subplan")
             applyNestedPlan(*session, toolArgs);
+        if (!toolFailed && event.toolName == "goal_complete")
+            applyGoalCompletion(*session, toolArgs);
         // Prose documents do not need an executable checker. The agent can
         // read back the artifact as requested without manufacturing a second
         // final answer. Existing verification for code remains outstanding.
@@ -20086,10 +20451,16 @@ private void pollButtonSuggestionRequest()
         {
             invalidateChangedWorkspaceEvidence();
             const evidenceKey = buildNormalizedPath(event.verificationWorkspace).toLower();
-            _observedWorkspaceRevisions[evidenceKey] = event.verificationRevision;
+            // The scheduler may advance after the recipe settles (for example,
+            // while this result is being applied). Adopt the revision that is
+            // current now; restoring the older event revision would make this
+            // successful check invalidate itself on the next service tick.
+            const currentRevision =
+                toolWorkspaceRevision(event.verificationWorkspace);
+            _observedWorkspaceRevisions[evidenceKey] = currentRevision;
             _execution.verificationRecorded = true;
             _execution.verifiedWorkspace = event.verificationWorkspace;
-            _execution.verifiedWorkspaceRevision = event.verificationRevision;
+            _execution.verifiedWorkspaceRevision = currentRevision;
             session.verificationStatus = "passed";
             if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
                 session.taskStatus = hasIncompleteTaskSteps(*session) ? "active" : "completed";
@@ -20483,6 +20854,7 @@ private void pollButtonSuggestionRequest()
         cancelPendingTools();
 
         auto session = &_sessions[sessionIndex];
+        pauseActiveGoal(*session);
         foreach (index; freezeFollowUpTimers(*session, true))
             publishMessageEvent(AgentEventKind.itemUpdated, *session, session.messages[index]);
         // Guidance was already submitted by the user and persisted while this
@@ -20505,6 +20877,7 @@ private void pollButtonSuggestionRequest()
             ? "Stopped. Releasing the network request…" : "Stopped.") ~
             preservedStatus);
         updateSendButton();
+        updateGoalBar();
     }
 
     /// Attach small explicitly mentioned files as hidden request context. The
@@ -20787,6 +21160,292 @@ private void pollButtonSuggestionRequest()
         return id;
     }
 
+    // -- persistent goals ---------------------------------------------------
+
+    private void updateGoalBar()
+    {
+        if (_goalBar is null) return;
+        if (_current < 0 || _current >= cast(int) _sessions.length)
+        {
+            _goalBar.setState("", "");
+            return;
+        }
+        const session = _sessions[_current];
+        _goalBar.setState(session.goal, session.goalStatus);
+    }
+
+    /// Reset the model-owned task projection when the user replaces the goal.
+    /// The transcript is untouched; the previous state is archived so branch
+    /// restoration still has its normal recovery path.
+    private static void resetTaskForNewGoal(ref ChatSession session)
+    {
+        if (session.objective.length > 0)
+            session.taskArchive ~= activeTaskStateJson(session);
+        session.objective = session.goal;
+        session.contract = TaskContract.init;
+        session.taskSteps = null;
+        session.nestedPlans = null;
+        session.verificationStatus = "not_required";
+        session.taskStatus = "active";
+    }
+
+    /// Set or replace the one persistent goal for the current conversation.
+    /// `activate` false is used when saving an edit while the goal is paused.
+    private void setGoal(string raw, bool activate)
+    {
+        auto text = raw.strip();
+        if (text.length == 0)
+        {
+            if (_goalBar !is null) _goalBar.beginEdit();
+            updateStatus("Type the completion condition you want the agent to pursue.");
+            return;
+        }
+        const clamped = clampGoalText(text);
+        if (clamped.length != text.length)
+        {
+            text = clamped;
+            updateStatus("Goal shortened to " ~ to!string(maxGoalLength) ~
+                " characters.");
+        }
+        if (_startupLoadPending || threadLoadPending(_current) ||
+            threadHistoryUnavailable(_current))
+        {
+            requestThreadLoad(_current);
+            updateStatus("Loading conversation history — one moment…");
+            return;
+        }
+        if (_current < 0) newChat();
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+
+        auto session = &_sessions[_current];
+        const changed = session.goal != text;
+        session.goal = text;
+        session.goalStatus = activate ? "active" : "paused";
+        session.goalStartedAt = Clock.currTime.toUnixTime();
+        session.goalTurns = 0;
+        session.updatedAt = session.goalStartedAt;
+        if (changed) resetTaskForNewGoal(*session);
+        if (session.title.length == 0 || session.title == "New chat")
+        {
+            session.title = chatTitle(text);
+            updateSessionList();
+        }
+        publishThreadUpdated(*session);
+        markDirty();
+        updateGoalBar();
+        if (!activate)
+        {
+            updateStatus("Goal saved paused · press Start when ready.");
+            return;
+        }
+        if (session.messages.length == 0)
+        {
+            _input.setText(text);
+            sendMessage(false);
+            updateStatus("Goal started.");
+            return;
+        }
+        startGoalContinuation(changed
+            ? "The user replaced the persistent goal. Use this completion condition from now on:\n" ~ text
+            : "The user started the saved persistent goal again.");
+    }
+
+    private void saveGoalEdit(string text)
+    {
+        const paused = _current >= 0 && _current < cast(int) _sessions.length &&
+            _sessions[_current].goalStatus == "paused";
+        setGoal(text, !paused);
+    }
+
+    private void startGoalContinuation(string lead = "")
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        auto session = &_sessions[_current];
+        if (!goalActive(*session)) return;
+        if (turnIsBusy())
+        {
+            if (_current != turnOwnerSessionIndex())
+            {
+                updateStatus("Goal active. It starts after the other working conversation.");
+                return;
+            }
+            session.queuedGuidance ~= (lead.length ? lead ~ "\n" : "") ~
+                goalContinuationInstruction(*session);
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            markDirty();
+            updateStatus("Goal active — steering this turn.");
+            return;
+        }
+        if (session.goalTurns >= maxGoalTurns)
+        {
+            session.goalStatus = "paused";
+            publishThreadUpdated(*session);
+            markDirty();
+            updateGoalBar();
+            updateStatus("Goal paused at the safety turn limit. Press Start to continue.");
+            return;
+        }
+        session.goalTurns++;
+        ChatMessage guidance;
+        guidance.role = "user";
+        guidance.internal = true;
+        guidance.time = currentTimestamp();
+        guidance.content = (lead.length ? lead ~ "\n" : "") ~
+            goalContinuationInstruction(*session);
+        appendMessage(*session, guidance);
+        session.turnStatus = "running";
+        session.taskStatus = "active";
+        publishThreadUpdated(*session);
+        markDirty();
+        updateGoalBar();
+        _lastToolSignature = "";
+        _lastToolRepeatCount = 0;
+        _lastFailureSignature = "";
+        _lastFailureRepeatCount = 0;
+        _pendingProgressGuidance = "";
+        _toolRounds = 0;
+        _finalAnswerRequested = false;
+        updateStatus("Working toward the goal…");
+        startChatRequest(_current);
+    }
+
+    private void pauseGoal()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        auto session = &_sessions[_current];
+        if (session.goal.length == 0) return;
+        session.goalStatus = "paused";
+        publishThreadUpdated(*session);
+        markDirty();
+        updateGoalBar();
+        if (turnIsBusy() && turnOwnerSessionIndex() == _current)
+        {
+            stopActiveTurn();
+            updateStatus("Goal paused and the current turn stopped.");
+        }
+        else
+            updateStatus("Goal paused. Press Start to resume it.");
+    }
+
+    private void resumeGoal()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        auto session = &_sessions[_current];
+        if (session.goal.length == 0)
+        {
+            if (_goalBar !is null) _goalBar.beginEdit();
+            return;
+        }
+        session.goalStatus = "active";
+        session.goalStartedAt = Clock.currTime.toUnixTime();
+        session.goalTurns = 0;
+        if (session.taskStatus == "waiting_input") session.taskStatus = "active";
+        publishThreadUpdated(*session);
+        markDirty();
+        updateGoalBar();
+        if (turnIsBusy() && turnOwnerSessionIndex() == _current)
+        {
+            session.queuedGuidance ~= "The user resumed the persistent goal. Continue toward it now.\n" ~
+                goalContinuationInstruction(*session);
+            publishThreadUpdated(*session);
+            markDirty();
+            updateStatus("Goal resumed — continuing this turn.");
+            return;
+        }
+        startGoalContinuation("The user resumed the saved persistent goal.");
+    }
+
+    private void toggleGoal()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        auto session = &_sessions[_current];
+        if (session.goal.length == 0)
+        {
+            if (_goalBar !is null) _goalBar.beginEdit();
+            return;
+        }
+        if (session.goalStatus == "active") pauseGoal();
+        else resumeGoal();
+    }
+
+    private void clearGoal()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        auto session = &_sessions[_current];
+        if (session.goal.length == 0) return;
+        const removed = session.goal;
+        session.goal = "";
+        session.goalStatus = "";
+        session.goalStartedAt = 0;
+        session.goalTurns = 0;
+        if (session.objective == removed) session.objective = "";
+        publishThreadUpdated(*session);
+        markDirty();
+        updateGoalBar();
+        updateStatus("Goal cleared.");
+    }
+
+    private bool handleGoalCommand(string text)
+    {
+        const command = parseGoalCommand(text);
+        if (command.kind == GoalCommandKind.none) return false;
+        _input.setText("");
+        final switch (command.kind)
+        {
+            case GoalCommandKind.none:
+                break;
+            case GoalCommandKind.show:
+                if (_current >= 0 && _current < cast(int) _sessions.length &&
+                    _sessions[_current].goal.length > 0)
+                {
+                    auto session = _sessions[_current];
+                    const status = session.goalStatus.length
+                        ? session.goalStatus : "active";
+                    updateStatus("Goal (" ~ status ~ "): " ~ session.goal);
+                }
+                else
+                {
+                    if (_goalBar !is null) _goalBar.beginEdit();
+                    updateStatus("Set a persistent goal for this chat.");
+                }
+                break;
+            case GoalCommandKind.set:
+                setGoal(command.text, true);
+                break;
+            case GoalCommandKind.pause:
+                pauseGoal();
+                break;
+            case GoalCommandKind.resume:
+                resumeGoal();
+                break;
+            case GoalCommandKind.clear:
+                clearGoal();
+                break;
+        }
+        return true;
+    }
+
+    private void applyGoalCompletion(ref ChatSession session, string arguments)
+    {
+        string summary;
+        try summary = parseJSON(arguments)["summary"].str;
+        catch (Exception) {}
+        session.goalStatus = "completed";
+        session.goalTurns = 0;
+        session.taskStatus = "completed";
+        publishThreadUpdated(session);
+        markDirty();
+        updateGoalBar();
+        updateStatus("Goal complete" ~ (summary.length ? ": " ~ summary : "."));
+    }
+
+    private void pauseActiveGoal(ref ChatSession session)
+    {
+        if (session.goal.length == 0 || session.goalStatus != "active") return;
+        session.goalStatus = "paused";
+    }
+
     private void sendMessage(bool allowSideQuestion = true)
     {
         const submittedTicks = MonoTime.currTime.ticks;
@@ -20805,6 +21464,7 @@ private void pollButtonSuggestionRequest()
             return;
         }
         const composerText = _input.textUtf8().strip();
+        if (allowSideQuestion && handleGoalCommand(composerText)) return;
         // A real user instruction restarts the auto-continue budget.
         if (_current >= 0 && _current < cast(int) _sessions.length)
             _autoContinueStreak = 0;
@@ -22851,6 +23511,14 @@ private void pollButtonSuggestionRequest()
             OpenCodeToolDef[] filtered;
             foreach (tool; tools)
                 if (tool.name != "update_subplan") filtered ~= tool;
+            tools = filtered;
+        }
+        // The completion tool is only meaningful while a goal is active.
+        if (!goalActive(*session))
+        {
+            OpenCodeToolDef[] filtered;
+            foreach (tool; tools)
+                if (tool.name != "goal_complete") filtered ~= tool;
             tools = filtered;
         }
         // experimental: orchestrator - a router sees only its routing tools;
@@ -26440,7 +27108,7 @@ private void pollButtonSuggestionRequest()
             _composerWasBusy = busy;
             _input.setPlaceholder(busy
                 ? "Guide this task…  Enter applies at the next step · Alt+Enter queues a follow-up"
-                : "Ask anything…  @file · /btw · /review");
+                : "Ask anything…  @file · /goal · /btw · /review");
         }
     }
 
@@ -27562,6 +28230,7 @@ private void pollButtonSuggestionRequest()
         markDirty();
         updateStatus(_sessions.length == 0 ? "No conversations yet." : "");
         refreshUsageBadge();
+        updateGoalBar();
     }
 
     /// Copy a conversation, transcript and all, into a new independent
@@ -27583,6 +28252,10 @@ private void pollButtonSuggestionRequest()
         copy.thinking = source.thinking;
         copy.projectId = source.projectId;
         copy.objective = source.objective;
+        copy.goal = source.goal;
+        copy.goalStatus = source.goalStatus == "active" ? "paused" : source.goalStatus;
+        copy.goalStartedAt = source.goalStartedAt;
+        copy.goalTurns = source.goalTurns;
         copy.taskStatus = source.taskStatus;
         copy.turnStatus = source.turnStatus;
         copy.verificationStatus = source.verificationStatus;
@@ -27650,6 +28323,7 @@ private void pollButtonSuggestionRequest()
         updateStatus("Duplicated conversation.");
         refreshUsageBadge();
         refreshTimerBadge(true);
+        updateGoalBar();
     }
 
     /// Start a fresh conversation that duplicates `sessionIndex` and then
@@ -27672,6 +28346,10 @@ private void pollButtonSuggestionRequest()
         copy.thinking = source.thinking;
         copy.projectId = source.projectId;
         copy.objective = source.objective;
+        copy.goal = source.goal;
+        copy.goalStatus = source.goalStatus == "active" ? "paused" : source.goalStatus;
+        copy.goalStartedAt = source.goalStartedAt;
+        copy.goalTurns = source.goalTurns;
         copy.taskStatus = source.taskStatus;
         // The copy starts idle: the compaction request below must not resume a
         // turn the source happened to leave running.
@@ -27742,6 +28420,7 @@ private void pollButtonSuggestionRequest()
         updateSessionList();
         markDirty();
         refreshUsageBadge();
+        updateGoalBar();
         refreshTimerBadge(true);
         // Install the extractive checkpoint immediately so the new chat is
         // compacted even without a provider. It is the same rolling checkpoint
@@ -28901,6 +29580,14 @@ private void pollButtonSuggestionRequest()
         if (session.projectId.length > 0)
             root["project"] = session.projectId;
         if (session.objective.length > 0) root["objective"] = session.objective;
+        if (session.goal.length > 0)
+        {
+            root["goal"] = session.goal;
+            root["goalStatus"] = session.goalStatus;
+            if (session.goalStartedAt > 0)
+                root["goalStartedAt"] = session.goalStartedAt;
+            if (session.goalTurns > 0) root["goalTurns"] = session.goalTurns;
+        }
         if (session.taskStatus.length > 0)
             root["taskStatus"] = session.taskStatus;
         if (session.turnStatus.length > 0)
@@ -29259,6 +29946,14 @@ private void pollButtonSuggestionRequest()
             session.projectId = field.str;
         if (auto field = "objective" in sessionValue.object)
             session.objective = field.str;
+        if (auto field = "goal" in sessionValue.object)
+            if (field.type == JSONType.string) session.goal = field.str;
+        if (auto field = "goalStatus" in sessionValue.object)
+            if (field.type == JSONType.string) session.goalStatus = field.str;
+        if (auto field = "goalStartedAt" in sessionValue.object)
+            if (field.type == JSONType.integer) session.goalStartedAt = field.integer;
+        if (auto field = "goalTurns" in sessionValue.object)
+            if (field.type == JSONType.integer) session.goalTurns = cast(int) field.integer;
         if (auto field = "taskStatus" in sessionValue.object)
             session.taskStatus = field.str;
         if (auto field = "turnStatus" in sessionValue.object)
@@ -29753,6 +30448,18 @@ private void pollButtonSuggestionRequest()
                             session.projectId = field.str;
                         if (auto field = "objective" in sessionValue.object)
                             session.objective = field.str;
+                        if (auto field = "goal" in sessionValue.object)
+                            if (field.type == JSONType.string)
+                                session.goal = field.str;
+                        if (auto field = "goalStatus" in sessionValue.object)
+                            if (field.type == JSONType.string)
+                                session.goalStatus = field.str;
+                        if (auto field = "goalStartedAt" in sessionValue.object)
+                            if (field.type == JSONType.integer)
+                                session.goalStartedAt = field.integer;
+                        if (auto field = "goalTurns" in sessionValue.object)
+                            if (field.type == JSONType.integer)
+                                session.goalTurns = cast(int) field.integer;
                         if (auto field = "taskStatus" in sessionValue.object)
                             session.taskStatus = field.str;
                         if (auto field = "turnStatus" in sessionValue.object)
@@ -30131,12 +30838,25 @@ private void pollButtonSuggestionRequest()
             // snapshot that predates the composer text cannot drop it.
             const oldDraft = existing.draft;
             const oldUpdatedAt = existing.updatedAt;
+            const oldGoal = existing.goal;
+            const oldGoalStatus = existing.goalStatus;
+            const oldGoalStartedAt = existing.goalStartedAt;
+            const oldGoalTurns = existing.goalTurns;
             const replace = session.messages.length > existing.messages.length;
             if (replace)
                 existing = session;
             existing.unread = unread;
             if (existing.draft.length == 0)
                 existing.draft = replace ? oldDraft : session.draft;
+            // A snapshot saved before the goal feature cannot erase the goal
+            // held by a more recent copy.
+            if (existing.goal.length == 0 && oldGoal.length > 0)
+            {
+                existing.goal = oldGoal;
+                existing.goalStatus = oldGoalStatus;
+                existing.goalStartedAt = oldGoalStartedAt;
+                existing.goalTurns = oldGoalTurns;
+            }
             // Keep the most recent activity stamp across merged snapshots, so a
             // more complete copy saved earlier does not pull the conversation
             // back down the recency list.
@@ -30403,6 +31123,13 @@ private void pollButtonSuggestionRequest()
             existing.thinking = recovered.thinking;
             if (recovered.objective.length > 0)
                 existing.objective = recovered.objective;
+            if (recovered.goal.length > 0)
+            {
+                existing.goal = recovered.goal;
+                existing.goalStatus = recovered.goalStatus;
+                existing.goalStartedAt = recovered.goalStartedAt;
+                existing.goalTurns = recovered.goalTurns;
+            }
             if (recovered.taskStatus.length > 0)
                 existing.taskStatus = recovered.taskStatus;
             if (recovered.turnStatus.length > 0)
@@ -31697,6 +32424,35 @@ private void pollButtonSuggestionRequest()
     public string taskObjectiveForTesting() const
     {
         return _current < 0 ? "" : _sessions[_current].objective;
+    }
+
+    /// Test-only: set the durable goal without starting a network turn.
+    public void setGoalForTesting(string goal, string status)
+    {
+        if (_current < 0) return;
+        _sessions[_current].goal = goal;
+        _sessions[_current].goalStatus = goal.length ? status : "";
+        _sessions[_current].goalStartedAt = goal.length
+            ? Clock.currTime.toUnixTime() : 0;
+        _sessions[_current].goalTurns = 0;
+        publishThreadUpdated(_sessions[_current]);
+        markDirty();
+        updateGoalBar();
+    }
+
+    public string goalForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].goal;
+    }
+
+    public string goalStatusForTesting() const
+    {
+        return _current < 0 ? "" : _sessions[_current].goalStatus;
+    }
+
+    public int goalTurnsForTesting() const
+    {
+        return _current < 0 ? 0 : _sessions[_current].goalTurns;
     }
 
     public string taskStatusForTesting() const

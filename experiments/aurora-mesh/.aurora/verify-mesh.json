@@ -60,6 +60,15 @@
       }
     },
     {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-c", "d=open('build/verify-human.ppm','rb').read();parts=d.split(b'\\n',3);assert parts[1]==b'800 600',parts[1];px=parts[3];coverage=sum(1 for i in range(0,len(px),3) if px[i+1]>60 or px[i]>60);assert coverage>20000,coverage;coverage"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 30000
+      }
+    },
+    {
       "kind": "prepare",
       "command": {
         "program": "python",
@@ -90,7 +99,7 @@
       "kind": "prepare",
       "command": {
         "program": "python",
-        "args": ["-c", "import json;from pathlib import Path;Path('build/verify-workbench.json').write_text(json.dumps({'revision':1,'commands':[{'type':'new-animation','name':'VerifyAnim','duration':1.0,'additive':True,'tracks':[{'node':'Human','keys':[{'time':0,'rotation':[0,0,0,1]},{'time':1,'rotation':[0,0,0.1,0.995]}]}]},{'type':'keyframe','node':'Human','time':0.5,'rotation':[0,0,0,1]},{'type':'frame','frame':15},{'type':'audit'},{'type':'scan-frames'}]}))"],
+        "args": ["-c", "import json;from pathlib import Path;Path('build/verify-workbench.json').write_text(json.dumps({'revision':1,'commands':[{'type':'new-animation','name':'VerifyAnim','duration':1.0,'additive':True,'tracks':[{'node':'Human','keys':[{'time':0,'rotation':[0,0,0,1]},{'time':1,'rotation':[0,0,0.1,0.995]}]}]},{'type':'keyframe','node':'Human','time':0.5,'rotation':[0,0,0,1]},{'type':'frame','frame':15},{'type':'inspect-bone','node':'Human'},{'type':'pose-axis','node':'Human','axis':'y','angle':10},{'type':'audit'},{'type':'scan-frames'},{'type':'capture','path':'build/verify-workbench-capture.ppm'},{'type':'capture-sheet','path':'build/verify-workbench-sheet.ppm'}]}))"],
         "workdir": "experiments/aurora-mesh",
         "timeout": 30000
       }
@@ -108,7 +117,7 @@
       "kind": "tests",
       "command": {
         "program": "python",
-        "args": ["-c", "import json;from pathlib import Path;a=json.loads(Path('build/live-ack.json').read_text());assert a.get('clip')=='VerifyAnim' and a.get('tracks')==1 and a.get('keys')==3 and a.get('frame')==15 and a.get('valid') is True and a.get('frameScan')==30 and a.get('invalidFrames')==0;a"],
+        "args": ["-c", "import json;from pathlib import Path;a=json.loads(Path('build/live-ack.json').read_text());assert a.get('clip')=='VerifyAnim' and a.get('tracks')==1 and a.get('keys')==3 and a.get('frame')==15 and a.get('valid') is True and a.get('frameScan')==30 and a.get('invalidFrames')==0 and a.get('limbHits')==0 and a.get('awarenessValid') is True and Path('build/bone-info.json').exists() and Path('build/verify-workbench-capture.ppm').exists() and Path('build/verify-workbench-sheet.ppm').exists();a"],
         "workdir": "experiments/aurora-mesh",
         "timeout": 30000
       }

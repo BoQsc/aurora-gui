@@ -1155,6 +1155,10 @@ int main(string[] args)
         toolSteeringPrompt(false).indexOf("Use update_plan.work_items for necessary discoveries/recovery") >= 0 &&
         toolSteeringPrompt(false).indexOf(
             "Finish authorized work and verification") >= 0 &&
+        toolSteeringPrompt(false).indexOf(
+            "do not switch compilers or probe toolchains") >= 0 &&
+        toolSteeringPrompt(false).indexOf(
+            "for clear intent, act without routine confirmation") >= 0 &&
         toolSteeringPrompt(false).indexOf("request_input") >= 0,
         "Steering prompt must scope plans and define a stopping condition");
     assert(toolSteeringPrompt(false).indexOf("# Environment") >
@@ -1356,22 +1360,29 @@ int main(string[] args)
         scope (exit) rebuildRequestHandler = null;
 
         auto generalTool = executeTool(makeCall("rebuild", "{}"), general);
-        assert(generalTool.failed &&
-            generalTool.output.indexOf("general Aurora") >= 0,
-            "rebuild must refuse the general Aurora repository: " ~
-            generalTool.output);
-        assert(!requested, "a wrong-context rebuild must not reach the app");
+        assert(!generalTool.failed && requested,
+            "rebuild must work when the task workspace is the package's " ~
+            "direct parent checkout: " ~ generalTool.output);
 
+        requested = false;
+        auto widerTool = executeTool(makeCall("rebuild", "{}"), dir);
+        assert(widerTool.failed && !requested,
+            "rebuild must refuse a wider ancestor: " ~ widerTool.output);
+
+        requested = false;
         auto siblingTool = executeTool(makeCall("rebuild", "{}"), sibling);
         assert(siblingTool.failed && !requested,
             "rebuild must refuse a sibling Aurora app: " ~ siblingTool.output);
 
+        requested = false;
         auto selfTool = executeTool(makeCall("rebuild", "{}"), appSource);
         assert(!selfTool.failed && requested,
             "rebuild must still work in Aurora OpenCode's own package: " ~
             selfTool.output);
-        assert(isRebuildAware(general, appSource, true, true) == false,
-            "Developer mode must not expose rebuild in the general Aurora repository");
+        assert(isRebuildAware(general, appSource, true, true),
+            "the package's direct parent checkout must be rebuild-aware");
+        assert(isRebuildAware(dir, appSource, true, true) == false,
+            "a wider ancestor must not expose rebuild");
         assert(isRebuildAware(sibling, appSource, true, true) == false,
             "Developer mode must not expose rebuild in a sibling Aurora app");
         assert(isRebuildAware(appSource, appSource, false, false),

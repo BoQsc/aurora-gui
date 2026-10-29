@@ -2,7 +2,8 @@ module auroraopencode.taskcontinuation;
 
 import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.taskcontext : taskExcerpt;
-import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestIntent;
+import auroraopencode.requestintent : RequestIntent, actionApprovalRequest, answerOnlyRequest,
+    permissionQuestionReply, requestIntent;
 import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
 import auroraopencode.workevidence : observedResultKey;
 import std.digest.sha : sha256Of;
@@ -12,6 +13,7 @@ import std.string : startsWith, indexOf, strip, toLower, split, join;
 import std.regex : matchFirst;
 
 enum taskContinuationMarker = "Continuation: unfinished authorized work\n";
+enum proactiveActionMarker = "Proactive action checkpoint: ";
 enum taskStallLimit = 3;
 enum taskVerificationAttemptLimit = 3;
 
@@ -126,7 +128,9 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
         }
     if (!request.length && session.parentSessionId.length) request = session.contract.requestedOutcome;
     if (!request.length || answerOnlyRequest(request) ||
-        requestIntent(request) == RequestIntent.conversation) return result;
+        (requestIntent(request) == RequestIntent.conversation &&
+         session.contract.currentIntent != "continuation" &&
+         !actionApprovalRequest(request))) return result;
 
     JSONValue previous;
     int previousVerificationAttempts;
@@ -160,6 +164,7 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
         }
         if (message.role != "tool" || message.failed ||
             message.toolName == "update_plan" || message.toolName == "update_subplan" ||
+            message.toolName == "goal_complete" ||
             message.toolName == "task_blocker" || message.toolName == "request_input" || message.toolName == "process" ||
             message.toolName == "assign" || message.toolName == "ask_user" ||
             message.toolName == "finish") continue;
@@ -268,6 +273,9 @@ string taskBlockerError(string arguments)
         if (matchFirst(need, `\b(permission|approval|consent|whether i|whether we|may i|can i|allowed to|close .*window|close .*process)\b`) ||
             matchFirst(question, `\b(do you want me to|will you .*yourself|(?:may|should) i (?:close|stop|kill|run|test|continue)|permission to|say continue)\b`))
             return "Recover internally: this asks for permission for a routine workaround, not missing user information. Preserve the running application; build and test a unique output instead of closing its window.";
+        if (matchFirst(context, `\b(?:which|what) (?:implementation |testing |test |verification |build |code |file |command |tool |library |language |design )?(?:approach|option|method|way|file|test|command|tool|library|language|design)\b`) ||
+            matchFirst(need, `\b(?:preferred|routine|implementation|testing|test|verification|build|code) (?:approach|option|method|choice|file|test|command|tool|library|language|design)\b`))
+            return "Choose a reasonable default and continue. Implementation, file, test, tool and verification choices are routine execution decisions, not missing user information.";
         if (matchFirst(context, `\b(locked|mapped image|file in use|sharing violation|link step|release link|permission denied|linker|running executable)\b`) &&
             matchFirst(context, `\b(build|compile|executable|window|process|output|\.exe)\b`))
             return "Recover internally: a locked build output is a technical obstacle. Use verify, which isolates locked compiler outputs, or choose a separate artifact path. Keep the user's application running and finish the task.";
@@ -320,4 +328,49 @@ bool taskAwaitingInput(const ref ChatSession session)
             return taskInputError(session, message.toolArgs).length == 0;
     }
     return false;
+}
+
+/// A permission question is not an answer when the user already gave a clear
+/// action request and work remains. Return bounded guidance that asks the model
+/// to make the routine decision and continue; return empty when the turn is
+/// genuinely complete, awaiting real input, or has already retried twice.
+string proactiveActionGuidance(const ref ChatSession session)
+{
+    if (session.contract.intent != "implementation" ||
+        session.contract.currentIntent == "analysis" ||
+        taskAwaitingInput(session) || taskInvestigation(session) ||
+        session.queuedFollowUps.length || session.queuedGuidance.length)
+        return "";
+    string latestRequest;
+    string lastAssistant;
+    int attempts;
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.internal && message.content.startsWith(proactiveActionMarker))
+        {
+            ++attempts;
+            continue;
+        }
+        if (message.role == "user" && !message.internal)
+        {
+            latestRequest = message.content;
+            break;
+        }
+        if (!lastAssistant.length && message.role == "assistant" &&
+            !message.internal && !message.failed && message.toolCalls.length == 0)
+            lastAssistant = message.content;
+    }
+    if (!latestRequest.length || attempts >= 2) return "";
+    const intent = requestIntent(latestRequest);
+    if (intent != RequestIntent.implementation &&
+        intent != RequestIntent.continuation) return "";
+    if (!permissionQuestionReply(lastAssistant)) return "";
+    if (!unfinishedTask(session) && taskHasActionEvidence(session)) return "";
+    return proactiveActionMarker ~
+        "The latest request already authorizes the obvious next step. " ~
+        "Do not ask for permission or present a clarification question. " ~
+        "Choose a reasonable, reversible default, use tools now, and complete " ~
+        "the requested outcome. If a genuinely essential user-owned fact is " ~
+        "missing, finish every independent outcome first and then use request_input.";
 }

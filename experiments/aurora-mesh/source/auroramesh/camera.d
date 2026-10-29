@@ -3,6 +3,9 @@ module auroramesh.camera;
 import auroramesh.mesh : Vec3, add, cross, dot, length, normalize, scale, sub;
 import std.math : PI, abs, cos, exp, isFinite, sin, sqrt, tan;
 
+/** Camera depth below which geometry is clipped against the near plane. */
+enum double NearPlane = 0.04;
+
 struct Camera
 {
     Vec3 target = Vec3(0, 0.95, 0);
@@ -84,6 +87,9 @@ struct Projected
     double x;
     double y;
     double z;
+    /// Camera-space right/up offsets before the perspective divide.
+    double viewX;
+    double viewY;
     bool visible;
 }
 
@@ -92,12 +98,14 @@ Projected project(Vec3 point, const Camera camera, int width, int height)
     Projected result;
     const offset = sub(point, camera.eye());
     const depth = dot(offset, camera.forward());
+    result.viewX = dot(offset, camera.right());
+    result.viewY = dot(offset, camera.up());
     result.z = depth;
-    if (depth <= 0.04)
+    if (depth <= NearPlane)
         return result;
     const focal = (height * 0.5) / tan(camera.fov * 0.5);
-    result.x = width * 0.5 + dot(offset, camera.right()) / depth * focal;
-    result.y = height * 0.5 - dot(offset, camera.up()) / depth * focal;
+    result.x = width * 0.5 + result.viewX / depth * focal;
+    result.y = height * 0.5 - result.viewY / depth * focal;
     result.visible = true;
     return result;
 }

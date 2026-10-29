@@ -1,15 +1,24 @@
 module auroramesh.sculpt;
 
-import auroramesh.mesh : Face, Mesh, Vec3, add, computeSmoothNormals, lerp,
-    normalize, scale, sub;
+import auroramesh.mesh : Face, MaterialSlot, Mesh, Vec2, Vec3, add,
+    computeSmoothNormals, lerp, normalize, scale, sub;
+import aurora.image : RgbaImage;
 import std.math : abs;
 
+/** Deep copy used for undo snapshots; keeps materials, UVs, and textures. */
 Mesh cloneMesh(const Mesh source)
 {
     Mesh copy;
     copy.vertices = source.vertices.dup;
     copy.faces = source.faces.dup;
     copy.normals = source.normals.dup;
+    copy.uvs = source.uvs.dup;
+    copy.faceMaterials = source.faceMaterials.dup;
+    copy.materials = source.materials.dup;
+    // Decoded images are immutable, so undo snapshots share the image objects.
+    copy.textures.length = source.textures.length;
+    foreach (index, texture; source.textures)
+        copy.textures[index] = cast(RgbaImage) texture;
     return copy;
 }
 
@@ -104,4 +113,24 @@ unittest
     inflateVertices(mesh, [a], 0.1);
     assert(mesh.vertices[a].x != -1.0);
     assert(mirrorVertex(mesh, 0) >= 0);
+
+    // Undo snapshots must keep everything the rasterizer needs.
+    Mesh scene;
+    scene.vertices = mesh.vertices.dup;
+    scene.faces = mesh.faces.dup;
+    scene.uvs = [Vec2(0, 0), Vec2(1, 0), Vec2(0, 1)];
+    scene.faceMaterials = [0];
+    MaterialSlot slot;
+    slot.baseColor = Vec3(1, 0, 0);
+    slot.texture = 0;
+    scene.materials = [slot];
+    scene.textures = [new RgbaImage(1, 1, [ubyte(255), 0, 0, 255])];
+    auto snapshot = cloneMesh(scene);
+    assert(snapshot.uvs.length == 3);
+    assert(snapshot.faceMaterials.length == 1);
+    assert(snapshot.materials.length == 1);
+    assert(snapshot.materials[0].texture == 0);
+    assert(snapshot.textures.length == 1);
+    assert(snapshot.textures[0] is scene.textures[0]);
+    assert(snapshot.uvs[1].x == 1.0);
 }

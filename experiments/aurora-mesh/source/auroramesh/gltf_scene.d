@@ -431,6 +431,7 @@ struct PoseOverride
     bool hasScale;
     Vec3 scale;
     bool additive;
+    bool preAdditive;
 }
 
 struct GltfScene
@@ -1057,10 +1058,19 @@ Mesh bakeGltfFrame(GltfScene scene, int animationIndex, double time,
                 poses[overrideValue.node].translation =
                     overrideValue.translation;
             if (overrideValue.hasRotation)
-                poses[overrideValue.node].rotation =
-                    overrideValue.additive ?
-                    quatMultiply(poses[overrideValue.node].rotation,
-                        overrideValue.rotation) : overrideValue.rotation;
+            {
+                if (overrideValue.preAdditive)
+                    poses[overrideValue.node].rotation =
+                        quatMultiply(overrideValue.rotation,
+                            poses[overrideValue.node].rotation);
+                else if (overrideValue.additive)
+                    poses[overrideValue.node].rotation =
+                        quatMultiply(poses[overrideValue.node].rotation,
+                            overrideValue.rotation);
+                else
+                    poses[overrideValue.node].rotation =
+                        overrideValue.rotation;
+            }
             if (overrideValue.hasScale)
                 poses[overrideValue.node].scale = overrideValue.scale;
         }

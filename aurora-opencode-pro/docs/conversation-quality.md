@@ -62,9 +62,10 @@ reports are rejected with recovery guidance. Genuine absent information remains
 `waiting_input`; it is never certified as completed. With multiple unfinished
 outcomes/actions, `blocked_steps` must identify each remaining dependency;
 `independent_work_complete` alone cannot pause unrelated work. Embedded routine
-permission questions and locked-build obstacles are rejected with recovery
-guidance. A supplied fact resumes the same objective. The legacy `task_blocker`
-name follows these same rules.
+permission questions, implementation/file/test choices and locked-build
+obstacles are rejected with recovery guidance. A supplied fact or short approval
+such as "go ahead" resumes the same objective; unrelated conversational
+follow-ups still stop. The legacy `task_blocker` name follows these same rules.
 
 The waiting state must correspond to an accepted essential-information request
 on the active branch after the latest user message. On startup, a completed

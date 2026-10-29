@@ -459,17 +459,31 @@ private bool isSameOrChildPath(string path, string parent)
  * Whether the agent-facing rebuild flow applies to `workspace`.
  *
  * Rebuild compiles the Aurora OpenCode / Aurora OpenCode Pro package that this
- * app was built from. The general Aurora repository and its sibling `aurora-*`
- * apps are different projects: rebuilding them would deploy Aurora OpenCode
- * instead of the edited app, so those workspaces are rejected even when the
- * running app can self-rebuild. A sandbox or unrelated workspace stays eligible
- * while a developer source is configured, which preserves the self-fix flow.
+ * app was built from. The package's direct parent repository is allowed because
+ * normal task workspaces resolve to the checkout root, even while every edit is
+ * inside the package. Wider ancestors and sibling `aurora-*` apps are different
+ * projects: rebuilding them would deploy Aurora OpenCode instead of the edited
+ * app, so those workspaces remain rejected. A sandbox or unrelated workspace
+ * stays eligible while a developer source is configured, preserving the
+ * self-fix flow.
  */
 bool isRebuildWorkspace(string workspace, string developerSource)
 {
     if (developerSource.length == 0 || !isAuroraProject(developerSource))
         return false;
     if (isSameOrChildPath(workspace, developerSource)) return true;
+    // A task opened at the checkout root is still working on this package when
+    // its edits target aurora-opencode-pro. Accept that exact parent, but not a
+    // wider ancestor that could be hosting unrelated Aurora work.
+    string parent;
+    try
+    {
+        parent = dirName(buildNormalizedPath(developerSource));
+        if (buildNormalizedPath(workspace).toLower == parent.toLower)
+            return true;
+    }
+    catch (Exception) {}
+    if (parent.length && isSameOrChildPath(parent, workspace)) return false;
     const general = findAuroraRoot(developerSource);
     if (general.length > 0 && isSameOrChildPath(workspace, general)) return false;
     return true;

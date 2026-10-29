@@ -115,10 +115,18 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
     const name = requestIntentName(intent);
     if (intent == RequestIntent.conversation)
     {
-        if (session.taskStatus == "waiting_input")
+        const stripped = text.strip;
+        const askedQuestion = stripped.length && stripped[$ - 1] == '?';
+        const suppliedFact = session.taskStatus == "waiting_input" && !askedQuestion;
+        if (session.objective.length && session.taskStatus != "completed" &&
+            (suppliedFact || actionApprovalRequest(text)))
         {
+            if (session.contract.intent == "analysis")
+                session.contract.intent = "implementation";
+            session.contract.currentIntent = "continuation";
             session.taskStatus = "active";
             session.contract.blocker = "";
+            return;
         }
         session.contract.currentIntent = session.contract.intent.length ? session.contract.intent : name;
         return;

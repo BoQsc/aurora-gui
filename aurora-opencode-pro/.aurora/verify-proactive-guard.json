@@ -1,0 +1,41 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/tests/task_continuation_contracts.d",
+    "aurora-opencode-pro/tests/task_policy_ui_contracts.d",
+    "aurora-opencode-pro/tests/tools_test.d",
+    "aurora-opencode-pro/assets",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-proactive-task-cont.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp",
+        "timeout": 30000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Windows/Temp/aurora-task-policy-ui-opt.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Windows/Temp/aurora-tools-final-2.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp",
+        "timeout": 180000
+      }
+    }
+  ]
+}

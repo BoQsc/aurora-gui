@@ -1,0 +1,45 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/tests/task_continuation_contracts.d",
+    "aurora-opencode-pro/assets",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "C:/D/dmd2/windows/bin64/dmd.exe",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-IC:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-opencode-pro/source",
+          "-IC:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-opencode-pro/shared",
+          "-IC:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-opencode-core/source",
+          "-IC:/Users/windows10/Documents/github_repositories/aurora-gui/vendor/aurora-d-0.4.5/source",
+          "-JC:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-opencode-pro/assets",
+          "-ofC:/Users/windows10/AppData/Local/Temp/aurora-proactive-task-cont.exe",
+          "C:/Users/windows10/Documents/github_repositories/aurora-gui/aurora-opencode-pro/tests/task_continuation_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib"
+        ],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:/Users/windows10/AppData/Local/Temp/aurora-proactive-task-cont.exe",
+        "args": [],
+        "workdir": "C:/Users/windows10/AppData/Local/Temp",
+        "timeout": 30000
+      }
+    }
+  ]
+}

@@ -12,6 +12,10 @@ dub build
 aurora-mesh.exe
 ```
 
+`dub build --build=release` is worth it for interactive animation preview: on
+the 72 MB reference scene it loads, bakes, and audits a frame in about 1.2 s
+instead of 2.0 s (debug build, measured with `--glb <scene> --check`).
+
 The editor opens with the watertight v3 human base mesh. `mesh.obj` and
 `mesh.glb` are the default Save/Load targets.
 
@@ -43,6 +47,8 @@ aurora-mesh.exe --v3
 - `X`, `Y`, `Z`: constrain vertex movement to one world axis; press again to release.
 - `Esc`: clear the selection and axis lock.
 - `W`: toggle wireframe and vertex dots.
+- `C`: toggle backface culling (turn it off for imported OBJ meshes that are
+  wound inconsistently).
 - `S`: save the mesh to the current OBJ path.
 - `L`: load the current OBJ path.
 - `R`: reset the camera to frame the mesh.
@@ -61,6 +67,23 @@ aurora-mesh.exe --v3
 The sidebar has Human v3, Human v2, Human v1, Reset view, Wireframe, Save OBJ,
 Load OBJ, Save GLB, and Load GLB buttons. The sculpt tools are keyboard-driven;
 the current tool and mirror state are shown in the sidebar.
+
+## Viewport rendering
+
+The viewport is a software rasterizer, so its behavior is part of the editor
+rather than a driver detail:
+
+- Triangles that cross the camera are clipped against the near plane, so a face
+  keeps its visible part instead of disappearing when you zoom into the body.
+- UVs, depth, and shading use perspective-correct (`1/z`) interpolation, so
+  textures do not swim on surfaces that recede from the camera.
+- Single-sided faces are backface culled, which both halves the fill work on
+  closed meshes and honors the glTF `doubleSided` flag. The winding convention
+  is validated by a unit test that compares culled and un-culled renders of a
+  closed base mesh.
+- Picking and sculpting are occlusion aware. Clicking the chest selects the
+  front vertex instead of a hidden vertex on the back, and a brush stroke at the
+  surface leaves the far side of the body untouched.
 
 ## Human base mesh
 
@@ -176,7 +199,16 @@ applying a revision. Edits are rebuilt in the viewport immediately.
 - `audit` validates mesh indices/normals, key ordering, duration, and track
   integrity, then writes `build/live-audit.json`.
 - `scan-frames` bakes and validates every 1/30-second frame, then writes
-  `build/live-frames.json` with per-frame validity and invalid-frame count.
+  `build/live-frames.json` with per-frame validity, bounds validity, hand-jump
+  distance, limb/torso proximity hits, and `awarenessValid`.
+- `inspect-bone` writes `build/bone-info.json` with the named bone’s world
+  position and world-space X/Y/Z axes. Use this before authoring a rotation.
+- `pose-axis` applies a rotation around a named local axis (`x`, `y`, or `z`)
+  instead of a guessed quaternion.
+- `capture` writes the current viewport to a PPM without changing window focus:
+  `{"type":"capture","path":"build/view.ppm"}`.
+- `scan-frames` accepts `"collisions": true` to run full triangle self-intersection
+  checks per frame, excluding the baseline collision keys.
 - `clear` removes pose overrides and live objects.
 
 The acknowledgement separates `baselineCollisions` (same-frame base animation
@@ -204,6 +236,9 @@ steps.
 - Missing glTF rendering features: metallic/roughness, normal, emissive, and
   occlusion maps; texture transforms; advanced material extensions; animation
   blending/events; cameras; lights; and non-triangle primitive rendering.
+- The rasterizer samples textures with nearest-neighbor filtering only: there is
+  no mipmap chain, anisotropic filtering, or multisample antialiasing, and
+  blended faces are drawn in face order rather than sorted back to front.
 - Missing asset forms/compression: arbitrary GLB scene injection, Draco,
   BasisU/KTX2, meshopt, quantization
   extensions, and external URI images/buffers.
@@ -219,7 +254,8 @@ steps.
 - `source/auroramesh/sdf.d` — SDF primitives, smooth union, and cuts.
 - `source/auroramesh/surface_nets.d` — watertight SDF surface extraction.
 - `source/auroramesh/human_v2.d` — v2 anatomy and materials.
-- `source/auroramesh/sculpt.d` — smooth/inflate brushes, symmetry lookup, undo snapshots.
+- `source/auroramesh/sculpt.d` — smooth/inflate brushes, symmetry lookup, full
+  undo snapshots (geometry, materials, UVs, and textures).
 - `source/auroramesh/decimate.d` — edge-collapse decimation experiment for v3.
 - `source/auroramesh/human_v3.d` — embedded natural low-poly v3 body.
 - `assets/human_v3.obj` — v3 body asset.
@@ -227,9 +263,12 @@ steps.
 - `source/auroramesh/glb.d` — GLB 2.0 container, accessor, node-transform, and material I/O.
 - `source/auroramesh/gltf_scene.d` — full scene import, textures, skinning, morphs, and animation baking.
 - `source/auroramesh/live.d` — owned procedural live-authoring objects.
-- `source/auroramesh/camera.d` — orbit camera and perspective projection.
-- `source/auroramesh/renderer.d` — z-buffered shaded rasterizer, grid, wireframe.
-- `source/auroramesh/edit.d` — vertex picking and constrained screen drag.
+- `source/auroramesh/camera.d` — orbit camera, perspective projection, and the
+  near-plane constant.
+- `source/auroramesh/renderer.d` — z-buffered shaded rasterizer with near-plane
+  clipping, perspective-correct attributes, backface culling, grid, wireframe.
+- `source/auroramesh/edit.d` — occlusion-aware vertex picking, surface-limited
+  brush selection, ray/mesh queries, and constrained screen drag.
 - `source/auroramesh/editor.d` — Aurora viewport and editor chrome.
 - `source/auroramesh/main.d` — CLI and GUI entry point.
 
@@ -244,7 +283,9 @@ aurora-mesh.exe --screenshot build/editor.ppm
 
 `--check` validates indices, bounds, OBJ round-trip, watertightness, and edge
 counts. `dub test` covers v1/v2/v3 generation, SDF primitives, sculpting,
-GLB/OBJ I/O, projection, rasterizer, picking, and axis-locked drag math.
+GLB/OBJ I/O, projection, picking and brush visibility, near-plane clipping,
+perspective-correct texturing, backface culling versus `doubleSided`, and
+axis-locked drag math.
 
 This first editor intentionally does not provide extrusion, loop cuts,
 subdivision, authored UVs/skinning/animation, or multi-object scenes. It is a

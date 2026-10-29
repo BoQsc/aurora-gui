@@ -50,7 +50,7 @@ private bool controlTool(string name)
 {
     return name == "calculate" || name == "process" || name == "tool_status" || name == "read_plan" || name == "update_plan" ||
         name == "update_subplan" || name == "open" || name == "retire_images" ||
-        name == "task_blocker" || name == "request_input";
+        name == "goal_complete" || name == "task_blocker" || name == "request_input";
 }
 
 private WorkScheduler scheduler()

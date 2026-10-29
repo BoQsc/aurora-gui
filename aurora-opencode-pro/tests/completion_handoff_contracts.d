@@ -47,7 +47,8 @@ int main()
     assert(!hasCompletionHandoff("```\n" ~ summary ~ "\n```"));
     assert(!hasCompletionHandoff("> Result: Saved\n> Checks: Passed\n> Remaining: None"));
     auto session = substantial();
-    assert(completionHandoffNeeded(session));
+    assert(!completionHandoffNeeded(session),
+        "A healthy final answer must not trigger a second summary");
     assert(!completionHandoffPending(session));
     const oldLeaf = session.activeLeafId;
     append(session, "user", completionHandoffMarker ~ completionHandoffInstruction, "", true);
@@ -61,8 +62,8 @@ int main()
     auto reloaded = session;
     assert(completionHandoffPending(reloaded) && !completionHandoffNeeded(reloaded));
     session.activeLeafId = oldLeaf;
-    assert(!completionHandoffPending(session) && completionHandoffNeeded(session));
-    writeln("PASS summaries require three populated sections; truncation, reload and branch boundaries survive");
+    assert(!completionHandoffPending(session) && !completionHandoffNeeded(session));
+    writeln("PASS healthy answers stay single; truncation, reload and branch boundaries survive");
 
     foreach (request; ["Write documents, then reply READY.", "Write documents. Reply with only JSON.",
             "Implement it without a summary.", "Save the files. Respond in JSON.",
@@ -80,11 +81,13 @@ int main()
     checked.messages = small.messages.dup;
     checked.messages[$ - 2].workspaceChanged = true;
     checked.messages[$ - 2].verificationCheck = "Fixture check";
-    assert(completionHandoffNeeded(checked), "A change and check need a handoff even with few tools");
+    assert(!completionHandoffNeeded(checked),
+        "A change and check do not require a second summary");
     auto planned = small;
     append(planned, "tool", "Plan updated", "update_plan");
     planned.taskSteps = [TaskStep("First outcome", "completed"), TaskStep("Second outcome", "completed")];
-    assert(completionHandoffNeeded(planned), "A multi-outcome plan lost its handoff");
+    assert(!completionHandoffNeeded(planned),
+        "A multi-outcome plan does not require a second summary");
     append(small, "tool", "Plan updated", "update_plan");
     foreach (i; 0 .. 8) append(small, "tool", "Process running", "process");
     assert(!completionHandoffNeeded(small));
@@ -122,8 +125,9 @@ int main()
     foreach (style; ["compact", "caveman"])
     {
         assert(promptVerbosityDirective(style).indexOf("no closing summary") < 0);
-        assert(promptVerbosityDirective(style).indexOf("Result/Checks/Remaining") >= 0);
+        assert(promptVerbosityDirective(style).indexOf("Result/Checks/Remaining") < 0);
+        assert(promptVerbosityDirective(style).indexOf("no closing recap block") >= 0);
     }
-    writeln("PASS fallback uses actual changes, exposes failed/unrun checks and blockers, and preserves task state; brief styles keep handoffs");
+    writeln("PASS fallback uses actual changes and blockers; brief styles stay natural without recap blocks");
     return 0;
 }

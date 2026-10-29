@@ -107,6 +107,9 @@ int main(string[] arguments)
     writeln("PASS partial native receipts complete their plan outcomes and aggregate coverage across separate checks");
     dispatch(OpenCodeToolCall("verify", "verify", args.toString()));
     assert(root.verificationStatusForTesting() == "passed", root.lastToolResultForTesting());
+    foreach (_; 0 .. 5) pump();
+    assert(root.verificationStatusForTesting() == "passed",
+        "A successful recipe invalidated itself on a later service tick");
     writeln("PASS actual GUI/scheduler accepts a scratch-built external checkout's typed recipe and rejects compilation-only completion");
     write(actual, "P6\n1 1\n255\n" ~ cast(string)[cast(ubyte)21,40,60]);
     dispatch(OpenCodeToolCall("wrong-render", "verify", args.toString()));

@@ -49,6 +49,10 @@ int main()
         assert(answerOnlyRequest(text), text);
     foreach (text; ["do it", "Do that.", "Please do it.", "Yes, do it."])
         assert(requestIntent(text) == RequestIntent.implementation, text);
+    foreach (text; ["Stop asking and just do the work.",
+            "Be proactive and figure it out.",
+            "It's always clarifying and annoyances instead of figuring out and doing things."])
+        assert(requestIntent(text) == RequestIntent.implementation, text);
     assert(!answerOnlyRequest("do it"), "An action approval was treated as an answer-only question");
     assert(!answerOnlyRequest("go ahead"));
     assert(requestIntent("Analyze the conversation flow.") == RequestIntent.analysis);
@@ -82,6 +86,8 @@ int main()
     request(s, "The deployment destination is fixture.example.");
     assert(s.taskStatus == "active" && s.contract.id == parserTask,
         "Supplied information failed to resume the existing task");
+    assert(s.contract.currentIntent == "continuation",
+        "Supplied information was not recorded as task continuation");
     append(s, "assistant", "Done.");
     assert(taskContinuation(s, true).action == TaskContinuationAction.continueWork);
     append(s, "tool", "Build passed", "run");

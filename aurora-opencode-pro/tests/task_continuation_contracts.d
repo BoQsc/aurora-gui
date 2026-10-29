@@ -1,6 +1,7 @@
 module task_continuation_contracts;
 import auroraopencode.core;
 import auroraopencode.taskcontinuation;
+import auroraopencode.taskflow : acceptTaskRequest;
 import auroraopencode.requestintent;
 import std.conv : to;
 import std.stdio : writeln;
@@ -137,6 +138,62 @@ int main()
     append(session, "user", "So what's the future of this project?");
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle,
         "Conversation follow-up resumed unfinished work");
+
+    // A fact supplied after a required-input pause is the next step of the
+    // same task, not a conversational detour.
+    ChatSession supplied;
+    append(supplied, "user", "Deploy the prepared fixture.");
+    acceptTaskRequest(supplied, supplied.messages[$ - 1].content,
+        supplied.messages[$ - 1].id);
+    supplied.taskStatus = "waiting_input";
+    append(supplied, "user", "The deployment destination is fixture.example.");
+    acceptTaskRequest(supplied, supplied.messages[$ - 1].content,
+        supplied.messages[$ - 1].id);
+    assert(supplied.contract.currentIntent == "continuation",
+        "A supplied fact was recorded as unrelated conversation");
+    assert(taskContinuation(supplied, true).action ==
+        TaskContinuationAction.continueWork,
+        "Supplying the missing fact did not resume the task");
+
+    // Explicit approval of the next step is also a directive to act.
+    foreach (approval; ["go ahead", "please proceed", "yes", "sounds good",
+            "go for it", "make it so"])
+        assert(actionApprovalRequest(approval), approval);
+    assert(!actionApprovalRequest("What should happen next?"));
+    assert(!actionApprovalRequest("go for"));
+    ChatSession approved;
+    append(approved, "user", "Fix the parser.");
+    acceptTaskRequest(approved, approved.messages[$ - 1].content,
+        approved.messages[$ - 1].id);
+    append(approved, "user", "Go ahead.");
+    acceptTaskRequest(approved, approved.messages[$ - 1].content,
+        approved.messages[$ - 1].id);
+    assert(approved.contract.currentIntent == "continuation");
+    assert(taskContinuation(approved, true).action ==
+        TaskContinuationAction.continueWork,
+        "Approval after a permission question did not resume work");
+
+    foreach (reply; ["Would you like me to continue?",
+            "Should I run the tests now?",
+            "I can apply the patch. Do you want me to proceed?"])
+        assert(permissionQuestionReply(reply), reply);
+    assert(!permissionQuestionReply("The parser is fixed; tests pass."));
+    ChatSession asking;
+    append(asking, "user", "Fix the parser.");
+    acceptTaskRequest(asking, asking.messages[$ - 1].content,
+        asking.messages[$ - 1].id);
+    append(asking, "assistant", "Would you like me to proceed?");
+    auto proactive = proactiveActionGuidance(asking);
+    assert(proactive.length, "A permission question settled an unfinished task");
+    append(asking, "user", proactive, true);
+    append(asking, "assistant", "Should I start now?");
+    proactive = proactiveActionGuidance(asking);
+    assert(proactive.length, "The first proactive retry did not permit a second");
+    append(asking, "user", proactive, true);
+    append(asking, "assistant", "May I continue?");
+    assert(!proactiveActionGuidance(asking).length,
+        "Proactive retries were not bounded");
+
     foreach (question; ["What is left?", "How would we fix it?", "Why did it stop?"])
         assert(answerOnlyRequest(question));
     foreach (request; ["Can you fix the remaining work?", "Could you implement it?",
@@ -146,6 +203,8 @@ int main()
     assert(taskBlockerError(`{"reason":"Deployment address missing","required_fact":"Deployment destination","question":"Which server?","checked":["Local deployment configuration has no destination"],"independent_work_complete":true}`) == "");
     assert(taskBlockerError(`{"kind":"external","reason":"Server offline"}`).length);
     assert(taskBlockerError(`{"reason":"Verification pending","required_fact":"Permission","question":"Should I run tests?","checked":["Tests exist"],"independent_work_complete":true}`).length);
+    assert(taskBlockerError(`{"reason":"Implementation choice unresolved","required_fact":"Preferred implementation approach","question":"Which approach should I use?","checked":["Source inspected"],"independent_work_complete":true}`).length,
+        "A routine implementation choice was accepted as missing user information");
     assert(taskBlockerError(`{"kind":"input","reason":"Deployment address missing"}`).length);
     assert(taskBlockerError(`{"kind":"external","reason":""}`).length);
     assert(taskBlockerError("broken").length);

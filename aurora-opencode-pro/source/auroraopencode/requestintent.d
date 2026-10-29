@@ -1,7 +1,7 @@
 module auroraopencode.requestintent;
 
 import std.algorithm : canFind;
-import std.string : toLower, split, startsWith;
+import std.string : toLower, split, join, startsWith;
 
 enum RequestIntent { conversation, clarification, analysis, implementation, continuation }
 
@@ -66,6 +66,7 @@ RequestIntent requestIntent(string text)
     if (continuation) return RequestIntent.continuation;
     if (completion) return RequestIntent.implementation;
     if (analysis) return RequestIntent.analysis;
+    if (correctiveActionRequest(text)) return RequestIntent.implementation;
     if (clarification) return RequestIntent.clarification;
     if (words.length && (["what", "how", "why", "when", "where", "who", "which", "is", "are",
             "does", "did", "do", "can", "could", "would", "should", "shall", "will", "may", "might", "explain", "describe", "summarize",
@@ -94,6 +95,70 @@ bool explanationOnlyRequest(string text)
 }
 
 bool answerOnlyRequest(string text) { return requestIntent(text) == RequestIntent.clarification; }
+
+/// A short approval authorizes the work the agent already described. It is not
+/// a new objective and must not be mistaken for casual conversation, which
+/// would leave an unfinished task stalled after a needless confirmation.
+bool actionApprovalRequest(string text)
+{
+    auto words = requestWords(text);
+    if (!words.length) return false;
+    size_t begin, end;
+    if (words[0] == "please") begin = 1;
+    end = words.length;
+    if (end > begin && words[end - 1] == "please") --end;
+    if (begin >= end) return false;
+    const phrase = words[begin .. end];
+    if (phrase.length == 2 &&
+        ((phrase[0] == "go" && phrase[1] == "ahead") ||
+         (phrase[0] == "carry" && phrase[1] == "on") ||
+         (phrase[0] == "handle" && phrase[1] == "it") ||
+         (phrase[0] == "handle" && phrase[1] == "that") ||
+         (phrase[0] == "sounds" && phrase[1] == "good") ||
+         (phrase[0] == "that" && phrase[1] == "works")))
+        return true;
+    if (phrase.length == 3 && phrase[0] == "go" && phrase[1] == "for" &&
+        phrase[2] == "it")
+        return true;
+    if (phrase.length == 3 && phrase[0] == "make" && phrase[1] == "it" && phrase[2] == "so")
+        return true;
+    if (phrase.length == 4 && phrase[0] == "take" && phrase[1] == "care" &&
+        phrase[2] == "of" && phrase[3] == "it")
+        return true;
+    if (["yes", "yeah", "yep", "sure", "ok", "okay", "proceed"].canFind(phrase[0]))
+        return phrase.length == 1 || ["now", "then"].canFind(phrase[1]);
+    return false;
+}
+
+/// Feedback such as "stop asking and just do it" is a corrective action
+/// request, not casual conversation. Treating it as chat leaves the old task
+/// stalled even though the user has clearly asked for a behavior change.
+bool correctiveActionRequest(string text)
+{
+    const normalized = text.toLower.split().join(" ");
+    foreach (phrase; ["be proactive", "stop asking", "stop clarifying",
+            "don't ask", "dont ask", "instead of asking", "instead of clarifying",
+            "instead of figuring out", "instead of doing", "figure it out",
+            "just do it", "just do the", "do the work", "do what i asked",
+            "always clarifying", "always asking", "without asking", "keep asking"])
+        if (normalized.canFind(phrase)) return true;
+    return false;
+}
+
+/// A visible permission question in the assistant's prose is not a completed
+/// outcome. The agent already has authorization for routine reversible steps.
+bool permissionQuestionReply(string text)
+{
+    const lower = text.toLower;
+    if (!lower.canFind("?")) return false;
+    foreach (phrase; ["would you like me to", "should i ", "may i ",
+            "do you want me to", "shall i ", "can i proceed", "could i proceed",
+            "do you want to proceed", "please confirm", "would you prefer",
+            "which option do you prefer", "which approach would you like",
+            "let me know if you want me to", "let me know if you'd like me to"])
+        if (lower.canFind(phrase)) return true;
+    return false;
+}
 
 bool artifactChangeRequested(string text)
 {

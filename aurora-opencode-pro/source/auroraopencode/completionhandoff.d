@@ -10,11 +10,10 @@ import std.regex : matchFirst;
 import std.string : strip, startsWith, toLower, splitLines, replace;
 
 enum completionHandoffMarker = "Completion handoff requested:\n";
-enum completionHandoffInstruction = "Summarize recorded work with Result:, Checks:, Remaining:. " ~
-    "Name delivered outcomes, actual checks (or unrun checks), and unresolved work. " ~
-    "Use three brief lines; every response style retains them. " ~
-    "Use only existing evidence: no tools, new work or permission questions. " ~
-    "Do not claim unchecked or unfinished work completed.";
+enum completionHandoffInstruction = "Finish the response now from existing evidence. " ~
+    "Give the user the concise useful result and accurately state any unresolved " ~
+    "work. Do not use tools, start new work or ask permission. Do not claim " ~
+    "unchecked or unfinished work completed.";
 
 /// Scope the checkpoint to this instruction and selected branch, including
 /// assignments in child chats. A new human request never inherits a repair.
@@ -79,26 +78,16 @@ bool completionHandoffNeeded(const ref ChatSession session, string finishReason 
         if (taskInstruction(session, session.messages[index]))
         { request = session.messages[index].content; break; }
     if (customReplyRequested(request)) return false;
-    size_t actions;
-    bool changed, checked, planned;
     string answer, reason;
     foreach (index; turnPath(session))
     {
         const ref message = session.messages[index];
-        if (message.role == "tool")
-        {
-            if (message.toolName == "update_plan" && !message.failed) planned = true;
-            if (["update_plan", "read_plan", "update_subplan", "process", "tool_status",
-                    "request_input", "task_blocker", "retire_images", "assign", "finish", "ask_user"].canFind(message.toolName)) continue;
-            ++actions;
-            changed |= !message.failed && message.workspaceChanged;
-            checked |= message.verificationCheck.length > 0;
-        }
         if (message.role == "assistant" && !message.internal && !message.failed && !message.toolCalls.length)
         { answer = message.content; reason = message.finishReason; }
     }
-    if (actions < 4 && !(changed && checked) && !(planned && actions && session.taskSteps.length > 1)) return false;
-    return finishReason == "length" || reason == "length" || !hasCompletionHandoff(answer);
+    // A healthy final answer is the user's answer. Only repair an empty or
+    // truncated response; never append a second ceremony after substantial work.
+    return finishReason == "length" || reason == "length" || !answer.strip.length;
 }
 
 /// Bounded, conservative fallback if the provider also omits the requested
