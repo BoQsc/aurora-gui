@@ -6,6 +6,7 @@ it writes, so this exercises the same path the editor window uses.
 
 import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -111,6 +112,96 @@ class RegionEditing(unittest.TestCase):
                                        "radius": 0.5}]}], "bad2")
         self.assertEqual(pixels(plain), pixels(refused),
                          "a refused replacement must leave the model untouched")
+
+    def test_carve_is_sound(self):
+        stumps = {"type": "region", "name": "stumps", "kind": "box",
+                  "a": [-0.30, -0.02, -0.10], "b": [0.30, 0.075, 0.20],
+                  "falloff": 0.02}
+        ack, _ = run([stumps,
+                      {"type": "replace", "kind": "carve", "region": "stumps"}],
+                     "carve")
+        self.assertTrue(ack["replaceOk"], ack["replaceReason"])
+        self.assertEqual(ack["op"], "carve")
+        self.assertLess(ack["opMs"], 200.0, ack["opMs"])
+
+    def test_carve_without_a_region_is_refused(self):
+        ack, _ = run([{"type": "replace", "kind": "carve",
+                       "region": "not-a-region"}], "carve-none")
+        self.assertFalse(ack["replaceOk"])
+        self.assertIn("region", ack["replaceReason"])
+
+    def test_replacement_survives_a_rebake(self):
+        # The mesh is rebaked per frame, so an accepted replacement has to be
+        # reapplied. A shell that survives the command but vanishes on the next
+        # rebuild is invisible to the ack, so it is checked in pixels.
+        feet = {"type": "region", "name": "feet", "kind": "box",
+                "a": [-0.2, -0.01, -0.05], "b": [0.2, 0.145, 0.28],
+                "falloff": 0.18}
+        shell = {"type": "replace", "kind": "sdf", "region": "feet",
+                 "cell": 0.004,
+                 "shapes": [{"kind": "ellipsoid", "center": [0.0, 0.06, 0.20],
+                             "radii": [0.05, 0.05, 0.05]}]}
+        with_shell = ROOT / "build" / "rebake-shell.ppm"
+        without_shell = ROOT / "build" / "rebake-plain.ppm"
+        ack, _ = run([feet, shell, {"type": "frame", "frame": 5},
+                      {"type": "capture", "path": str(with_shell)}],
+                     "rebake-shell")
+        self.assertTrue(ack["replaceOk"], ack["replaceReason"])
+        run([feet, {"type": "frame", "frame": 5},
+             {"type": "capture", "path": str(without_shell)}], "rebake-plain")
+        self.assertNotEqual(pixels(with_shell), pixels(without_shell),
+                            "a replacement must survive the rebake")
+
+    def test_camera_command_frames_the_view(self):
+        def shot(distance, name):
+            path = ROOT / "build" / f"cam-{name}.ppm"
+            ack, _ = run([{"type": "camera", "target": [0.0, 0.05, 0.05],
+                           "yaw": 0.6, "pitch": 0.25, "distance": distance},
+                          {"type": "capture", "path": str(path)}],
+                         f"cam-{name}")
+            return ack, pixels(path)
+
+        near, near_px = shot(0.6, "near")
+        far, far_px = shot(4.0, "far")
+        self.assertAlmostEqual(near["camDistance"], 0.6, places=3)
+        self.assertAlmostEqual(far["camDistance"], 4.0, places=3)
+        self.assertNotEqual(near_px, far_px,
+                            "the camera command must change what is rendered")
+
+    def test_ack_survives_a_foreign_working_folder(self):
+        # A window started elsewhere must still report, so the folder is created.
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            live = work / "live.json"
+            live.write_text(json.dumps({"revision": 1,
+                                        "commands": [{"type": "frame",
+                                                      "frame": 0}]}))
+            subprocess.run([str(EXE), "--glb", str(GLB), "--live", str(live),
+                            "--screenshot", str(work / "shot.ppm"),
+                            "--width", "400", "--height", "300"],
+                           cwd=work, capture_output=True, text=True,
+                           timeout=300)
+            ack = work / "build" / "live-ack.json"
+            self.assertTrue(ack.exists(),
+                            "the ack must be written even without a build folder")
+            self.assertEqual(json.loads(ack.read_text())["status"], "ok")
+
+    def test_shell_may_reach_past_the_old_silhouette(self):
+        # A foot is longer than the stub it replaces, so geometry inside the region
+        # must be accepted even beyond the model's previous bounds. A stray shape
+        # outside the region stays refused (covered above).
+        feet = {"type": "region", "name": "feet", "kind": "box",
+                "a": [-0.2, -0.01, -0.05], "b": [0.2, 0.145, 0.28],
+                "falloff": 0.18}
+        ack, _ = run([feet,
+                      {"type": "replace", "kind": "sdf", "region": "feet",
+                       "cell": 0.004,
+                       "shapes": [{"kind": "ellipsoid",
+                                   "center": [0.0, 0.05, 0.22],
+                                   "radii": [0.06, 0.05, 0.06]}]}], "beyond")
+        self.assertTrue(ack["replaceOk"], ack["replaceReason"])
+        self.assertGreater(ack["shellHi"][2], 0.17,
+                           "the shell must extend past the old model bounds")
 
 
 if __name__ == "__main__":

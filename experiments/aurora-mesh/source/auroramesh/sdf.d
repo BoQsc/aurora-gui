@@ -85,6 +85,68 @@ struct SdfField
                 blend * 0.5);
         return distance;
     }
+
+    /**
+     * Axis-aligned extent of the field's solid, grown by the blend radius.
+     *
+     * Meshing uses this rather than an outside box: a field that reaches past the
+     * box it is sampled in gets clipped open, which reads as a hole.
+     */
+    void bounds(out Vec3 low, out Vec3 high) const
+    {
+        low = Vec3(0, 0, 0);
+        high = Vec3(0, 0, 0);
+        bool any;
+        foreach (shape; shapes)
+        {
+            Vec3 localLow;
+            Vec3 localHigh;
+            final switch (shape.kind)
+            {
+                case SdfKind.sphere:
+                    localLow = Vec3(shape.a.x - shape.radius,
+                        shape.a.y - shape.radius, shape.a.z - shape.radius);
+                    localHigh = Vec3(shape.a.x + shape.radius,
+                        shape.a.y + shape.radius, shape.a.z + shape.radius);
+                    break;
+
+                case SdfKind.ellipsoid:
+                    localLow = Vec3(shape.a.x - abs(shape.radii.x),
+                        shape.a.y - abs(shape.radii.y),
+                        shape.a.z - abs(shape.radii.z));
+                    localHigh = Vec3(shape.a.x + abs(shape.radii.x),
+                        shape.a.y + abs(shape.radii.y),
+                        shape.a.z + abs(shape.radii.z));
+                    break;
+
+                case SdfKind.taper:
+                    const reach = max(shape.radius, shape.endRadius);
+                    localLow = Vec3(min(shape.a.x, shape.b.x) - reach,
+                        min(shape.a.y, shape.b.y) - reach,
+                        min(shape.a.z, shape.b.z) - reach);
+                    localHigh = Vec3(max(shape.a.x, shape.b.x) + reach,
+                        max(shape.a.y, shape.b.y) + reach,
+                        max(shape.a.z, shape.b.z) + reach);
+                    break;
+            }
+            if (!any)
+            {
+                low = localLow;
+                high = localHigh;
+                any = true;
+            }
+            else
+            {
+                low = Vec3(min(low.x, localLow.x), min(low.y, localLow.y),
+                    min(low.z, localLow.z));
+                high = Vec3(max(high.x, localHigh.x), max(high.y, localHigh.y),
+                    max(high.z, localHigh.z));
+            }
+        }
+        const pad = blend > 0 ? blend : 0.0;
+        low = Vec3(low.x - pad, low.y - pad, low.z - pad);
+        high = Vec3(high.x + pad, high.y + pad, high.z + pad);
+    }
 }
 
 double smoothMinimum(double a, double b, double blend)
@@ -119,4 +181,12 @@ unittest
     field.blend = 0.2;
     assert(field.eval(Vec3(1, 0, 0)) < 0);
     assert(field.eval(Vec3(1, 3, 0)) > 0);
+
+    // The meshing box must cover the field, including the blend.
+    Vec3 low;
+    Vec3 high;
+    field.bounds(low, high);
+    assert(low.x <= -1.0 && high.x >= 3.0, "bounds must span every shape");
+    assert(low.y <= -1.0 && high.y >= 1.0);
+    assert(high.x - low.x >= 4.0);
 }

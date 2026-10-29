@@ -2350,8 +2350,54 @@ private ToolExecution runProgramTool(string args, string workspace,
     }
 
     if (background)
-        return startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
-            "run");
+    {
+        // Relaunching the same command must not leave the previous copy running
+        // behind the new one: a stale window nobody looks at is worse than none.
+        // The stale instance is stopped first, so its window closes before the
+        // new one opens, and the launch reports what it replaced. `allowMultiple`
+        // keeps the old copy for the cases where two are genuinely wanted.
+        bool allowMultiple;
+        bool stopWithApp;
+        if (value.type == JSONType.object)
+        {
+            if (auto field = "allowMultiple" in value.object)
+                allowMultiple = field.type == JSONType.true_;
+            if (auto field = "stopWithApp" in value.object)
+                stopWithApp = field.type == JSONType.true_;
+        }
+        string[] replaced;
+        if (!allowMultiple)
+        {
+            const launchProgram = resolveToolPath(fullArgv[0], resolvedWorkdir);
+            // Identical program *and* command line: a relaunch of the same thing.
+            // Two different commands of one program (two servers, two pings to
+            // different hosts) are distinct work and are never touched.
+            const launchCommand = displayCommand(fullArgv);
+            foreach (info; listSupervisedProcesses())
+                if (info.running && info.program.length > 0 &&
+                    toLower(info.program) == toLower(launchProgram) &&
+                    info.command == launchCommand)
+                {
+                    // Process-only: a launcher's already-running children (a
+                    // live server) are never stopped by a replace.
+                    replaceSupervisedProcess(info.id);
+                    waitForSupervisedProcessStop(info.id, 3_000);
+                    replaced ~= info.id;
+                }
+        }
+        auto launch = startBackgroundProcess(fullArgv, resolvedWorkdir, timeoutMs,
+            "run", stopWithApp);
+        if (replaced.length && !launch.failed)
+        {
+            auto ids = "";
+            foreach (index, id; replaced)
+                ids ~= (index == 0 ? "" : ", ") ~ id;
+            launch.output ~= "\nReplaced the stale copy" ~
+                (replaced.length == 1 ? "" : "s") ~ ": " ~ ids ~
+                " (its window is closed).";
+        }
+        return launch;
+    }
     size_t gitCommandAt;
     const effect = workspaceCommandEffect(program, argv, gitCommandAt);
     const check = verificationCheck(program, argv);
@@ -2821,6 +2867,9 @@ private final class SupervisedProcess
 {
     string id;
     string command;
+    /// The program this command launched, resolved for comparison: two launches
+    /// of the same program must not stack a second window while the first runs.
+    string program;
     string workdir;
     string outputPath;
     Pid pid;
@@ -2831,6 +2880,10 @@ private final class SupervisedProcess
     bool killRequested;
     bool killed;
     bool timedOut;
+    /// Launched with `stopWithApp`: terminated when the app closes. Everything
+    /// else is left running, so a live server started from a launcher keeps
+    /// serving after the window is gone.
+    bool stopWithApp;
     int exitCode;
     long elapsedMs;
     /// Start order. The registry is a hash map, so the UI cannot recover
@@ -2875,8 +2928,52 @@ private string displayCommand(const(string)[] argv)
     return result.data;
 }
 
+/// Terminate only the process itself, leaving anything it spawned running.
+/// `killProcessTree` stays the explicit Stop action; a replace must not stop the
+/// live server that a stale launcher started.
+private void killProcessOnly(Pid pid)
+{
+    try kill(pid);
+    catch (Exception) {}
+}
+
+/// Replace a stale copy: stop the launcher process itself and let the monitor
+/// thread stamp the outcome. Children it already started keep running.
+public bool replaceSupervisedProcess(string id)
+{
+    Pid pid;
+    synchronized (_processMutex)
+    {
+        auto found = id in _processes;
+        if (found is null) return false;
+        auto process = *found;
+        if (process is null || !process.running) return false;
+        process.killRequested = true;
+        pid = process.pid;
+    }
+    killProcessOnly(pid);
+    return true;
+}
+
+/// Wait until a supervised record stops, so a relaunch can close the stale
+/// copy's window before the replacement opens.
+private bool waitForSupervisedProcessStop(string id, int timeoutMs)
+{
+    const deadline = MonoTime.currTime + msecs(timeoutMs);
+    while (true)
+    {
+        bool running;
+        _processMutex.lock();
+        if (auto process = id in _processes) running = process.running;
+        _processMutex.unlock();
+        if (!running) return true;
+        if (MonoTime.currTime >= deadline) return false;
+        Thread.sleep(msecs(20));
+    }
+}
+
 private ToolExecution startBackgroundProcess(string[] argv, string workdir,
-    int timeoutMs, string toolName)
+    int timeoutMs, string toolName, bool stopWithApp = false)
 {
     import core.atomic : atomicLoad;
 
@@ -2925,7 +3022,9 @@ private ToolExecution startBackgroundProcess(string[] argv, string workdir,
     auto process = new SupervisedProcess();
     process.id = id;
     process.command = displayCommand(argv);
+    process.program = argv.length > 0 ? resolveToolPath(argv[0], workdir) : "";
     process.workdir = workdir;
+    process.stopWithApp = stopWithApp;
     process.outputPath = outPath;
     process.pid = pid;
     process.input = inputPipe.writeEnd;
@@ -3153,11 +3252,15 @@ public struct SupervisedProcessInfo
 {
     string id;
     string command;
+    /// The program this record launched (resolved path, or the bare name).
+    string program;
     string workdir;
     bool running;
     bool killRequested;
     bool killed;
     bool timedOut;
+    /// Whether this record is terminated when Aurora closes (opt-in per launch).
+    bool stopWithApp;
     int exitCode;
     long elapsedMs;
     bool stdinClosed;
@@ -3178,11 +3281,13 @@ private SupervisedProcessInfo supervisedProcessInfo(SupervisedProcess process)
     SupervisedProcessInfo info;
     info.id = process.id;
     info.command = process.command;
+    info.program = process.program;
     info.workdir = process.workdir;
     info.running = process.running;
     info.killRequested = process.killRequested;
     info.killed = process.killed;
     info.timedOut = process.timedOut;
+    info.stopWithApp = process.stopWithApp;
     info.exitCode = process.exitCode;
     // A running record only has its start time: the monitor thread stamps the
     // final duration when it exits, so an in-flight one is measured now.
@@ -3242,10 +3347,44 @@ public size_t requestAllSupervisedProcessKills()
     return count;
 }
 
-/// Terminate every running supervised command synchronously. This is the app
-/// shutdown path: the monitor threads are daemons and may never get another
-/// slice, so waiting for them would leave the command tree running after the
-/// window closed. Returns how many process trees were terminated.
+/// Terminate the supervised commands that asked to stop with the app, and leave
+/// every other one running. A live server started from a launcher keeps serving
+/// after Aurora closes: only launches that opted in with `stopWithApp` are taken
+/// down. Returns how many process trees were terminated.
+public size_t stopAppBoundSupervisedProcesses()
+{
+    Pid[] pids;
+    size_t count;
+    synchronized (_processMutex)
+    {
+        foreach (process; _processes)
+        {
+            if (process is null || !process.running || !process.stopWithApp) continue;
+            // Same ordering as `killAllSupervisedProcesses`: stamp the outcome
+            // before signalling so the monitor cannot record an ordinary exit.
+            process.killRequested = true;
+            process.killed = true;
+            process.running = false;
+            process.exitCode = 1;
+            process.elapsedMs =
+                (MonoTime.currTime - process.startedAt).total!"msecs";
+            if (!process.stdinClosed)
+            {
+                collectException(process.input.close());
+                process.stdinClosed = true;
+            }
+            pids ~= process.pid;
+            ++count;
+        }
+    }
+    foreach (pid; pids) killProcessTree(pid);
+    return count;
+}
+
+/// Terminate every running supervised command synchronously. This is the explicit
+/// "stop everything" action (the card's Stop all), not the shutdown path: closing
+/// the app only stops the commands that asked for it. Returns how many process
+/// trees were terminated.
 public size_t killAllSupervisedProcesses()
 {
     Pid[] pids;

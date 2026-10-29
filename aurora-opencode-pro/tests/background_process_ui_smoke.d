@@ -13,12 +13,13 @@ import auroraopencode.core : OpenCodeToolCall, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
 import auroraopencode.tools : SupervisedProcessInfo, clearFinishedSupervisedProcesses,
     executeTool, installDeveloperToolSource, killAllSupervisedProcesses,
-    listSupervisedProcesses, restoreDeveloperToolSource;
+    listSupervisedProcesses, requestSupervisedProcessKill,
+    restoreDeveloperToolSource;
 import std.conv : to;
 import std.file : mkdirRecurse, tempDir, write;
 import std.path : absolutePath, buildPath;
 import std.stdio : writeln;
-import std.string : indexOf, startsWith, toLower;
+import std.string : indexOf, replace, startsWith, toLower;
 import std.utf : toUTF8;
 import core.thread : Thread;
 import core.time : msecs;
@@ -85,12 +86,14 @@ private string startBackground(string workspace, string json)
 /// A command that stays alive long enough to be seen and stopped. No workdir is
 /// passed: the tool defaults to the workspace, which keeps the payload free of
 /// Windows path escaping.
-private string longRunJson()
+private string longRunJson(int seconds = 120)
 {
     version (Windows)
-        return `{"program":"cmd.exe","args":["/d","/c","ping -n 120 127.0.0.1 >nul"],"background":true}`;
+        return `{"program":"cmd.exe","args":["/d","/c","ping -n ` ~
+            to!string(seconds) ~ ` 127.0.0.1 >nul"],"background":true}`;
     else
-        return `{"program":"/bin/sh","args":["-c","sleep 120"],"background":true}`;
+        return `{"program":"/bin/sh","args":["-c","sleep ` ~
+            to!string(seconds) ~ `"],"background":true}`;
 }
 
 private void waitForTermination(string id, string context)
@@ -329,7 +332,8 @@ int main()
 
     // Stop all covers several running commands.
     const first = startBackground(state, longRunJson());
-    const second = startBackground(state, longRunJson());
+    // A different command of the same program: distinct work, not a duplicate.
+    const second = startBackground(state, longRunJson(90));
     driver.moveTo(globalCenter(pill));
     waitUntil(root, driver,
         delegate() { return findById(root, "oc-processes-panel") !is null; },
@@ -351,18 +355,31 @@ int main()
         "Clear finished to drop both records");
     writeln("PASS Stop all terminates every running command");
 
-    // Shutdown path: a command still running when the app closes is terminated
-    // by the hook rather than becoming an orphan with nothing accounting for it.
-    const abandoned = startBackground(state, longRunJson());
-    assert(processById(abandoned).running);
+    // Closing the app must not take a live server down. A normal launch keeps
+    // running (a launcher-started service outlives the window); only a launch
+    // that opted in with `stopWithApp` is stopped on the way out.
+    const survivor = startBackground(state, longRunJson());
+    const appBound = startBackground(state, longRunJson(150).replace(
+        `"background":true`, `"background":true,"stopWithApp":true`));
+    assert(processById(survivor).running && processById(appBound).running,
+        "the shutdown pair did not start");
     root.shutdownClient();
-    const after = processById(abandoned);
-    assert(after.id.length > 0 && !after.running && after.state() == "killed",
-        "shutdown left a supervised background command running");
+    assert(processById(survivor).running,
+        "closing the app terminated a background command that should keep running");
+    const stopped = processById(appBound);
+    assert(stopped.id.length > 0 && !stopped.running &&
+        stopped.state() == "killed",
+        "an app-bound background command survived shutdown");
+    writeln("PASS closing the app keeps a live process and stops an app-bound one");
+    requestSupervisedProcessKill(survivor);
+    foreach (_; 0 .. 200)
+    {
+        if (!processById(survivor).running) break;
+        Thread.sleep(msecs(25));
+    }
+    assert(!processById(survivor).running, "the survivor could not be stopped");
     clearFinishedSupervisedProcesses();
-    assert(killAllSupervisedProcesses() == 0,
-        "shutdown kill reported commands when none were running");
-    writeln("PASS shutdown terminates a still-running background command");
+    writeln("PASS a service launch is only stopped when asked");
 
     window.close();
     writeln("background process UI smoke passed");

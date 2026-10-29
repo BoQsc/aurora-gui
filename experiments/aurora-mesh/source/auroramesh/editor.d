@@ -20,8 +20,8 @@ import auroramesh.reshape : RegionBox, RegionEdit, regionBox, regionVertices,
     reshapeBox, reshapeRegion;
 import auroramesh.regions : RegionKind, RegionVolume, deformRegion, regionMask,
     selectRegion;
-import auroramesh.remesh : addSdfShell, carveRegion, decimateTo,
-    replaceChecked, subdivideMesh;
+import auroramesh.remesh : appendMesh, carveRegion, decimateTo,
+    replaceChecked, sdfShell, subdivideMesh;
 import auroramesh.sdf : SdfField, SdfShape, ellipsoid, sphere, taper;
 import core.time : MonoTime;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
@@ -1773,9 +1773,13 @@ final class MeshEditor : Widget
     private Vec3 _shellLo = Vec3(0, 0, 0);
     private Vec3 _shellHi = Vec3(0, 0, 0);
     private int _shellFaces;
+    private string _meshWarning = "";
     // Replacements are state, not a one-off: the mesh is rebaked for every frame,
     // so each accepted replacement is replayed onto the fresh mesh.
     private JSONValue[] _replaceCommands;
+    // Meshed geometry is cached per replacement. Re-meshing an SDF field on every
+    // rebuild is expensive enough that a fine field silently failed to reappear.
+    private Mesh[] _replaceShells;
 
     private RegionVolume* activeRegion()
     {
@@ -1919,6 +1923,49 @@ final class MeshEditor : Widget
         }
     }
 
+    /// Widen the bounds a replacement may occupy to include its own region.
+    ///
+    /// The model's silhouette is the natural limit for a stray shape, but a
+    /// replacement that adds real volume is allowed to reach the edge of the region
+    /// it was given: a foot is longer than the stub it replaces.
+    private static void extendLimits(const RegionVolume region, ref Vec3 minimum,
+        ref Vec3 maximum)
+    {
+        Vec3 low;
+        Vec3 high;
+        if (region.kind == RegionKind.box)
+        {
+            low = Vec3(region.a.x < region.b.x ? region.a.x : region.b.x,
+                region.a.y < region.b.y ? region.a.y : region.b.y,
+                region.a.z < region.b.z ? region.a.z : region.b.z);
+            high = Vec3(region.a.x > region.b.x ? region.a.x : region.b.x,
+                region.a.y > region.b.y ? region.a.y : region.b.y,
+                region.a.z > region.b.z ? region.a.z : region.b.z);
+        }
+        else
+        {
+            const centre = region.kind == RegionKind.sphere ? region.a :
+                Vec3((region.a.x + region.b.x) * 0.5,
+                    (region.a.y + region.b.y) * 0.5,
+                    (region.a.z + region.b.z) * 0.5);
+            const stretch = region.kind == RegionKind.capsule ?
+                Vec3(abs(region.b.x - region.a.x) * 0.5,
+                    abs(region.b.y - region.a.y) * 0.5,
+                    abs(region.b.z - region.a.z) * 0.5) : Vec3(0, 0, 0);
+            const reach = region.radius;
+            low = Vec3(centre.x - stretch.x - reach,
+                centre.y - stretch.y - reach, centre.z - stretch.z - reach);
+            high = Vec3(centre.x + stretch.x + reach,
+                centre.y + stretch.y + reach, centre.z + stretch.z + reach);
+        }
+        minimum = Vec3(low.x < minimum.x ? low.x : minimum.x,
+            low.y < minimum.y ? low.y : minimum.y,
+            low.z < minimum.z ? low.z : minimum.z);
+        maximum = Vec3(high.x > maximum.x ? high.x : maximum.x,
+            high.y > maximum.y ? high.y : maximum.y,
+            high.z > maximum.z ? high.z : maximum.z);
+    }
+
     /// Apply one replacement, optionally recording it so it survives a rebake.
     private bool applyReplaceCommand(JSONValue command, bool record)
     {
@@ -1932,6 +1979,7 @@ final class MeshEditor : Widget
         auto candidate = cloneMesh(_mesh);
         const start = MonoTime.currTime();
         int changed;
+        Mesh producedShell;
         if (kind == "subdivide")
             changed = subdivideMesh(candidate,
                 cast(int) liveNumber(liveChild(command, "passes"), 1));
@@ -1966,26 +2014,41 @@ final class MeshEditor : Widget
                 _lastReplaceReason = "no region to place the shape";
                 return false;
             }
+            extendLimits(*region, minimum, maximum);
             SdfField field;
             readSdfShapes(liveChild(command, "shapes"), field.shapes);
             readSdfShapes(liveChild(command, "cuts"), field.cuts);
             field.blend = liveNumber(liveChild(command, "blend"),
                 field.blend);
-            changed = addSdfShell(candidate, *region, field,
+            producedShell = sdfShell(field,
                 liveNumber(liveChild(command, "cell"), 0.006), _shellLo,
-                _shellHi, _shellFaces);
+                _shellHi);
+            _shellFaces = cast(int) producedShell.faces.length;
+            changed = appendMesh(candidate, producedShell);
         }
-        _lastOpMs = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
+        const elapsed = (MonoTime.currTime() - start).total!"usecs" / 1000.0;
         // Commit only if the result is still a sound mesh.
         string reason;
+        string warning;
         const ok = changed != 0 &&
-            replaceChecked(_mesh, candidate, minimum, maximum, reason);
-        _lastReplaceOk = ok;
-        _lastReplaceReason = ok ? "ok" : (changed == 0 ?
-            "nothing to do" : reason);
-        _lastOp = kind;
+            replaceChecked(_mesh, candidate, minimum, maximum, reason, warning);
+        // Only a command from the file reports. A replay pass must not overwrite the
+        // outcome of the command the caller actually asked for, or a refused edit
+        // looks successful because a cheaper one was reapplied afterwards.
+        if (record)
+        {
+            _lastOpMs = elapsed;
+            _lastReplaceOk = ok;
+            _lastReplaceReason = ok ? "ok" : (changed == 0 ?
+                "nothing to do" : reason);
+            _lastOp = kind;
+            _meshWarning = ok ? warning : "";
+        }
         if (ok && record)
+        {
             _replaceCommands ~= command;
+            _replaceShells ~= producedShell;
+        }
         return ok;
     }
 
@@ -1994,15 +2057,29 @@ final class MeshEditor : Widget
     {
         if (_replaceCommands.length == 0)
             return;
-        foreach (command; _replaceCommands)
+        foreach (index, command; _replaceCommands)
+        {
+            // A cached shell is spliced straight on; only the cheap kinds re-run.
+            if (index < _replaceShells.length &&
+                _replaceShells[index].faces.length > 0)
+            {
+                const before = _mesh.faces.length;
+                appendMesh(_mesh, _replaceShells[index], 0);
+                if (_mesh.faces.length > before)
+                {
+                    _lastOp = "sdf";
+                    continue;
+                }
+            }
             applyReplaceCommand(command, false);
+        }
     }
 
     private void writeLiveAck()
     {
         try
             writeReport("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f,"regions":%d,"region":"%s","maskVerts":%d,"maskFaces":%d,"op":"%s","opMs":%.2f,"replaceOk":%s,"replaceReason":"%s","shellFaces":%d,"shellLo":[%.3f,%.3f,%.3f],"shellHi":[%.3f,%.3f,%.3f],"camTarget":[%.3f,%.3f,%.3f],"camYaw":%.3f,"camPitch":%.3f,"camDistance":%.3f}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f,"regions":%d,"region":"%s","maskVerts":%d,"maskFaces":%d,"op":"%s","opMs":%.2f,"replaceOk":%s,"replaceReason":"%s","shellFaces":%d,"shellLo":[%.3f,%.3f,%.3f],"shellHi":[%.3f,%.3f,%.3f],"camTarget":[%.3f,%.3f,%.3f],"camYaw":%.3f,"camPitch":%.3f,"camDistance":%.3f,"meshVerts":%d,"meshFaces":%d,"meshWarning":"%s"}`,
                 _liveRevision, _liveExtras.length, _poseOverrides.length,
                 jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
@@ -2031,7 +2108,9 @@ final class MeshEditor : Widget
                 jsonEscape(_lastReplaceReason), _shellFaces, _shellLo.x,
                 _shellLo.y, _shellLo.z, _shellHi.x, _shellHi.y, _shellHi.z,
                 _camera.target.x, _camera.target.y, _camera.target.z,
-                _camera.yaw, _camera.pitch, _camera.distance));
+                _camera.yaw, _camera.pitch, _camera.distance,
+                _mesh.vertices.length, _mesh.faces.length,
+                jsonEscape(_meshWarning)));
         catch (Exception)
         {
         }
@@ -2128,6 +2207,7 @@ final class MeshEditor : Widget
         {
             _liveExtras.length = 0;
             _replaceCommands.length = 0;
+            _replaceShells.length = 0;
             _reshapecs.length = 0;
             _regions = null;
             _activeRegion = "";

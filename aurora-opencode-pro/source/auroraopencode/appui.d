@@ -39,7 +39,7 @@ import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
     usageProviderForBaseUrl;
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, clearFinishedSupervisedProcesses, executeTool,
-    killAllSupervisedProcesses, listChangeRecords, listSupervisedProcesses,
+    listChangeRecords, listSupervisedProcesses, stopAppBoundSupervisedProcesses,
     nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
     previewToolDiffText, removeSupervisedProcess,
     requestAllSupervisedProcessKills, requestSupervisedProcessKill,
@@ -8682,7 +8682,9 @@ private final class BackgroundProcessPanel : Widget
             ["Command: " ~ item.command,
              "Folder: " ~ (item.workdir.length ? item.workdir :
                  "no working directory"),
-             item.id ~ " · " ~ item.state()]);
+             item.id ~ " · " ~ item.state(),
+             item.stopWithApp ? "Stops when Aurora closes"
+                 : "Keeps running after Aurora closes"]);
         auto root = popupRoot(this);
         if (root is null) return;
         if (_rowTip.parent() is null) root.add(_rowTip);
@@ -8711,7 +8713,9 @@ private final class BackgroundProcessPanel : Widget
     {
         if (_hoverRow < 0 || _hoverRow >= cast(int) _items.length) return "";
         const item = _items[cast(size_t) _hoverRow];
-        return "Command: " ~ item.command ~ "\nFolder: " ~ item.workdir;
+        return "Command: " ~ item.command ~ "\nFolder: " ~ item.workdir ~
+            "\n" ~ (item.stopWithApp ? "Stops when Aurora closes"
+                : "Keeps running after Aurora closes");
     }
 
     private void styleProcessButton(Button button, int width)
@@ -13414,14 +13418,14 @@ private string _suggestExcludeId;
     /// Test-only / shutdown hook: release the shared network session.
     public void shutdownClient()
     {
-        // Terminate every supervised background command first: the monitor
-        // threads are daemons and the window is already closing, so a command
-        // the agent left running would otherwise survive the app with nothing
-        // accounting for it. Records are kept so the run reported its outcome.
-        const terminated = killAllSupervisedProcesses();
+        // Only the commands that asked to stop with the app are terminated. A
+        // live server started from a launcher keeps serving after the window
+        // closes: closing Aurora must never take a service down by accident.
+        // `killAllSupervisedProcesses` stays the explicit Stop all action.
+        const terminated = stopAppBoundSupervisedProcesses();
         if (terminated > 0)
             logInfo("terminated " ~ to!string(terminated) ~
-                " supervised background process(es) on shutdown");
+                " app-bound supervised background process(es) on shutdown");
         // Persist on the way out regardless of the debounce flag: a reply that
         // arrived moments before the window closed is otherwise lost, which is
         // why the last message could vanish across a restart.

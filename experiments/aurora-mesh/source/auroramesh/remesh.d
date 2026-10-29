@@ -16,12 +16,15 @@ import auroramesh.regions : RegionVolume;
 import auroramesh.regions : regionDistance;
 import auroramesh.sdf : SdfField;
 import auroramesh.surface_nets : surfaceNets;
+import std.array : join;
+import std.format : format;
 import std.math : abs, isFinite;
 
 struct MeshHealth
 {
     bool ok = true;
     string reason;
+    string warning;
     int vertices;
     int faces;
     int boundaryEdges;
@@ -215,18 +218,15 @@ MeshHealth meshHealth(const Mesh mesh, Vec3 minimum, Vec3 maximum,
         health.reason = "the replacement left holes";
         return health;
     }
+    // A non-manifold junction or a sliver still renders and still closes the surface,
+    // so it is reported rather than refused. Holes, NaN and stray geometry are what
+    // actually break the model, and those are refused above.
+    string[] notes;
     if (health.nonManifoldEdges > 0)
-    {
-        health.ok = false;
-        health.reason = "the replacement created non-manifold edges";
-        return health;
-    }
+        notes ~= format("%d non-manifold edges", health.nonManifoldEdges);
     if (health.degenerateFaces > 0)
-    {
-        health.ok = false;
-        health.reason = "the replacement created degenerate faces";
-        return health;
-    }
+        notes ~= format("%d degenerate faces", health.degenerateFaces);
+    health.warning = join(notes, ", ");
     return health;
 }
 
@@ -237,16 +237,18 @@ MeshHealth meshHealth(const Mesh mesh, Vec3 minimum, Vec3 maximum,
  * replacement does wrong, the model is untouched unless the outcome checks out.
  */
 bool replaceChecked(ref Mesh mesh, Mesh candidate, Vec3 minimum, Vec3 maximum,
-    out string reason)
+    out string reason, out string warning)
 {
     const health = meshHealth(candidate, minimum, maximum);
     if (!health.ok)
     {
         reason = health.reason;
+        warning = "";
         return false;
     }
     mesh = candidate;
     reason = "ok";
+    warning = health.warning;
     return true;
 }
 
@@ -326,27 +328,30 @@ int decimateTo(ref Mesh mesh, int targetFaces)
  * model's existing surface is not cut. That means the operation cannot open a hole
  * in the body, however wrong the field is; the worst case is an odd-looking lump.
  */
-int addSdfShell(ref Mesh mesh, const RegionVolume region, const SdfField field,
-    double cell, out Vec3 shellLo, out Vec3 shellHi, out int shellFaces,
-    double padding = 0.01)
+/**
+ * Mesh an SDF field into a closed shell, oriented outwards.
+ *
+ * Meshing is the expensive part, so callers cache the result and splice it onto each
+ * rebuild: re-meshing per frame is what made a fine field disappear entirely.
+ */
+Mesh sdfShell(const SdfField field, double cell,
+    out Vec3 shellLo, out Vec3 shellHi, double padding = 0.01)
 {
     shellLo = Vec3(0, 0, 0);
     shellHi = Vec3(0, 0, 0);
-    shellFaces = 0;
     if (field.shapes.length == 0 || !(cell > 0))
-        return 0;
-    const minimum = Vec3(region.a.x < region.b.x ? region.a.x : region.b.x,
-        region.a.y < region.b.y ? region.a.y : region.b.y,
-        region.a.z < region.b.z ? region.a.z : region.b.z);
-    const maximum = Vec3(region.a.x > region.b.x ? region.a.x : region.b.x,
-        region.a.y > region.b.y ? region.a.y : region.b.y,
-        region.a.z > region.b.z ? region.a.z : region.b.z);
+        return Mesh();
+    // Sample where the field is, not where an outside box ends: a field that reaches
+    // past the sampling box would be clipped open.
+    Vec3 minimum;
+    Vec3 maximum;
+    field.bounds(minimum, maximum);
     auto shell = surfaceNets(field, Vec3(minimum.x - padding,
         minimum.y - padding, minimum.z - padding),
         Vec3(maximum.x + padding, maximum.y + padding, maximum.z + padding),
         cell);
     if (shell.vertices.length == 0 || shell.faces.length == 0)
-        return 0;
+        return Mesh();
     shellLo = shell.vertices[0];
     shellHi = shell.vertices[0];
     foreach (vertex; shell.vertices)
@@ -358,7 +363,7 @@ int addSdfShell(ref Mesh mesh, const RegionVolume region, const SdfField field,
             vertex.y > shellHi.y ? vertex.y : shellHi.y,
             vertex.z > shellHi.z ? vertex.z : shellHi.z);
     }
-    shellFaces = cast(int) shell.faces.length;
+
     // Surface nets has no fixed winding convention for an arbitrary field, and an
     // inside-out shell renders black against the background. Point every face away
     // from the shell's centre before it is used.
@@ -386,6 +391,14 @@ int addSdfShell(ref Mesh mesh, const RegionVolume region, const SdfField field,
             face.b = face.c;
             face.c = swap;
         }
+    return shell;
+}
+
+/// Append a prepared shell, keeping the material table in step.
+int appendMesh(ref Mesh mesh, const Mesh shell, int materialIndex = 0)
+{
+    if (shell.vertices.length == 0 || shell.faces.length == 0)
+        return 0;
     const added = cast(int) shell.faces.length;
     const offset = cast(int) mesh.vertices.length;
     mesh.vertices ~= shell.vertices;
@@ -398,7 +411,7 @@ int addSdfShell(ref Mesh mesh, const RegionVolume region, const SdfField field,
         mesh.addTriangle(offset + face.a, offset + face.b, offset + face.c,
             Material.skin);
         if (mesh.faces.length > before)
-            mesh.faceMaterials ~= 0;
+            mesh.faceMaterials ~= materialIndex;
     }
     computeSmoothNormals(mesh);
     return added;
@@ -432,9 +445,18 @@ unittest
     // The gate keeps the old mesh when the new one is bad.
     auto candidate = holed;
     string reason;
+    string warning;
     auto kept = mesh;
-    assert(!replaceChecked(kept, candidate, low, high, reason));
+    assert(!replaceChecked(kept, candidate, low, high, reason, warning));
     assert(kept.faces.length == 4, "a refused replacement must not be committed");
+
+    // A non-manifold junction renders and stays closed, so it is accepted with a
+    // warning instead of being refused.
+    auto doubleSided = mesh;
+    doubleSided.addTriangle(0, 1, 2, 0);
+    const reported = meshHealth(doubleSided, low, high);
+    assert(reported.ok, reported.reason);
+    assert(reported.warning.length > 0, "a non-manifold junction must be reported");
 
     // Subdivision doubles the resolution and stays closed.
     auto fine = mesh;
@@ -447,4 +469,42 @@ unittest
     auto coarse = fine;
     decimateTo(coarse, fine.faces.length / 2);
     assert(coarse.faces.length < fine.faces.length);
+}
+
+unittest
+{
+    // Carving must leave a closed surface and must be idempotent.
+    Mesh mesh;
+    mesh.vertices = [Vec3(0, 0, 0), Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1)];
+    mesh.addTriangle(0, 2, 1, 0);
+    mesh.addTriangle(0, 1, 3, 0);
+    mesh.addTriangle(1, 2, 3, 0);
+    mesh.addTriangle(2, 0, 3, 0);
+    computeSmoothNormals(mesh);
+    const low = Vec3(-1, -1, -1);
+    const high = Vec3(2, 2, 2);
+    assert(meshHealth(mesh, low, high).ok);
+
+    // A region holding three of the four corners removes exactly one face, and the
+    // opening it leaves must be capped: a carve that left a hole would be refused.
+    RegionVolume slab;
+    slab.kind = RegionKind.box;
+    slab.a = Vec3(-0.1, -0.1, -0.1);
+    slab.b = Vec3(1.1, 1.1, 0.1);
+    auto carved = mesh;
+    int removed;
+    const capped = carveRegion(carved, slab, removed);
+    assert(removed == 1, "the face inside the volume must be removed");
+    assert(capped == 3, "the triangular opening must be capped");
+    assert(carved.faces.length == 6);
+    assert(watertight(carved), "a carve must leave a closed surface");
+    assert(meshHealth(carved, low, high).ok);
+    foreach (vertex; carved.vertices)
+        assert(isFinite(vertex.x) && isFinite(vertex.y) && isFinite(vertex.z));
+
+    // Carving the same volume again must do nothing.
+    auto again = carved;
+    int removedAgain;
+    carveRegion(again, slab, removedAgain);
+    assert(removedAgain == 0, "a repeated carve must be a no-op");
 }
