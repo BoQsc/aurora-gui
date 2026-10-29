@@ -1,0 +1,94 @@
+{
+  "name": "HumanSnapKick",
+  "description": "The RightSnapKick motion retargeted onto the CC0 reference human rig. Same world-axis keys, but the arms are left alone so the rifle stays in both hands, and the socketed AK47 follows the spine lean through 'follow'.",
+  "scene": "build/full-scene-copy.glb",
+  "fps": 30,
+  "duration": 1.2,
+  "loop": true,
+  "additive": false,
+  "checks": {
+    "comment": "the reference body is a self-intersecting game asset (thousands of baseline pairs), so new-pair collisions cannot be judged on it; frame validity and grip drift still are",
+    "collisions": false
+  },
+  "grip": {
+    "pivotNode": "Spine2",
+    "socketNode": "AK47_Mount"
+  },
+  "follow": [
+    {
+      "comment": "keep the rifle rigid with the chest as the torso leans back",
+      "node": "AK47_Mount",
+      "target": "Spine2"
+    }
+  ],
+  "watch": {
+    "node": "RightFoot",
+    "minTravel": 0.4
+  },
+  "tracks": [
+    {
+      "node": "RightUpLeg",
+      "comment": "hip flexion: negative world X swings the thigh forward and up",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.15, "worldAxis": "x", "angle": -22.0},
+        {"time": 0.3, "worldAxis": "x", "angle": -62.0},
+        {"time": 0.42, "worldAxis": "x", "angle": -68.0},
+        {"time": 0.5, "worldAxis": "x", "angle": -72.0},
+        {"time": 0.58, "worldAxis": "x", "angle": -62.0},
+        {"time": 0.75, "worldAxis": "x", "angle": -30.0},
+        {"time": 0.95, "worldAxis": "x", "angle": -7.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "RightLeg",
+      "comment": "knee: folded in the chamber, straight at impact",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.15, "worldAxis": "x", "angle": 32.0},
+        {"time": 0.3, "worldAxis": "x", "angle": 68.0},
+        {"time": 0.42, "worldAxis": "x", "angle": 12.0},
+        {"time": 0.5, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.58, "worldAxis": "x", "angle": 14.0},
+        {"time": 0.75, "worldAxis": "x", "angle": 44.0},
+        {"time": 0.95, "worldAxis": "x", "angle": 10.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "RightFoot",
+      "comment": "ankle: relaxed in the chamber, pointed through the strike",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "x", "angle": 10.0},
+        {"time": 0.5, "worldAxis": "x", "angle": 20.0},
+        {"time": 0.58, "worldAxis": "x", "angle": 8.0},
+        {"time": 0.75, "worldAxis": "x", "angle": 0.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "Spine",
+      "comment": "counterbalance lean; the rifle follows this",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "x", "angle": -3.0},
+        {"time": 0.5, "worldAxis": "x", "angle": -5.0},
+        {"time": 0.75, "worldAxis": "x", "angle": -2.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "Spine2",
+      "comment": "a little more lean at the top of the spine",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "x", "angle": -2.0},
+        {"time": 0.5, "worldAxis": "x", "angle": -4.0},
+        {"time": 0.75, "worldAxis": "x", "angle": -1.5},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    }
+  ]
+}

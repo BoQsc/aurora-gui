@@ -19,7 +19,8 @@ import std.stdio : File;
 import core.stdc.stdio : SEEK_END;
 import auroraopencode.core : ChatMessage, ChatSession, OpenCodeToolCall,
     readTaskContract,
-    ChatImageAttachment, TaskStep, ensureMessageGraph, nestedPlansFromJson;
+    ChatImageAttachment, TaskStep, ensureMessageGraph, goalHistoryFromJson,
+    nestedPlansFromJson;
 
 public enum AgentEventKind
 {
@@ -573,6 +574,8 @@ private void applyThreadPayload(ref ChatSession session, JSONValue payload)
         if (f.type == JSONType.integer) session.goalStartedAt = f.integer;
     if (auto f = "goalTurns" in payload.object)
         if (f.type == JSONType.integer) session.goalTurns = cast(int) f.integer;
+    if (auto f = "goalHistory" in payload.object)
+        session.goalHistory = goalHistoryFromJson(*f);
     if (auto f = "taskStatus" in payload.object)
         if (f.type == JSONType.string) session.taskStatus = f.str;
     if (auto f = "turnStatus" in payload.object)

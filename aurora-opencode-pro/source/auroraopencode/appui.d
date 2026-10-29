@@ -92,7 +92,8 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
     taskBlockerError, taskInputError, taskAwaitingInput, proactiveActionGuidance;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
     clampGoalText, goalCompletionError, goalContinuationInstruction,
-    goalPromptBlock, maxGoalLength, maxGoalTurns, parseGoalCommand;
+    goalPromptBlock, maxGoalLength, maxGoalTurns, parseGoalCommand,
+    recordGoalOutcome, recordGoalSet, syncGoalHistory;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine;
@@ -8083,15 +8084,18 @@ private final class GoalBar : Widget
     private Button _edit;
     private Button _toggle;
     private Button _clear;
+    private Button _history;
     private Button _save;
     private Button _cancel;
     private string _goal;
     private string _status;
+    private size_t _historyCount;
     private bool _editing;
 
     void delegate(string text) onCommit;
     void delegate() onToggle;
     void delegate() onClear;
+    void delegate() onHistory;
 
     this()
     {
@@ -8127,6 +8131,9 @@ private final class GoalBar : Widget
         _clear = goalButton("oc-goal-clear", "Clear", buttonWidth);
         _clear.onClick = delegate() { if (onClear !is null) onClear(); };
         add(_clear);
+        _history = goalButton("oc-goal-history", "History", buttonWidth);
+        _history.onClick = delegate() { if (onHistory !is null) onHistory(); };
+        add(_history);
         _save = goalButton("oc-goal-save", "Save", buttonWidth);
         _save.onClick = delegate() { commit(); };
         add(_save);
@@ -8160,12 +8167,13 @@ private final class GoalBar : Widget
             child.layoutHints().preferredWidth));
     }
 
-    void setState(string goal, string status)
+    void setState(string goal, string status, size_t historyCount = 0)
     {
         const goalChanged = goal != _goal;
         const statusChanged = status != _status;
         _goal = goal;
         _status = status;
+        _historyCount = historyCount;
         if (goalChanged || statusChanged)
         {
             _editing = false;
@@ -8179,6 +8187,16 @@ private final class GoalBar : Widget
     {
         _editing = true;
         _editor.setText(_goal, false);
+        updateControls();
+        _editor.requestFocus();
+        invalidate();
+    }
+
+    /// Bring a historical goal back into the editor without activating it.
+    void editText(string text)
+    {
+        _editing = true;
+        _editor.setText(text, false);
         updateControls();
         _editor.requestFocus();
         invalidate();
@@ -8235,6 +8253,7 @@ private final class GoalBar : Widget
         _edit.setVisible(!_editing);
         _toggle.setVisible(!_editing && hasGoal);
         _clear.setVisible(!_editing && hasGoal);
+        _history.setVisible(!_editing && _historyCount > 0);
         _save.setVisible(_editing);
         _cancel.setVisible(_editing);
         _toggle.setText(_status == "active" ? "Stop" : "Start");
@@ -8284,6 +8303,7 @@ private final class GoalBar : Widget
         }
         else
         {
+            placeRight(_history);
             placeRight(_clear);
             placeRight(_toggle);
             placeRight(_edit);
@@ -14242,6 +14262,7 @@ private string _suggestExcludeId;
         _goalBar.onCommit = delegate(string text) { saveGoalEdit(text); };
         _goalBar.onToggle = delegate() { toggleGoal(); };
         _goalBar.onClear = delegate() { clearGoal(); };
+        _goalBar.onHistory = delegate() { showGoalHistory(); };
         _goalCenter = new CenteredColumn(_goalBar, opencodeContentMaxWidth);
         _goalCenter.setId("oc-goal-center");
         // The split pane lays children out from hints instead of measuring the
@@ -15527,6 +15548,7 @@ private string _suggestExcludeId;
         payload["goalStatus"] = session.goalStatus;
         payload["goalStartedAt"] = session.goalStartedAt;
         payload["goalTurns"] = session.goalTurns;
+        payload["goalHistory"] = goalHistoryToJson(session.goalHistory);
         payload["taskStatus"] = session.taskStatus;
         payload["turnStatus"] = session.turnStatus;
         payload["verificationStatus"] = session.verificationStatus;
@@ -21173,7 +21195,8 @@ private void pollButtonSuggestionRequest()
             return;
         }
         const session = _sessions[_current];
-        _goalBar.setState(session.goal, session.goalStatus);
+        _goalBar.setState(session.goal, session.goalStatus,
+            session.goalHistory.length);
     }
 
     /// Reset the model-owned task projection when the user replaces the goal.
@@ -21227,6 +21250,7 @@ private void pollButtonSuggestionRequest()
         session.goalTurns = 0;
         session.updatedAt = session.goalStartedAt;
         if (changed) resetTaskForNewGoal(*session);
+        recordGoalSet(*session, session.goalStartedAt);
         if (session.title.length == 0 || session.title == "New chat")
         {
             session.title = chatTitle(text);
@@ -21282,6 +21306,7 @@ private void pollButtonSuggestionRequest()
         if (session.goalTurns >= maxGoalTurns)
         {
             session.goalStatus = "paused";
+            recordGoalOutcome(*session, "paused", Clock.currTime.toUnixTime());
             publishThreadUpdated(*session);
             markDirty();
             updateGoalBar();
@@ -21318,6 +21343,7 @@ private void pollButtonSuggestionRequest()
         auto session = &_sessions[_current];
         if (session.goal.length == 0) return;
         session.goalStatus = "paused";
+        recordGoalOutcome(*session, "paused", Clock.currTime.toUnixTime());
         publishThreadUpdated(*session);
         markDirty();
         updateGoalBar();
@@ -21340,8 +21366,10 @@ private void pollButtonSuggestionRequest()
             return;
         }
         session.goalStatus = "active";
-        session.goalStartedAt = Clock.currTime.toUnixTime();
+        const now = Clock.currTime.toUnixTime();
+        if (session.goalStartedAt == 0) session.goalStartedAt = now;
         session.goalTurns = 0;
+        recordGoalOutcome(*session, "active", now);
         if (session.taskStatus == "waiting_input") session.taskStatus = "active";
         publishThreadUpdated(*session);
         markDirty();
@@ -21377,6 +21405,7 @@ private void pollButtonSuggestionRequest()
         auto session = &_sessions[_current];
         if (session.goal.length == 0) return;
         const removed = session.goal;
+        recordGoalOutcome(*session, "cleared", Clock.currTime.toUnixTime());
         session.goal = "";
         session.goalStatus = "";
         session.goalStartedAt = 0;
@@ -21386,6 +21415,62 @@ private void pollButtonSuggestionRequest()
         markDirty();
         updateGoalBar();
         updateStatus("Goal cleared.");
+    }
+
+    private static string goalHistoryLabel(const ref GoalHistoryEntry entry)
+    {
+        string outcome;
+        switch (entry.outcome)
+        {
+            case "active": outcome = "Active"; break;
+            case "paused": outcome = "Paused"; break;
+            case "completed": outcome = "Completed"; break;
+            case "cleared": outcome = "Cleared"; break;
+            case "replaced": outcome = "Replaced"; break;
+            default: outcome = entry.outcome.length ? entry.outcome : "Active";
+        }
+        const when = entry.startedAt > 0
+            ? sessionActivityTimeLabel(entry.startedAt) : "";
+        auto units = toUTF32(entry.text);
+        const excerpt = units.length <= 80 ? entry.text
+            : toUTF8(units[0 .. 77]) ~ "...";
+        return outcome ~ (when.length ? " · " ~ when : "") ~ " · " ~ excerpt;
+    }
+
+    /// Show the append-only goal history for this conversation. Selecting an
+    /// older goal loads its text into the editor without silently reactivating it.
+    private void showGoalHistory()
+    {
+        if (_current < 0 || _current >= cast(int) _sessions.length) return;
+        const session = _sessions[_current];
+        if (!session.goalHistory.length)
+        {
+            updateStatus("No goal history yet.");
+            return;
+        }
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command(
+            "Goal history · " ~ to!string(session.goalHistory.length) ~ " saved",
+            delegate() {}, "", false);
+        items ~= ContextMenuItem.separatorItem();
+        const shown = session.goalHistory.length < 20
+            ? session.goalHistory.length : cast(size_t) 20;
+        if (shown < session.goalHistory.length)
+            items ~= ContextMenuItem.command(
+                "Showing latest " ~ to!string(shown) ~ " of " ~
+                to!string(session.goalHistory.length), delegate() {}, "", false);
+        for (size_t offset = 0; offset < shown; ++offset)
+        {
+            const entry = session.goalHistory[
+                session.goalHistory.length - 1 - offset];
+            const entryText = entry.text;
+            items ~= ContextMenuItem.command(goalHistoryLabel(entry),
+                delegate()
+                {
+                    if (_goalBar !is null) _goalBar.editText(entryText);
+                });
+        }
+        showContextMenuBelow(_goalBar, items);
     }
 
     private bool handleGoalCommand(string text)
@@ -21434,6 +21519,7 @@ private void pollButtonSuggestionRequest()
         try summary = parseJSON(arguments)["summary"].str;
         catch (Exception) {}
         session.goalStatus = "completed";
+        recordGoalOutcome(session, "completed", Clock.currTime.toUnixTime());
         session.goalTurns = 0;
         session.taskStatus = "completed";
         publishThreadUpdated(session);
@@ -21446,6 +21532,7 @@ private void pollButtonSuggestionRequest()
     {
         if (session.goal.length == 0 || session.goalStatus != "active") return;
         session.goalStatus = "paused";
+        recordGoalOutcome(session, "paused", Clock.currTime.toUnixTime());
     }
 
     private void sendMessage(bool allowSideQuestion = true)
@@ -28258,6 +28345,7 @@ private void pollButtonSuggestionRequest()
         copy.goalStatus = source.goalStatus == "active" ? "paused" : source.goalStatus;
         copy.goalStartedAt = source.goalStartedAt;
         copy.goalTurns = source.goalTurns;
+        copy.goalHistory = source.goalHistory.dup;
         copy.taskStatus = source.taskStatus;
         copy.turnStatus = source.turnStatus;
         copy.verificationStatus = source.verificationStatus;
@@ -28352,6 +28440,7 @@ private void pollButtonSuggestionRequest()
         copy.goalStatus = source.goalStatus == "active" ? "paused" : source.goalStatus;
         copy.goalStartedAt = source.goalStartedAt;
         copy.goalTurns = source.goalTurns;
+        copy.goalHistory = source.goalHistory.dup;
         copy.taskStatus = source.taskStatus;
         // The copy starts idle: the compaction request below must not resume a
         // turn the source happened to leave running.
@@ -29590,6 +29679,8 @@ private void pollButtonSuggestionRequest()
                 root["goalStartedAt"] = session.goalStartedAt;
             if (session.goalTurns > 0) root["goalTurns"] = session.goalTurns;
         }
+        if (session.goalHistory.length > 0)
+            root["goalHistory"] = goalHistoryToJson(session.goalHistory);
         if (session.taskStatus.length > 0)
             root["taskStatus"] = session.taskStatus;
         if (session.turnStatus.length > 0)
@@ -29956,6 +30047,8 @@ private void pollButtonSuggestionRequest()
             if (field.type == JSONType.integer) session.goalStartedAt = field.integer;
         if (auto field = "goalTurns" in sessionValue.object)
             if (field.type == JSONType.integer) session.goalTurns = cast(int) field.integer;
+        if (auto field = "goalHistory" in sessionValue.object)
+            session.goalHistory = goalHistoryFromJson(*field);
         if (auto field = "taskStatus" in sessionValue.object)
             session.taskStatus = field.str;
         if (auto field = "turnStatus" in sessionValue.object)
@@ -30462,6 +30555,8 @@ private void pollButtonSuggestionRequest()
                         if (auto field = "goalTurns" in sessionValue.object)
                             if (field.type == JSONType.integer)
                                 session.goalTurns = cast(int) field.integer;
+                        if (auto field = "goalHistory" in sessionValue.object)
+                            session.goalHistory = goalHistoryFromJson(*field);
                         if (auto field = "taskStatus" in sessionValue.object)
                             session.taskStatus = field.str;
                         if (auto field = "turnStatus" in sessionValue.object)
@@ -30696,8 +30791,12 @@ private void pollButtonSuggestionRequest()
         // messages before the merge compared them, so the same file loaded
         // twice looked like two different conversations and was duplicated.
         bool imageHistoryChanged;
+        bool goalHistoryChanged;
         foreach (ref session; _sessions)
         {
+            const historyBefore = session.goalHistory.length;
+            syncGoalHistory(session, Clock.currTime.toUnixTime());
+            goalHistoryChanged |= session.goalHistory.length != historyBefore;
             imageHistoryChanged |= repairRestoredParentLinks(session);
             ensureMessageGraph(session);
             if (session.turnStatus == "interrupted") imageHistoryChanged |= recordInterruptedReads(session);
@@ -30759,7 +30858,7 @@ private void pollButtonSuggestionRequest()
             markDirty();
         }
         restorePhase("selection + message column");
-        if (imageHistoryChanged) markDirty();
+        if (imageHistoryChanged || goalHistoryChanged) markDirty();
         refreshUsageBadge();
         // Migration: this path only runs when no per-conversation store exists
         // yet and every conversation is in memory, so write the index and
@@ -30844,6 +30943,7 @@ private void pollButtonSuggestionRequest()
             const oldGoalStatus = existing.goalStatus;
             const oldGoalStartedAt = existing.goalStartedAt;
             const oldGoalTurns = existing.goalTurns;
+            const oldGoalHistory = existing.goalHistory;
             const replace = session.messages.length > existing.messages.length;
             if (replace)
                 existing = session;
@@ -30859,6 +30959,8 @@ private void pollButtonSuggestionRequest()
                 existing.goalStartedAt = oldGoalStartedAt;
                 existing.goalTurns = oldGoalTurns;
             }
+            if (existing.goalHistory.length < oldGoalHistory.length)
+                existing.goalHistory = oldGoalHistory.dup;
             // Keep the most recent activity stamp across merged snapshots, so a
             // more complete copy saved earlier does not pull the conversation
             // back down the recency list.
@@ -31132,6 +31234,8 @@ private void pollButtonSuggestionRequest()
                 existing.goalStartedAt = recovered.goalStartedAt;
                 existing.goalTurns = recovered.goalTurns;
             }
+            if (recovered.goalHistory.length >= existing.goalHistory.length)
+                existing.goalHistory = recovered.goalHistory.dup;
             if (recovered.taskStatus.length > 0)
                 existing.taskStatus = recovered.taskStatus;
             if (recovered.turnStatus.length > 0)
@@ -32437,6 +32541,8 @@ private void pollButtonSuggestionRequest()
         _sessions[_current].goalStartedAt = goal.length
             ? Clock.currTime.toUnixTime() : 0;
         _sessions[_current].goalTurns = 0;
+        if (goal.length) recordGoalSet(_sessions[_current],
+            _sessions[_current].goalStartedAt);
         publishThreadUpdated(_sessions[_current]);
         markDirty();
         updateGoalBar();
@@ -32450,6 +32556,24 @@ private void pollButtonSuggestionRequest()
     public string goalStatusForTesting() const
     {
         return _current < 0 ? "" : _sessions[_current].goalStatus;
+    }
+
+    public string[] goalHistoryTextsForTesting() const
+    {
+        string[] result;
+        if (_current < 0) return result;
+        foreach (entry; _sessions[_current].goalHistory)
+            result ~= entry.text;
+        return result;
+    }
+
+    public string[] goalHistoryOutcomesForTesting() const
+    {
+        string[] result;
+        if (_current < 0) return result;
+        foreach (entry; _sessions[_current].goalHistory)
+            result ~= entry.outcome;
+        return result;
     }
 
     public int goalTurnsForTesting() const

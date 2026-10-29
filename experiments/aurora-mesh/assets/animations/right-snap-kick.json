@@ -1,0 +1,100 @@
+{
+  "name": "RightSnapKick",
+  "description": "Right front snap kick on the generated rig fixture: chamber, snap, retract, recover. The support leg and hips are untouched so the planted foot never slides; the spine leans back and the arms open for balance.",
+  "fps": 30,
+  "duration": 1.2,
+  "loop": true,
+  "additive": false,
+  "watch": {
+    "comment": "the kicking foot must travel well forward of its rest position",
+    "node": "RightFoot",
+    "minTravel": 0.5
+  },
+  "tracks": [
+    {
+      "node": "RightUpLeg",
+      "comment": "hip flexion: negative world X swings the thigh forward and up",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.15, "worldAxis": "x", "angle": -25.0},
+        {"time": 0.3, "worldAxis": "x", "angle": -70.0},
+        {"time": 0.42, "worldAxis": "x", "angle": -75.0},
+        {"time": 0.5, "worldAxis": "x", "angle": -80.0},
+        {"time": 0.58, "worldAxis": "x", "angle": -70.0},
+        {"time": 0.75, "worldAxis": "x", "angle": -35.0},
+        {"time": 0.95, "worldAxis": "x", "angle": -8.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "RightLeg",
+      "comment": "knee: folded in the chamber, straight at impact",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.15, "worldAxis": "x", "angle": 35.0},
+        {"time": 0.3, "worldAxis": "x", "angle": 75.0},
+        {"time": 0.42, "worldAxis": "x", "angle": 10.0},
+        {"time": 0.5, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.58, "worldAxis": "x", "angle": 15.0},
+        {"time": 0.75, "worldAxis": "x", "angle": 50.0},
+        {"time": 0.95, "worldAxis": "x", "angle": 12.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "RightFoot",
+      "comment": "ankle: relaxed in the chamber, pointed through the strike",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "x", "angle": 12.0},
+        {"time": 0.5, "worldAxis": "x", "angle": 22.0},
+        {"time": 0.58, "worldAxis": "x", "angle": 10.0},
+        {"time": 0.75, "worldAxis": "x", "angle": 0.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "Spine",
+      "comment": "counterbalance: the chest leans back as the leg drives forward",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "x", "angle": -4.0},
+        {"time": 0.5, "worldAxis": "x", "angle": -7.0},
+        {"time": 0.75, "worldAxis": "x", "angle": -3.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "Spine2",
+      "comment": "a little more lean at the top of the spine",
+      "keys": [
+        {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "x", "angle": -3.0},
+        {"time": 0.5, "worldAxis": "x", "angle": -5.0},
+        {"time": 0.75, "worldAxis": "x", "angle": -2.0},
+        {"time": 1.2, "worldAxis": "x", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "LeftArm",
+      "comment": "arms open for balance, left outboard on positive world Z",
+      "keys": [
+        {"time": 0.0, "worldAxis": "z", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "z", "angle": 14.0},
+        {"time": 0.5, "worldAxis": "z", "angle": 20.0},
+        {"time": 0.75, "worldAxis": "z", "angle": 8.0},
+        {"time": 1.2, "worldAxis": "z", "angle": 0.0}
+      ]
+    },
+    {
+      "node": "RightArm",
+      "keys": [
+        {"time": 0.0, "worldAxis": "z", "angle": 0.0},
+        {"time": 0.3, "worldAxis": "z", "angle": -14.0},
+        {"time": 0.5, "worldAxis": "z", "angle": -20.0},
+        {"time": 0.75, "worldAxis": "z", "angle": -8.0},
+        {"time": 1.2, "worldAxis": "z", "angle": 0.0}
+      ]
+    }
+  ]
+}

@@ -101,7 +101,8 @@ private string fixed(double value)
     return format("%.6g", value);
 }
 
-private ubyte[] buildGlb(string json, ubyte[] binary)
+/** Wrap a glTF JSON document and binary buffer into a GLB container. */
+ubyte[] buildGlb(string json, ubyte[] binary)
 {
     while (json.length % 4 != 0)
         json ~= " ";

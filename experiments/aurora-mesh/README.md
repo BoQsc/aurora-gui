@@ -26,6 +26,7 @@ aurora-mesh.exe --check
 aurora-mesh.exe --render build/human.ppm --width 1100 --height 800
 aurora-mesh.exe --export-obj build/human.obj
 aurora-mesh.exe --export-glb build/human.glb
+aurora-mesh.exe --export-rig build/rig.glb
 aurora-mesh.exe --screenshot build/editor.ppm --width 1400 --height 860
 aurora-mesh.exe --obj mesh.obj
 aurora-mesh.exe --glb mesh.glb
@@ -191,6 +192,14 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   `Space` plays/pauses it, `N` restarts it, and `[` / `]` scrub it.
   `additive: true` treats the rotations as deltas on the base GLB clip instead
   of replacing the base pose.
+  A key may carry `"worldAxis": "x" | "y" | "z"` (or a 3-number vector) plus
+  `"angle"` in degrees instead of a quaternion. The editor resolves the axis in
+  the bone's base pose and keeps its rest orientation, in both replace and
+  additive clips, so a key means "spin this bone about a world axis" exactly.
+  `"follow": [{"node": "AK47_Mount", "target": "Spine2"}]` generates the socket
+  track from a world-axis target track: the socket rotates with the target and
+  orbits its pivot about it, which keeps a socketed prop rigidly in the hands.
+  Follow needs replace-mode clips and world-axis keys on the target.
 - `check` reruns the collision audit at the current pose.
 - `frame` sets a frame number (1/30-second steps) and pauses; `pause` pauses.
 - `keyframe` inserts/replaces a keyframe at the current (or supplied) time:
@@ -203,6 +212,9 @@ applying a revision. Edits are rebuilt in the viewport immediately.
   distance, limb/torso proximity hits, and `awarenessValid`.
 - `inspect-bone` writes `build/bone-info.json` with the named bone’s world
   position and world-space X/Y/Z axes. Use this before authoring a rotation.
+- `list-bones` writes `build/bones.json` with every node's index, name, parent,
+  child count, deform-joint flag, world position, and world X/Y/Z axes at the
+  current pose. Dump it once before authoring to see what the rig offers.
 - `pose-axis` applies a rotation around a named local axis (`x`, `y`, or `z`)
   instead of a guessed quaternion.
 - `capture` writes the current viewport to a PPM without changing window focus:
@@ -210,6 +222,13 @@ applying a revision. Edits are rebuilt in the viewport immediately.
 - `scan-frames` accepts `"collisions": true` to run full triangle self-intersection
   checks per frame, excluding the baseline collision keys.
 - `clear` removes pose overrides and live objects.
+
+Reports (`live-ack.json`, `live-audit.json`, `live-frames.json`,
+`bones.json`, `bone-info.json`) are rewritten through a temporary file and
+rename and escape every string, so a poller never parses a half-written or
+invalid file, even with absolute Windows paths. A tick holds a mutex, so the
+window callback and the headless driver thread cannot interleave authoring,
+baking, scanning, and reporting.
 
 The acknowledgement separates `baselineCollisions` (same-frame base animation
 overlap) from `collisions` (new animation/object overlap), and includes
@@ -225,6 +244,55 @@ Objects are procedural or OBJ, poses are node-local overrides, and edits are
 not serialized back into a live skinned scene. GLB scene injection, CSG, undo
 transactions, and a live scene graph/network protocol are the next production
 steps.
+
+## Animation clips
+
+Authored clips live in `assets/animations/*.json` as declarative data, so they
+can be reviewed, diffed, and replayed without the editor UI:
+
+```json
+{
+  "name": "RightSnapKick", "fps": 30, "duration": 1.2, "loop": true,
+  "watch": {"node": "RightFoot", "minTravel": 0.5},
+  "tracks": [
+    {"node": "RightUpLeg", "keys": [
+      {"time": 0.0, "worldAxis": "x", "angle": 0.0},
+      {"time": 0.3, "worldAxis": "x", "angle": -70.0}
+    ]}
+  ]
+}
+```
+
+Optional blocks: `follow` (socket generation), `grip`
+(`pivotNode`/`socketNode` for the hand-drift check), `watch` (a node that must
+travel at least `minTravel` metres), `scene` (a rig other than the fixture), and
+`checks` (`{"collisions": false}` for assets whose base mesh already
+self-intersects).
+
+`tests/replay_clip.py` wraps a clip into a live revision, scans every frame with
+collision checks, reads `build/live-frames.json`, renders a frame sheet, and
+fails on any invalid frame, collision pair, limb hit, bounds problem, short
+motion, or grip drift. `tests/probe_joint_limits.py` sweeps one joint to report
+the angle range that stays collision free, which is what a kick or lift should
+be designed against.
+
+`RightSnapKick` is a 36-frame right front snap kick: chamber, snap, retract, and
+recover. It changes only the kicking leg, the spine lean, and the arms, so the
+support foot stays exactly planted and the hips never slide.
+
+## Rig fixture
+
+`--export-rig build/rig.glb` writes a 732-vertex, 1,388-face, 20-joint skinned mannequin
+with standard bone names (`Hips`, `Spine`, `Spine2`, `Neck`, `Head`,
+`Left/RightShoulder`, `Arm`, `ForeArm`, `Hand`, `UpLeg`, `Leg`, `Foot`). Every
+vertex is rigidly bound to one bone, so the fixture has no weights to debug and
+the rest pose has no self-intersections.
+
+Its segments are tapered with a pinched cap at each joint, and the cap radius is
+smaller than the joint inset. Two caps therefore stay apart at every bend angle,
+which is why a knee can fold past 110 degrees without a false collision report.
+That makes the fixture a reproducible target for animation tests without the
+72 MB reference asset.
 
 ## Remaining gaps
 
@@ -242,6 +310,9 @@ steps.
 - Missing asset forms/compression: arbitrary GLB scene injection, Draco,
   BasisU/KTX2, meshopt, quantization
   extensions, and external URI images/buffers.
+- Authored clips are data, not glTF animation: there is no writer that injects a
+  live-authored clip back into a GLB animation, so a clip ships as JSON plus the
+  rig it was authored for.
 - Full scene authoring is absent. Loaded scenes support pass-through save and
   baked static export, but edited hierarchies, skins, animations, and morphs
   cannot be serialized back as a live scene.
@@ -262,6 +333,7 @@ steps.
 - `assets/PROVENANCE.md` — CC0 reference provenance and repair steps.
 - `source/auroramesh/glb.d` — GLB 2.0 container, accessor, node-transform, and material I/O.
 - `source/auroramesh/gltf_scene.d` — full scene import, textures, skinning, morphs, and animation baking.
+- `source/auroramesh/rig_fixture.d` — skinned test mannequin generator and its GLB writer.
 - `source/auroramesh/live.d` — owned procedural live-authoring objects.
 - `source/auroramesh/camera.d` — orbit camera, perspective projection, and the
   near-plane constant.
@@ -271,6 +343,10 @@ steps.
   brush selection, ray/mesh queries, and constrained screen drag.
 - `source/auroramesh/editor.d` — Aurora viewport and editor chrome.
 - `source/auroramesh/main.d` — CLI and GUI entry point.
+- `assets/animations/` — authored clips (`right-snap-kick.json`, `rifle-ready-idle.json`).
+- `tests/replay_clip.py` — replays a clip through the live protocol and audits every frame.
+- `tests/probe_joint_limits.py` — sweeps a joint to report its collision-free range.
+- `tests/test_animation_clip.py` — structural checks for the clip assets.
 
 ## Verify
 
@@ -279,6 +355,10 @@ dub test
 aurora-mesh.exe --check
 aurora-mesh.exe --render build/human.ppm
 aurora-mesh.exe --screenshot build/editor.ppm
+aurora-mesh.exe --export-rig build/rig.glb
+python -B tests/test_animation_clip.py
+python -u tests/replay_clip.py --clip assets/animations/right-snap-kick.json
+python -u tests/replay_clip.py --clip assets/animations/rifle-ready-idle.json
 ```
 
 `--check` validates indices, bounds, OBJ round-trip, watertightness, and edge
@@ -286,6 +366,12 @@ counts. `dub test` covers v1/v2/v3 generation, SDF primitives, sculpting,
 GLB/OBJ I/O, projection, picking and brush visibility, near-plane clipping,
 perspective-correct texturing, backface culling versus `doubleSided`, and
 axis-locked drag math.
+
+The clip replays are the animation gate: they assert zero invalid frames, zero
+new collision pairs, zero limb hits, valid awareness, a minimum watched-node
+travel, and (for socketed props) under 3 mm of grip drift. The fixture replay
+runs anywhere; the reference-rig replay reports itself as skipped when
+`build/full-scene-copy.glb` is absent, because that asset is user supplied.
 
 This first editor intentionally does not provide extrusion, loop cuts,
 subdivision, authored UVs/skinning/animation, or multi-object scenes. It is a

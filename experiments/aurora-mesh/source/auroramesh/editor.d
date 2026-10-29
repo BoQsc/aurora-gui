@@ -9,8 +9,9 @@ import auroramesh.gltf_scene : GltfScene, Mat4, PoseOverride, bakeGltfFrame,
     gltfTransformPoint, loadGltfScene;
 import auroramesh.live : liveObject;
 import auroramesh.mesh : Material, MaterialSlot, Mesh, Vec2, Vec3,
-    meshAdd = add, computeSmoothNormals, humanBaseMesh, meshMaximum,
-    meshMinimum, parseObj, toObj;
+    meshAdd = add, computeSmoothNormals, meshCross = cross, dot,
+    humanBaseMesh, length, meshMaximum, meshMinimum, normalize,
+    meshScale = scale, parseObj, toObj;
 import auroramesh.human_v2 : humanBaseMeshV2;
 import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh, writePpm;
@@ -18,7 +19,8 @@ import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
     smoothVertices;
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
     MouseButton, Point, Rect, VerticalAlign, Widget;
-import std.file : exists, read, readText, write;
+import core.sync.mutex : Mutex;
+import std.file : exists, read, readText, stdRemove = remove, rename, write;
 import std.algorithm : filter, max, min, sort;
 import std.array : array, join;
 import std.conv : to;
@@ -60,6 +62,11 @@ private struct LiveKey
     Vec3 translation;
     bool hasRotation;
     double[4] rotation = [0, 0, 0, 1];
+    /// Set when the key was authored as a world axis spin, so followers can
+    /// reproduce the same motion.
+    bool hasWorldAxis;
+    Vec3 worldAxis = Vec3(1, 0, 0);
+    double worldAngle;
     bool hasScale;
     Vec3 scale;
 }
@@ -164,9 +171,18 @@ final class MeshEditor : Widget
     private string _rendererFallback;
     private string _sheetPath;
     private string _lastSheetPath;
+    private bool _listBones;
+    private int _liveFollowCount;
+    /**
+     * The window callback and the headless driver thread both drive live
+     * authoring, so a tick must read, author, bake, audit and report as one
+     * step; otherwise reports and frame scans interleave.
+     */
+    private shared Mutex _liveMutex;
 
     this(Mesh mesh, string objPath)
     {
+        _liveMutex = new shared Mutex;
         _mesh = mesh;
         _objPath = objPath;
         setFocusable(true);
@@ -231,6 +247,12 @@ final class MeshEditor : Widget
     }
 
     void advance(double delta)
+    {
+        synchronized (_liveMutex)
+            advanceLocked(delta);
+    }
+
+    private void advanceLocked(double delta)
     {
         if (_hasLiveAnimation)
         {
@@ -511,16 +533,61 @@ final class MeshEditor : Widget
     private void writeAuditReport()
     {
         try
-            write("build/live-audit.json", format(
+            writeReport("build/live-audit.json", format(
                 `{"frame":%d,"frames":%d,"time":%.4f,"clip":"%s","tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s"}`,
                 cast(int) (_time * 30 + 0.5), animationFrameCount(), _time,
-                _hasLiveAnimation ? _liveClip.name : "",
+                jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 animationTrackCount(), animationKeyCount(),
                 _auditValid ? "true" : "false", _auditNonFinite,
-                _auditInvalidFaces, _auditWarnings.join("|")));
+                _auditInvalidFaces,
+                jsonEscape(_auditWarnings.join("|"))));
         catch (Exception)
         {
         }
+    }
+
+    /** Escape a value for a JSON string literal. */
+    private static string jsonEscape(string value)
+    {
+        string result;
+        foreach (character; value)
+        {
+            switch (character)
+            {
+                case '"':
+                    result ~= `\"`;
+                    break;
+                case '\\':
+                    result ~= `\\`;
+                    break;
+                case '\n':
+                    result ~= `\n`;
+                    break;
+                case '\r':
+                    result ~= `\r`;
+                    break;
+                case '\t':
+                    result ~= `\t`;
+                    break;
+                default:
+                    result ~= character;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Replace a report file in one step. The UI and driver threads both refresh
+     * these files, and a half written file is not parseable by the tools that
+     * poll them.
+     */
+    private static void writeReport(string path, string text)
+    {
+        const temporary = path ~ ".tmp";
+        write(temporary, text);
+        if (exists(path))
+            stdRemove(path);
+        rename(temporary, path);
     }
 
     private void scanAnimationFrames()
@@ -668,7 +735,7 @@ final class MeshEditor : Widget
         _scanRunning = false;
         _scanReport ~= format(`],"invalidFrames":%d}`, _scanInvalidFrames);
         try
-            write("build/live-frames.json", _scanReport);
+            writeReport("build/live-frames.json", _scanReport);
         catch (Exception)
         {
         }
@@ -710,9 +777,9 @@ final class MeshEditor : Widget
         const axisZ = gltfTransformNormal(matrix, Vec3(0, 0, 1));
         const name = _scene.nodes[_inspectNode].name;
         try
-            write("build/bone-info.json", format(
+            writeReport("build/bone-info.json", format(
                 `{"node":"%s","position":[%.5f,%.5f,%.5f],"axes":{"x":[%.5f,%.5f,%.5f],"y":[%.5f,%.5f,%.5f],"z":[%.5f,%.5f,%.5f]}}`,
-                name, position.x, position.y, position.z,
+                jsonEscape(name), position.x, position.y, position.z,
                 axisX.x, axisX.y, axisX.z,
                 axisY.x, axisY.y, axisY.z,
                 axisZ.x, axisZ.y, axisZ.z));
@@ -721,6 +788,161 @@ final class MeshEditor : Widget
         }
         _status = "Bone axes: " ~ name ~ " · build/bone-info.json";
         _inspectNode = -1;
+    }
+
+    /**
+     * Write the rig inventory authors need: every node with its hierarchy,
+     * deform-joint flag, and world position/axes at the current pose.
+     */
+    private void writeBoneList()
+    {
+        if (!_hasScene)
+            return;
+        auto joint = new bool[_scene.nodes.length];
+        foreach (skin; _scene.skins)
+            foreach (candidate; skin.joints)
+                if (candidate >= 0 && candidate < joint.length)
+                    joint[candidate] = true;
+        string[] entries;
+        foreach (index, node; _scene.nodes)
+        {
+            const matrix = index < _nodeWorlds.length ?
+                _nodeWorlds[index] : Mat4.identity();
+            const position = Vec3(matrix.m[12], matrix.m[13], matrix.m[14]);
+            const axisX = normalize(gltfTransformNormal(matrix,
+                Vec3(1, 0, 0)));
+            const axisY = normalize(gltfTransformNormal(matrix,
+                Vec3(0, 1, 0)));
+            const axisZ = normalize(gltfTransformNormal(matrix,
+                Vec3(0, 0, 1)));
+            const parent = parentNode(cast(int) index);
+            entries ~= format(
+                `{"index":%d,"name":"%s","parent":%d,"parentName":"%s","children":%d,"joint":%s,"position":[%.4f,%.4f,%.4f],"axes":{"x":[%.4f,%.4f,%.4f],"y":[%.4f,%.4f,%.4f],"z":[%.4f,%.4f,%.4f]}}`,
+                index, jsonEscape(node.name), parent,
+                parent >= 0 ? jsonEscape(_scene.nodes[parent].name) : "",
+                node.children.length, joint[index] ? "true" : "false",
+                position.x, position.y, position.z,
+                axisX.x, axisX.y, axisX.z,
+                axisY.x, axisY.y, axisY.z,
+                axisZ.x, axisZ.y, axisZ.z);
+        }
+        try
+        {
+            writeReport("build/bones.json",
+                format(`{"nodes":[%s]}`, entries.join(",")));
+            _status = format("Bone list: %d nodes · build/bones.json",
+                _scene.nodes.length);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    /** Base (un-posed) node world matrices used to resolve world axes. */
+    private Mat4[] baseWorldMatrices()
+    {
+        Mat4[] worlds;
+        if (!_hasScene)
+            return worlds;
+        try
+            bakeGltfFrame(_scene, _animation, 0.0, false, null, &worlds);
+        catch (Exception)
+        {
+        }
+        return worlds;
+    }
+
+    /** Rotate a world axis into the node's local frame so a key spins it. */
+    private static Vec3 worldAxisToLocal(const Mat4[] worlds, int node,
+        Vec3 axis)
+    {
+        if (node < 0 || node >= worlds.length)
+            return Vec3(0, 0, 0);
+        const matrix = worlds[node];
+        const basisX = normalize(Vec3(matrix.m[0], matrix.m[1], matrix.m[2]));
+        const basisY = normalize(Vec3(matrix.m[4], matrix.m[5], matrix.m[6]));
+        const basisZ = normalize(Vec3(matrix.m[8], matrix.m[9], matrix.m[10]));
+        return Vec3(dot(basisX, axis), dot(basisY, axis), dot(basisZ, axis));
+    }
+
+    private static double[4] axisAngleRotation(Vec3 axis, double degrees)
+    {
+        const unit = normalize(axis);
+        const half = degrees * 3.141592653589793 / 360.0;
+        const sine = sin(half);
+        return [unit.x * sine, unit.y * sine, unit.z * sine, cos(half)];
+    }
+
+    /** Rodrigues rotation of a vector around a world axis, in degrees. */
+    private static Vec3 rotateAroundAxis(Vec3 axis, double degrees, Vec3 value)
+    {
+        const unit = normalize(axis);
+        const angle = degrees * 3.141592653589793 / 180.0;
+        const cosine = cos(angle);
+        const sine = sin(angle);
+        return meshAdd(
+            meshAdd(meshScale(value, cosine),
+                meshScale(meshCross(unit, value), sine)),
+            meshScale(unit, dot(unit, value) * (1 - cosine)));
+    }
+
+    /** Convert a world position into a node's parent space. */
+    private static Vec3 parentSpacePosition(const Mat4[] worlds, int parent,
+        Vec3 world)
+    {
+        if (parent < 0 || parent >= worlds.length)
+            return world;
+        const matrix = worlds[parent];
+        const origin = Vec3(matrix.m[12], matrix.m[13], matrix.m[14]);
+        const delta = Vec3(world.x - origin.x, world.y - origin.y,
+            world.z - origin.z);
+        const basisX = normalize(Vec3(matrix.m[0], matrix.m[1], matrix.m[2]));
+        const basisY = normalize(Vec3(matrix.m[4], matrix.m[5], matrix.m[6]));
+        const basisZ = normalize(Vec3(matrix.m[8], matrix.m[9], matrix.m[10]));
+        return Vec3(dot(basisX, delta), dot(basisY, delta),
+            dot(basisZ, delta));
+    }
+
+    /**
+     * Quaternion that spins a node by `degrees` around a world axis, keeping its
+     * rest orientation. A replace-mode override supplies the whole local
+     * rotation, so it composes the parent-frame axis with the node's base local
+     * rotation; an additive override only supplies the delta.
+     */
+    private double[4] worldAxisKeyRotation(const Mat4[] worlds, int node,
+        Vec3 worldAxis, double degrees, bool additive)
+    {
+        if (node < 0 || node >= worlds.length)
+            return [0.0, 0.0, 0.0, 1.0];
+        const parent = parentNode(node);
+        const frame = additive ? node : (parent >= 0 ? parent : node);
+        const spin = axisAngleRotation(worldAxisToLocal(worlds, frame,
+            worldAxis), degrees);
+        if (additive)
+            return spin;
+        const parentRotation = parent >= 0 && parent < worlds.length ?
+            quatEditorFromMatrix(worlds[parent]) : [0.0, 0.0, 0.0, 1.0];
+        const localRotation = quatEditorMultiply(
+            quatEditorConjugate(parentRotation),
+            quatEditorFromMatrix(worlds[node]));
+        return quatEditorMultiply(spin, localRotation);
+    }
+
+    /** A world axis given as "x"/"y"/"z" or as a three number array. */
+    private static Vec3 liveAxisValue(JSONValue value)
+    {
+        if (value.type == JSONType.string)
+        {
+            if (value.str == "y")
+                return Vec3(0, 1, 0);
+            if (value.str == "z")
+                return Vec3(0, 0, 1);
+            return Vec3(1, 0, 0);
+        }
+        const numbers = liveNumbers(value);
+        if (numbers.length >= 3)
+            return Vec3(numbers[0], numbers[1], numbers[2]);
+        return Vec3(0, 0, 0);
     }
 
     private double pointSegmentDistance(Vec3 point, Vec3 start, Vec3 end)
@@ -1068,6 +1290,12 @@ final class MeshEditor : Widget
 
     void tickLive()
     {
+        synchronized (_liveMutex)
+            tickLiveLocked();
+    }
+
+    private void tickLiveLocked()
+    {
         _scanTickCount++;
         if (!_hasScene || _livePath.length == 0 || !exists(_livePath))
             return;
@@ -1123,6 +1351,11 @@ final class MeshEditor : Widget
         writeAuditReport();
         if (_inspectNode >= 0)
             writeBoneInfo();
+        if (_listBones)
+        {
+            writeBoneList();
+            _listBones = false;
+        }
         if (_scanRequested)
             scanAnimationFrames();
         if (_capturePath.length > 0)
@@ -1160,27 +1393,29 @@ final class MeshEditor : Widget
     private void writeLiveAck()
     {
         try
-            write("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d]}`,
+            writeReport("build/live-ack.json", format(
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d}`,
                 _liveRevision, _liveExtras.length, _poseOverrides.length,
-                _hasLiveAnimation ? _liveClip.name : "",
+                jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
                 _playing ? "true" : "false",
                 animationTrackCount(), animationKeyCount(),
                 _auditValid ? "true" : "false", _auditNonFinite,
-                _auditInvalidFaces, _auditWarnings.join("|"),
+                _auditInvalidFaces, jsonEscape(_auditWarnings.join("|")),
                 _scanFrameCount, _scanInvalidFrames, _scanLimbHits,
                 _scanCollisionFrames, _scanCollisionPairs,
                 _scanRunning ? "true" : "false", _scanCursor,
                 _scanFrameCount, _scanTickCount, _scanAdvanceCount,
-                _rendererName, _rendererHardware ? "true" : "false",
-                _rendererFallback,
+                jsonEscape(_rendererName),
+                _rendererHardware ? "true" : "false",
+                jsonEscape(_rendererFallback),
                 _scanFrameCount > 0 && _scanInvalidFrames == 0 ? "true" : "false",
-                _lastCapturePath,
-                _lastSheetPath,
+                jsonEscape(_lastCapturePath),
+                jsonEscape(_lastSheetPath),
                 _collisions.pairs, _baselineCollisionCount,
                 _collisions.sample.x, _collisions.sample.y,
-                _collisions.sample.z, _collisions.faceA, _collisions.faceB));
+                _collisions.sample.z, _collisions.faceA, _collisions.faceB,
+                _liveFollowCount));
         catch (Exception)
         {
         }
@@ -1313,6 +1548,11 @@ final class MeshEditor : Widget
             if (node < 0 || node >= _scene.nodes.length)
                 return false;
             _inspectNode = node;
+            return true;
+        }
+        if (type == "list-bones")
+        {
+            _listBones = true;
             return true;
         }
         if (type == "pose-axis")
@@ -1525,6 +1765,10 @@ final class MeshEditor : Widget
             return false;
         LiveTrack[] tracks;
         double maxTime;
+        const additiveClip = liveHas(command, "additive") &&
+            liveChild(command, "additive").type == JSONType.true_;
+        Mat4[] base;
+        bool haveBase;
         foreach (trackValue; tracksValue.array)
         {
             const nodeName = liveString(liveChild(trackValue, "node"));
@@ -1563,6 +1807,29 @@ final class MeshEditor : Widget
                     key.rotation = [rotation[0], rotation[1], rotation[2],
                         rotation[3]];
                 }
+                else if (liveHas(keyValue, "worldAxis"))
+                {
+                    // Author in world terms: the axis is resolved against the
+                    // node's base pose, so a wave is "spin world Z".
+                    const worldAxis = liveAxisValue(
+                        liveChild(keyValue, "worldAxis"));
+                    if (length(worldAxis) > 1.0e-9)
+                    {
+                        if (!haveBase)
+                        {
+                            base = baseWorldMatrices();
+                            haveBase = true;
+                        }
+                        key.hasRotation = true;
+                        key.rotation = worldAxisKeyRotation(base, node,
+                            worldAxis, liveNumber(liveChild(keyValue, "angle")),
+                            additiveClip);
+                        key.hasWorldAxis = true;
+                        key.worldAxis = worldAxis;
+                        key.worldAngle = liveNumber(
+                            liveChild(keyValue, "angle"));
+                    }
+                }
                 const scale = liveNumbers(liveChild(keyValue, "scale"));
                 if (scale.length >= 3)
                 {
@@ -1577,6 +1844,74 @@ final class MeshEditor : Widget
             track.keys.sort!((a, b) => a.time < b.time);
             tracks ~= track;
         }
+        _liveFollowCount = 0;
+        if (!additiveClip && liveHas(command, "follow") &&
+            liveChild(command, "follow").type == JSONType.array)
+            foreach (followValue; liveChild(command, "follow").array)
+            {
+                const socket = liveNodeIndex(
+                    liveString(liveChild(followValue, "node")));
+                const target = liveNodeIndex(
+                    liveString(liveChild(followValue, "target")));
+                if (socket < 0 || target < 0 || socket == target)
+                    continue;
+                int targetTrack = -1;
+                foreach (index, track; tracks)
+                    if (track.node == target)
+                    {
+                        targetTrack = cast(int) index;
+                        break;
+                    }
+                if (targetTrack < 0)
+                    continue;
+                if (!haveBase)
+                {
+                    base = baseWorldMatrices();
+                    haveBase = true;
+                }
+                const pivot = Vec3(base[target].m[12], base[target].m[13],
+                    base[target].m[14]);
+                const rest = Vec3(base[socket].m[12], base[socket].m[13],
+                    base[socket].m[14]);
+                const socketParent = parentNode(socket);
+                LiveTrack followed;
+                followed.node = socket;
+                foreach (key; tracks[targetTrack].keys)
+                {
+                    if (!key.hasWorldAxis)
+                        continue;
+                    LiveKey socketKey;
+                    socketKey.time = key.time;
+                    socketKey.hasRotation = true;
+                    socketKey.rotation = worldAxisKeyRotation(base, socket,
+                        key.worldAxis, key.worldAngle, false);
+                    socketKey.hasWorldAxis = true;
+                    socketKey.worldAxis = key.worldAxis;
+                    socketKey.worldAngle = key.worldAngle;
+                    socketKey.hasTranslation = true;
+                    const orbit = rotateAroundAxis(key.worldAxis,
+                        key.worldAngle, Vec3(rest.x - pivot.x,
+                            rest.y - pivot.y, rest.z - pivot.z));
+                    socketKey.translation = parentSpacePosition(base,
+                        socketParent, Vec3(pivot.x + orbit.x,
+                            pivot.y + orbit.y, pivot.z + orbit.z));
+                    followed.keys ~= socketKey;
+                }
+                if (followed.keys.length == 0)
+                    continue;
+                bool replaced;
+                foreach (ref track; tracks)
+                    if (track.node == socket)
+                    {
+                        track = followed;
+                        replaced = true;
+                        break;
+                    }
+                if (!replaced)
+                    tracks ~= followed;
+                _liveFollowCount++;
+            }
+
         if (tracks.length == 0)
             return false;
         _liveClip = LiveClip();

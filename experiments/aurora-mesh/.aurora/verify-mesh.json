@@ -2,7 +2,8 @@
   "inputs": [
     "experiments/aurora-mesh/source",
     "experiments/aurora-mesh/dub.json",
-    "experiments/aurora-mesh/assets"
+    "experiments/aurora-mesh/assets",
+    "experiments/aurora-mesh/tests"
   ],
   "steps": [
     {
@@ -120,6 +121,33 @@
         "args": ["-c", "import json;from pathlib import Path;a=json.loads(Path('build/live-ack.json').read_text());assert a.get('clip')=='VerifyAnim' and a.get('tracks')==1 and a.get('keys')==3 and a.get('frame')==15 and a.get('valid') is True and a.get('frameScan')==30 and a.get('invalidFrames')==0 and a.get('limbHits')==0 and a.get('awarenessValid') is True and Path('build/bone-info.json').exists() and Path('build/verify-workbench-capture.ppm').exists() and Path('build/verify-workbench-sheet.ppm').exists();a"],
         "workdir": "experiments/aurora-mesh",
         "timeout": 30000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tests/verify_assets.py"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "tests/replay_clip.py", "--clip", "assets/animations/right-snap-kick.json", "--timeout", "300"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 420000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "tests/replay_clip.py", "--clip", "assets/animations/rifle-ready-idle.json", "--timeout", "900"],
+        "workdir": "experiments/aurora-mesh",
+        "timeout": 1200000
       }
     }
   ]

@@ -1,6 +1,7 @@
 module goal_mode_contracts;
 
-import auroraopencode.core : ChatSession, TaskStep;
+import auroraopencode.core : ChatSession, TaskStep, goalHistoryFromJson,
+    goalHistoryToJson;
 import auroraopencode.goalmode;
 import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
@@ -71,6 +72,41 @@ int main()
     session.verificationStatus = "not_required";
     writeln("PASS goal completion requires evidence and finished checks");
 
+    ChatSession history;
+    history.goal = "first durable goal";
+    history.goalStatus = "paused";
+    history.goalStartedAt = 10;
+    recordGoalSet(history, 10);
+    require(history.goalHistory.length == 1 &&
+        history.goalHistory[0].outcome == "paused",
+        "setting a goal did not append history");
+    history.goal = "second durable goal";
+    history.goalStatus = "active";
+    history.goalStartedAt = 20;
+    recordGoalSet(history, 20);
+    require(history.goalHistory.length == 2 &&
+        history.goalHistory[0].outcome == "replaced" &&
+        history.goalHistory[0].closedAt == 20 &&
+        history.goalHistory[1].outcome == "active",
+        "replacing a goal did not preserve the previous record");
+    recordGoalOutcome(history, "completed", 30);
+    require(history.goalHistory[1].outcome == "completed" &&
+        history.goalHistory[1].closedAt == 30,
+        "completion did not close the goal history record");
+    const encodedHistory = goalHistoryToJson(history.goalHistory);
+    const decodedHistory = goalHistoryFromJson(encodedHistory);
+    require(decodedHistory.length == 2 &&
+        decodedHistory[0].text == "first durable goal" &&
+        decodedHistory[1].outcome == "completed",
+        "goal history did not survive JSON round-trip");
+    history.goal = "second durable goal";
+    history.goalStatus = "active";
+    history.goalStartedAt = 40;
+    recordGoalSet(history, 40);
+    require(history.goalHistory.length == 3,
+        "reusing a completed goal text did not create a new history entry");
+    writeln("PASS every goal set is retained in per-conversation history");
+
     foreach (definitions; [nativeOnlyToolDefinitions(), builtinToolDefinitions()])
     {
         size_t found;
@@ -90,11 +126,13 @@ int main()
     started.kind = AgentEventKind.threadStarted;
     started.threadId = "t-goal";
     started.payloadJson =
-        `{"title":"Goal","goal":"finish it","goalStatus":"paused","goalStartedAt":42,"goalTurns":3}`;
+        `{"title":"Goal","goal":"finish it","goalStatus":"paused","goalStartedAt":42,"goalTurns":3,"goalHistory":[{"text":"finish it","outcome":"paused","startedAt":42,"closedAt":0}]}`;
     auto restored = projectAgentRuntimeEvents([started]);
     require(restored.length == 1 && restored[0].goal == "finish it" &&
         restored[0].goalStatus == "paused" &&
-        restored[0].goalStartedAt == 42 && restored[0].goalTurns == 3,
+        restored[0].goalStartedAt == 42 && restored[0].goalTurns == 3 &&
+        restored[0].goalHistory.length == 1 &&
+        restored[0].goalHistory[0].text == "finish it",
         "journal projection lost persistent goal state");
     writeln("PASS durable goal state survives journal projection");
     writeln("goal mode contracts passed");

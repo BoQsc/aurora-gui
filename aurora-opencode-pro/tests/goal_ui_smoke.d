@@ -6,6 +6,8 @@ module goal_ui_smoke;
 // Stop is exercised on an active but idle goal.
 
 import aurora;
+import aurora.widgets.contextmenu : ContextMenu;
+import aurora.widgets.popup : currentTransientPopup;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : opencodeContentMaxWidth, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
@@ -124,6 +126,20 @@ int main()
         "paused goal should offer Start");
     auto clear = requireWidget!Button(root, "oc-goal-clear");
     assert(clear.visible(), "Clear control missing for a saved goal");
+    auto history = requireWidget!Button(root, "oc-goal-history");
+    assert(history.visible() && toUTF8(history.text()) == "History",
+        "saved goal should expose its history");
+    driver.click(globalCenter(history));
+    root.tickTree(0.02);
+    assert(driver.paint(), "goal history menu paint failed");
+    auto menu = cast(ContextMenu) currentTransientPopup(root);
+    assert(menu !is null && menu.items().length >= 3,
+        "History did not open a goal-history menu");
+    assert(toUTF8(menu.items()[2].label).indexOf("keep the build green") >= 0,
+        "goal-history menu omitted the saved goal");
+    menu.dismiss();
+    root.tickTree(0.02);
+    assert(driver.paint(), "dismissed goal history paint failed");
     writeln("PASS saved goal shows text, Edit, Start and Clear");
 
     driver.click(globalCenter(edit));
@@ -177,6 +193,33 @@ int main()
     assert(toUTF8(text.text()).indexOf("Set a persistent goal") >= 0,
         "cleared goal bar did not return to its prompt");
     writeln("PASS Clear removes the goal and restores the prompt");
+
+    auto historyTexts = root.goalHistoryTextsForTesting();
+    auto historyOutcomes = root.goalHistoryOutcomesForTesting();
+    assert(historyTexts.length == 2 &&
+        historyTexts[0] == "keep the build green" &&
+        historyTexts[1] == "keep the build green and tests passing",
+        "goal history did not retain every set goal");
+    assert(historyOutcomes[0] == "replaced" && historyOutcomes[1] == "cleared",
+        "goal history outcomes were not recorded");
+    const originalSession = root.currentSessionForTesting();
+    root.setGoalForTesting("third saved goal", "paused");
+    root.persistForTesting();
+    root.reloadSessionsForTesting();
+    root.tickTree(0.02);
+    assert(driver.paint(), "reloaded-goal-history paint failed");
+    assert(root.goalHistoryTextsForTesting().length == 3 &&
+        root.goalHistoryTextsForTesting()[2] == "third saved goal",
+        "goal history did not survive save + reload");
+    assert(toUTF8(requireWidget!Button(root, "oc-goal-history").text()) == "History",
+        "restored goal history is not reachable from the goal row");
+    root.newChatForTesting();
+    assert(root.goalHistoryTextsForTesting().length == 0,
+        "goal history leaked into another conversation");
+    root.selectSessionForTesting(originalSession);
+    assert(root.goalHistoryTextsForTesting().length == 3,
+        "original conversation lost its goal history");
+    writeln("PASS goal history is retained per conversation across reload");
 
     root.shutdownClient();
     window.close();

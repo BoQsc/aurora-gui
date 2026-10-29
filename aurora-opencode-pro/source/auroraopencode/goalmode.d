@@ -1,6 +1,6 @@
 module auroraopencode.goalmode;
 
-import auroraopencode.core : ChatSession;
+import auroraopencode.core : ChatSession, GoalHistoryEntry;
 import std.array : appender;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.string : startsWith, strip, toLower;
@@ -20,6 +20,82 @@ public string clampGoalText(string text)
 {
     const units = toUTF32(text);
     return units.length <= maxGoalLength ? text : toUTF8(units[0 .. maxGoalLength]);
+}
+
+/// Record the current goal text whenever it is created or changed. Re-setting
+/// the same live goal only refreshes its outcome; a previously completed or
+/// cleared goal with the same text is a new history entry.
+public void recordGoalSet(ref ChatSession session, long at)
+{
+    if (!session.goal.length) return;
+    auto history = session.goalHistory;
+    if (history.length)
+    {
+        auto last = history[$ - 1];
+        if (last.text == session.goal &&
+            (last.outcome == "active" || last.outcome == "paused" ||
+             last.outcome.length == 0))
+        {
+            last.outcome = session.goalStatus.length
+                ? session.goalStatus : "active";
+            last.closedAt = 0;
+            history[$ - 1] = last;
+            session.goalHistory = history;
+            return;
+        }
+        if (last.outcome == "active" || last.outcome == "paused" ||
+            last.outcome.length == 0)
+        {
+            last.outcome = "replaced";
+            last.closedAt = at;
+            history[$ - 1] = last;
+        }
+    }
+    history ~= GoalHistoryEntry(session.goal, session.goalStatus.length
+        ? session.goalStatus : "active", at, 0);
+    session.goalHistory = history;
+}
+
+/// Update the outcome of the latest goal record, seeding it when restoring a
+/// conversation saved before goal history existed.
+public void recordGoalOutcome(ref ChatSession session, string outcome, long at)
+{
+    if (!session.goal.length) return;
+    auto history = session.goalHistory;
+    if (!history.length || history[$ - 1].text != session.goal)
+    {
+        recordGoalSet(session, session.goalStartedAt > 0
+            ? session.goalStartedAt : at);
+        history = session.goalHistory;
+    }
+    if (!history.length) return;
+    auto last = history[$ - 1];
+    last.outcome = outcome;
+    const terminal = outcome == "completed" || outcome == "cleared" ||
+        outcome == "replaced";
+    if (terminal)
+    {
+        if (last.closedAt == 0) last.closedAt = at;
+    }
+    else
+        last.closedAt = 0;
+    history[$ - 1] = last;
+    session.goalHistory = history;
+}
+
+/// Backfill history for a goal restored from an older build.
+public void syncGoalHistory(ref ChatSession session, long at)
+{
+    if (!session.goal.length) return;
+    if (!session.goalHistory.length ||
+        session.goalHistory[$ - 1].text != session.goal)
+    {
+        recordGoalSet(session, session.goalStartedAt > 0
+            ? session.goalStartedAt : at);
+        return;
+    }
+    recordGoalOutcome(session, session.goalStatus.length
+        ? session.goalStatus : "active", at);
 }
 
 public enum GoalCommandKind

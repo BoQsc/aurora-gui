@@ -799,6 +799,52 @@ public struct TaskStep
     string blocker;
 }
 
+/// One user-set goal in a conversation's append-only goal history.
+public struct GoalHistoryEntry
+{
+    string text;
+    /// "active" | "paused" | "completed" | "cleared" | "replaced"
+    string outcome;
+    long startedAt;
+    long closedAt; // 0 while the goal is active or paused.
+}
+
+public JSONValue goalHistoryToJson(const(GoalHistoryEntry)[] history)
+{
+    JSONValue result = JSONValue.emptyArray;
+    foreach (entry; history)
+    {
+        JSONValue item;
+        item["text"] = entry.text;
+        item["outcome"] = entry.outcome;
+        item["startedAt"] = entry.startedAt;
+        item["closedAt"] = entry.closedAt;
+        result.array ~= item;
+    }
+    return result;
+}
+
+public GoalHistoryEntry[] goalHistoryFromJson(JSONValue value)
+{
+    GoalHistoryEntry[] result;
+    if (value.type != JSONType.array) return result;
+    foreach (item; value.array)
+    {
+        if (item.type != JSONType.object) continue;
+        GoalHistoryEntry entry;
+        if (auto f = "text" in item.object)
+            if (f.type == JSONType.string) entry.text = f.str;
+        if (auto f = "outcome" in item.object)
+            if (f.type == JSONType.string) entry.outcome = f.str;
+        if (auto f = "startedAt" in item.object)
+            if (f.type == JSONType.integer) entry.startedAt = f.integer;
+        if (auto f = "closedAt" in item.object)
+            if (f.type == JSONType.integer) entry.closedAt = f.integer;
+        if (entry.text.length > 0) result ~= entry;
+    }
+    return result;
+}
+
 public JSONValue taskStepsToJson(const(TaskStep)[] steps)
 {
     JSONValue result = JSONValue.emptyArray;
@@ -1106,6 +1152,7 @@ public struct ChatSession
     string goalStatus;
     long goalStartedAt; // Unix time when the current goal was set or resumed.
     int goalTurns;      // Bounded goal-driven continuations since set/resume.
+    GoalHistoryEntry[] goalHistory; // Append-only, per conversation.
     TaskContract contract;
     string[] taskArchive; // Immutable JSON snapshots; transcript history stays intact.
     string taskStatus; // "idle" | "active" | "reviewing" | "verifying" | "completed" | "blocked"

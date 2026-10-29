@@ -12,6 +12,7 @@ import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.glb : fromGlb, toGlb;
 import auroramesh.gltf_scene : GltfScene, bakeGltfFrame, loadGltfScene;
 import auroramesh.renderer : RenderOptions, renderMesh, writePpm;
+import auroramesh.rig_fixture : buildRigFixture, rigFixtureGlb;
 import aurora : GuiWindow, RendererPreference, Theme, WindowOptions;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
@@ -31,6 +32,7 @@ private void usage()
     writeln("  aurora-mesh --check                  validate and print mesh statistics");
     writeln("  aurora-mesh --export-obj <file.obj>  write the human base mesh");
     writeln("  aurora-mesh --export-glb <file.glb>  write a glTF 2.0 binary mesh");
+    writeln("  aurora-mesh --export-rig <file.glb>  write the skinned test rig fixture");
     writeln("  aurora-mesh --export-static-glb <file.glb>  bake textures/UVs into a static GLB");
     writeln("  aurora-mesh --obj <file.obj>         load a mesh into the editor");
     writeln("  aurora-mesh --glb <file.glb>         load a GLB mesh into the editor");
@@ -52,6 +54,7 @@ int main(string[] args)
     string glbLoadPath;
     string glbExportPath;
     string staticGlbExportPath;
+    string rigExportPath;
     GltfScene gltfScene;
     bool hasGltfScene;
     string glbAnimation;
@@ -108,6 +111,14 @@ int main(string[] args)
                     return 2;
                 }
                 staticGlbExportPath = args[index];
+                break;
+            case "--export-rig":
+                if (++index >= args.length)
+                {
+                    stderr.writeln("--export-rig needs a path");
+                    return 2;
+                }
+                rigExportPath = args[index];
                 break;
             case "--obj":
                 if (++index >= args.length)
@@ -194,6 +205,20 @@ int main(string[] args)
                 usage();
                 return 2;
         }
+    }
+
+    if (rigExportPath.length > 0)
+    {
+        ensureParent(rigExportPath);
+        try
+            write(rigExportPath, rigFixtureGlb(buildRigFixture()));
+        catch (Exception error)
+        {
+            stderr.writeln("Rig export failed: " ~ error.msg);
+            return 1;
+        }
+        writeln("wrote " ~ rigExportPath);
+        return 0;
     }
 
     Mesh mesh = humanVersion == 1 ? humanBaseMesh() :
