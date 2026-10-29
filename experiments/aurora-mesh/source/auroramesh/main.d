@@ -59,6 +59,7 @@ private void usage()
     writeln("  --glb-time <seconds>                 set the GLB animation time");
     writeln("  --glb-morph                          enable animated morph weights");
     writeln("  --live <file.json>                   watch a live authoring command file");
+    writeln("  --topmost                            keep the window above other programs");
     writeln("  --v3                                 use the natural low-poly human (default)");
     writeln("  --v2                                 use the organic generated human");
     writeln("  --v1                                 use the original primitive human");
@@ -103,6 +104,9 @@ int main(string[] args)
     string[] probeArguments;
     int benchFrames;
     bool benchRequested;
+    // Off by default: a pinned window that also recentred itself was obnoxious to
+    // work beside. Opt in with --topmost when the preview should float.
+    bool topmostRequested;
 
     for (size_t index = 1; index < args.length; index++)
     {
@@ -305,6 +309,9 @@ int main(string[] args)
                 break;
             case "--v3":
                 humanVersion = 3;
+                break;
+            case "--topmost":
+                topmostRequested = true;
                 break;
             default:
                 stderr.writeln("unknown option: " ~ args[index]);
@@ -639,7 +646,7 @@ int main(string[] args)
     options.width = width;
     options.height = height;
     options.darkTitleBar = true;
-    options.alwaysOnTop = true;
+    options.alwaysOnTop = topmostRequested;
     options.renderer = RendererPreference.vulkan;
     auto window = new GuiWindow(options, Theme.dark());
     auto editor = new MeshEditor(mesh, objPath);

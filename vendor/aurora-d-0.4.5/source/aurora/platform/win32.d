@@ -2000,7 +2000,9 @@ else version (Windows)
                     _inSizeMove = false;
                     _liveResizeMoveOnly = false;
                     updateClientSize();
-                    keepWindowOnScreen();
+                    // A finished user drag must leave the window where it was put.
+                    // Re-anchoring here teleported the window to the middle of the
+                    // screen whenever it was dragged low, which read as a glitch.
                     notifyResize();
                     notifyResizeLifecycle(EventType.resizeEnded);
                     invalidate();
@@ -2859,11 +2861,12 @@ else version (Windows)
             const enoughHeight = visibleHeight >= minIntLocal(height, 200);
             const captionReachable = y >= work.top - 8 && y <= work.bottom - 40;
             if (enoughWidth && enoughHeight && captionReachable) return;
-            int newX = work.left + (workWidth - width) / 2;
-            int newY = work.top + (workHeight - height) / 2;
-            // Never leave the caption above/left of the work area.
-            newX = minIntLocal(maxIntLocal(newX, work.left), work.right - width);
-            newY = minIntLocal(maxIntLocal(newY, work.top), work.bottom - height);
+            // Translate just far enough to bring the window back inside the work
+            // area. Centring it moved a window the user had deliberately placed,
+            // which is the difference between a rescue and a jump.
+            const newX = minIntLocal(maxIntLocal(x, work.left), work.right - width);
+            const newY = minIntLocal(maxIntLocal(y, work.top), work.bottom - height);
+            if (newX == x && newY == y) return;
             SetWindowPos(_hwnd, null, newX, newY, width, height,
                 SWP_NOZORDER | SWP_NOACTIVATE);
         }
