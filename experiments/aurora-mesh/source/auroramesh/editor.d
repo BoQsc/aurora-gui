@@ -20,8 +20,8 @@ import auroramesh.reshape : RegionBox, RegionEdit, regionBox, regionVertices,
     reshapeBox, reshapeRegion;
 import auroramesh.regions : RegionKind, RegionVolume, deformRegion, regionMask,
     selectRegion;
-import auroramesh.remesh : addSdfShell, decimateTo, replaceChecked,
-    subdivideMesh;
+import auroramesh.remesh : addSdfShell, carveRegion, decimateTo,
+    replaceChecked, subdivideMesh;
 import auroramesh.sdf : SdfField, SdfShape, ellipsoid, sphere, taper;
 import core.time : MonoTime;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
@@ -29,7 +29,8 @@ import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
 import aurora : Canvas, Color, CursorKind, Event, HorizontalAlign, Key,
     MouseButton, Point, Rect, VerticalAlign, Widget;
 import core.sync.mutex : Mutex;
-import std.file : exists, read, readText, stdRemove = remove, rename, write;
+import std.file : exists, mkdirRecurse, read, readText,
+    stdRemove = remove, rename, write;
 import std.algorithm : filter, max, min, sort;
 import std.array : array, join;
 import std.conv : to;
@@ -1922,8 +1923,12 @@ final class MeshEditor : Widget
     private bool applyReplaceCommand(JSONValue command, bool record)
     {
         const kind = liveString(liveChild(command, "kind"), "subdivide");
-        const minimum = meshMinimum(_mesh);
-        const maximum = meshMaximum(_mesh);
+        // The model's own bounds are the starting limit. An operation that adds real
+        // volume inside a region may legitimately reach past the old silhouette — a
+        // foot is longer than the stub it replaces — so the region widens the limit.
+        // A stray shape far outside the model still fails the check.
+        auto minimum = meshMinimum(_mesh);
+        auto maximum = meshMaximum(_mesh);
         auto candidate = cloneMesh(_mesh);
         const start = MonoTime.currTime();
         int changed;
@@ -1934,6 +1939,22 @@ final class MeshEditor : Widget
             changed = decimateTo(candidate,
                 cast(int) liveNumber(liveChild(command, "faces"),
                     cast(int) candidate.faces.length / 2));
+        else if (kind == "carve")
+        {
+            // Removing geometry is the one destructive step, so it runs on the
+            // copy and only survives the health gate that follows.
+            const name = liveString(liveChild(command, "region"), _activeRegion);
+            auto region = name in _regions;
+            if (region is null)
+            {
+                _lastReplaceOk = false;
+                _lastReplaceReason = "no region to carve";
+                return false;
+            }
+            int removed;
+            changed = carveRegion(candidate, *region, removed);
+            extendLimits(*region, minimum, maximum);
+        }
         else if (kind == "sdf")
         {
             const name = liveString(liveChild(command, "region"),

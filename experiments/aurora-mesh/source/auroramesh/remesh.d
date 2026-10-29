@@ -11,7 +11,7 @@ module auroramesh.remesh;
  */
 import auroramesh.decimate : decimateMesh;
 import auroramesh.mesh : Face, Material, Mesh, Vec3, computeSmoothNormals,
-    add, cross, dot, length, sub;
+    add, cross, dot, length, scale, sub;
 import auroramesh.regions : RegionVolume;
 import auroramesh.regions : regionDistance;
 import auroramesh.sdf : SdfField;
@@ -33,6 +33,115 @@ private long edgeKey(int a, int b)
 {
     return a < b ? (cast(long) a << 32) | cast(uint) b
         : (cast(long) b << 32) | cast(uint) a;
+}
+
+private int lowOf(long key)
+{
+    return cast(int) (key >> 32);
+}
+
+private int highOf(long key)
+{
+    return cast(int) (key & 0xffffffff);
+}
+
+/**
+ * Remove the geometry inside a volume and close the openings that leaves.
+ *
+ * The cap sits inside whatever is placed over the hole, so what remains is still a
+ * closed surface and the removal cannot show as a hole. The result still goes
+ * through the health gate before it is kept.
+ */
+int carveRegion(ref Mesh mesh, const RegionVolume region, out int removed)
+{
+    removed = 0;
+    if (mesh.faces.length == 0)
+        return 0;
+    auto inside = new bool[mesh.vertices.length];
+    foreach (index, vertex; mesh.vertices)
+        inside[index] = regionDistance(region, vertex) <= 0;
+    const hasMaterials = mesh.faceMaterials.length == mesh.faces.length;
+    const baseMaterial = hasMaterials && mesh.faceMaterials.length > 0 ?
+        mesh.faceMaterials[0] : 0;
+    Face[] kept;
+    int[] keptMaterials;
+    int[long] counts;
+    foreach (index, face; mesh.faces)
+    {
+        if (inside[face.a] && inside[face.b] && inside[face.c])
+        {
+            ++removed;
+            continue;
+        }
+        kept ~= face;
+        if (hasMaterials)
+            keptMaterials ~= mesh.faceMaterials[index];
+        foreach (key; [edgeKey(face.a, face.b), edgeKey(face.b, face.c),
+            edgeKey(face.c, face.a)])
+        {
+            auto found = key in counts;
+            counts[key] = (found ? *found : 0) + 1;
+        }
+    }
+    mesh.faces = kept;
+    if (hasMaterials)
+        mesh.faceMaterials = keptMaterials;
+    if (removed == 0)
+        return 0;
+
+    // Walk the edges that lost a face into ordered loops, then cap each one.
+    int[][int] neighbours;
+    foreach (key, count; counts)
+        if (count == 1)
+        {
+            neighbours[lowOf(key)] ~= highOf(key);
+            neighbours[highOf(key)] ~= lowOf(key);
+        }
+    auto visited = new bool[mesh.vertices.length];
+    int capped;
+    foreach (start, links; neighbours)
+    {
+        if (visited[start])
+            continue;
+        int[] loop;
+        int current = start;
+        while (!visited[current])
+        {
+            visited[current] = true;
+            loop ~= current;
+            int next = -1;
+            foreach (candidate; neighbours[current])
+                if (!visited[candidate])
+                {
+                    next = candidate;
+                    break;
+                }
+            if (next < 0)
+                break;
+            current = next;
+        }
+        if (loop.length < 3)
+            continue;
+        auto sum = Vec3(0, 0, 0);
+        foreach (index; loop)
+            sum = add(sum, mesh.vertices[index]);
+        const centre = cast(int) mesh.vertices.length;
+        mesh.vertices ~= scale(sum, 1.0 / loop.length);
+        foreach (position; 0 .. loop.length)
+        {
+            const next = (position + 1) % loop.length;
+            const before = mesh.faces.length;
+            mesh.addTriangle(centre, loop[position], loop[next], Material.skin);
+            if (mesh.faces.length > before)
+            {
+                if (mesh.faceMaterials.length == before)
+                    mesh.faceMaterials ~= baseMaterial;
+                ++capped;
+            }
+        }
+    }
+    computeSmoothNormals(mesh);
+    return capped;
 }
 
 /**
