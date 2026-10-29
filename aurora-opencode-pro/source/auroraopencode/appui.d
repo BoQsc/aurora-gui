@@ -8069,6 +8069,7 @@ private final class ChatInput : TextArea
 private final class GoalBar : Widget
 {
     private static immutable int barHeight = 36;
+    private static immutable int outerMargin = 8;
     private static immutable int padH = 10;
     private static immutable int padV = 5;
     private static immutable int prefixWidth = 132;
@@ -8260,13 +8261,13 @@ private final class GoalBar : Widget
     protected override void onLayout()
     {
         const width = bounds().width;
-        int x = padH;
+        int x = outerMargin + padH;
         const innerY = padV;
         const innerH = buttonHeight;
         _prefix.setBounds(Rect(x, innerY, prefixWidth, innerH));
         x += prefixWidth + gap;
 
-        int right = maxInt(x, width - padH);
+        int right = maxInt(x, width - outerMargin - padH);
         void placeRight(Widget child)
         {
             if (child is null || !child.visible()) return;
@@ -8292,7 +8293,8 @@ private final class GoalBar : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
-        const rect = Rect(0, 0, bounds().width, bounds().height);
+        const rect = Rect(outerMargin, 0,
+            maxInt(0, bounds().width - 2 * outerMargin), bounds().height);
         if (rect.width <= 0 || rect.height <= 0) return;
         const active = _status == "active" && _goal.length > 0;
         canvas.drawRoundedRect(rect, 8, opencodeField,

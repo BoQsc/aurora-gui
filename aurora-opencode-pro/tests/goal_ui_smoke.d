@@ -90,8 +90,8 @@ int main()
         "Set goal button width did not expand for its label: " ~
         to!string(emptyEdit.bounds().width));
     assert(emptyEditOrigin.x + emptyEdit.bounds().width <=
-        barOrigin.x + bar.bounds().width - 8,
-        "Set goal button is clipped at the right edge of the goal row");
+        barOrigin.x + bar.bounds().width - 16,
+        "Set goal button does not leave a right margin in the goal row");
     driver.click(globalCenter(emptyEdit));
     root.tickTree(0.02);
     assert(driver.paint(), "empty goal editor paint failed");
@@ -111,6 +111,9 @@ int main()
     assert(toUTF8(text.text()) == "keep the build green",
         "goal text did not update");
     auto prefix = requireWidget!Label(root, "oc-goal-prefix");
+    const prefixOrigin = prefix.localToGlobal(Point(0, 0));
+    assert(prefixOrigin.x >= barOrigin.x + 16,
+        "goal content does not leave a left margin in the goal row");
     assert(toUTF8(prefix.text()).toLower().indexOf("paused") >= 0,
         "paused status is not visible");
     auto edit = requireWidget!Button(root, "oc-goal-edit");
