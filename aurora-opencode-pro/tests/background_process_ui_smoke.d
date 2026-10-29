@@ -163,20 +163,20 @@ int main()
     scope (exit) restoreDeveloperToolSource(previousSource);
 
     auto pill = requireWidget!Widget(root, "oc-processes");
-    auto exportButton = requireWidget!Widget(root, "oc-export");
+    auto checkpointButton = requireWidget!Widget(root, "oc-checkpoint");
     auto composer = requireWidget!Widget(root, "oc-composer");
     const pillOrigin = pill.localToGlobal(Point(0, 0));
-    const exportOrigin = exportButton.localToGlobal(Point(0, 0));
+    const checkpointOrigin = checkpointButton.localToGlobal(Point(0, 0));
     const composerOrigin = composer.localToGlobal(Point(0, 0));
     assert(pill.visible() && pill.bounds().width > 0 && pill.bounds().height > 0,
         "the background pill has no laid-out bounds");
     assert(pillOrigin.y + pill.bounds().height <= composerOrigin.y,
         "the background pill must sit in the top toolbar, not in the chat column");
-    assert(pillOrigin.x + pill.bounds().width <= exportOrigin.x,
-        "the background pill must sit left of Export");
+    assert(pillOrigin.x + pill.bounds().width <= checkpointOrigin.x,
+        "the background pill must sit left of Checkpoint");
     assert(findById(root, "oc-processes-panel") is null,
         "the floating card is present before the pill is used");
-    writeln("PASS background pill sits in the top toolbar left of Export");
+    writeln("PASS background pill sits in the top toolbar left of Checkpoint");
 
     const background = startBackground(state, longRunJson());
     assert(processById(background).running,

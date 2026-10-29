@@ -1,0 +1,41 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/tests/export_reveal_ui_smoke.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/export_reveal_ui_smoke.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/bg-process-smoke/export_reveal_ui_smoke.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/bg-process-smoke/export_reveal_ui_smoke.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    }
+  ]
+}

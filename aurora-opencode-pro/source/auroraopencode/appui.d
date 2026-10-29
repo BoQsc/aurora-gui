@@ -8876,6 +8876,62 @@ private final class BackgroundProcessPanel : Widget
     }
 }
 
+/// Hover-revealed sub-button card for a toolbar cluster: the action lives here
+/// instead of on the toolbar row, appears flush under the button that owns it,
+/// and disappears the moment the pointer leaves either the button or the card.
+/// Flush geometry matters: hiding is immediate, so there must be no gap a
+/// pointer walking from the owner into the card could fall into.
+private final class ExportRevealPanel : Widget
+{
+    private static immutable int pad = 5;
+
+    private Widget _content;
+
+    this(Widget content)
+    {
+        // Floating overlay: the window root never lays it out; the app positions
+        // it under the owning toolbar button.
+        layoutHints().excludeFromLayout = true;
+        layoutHints().allowOverflow = true;
+        _content = content;
+        add(content);
+    }
+
+    /// Whether the pointer is on the card or on the action inside it.
+    bool hoverActive()
+    {
+        if (hovered()) return true;
+        foreach (child; children())
+            if (child.visible() && child.hovered()) return true;
+        return false;
+    }
+
+    Size preferredPanelSize()
+    {
+        const measured = _content.measure(Size(int.max, int.max));
+        return Size(measured.width + 2 * pad, measured.height + 2 * pad);
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        return preferredPanelSize();
+    }
+
+    protected override void onLayout()
+    {
+        const size = preferredPanelSize();
+        _content.setBounds(Rect(pad, pad,
+            maxInt(0, size.width - 2 * pad), maxInt(0, size.height - 2 * pad)));
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const rect = Rect(0, 0, bounds().width, bounds().height);
+        if (rect.width <= 0 || rect.height <= 0) return;
+        canvas.drawRoundedRect(rect, 8, opencodeElevated, opencodeBorder, 1);
+    }
+}
+
 /// Editable field used when a message is edited in place inside its own bubble.
 /// Enter saves (Shift+Enter inserts a newline) and Escape cancels, so the
 /// inline editor behaves like the composer without the trip to the bottom of
@@ -11494,6 +11550,12 @@ public final class OpenCodeRoot : VBox
     private bool _processPanelPinned;
     private double _processHoverSeconds;
     private enum double processPanelHoverDelay = 0.18;
+    // Export rides under Checkpoint as a hover-revealed sub-button. The slot
+    // keeps its toolbar position for the case where Checkpoints are switched off
+    // and Export has to stand alone again.
+    private Button _exportButton;
+    private HBox _exportSlot;
+    private ExportRevealPanel _exportReveal;
     // experimental: attachments - pending dropped files / large pastes and the
     // chip row that shows them. See source/auroraopencode/attachments.d.
     private Attachment[] _pendingAttachments;
@@ -14365,10 +14427,104 @@ private string _suggestExcludeId;
         showProcessPanel(false);
     }
 
+    private bool exportRevealOpen()
+    {
+        return _exportReveal !is null && _exportReveal.parent() !is null;
+    }
+
+    /// Keep Export reachable: it belongs to the hover card while the Checkpoint
+    /// button is shown, and to the toolbar slot when Checkpoints are switched off.
+    private void placeExportButton()
+    {
+        if (_exportButton is null || _exportReveal is null || _exportSlot is null)
+            return;
+        const floating = _checkpointButton !is null && _checkpointButton.visible();
+        Widget target = floating ? _exportReveal : _exportSlot;
+        if (_exportButton.parent() is target) return;
+        if (_exportButton.parent() !is null)
+            _exportButton.parent().remove(_exportButton);
+        showExportReveal(false);
+        target.add(_exportButton);
+        invalidate();
+    }
+
+    /// Reveal Export under Checkpoint while the pointer is on either, and hide it
+    /// the moment the pointer leaves. The Checkpoint dropdown opens in the same
+    /// place, so an open popup suppresses the reveal instead of overlapping it.
+    private void refreshExportReveal()
+    {
+        const floating = _checkpointButton !is null && _checkpointButton.visible();
+        if (!floating)
+        {
+            showExportReveal(false);
+            placeExportButton();
+            return;
+        }
+        if (currentTransientPopup(this) !is null)
+        {
+            showExportReveal(false);
+            return;
+        }
+        const over = _checkpointButton.hovered() ||
+            (exportRevealOpen() && _exportReveal.hoverActive());
+        showExportReveal(over);
+    }
+
+    private void showExportReveal(bool open)
+    {
+        if (open)
+        {
+            placeExportButton();
+            if (_exportButton.parent() !is _exportReveal) return;
+            if (!exportRevealOpen())
+            {
+                auto root = popupRoot(this);
+                if (root is null) return;
+                root.add(_exportReveal);
+                root.bringChildToFront(_exportReveal);
+            }
+            positionExportReveal();
+            invalidate();
+            return;
+        }
+        if (exportRevealOpen())
+        {
+            _exportReveal.parent().remove(_exportReveal);
+            invalidate();
+        }
+    }
+
+    /// Sit the reveal flush under Checkpoint, right-aligned to it and clamped
+    /// inside the window.
+    private void positionExportReveal()
+    {
+        if (!exportRevealOpen()) return;
+        auto root = popupRoot(this);
+        if (root is null) return;
+        const origin = _checkpointButton.localToGlobal(Point(0, 0));
+        const right = origin.x + _checkpointButton.bounds().width;
+        const bottom = origin.y + _checkpointButton.bounds().height;
+        const size = _exportReveal.preferredPanelSize();
+        int x = clampInt(right - size.width, 8,
+            maxInt(8, root.bounds().width - size.width - 8));
+        int y = clampInt(bottom - 1, 8,
+            maxInt(8, root.bounds().height - size.height - 8));
+        _exportReveal.setBounds(Rect(x, y, size.width, size.height));
+    }
+
     /// Test-only: "id:state" for each row the floating card currently renders.
     public string[] backgroundProcessRowsForTesting()
     {
         return _processPanel is null ? null : _processPanel.rowsForTesting();
+    }
+
+    /// Test-only: apply the Checkpoints switch exactly as the Settings checkbox
+    /// does, including where Export is placed.
+    public void setCheckpointFeatureForTesting(bool enabled)
+    {
+        setCheckpointFeatureEnabled(enabled);
+        if (_checkpointButton !is null) _checkpointButton.setVisible(enabled);
+        placeExportButton();
     }
 
     private bool processPanelOpen()
@@ -14581,10 +14737,19 @@ private string _suggestExcludeId;
         _processButton.setId("oc-processes");
         _processButton.onTogglePinned = delegate() { toggleProcessPanelPinned(); };
 
-        auto exportButton = toolbar.add(new Button("Export", IconKind.save));
-        exportButton.setId("oc-export");
-        exportButton.onClick = delegate() { exportCurrentConversation(); };
-        addButtonTooltip(exportButton, exportButtonTooltipText);
+        // Export is a rare action in the tightest row of the window, so it rides
+        // under Checkpoint: hovering Checkpoint reveals it, and it disappears as
+        // soon as the pointer leaves. The slot keeps Export's toolbar position
+        // for the case where Checkpoints are switched off.
+        _exportButton = new Button("Export", IconKind.save);
+        _exportButton.setId("oc-export");
+        _exportButton.onClick = delegate() { exportCurrentConversation(); };
+        addButtonTooltip(_exportButton, exportButtonTooltipText);
+        _exportSlot = toolbar.add(new HBox(0));
+        _exportSlot.setId("oc-export-slot");
+        _exportReveal = new ExportRevealPanel(_exportButton);
+        _exportReveal.setId("oc-export-reveal");
+        _exportReveal.setComposited(true);
 
         // experimental: checkpoint - return the workspace's files and folders to
         // a saved point. Delete with source/auroraopencode/checkpoint.d. The
@@ -14594,6 +14759,7 @@ private string _suggestExcludeId;
         _checkpointButton.setVisible(checkpointFeatureEnabled());
         _checkpointButton.onClick = delegate() { showCheckpointMenu(); };
         addButtonTooltip(_checkpointButton, checkpointButtonTooltipText);
+        placeExportButton();
 
         auto profileButton = toolbar.add(new Button("Profile", IconKind.user));
         profileButton.setId("oc-profile");
@@ -27091,6 +27257,8 @@ private void pollButtonSuggestionRequest()
         {
             setCheckpointFeatureEnabled(value);
             if (_checkpointButton !is null) _checkpointButton.setVisible(value);
+            // A hidden Checkpoint button must not strand its sub-button.
+            placeExportButton();
             updateStatus(value ? "Checkpoints on." : "Checkpoints off.");
         };
         checkpointRow.add(checkpointCheck);
@@ -32765,6 +32933,8 @@ private void pollButtonSuggestionRequest()
         // agent left running must stay visible (and stoppable) while the chat
         // is idle, with the card following the pointer or a pin.
         refreshBackgroundProcesses(deltaSeconds);
+        // Export appears under Checkpoint while the pointer rests there.
+        refreshExportReveal();
         drainSourceFetch();
         drainDeveloperPush();
         drainDeveloperUpstreamCheck();
