@@ -4,6 +4,7 @@
     "aurora-opencode-pro/source/auroraopencode/goalmode.d",
     "aurora-opencode-pro/tests/goal_ui_smoke.d",
     "aurora-opencode-pro/tests/goal_mode_contracts.d",
+    "aurora-opencode-pro/tests/test_goal_send_contracts.py",
     "aurora-opencode-core/source/auroraopencode/core.d"
   ],
   "steps": [
@@ -71,6 +72,19 @@
         "args": [],
         "workdir": "aurora-opencode-pro",
         "timeout": 180000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": [
+          "-u",
+          "-B",
+          "tests/test_goal_send_contracts.py"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 120000
       }
     }
   ]
