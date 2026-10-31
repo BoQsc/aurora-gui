@@ -546,6 +546,79 @@ private bool paintProjection(OpenCodeRoot root, UiTestDriver driver)
     return driver.paint();
 }
 
+/// A failed request must let the reader stop or start the automatic re-send:
+/// the pill right beside Retry flips between "Stop retrying" while a re-send
+/// waits and "Start retrying" when none does, so a turn is never sent again
+/// behind their back with no way to stop it.
+private void verifyRetryPill(OpenCodeRoot root, UiTestDriver driver)
+{
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Try again.", "Half an answer."]);
+    // The real failure path, so the automatic re-send policy runs first: a
+    // provider blip must still start retrying on its own, exactly as before
+    // the pill existed.
+    root.failRequestThroughServiceForTesting("Connection reset by peer");
+    assert(root.lastBubbleActionForTesting() == "Retry",
+        "A failed reply must offer Retry, got " ~
+        root.lastBubbleActionForTesting());
+    assert(root.lastBubbleSecondaryActionForTesting() == "Stop retrying",
+        "A failed request no longer retries on its own, got " ~
+        root.lastBubbleSecondaryActionForTesting());
+    assert(root.autoResendPendingForTesting(),
+        "The automatic re-send was not scheduled for a provider blip");
+    assert(paintProjection(root, driver),
+        "Retry plus the retrying control did not paint");
+    // The control sits directly to the right of Retry, on the same row.
+    const retryBounds = root.lastBubbleActionBoundsForTesting();
+    const retryControl = root.lastBubbleSecondaryActionBoundsForTesting();
+    assert(retryBounds.width > 0 && retryControl.width > 0,
+        "Retry or the retrying control has no painted bounds");
+    assert(retryControl.x >= retryBounds.right() &&
+        retryControl.y == retryBounds.y,
+        "The retrying control does not sit to the right of Retry: " ~
+        to!string(retryControl) ~ " vs " ~ to!string(retryBounds));
+    // Stop ends the wait that was running on its own.
+    assert(root.invokeLastBubbleSecondaryActionForTesting(),
+        "The retrying control beside Retry is not clickable");
+    assert(root.lastBubbleSecondaryActionForTesting() == "Start retrying",
+        "Stopping the automatic re-send did not flip the pill, got " ~
+        root.lastBubbleSecondaryActionForTesting());
+    assert(!root.autoResendPendingForTesting(),
+        "Stop retrying left the re-send scheduled");
+    // Start re-arms the same automatic re-send after the reader stopped it.
+    assert(root.invokeLastBubbleSecondaryActionForTesting(),
+        "Start retrying is not clickable");
+    assert(root.lastBubbleSecondaryActionForTesting() == "Stop retrying",
+        "Starting the re-send did not flip the pill back, got " ~
+        root.lastBubbleSecondaryActionForTesting());
+    assert(root.autoResendPendingForTesting(),
+        "Start retrying did not schedule the re-send");
+    assert(paintProjection(root, driver), "Stop retrying pill did not paint");
+    // Leave nothing scheduled for the rest of the suite.
+    assert(root.invokeLastBubbleSecondaryActionForTesting() &&
+        !root.autoResendPendingForTesting(),
+        "the stopped retry was left scheduled");
+
+    // A failure the automatic policy declines (a bad key) starts nothing, so
+    // the same pill offers the start instead of the stop.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Again.", "Not now."]);
+    root.failRequestThroughServiceForTesting("HTTP 401: invalid API key");
+    assert(root.lastBubbleSecondaryActionForTesting() == "Start retrying" &&
+        !root.autoResendPendingForTesting(),
+        "a declined failure should leave retrying off, got " ~
+        root.lastBubbleSecondaryActionForTesting());
+    assert(root.invokeLastBubbleSecondaryActionForTesting() &&
+        root.lastBubbleSecondaryActionForTesting() == "Stop retrying",
+        "an explicit start must re-arm retrying after a declined failure");
+    assert(root.invokeLastBubbleSecondaryActionForTesting() &&
+        !root.autoResendPendingForTesting(),
+        "the stopped retry was left scheduled");
+    writeln("A failed request still retries on its own; the pill stops or starts it");
+}
+
 private void verifyTitleTooltipLeavesWindow(OpenCodeRoot root, UiTestDriver driver,
     SessionListView sessions)
 {
@@ -789,6 +862,24 @@ int main(string[] args)
         // Focused run for the Stop-preserves-transcript regression: run alone
         // so it can be exercised without the rest of the suite.
         verifyStopPreservesTranscript(root, driver, stateDir);
+        return 0;
+    }
+    if (args.length > 1 && args[$ - 1] == "--retry-pill-only")
+    {
+        // Focused run for the retrying control beside Retry: run alone so the
+        // regression can be exercised without the rest of the suite. The
+        // focused run has not spent the normal suite's ticks letting the
+        // background snapshot parse finish, so wait for startup to release the
+        // session list before creating the fixture chat.
+        foreach (attempt; 0 .. 1_000)
+        {
+            if (!root.startupPendingForTesting()) break;
+            root.tickTree(0.02);
+            Thread.sleep(5.msecs);
+        }
+        assert(!root.startupPendingForTesting(),
+            "Startup restore did not finish for the focused retry-pill run");
+        verifyRetryPill(root, driver);
         return 0;
     }
     // Git-independent Changes view is reached through the Checkpoint dropdown
@@ -4942,6 +5033,8 @@ int main(string[] args)
         assert(paintProjection(root, driver), "Failed-retry layout did not paint");
         writeln("A failed retry stays on the active branch and offers Retry");
     }
+
+    verifyRetryPill(root, driver);
 
     // Edit tool: a real file edit must report a unified diff with green/red
     // counters (the collapsed part shows +N -M; the body shows line numbers).

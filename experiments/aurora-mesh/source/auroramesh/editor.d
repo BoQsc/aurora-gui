@@ -1612,6 +1612,13 @@ final class MeshEditor : Widget
         if (revision > 0 && revision == _liveRevision)
             return;
         _liveRevision = revision;
+        // A revision describes the current state, not an addition to the previous
+        // one. Recorded edits are rebuilt from the file, or every revision would
+        // stack another copy of the same shell onto the mesh.
+        _replaceCommands.length = 0;
+        _replaceShells.length = 0;
+        _deformCommands.length = 0;
+        _reshapecs.length = 0;
         const changed = applyLiveDocument(document);
         if (changed)
         {
@@ -1774,6 +1781,8 @@ final class MeshEditor : Widget
     private Vec3 _shellHi = Vec3(0, 0, 0);
     private int _shellFaces;
     private string _meshWarning = "";
+    // The region tint is an editing aid; a capture should show the model itself.
+    private bool _showRegion = true;
     // Replacements are state, not a one-off: the mesh is rebaked for every frame,
     // so each accepted replacement is replayed onto the fresh mesh.
     private JSONValue[] _replaceCommands;
@@ -1811,6 +1820,8 @@ final class MeshEditor : Widget
      */
     private void tintSelection()
     {
+        if (!_showRegion)
+            return;
         auto region = activeRegion();
         if (region is null || _mesh.faces.length == 0)
             return;
@@ -2057,7 +2068,9 @@ final class MeshEditor : Widget
         if (ok && record)
         {
             _replaceCommands ~= command;
-            _replaceShells ~= producedShell;
+            // A carve refines the whole mesh, so its result is cached whole; an SDF
+            // shell is cached as the geometry to splice on.
+            _replaceShells ~= kind == "carve" ? _mesh : producedShell;
         }
         return ok;
     }
@@ -2104,6 +2117,12 @@ final class MeshEditor : Widget
             if (index < _replaceShells.length &&
                 _replaceShells[index].faces.length > 0)
             {
+                if (liveString(liveChild(command, "kind"), "") == "carve")
+                {
+                    _mesh = cloneMesh(_replaceShells[index]);
+                    _lastOp = "carve";
+                    continue;
+                }
                 const before = _mesh.faces.length;
                 appendMesh(_mesh, _replaceShells[index], 0);
                 if (_mesh.faces.length > before)
@@ -2459,6 +2478,18 @@ final class MeshEditor : Widget
             _dirty = true;
             invalidate();
             return ok;
+        }
+        if (type == "overlay")
+        {
+            _showRegion = liveString(liveChild(command, "region"), "show") !=
+                "hide";
+            if (_hasScene)
+                rebuildGltfMesh();
+            else
+                tintSelection();
+            _dirty = true;
+            invalidate();
+            return true;
         }
         if (type == "camera")
         {

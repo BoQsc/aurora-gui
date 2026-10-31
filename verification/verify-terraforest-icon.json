@@ -1,0 +1,14 @@
+{
+  "inputs": ["verification/check_exe_icon.py"],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-B", "check_exe_icon.py"],
+        "workdir": "verification",
+        "timeout": 900000
+      }
+    }
+  ]
+}

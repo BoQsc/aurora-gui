@@ -12,8 +12,7 @@ module auroramesh.remesh;
 import auroramesh.decimate : decimateMesh;
 import auroramesh.mesh : Face, Material, Mesh, Vec3, computeSmoothNormals,
     add, cross, dot, length, normalize, scale, sub;
-import auroramesh.regions : RegionVolume;
-import auroramesh.regions : regionDistance;
+import auroramesh.regions : RegionKind, RegionVolume, regionDistance;
 import auroramesh.sdf : SdfField, sphere;
 import auroramesh.surface_nets : surfaceNets;
 import std.array : join;
@@ -48,6 +47,34 @@ private int highOf(long key)
     return cast(int) (key & 0xffffffff);
 }
 
+private double faceLongestEdge(const Mesh mesh, Face face)
+{
+    double longest = length(sub(mesh.vertices[face.a], mesh.vertices[face.b]));
+    const second = length(sub(mesh.vertices[face.b], mesh.vertices[face.c]));
+    const third = length(sub(mesh.vertices[face.c], mesh.vertices[face.a]));
+    if (second > longest)
+        longest = second;
+    if (third > longest)
+        longest = third;
+    return longest;
+}
+
+private double regionReach(const RegionVolume region)
+{
+    if (region.kind == RegionKind.box)
+    {
+        double smallest = abs(region.b.x - region.a.x);
+        if (abs(region.b.y - region.a.y) < smallest)
+            smallest = abs(region.b.y - region.a.y);
+        if (abs(region.b.z - region.a.z) < smallest)
+            smallest = abs(region.b.z - region.a.z);
+        return smallest;
+    }
+    if (region.kind == RegionKind.capsule)
+        return region.radius;
+    return region.radius * 2;
+}
+
 /**
  * Remove the geometry inside a volume and close the openings that leaves.
  *
@@ -63,6 +90,29 @@ int carveRegion(ref Mesh mesh, const RegionVolume region, out int removed)
     auto inside = new bool[mesh.vertices.length];
     foreach (index, vertex; mesh.vertices)
         inside[index] = regionDistance(region, vertex) <= 0;
+
+    // A face is removed only when all three corners are inside, so a face larger than
+    // the region cannot be cut at all — on a coarse base mesh a whole leg can be one
+    // long triangle. Refine until the faces at the cut are small next to the region.
+    const reach = regionReach(region);
+    if (reach > 0)
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            double largest;
+            foreach (face; mesh.faces)
+                if (inside[face.a] || inside[face.b] || inside[face.c])
+                {
+                    const edge = faceLongestEdge(mesh, face);
+                    if (edge > largest)
+                        largest = edge;
+                }
+            if (largest <= reach * 0.35)
+                break;
+            subdivideMesh(mesh, 1);
+            inside = new bool[mesh.vertices.length];
+            foreach (index, vertex; mesh.vertices)
+                inside[index] = regionDistance(region, vertex) <= 0;
+        }
     const hasMaterials = mesh.faceMaterials.length == mesh.faces.length;
     const baseMaterial = hasMaterials && mesh.faceMaterials.length > 0 ?
         mesh.faceMaterials[0] : 0;

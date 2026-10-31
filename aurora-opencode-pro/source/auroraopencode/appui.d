@@ -19465,11 +19465,7 @@ private void pollButtonSuggestionRequest()
             if (!turnBusy && message.role == "assistant" &&
                 (message.toolCalls.length == 0 || message.failed))
             {
-                bubble.setAction(message.failed ? "Retry" : "Regenerate",
-                    regenerateAction(_current, messageIndex));
-                if (!message.failed && sessionTurnIncomplete(_current))
-                    bubble.setSecondaryAction("Continue",
-                        continueAction(_current, messageIndex));
+                applyReplyActions(bubble, _current, messageIndex);
                 pillApplied = true;
             }
         }
@@ -19536,21 +19532,9 @@ private void pollButtonSuggestionRequest()
                 if (children.length > 0)
                     tipGroup = cast(ToolGroupBubble) children[$ - 1];
                 if (tipGroup !is null)
-                {
-                    tipGroup.setAction("Regenerate",
-                        regenerateAction(_current, resumableIndex));
-                    if (sessionTurnIncomplete(_current))
-                        tipGroup.setSecondaryAction("Continue",
-                            continueAction(_current, resumableIndex));
-                }
+                    applyReplyActions(tipGroup, _current, resumableIndex);
                 else
-                {
-                    resumable.setAction("Regenerate",
-                        regenerateAction(_current, resumableIndex));
-                    if (sessionTurnIncomplete(_current))
-                        resumable.setSecondaryAction("Continue",
-                            continueAction(_current, resumableIndex));
-                }
+                    applyReplyActions(resumable, _current, resumableIndex);
             }
         }
     }
@@ -19562,6 +19546,35 @@ private void pollButtonSuggestionRequest()
     private void delegate() regenerateAction(int sessionIndex, int messageIndex)
     {
         return delegate() { regenerateLastReply(sessionIndex, messageIndex); };
+    }
+
+    /// Host the reply pill on a reply bubble or on the tip tool group, so both
+    /// paths show the same affordance. A failed reply offers Retry and, right
+    /// beside it, the reader's control over automatic retrying: "Stop retrying"
+    /// while a re-send is waiting, "Start retrying" when none is. A settled
+    /// unfinished reply keeps Continue instead.
+    private void applyReplyActions(T)(T target, int sessionIndex, int messageIndex)
+    {
+        if (target is null || sessionIndex < 0 ||
+            sessionIndex >= cast(int) _sessions.length) return;
+        const session = &_sessions[sessionIndex];
+        if (messageIndex < 0 ||
+            messageIndex >= cast(int) session.messages.length) return;
+        const message = session.messages[cast(size_t) messageIndex];
+        if (message.failed)
+        {
+            target.setAction("Retry", regenerateAction(sessionIndex, messageIndex));
+            target.setSecondaryAction(
+                autoResendPendingFor(sessionIndex, messageIndex)
+                    ? "Stop retrying" : "Start retrying",
+                autoResendToggleAction(sessionIndex, messageIndex));
+            return;
+        }
+        target.setAction("Regenerate",
+            regenerateAction(sessionIndex, messageIndex));
+        if (sessionTurnIncomplete(sessionIndex))
+            target.setSecondaryAction("Continue",
+                continueAction(sessionIndex, messageIndex));
     }
 
     /// Delegate factory for the Edit & resend pill (see regenerateAction).
@@ -25021,16 +25034,103 @@ private void pollButtonSuggestionRequest()
         const delayMs = autoResendDelayMs(failureText,
             cast(uint) _autoResendCount);
         if (delayMs < 0) return;
+        armAutoResend(sessionIndex, cast(int) session.messages.length - 1,
+            delayMs, quotaResetDelayMs(failureText));
+    }
+
+    /// Wait this long before an explicitly started automatic re-send when the
+    /// failure itself states no reset time: the same first interval the
+    /// automatic path uses, so a manual start is not a hammering loop.
+    private enum long manualAutoResendDelayMs = 3_000;
+
+    /// Record a pending automatic re-send for one reply and repaint the pill
+    /// that controls it (the failure path refreshed the pill before the
+    /// schedule existed, so it would otherwise still offer "Start retrying").
+    private void armAutoResend(int sessionIndex, int messageIndex, long delayMs,
+        long resetMs)
+    {
         _autoResendPending = true;
         _autoResendAt = MonoTime.currTime + msecs(delayMs);
         _autoResendSession = sessionIndex;
-        _autoResendMessage = cast(int) session.messages.length - 1;
-        _autoResendResetMs = quotaResetDelayMs(failureText);
+        _autoResendMessage = messageIndex;
+        _autoResendResetMs = resetMs;
         _lastAutoResendSeconds = -1;
         logInfo("sending this turn again automatically in " ~
             to!string(delayMs) ~ " ms [auto-retry " ~
             to!string(_autoResendCount + 1) ~ "/" ~
             to!string(maxAutoResends) ~ "]");
+        refreshAutoRetryPill(sessionIndex);
+    }
+
+    /// Schedule the automatic re-send for one failed reply. `manual` is the
+    /// reader pressing "Start retrying": an explicit start is honoured even
+    /// where the automatic policy would wait for the reason to be repaired,
+    /// because the decision is now theirs, and it still keeps the bounded
+    /// attempt budget.
+    private bool scheduleAutoResendFor(int sessionIndex, int messageIndex,
+        bool manual)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return false;
+        auto session = &_sessions[sessionIndex];
+        if (messageIndex < 0 ||
+            messageIndex >= cast(int) session.messages.length)
+            return false;
+        const reply = session.messages[cast(size_t) messageIndex];
+        if (reply.role != "assistant" || !reply.failed) return false;
+        const delayMs = autoResendDelayMs(reply.error,
+            cast(uint) _autoResendCount);
+        if (delayMs < 0 && !manual) return false;
+        dropAutoResendSchedule();
+        armAutoResend(sessionIndex, messageIndex,
+            delayMs >= 0 ? delayMs : manualAutoResendDelayMs,
+            quotaResetDelayMs(reply.error));
+        return true;
+    }
+
+    /// Whether the automatic re-send is currently waiting for exactly this
+    /// failed reply — the pill's "Stop retrying" state.
+    private bool autoResendPendingFor(int sessionIndex, int messageIndex)
+    {
+        return _autoResendPending && _autoResendSession == sessionIndex &&
+            _autoResendMessage == messageIndex;
+    }
+
+    /// Delegate factory for the pill beside Retry (see regenerateAction).
+    private void delegate() autoResendToggleAction(int sessionIndex,
+        int messageIndex)
+    {
+        return delegate() { toggleAutoResend(sessionIndex, messageIndex); };
+    }
+
+    /// Stop the automatic wait that is running for this failed reply, or start
+    /// one again with the whole attempt budget restored.
+    private void toggleAutoResend(int sessionIndex, int messageIndex)
+    {
+        if (autoResendPendingFor(sessionIndex, messageIndex))
+        {
+            dropAutoResendSchedule();
+            updateStatus("Automatic retry stopped. Retry sends this turn again now.");
+            refreshBubbleActions();
+            return;
+        }
+        _autoResendCount = 0;
+        if (!scheduleAutoResendFor(sessionIndex, messageIndex, true))
+        {
+            updateStatus("This turn cannot be sent again automatically; use Retry.");
+            refreshBubbleActions();
+            return;
+        }
+        const remainingMs = (_autoResendAt - MonoTime.currTime).total!"msecs";
+        updateStatus(autoResendStatusText(
+            cast(int)((remainingMs + 999) / 1_000)));
+    }
+
+    /// Repaint the automatic-retry pill when a schedule changed without a
+    /// transcript rebuild, and only for the conversation on screen.
+    private void refreshAutoRetryPill(int sessionIndex)
+    {
+        if (sessionIndex >= 0 && sessionIndex == _current) refreshBubbleActions();
     }
 
     /// Forget the scheduled re-send but keep the attempt budget, which belongs
@@ -25064,7 +25164,9 @@ private void pollButtonSuggestionRequest()
         // answer for now.
         if (_autoResendCount >= maxAutoResends)
         {
+            const sessionIndex = _autoResendSession;
             dropAutoResendSchedule();
+            refreshAutoRetryPill(sessionIndex);
             return;
         }
         const remainingMs = (_autoResendAt - MonoTime.currTime).total!"msecs";
@@ -25085,6 +25187,7 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
         {
             _autoResendCount = 0;
+            refreshAutoRetryPill(sessionIndex);
             return;
         }
         auto session = &_sessions[sessionIndex];
@@ -25092,6 +25195,7 @@ private void pollButtonSuggestionRequest()
             messageIndex >= cast(int) session.messages.length)
         {
             _autoResendCount = 0;
+            refreshAutoRetryPill(sessionIndex);
             return;
         }
         // The reply must still be the failed one this schedule was made for.
@@ -25099,6 +25203,7 @@ private void pollButtonSuggestionRequest()
         if (reply.role != "assistant" || !reply.failed)
         {
             _autoResendCount = 0;
+            refreshAutoRetryPill(sessionIndex);
             return;
         }
         ++_autoResendCount;
@@ -29765,6 +29870,14 @@ private void pollButtonSuggestionRequest()
                 {
                     regenerateLastReply(_current, messageIndex);
                 });
+            if (message.failed)
+                items ~= ContextMenuItem.command(
+                    autoResendPendingFor(_current, messageIndex)
+                        ? "Stop retrying" : "Start retrying",
+                    IconKind.refresh, delegate()
+                    {
+                        toggleAutoResend(_current, messageIndex);
+                    });
             if (!message.failed &&
                 (message.toolCalls.length == 0 || sessionTurnIncomplete(_current)))
                 items ~= ContextMenuItem.command("Continue",
@@ -34692,6 +34805,19 @@ private void pollButtonSuggestionRequest()
         failAssistantMessage(error);
     }
 
+    /// Test-only: deliver an `error` event through the real service path, so the
+    /// automatic re-send policy runs exactly as it does for a failed request
+    /// (`failAssistantMessage` alone bypasses that policy).
+    public void failRequestThroughServiceForTesting(string error)
+    {
+        if (_current < 0) return;
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.error;
+        event.text = error;
+        runtimeForSession(_current).client.pushLocalEvent(event);
+        serviceExecution(0.0);
+    }
+
     /// Test-only: invoke the action pill on the bubble at `index` exactly as a
     /// mouse click would, exercising the real delegate captured for that
     /// bubble (regression: foreach closures must not all target the last
@@ -35131,6 +35257,41 @@ private void pollButtonSuggestionRequest()
         if (children.length == 0) return "";
         auto bubble = cast(MessageBubble) children[$ - 1];
         return bubble is null ? "" : bubble.secondaryActionLabelForTesting();
+    }
+
+    /// Test-only: click the pill beside Retry on the last bubble, exactly as a
+    /// mouse click would.
+    public bool invokeLastBubbleSecondaryActionForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return false;
+        auto bubble = cast(MessageBubble) children[$ - 1];
+        return bubble !is null && bubble.invokeSecondaryActionForTesting();
+    }
+
+    /// Test-only: bounds of the last bubble's action pill and of the pill
+    /// beside it, so a test can assert the retrying control sits to the right.
+    public Rect lastBubbleActionBoundsForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return Rect.init;
+        auto bubble = cast(MessageBubble) children[$ - 1];
+        return bubble is null ? Rect.init : bubble.actionBoundsForTesting();
+    }
+
+    public Rect lastBubbleSecondaryActionBoundsForTesting()
+    {
+        const children = messageColumnVisuals();
+        if (children.length == 0) return Rect.init;
+        auto bubble = cast(MessageBubble) children[$ - 1];
+        return bubble is null ? Rect.init
+            : bubble.secondaryActionBoundsForTesting();
+    }
+
+    /// Test-only: whether an automatic re-send is waiting to fire.
+    public bool autoResendPendingForTesting() const
+    {
+        return _autoResendPending;
     }
 
     /// Test-only: the resume-pill label hosted on the transcript's tip widget.
