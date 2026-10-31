@@ -21963,7 +21963,13 @@ private void pollButtonSuggestionRequest()
     /// Invalidate the request id before closing handles so already-queued or
     /// late events cannot append output, restart a tool continuation, or keep
     /// the UI trapped in Stop mode.
-    private void stopActiveTurn()
+    ///
+    /// `pauseGoal` is false when the stop is only a side effect of the user
+    /// sending the next message (a promoted queued prompt or an edited one).
+    /// That interruption exists to free the turn for the new prompt, so the
+    /// persistent goal the user is still pursuing stays active; only an
+    /// explicit Stop pauses it.
+    private void stopActiveTurn(bool pauseGoal = true)
     {
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
@@ -22014,7 +22020,7 @@ private void pollButtonSuggestionRequest()
         cancelPendingTools();
 
         auto session = &_sessions[sessionIndex];
-        pauseActiveGoal(*session);
+        if (pauseGoal) pauseActiveGoal(*session);
         foreach (index; freezeFollowUpTimers(*session, true))
             publishMessageEvent(AgentEventKind.itemUpdated, *session, session.messages[index]);
         // Guidance was already submitted by the user and persisted while this
@@ -23020,7 +23026,7 @@ private void pollButtonSuggestionRequest()
             // Stop first, never alongside it: the queued turn opens from
             // `startInterruptedSendIfReady` once the request has released.
             _interruptSendSession = _current;
-            stopActiveTurn();
+            stopActiveTurn(false);
             updateStatus("Interrupting — the queued message starts the next turn.");
             return;
         }
@@ -25515,7 +25521,7 @@ private void pollButtonSuggestionRequest()
         cancelAutoResend();
         if (_client.busy() || _turnTiming || _turnInFlight ||
             _pendingToolCalls.length > 0 || _pendingToolResults > 0)
-            stopActiveTurn();
+            stopActiveTurn(false);
         cancelPendingTools();
         _streamBubble = null;
         _editMessageIndex = messageIndex;
@@ -25550,7 +25556,7 @@ private void pollButtonSuggestionRequest()
         cancelAutoResend();
         if (_client.busy() || _turnTiming || _turnInFlight ||
             _pendingToolCalls.length > 0 || _pendingToolResults > 0)
-            stopActiveTurn();
+            stopActiveTurn(false);
         cancelPendingTools();
         _streamBubble = null;
         _editMessageIndex = -1;

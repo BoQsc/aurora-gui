@@ -268,6 +268,26 @@ int main()
     root.setAutoGoalFromFirstMessageForTesting(true);
     writeln("PASS first-message goal adoption follows its setting");
 
+    // Sending a message that is already queued interrupts the running turn so
+    // the promoted prompt can start. That interruption is user-sent work, not a
+    // Stop, so the persistent goal must stay active.
+    root.newChatForTesting();
+    root.tickTree(0.02);
+    root.setGoalForTesting("finish the goal-send fix", "active");
+    root.addConversationForTesting(["user"], ["start the goal work"]);
+    root.startTurnClockForTesting();
+    root.setInputForTesting("queued next step");
+    root.queueComposerForTesting();
+    root.tickTree(0.02);
+    assert(root.turnBusyForTesting() &&
+        root.queuedFollowUpCountForTesting() == 1,
+        "the queued message was not queued for the running turn");
+    assert(root.clickQueuedPromptActionForTesting(0),
+        "the queued message's Send now action did not fire");
+    assert(root.goalStatusForTesting() == "active",
+        "sending a queued message paused the persistent goal");
+    writeln("PASS sending a queued message keeps the persistent goal active");
+
     root.shutdownClient();
     window.close();
     writeln("goal UI smoke passed");
