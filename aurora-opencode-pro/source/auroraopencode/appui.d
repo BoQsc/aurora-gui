@@ -6496,6 +6496,8 @@ private final class ToolGroupBubble : Widget
     // them; `onLayout` places them at `padH`, matching MessageBubble's text.
 
     private Widget[] _parts;
+    private TranscriptPresenter _details;
+    private int _detailsHeight;
     private bool _collapsed = true;
     private bool _flat;
     private bool _showTail;
@@ -6532,10 +6534,12 @@ private final class ToolGroupBubble : Widget
     {
         _parts = parts;
         _live = live;
+        _details = new TranscriptPresenter();
+        add(_details);
         foreach (part; parts)
         {
             part.setVisible(partVisible(part));
-            add(part);
+            _details.add(part);
         }
     }
 
@@ -6548,6 +6552,8 @@ private final class ToolGroupBubble : Widget
         {
             if (auto bubble = cast(MessageBubble) part)
                 names ~= bubble.toolNameForTesting();
+            else if (auto deferred = cast(DeferredTranscriptRow) part)
+                names ~= deferred.toolName;
             else if (auto row = cast(LiveToolRow) part)
                 names ~= row.toolNameForTesting();
         }
@@ -6566,11 +6572,22 @@ private final class ToolGroupBubble : Widget
             (_showTail && _parts.length > 0 && part is _parts[$ - 1]);
     }
 
+    private void syncParts()
+    {
+        foreach (part; _parts)
+        {
+            const visible = partVisible(part);
+            _details.setRowVisible(part, visible);
+            if (!visible)
+                if (auto deferred = cast(DeferredTranscriptRow) part) deferred.release();
+        }
+    }
+
     void setFlat(bool value)
     {
         if (_flat == value) return;
         _flat = value;
-        foreach (part; _parts) part.setVisible(partVisible(part));
+        syncParts();
         invalidate();
     }
 
@@ -6578,7 +6595,7 @@ private final class ToolGroupBubble : Widget
     {
         if (_showTail == value) return;
         _showTail = value;
-        foreach (part; _parts) part.setVisible(partVisible(part));
+        syncParts();
         invalidate();
     }
 
@@ -6586,8 +6603,7 @@ private final class ToolGroupBubble : Widget
     {
         if (_collapsed == value) return;
         _collapsed = value;
-        foreach (part; _parts)
-            part.setVisible(partVisible(part));
+        syncParts();
         if (onCollapseChanged !is null) onCollapseChanged(_collapsed);
         if (onSizeChanged !is null) onSizeChanged();
         invalidate();
@@ -6601,7 +6617,7 @@ private final class ToolGroupBubble : Widget
     {
         _parts ~= part;
         part.setVisible(partVisible(part));
-        add(part);
+        _details.add(part);
     }
 
     /// Mark the group as still working so its header reads in the present
@@ -6610,8 +6626,7 @@ private final class ToolGroupBubble : Widget
     {
         if (_live == value) return;
         _live = value;
-        foreach (part; _parts)
-            part.setVisible(partVisible(part));
+        syncParts();
         invalidate();
     }
 
@@ -6720,7 +6735,9 @@ private final class ToolGroupBubble : Widget
         int failed;
         foreach (part; _parts)
             if (auto bubble = cast(MessageBubble) part)
-                if (bubble._failed) ++failed;
+            { if (bubble._failed) ++failed; }
+            else if (auto deferred = cast(DeferredTranscriptRow) part)
+                if (deferred.toolFailed) ++failed;
         if (failed > 0) summary ~= " · " ~ to!string(failed) ~ " failed";
         return (_collapsed ? "▸" : "▾") ~ " " ~ summary;
     }
@@ -6737,6 +6754,11 @@ private final class ToolGroupBubble : Widget
             {
                 additions += bubble.diffAdditionsForTesting();
                 deletions += bubble.diffDeletionsForTesting();
+            }
+            else if (auto deferred = cast(DeferredTranscriptRow) part)
+            {
+                additions += deferred.additions;
+                deletions += deferred.deletions;
             }
             else if (auto row = cast(LiveToolRow) part)
             {
@@ -6771,6 +6793,8 @@ private final class ToolGroupBubble : Widget
         {
             if (auto bubble = cast(MessageBubble) part)
                 total = max(total, bubble.toolElapsedMsForTesting());
+            else if (auto deferred = cast(DeferredTranscriptRow) part)
+                total = max(total, deferred.elapsedMs);
             else if (auto row = cast(LiveToolRow) part)
                 total = max(total, row.toolElapsedMsForTesting());
         }
@@ -6812,16 +6836,13 @@ private final class ToolGroupBubble : Widget
         // Match MessageBubble's vertical padding so a collapsed group row is
         // the same height as a sibling Thinking / Shell / Read header row.
         double height = _flat ? 0 : 2 * padV + headerHeight();
+        _detailsHeight = 0;
+        _details.setVisible(_flat || !_collapsed || _live || _showTail);
         if (_flat || !_collapsed || _live || _showTail)
         {
             const childWidth = maxInt(0, width - (_flat ? 0 : 2 * padH));
-            foreach (part; _parts)
-            {
-                if (!part.visible()) continue;
-                part.measure(Size(childWidth, available.height));
-                const hint = part.layoutHints().preferredHeight;
-                height += hint >= 0 ? hint : cast(double) part.bounds().height;
-            }
+            _detailsHeight = _details.measure(Size(childWidth, available.height)).height;
+            height += _detailsHeight;
         }
         height += actionReserve();
         layoutHints().preferredWidth = width;
@@ -6833,14 +6854,7 @@ private final class ToolGroupBubble : Widget
     {
         const width = maxInt(0, bounds().width - (_flat ? 0 : 2 * padH));
         int y = _flat ? 0 : 2 * padV + headerHeight();
-        foreach (part; _parts)
-        {
-            if (!part.visible()) continue;
-            const hint = part.layoutHints().preferredHeight;
-            const childHeight = hint >= 0 ? hint : part.bounds().height;
-            part.setBounds(Rect(_flat ? 0 : padH, y, width, childHeight));
-            y += childHeight;
-        }
+        if (_details.visible()) _details.setBounds(Rect(_flat ? 0 : padH, y, width, _detailsHeight));
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -18956,10 +18970,16 @@ private void pollButtonSuggestionRequest()
         collectMessageBubbles(_messageColumn, found);
         foreach (bubble; found)
             if (bubble.messageIndex() == messageIndex) return bubble;
-        foreach (child; messageColumnVisuals())
-            if (auto deferred = cast(DeferredTranscriptRow) child)
-                if (deferred.messageIndex == messageIndex)
-                    return cast(MessageBubble) deferred.ensureMaterialized();
+        DeferredTranscriptRow findDeferred(Widget node)
+        {
+            if (auto descriptor = cast(DeferredTranscriptRow) node)
+                if (descriptor.messageIndex == messageIndex) return descriptor;
+            foreach (child; node.children())
+                if (auto match = findDeferred(child)) return match;
+            return null;
+        }
+        if (auto descriptor = findDeferred(_messageColumn))
+            return cast(MessageBubble) descriptor.ensureMaterialized();
         return null;
     }
 
@@ -19000,7 +19020,7 @@ private void pollButtonSuggestionRequest()
         foreach (slot; slots)
         {
             const index = path[slot];
-            parts ~= buildMessageBubble(index, session.messages[index],
+            parts ~= buildDeferredMessage(index, session.messages[index],
                 latestAssistantIndex, versionPositions, versionTotals);
         }
         auto group = new ToolGroupBubble(parts);
@@ -19016,6 +19036,7 @@ private void pollButtonSuggestionRequest()
     private void wireToolGroup(ToolGroupBubble group, string key)
     {
         group.collapseKey = "group:" ~ key;
+        group._details.onAnchorCorrection = delegate(int delta) { _messagesScroll._anchorGrow += delta; };
         group.onSizeChanged = delegate()
         {
             _messageColumn.invalidate();
@@ -19067,9 +19088,10 @@ private void pollButtonSuggestionRequest()
                         deferred = planningDeferred = true;
                         break;
                     }
-                    auto row = buildMessageBubble(indices[i], result,
+                    auto resultWithName = cast(ChatMessage) result;
+                    if (!resultWithName.toolName.length) resultWithName.toolName = call.name;
+                    auto row = buildDeferredMessage(indices[i], resultWithName,
                         latestAssistantIndex, versionPositions, versionTotals);
-                    if (result.toolName.length == 0) row.setToolName(call.name);
                     part = row;
                     break;
                 }
@@ -19377,6 +19399,11 @@ private void pollButtonSuggestionRequest()
         auto factory = new BubbleRowFactory(this, index, message, latest, positions, totals, thinking);
         auto row = new DeferredTranscriptRow(&factory.create);
         row.messageIndex = cast(long) index;
+        row.toolName = message.toolName;
+        row.toolFailed = message.failed;
+        row.additions = message.diffAdditions;
+        row.deletions = message.diffDeletions;
+        row.elapsedMs = message.toolElapsedMs;
         row.allowRelease = &factory.allowRelease;
         _deferredRows.remember(message.id, presentation, row);
         return row;
@@ -31809,6 +31836,19 @@ private void pollButtonSuggestionRequest()
             else if (cast(MessageBubble) child !is null) ++count;
         return count;
     }
+
+    public size_t toolDetailsForTesting(bool onlyMaterialized = true)
+    {
+        size_t count;
+        void visit(Widget node)
+        {
+            if (auto row = cast(DeferredTranscriptRow) node)
+                if (row.toolName.length && (!onlyMaterialized || row.materialized() !is null)) ++count;
+            foreach (child; node.children()) visit(child);
+        }
+        visit(_messageColumn);
+        return count;
+    }
     public bool messageInViewportForTesting(int index)
     {
         auto bubble = bubbleForMessageIndex(index);
@@ -33916,6 +33956,13 @@ private void pollButtonSuggestionRequest()
         return count;
     }
 
+    private static MessageBubble toolBubbleForTesting(Widget part)
+    {
+        if (auto deferred = cast(DeferredTranscriptRow) part)
+            return cast(MessageBubble) deferred.ensureMaterialized();
+        return cast(MessageBubble) part;
+    }
+
     /// Test-only: labels of the in-progress tool rows currently in the column
     /// (one per running Edit / Write / Delete / Shell call), recursing into
     /// their turn's action group where the rows now live.
@@ -34131,7 +34178,7 @@ private void pollButtonSuggestionRequest()
         {
             if (auto group = cast(ToolGroupBubble) child)
                 foreach (part; group._parts)
-                    if (auto bubble = cast(MessageBubble) part)
+                    if (auto bubble = toolBubbleForTesting(part))
                         headers ~= bubble.toolHeaderText();
             if (auto bubble = cast(MessageBubble) child)
                 if (bubble._role == "tool") headers ~= bubble.toolHeaderText();
@@ -35529,7 +35576,7 @@ private void pollButtonSuggestionRequest()
             if (auto group = cast(ToolGroupBubble) child)
             {
                 foreach (part; group._parts)
-                    if (auto partBubble = cast(MessageBubble) part)
+                    if (auto partBubble = toolBubbleForTesting(part))
                         result ~= partBubble;
                 continue;
             }

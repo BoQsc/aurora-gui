@@ -42,7 +42,7 @@ It still runs on the window thread: it is **not** an autonomous actor.
 | Native recovery | Before-images and an intent manifest are saved before native file effects. Completion retires temporary blobs. Death leaves an explicitly uncertain operation with preserved before-images; it is never automatically replayed or undone. Changes reports pending operations. |
 | Attachments | Immutable content-addressed blobs replace repeated persisted base64. Missing/corrupt images retain references and appear unavailable; surrounding messages survive. Corrupt existing blobs are rejected. Legacy records remain readable. |
 | History | Selection and internal actions load asynchronously. A bounded ID-based mailbox retains actions through loading and retry. Failed/missing history blocks Send; failed startup preserves original files even on close. Replay patches retain metadata absent from the journal tail. |
-| Presentation | Settled rows are retained by identity/presentation inputs. Long pages use deferred descriptors, a height index, overscan and eviction. Selection/search targets are pinned; search spans and lazily reveals the active branch. |
+| Presentation | Settled rows are retained by identity/presentation inputs. Long pages use deferred descriptors, a height index, overscan and eviction. Tool groups retain cheap result metadata while collapsed and use a nested viewport presenter when expanded. Selection/search targets are pinned; search spans and lazily reveals the active branch. Wrapped code copies logical lines once and retains blank lines. |
 | Diagnostics/prompt | Shared lock initialization, bounded asynchronous diagnostics, rotation and measurement sampling. Prompt identity includes module generation and current feature flags; repeated instructions were shortened. |
 | Deployment | Apply through the existing self-helper. A per-build local publication switch preserves the normal publisher setting after the new app launches. |
 
@@ -88,12 +88,13 @@ elapsed time. Tests use private executables/state.
    window-thread I/O waits. Replay
    full recorded provider/tool traces to the same transcript and task; the new
    forced application-death proof covers copied branches and a settled mixed batch.
-3. Complete incremental transcript/group projection. Stable page reconciliation
-   already preserves retained children and focus; complex tool groups remain
-   eager. Long Markdown paint now has measured visibility indexing and real-chat
-   forced-rebuild/input tests, including a 10,000-row diff. Finish group laziness,
-   image-heavy history benchmarks and allocation reduction; these measurements
-   do not establish that arbitrary long histories are fast.
+3. Complete incremental transcript projection, image-heavy history benchmarks
+   and remaining allocation/cold-layout reduction. Stable page reconciliation
+   preserves retained children and focus. Tool details now construct lazily,
+   including a virtualized expanded group. Long Markdown paint has measured
+   visibility indexing and real-chat forced-rebuild/input tests, including a
+   10,000-row diff. These measurements do not establish that arbitrary long
+   histories are fast.
 4. Finish extracting orchestration/title/compaction/computer/continuation effect
    coordination. Request/context/turn/tool/plan policy modules, unified typed
    retry decisions and revision-keyed request projection caching are implemented.

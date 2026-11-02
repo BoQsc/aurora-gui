@@ -14,6 +14,12 @@ public final class DeferredTranscriptRow : Widget
     private Widget _row;
     bool delegate(Widget) allowRelease;
     long messageIndex = -1;
+    // A collapsed action group can summarize a result without constructing
+    // its text, diff, images or interaction controls.
+    string toolName;
+    bool toolFailed;
+    int additions, deletions;
+    long elapsedMs;
     this(Widget delegate() factory) { _factory = factory; }
     Widget materialized() { return _row; }
     Widget ensureMaterialized()
@@ -99,6 +105,12 @@ public final class TranscriptPresenter : VBox
 
     this(int spacing = 0, Insets padding = Insets(0)) { super(spacing, padding); }
 
+    void setRowVisible(Widget row, bool visible)
+    {
+        _virtualHidden.remove(row);
+        row.setVisible(visible);
+    }
+
     /// Preserve a retained row's screen position while older descriptors are
     /// prepended. Total-height deltas include unrelated offscreen estimates;
     /// anchor to the row itself instead, without measuring the whole history.
@@ -167,6 +179,15 @@ public final class TranscriptPresenter : VBox
         return null;
     }
 
+    private int viewportTop(ScrollView view)
+    {
+        if (view is null) return 0;
+        int offset;
+        for (Widget node = this; node.parent() !is null && node.parent() !is view; node = node.parent())
+            offset += node.bounds().y;
+        return view.scrollY() - offset;
+    }
+
     protected override Size onMeasure(Size available)
     {
         if (children().length < virtualThreshold) return super.onMeasure(available);
@@ -174,7 +195,7 @@ public final class TranscriptPresenter : VBox
         const pad = padding();
         const width = maxInt(0, available.width - pad.left - pad.right);
         const page = view !is null ? maxInt(1, view.bounds().height) : 700;
-        int top = view !is null ? view.scrollY() : 0;
+        int top = viewportTop(view);
         const follow = following !is null && following();
         _measuredTop = top;
         int estimatedBottom = pad.top + pad.bottom;
@@ -241,7 +262,7 @@ public final class TranscriptPresenter : VBox
         scope(exit) _insertAnchor = null;
         if (children().length < virtualThreshold) { super.onLayout(); return; }
         auto view = viewport();
-        const top = view !is null ? view.scrollY() : 0;
+        const top = viewportTop(view);
         const page = view !is null ? view.bounds().height : 700;
         const pad = padding();
         // ScrollView does not invalidate a child's measure cache when its

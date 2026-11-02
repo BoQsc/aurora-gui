@@ -76,3 +76,26 @@ wraps. It passed in `build/architecture-checks-ugxiwf2m/`, source fingerprint
 `8c877dbf33094e5ae274ccfa49b4c5530c254d108c6af5dadab0a1c2f81a2eac`.
 The native headless smoke and existing viewport pixel/geometry checks passed
 before the final test expansion in `build/architecture-checks-w8izecto/`.
+
+## Lazy tool groups (source, not yet deployed)
+
+Collapsed groups retain result names, failure counts, diff totals and durations
+without constructing detail widgets. Expanded groups use a nested viewport
+presenter, which accounts for the group's offset within the scroll content.
+Offscreen details are released; selection and search targets remain pinned.
+
+The 180-result fixture includes roughly 6 MiB of saved textual output. It
+constructs zero details while collapsed and fewer than 100 while expanded or
+scrolling, releases them on collapse, and reveals an exact search target.
+One recorded collapsed rebuild plus paint took 5,174 microseconds and allocated
+471,968 bytes. This is a debug fixture measurement, not a general latency bound.
+Proof: `build/architecture-checks-11tdcmp9/`, fingerprint
+`8af0ac0d0a00549996ec39f4a20e8e43e45ceb1c29d023ac69fdcf5ae12498b8`.
+
+The full native smoke, presentation, tool feedback, history preservation and
+follow-up fixtures passed in `build/architecture-checks-60s4z5x1/`. Image,
+execution and interaction-performance checks passed on the final fingerprint
+in `build/architecture-checks-lfnvt4wz/`; its long-reply input/rebuild/paint p95
+was 13,176 microseconds and its 10,000-row diff p95 was 13,292 microseconds.
+The 16-round HTTP conversation fixture passed in
+`build/architecture-checks-atnmezji/`.
