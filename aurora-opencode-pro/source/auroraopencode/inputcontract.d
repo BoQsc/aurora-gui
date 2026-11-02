@@ -1,0 +1,5 @@
+module auroraopencode.inputcontract;
+
+/// Both ordinary agents and orchestration use the same missing-information
+/// contract. Routing must not provide a weaker permission-to-stop shortcut.
+public enum requestInputSchema = `{"type":"object","properties":{"reason":{"type":"string"},"required_fact":{"type":"string","description":"The essential fact only the user can supply, such as an absent deployment destination"},"question":{"type":"string"},"checked":{"type":"array","items":{"type":"string"},"description":"Concrete sources and alternatives already inspected"},"independent_work_complete":{"type":"boolean","description":"True after completing all work that does not depend on the missing fact"},"blocked_steps":{"type":"array","items":{"type":"string"},"description":"IDs of every remaining outcome/action that genuinely depends on this missing fact. Finish all other work first; required when more than one outcome remains."}},"required":["reason","required_fact","question","checked","independent_work_complete"]}`;

@@ -93,10 +93,7 @@ import auroraopencode.orchestrator : setOrchestratorSetting,
     experimentalOrchestratorIdentityBlock,
     experimentalOrchestratorFilterTools,
     experimentalOrchestratorSubagents,
-    experimentalOrchestratorTakePendingAssignments,
-    experimentalOrchestratorTakePendingHalt,
-    experimentalOrchestratorTakePendingStatus,
-    OrchestratorAssignment;
+    OrchestratorAssignment, OrchestrationBatch;
 // experimental: planmode - delete with source/auroraopencode/planmode.d
 import auroraopencode.planmode : experimentalStrictPlanEnabled,
     setStrictPlanSetting, trackedPlanPromptBlock;
@@ -12029,6 +12026,7 @@ private string _suggestExcludeId;
     // pointer.
     private struct PendingRound { string hubId; OrchestratorAssignment[] batch; }
     private PendingRound[] _pendingRounds;
+    private bool _stoppingDelegation;
     // Orchestrators whose round just reported back, resumed on the next service
     // pass: restarting the orchestrator's turn from inside a subagent's
     // completion frame re-enters the transcript rebuild while that frame is
@@ -12543,6 +12541,13 @@ private string _suggestExcludeId;
         foreach (i, ref session; _sessions)
             if (session.id == hubId) { hubIndex = cast(int) i; break; }
         if (hubIndex < 0) return;
+        // A late child completion belongs only to the round that still owns
+        // that child. Stop or a newer parent turn revokes that membership.
+        auto owned = hubId in _subagentPending;
+        if (owned is null || !(*owned).canFind(childId) ||
+            _sessions[hubIndex].turnStatus != "running") return;
+        if (auto runtime = hubId in _conversationRuntimes)
+            if ((*runtime).turnCancelled) return;
         auto note = subagentResult(_sessions[childIndex]);
         note.time = currentTimestamp();
         appendMessage(_sessions[hubIndex], note);
@@ -12586,6 +12591,9 @@ private string _suggestExcludeId;
                 if (session.id == hubId) { hubIndex = cast(int) i; break; }
             if (hubIndex < 0) continue;
             if (_sessions[hubIndex].parentSessionId.length > 0) continue;
+            if (_sessions[hubIndex].turnStatus != "running") continue;
+            if (auto runtime = hubId in _conversationRuntimes)
+                if ((*runtime).turnCancelled) continue;
             if (hasPendingSubagents(hubId)) continue;
             setTurnActiveMarker(true, hubId);
             setTurnInFlight(true);
@@ -12607,7 +12615,10 @@ private string _suggestExcludeId;
             int hubIndex = -1;
             foreach (i, ref session; _sessions)
                 if (session.id == round.hubId) { hubIndex = cast(int) i; break; }
-            if (hubIndex >= 0) startSubagentRound(hubIndex, round.batch);
+            if (hubIndex < 0 || _sessions[hubIndex].turnStatus != "running") continue;
+            if (auto runtime = round.hubId in _conversationRuntimes)
+                if ((*runtime).turnCancelled) continue;
+            startSubagentRound(hubIndex, round.batch);
         }
     }
 
@@ -21270,6 +21281,7 @@ private void pollButtonSuggestionRequest()
         // Publish the running calls before the rebuild: it must already show the
         // live rows, otherwise they blink out for one frame.
         _pendingToolCalls = calls.dup;
+        _execution.pendingRouting = OrchestrationBatch.init;
         _liveToolOutputs = null;
         _pendingToolImages.length = 0;
         _reportedToolCallIds = null;
@@ -21466,7 +21478,8 @@ private void pollButtonSuggestionRequest()
             ? event.verificationWorkspace : receiptWorkspace;
         const verificationRevision = event.verificationRevision;
         const policy = ToolResultPolicy(_settings.experimentalNestedPlans, receiptWorkspace,
-            verificationWorkspace, currentTimestamp(), toolWorkspaceRevision(verificationWorkspace));
+            verificationWorkspace, currentTimestamp(), toolWorkspaceRevision(verificationWorkspace),
+            experimentalOrchestratorEnabled(), _execution.pendingRouting.halt);
         auto settlement = settleToolResult(*session, event, toolArgs, policy);
         auto toolMessage = settlement.message;
         const toolFailed = toolMessage.failed;
@@ -21474,6 +21487,7 @@ private void pollButtonSuggestionRequest()
         const checkerAttempt = settlement.checkerAttempt;
         const scopedVerification = settlement.scopedVerification;
         const acceptedVerification = settlement.acceptedVerification;
+        _execution.pendingRouting.accept(settlement.routing);
         appendMessage(*session, toolMessage);
         if (event.images.length > 0)
             _pendingToolImages ~= event.images;
@@ -21601,11 +21615,11 @@ private void pollButtonSuggestionRequest()
             // ask_user and finish end the dispatch.
             if (experimentalOrchestratorEnabled())
             {
-                auto assignments =
-                    experimentalOrchestratorTakePendingAssignments();
-                const halt = experimentalOrchestratorTakePendingHalt();
-                const terminalStatus =
-                    experimentalOrchestratorTakePendingStatus();
+                const routing = _execution.pendingRouting.take();
+                auto assignments = routing.assignments;
+                const halt = routing.halt;
+                const terminalStatus = routing.status;
+                if (routing.question.length) session.contract.blocker = routing.question;
                 // finish/ask_user end the dispatch: mark the task terminal so
                 // the durable-task continuation stops re-opening turns (that
                 // endless "Continuation request…" loop was the bug).
@@ -21782,6 +21796,7 @@ private void pollButtonSuggestionRequest()
             return;
 
         _historyMailbox.cancel(_sessions[sessionIndex].id);
+        stopDelegatedWork(sessionIndex, pauseGoal);
 
         JSONValue stopDetails;
         stopDetails["pendingTools"] = _pendingToolResults;
@@ -21852,6 +21867,39 @@ private void pollButtonSuggestionRequest()
             preservedStatus);
         updateSendButton();
         updateGoalBar();
+    }
+
+    private void stopDelegatedWork(int ownerIndex, bool pauseGoal)
+    {
+        if (_stoppingDelegation) return;
+        _stoppingDelegation = true;
+        scope (exit) { _stoppingDelegation = false; loadRuntime(ownerIndex); }
+        bool[string] stopped;
+        stopped[_sessions[ownerIndex].id] = true;
+        // Breadth-first ownership closure also tolerates malformed cycles in
+        // old metadata without recursing indefinitely.
+        bool added = true;
+        while (added)
+        {
+            added = false;
+            foreach (session; _sessions)
+                if (session.parentSessionId in stopped && !(session.id in stopped))
+                { stopped[session.id] = true; added = true; }
+        }
+        PendingRound[] retainedRounds;
+        foreach (round; _pendingRounds)
+            if (!(round.hubId in stopped)) retainedRounds ~= round;
+        _pendingRounds = retainedRounds;
+        string[] retainedResumes;
+        foreach (id; _pendingResumes) if (!(id in stopped)) retainedResumes ~= id;
+        _pendingResumes = retainedResumes;
+        foreach (id, _; stopped) _subagentPending.remove(id);
+        foreach (i, session; _sessions)
+            if (i != ownerIndex && session.id in stopped && sessionIsBusy(cast(int) i))
+            {
+                loadRuntime(cast(int) i);
+                stopActiveTurn(pauseGoal);
+            }
     }
 
     /// Attach small explicitly mentioned files as hidden request context. The

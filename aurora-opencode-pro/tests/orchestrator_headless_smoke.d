@@ -102,6 +102,7 @@ void main()
     const sessionsBefore = root.sessionCountForTesting();
 
     // The orchestrator dispatches a round of two subagents at once.
+    root.setSessionTurnStatusForTesting(hub, "running");
     root.beginStreamForTesting();
     root.injectToolCallsForTesting(
         [OpenCodeToolCall("assign-1", "assign",

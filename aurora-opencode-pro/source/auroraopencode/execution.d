@@ -5,6 +5,7 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeE
 import auroraopencode.tools : ToolCancellation;
 import auroraopencode.repository : RepositoryRuntime;
 import auroraopencode.projectioncache : RequestProjectionCache;
+import auroraopencode.orchestrator : OrchestrationBatch;
 import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy;
 import core.time : MonoTime, msecs;
 import core.sync.mutex : Mutex;
@@ -83,6 +84,7 @@ public class ThreadEngine
     bool batchingToolResults;
     bool toolTranscriptDirty;
     OpenCodeToolCall[] pendingToolCalls;
+    OrchestrationBatch pendingRouting;
     int pendingToolResults;
     ChatImageAttachment[] pendingToolImages;
     bool[string] reportedToolCallIds;
@@ -210,6 +212,7 @@ public class ThreadEngine
 
     void stop()
     {
+        pendingRouting = OrchestrationBatch.init;
         toolContinuationPending = false;
         if (turnInFlight || pendingToolResults > 0 || _queuedEffect !is null)
             logAgentLifecycle(threadId, activeRequestId, "execution.cancelled");

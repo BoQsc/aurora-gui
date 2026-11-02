@@ -35,6 +35,7 @@ It still runs on the window thread: it is **not** an autonomous actor.
 | Service | Round-robin native application service runs during resize, uses a soft six-millisecond budget and bounded drains, and retains unconsumed events in order. |
 | Provider | Wire projection and stream accumulation/usage interpretation have separate modules. Shared asynchronous WinHTTP connections, isolated request cancellation and optional exact token preflight improve startup. Physically running requests have a configurable cap: `AURORA_PROVIDER_WORKERS`, default 16. A stopped worker retains its slot until it returns. Launch rejection is explicit. |
 | Retry | HTTP recovery and terminal resend use the same typed policy and outage configuration: `AURORA_PROVIDER_OUTAGE_MS`, default 120 seconds; explicit zero means unlimited. Exhausted provider recovery carries a terminal flag, so the UI cannot restart its budget. Backoff is clipped to remaining time. Explicit quota reset waits and manual Retry remain available. A failed request preserves the persistent goal. |
+| Orchestration | Routing values derive from recorded calls and settle into the owning conversation's batch. No process-global assignment/halt channel remains. Invalid participants, malformed partial batches and premature finish are rejected. `ask_user` shares the ordinary missing-information schema and validation. Stop revokes queued rounds/resumes and stops descendants; late child reports require live round membership. Productive handoffs have no eight-hop cap. |
 | Delivery | Native notifications service stream queues without widget ticks; remaining bounded-drain work is reposted and paint gets a turn between passes. Soft 8 MiB / 1,024-event producer limits, cancellation wakeups and UTF-8-safe drains retain text and terminal events. An indivisible event or consumer control reserve can exceed the soft bound. |
 | Tools | Shared four-worker scheduler, bounded pending queue, workspace read/write barriers and a global desktop lease. Captured computer routing is installed per worker. Leases remain held for physical effects. Queued, running, completed, failed, cancelled and resource-blocked states are explicit; terminal states survive snapshots and journal replay. Missing, duplicate and historically reused call IDs are normalized before ledger admission. |
 | Verification | Recognized check identity, actual exit status, workspace and mutation generation. Recipe and direct receipts retain the checked revision; a delayed receipt cannot inherit a later mutation. Completion revalidates current scope even without an intervening service tick. Goal evidence must reference successful recorded results in the active task. Physical mutations invalidate older evidence even when Stop drops their late events. Rebuilding alone cannot satisfy unrelated checks. |
@@ -101,6 +102,8 @@ elapsed time. Tests use private executables/state.
 4. Finish extracting orchestration/title/compaction/computer/continuation effect
    coordination. Request/context/turn/tool/plan policy modules, unified typed
    retry decisions and revision-keyed request projection caching are implemented.
+   Orchestration routing values and batch state are now conversation-owned;
+   child creation and parent-resume effects still reside in the root.
    Recipe evidence inspection still performs filesystem work and must move with
    effect ownership; extracting a function alone does not remove that I/O.
 5. Finish isolation for truly uninterruptible native calls. Explicit queued and
@@ -117,6 +120,17 @@ elapsed time. Tests use private executables/state.
 
 Deployment evidence follows after the helper succeeds and the new image/process
 are verified. This report does not mark the full redesign complete.
+
+The orchestration ownership check runs two real tool batches before consuming
+their events, verifies distinct child ownership, and exercises parent Stop and
+queued dispatch revocation. It also checks invalid participants, incomplete
+finish, validated input waiting and a productive handoff beyond 100 hops.
+Eight focused fixtures passed in `build/architecture-checks-0fh33cu2/`; the
+16-round HTTP conversation passed in `build/architecture-checks-4lcw4p85/` at
+source fingerprint
+`f028d86f0c535e4f4c51e1251f910a6af5e93bbb7c903935a4e17a62a4cc853d`.
+The later orchestrator header-comment edit does not change behavior. These
+changes remain source-only pending the complete migration and delivery.
 
 ## Earlier hardening deployment
 

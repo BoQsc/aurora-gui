@@ -118,7 +118,6 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         const didWork = policy.speakerToolRoundsBase >= 0 && policy.toolRounds > policy.speakerToolRoundsBase;
         if (next == "orchestrator" && !router && !didWork) next = "";
         result.advanceHop = true;
-        if (session.agentHops >= 8) next = "";
         if (next.length)
         {
             string review;

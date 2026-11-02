@@ -322,7 +322,7 @@ bool taskAwaitingInput(const ref ChatSession session)
         const ref message = session.messages[index];
         if (message.role == "user" && !message.internal) return false;
         if (message.role == "tool" && !message.failed &&
-            (message.toolName == "request_input" || message.toolName == "task_blocker"))
+            (message.toolName == "request_input" || message.toolName == "task_blocker" || message.toolName == "ask_user"))
             return taskInputError(session, message.toolArgs).length == 0;
     }
     return false;

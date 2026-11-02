@@ -1,15 +1,16 @@
 module auroraopencode.orchestrator;
 
 // experimental: orchestrator (multi-agent routing).
-// Removable drop-in: delete this file and the three "experimental:
-// orchestrator" markers in source/auroraopencode/tools.d and the feature is
-// gone, with no other call site to update. Mirrors the websearch/computer-use
-// pattern (see source/auroraopencode/websearch.d).
+// Tool execution produces a routing value. The owning conversation validates
+// and applies it after correlated settlement; workers never publish routing
+// decisions through shared mutable state.
 //
 // Off by default. Opt in with AURORA_ORCHESTRATOR=1 (also on/true/yes/y/
 // enabled/enable).
 
 import auroraopencode.core : AgentSpec, ChatSession, OpenCodeToolDef;
+import auroraopencode.inputcontract : requestInputSchema;
+import auroraopencode.taskcontinuation : taskBlockerError, taskInputError, unfinishedTask;
 import std.algorithm.searching : canFind;
 import std.array : appender;
 import std.conv : to;
@@ -30,6 +31,49 @@ public struct OrchestratorAssignment
 {
     string agentId;
     string task;
+}
+
+public struct OrchestratorDirective
+{
+    string output;
+    bool failed;
+    OrchestratorAssignment[] assignments;
+    bool halt;
+    string status, question;
+}
+
+/// Owned by one conversation's current tool batch, never by a tool worker.
+public struct OrchestrationBatch
+{
+    OrchestratorAssignment[] assignments;
+    bool halt;
+    string status, question;
+
+    void accept(OrchestratorDirective directive)
+    {
+        if (directive.failed) return;
+        if (directive.halt)
+        {
+            assignments = null; halt = true;
+            status = directive.status; question = directive.question;
+            return;
+        }
+        if (halt) return;
+        foreach (assignment; directive.assignments)
+        {
+            bool found;
+            foreach (ref existing; assignments)
+                if (existing.agentId == assignment.agentId)
+                {
+                    existing.task ~= "\n\nAdditional assignment:\n" ~ assignment.task;
+                    found = true; break;
+                }
+            if (!found) assignments ~= assignment;
+        }
+    }
+
+    OrchestrationBatch take()
+    { auto result = this; this = OrchestrationBatch.init; return result; }
 }
 
 /// Whether the experimental orchestrator routing tools are active. Read on
@@ -79,8 +123,8 @@ public OpenCodeToolDef[] experimentalOrchestratorTools()
             "ask_user",
             "Orchestrator only. Pause the dispatch and hand control back to the " ~
             "user with one specific question. Use only when a decision is " ~
-            "required to continue.",
-            `{"type":"object","properties":{"question":{"type":"string","description":"The single question to ask the user"}},"required":["question"]}`
+            "required to continue. Supply the same evidence and blocked-outcome fields as request_input; complete independent work first.",
+            requestInputSchema
         ),
         OpenCodeToolDef(
             "finish",
@@ -100,6 +144,15 @@ public OpenCodeToolDef[] experimentalOrchestratorTools()
 /// time. This module stays free of UI: the app owns presentation and dispatch.
 public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
     string args)
+{
+    auto directive = parseOrchestratorDirective(name, args);
+    return tuple(directive.output, directive.failed);
+}
+
+/// A recorded tool call fully determines its routing value. Executing it has
+/// no process-global side effect; only its correlated successful settlement
+/// may apply the directive to the owning conversation.
+public OrchestratorDirective parseOrchestratorDirective(string name, string args)
 {
     JSONValue value;
     try value = parseJSON(args);
@@ -129,15 +182,18 @@ public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
             // Preferred form: an explicit list dispatched as one batch.
             if (value.type == JSONType.object)
                 if (auto list = "assignments" in value.object)
-                    if (list.type == JSONType.array)
+                {
+                    if (list.type != JSONType.array || !list.array.length || list.array.length > 16)
+                        return OrchestratorDirective("Error: assignments must contain between 1 and 16 participants.", true);
                         foreach (ref entry; list.array)
                         {
                             const agent = strip(objField(entry, "agent_id"));
                             const task = strip(objField(entry, "task"));
-                            if (agent.length > 0 && task.length > 0)
-                                requested ~=
-                                    OrchestratorAssignment(agent, task);
+                            if (!agent.length || !task.length)
+                                return OrchestratorDirective("Error: every assignment requires agent_id and task. No partial batch was dispatched.", true);
+                            requested ~= OrchestratorAssignment(agent, task);
                         }
+                }
             // Single-agent shorthand (also the backward-compatible form).
             if (requested.length == 0)
             {
@@ -147,11 +203,12 @@ public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
                     requested ~= OrchestratorAssignment(agent, task);
             }
             if (requested.length == 0)
-                return tuple("Error: assign requires `agent_id` and `task`, " ~
+                return OrchestratorDirective("Error: assign requires `agent_id` and `task`, " ~
                     "or a non-empty `assignments` list of {agent_id, task}.",
                     true);
-            // One task per participant: keep the first for each agent id so a
-            // repeated id cannot make the same agent run twice in a batch.
+            if (requested.length > 16)
+                return OrchestratorDirective("Error: assign accepts at most 16 participants per call.", true);
+            // Never silently discard a second task for the same participant.
             OrchestratorAssignment[] batch;
             foreach (assignment; requested)
             {
@@ -162,9 +219,9 @@ public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
                         seen = true;
                         break;
                     }
-                if (!seen) batch ~= assignment;
+                if (seen) return OrchestratorDirective("Error: assign contains a duplicate participant: " ~ assignment.agentId, true);
+                batch ~= assignment;
             }
-            orchestratorPendingAssignments = batch;
             auto summary = appender!string();
             summary.put(batch.length == 1 ? "Assigned " : "Assigned in parallel ");
             summary.put(to!string(batch.length));
@@ -176,71 +233,47 @@ public Tuple!(string, bool) experimentalOrchestratorExecute(string name,
                 summary.put(" — ");
                 summary.put(assignment.task);
             }
-            return tuple(summary.data, false);
+            return OrchestratorDirective(summary.data, false, batch);
         }
         case "ask_user":
         {
             const question = strip(field("question"));
-            if (question.length == 0)
-                return tuple("Error: ask_user requires `question`.", true);
-            orchestratorPendingHalt = true;
-            orchestratorPendingStatus = "blocked";
-            return tuple("Waiting for the user: " ~ question, false);
+            const error = taskBlockerError(args);
+            if (error.length) return OrchestratorDirective(error, true);
+            return OrchestratorDirective("Waiting for the user: " ~ question, false,
+                null, true, "waiting_input", question);
         }
         case "finish":
         {
             const summary = strip(field("summary"));
-            orchestratorPendingHalt = true;
-            // Mark the dispatch done so the durable-task continuation does not
-            // keep re-opening turns after the orchestrator has finished.
-            orchestratorPendingStatus = "completed";
-            if (summary.length == 0)
-                return tuple("Dispatch finished.", false);
-            return tuple("Dispatch complete: " ~ summary, false);
+            return OrchestratorDirective(summary.length ? "Dispatch complete: " ~ summary : "Dispatch finished.",
+                false, null, true, "completed");
         }
         default:
-            return tuple("Error: unknown orchestrator tool '" ~ name ~ "'.",
+            return OrchestratorDirective("Error: unknown orchestrator tool '" ~ name ~ "'.",
                 true);
     }
 }
 
-/// Routing channel from the tool worker (which sets it) to the app (which
-/// consumes it at the next turn boundary). `__gshared` because the tool runs on
-/// a worker while the app reads it on the UI thread.
-// Assignments queued by the last `assign` call, consumed at the next turn
-// boundary. A whole batch is taken at once so the app can dispatch the
-// participants together.
-public __gshared OrchestratorAssignment[] orchestratorPendingAssignments;
-public __gshared bool orchestratorPendingHalt = false;
-// Terminal task status requested by a routing tool: "completed" (finish) or
-// "blocked" (ask_user). Applied to the session so the durable-task
-// continuation stops re-opening turns once the dispatch is over.
-public __gshared string orchestratorPendingStatus = "";
-
-/// Consume and clear the batch of assignments the orchestrator just made
-/// (empty when none). The caller dispatches the first immediately and queues
-/// the rest, so one assign can fan out to several agents.
-public OrchestratorAssignment[] experimentalOrchestratorTakePendingAssignments()
+public string orchestratorDirectiveError(const ref ChatSession session,
+    string name, string arguments, const ref OrchestratorDirective directive,
+    bool enabled, bool halted)
 {
-    auto value = orchestratorPendingAssignments;
-    orchestratorPendingAssignments = null;
-    return value;
-}
-
-/// Consume and clear the halt request (ask_user / finish).
-public bool experimentalOrchestratorTakePendingHalt()
-{
-    const value = orchestratorPendingHalt;
-    orchestratorPendingHalt = false;
-    return value;
-}
-
-/// Consume and clear the terminal status requested by finish/ask_user.
-public string experimentalOrchestratorTakePendingStatus()
-{
-    const value = orchestratorPendingStatus;
-    orchestratorPendingStatus = "";
-    return value;
+    if (directive.failed) return directive.output;
+    if (!enabled || !experimentalOrchestratorIsRouter(session, session.activeAgentId))
+        return "Error: routing tools require this conversation's active orchestrator.";
+    if (halted) return "Error: this batch already ended its dispatch. No further routing action was applied.";
+    foreach (assignment; directive.assignments)
+    {
+        bool known;
+        foreach (agent; session.agents)
+            if (agent.id == assignment.agentId && !agent.router) { known = true; break; }
+        if (!known) return "Error: unknown worker participant: " ~ assignment.agentId;
+    }
+    if (name == "ask_user") return taskInputError(session, arguments);
+    if (name == "finish" && unfinishedTask(session, false))
+        return "Error: unfinished outcomes or verification remain. Continue them before ending the dispatch.";
+    return "";
 }
 
 /// True when `name` is one of the routing-only tools.

@@ -3,6 +3,8 @@ module auroraopencode.toolsettlement;
 import auroraopencode.core : ChatSession, ChatMessage;
 import auroraopencode.opencode_client : OpenCodeEvent;
 import auroraopencode.toolstate : terminalToolState;
+import auroraopencode.orchestrator : OrchestratorDirective, parseOrchestratorDirective,
+    orchestratorDirectiveError, experimentalOrchestratorIsRoutingTool;
 import auroraopencode.taskflow : planUpdateText;
 import auroraopencode.taskmutation : nestedPlanError, planReplacementError;
 import auroraopencode.imagecontext : retireImagesSessionError;
@@ -19,12 +21,14 @@ struct ToolResultPolicy
     bool nestedPlans;
     string workspace, verificationWorkspace, timestamp;
     ulong currentRevision;
+    bool orchestratorEnabled, routingHalted;
 }
 
 struct ToolSettlement
 {
     ChatMessage message;
     bool checkerAttempt, scopedVerification, acceptedVerification;
+    OrchestratorDirective routing;
 }
 
 /// Resolve semantic validation and receipt coverage from one captured state.
@@ -33,6 +37,14 @@ struct ToolSettlement
 ToolSettlement settleToolResult(const ref ChatSession session,
     const ref OpenCodeEvent event, string toolArgs, const ref ToolResultPolicy policy)
 {
+    OrchestratorDirective routing;
+    string routingError;
+    if (!event.toolFailed && experimentalOrchestratorIsRoutingTool(event.toolName))
+    {
+        routing = parseOrchestratorDirective(event.toolName, toolArgs);
+        routingError = orchestratorDirectiveError(session, event.toolName, toolArgs,
+            routing, policy.orchestratorEnabled, policy.routingHalted);
+    }
     const planError = !event.toolFailed && event.toolName == "update_plan"
         ? planReplacementError(session, toolArgs) : "";
     const subplanError = !event.toolFailed &&
@@ -51,8 +63,8 @@ ToolSettlement settleToolResult(const ref ChatSession session,
     const toolFailed = event.toolFailed || planError.length > 0 ||
         subplanError.length > 0 || imageError.length > 0 ||
         blockerError.length > 0 || goalError.length > 0 ||
-        planViewError.length > 0;
-    string toolText = planViewError.length > 0 ? planViewError : planError.length > 0 ? planError :
+        planViewError.length > 0 || routingError.length > 0;
+    string toolText = routingError.length > 0 ? routingError : planViewError.length > 0 ? planViewError : planError.length > 0 ? planError :
         subplanError.length > 0 ? subplanError :
         imageError.length > 0 ? imageError :
         blockerError.length > 0 ? blockerError :
@@ -103,5 +115,6 @@ ToolSettlement settleToolResult(const ref ChatSession session,
     toolMessage.verificationScope = checkerAttempt ? session.verificationScope : "";
     toolMessage.toolElapsedMs = event.elapsedMs;
     toolMessage.time = policy.timestamp;
-    return ToolSettlement(toolMessage, checkerAttempt, scopedVerification, acceptedVerification);
+    return ToolSettlement(toolMessage, checkerAttempt, scopedVerification, acceptedVerification,
+        toolFailed ? OrchestratorDirective.init : routing);
 }
