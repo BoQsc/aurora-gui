@@ -2,6 +2,7 @@ module actor_image_contracts;
 
 import auroraopencode.core;
 import auroraopencode.conversationactor;
+import actorview : ActorTestView;
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.imagehistory : requestHistoryImageIndices, requestImageByteBudget;
 import core.thread : Thread;
@@ -42,6 +43,7 @@ int main()
     ActorConfiguration config; config.baseUrl = base; config.apiKey = "fixture";
     config.workspace = directory; config.recordTrace = true; config.request.contextLimit = 64_000;
     auto actor = new ConversationActor(initial, config, null);
+    auto view = new ActorTestView(initial, actor);
     string originalReply;
     foreach (round; 0 .. 3)
     {
@@ -54,7 +56,7 @@ int main()
         const deadline = MonoTime.currTime + 10.seconds;
         while (MonoTime.currTime < deadline && !ready)
         {
-            foreach (change; actor.takeChanges())
+            foreach (change; view.take())
             {
                 assert(change.kind != ActorChangeKind.fault, change.text);
                 if (change.kind == ActorChangeKind.added)
@@ -64,11 +66,10 @@ int main()
                     if (auto images = "images" in message.object)
                         foreach (image; images.array) assert(!("base64Data" in image.object));
                 }
-                if (change.kind != ActorChangeKind.metadata) continue;
-                latest = parseJSON(change.text);
-                if (latest["turnStatus"].str == "running") began = true;
+                if (change.busy) began = true;
             }
-            if (latest.type == JSONType.object) ready = began && latest["turnStatus"].str == "completed";
+            latest = view.header;
+            ready = began && view.model.turnStatus == "completed" && !view.projection.busy;
             assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
         }
         assert(ready, "Image turn did not complete");

@@ -2,6 +2,7 @@ module actor_configuration_contracts;
 
 import auroraopencode.core;
 import auroraopencode.conversationactor;
+import actorview : ActorTestView;
 import auroraopencode.tools : buildSystemPrompt, nativeOnlyToolDefinitions;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
@@ -28,12 +29,13 @@ int main()
     config.request.baseSystemPrompt = buildSystemPrompt(true, oldWorkspace, "win32", "auto");
     config.request.availableTools = nativeOnlyToolDefinitions();
     auto actor = new ConversationActor(initial, config, null);
+    auto view = new ActorTestView(initial, actor);
     assert(actor.post(ActorCommand(ActorCommandKind.start, "Analyze this design and record a plain text note.")) == ActorAdmission.accepted);
     bool partial;
     const partialDeadline = MonoTime.currTime + 10.seconds;
     while (!partial && MonoTime.currTime < partialDeadline)
     {
-        foreach (change; actor.takeChanges()) if (change.kind == ActorChangeKind.delta) partial = true;
+        foreach (change; view.take()) if (change.kind == ActorChangeKind.delta) partial = true;
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
     }
     assert(partial);
@@ -50,7 +52,7 @@ int main()
     const configurationDeadline = MonoTime.currTime + 10.seconds;
     while (!configured && MonoTime.currTime < configurationDeadline)
     {
-        foreach (change; actor.takeChanges()) if (change.kind == ActorChangeKind.metadata) latest = parseJSON(change.text);
+        view.take(); latest = view.header;
         if (latest.type == JSONType.object) configured = latest["model"].str == "configuration-new" &&
             latest["title"].str == "User chosen title";
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
@@ -60,12 +62,12 @@ int main()
     const deadline = MonoTime.currTime + 15.seconds;
     while (!finished && MonoTime.currTime < deadline)
     {
-        foreach (change; actor.takeChanges())
+        foreach (change; view.take())
         {
             assert(change.kind != ActorChangeKind.fault, change.text);
-            if (change.kind == ActorChangeKind.metadata) latest = parseJSON(change.text);
         }
-        if (latest.type == JSONType.object) finished = latest["turnStatus"].str == "completed";
+        latest = view.header;
+        finished = view.model.turnStatus == "completed" && !view.projection.busy;
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
     }
     write(buildPath(directory, "last-header.json"), latest.toString());
@@ -79,8 +81,7 @@ int main()
     const readDeadline = MonoTime.currTime + 5.seconds;
     while (!read && MonoTime.currTime < readDeadline)
     {
-        foreach (change; actor.takeChanges()) if (change.kind == ActorChangeKind.metadata)
-            read = !("unread" in parseJSON(change.text).object);
+        view.take(); read = !view.model.unread;
         Thread.sleep(2.msecs);
     }
     assert(read);
@@ -89,7 +90,7 @@ int main()
     const invalidDeadline = MonoTime.currTime + 5.seconds;
     while (!rejected && MonoTime.currTime < invalidDeadline)
     {
-        foreach (change; actor.takeChanges()) if (change.kind == ActorChangeKind.notice) rejected = true;
+        foreach (change; view.take()) if (change.kind == ActorChangeKind.notice) rejected = true;
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
     }
     assert(rejected, "Malformed configuration did not return an explicit rejection");

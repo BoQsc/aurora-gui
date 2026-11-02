@@ -115,7 +115,7 @@ int main()
                 }
                 auto applied = projections[delivery.threadId].apply(views[delivery.threadId], delivery.changes);
                 assert(!applied.error.length, applied.error);
-                if (applied.needsSnapshot) rotating.post(delivery.threadId, ActorCommand(ActorCommandKind.snapshot));
+                if (applied.requestSnapshot) rotating.post(delivery.threadId, ActorCommand(ActorCommandKind.snapshot));
             }
             ready = views[id].draft == draft;
             assert(rotating.activeWorkers() <= 1); Thread.sleep(2.msecs);
@@ -150,7 +150,8 @@ int main()
         {
             if (delivery.threadId == broken.id && delivery.error.length) sawFailure = true;
             if (delivery.threadId == second.id)
-                foreach (change; delivery.changes) if (change.kind == ActorChangeKind.snapshot || change.kind == ActorChangeKind.metadata)
+                foreach (change; delivery.changes) if (change.kind == ActorChangeKind.snapshot ||
+                    change.kind == ActorChangeKind.metadata || change.kind == ActorChangeKind.metadataPatch)
                 {
                     const value = parseJSON(change.text);
                     if (auto draft = "draft" in value.object) healthy = draft.str == "Healthy owner still progresses";

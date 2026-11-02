@@ -48,7 +48,7 @@ int main()
         auto changes = actor.takeChanges();
         auto applied = projection.apply(view, changes);
         assert(!applied.error.length, applied.error);
-        if (applied.needsSnapshot) actor.post(ActorCommand(ActorCommandKind.snapshot));
+        if (applied.requestSnapshot) actor.post(ActorCommand(ActorCommandKind.snapshot));
         foreach (change; changes)
         {
             if (change.kind == ActorChangeKind.toolProgress)
@@ -57,12 +57,8 @@ int main()
                 sawRunningTool = sawRunningTool || progress["state"].str == "running";
                 sawCompletedTool = sawCompletedTool || progress["state"].str == "completed";
             }
-            if (change.kind == ActorChangeKind.metadata)
-            {
-                auto header = parseJSON(change.text);
-                ready = header["turnStatus"].str == (stalledGoal ? "failed" : "completed");
-            }
         }
+        ready = !projection.busy && view.turnStatus == (stalledGoal ? "failed" : "completed");
         assert(!actor.fault().length, actor.fault());
         Thread.sleep(5.msecs);
     }

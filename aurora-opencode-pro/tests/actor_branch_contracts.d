@@ -31,7 +31,7 @@ int main()
         auto changes = actor.takeChanges();
         auto applied = projection.apply(mirror, changes);
         assert(!applied.error.length, applied.error);
-        if (applied.needsSnapshot) send(ActorCommand(ActorCommandKind.snapshot));
+        if (applied.requestSnapshot) send(ActorCommand(ActorCommandKind.snapshot));
         return changes;
     }
     void answer(string expected)
@@ -47,9 +47,8 @@ int main()
                     auto message = parseJSON(change.text);
                     if (message["role"].str == "assistant" && message["content"].str == expected) seen = true;
                 }
-                if (change.kind == ActorChangeKind.metadata && !change.busy &&
-                    parseJSON(change.text)["turnStatus"].str == "completed") idle = true;
             }
+            idle = !projection.busy && mirror.turnStatus == "completed";
             assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
         }
         assert(seen && idle, "The actor did not settle " ~ expected);
@@ -120,8 +119,7 @@ int main()
     const rejection = MonoTime.currTime + 5.seconds;
     while (!rejectedTool && MonoTime.currTime < rejection)
     {
-        foreach (change; take())
-            if (change.kind == ActorChangeKind.metadata && parseJSON(change.text)["turnStatus"].str == "failed") rejectedTool = true;
+        take(); rejectedTool = !projection.busy && mirror.turnStatus == "failed";
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
     }
     assert(rejectedTool && !exists(buildPath(directory, "must-not-exist.txt")));

@@ -2,6 +2,7 @@ module actor_attachment_command_contracts;
 
 import auroraopencode.core;
 import auroraopencode.conversationactor;
+import actorview : ActorTestView;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.runtime : projectAgentRuntimeEvents;
 import auroraopencode.queuedprompts : takeQueuedPrompt;
@@ -39,6 +40,7 @@ int main()
     ActorConfiguration config; config.baseUrl = base; config.apiKey = "fixture";
     config.workspace = directory; config.recordTrace = true; config.request.contextLimit = 64_000;
     auto actor = new ConversationActor(initial, config, journal);
+    auto view = new ActorTestView(initial, actor);
     ChatImageAttachment image; image.name = "input.png"; image.mimeType = "image/png";
     image.base64Data = "fixture-input-pixels";
     ActorCommand first; first.kind = ActorCommandKind.start; first.text = "Analyze this first attachment.";
@@ -52,13 +54,12 @@ int main()
     const deadline = MonoTime.currTime + 15.seconds;
     while (!done && MonoTime.currTime < deadline)
     {
-        foreach (change; actor.takeChanges())
+        foreach (change; view.take())
         {
             assert(change.kind != ActorChangeKind.fault, change.text);
-            if (change.kind == ActorChangeKind.metadata) latest = parseJSON(change.text);
         }
-        if (latest.type == JSONType.object)
-            done = latest["turnStatus"].str == "completed" && !("queuedFollowUps" in latest.object);
+        latest = view.header;
+        done = view.model.turnStatus == "completed" && !view.model.queuedFollowUps.length && !view.projection.busy;
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
     }
     assert(done); actor.close(); assert(!actor.fault().length, actor.fault());

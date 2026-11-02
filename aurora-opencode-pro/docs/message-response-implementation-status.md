@@ -365,6 +365,18 @@ and owner isolation. Source fingerprint
 Snapshot and journal metadata now share one decoder; arrays replace existing
 values rather than appending duplicates during a second application.
 
+UI metadata now uses explicit replacement patches too. Fifty draft changes send
+2,540 bytes while retaining the same 8,000-step history array. Removed optional
+fields clear explicitly, and only one resync request is outstanding at a time.
+Source fingerprint
+`67ac4c02a52031fa922fc4cb3f0d4371af319afd3c95c324f65416fb0e8f57b6`:
+`build/architecture-checks-lvjy4z0t/` (projection and metadata),
+`build/architecture-checks-v4btg3uh/` (image and attachment commands), and
+`build/architecture-checks-h1007430/` (hot configuration). All eleven HTTP
+recovery cases also pass at the preceding patch fingerprint in
+`build/architecture-checks-90xq7a9s/`. These are standalone owner checks; desktop
+adoption and deployment remain required.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

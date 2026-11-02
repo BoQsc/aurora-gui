@@ -9,7 +9,7 @@ import std.json : JSONValue, JSONType, parseJSON;
 public struct ConversationChanges
 {
     string[] messages, notices;
-    bool structureChanged, metadataChanged, executionChanged, needsSnapshot;
+    bool structureChanged, metadataChanged, executionChanged, needsSnapshot, requestSnapshot;
     string error;
 }
 
@@ -24,6 +24,7 @@ public final class ConversationProjection
     private size_t[string] positions;
     private size_t count;
     private bool resync;
+    private bool snapshotOutstanding;
     public bool busy;
     public ulong requestId;
     public ConversationExecutionView execution;
@@ -63,6 +64,7 @@ public final class ConversationProjection
                 execution.phase = "failed"; execution.tools = null;
                 result.executionChanged = true;
                 resync = false;
+                snapshotOutstanding = false;
                 result.error = change.text; result.metadataChanged = true;
                 appliedRevision = change.revision; continue;
             }
@@ -75,14 +77,16 @@ public final class ConversationProjection
                 {
                     case ActorChangeKind.snapshot:
                     case ActorChangeKind.metadata:
+                    case ActorChangeKind.metadataPatch:
                     {
                         const value = parseJSON(change.text);
                         if (value.type != JSONType.object || !("id" in value.object) || value["id"].str != threadId)
                             throw new Exception("Worker metadata belongs to another conversation");
-                        ChatSession header;
+                        auto header = change.kind == ActorChangeKind.metadataPatch ? view : ChatSession.init;
                         decodeSessionMetadata(value, header);
                         const executionValue = "execution" in value.object;
-                        auto nextExecution = executionValue is null ? ConversationExecutionView.init : decodeExecutionView(*executionValue);
+                        auto nextExecution = executionValue is null ?
+                            (change.kind == ActorChangeKind.metadataPatch ? execution : ConversationExecutionView.init) : decodeExecutionView(*executionValue);
                         if (change.kind == ActorChangeKind.snapshot)
                         {
                             if (!("messages" in value.object) || value["messages"].type != JSONType.array)
@@ -93,7 +97,7 @@ public final class ConversationProjection
                             { positions = previous; count = view.messages.length; throw new Exception("Worker snapshot contains ambiguous message IDs"); }
                             if (header.activeLeafId.length && !(header.activeLeafId in positions))
                             { positions = previous; count = view.messages.length; throw new Exception("Worker snapshot has an unavailable active branch"); }
-                            view = header; resync = false; result.structureChanged = true;
+                            view = header; resync = false; snapshotOutstanding = false; result.structureChanged = true;
                         }
                         else
                         {
@@ -103,8 +107,11 @@ public final class ConversationProjection
                             // cleared fields, rather than a metadata patch.
                             header.messages = view.messages; view = header;
                         }
-                        result.metadataChanged = true;
-                        execution = nextExecution; result.executionChanged = true;
+                        if (change.kind != ActorChangeKind.metadataPatch) result.metadataChanged = true;
+                        else foreach (key, field; value.object)
+                            if (key != "id" && key != "execution") result.metadataChanged = true;
+                        execution = nextExecution;
+                        if (executionValue !is null || change.kind != ActorChangeKind.metadataPatch) result.executionChanged = true;
                         break;
                     }
                     case ActorChangeKind.added:
@@ -161,12 +168,17 @@ public final class ConversationProjection
                     case ActorChangeKind.usage: break;
                     default: throw new Exception("Unsupported conversation change");
                 }
+                result.executionChanged = result.executionChanged || requestId != change.requestId || busy != change.busy;
                 appliedRevision = change.revision; requestId = change.requestId; busy = change.busy;
             }
             catch (Exception error)
-            { resync = true; result.error = error.msg; }
+            {
+                resync = true; result.error = error.msg;
+                if (change.kind == ActorChangeKind.snapshot) snapshotOutstanding = false;
+            }
         }
         result.needsSnapshot = resync;
+        if (resync && !snapshotOutstanding) { snapshotOutstanding = true; result.requestSnapshot = true; }
         return result;
     }
 }

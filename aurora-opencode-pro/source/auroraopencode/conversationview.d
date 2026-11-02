@@ -2,6 +2,7 @@ module auroraopencode.conversationview;
 
 import auroraopencode.core : ToolState, toolStateName, parseToolState;
 import std.json : JSONValue, JSONType;
+import std.traits : isIntegral;
 
 public struct ConversationToolView
 {
@@ -47,7 +48,11 @@ public JSONValue executionViewJson(const ref ConversationExecutionView execution
     JSONValue value;
     static foreach (field; ["phase", "routingKey", "resendCount", "retryRemainingMs", "toolRounds",
         "selectedImages", "selectedImageBytes", "imageSizeReads", "imageBlobReads", "omittedTools"])
-        value[field] = __traits(getMember, execution, field);
+    {
+        static if (isIntegral!(typeof(__traits(getMember, execution, field))))
+            value[field] = cast(long) __traits(getMember, execution, field);
+        else value[field] = __traits(getMember, execution, field);
+    }
     value["tools"] = JSONValue.emptyArray;
     foreach (tool; execution.tools) value["tools"].array ~= toolViewJson(tool);
     return value;

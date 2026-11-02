@@ -154,7 +154,9 @@ public final class ConversationRegistry
                         else
                         {
                             updates = null;
-                            entry.actor.post(ActorCommand(ActorCommandKind.snapshot));
+                            // bind already reserved the initial snapshot. A
+                            // second request during serialization only repeats
+                            // a large graph and its layout work.
                         }
                     }
                     changes ~= updates;

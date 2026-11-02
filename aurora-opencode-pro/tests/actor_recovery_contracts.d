@@ -2,6 +2,7 @@ module actor_recovery_contracts;
 
 import auroraopencode.core;
 import auroraopencode.conversationactor;
+import actorview : ActorTestView;
 import auroraopencode.tools : buildSystemPrompt, nativeOnlyToolDefinitions;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
@@ -39,6 +40,7 @@ int main()
         }
         if (mode == "mixed-offer") write(buildPath(workspace, "allowed.txt"), "Allowed input");
         auto actor = new ConversationActor(initial, config, null);
+        auto view = new ActorTestView(initial, actor);
         assert(actor.post(ActorCommand(ActorCommandKind.start, "Analyze the tradeoffs of this design.")) == ActorAdmission.accepted);
         JSONValue latest;
         bool sawWait, sawFailure, stopped;
@@ -47,7 +49,7 @@ int main()
         bool settled;
         while (MonoTime.currTime < deadline)
         {
-            foreach (change; actor.takeChanges())
+            foreach (change; view.take())
             {
                 assert(change.kind != ActorChangeKind.fault, change.text);
                 if (change.kind == ActorChangeKind.updated)
@@ -55,12 +57,13 @@ int main()
                     const message = parseJSON(change.text);
                     if (auto failed = "failed" in message.object) if (failed.boolean) sawFailure = true;
                 }
-                if (change.kind != ActorChangeKind.metadata) continue;
-                latest = parseJSON(change.text);
-                if (latest["turnStatus"].str == "failed") sawFailure = true;
-                if (latest["execution"]["retryRemainingMs"].integer >= 0) sawWait = true;
-                if (latest["execution"]["retryRemainingMs"].integer >= 0)
-                    assert(latest["turnStatus"].str == "running" && change.busy, "Retry backoff advertised a terminal turn");
+            }
+            latest = view.header;
+            if (view.model.turnStatus == "failed") sawFailure = true;
+            if (view.projection.execution.retryRemainingMs >= 0)
+            {
+                sawWait = true;
+                assert(view.model.turnStatus == "running" && view.projection.busy, "Retry backoff advertised a terminal turn");
             }
             assert(!actor.fault().length, actor.fault());
             if (mode == "retry-stop" && sawWait && !stopped)

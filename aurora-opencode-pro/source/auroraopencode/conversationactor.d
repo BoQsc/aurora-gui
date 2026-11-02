@@ -4,6 +4,7 @@ import auroraopencode.core;
 import auroraopencode.conversationencode;
 import auroraopencode.conversationimages : ConversationImages;
 import auroraopencode.conversationview;
+import auroraopencode.conversationmetadata : MetadataDelta;
 public import auroraopencode.conversationconfiguration : ActorConfiguration;
 import auroraopencode.conversationconfiguration : actorBehaviorJson, decodeActorBehavior, configurationKey;
 import auroraopencode.queuedprompts;
@@ -82,7 +83,7 @@ public struct ActorQueueStats
     size_t commands, commandBytes, changes, changeBytes;
     bool resync;
 }
-public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice, toolProgress }
+public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice, toolProgress, metadataPatch }
 /// Values contain immutable strings/scalars only, so readers cannot mutate an
 /// execution owner's graph, tool arrays or task state through a UI change.
 public struct ActorChange
@@ -152,9 +153,10 @@ public final class ConversationActor
     private ConversationImages images;
     private ConversationToolView[] liveTools;
     private size_t omittedTools;
-    private const(PlanHistoryEntry)[] encodedHistorySource, journalHistorySource;
+    private const(PlanHistoryEntry)[] encodedHistorySource;
     private JSONValue encodedPlanHistory;
-    private bool hasEncodedHistory, hasJournalHistory;
+    private bool hasEncodedHistory;
+    private MetadataDelta journalMetadata, viewMetadata;
     private MonoTime lastCheckpoint;
     private size_t checkpointBytes;
     private ToolCancellation activeCancellation;
@@ -186,6 +188,7 @@ public final class ConversationActor
         this.config = config; this.config.request.availableTools = config.request.availableTools.dup;
         this.journal = journal;
         mutex = new Mutex(); joinMutex = new Mutex(); wake = new Condition(mutex);
+        journalMetadata = new MetadataDelta(); viewMetadata = new MetadataDelta();
         clockOrigin = MonoTime.currTime;
         workerBudget = budget is null ? actorWorkers : budget;
         if (launchWorker && launch() != ActorAdmission.accepted) throw new ActorCapacityException();
@@ -419,15 +422,16 @@ public final class ConversationActor
     {
         if (currentCommandSerial && currentCommand.kind != ActorCommandKind.editPrompt)
             currentInputRetained = true;
-        auto payload = runtimeThreadJson(session, true);
-        const historyChanged = !hasJournalHistory || journalHistorySource.ptr != session.planHistory.ptr ||
-            journalHistorySource.length != session.planHistory.length;
-        if (historyChanged) payload["planHistory"] = historyJson();
-        publish(AgentEventKind.threadUpdated, payload.toString());
-        if (historyChanged) { journalHistorySource = session.planHistory; hasJournalHistory = true; }
+        auto payload = runtimeThreadJson(session, true); payload["planHistory"] = historyJson();
+        auto durable = journalMetadata.update(payload);
+        if (durable.value.object.length) publish(AgentEventKind.threadUpdated, durable.value.toString());
         bool deliver;
         synchronized (mutex) deliver = !needsSnapshot;
-        if (deliver) emit(ActorChangeKind.metadata, headerView().toString());
+        if (deliver)
+        {
+            auto update = viewMetadata.update(headerView());
+            emit(update.complete ? ActorChangeKind.metadata : ActorChangeKind.metadataPatch, update.value.toString());
+        }
     }
     private JSONValue historyJson()
     {
@@ -655,7 +659,8 @@ public final class ConversationActor
                 }
                 break;
             case ActorCommandKind.snapshot:
-                auto snapshot = headerView(); snapshot["messages"] = messagesToJson(session.messages);
+                auto snapshot = headerView(); viewMetadata.reset(snapshot);
+                snapshot["messages"] = messagesToJson(session.messages);
                 emit(ActorChangeKind.snapshot, viewJson(snapshot)); break;
             case ActorCommandKind.regenerate:
             case ActorCommandKind.editPrompt:
@@ -1069,6 +1074,8 @@ public final class ConversationActor
                 payload["snapshot"] = sessionToJson(session);
                 publish(AgentEventKind.threadStarted, payload.toString());
             }
+            auto baseline = runtimeThreadJson(session, true); baseline["planHistory"] = historyJson();
+            journalMetadata.reset(baseline);
         }
         if (provider) applyEvent(event); else applyCommand(command);
         if (replaying)
@@ -1231,7 +1238,8 @@ public final class ConversationActor
         {
             if (!isClosed() || sessionTaken) throw new Exception("Actor final state is unavailable or was already transferred");
             auto result = session; session = ChatSession.init; sessionTaken = true;
-            engine = null; images = null; return result;
+            engine = null; images = null; encodedHistorySource = null; encodedPlanHistory = JSONValue.init;
+            journalMetadata.clear(); viewMetadata.clear(); return result;
         }
     }
     ActorConfiguration finalConfiguration()
