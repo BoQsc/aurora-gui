@@ -1301,14 +1301,15 @@ public struct ChatSession
 // Message graph (branching / edit-run history)
 // ---------------------------------------------------------------------------
 
-private __gshared size_t messageIdCounter;
+private shared size_t messageIdCounter;
 
 /// A process-unique message id. The wall-clock tick makes collisions across
 /// restarts impossible; the counter separates messages created in one tick.
 public string newMessageId()
 {
+    import core.atomic : atomicOp;
     return "m" ~ to!string(Clock.currTime.stdTime) ~ "-" ~
-        to!string(messageIdCounter++);
+        to!string(atomicOp!"+="(messageIdCounter, 1));
 }
 
 /// A stable id for a durable agent thread. Keep the prefix distinct from

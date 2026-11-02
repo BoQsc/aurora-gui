@@ -1,4 +1,5 @@
 module auroraopencode.recipeevidence;
+import auroraopencode.effectfacts : effectFactBool;
 import auroraopencode.core : ChatMessage;
 import auroraopencode.checkout : canonicalPath, checkoutIdentity;
 import auroraopencode.verificationrecipe : verificationInputsFingerprint, verificationInputsSignature;
@@ -79,6 +80,12 @@ struct RecipeEvidenceCache
         return hash;
     }
     bool current(const ref ChatMessage message, string ownerScope)
+    {
+        const key = "recipe.current\n" ~ message.id ~ "\n" ~ ownerScope ~ "\n" ~
+            sha256Of(message.content ~ message.verificationCheck).toHexString().idup;
+        return effectFactBool(key, () => currentObserved(message, ownerScope));
+    }
+    private bool currentObserved(const ref ChatMessage message, string ownerScope)
     {
         if (message.failed || !message.verificationCheck.length) return false;
         try

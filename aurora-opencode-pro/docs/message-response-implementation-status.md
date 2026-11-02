@@ -26,11 +26,18 @@ results and stable/deferred transcript rows reach markdown layout and paint.
 Execution service advances during native resizing without widget ticks.
 It still runs on the window thread: it is **not** an autonomous actor.
 
+The source now also contains a standalone `ConversationActor`. It owns its
+conversation graph, request preparation, provider drain, tool settlement,
+durable admission and ordinary task/goal continuation on a separate thread.
+The desktop has not switched to it. Adopting it before optional-feature and
+command parity would lose behavior; that adapter remains required below.
+
 ## Implemented
 
 | Boundary | Result |
 | --- | --- |
 | Execution state | Direct per-chat ownership replaces save/load field copying. A scalar deterministic request reducer tracks phase/correlation. Stop rejects late output; unknown/duplicate tool results are rejected. Delayed operations survive chat insertion/deletion. |
+| Standalone owner | `ConversationActor` advances real provider/native-tool turns without any window or UI service. Its mailbox is bounded to 128 commands / 1 MiB, with separate Stop and snapshot signals. Immutable UI values are bounded to 256 changes / 1 MiB; overflow requests a full resync. One indivisible snapshot has its own slot. Physically running actor workers are capped by `AURORA_ACTOR_WORKERS` (default 16); Stop does not release a blocked physical slot. |
 | Request and task policy | Context compaction, request assembly, turn decisions, tool-result validation and plan mutations now have separate modules. The root captures settings and applies decisions. A revision-keyed immutable request projection cache reuses full projections for suffixes, retaining complete tool envelopes and private caller arrays. Its 4 MiB logical budget includes omitted-history index entries. |
 | Service | Round-robin native application service runs during resize, uses a soft six-millisecond budget and bounded drains, and retains unconsumed events in order. |
 | Provider | Wire projection and stream accumulation/usage interpretation have separate modules. Shared asynchronous WinHTTP connections, isolated request cancellation and optional exact token preflight improve startup. Physically running requests have a configurable cap: `AURORA_PROVIDER_WORKERS`, default 16. A stopped worker retains its slot until it returns. Launch rejection is explicit. |
@@ -83,12 +90,19 @@ elapsed time. Tests use private executables/state.
 1. Move full turn/task reduction, request preparation, continuation and effect
    coordination out of `OpenCodeRoot`. Give per-chat actors serialized command
    mailboxes and immutable UI change sets. Owned fields and the scalar reducer
-   are foundations, not the completed extraction.
+   are foundations, not the completed extraction. The standalone actor now
+   proves this ownership for ordinary tool/task/goal turns. Desktop command
+   routing, branch edits/retry, failure recovery, title/model-compaction jobs,
+   diagnostic/computer context, orchestration and exit/snapshot integration
+   still need parity before replacing the existing service.
 2. Replay full recorded provider/tool traces. Shutdown/rebuild/update checkpoint
    barriers, journal admission, startup and internal history reads now avoid
    window-thread I/O waits. Replay
    full recorded provider/tool traces to the same transcript and task; the new
    forced application-death proof covers copied branches and a settled mixed batch.
+   Full ordinary provider/tool traces now replay through the standalone actor,
+   including captured receipt/workspace facts and plan-history clock values.
+   The desktop actor integration and its crash/restart proof remain open.
 3. Complete incremental transcript projection and remaining allocation/cold-layout
    reduction. An image-heavy repeated-reference benchmark now covers restore,
    replay, provider budgets, attachment chips, input and search. A bounded
@@ -131,6 +145,36 @@ source fingerprint
 `f028d86f0c535e4f4c51e1251f910a6af5e93bbb7c903935a4e17a62a4cc853d`.
 The later orchestrator header-comment edit does not change behavior. These
 changes remain source-only pending the complete migration and delivery.
+
+## Standalone execution and replay proof
+
+`python aurora-opencode-pro/tests/test_provider_roundtrip.py --actor` runs four
+real HTTP/SSE requests, native writes, Python unittest, plan completion and final
+settlement with no `GuiWindow`, UI tick, layout or paint. `--actor-recipe` uses
+a saved verification recipe instead of the direct checker. Recorded traces
+replay after moving the workspace offline and refusing provider access; the
+entire final transcript/task state must match, including IDs and timestamps.
+Missing external facts and changed behavioral configuration reject replay.
+The diagnostic recording is opt-in and capped at 8 MiB; exceeding that budget
+invalidates the recording without limiting useful work. Each fact frame is
+capped at 256 entries / 4 MiB. Secrets used to connect to a provider are excluded
+from the configuration identity.
+
+`actor_mailbox_contracts` holds the journal owner, fills all 128 command slots,
+and requests Stop plus a snapshot without waiting for storage. All accepted
+guidance survives, and the cancelled admission sends no HTTP request. Four
+hundred unconsumed updates force explicit resync within the view budget.
+It also checks 8,000 concurrent graph IDs and physical actor-slot retention.
+
+Source changes also consolidate snapshot/journal encoding and unchanged-tool
+repeat/mutation policies outside the root. This proof does not establish
+desktop adoption or actual gateway quality. Delivery is still pending.
+
+All 46 default fixtures passed in `build/architecture-checks-klag1a91/` at source
+fingerprint `ba7ce67353d0e540f1d84a5e33797debcd5a159c032be5369033067227ec742b`.
+At that same fingerprint, the actor recipe/offline-replay checks passed in
+`build/architecture-checks-5b91tiin/` and the existing 16-round desktop HTTP
+conversation passed in `build/architecture-checks-1ggukg9t/`.
 
 ## Earlier hardening deployment
 

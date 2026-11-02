@@ -15,6 +15,14 @@ import auroraopencode.core : ChatSession, NestedPlan, PlanHistoryEntry,
 import std.datetime : Clock;
 import std.json : JSONType, JSONValue;
 import std.string : strip;
+import auroraopencode.effectfacts : effectFact;
+import std.conv : to;
+
+private long planHistoryTime()
+{
+    return to!long(effectFact("clock.planHistory",
+        () => to!string(Clock.currTime.toUnixTime())));
+}
 
 /// Newest revisions kept per conversation. Older snapshots are dropped first,
 /// so the most recent evolution is always available.
@@ -63,7 +71,7 @@ public void recordPlanHistory(ref ChatSession session, string source,
     JSONValue root = JSONValue.init)
 {
     recordPlanHistory(session, source, explanationFrom(root),
-        Clock.currTime.toUnixTime());
+        planHistoryTime());
 }
 
 /// A caller-supplied explanation, with the revision time taken now. Used where
@@ -72,7 +80,7 @@ public void recordPlanHistory(ref ChatSession session, string source,
     string explanation)
 {
     recordPlanHistory(session, source, explanation,
-        Clock.currTime.toUnixTime());
+        planHistoryTime());
 }
 
 /// Same as above with the revision time supplied by the caller.

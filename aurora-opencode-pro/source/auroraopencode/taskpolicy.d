@@ -1,4 +1,5 @@
 module auroraopencode.taskpolicy;
+import auroraopencode.effectfacts : effectFact, effectFactBool;
 
 import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.checkout : canonicalPath, checkoutIdentity;
@@ -13,6 +14,12 @@ import auroraopencode.requestintent : answerOnlyRequest, requestIntent, RequestI
 /// Only real user messages can retarget a task. Tool output, summaries and
 /// restart reasons cannot change the checkout that owns its effects/evidence.
 string taskWorkspace(const ref ChatSession session, string projectWorkspace)
+{
+    return effectFact("task.workspace\n" ~ session.id ~ "\n" ~ session.activeLeafId ~ "\n" ~ projectWorkspace,
+        () => observedTaskWorkspace(session, projectWorkspace));
+}
+
+private string observedTaskWorkspace(const ref ChatSession session, string projectWorkspace)
 {
     // Widget reconstruction asks for the same scope many times. Cache the
     // durable branch tip before walking a long transcript, not after it.
@@ -95,7 +102,8 @@ string taskWorkspace(const ref ChatSession session, string projectWorkspace)
 }
 bool sameCheckout(string first, string second)
 {
-    return first.length && second.length && checkoutIdentity(first) == checkoutIdentity(second);
+    return first.length && second.length && effectFactBool("checkout.same\n" ~ first ~ "\n" ~ second,
+        () => checkoutIdentity(first) == checkoutIdentity(second));
 }
 
 /// Compilation outside the checkout can still compile its source. Attribute
@@ -146,6 +154,13 @@ bool satisfiesEvidence(string check, const(string)[] required)
 }
 
 string verificationScope(string workspace, ulong revision)
+{
+    import std.conv : to;
+    return effectFact("verification.scope\n" ~ workspace ~ "\n" ~ to!string(revision),
+        () => observedVerificationScope(workspace, revision));
+}
+
+private string observedVerificationScope(string workspace, ulong revision)
 {
     import core.time : MonoTime;
     import std.process : thisProcessID;

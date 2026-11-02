@@ -16,6 +16,8 @@ failures = []
 main_rounds = []
 title_after_rounds = []
 hold = threading.Event()
+actor_mode = "--actor" in sys.argv or "--actor-recipe" in sys.argv
+recipe_mode = "--actor-recipe" in sys.argv
 
 def call(identity, name, arguments):
     return {"id": identity, "type": "function",
@@ -83,8 +85,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
                 tools = [call("plan", "update_plan", plan("in_progress")),
                          call("write-output", "write", {"filePath": "out.txt", "content": "success"}),
                          call("write-check", "write", {"filePath": "test_fixture.py", "content": test})]
+                if recipe_mode:
+                    recipe = {"inputs": ["out.txt", "test_fixture.py"], "steps": [
+                        {"kind": "tests", "command": {"program": "python", "args": ["-m", "unittest", "test_fixture"]}}]}
+                    tools.append(call("write-recipe", "write", {"filePath": "verify.json", "content": json.dumps(recipe)}))
             elif number == 2:
-                tools = [call("check", "run", {"program": "python", "args": ["-m", "unittest", "test_fixture"]})]
+                tools = ([call("check", "verify", {"recipe": "verify.json"})] if recipe_mode else
+                         [call("check", "run", {"program": "python", "args": ["-m", "unittest", "test_fixture"]})])
             elif number == 3:
                 tools = [call("complete-plan", "update_plan", plan("completed"))]
             else:
@@ -105,6 +112,8 @@ worker = threading.Thread(target=server.serve_forever, daemon=True)
 worker.start()
 try:
     env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
+    if recipe_mode:
+        env["AURORA_CONTRACT_RECIPE"] = "1"
     stalled_goal = "--goal-stall" in sys.argv
     if stalled_goal:
         env["AURORA_CONTRACT_GOAL_STALL"] = "1"
@@ -139,12 +148,12 @@ try:
         print("PASS built desktop image round trip; ARTIFACTS", directory, flush=True)
     else:
         result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
-                                 "provider_roundtrip"], cwd=package.parent, env=env, timeout=120)
+                                 *(["actor_roundtrip", "actor_mailbox_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
     expected_rounds = 8 if stalled_goal else 4
     assert len(main_rounds) == expected_rounds, f"Unexpected continuation count: {len(main_rounds)}"
     assert not failures, failures
-    if "--production" not in sys.argv:
+    if "--production" not in sys.argv and not actor_mode:
         assert len(title_after_rounds) == 1 and 1 <= title_after_rounds[0] <= expected_rounds, \
             f"Title was lost, repeated or launched before the opening request: {title_after_rounds}"
     print("PASS bounded goal output recovery" if stalled_goal else

@@ -1,0 +1,129 @@
+module actor_mailbox_contracts;
+
+import auroraopencode.core;
+import auroraopencode.conversationactor;
+import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
+import auroraopencode.workerbudget : WorkerBudget;
+import core.sync.mutex : Mutex;
+import core.sync.condition : Condition;
+import core.thread : Thread;
+import core.time : MonoTime, msecs, seconds;
+import std.file : mkdirRecurse, write;
+import std.path : absolutePath, buildPath;
+import std.json : parseJSON;
+import std.process : environment;
+import std.conv : to;
+import std.stdio : writeln;
+
+private final class Gate
+{
+    Mutex mutex; Condition wake; bool entered, released;
+    this() { mutex = new Mutex(); wake = new Condition(mutex); }
+    void block()
+    {
+        synchronized (mutex)
+        { entered = true; wake.notifyAll(); while (!released) wake.wait(); }
+    }
+    void waitEntered() { synchronized (mutex) while (!entered) wake.wait(); }
+    void release() { synchronized (mutex) { released = true; wake.notifyAll(); } }
+}
+private final class IdWriter
+{
+    string[] ids;
+    void run() { foreach (_; 0 .. 1000) ids ~= newMessageId(); }
+}
+
+int main()
+{
+    IdWriter[] writers; Thread[] threads;
+    foreach (_; 0 .. 8)
+    { auto writer = new IdWriter(); writers ~= writer; auto thread = new Thread(&writer.run); threads ~= thread; thread.start(); }
+    foreach (thread; threads) thread.join();
+    bool[string] unique;
+    foreach (writer; writers) foreach (id; writer.ids)
+    { assert(!(id in unique), "Concurrent conversations generated the same graph ID"); unique[id] = true; }
+    assert(unique.length == 8000);
+
+    const directory = absolutePath("actor-mailbox-" ~ to!string(MonoTime.currTime.ticks));
+    mkdirRecurse(directory); setOpencodeStateDirectoryForTesting(buildPath(directory, "state"));
+    auto repository = new ConversationRepository(); auto gate = new Gate();
+    scope (exit) { gate.release(); repository.close(); }
+    auto journal = new RepositoryRuntime(repository, buildPath(directory, "events.jsonl"));
+    assert(repository.submit(&gate.block)); gate.waitEntered();
+    ChatSession initial; initial.id = "mailbox-chat"; initial.model = "fixture";
+    ActorConfiguration config;
+    // With the real local provider driver, any accidental request here changes
+    // its round count and fails the outer proof. The default remains refused.
+    config.baseUrl = environment.get("AURORA_CONTRACT_PROVIDER_BASE", "http://127.0.0.1:9");
+    config.workspace = directory; config.recordTrace = true;
+    auto budget = new WorkerBudget(1);
+    auto actor = new ConversationActor(initial, config, journal, budget);
+    bool full;
+    try new ConversationActor(initial, config, journal, budget);
+    catch (ActorCapacityException) { full = true; }
+    assert(full && budget.active() == 1);
+    assert(actor.post(ActorCommand(ActorCommandKind.start, "Preserve this accepted request")) == ActorAdmission.accepted);
+    Thread.sleep(100.msecs); // owner is blocked behind the held journal job
+    foreach (i; 0 .. 128)
+        assert(actor.post(ActorCommand(ActorCommandKind.steer, "accepted-guidance-" ~ to!string(i))) == ActorAdmission.accepted);
+    assert(actor.post(ActorCommand(ActorCommandKind.steer, "rejected-overflow")) == ActorAdmission.capacity);
+    const stoppedAt = MonoTime.currTime;
+    assert(actor.stop() == ActorAdmission.accepted);
+    assert(budget.active() == 1, "Logical Stop released a physically blocked actor worker");
+    assert((MonoTime.currTime - stoppedAt).total!"msecs" < 100,
+        "Stop waited for storage or a full ordinary command queue");
+    assert(actor.post(ActorCommand(ActorCommandKind.snapshot)) == ActorAdmission.accepted);
+    const saturated = actor.queueStats();
+    assert(saturated.commands == 128 && saturated.commandBytes <= 1024 * 1024);
+    gate.release();
+    bool stopped;
+    const deadline = MonoTime.currTime + 8.seconds;
+    while (!stopped && MonoTime.currTime < deadline)
+    {
+        foreach (change; actor.takeChanges())
+            if (change.kind == ActorChangeKind.snapshot)
+            {
+                auto value = parseJSON(change.text);
+                assert(value["queuedGuidance"].array.length == 128);
+                assert(value["messages"].array.length == 1, "A cancelled admission produced a provider response");
+                stopped = value["turnStatus"].str == "interrupted";
+            }
+        assert(!actor.fault().length, actor.fault()); Thread.sleep(5.msecs);
+    }
+    assert(stopped, "The worker never acknowledged Stop and the reserved snapshot");
+
+    // A UI can stop consuming changes while the worker remains productive.
+    // Delivery coalesces to an explicit resync instead of growing without bound.
+    foreach (_; 0 .. 400)
+    {
+        while (actor.post(ActorCommand(ActorCommandKind.pauseGoal)) == ActorAdmission.capacity)
+        { assert(!actor.fault().length, actor.fault()); Thread.sleep(1.msecs); }
+    }
+    const changed = MonoTime.currTime + 8.seconds;
+    while (!actor.queueStats().resync && MonoTime.currTime < changed)
+    { assert(!actor.fault().length, actor.fault()); Thread.sleep(5.msecs); }
+    auto bounded = actor.queueStats();
+    assert(bounded.resync && bounded.changes <= 256 && bounded.changeBytes <= 1024 * 1024);
+    bool resync;
+    foreach (change; actor.takeChanges()) if (change.kind == ActorChangeKind.resync) resync = true;
+    assert(resync);
+    assert(actor.post(ActorCommand(ActorCommandKind.snapshot)) == ActorAdmission.accepted);
+    bool snapshot;
+    const snapDeadline = MonoTime.currTime + 8.seconds;
+    while (!snapshot && MonoTime.currTime < snapDeadline)
+    {
+        foreach (change; actor.takeChanges())
+            if (change.kind == ActorChangeKind.snapshot)
+            { snapshot = true; assert(parseJSON(change.text)["queuedGuidance"].array.length == 128); }
+        assert(!actor.fault().length, actor.fault()); Thread.sleep(5.msecs);
+    }
+    assert(snapshot); actor.close();
+    assert(budget.active() == 0);
+    assert(actor.post(ActorCommand(ActorCommandKind.start, "late")) == ActorAdmission.closed);
+    assert(!actor.fault().length, actor.fault());
+    const finalState = actor.finalSnapshot();
+    assert(parseJSON(ConversationActor.replay(initial, config, actor.recordedTrace())) == parseJSON(finalState));
+    write(buildPath(directory, "final.json"), finalState);
+    writeln("PASS 8000 concurrent IDs, bounded mailbox/view, reserved Stop/snapshot, zero cancelled effects, accepted-input retention and replay");
+    return 0;
+}
