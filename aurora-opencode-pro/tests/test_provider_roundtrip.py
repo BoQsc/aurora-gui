@@ -17,7 +17,8 @@ main_rounds = []
 title_after_rounds = []
 branch_requests = []
 hold = threading.Event()
-actor_mode = "--actor" in sys.argv or "--actor-recipe" in sys.argv
+registry_mode = "--registry" in sys.argv
+actor_mode = "--actor" in sys.argv or "--actor-recipe" in sys.argv or registry_mode
 recipe_mode = "--actor-recipe" in sys.argv
 
 def call(identity, name, arguments):
@@ -169,7 +170,8 @@ try:
         print("PASS built desktop image round trip; ARTIFACTS", directory, flush=True)
     else:
         result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
-                                 *(["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
+                                 *(["registry_roundtrip", "conversation_registry_contracts", "actor_branch_contracts"] if registry_mode else
+                                   ["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
     expected_rounds = 8 if stalled_goal else 4
     assert len(main_rounds) == expected_rounds, f"Unexpected continuation count: {len(main_rounds)}"
