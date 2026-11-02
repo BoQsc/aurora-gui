@@ -33,6 +33,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
         mode = request["model"].removeprefix("actor-")
         counts[mode] += 1
         number = counts[mode]
+        if number > 12:
+            self.respond(422, '{"error":{"message":"Fixture request bound exceeded"}}')
+            return
         owners, results = set(), set()
         for message in request["messages"]:
             owners.update(call["id"] for call in message.get("tool_calls", []))
@@ -55,6 +58,20 @@ class Provider(http.server.BaseHTTPRequestHandler):
         if mode == "bad-output":
             assert request.get("tools"), "Recovery dropped the structured tools"
             content = '<invoke name="read">\n<parameter name="filePath">sample.txt</parameter>\n</invoke>'
+        if mode == "task-stall":
+            if number == 1:
+                delta = {"tool_calls": [{"index": 0, "id": "substantive", "type": "function", "function": {
+                    "name": "write", "arguments": json.dumps({"filePath": "unverified.txt", "content": "unverified change"})}}]}
+                reason = "tool_calls"
+            else:
+                content = f"Short claim of completion {number}."
+        if mode == "unoffered" or (mode == "mixed-offer" and number == 1):
+            delta = {"tool_calls": [{"index": 0, "id": "unoffered", "type": "function", "function": {
+                "name": "write", "arguments": json.dumps({"filePath": "forbidden.txt", "content": "forbidden"})}}]}
+            if mode == "mixed-offer":
+                delta["tool_calls"].append({"index": 1, "id": "allowed", "type": "function", "function": {
+                    "name": "read", "arguments": json.dumps({"filePath": "allowed.txt"})}})
+            reason = "tool_calls"
         if mode in ("summary", "summary-error"):
             if number == 1:
                 content, reason = "A truncated analysis", "length"
@@ -79,7 +96,7 @@ try:
                              "actor_recovery_contracts"], cwd=package.parent, env=env, timeout=150)
     assert result.returncode == 0, "Actor recovery fixture failed"
     expected = {"retry": 2, "retry-stop": 1, "transient-cap": 3, "budget": 1,
-                "quota": 2, "bad-output": 4, "summary": 2, "summary-error": 2}
+                "quota": 2, "bad-output": 4, "summary": 2, "summary-error": 2, "task-stall": 7, "unoffered": 4, "mixed-offer": 2}
     assert counts == expected, f"Unexpected retries or tool recovery loops: {dict(counts)}"
     assert not failures, failures
     print("PASS real HTTP retry budgets, quota reset, Stop, bounded output repair and tool-free handoff", dict(counts))

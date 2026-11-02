@@ -125,6 +125,9 @@ public final class ConversationRegistry
         notifyView(); return ActorAdmission.accepted;
     }
 
+    ActorAdmission configure(string id, ActorConfiguration config, string model, bool thinking)
+    { return post(id, ConversationActor.configurationCommand(config, model, thinking)); }
+
     ConversationDelivery[] takeChanges(size_t maximumConversations = 4)
     {
         ConversationDelivery[] result;
@@ -237,6 +240,7 @@ public final class ConversationRegistry
         actor.close();
         const activity = actor.activity();
         const error = forcedError.length ? forcedError : actor.fault();
+        const config = actor.finalConfiguration();
         auto model = actor.takeFinalSession();
         // Hydrated pixels are transient. Failed, not-yet-archived input keeps
         // its pixels in the private recovery model until storage can save it.
@@ -244,7 +248,7 @@ public final class ConversationRegistry
             foreach (ref image; message.images) if (image.blob.length) image.base64Data = "";
         synchronized (mutex)
         {
-            entry.model = model; entry.actor = null; entry.error = error;
+            entry.model = model; entry.config = cast(ActorConfiguration) config; entry.actor = null; entry.error = error;
             entry.state = entry.pending.length || entry.stopAt != size_t.max ? ConversationOwnerState.waiting :
                 error.length ? ConversationOwnerState.failed : ConversationOwnerState.dormant;
             entry.initialSnapshot = false; entry.viewRevision = activity.revision;

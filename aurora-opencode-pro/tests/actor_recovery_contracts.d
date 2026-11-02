@@ -19,19 +19,25 @@ int main()
     const directory = absolutePath("actor-recovery-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(directory); setOpencodeStateDirectoryForTesting(buildPath(directory, "state"));
 
-    foreach (mode; ["retry", "retry-stop", "transient-cap", "budget", "quota", "bad-output", "summary", "summary-error"])
+    foreach (mode; ["retry", "retry-stop", "transient-cap", "budget", "quota", "bad-output", "summary", "summary-error", "task-stall", "unoffered", "mixed-offer"])
     {
         const workspace = buildPath(directory, mode); mkdirRecurse(workspace);
         ChatSession initial; initial.id = "recovery-" ~ mode; initial.model = "actor-" ~ mode;
-        const persistent = mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "retry-stop";
+        const persistent = mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "retry-stop" || mode == "unoffered";
         if (persistent) { initial.goal = "Deliver the user's requested analysis"; initial.goalStatus = "active"; }
         ActorConfiguration config; config.baseUrl = base; config.apiKey = "fixture";
         config.workspace = workspace; config.recordTrace = true;
         config.outageBudgetMs = mode == "budget" || mode == "quota" ? 250 : 15_000;
-        config.request.toolsEnabled = mode == "bad-output" || mode == "summary" || mode == "summary-error";
+        config.request.toolsEnabled = mode == "bad-output" || mode == "summary" || mode == "summary-error" || mode == "task-stall" || mode == "unoffered" || mode == "mixed-offer";
         config.request.contextLimit = 64_000;
         config.request.baseSystemPrompt = buildSystemPrompt(config.request.toolsEnabled, workspace, "win32", "auto");
         config.request.availableTools = nativeOnlyToolDefinitions();
+        if (mode == "unoffered" || mode == "mixed-offer")
+        {
+            config.request.availableTools = null;
+            foreach (tool; nativeOnlyToolDefinitions()) if (tool.name == "read") config.request.availableTools ~= tool;
+        }
+        if (mode == "mixed-offer") write(buildPath(workspace, "allowed.txt"), "Allowed input");
         auto actor = new ConversationActor(initial, config, null);
         assert(actor.post(ActorCommand(ActorCommandKind.start, "Analyze the tradeoffs of this design.")) == ActorAdmission.accepted);
         JSONValue latest;
@@ -44,10 +50,17 @@ int main()
             foreach (change; actor.takeChanges())
             {
                 assert(change.kind != ActorChangeKind.fault, change.text);
+                if (change.kind == ActorChangeKind.updated)
+                {
+                    const message = parseJSON(change.text);
+                    if (auto failed = "failed" in message.object) if (failed.boolean) sawFailure = true;
+                }
                 if (change.kind != ActorChangeKind.metadata) continue;
                 latest = parseJSON(change.text);
                 if (latest["turnStatus"].str == "failed") sawFailure = true;
                 if (latest["execution"]["retryRemainingMs"].integer >= 0) sawWait = true;
+                if (latest["execution"]["retryRemainingMs"].integer >= 0)
+                    assert(latest["turnStatus"].str == "running" && change.busy, "Retry backoff advertised a terminal turn");
             }
             assert(!actor.fault().length, actor.fault());
             if (mode == "retry-stop" && sawWait && !stopped)
@@ -59,7 +72,7 @@ int main()
             {
                 const status = latest["turnStatus"].str;
                 if (mode == "retry-stop") settled = stopped && status == "interrupted" && MonoTime.currTime >= quietUntil;
-                else if (mode == "budget" || mode == "transient-cap" || mode == "bad-output")
+                else if (mode == "budget" || mode == "transient-cap" || mode == "bad-output" || mode == "task-stall" || mode == "unoffered")
                     settled = status == "failed" && latest["execution"]["retryRemainingMs"].integer < 0;
                 else settled = status == "completed";
             }
@@ -74,6 +87,21 @@ int main()
         const state = parseJSON(snapshot);
         if (persistent && mode != "retry-stop") assert(state["goalStatus"].str == "active", mode ~ " discarded the active goal");
         if (mode == "retry-stop") assert(state["goalStatus"].str == "paused");
+        if (mode == "task-stall")
+            assert(state["verificationStatus"].str == "required" && state["objective"].str.length,
+                "No-action recovery discarded the unfinished verification/task");
+        if (mode == "unoffered" || mode == "mixed-offer") assert(!exists(buildPath(workspace, "forbidden.txt")), "An unoffered tool executed");
+        if (mode == "mixed-offer")
+        {
+            bool acceptedRead, rejectedWrite;
+            foreach (message; state["messages"].array)
+                if (message["role"].str == "tool")
+                {
+                    if (message["toolName"].str == "read") acceptedRead = !("failed" in message.object);
+                    if (message["toolName"].str == "write") rejectedWrite = message["failed"].boolean;
+                }
+            assert(acceptedRead && rejectedWrite, "A mixed batch lost the accepted or rejected outcome");
+        }
         if (mode == "summary" || mode == "summary-error")
         {
             assert(!exists(buildPath(workspace, "must-not-exist.txt")), "Summary executed an unavailable tool");

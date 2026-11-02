@@ -121,8 +121,15 @@ int main()
             assert(rotating.activeWorkers() <= 1); Thread.sleep(2.msecs);
         }
         assert(ready, "Idle worker eviction failed to deliver the next conversation's state");
+        if (round == 0)
+        {
+            auto next = config; next.outageBudgetMs = 15_000; next.request.contextLimit = 32_000;
+            assert(rotating.configure(first.id, next, "model-after-reconfiguration", true) == ActorAdmission.accepted);
+        }
     }
     assert(generations[first.id] == 2 && generations[second.id] == 1);
+    assert(views[first.id].model == "model-after-reconfiguration" && views[first.id].thinking,
+        "Owner recreation discarded a committed session configuration");
     rotating.close();
 
     // One invalid optional configuration must not block other conversations

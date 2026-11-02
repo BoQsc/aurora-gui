@@ -131,7 +131,7 @@ import auroraopencode.restorestore : RestoreBundle, readRestoreBundle, readThrea
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
-    maxOutputRecoveries, goalAuditStalled;
+    maxOutputRecoveries, goalAuditStalled, taskAuditStalled;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
 import auroraopencode.turnsummary : TurnWorkSummary;
@@ -30909,8 +30909,9 @@ private void pollButtonSuggestionRequest()
                 case OpenCodeEventKind.done:
                     if (!event.cancelled && toolsEnabledForSession(_sessions[runtimeIndex]) &&
                         !completionHandoffPending(_sessions[runtimeIndex]) &&
-                        !explanationOnlyRequest(latestActualUserRequest(_sessions[runtimeIndex])) &&
-                        (answerReplayed(_sessions[runtimeIndex]) || goalAuditStalled(_sessions[runtimeIndex])))
+                        (taskAuditStalled(_sessions[runtimeIndex]) ||
+                         (!explanationOnlyRequest(latestActualUserRequest(_sessions[runtimeIndex])) &&
+                          (answerReplayed(_sessions[runtimeIndex]) || goalAuditStalled(_sessions[runtimeIndex])))))
                     {
                         auto failure = *event;
                         failure.outputIssue = "replayed_prose";

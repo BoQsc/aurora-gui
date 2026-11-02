@@ -3,6 +3,7 @@ module auroraopencode.outputrecovery;
 import auroraopencode.core : ChatSession, activeMessagePath;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.goalmode : goalActive;
+import auroraopencode.taskcontinuation : taskContinuationMarker;
 import std.string : startsWith, strip;
 
 /// This bounds consecutive unusable provider responses, never useful task work.
@@ -61,4 +62,20 @@ bool goalAuditStalled(const ref ChatSession session)
         if (message.internal && message.content.startsWith("Persistent goal continuation:")) ++audits;
     }
     return audits >= 2;
+}
+
+/// Bound consecutive no-action continuations, including short or varied prose.
+/// Any real user instruction or nonadministrative tool attempt starts a new
+/// interval. Productive long work has no global turn limit.
+bool taskAuditStalled(const ref ChatSession session)
+{
+    int continuations;
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if ((message.role == "user" && !message.internal) ||
+            (message.role == "tool" && usefulTool(message.toolName))) break;
+        if (message.internal && message.content.startsWith(taskContinuationMarker)) ++continuations;
+    }
+    return continuations >= 2;
 }

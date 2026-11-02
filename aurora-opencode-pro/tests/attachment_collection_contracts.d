@@ -22,7 +22,7 @@ private final class BlobWriter
         try
         {
             auto store = AttachmentStore(directory);
-            foreach (_; 0 .. 4)
+            foreach (_; 0 .. 8)
             { digest = store.put(data); assert(store.get(digest) == data); }
         }
         catch (Throwable failure) { error = failure.msg; }
@@ -113,6 +113,18 @@ int main()
     assert(rejected);
     version (Windows)
     {
+        // A rename can briefly retain DELETE access after making its target
+        // visible. Reading immutable content must coexist with that handle.
+        import core.sys.windows.windows : CreateFileW, CloseHandle, DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_SHARE_DELETE, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, INVALID_HANDLE_VALUE;
+        import std.utf : toUTF16z;
+        auto held = CreateFileW(toUTF16z(buildPath(blobs, inFlight ~ ".b64")), DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, null,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null);
+        assert(held != INVALID_HANDLE_VALUE); scope (exit) CloseHandle(held);
+        assert(store.get(inFlight) == "reused before reference commit",
+            "An atomic installation handle prevented a concurrent immutable read");
         // A valid final blob path near MAX_PATH must also admit its temporary
         // write. A suffix on the 64-character digest exceeded that limit.
         const longDirectory = buildPath(directory, "long-" ~ "x".replicate(183 - directory.length));

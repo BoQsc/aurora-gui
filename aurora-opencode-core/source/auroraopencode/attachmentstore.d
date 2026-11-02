@@ -2,7 +2,7 @@ module auroraopencode.attachmentstore;
 
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
-import std.file : exists, mkdirRecurse, readText, rename, remove, isFile, isSymlink, getSize;
+import std.file : exists, mkdirRecurse, readText, rename, remove, isFile, isSymlink, getSize, FileException;
 import std.json : JSONValue, JSONType;
 import std.path : buildPath, buildNormalizedPath, absolutePath;
 import std.stdio : File;
@@ -12,6 +12,60 @@ import std.datetime : Clock;
 import std.process : thisProcessID;
 import core.sync.mutex : Mutex;
 import auroraopencode.logging : logError;
+
+private void installAttachment(string temporary, string target)
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : MoveFileW, GetLastError;
+        import std.utf : toUTF16z;
+        if (!MoveFileW(toUTF16z(temporary), toUTF16z(target)))
+            throw new FileException(target, GetLastError());
+    }
+    else version (Posix)
+    {
+        import core.sys.posix.unistd : link;
+        import core.stdc.errno : errno;
+        import std.string : toStringz;
+        if (link(toStringz(temporary), toStringz(target)) != 0)
+            throw new FileException(target, cast(uint) errno);
+    }
+    else rename(temporary, target);
+}
+
+private string readAttachment(string path)
+{
+    version (Windows)
+    {
+        import core.sys.windows.windows : CreateFileW, GetLastError, CloseHandle,
+            GetFileSizeEx, ReadFile, INVALID_HANDLE_VALUE, GENERIC_READ,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_SHARE_DELETE, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, FILE_FLAG_SEQUENTIAL_SCAN, LARGE_INTEGER, DWORD;
+        import std.utf : toUTF16z, validate;
+        auto handle = CreateFileW(toUTF16z(path), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, null,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, null);
+        if (handle == INVALID_HANDLE_VALUE) throw new FileException(path, GetLastError());
+        scope (exit) CloseHandle(handle);
+        LARGE_INTEGER length;
+        if (!GetFileSizeEx(handle, &length)) throw new FileException(path, GetLastError());
+        if (length.QuadPart < 0 || cast(ulong) length.QuadPart > size_t.max)
+            throw new FileException(path, "Attachment exceeds the addressable size");
+        auto data = new ubyte[cast(size_t) length.QuadPart];
+        size_t offset;
+        while (offset < data.length)
+        {
+            const chunk = data.length - offset > 1024 * 1024 ? 1024 * 1024 : data.length - offset;
+            DWORD count;
+            if (!ReadFile(handle, data.ptr + offset, cast(DWORD) chunk, &count, null))
+                throw new FileException(path, GetLastError());
+            if (!count) throw new FileException(path, "Attachment changed while reading");
+            offset += count;
+        }
+        auto text = cast(string) data; validate(text); return text;
+    }
+    else return readText(path);
+}
 
 private final class LiveAttachments
 {
@@ -139,7 +193,9 @@ public struct AttachmentStore
         file.write(data);
         file.flush();
         file.close();
-        try rename(temporary, target);
+        // Immutable content must never replace a winner from another writer.
+        // Replacement also conflicts with readers holding the destination.
+        try installAttachment(temporary, target);
         catch (Exception error)
         {
             if (!exists(target)) throw error;
@@ -154,7 +210,7 @@ public struct AttachmentStore
     {
         if (!validAttachmentDigest(digest)) throw new Exception("Invalid attachment reference");
         pin(digest);
-        const data = readText(buildPath(directory, digest ~ ".b64"));
+        const data = readAttachment(buildPath(directory, digest ~ ".b64"));
         if (sha256Of(data).toHexString() != digest)
             throw new Exception("Attachment checksum mismatch");
         return data;

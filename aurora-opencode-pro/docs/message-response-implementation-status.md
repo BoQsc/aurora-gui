@@ -312,6 +312,45 @@ optional title/compaction/orchestration jobs, exit/fold coordination and final
 deployment still remain open. The default runner now includes 49 fixtures;
 the preceding full suite proof covers its former 47-fixture set.
 
+Hot configuration is now an ordered command. It captures policy data separately
+from connection credentials, preserves the workspace/model of an already
+requested tool batch, and applies new schemas/credentials to the next request.
+Manual titles and selected/unread state use the same command boundary. An
+in-flight two-request HTTP test verifies the old workspace receives its write,
+the next request uses the new model, key and read-only schema, caller arrays
+cannot mutate admitted policy, malformed configuration is rejected, and full
+replay works offline without recording either fixture key. Proof:
+`build/architecture-checks-a3kefaxk/`, source fingerprint
+`32fc7b92cfbd3693588cfe21d8002549c5334ba15d07962cfb306412bfc49c64`.
+
+That test also exposed a real no-action continuation loop: short, varied
+completion claims could repeatedly bypass the earlier prose-replay guard while
+verification remained required. The new shared task audit bounds consecutive
+continuations without a useful tool attempt; it does not cap productive task
+length. A native HTTP case now fails explicitly after seven requests with the
+task and required verification preserved. A hundred useful continuation/tool
+intervals remain allowed. Per-request tool-name admission also rejects unoffered
+calls while preserving paired results for mixed accepted/rejected batches.
+All eleven HTTP recovery cases pass in `build/architecture-checks-lrtf611x/`.
+The 16-round GUI conversation passes in `build/architecture-checks-jbff9ci3/`,
+and lifecycle goal/recipe/branch checks pass in
+`build/architecture-checks-v5g5kypv/`, source fingerprint
+`e014a17d9b9485cf24fecf5d4d571e0f7bef62d8ab84c57d1e55f573baa397b7`.
+Terminal completion now publishes its final busy/unread state together; a retry
+wait remains a running turn instead of publishing a premature turn failure.
+
+The subsequent full-suite run found an intermittent Windows attachment sharing
+failure. Blob publication now installs without replacing an existing winner;
+reads explicitly share rename/delete handles and still verify the content hash.
+The concurrency fixture includes a held DELETE-access handle and eight writers.
+The prior implementation fails that reproduction, while the current executable
+passed three repeated runs. Evidence:
+`build/blob-sharing-proof-1793645357385855900/` and focused checks in
+`build/architecture-checks-d1c4awmb/`, source fingerprint
+`cf72b9be5d3bb0aa6037e7707ddc05305ab5039f98581a87861444d3ad96164b`.
+The full 49-fixture rerun is pending. These changes remain source-only; the
+desktop still uses its legacy execution coordinator.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

@@ -3,6 +3,7 @@ module output_recovery_contracts;
 import auroraopencode.core : ChatMessage, ChatSession;
 import auroraopencode.outputrecovery;
 import auroraopencode.outputguard : outputRecoveryMarker;
+import auroraopencode.taskcontinuation : taskContinuationMarker;
 import std.stdio : writeln;
 import std.conv : to;
 
@@ -47,6 +48,23 @@ int main()
     add("user", "Reply READY again");
     add("assistant", "READY");
     assert(!answerReplayed(session) && !goalAuditStalled(session));
+    session.goal = ""; session.goalStatus = "";
+    add("user", "Finish the outstanding verification");
+    add("assistant", "Done");
+    add("user", taskContinuationMarker ~ "verification remains", true);
+    add("assistant", "Still done");
+    add("user", taskContinuationMarker ~ "verification still remains", true);
+    add("assistant", "Everything is complete");
+    assert(taskAuditStalled(session), "Short or varied no-action replies escaped the continuation guard");
+    foreach (_; 0 .. 100)
+    {
+        add("tool", "A concrete attempt or observation", false, "read");
+        add("user", taskContinuationMarker ~ "continue useful work", true);
+        add("assistant", "Continuing");
+        assert(!taskAuditStalled(session), "Useful long-horizon work hit a total-turn cap");
+    }
+    add("user", "Explain the result"); add("assistant", "Done");
+    assert(!taskAuditStalled(session));
     writeln("PASS bounded unusable output, varied goal chatter, useful long-horizon work and new-user boundaries");
     return 0;
 }
