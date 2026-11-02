@@ -935,6 +935,9 @@ private final class MessageBubble : Widget
     private string[] _copyLabels;
     private Rect[] _linkRects;
     private string[] _linkUrls;
+    private bool _markdownTargetsCurrent;
+    private ulong _markdownTargetsGeneration;
+    private int _markdownTargetsWidth, _markdownTargetsY;
     // Workspace a message's local file/folder links resolve against on click.
     private string _workspace;
     // >>> filecontext:begin
@@ -945,6 +948,7 @@ private final class MessageBubble : Widget
     {
         _fileContextTarget = resolver;
         _fileContextTargetAt = resolverAt;
+        _markdownTargetsCurrent = false;
     }
     // <<< filecontext:end
 
@@ -1462,6 +1466,7 @@ private final class MessageBubble : Widget
     void setWorkspace(string workspace)
     {
         _workspace = workspace;
+        _markdownTargetsCurrent = false;
     }
 
     /// The local path link the point falls on ("" when the point is not on a
@@ -2437,11 +2442,11 @@ private final class MessageBubble : Widget
             }
         }
 
-        _copyRects.length = 0;
-        _copyLabels.length = 0;
-        _linkRects.length = 0;
-        _linkUrls.length = 0;
-        _selSegments.length = 0;
+        // Settled Markdown retains its selection and link geometry across
+        // repaints. Rebuilding thousands of targets on every keystroke made
+        // otherwise cached replies allocate megabytes per frame.
+        if (_role != "assistant" || _editingInPlace || _content.length == 0)
+            clearTextTargets();
 
         if (hasThinking() && !_reasoningInActivity && _content.length > 0)
             y += thinkingContentGap;
@@ -2486,7 +2491,7 @@ private final class MessageBubble : Widget
                     // under the code) and finally the glyphs. Building the runs
                     // and drawing them in the same frame keeps the highlight
                     // locked to the text instead of lagging a frame behind.
-                    collectMarkdownTargets(composition, contentY);
+                    collectMarkdownTargets(composition, contentY, innerWidth);
                     paintMarkdownBackgrounds(canvas, composition, padH, contentY);
                     drawSelection(canvas);
                     paintMarkdownGlyphs(canvas, composition, padH, contentY);
@@ -2536,6 +2541,7 @@ private final class MessageBubble : Widget
         foreach (index; 0 .. _copyRects.length)
         {
             if (_copyLabels[index].length == 0) continue;
+            if (canvas.toSurface(_copyRects[index]).intersection(canvas.clipRect()).empty()) continue;
             drawCopyPill(canvas, _copyRects[index],
                 _hoverCopy == cast(int) index);
         }
@@ -2555,8 +2561,12 @@ private final class MessageBubble : Widget
     private void drawSearchHighlights(ref Canvas canvas)
     {
         const needle = toUTF32(_searchQuery);
+        const origin = canvas.toSurface(Point(0, 0));
+        const clip = canvas.clipRect();
         foreach (segment; _selSegments)
         {
+            if (origin.y + segment.y + segment.h < clip.y ||
+                origin.y + segment.y > clip.bottom()) continue;
             const text = segment.layout.text();
             size_t from;
             while (true)
@@ -3176,8 +3186,25 @@ private final class MessageBubble : Widget
         }
     }
 
-    private void collectMarkdownTargets(ref MdComposition composition, int contentY)
+    private void clearTextTargets()
     {
+        _copyRects.length = 0;
+        _copyLabels.length = 0;
+        _linkRects.length = 0;
+        _linkUrls.length = 0;
+        _selSegments.length = 0;
+        _markdownTargetsCurrent = false;
+    }
+
+    private void collectMarkdownTargets(ref MdComposition composition, int contentY, int width)
+    {
+        if (_markdownTargetsCurrent && _markdownTargetsGeneration == _contentGen &&
+            _markdownTargetsWidth == width && _markdownTargetsY == contentY) return;
+        clearTextTargets();
+        _markdownTargetsGeneration = _contentGen;
+        _markdownTargetsWidth = width;
+        _markdownTargetsY = contentY;
+        _markdownTargetsCurrent = true;
         foreach (item; composition.items)
         {
             // Every text run is selectable, including the clipped lines of a
@@ -3361,10 +3388,14 @@ private final class MessageBubble : Widget
         int firstSeg, lastSeg;
         size_t firstChar, lastChar;
         orderedSelection(firstSeg, firstChar, lastSeg, lastChar);
+        const origin = canvas.toSurface(Point(0, 0));
+        const clip = canvas.clipRect();
         foreach (segIndex, segment; _selSegments)
         {
             const index = cast(int) segIndex;
             if (index < firstSeg || index > lastSeg) continue;
+            if (origin.y + segment.y + segment.h < clip.y ||
+                origin.y + segment.y > clip.bottom()) continue;
             const layout = segment.layout;
             const len = layout.text().length;
             const from = index == firstSeg
@@ -33535,10 +33566,13 @@ private void pollButtonSuggestionRequest()
 
     public int turnOwnerSessionForTesting() const
     {
+        // Resolve the loaded execution context before other background turns;
+        // iteration order must not route a simulated delta to an older chat.
+        if (_turnInFlight || _streamBubble !is null)
+            foreach (index, session; _sessions)
+                if (session.id == _loadedRuntimeId) return cast(int) index;
         foreach (index, session; _sessions)
         {
-            if (session.id == _loadedRuntimeId && _turnInFlight)
-                return cast(int) index;
             if (auto found = session.id in _conversationRuntimes)
                 if ((*found).turnInFlight) return cast(int) index;
         }

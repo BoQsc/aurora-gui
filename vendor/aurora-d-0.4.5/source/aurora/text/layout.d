@@ -131,6 +131,9 @@ struct CaretPosition
 /** Cacheable renderer-neutral result of shaping and laying out a string. */
 final class TextLayout
 {
+    // Renderer-owned visibility data has the same lifetime as its immutable
+    // shaped layout. Keeping it here avoids a global cache retaining history.
+    Object paintVisibility;
     private dstring _text;
     PositionedGlyph[] glyphs;
     GlyphRun[] runs;

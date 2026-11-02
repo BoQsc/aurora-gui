@@ -1923,6 +1923,7 @@ int main(string[] args)
     root.addConversationForTesting(["user"], ["finish while I am away"]);
     root.startTurnClockForTesting();
     root.beginStreamForTesting();
+    root.streamContentForTesting("The requested response is complete.");
     root.newChatForTesting();
     const unreadViewer = root.currentSessionForTesting();
     assert(unreadViewer != unreadOwner, "New chat did not change the view");
@@ -3460,7 +3461,7 @@ int main(string[] args)
         root.tickTree(0.02);
 
         // Every common button is wired, not just the two probed above.
-        foreach (id; ["oc-export", "oc-profile", "oc-settings-button",
+        foreach (id; ["oc-checkpoint", "oc-profile", "oc-settings-button",
             "oc-new", "oc-open-folder",
             "oc-new-project", "oc-rail-toggle", "oc-send"])
             requireWidget!Widget(root, id);
@@ -4386,8 +4387,10 @@ int main(string[] args)
         root.addConversationForTesting(["user"], ["Do something"]);
         assert(!root.activityVisibleForTesting(),
             "Activity row appeared before any work started");
+        root.startTurnClockForTesting();
         // With nothing else to show, the phase row renders and updates in place.
         root.setActivityForTesting("Waiting for the model…");
+        root.projectTranscriptForTesting();
         assert(root.activityVisibleForTesting(),
             "Activity row did not appear when there was nothing else to show");
         assert(root.activityTextForTesting() == "Waiting for the model…",
@@ -4403,6 +4406,7 @@ int main(string[] args)
             "Activity row is missing the elapsed seconds: " ~
             root.activityDisplayTextForTesting());
         root.clearActivityForTesting();
+        root.projectTranscriptForTesting();
         assert(!root.activityVisibleForTesting(),
             "Activity row did not clear when work stopped");
         // A tool-call progress event shows a live tool row instead of the phase
@@ -4411,6 +4415,7 @@ int main(string[] args)
         prep.name = "write";
         prep.arguments = `{"filePath":"page.html","content":"<html>`;
         root.injectToolProgressForTesting([prep]);
+        root.projectTranscriptForTesting();
         assert(root.liveToolRowTextsForTesting().length == 1,
             "Expected a live tool row while the arguments stream");
         assert(!root.activityVisibleForTesting(),
@@ -4436,11 +4441,13 @@ int main(string[] args)
         // Drop the phase row while the reply is still empty and hidden, exactly
         // the window that used to render nothing while Stop stayed visible.
         root.clearActivityForTesting();
+        root.projectTranscriptForTesting();
         assert(root.turnBusyForTesting(),
             "the turn was not busy after clearing the phase row");
         assert(!root.activityVisibleForTesting(),
             "the phase row was not actually cleared for the test");
         root.tickTree(0.02);
+        root.projectTranscriptForTesting();
         assert(root.activityVisibleForTesting(),
             "a busy turn with no visible progress left the transcript blank");
         assert(root.activityTextForTesting().length > 0,
@@ -4448,6 +4455,7 @@ int main(string[] args)
         // Real streamed content must yield the generic row back to the reply.
         root.streamContentForTesting("Here is the answer.");
         root.tickTree(0.02);
+        root.projectTranscriptForTesting();
         assert(!root.activityVisibleForTesting(),
             "the generic row stayed after the reply started streaming");
         root.finishStreamForTesting();
@@ -6813,6 +6821,8 @@ int main(string[] args)
             "consumed guidance remained queued");
         assert(root.queuedPromptBubbleCountForTesting() == 1,
             "consuming steering also consumed the distinct follow-up queue");
+        root.addConversationForTesting(["assistant"],
+            ["The current plan is recorded; your requested review remains queued."]);
         assert(!root.completionWouldContinueForTesting(),
             "an unfinished checklist manufactured another model request");
         root.settleTaskAfterDoneForTesting();
@@ -6844,6 +6854,8 @@ int main(string[] args)
         // durable state without a live queued-follow-up request racing it.
         root.setTaskStateForTesting("Build durable recovery", "completed",
             "passed");
+        root.addConversationForTesting(["assistant"],
+            ["Recovery state is persisted and the recovery assertions passed."]);
         assert(!root.completionWouldContinueForTesting(),
             "completed checklist plus successful verification stayed open");
 

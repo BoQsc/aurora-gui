@@ -10,6 +10,7 @@ import auroraopencode.core : setOpencodeStateDirectoryForTesting, opencodeTheme;
 import core.thread : Thread;
 import core.time : MonoTime;
 import core.time : msecs, seconds;
+import core.memory : GC;
 import std.algorithm : sort;
 import std.array : replicate;
 import std.conv : to;
@@ -40,6 +41,38 @@ private class RowFactory
 {
     size_t created;
     Widget create() { ++created; return new CountedRow(); }
+}
+
+private Widget findWidget(Widget root, string id)
+{
+    if (root.id() == id) return root;
+    foreach (child; root.children())
+        if (auto found = findWidget(child, id)) return found;
+    return null;
+}
+
+private void measureInput(OpenCodeRoot root, UiTestDriver driver, string label)
+{
+    auto input = findWidget(root, "oc-input");
+    assert(input !is null);
+    input.requestFocus();
+    long[] samples;
+    const before = GC.allocatedInCurrentThread();
+    foreach (_; 0 .. 20)
+    {
+        const started = MonoTime.currTime;
+        driver.text("x"d);
+        root.rebuildForTesting();
+        root.projectTranscriptForTesting();
+        assert(driver.paint());
+        samples ~= (MonoTime.currTime - started).total!"usecs";
+    }
+    assert(root.inputTextForTesting() == "x".replicate(20), "Projection lost focused composer input");
+    samples.sort();
+    writeln(label, " input_rebuild_paint_median_us=", samples[10],
+        " p95_us=", samples[19], " allocated_bytes=", GC.allocatedInCurrentThread() - before);
+    assert(samples[10] < 100_000 && samples[19] < 500_000,
+        "Long content caused a sustained input stall during forced rebuilds");
 }
 
 int main()
@@ -223,6 +256,28 @@ int main()
     }
     assert(root.lastAssistantContentForTesting() == answer);
     writeln("real_chat_60_stream_project_paint_us=", (MonoTime.currTime - stream).total!"usecs");
+    root.stopActiveTurnForTesting();
+    root.newChatForTesting();
+    const longReply = "## Long reply\n\n" ~
+        "Readable **formatted** paragraphs with UTF-8 žą 🌍.\n\n".replicate(600) ~
+        "```text\n" ~ "0123456789abcdef".replicate(750) ~ "\n```";
+    root.addConversationForTesting(["user", "assistant"], ["Explain the output", longReply]);
+    root.projectTranscriptForTesting();
+    foreach (_; 0 .. 3) assert(chatDriver.paint());
+    measureInput(root, chatDriver, "long_reply");
+    assert(root.lastAssistantContentForTesting() == longReply, "Rendering altered the stored answer");
+
+    root.newChatForTesting();
+    root.pauseToolContinuationForTesting();
+    root.addConversationForTesting(["user", "assistant"], ["Inspect this diff", "Here is the change."]);
+    root.injectToolResultForTesting("edit", "Edited a large file", false, "{}", 5000, 5000,
+        "@@ -1,5000 +1,5000 @@\n" ~ "-old line\n+new line\n".replicate(5000));
+    root.projectTranscriptForTesting();
+    root.toggleFirstToolGroupForTesting();
+    root.toggleFirstToolBubbleForTesting();
+    foreach (_; 0 .. 3) assert(chatDriver.paint());
+    assert(!root.firstToolGroupCollapsedForTesting() && !root.firstToolBubbleCollapsedForTesting());
+    measureInput(root, chatDriver, "diff_10000_rows");
     chatWindow.close();
     return 0;
 }

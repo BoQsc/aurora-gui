@@ -1510,19 +1510,27 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                     }
 
                     double sourceX = 0.0;
+                    size_t clusterIndex;
                     while (sourceX < layout.width - 0.01)
                     {
                         const limit = sourceX + inner;
                         double endX = sourceX;
-                        foreach (cluster; layout.visualClusters)
+                        while (clusterIndex < layout.visualClusters.length)
                         {
-                            if (cluster.xMax <= sourceX + 0.01) continue;
+                            const cluster = layout.visualClusters[clusterIndex];
+                            if (cluster.xMax <= sourceX + 0.01) { ++clusterIndex; continue; }
                             if (cluster.xMax <= limit + 0.01)
+                            {
                                 endX = max(endX, cluster.xMax);
+                                ++clusterIndex;
+                            }
                             else
                             {
                                 if (endX <= sourceX + 0.01)
+                                {
                                     endX = cluster.xMax;
+                                    ++clusterIndex;
+                                }
                                 break;
                             }
                         }

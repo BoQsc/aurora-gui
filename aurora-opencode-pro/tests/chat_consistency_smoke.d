@@ -71,6 +71,7 @@ int main()
     }
     root.addConversationForTesting(roles, bodies);
     root.tickTree(0.02); driver.paint();
+    root.startTurnClockForTesting();
     root.beginStreamForTesting();
     root.tickTree(0.02); driver.paint();
     assertVisible(find(root, "oc-activity"), view);

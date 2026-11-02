@@ -10,8 +10,29 @@ import aurora.text.layout : PositionedGlyph, TextLayout, TextLayoutOptions;
 import aurora.text.unicode.grapheme : previousGraphemeBoundary;
 import aurora.types : HorizontalAlign, Point, Rect, Size, VerticalAlign,
     clampInt, maxInt, minInt;
-import std.math : floor;
+import std.math : floor, ceil;
 import std.conv : to;
+
+private final class LayoutVisibility
+{
+    enum size_t chunkSize = 64;
+    Rect[] bounds;
+    FontSystem fonts;
+    int pixelSize;
+    int renderMode;
+    double scaleX, scaleY;
+    struct FaceVersion { FontFace face; uint variation; }
+    FaceVersion[] faces;
+
+    bool current(FontSystem system, int pixels, double sx, double sy)
+    {
+        if (fonts !is system || pixelSize != pixels || scaleX != sx ||
+            scaleY != sy || renderMode != cast(int) system.renderMode) return false;
+        foreach (entry; faces)
+            if (entry.face.variationHash() != entry.variation) return false;
+        return true;
+    }
+}
 
 /** Drawing context with translation/clipping and software or draw-list output. */
 struct Canvas
@@ -346,91 +367,161 @@ struct Canvas
     }
 
     /** Replay a previously shaped layout without reshaping it. */
-    void drawLayout(Point position, TextLayout layout, Color color)
+    void drawLayout(Point position, TextLayout layout, Color color,
+        bool useVisibilityIndex = true)
     {
-        if (layout is null || color.a == 0) return;
+        if (layout is null || color.a == 0 || _clip.empty()) return;
         if (_fonts is null) _fonts = FontSystem.sharedInstance();
-        foreach (positioned; layout.glyphs)
+        auto visibility = useVisibilityIndex ? layoutVisibility(layout) : null;
+        const surfaceOrigin = toSurface(position);
+        for (size_t start; start < layout.glyphs.length; start += LayoutVisibility.chunkSize)
         {
-            // A glyph whose face failed to resolve has nothing to draw from,
-            // and every branch below dereferences it. The same is true of a
-            // glyph index outside the face's range: `glyphByIndex`,
-            // `isColorGlyph` and `rasterizeColorGlyph` all index the face's
-            // tables with it, and an out-of-range index runs off the end of
-            // those tables and faults. Both cases are skipped rather than
-            // dereferenced, because dereferencing them took the whole process
-            // down here. The frequency is logged once, because a layout that
-            // reaches this point has an inconsistency upstream worth seeing.
-            if (positioned.font is null ||
-                positioned.glyphIndex >= cast(uint) maxInt(1,
-                    positioned.font.glyphCount()))
+            const end = start + LayoutVisibility.chunkSize < layout.glyphs.length
+                ? start + LayoutVisibility.chunkSize : layout.glyphs.length;
+            if (visibility !is null &&
+                visibility.bounds[start / LayoutVisibility.chunkSize].translated(surfaceOrigin.x, surfaceOrigin.y)
+                    .intersection(_clip).empty()) continue;
+            foreach (positioned; layout.glyphs[start .. end])
             {
-                version (Windows)
+                // A glyph whose face failed to resolve has nothing to draw from,
+                // and every branch below dereferences it. The same is true of a
+                // glyph index outside the face's range: `glyphByIndex`,
+                // `isColorGlyph` and `rasterizeColorGlyph` all index the face's
+                // tables with it, and an out-of-range index runs off the end of
+                // those tables and faults. Both cases are skipped rather than
+                // dereferenced, because dereferencing them took the whole process
+                // down here. The frequency is logged once, because a layout that
+                // reaches this point has an inconsistency upstream worth seeing.
+                if (positioned.font is null ||
+                    positioned.glyphIndex >= cast(uint) maxInt(1,
+                        positioned.font.glyphCount()))
                 {
-                    import core.stdc.stdio : fclose, fflush, fopen, fwrite;
-                    static __gshared bool reported;
-                    if (!reported)
+                    version (Windows)
                     {
-                        reported = true;
-                        const line = "aurora: drawLayout skipped a glyph with " ~
-                            "no font face or an out-of-range glyph index\n";
-                        if (auto file = fopen("aurora-nullfont.log\0", "a"))
+                        import core.stdc.stdio : fclose, fflush, fopen, fwrite;
+                        static __gshared bool reported;
+                        if (!reported)
                         {
-                            fwrite(line.ptr, 1, line.length, file);
-                            fflush(file);
-                            fclose(file);
+                            reported = true;
+                            const line = "aurora: drawLayout skipped a glyph with " ~
+                                "no font face or an out-of-range glyph index\n";
+                            if (auto file = fopen("aurora-nullfont.log\0", "a"))
+                            {
+                                fwrite(line.ptr, 1, line.length, file);
+                                fflush(file);
+                                fclose(file);
+                            }
                         }
                     }
-                }
-                continue;
-            }
-            if (_drawList !is null)
-            {
-                // Layout remains in 96-DPI logical units. Rasterize at the
-                // monitor's physical size, snap the vertical baseline,
-                // and submit the atlas bitmap 1:1 so it is never enlarged by
-                // the renderer or by Windows DPI virtualization.
-                const pixelSize = maxInt(1,
-                    _drawList.logicalToDeviceY(layout.pixelSize));
-                if (positioned.font.hasColorGlyphs() &&
-                    positioned.font.isColorGlyph(positioned.glyphIndex))
-                {
-                    drawColorGlyph(positioned, position, pixelSize);
                     continue;
                 }
-                const origin = glyphOriginX((position.x + _offsetX + positioned.x) *
-                    _drawList.displayScale.x(), positioned.font.isOpenType(), pixelSize,
-                    positioned.font.rasterPhases(pixelSize));
-                const glyph = _fonts.atlas.glyphByIndex(positioned.font,
-                    positioned.glyphIndex, pixelSize, _fonts.renderMode, origin.phase, color);
-                if (!glyph.hasPixels()) continue;
-                const x = origin.pixel + glyph.bearingX;
-                const y = _drawList.logicalToDeviceY(
-                    position.y + _offsetY + positioned.y) - glyph.bearingY;
-                const destination = Rect(x, y, glyph.region.width, glyph.region.height);
-                _drawList.addTexturedRectDevice(destination, glyph, color,
-                    _drawList.logicalToDevice(_clip));
+                if (_drawList !is null)
+                {
+                    // Layout remains in 96-DPI logical units. Rasterize at the
+                    // monitor's physical size, snap the vertical baseline,
+                    // and submit the atlas bitmap 1:1 so it is never enlarged by
+                    // the renderer or by Windows DPI virtualization.
+                    const pixelSize = maxInt(1,
+                        _drawList.logicalToDeviceY(layout.pixelSize));
+                    if (positioned.font.hasColorGlyphs() &&
+                        positioned.font.isColorGlyph(positioned.glyphIndex))
+                    {
+                        drawColorGlyph(positioned, position, pixelSize);
+                        continue;
+                    }
+                    const origin = glyphOriginX((position.x + _offsetX + positioned.x) *
+                        _drawList.displayScale.x(), positioned.font.isOpenType(), pixelSize,
+                        positioned.font.rasterPhases(pixelSize));
+                    const glyph = _fonts.atlas.glyphByIndex(positioned.font,
+                        positioned.glyphIndex, pixelSize, _fonts.renderMode, origin.phase, color);
+                    if (!glyph.hasPixels()) continue;
+                    const x = origin.pixel + glyph.bearingX;
+                    const y = _drawList.logicalToDeviceY(
+                        position.y + _offsetY + positioned.y) - glyph.bearingY;
+                    const destination = Rect(x, y, glyph.region.width, glyph.region.height);
+                    _drawList.addTexturedRectDevice(destination, glyph, color,
+                        _drawList.logicalToDevice(_clip));
+                }
+                else
+                {
+                    if (positioned.font.hasColorGlyphs() &&
+                        positioned.font.isColorGlyph(positioned.glyphIndex))
+                    {
+                        drawColorGlyph(positioned, position, layout.pixelSize);
+                        continue;
+                    }
+                    const origin = glyphOriginX(position.x + positioned.x,
+                        positioned.font.isOpenType(), layout.pixelSize,
+                        positioned.font.rasterPhases(layout.pixelSize));
+                    const glyph = _fonts.atlas.glyphByIndex(positioned.font,
+                        positioned.glyphIndex, layout.pixelSize, _fonts.renderMode, origin.phase, color);
+                    if (!glyph.hasPixels()) continue;
+                    const x = origin.pixel + glyph.bearingX;
+                    const y = position.y + cast(int) floor(positioned.y + 0.5) - glyph.bearingY;
+                    drawGlyphImmediate(toSurface(Rect(x, y,
+                        glyph.region.width, glyph.region.height)), glyph, color);
+                }
+            }
+        }
+    }
+
+    private LayoutVisibility layoutVisibility(TextLayout layout)
+    {
+        const sx = _drawList is null ? 1.0 : _drawList.displayScale.x();
+        const sy = _drawList is null ? 1.0 : _drawList.displayScale.y();
+        const pixels = _drawList is null ? layout.pixelSize :
+            maxInt(1, _drawList.logicalToDeviceY(layout.pixelSize));
+        auto cached = cast(LayoutVisibility) layout.paintVisibility;
+        if (cached !is null && cached.current(_fonts, pixels, sx, sy)) return cached;
+        auto result = new LayoutVisibility();
+        result.fonts = _fonts;
+        result.pixelSize = pixels;
+        result.renderMode = cast(int) _fonts.renderMode;
+        result.scaleX = sx; result.scaleY = sy;
+        result.bounds.length = (layout.glyphs.length + LayoutVisibility.chunkSize - 1) /
+            LayoutVisibility.chunkSize;
+        foreach (i, glyph; layout.glyphs)
+        {
+            if (glyph.font is null || glyph.glyphIndex >= cast(uint) maxInt(1, glyph.font.glyphCount())) continue;
+            bool known;
+            foreach (entry; result.faces) if (entry.face is glyph.font) { known = true; break; }
+            if (!known) result.faces ~= LayoutVisibility.FaceVersion(glyph.font, glyph.font.variationHash());
+            double left, top, right, bottom;
+            if (glyph.font.hasColorGlyphs() && glyph.font.isColorGlyph(glyph.glyphIndex))
+            {
+                // Color ink is centered on the baseline and cannot exceed its
+                // rasterizer's square output. No color bitmap allocation here.
+                left = glyph.x - pixels / sx;
+                right = glyph.x + pixels / sx;
+                top = glyph.y - pixels / sy;
+                bottom = glyph.y + pixels / sy;
             }
             else
             {
-                if (positioned.font.hasColorGlyphs() &&
-                    positioned.font.isColorGlyph(positioned.glyphIndex))
-                {
-                    drawColorGlyph(positioned, position, layout.pixelSize);
-                    continue;
-                }
-                const origin = glyphOriginX(position.x + positioned.x,
-                    positioned.font.isOpenType(), layout.pixelSize,
-                    positioned.font.rasterPhases(layout.pixelSize));
-                const glyph = _fonts.atlas.glyphByIndex(positioned.font,
-                    positioned.glyphIndex, layout.pixelSize, _fonts.renderMode, origin.phase, color);
-                if (!glyph.hasPixels()) continue;
-                const x = origin.pixel + glyph.bearingX;
-                const y = position.y + cast(int) floor(positioned.y + 0.5) - glyph.bearingY;
-                drawGlyphImmediate(toSurface(Rect(x, y,
-                    glyph.region.width, glyph.region.height)), glyph, color);
+                const bitmap = _fonts.atlas.glyphByIndex(glyph.font, glyph.glyphIndex,
+                    pixels, _fonts.renderMode);
+                if (!bitmap.hasPixels()) continue;
+                // Actual raster bounds retain italic bearings, combining marks
+                // and fallback fonts. Two device pixels cover phase snapping.
+                left = glyph.x + (bitmap.bearingX - 2.0) / sx;
+                right = glyph.x + (bitmap.bearingX + bitmap.region.width + 2.0) / sx;
+                top = glyph.y - (bitmap.bearingY + 2.0) / sy;
+                bottom = glyph.y + (bitmap.region.height - bitmap.bearingY + 2.0) / sy;
+            }
+            const bounds = Rect(cast(int) floor(left), cast(int) floor(top),
+                cast(int) ceil(right) - cast(int) floor(left),
+                cast(int) ceil(bottom) - cast(int) floor(top));
+            auto chunk = &result.bounds[i / LayoutVisibility.chunkSize];
+            if (chunk.empty()) *chunk = bounds;
+            else
+            {
+                const x = minInt(chunk.x, bounds.x), y = minInt(chunk.y, bounds.y);
+                *chunk = Rect(x, y, maxInt(chunk.right(), bounds.right()) - x,
+                    maxInt(chunk.bottom(), bounds.bottom()) - y);
             }
         }
+        layout.paintVisibility = result;
+        return result;
     }
 
     /// Rasterize a COLR color glyph and draw it as an RGBA image.
@@ -480,8 +571,8 @@ struct Canvas
         }
         else
         {
-            x = position.x + cast(int) floor(positioned.x + 0.5) - (width / 2);
-            y = position.y + cast(int) floor(positioned.y + 0.5) - (height / 2);
+            x = position.x + _offsetX + cast(int) floor(positioned.x + 0.5) - (width / 2);
+            y = position.y + _offsetY + cast(int) floor(positioned.y + 0.5) - (height / 2);
         }
 
         // Build an RgbaImage from the color buffer, trimmed to the ink extent.
@@ -513,14 +604,14 @@ struct Canvas
                 foreach (dx; 0 .. width)
                 {
                     const sx = x + dx;
-                    if (sx < 0 || sx >= target.width()) continue;
+                    if (sx < 0 || sx >= target.width() || !_clip.contains(sx, sy)) continue;
                     const src = (cast(size_t) dy * width + dx) * 4;
                     const alpha = trimmed[src + 3];
                     if (alpha == 0) continue;
                     // Premultiply for the surface.
                     target.setPixelClipped(sx, sy,
                         Color(trimmed[src], trimmed[src + 1], trimmed[src + 2],
-                            alpha), Rect(0, 0, target.width(), target.height()));
+                            alpha), _clip);
                 }
             }
         }

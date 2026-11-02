@@ -1,10 +1,11 @@
-> Current bounded-stage update: [Chat flow hardening](chat-flow-hardening.md).
-> The broader migration below is deferred at the user's request.
+> Current work: [Agent continuity](agent-continuity.md) and
+> [Long reply rendering](long-reply-rendering.md).
+> The user's 2026-11-02 request reactivates the entire remaining migration below.
 
 # Message-to-response migration status
 
-Updated 2026-10-06. The full migration in `message-response-architecture-review.md`
-is **not complete**. This is a verified hardening stage.
+Updated 2026-11-02. The full migration in `message-response-architecture-review.md`
+is **not complete**. All seven remaining requirements remain in scope.
 
 The subsequent transport/startup latency stage is documented in
 `latency-improvements.md`, including its controls, timing evidence and deployment.
@@ -83,9 +84,12 @@ elapsed time. Tests use private executables/state.
 2. Remove remaining synchronous intent acknowledgements/internal history reads
    from window-thread paths while preserving durable acceptance. Replay full
    recorded provider/tool traces to the same transcript and task.
-3. Complete incremental transcript/group projection. Structural pages are still
-   cleared/reattached and complex tool groups remain eager. Benchmark forced
-   rebuilds, long markdown/diffs/images, allocations and input latency.
+3. Complete incremental transcript/group projection. Stable page reconciliation
+   already preserves retained children and focus; complex tool groups remain
+   eager. Long Markdown paint now has measured visibility indexing and real-chat
+   forced-rebuild/input tests, including a 10,000-row diff. Finish group laziness,
+   image-heavy history benchmarks and allocation reduction; these measurements
+   do not establish that arbitrary long histories are fast.
 4. Extract orchestration/title/compaction/computer/continuation policy effects,
    consolidate root resend with typed retry, and cache immutable request
    projections by graph and capability revisions.
