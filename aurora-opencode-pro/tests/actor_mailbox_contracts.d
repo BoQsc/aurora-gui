@@ -168,6 +168,36 @@ int main()
     assert(imageView); imageActor.close();
     rename(buildPath(opencodeStateDirectory(), "attachments"), buildPath(opencodeStateDirectory(), "offline-attachments"));
     assert(parseJSON(ConversationActor.replay(imageInitial, config, imageActor.recordedTrace())) == parseJSON(imageActor.finalSnapshot()));
+    const badPath = buildPath(directory, "journal-is-a-directory"); mkdirRecurse(badPath);
+    auto failedGate = new Gate();
+    assert(repository.submit(&failedGate.block)); failedGate.waitEntered();
+    auto brokenJournal = new RepositoryRuntime(repository, badPath);
+    auto failedInitial = initial; failedInitial.id = "failed-storage";
+    failedInitial.goal = "Preserve the task through storage failure"; failedInitial.goalStatus = "active";
+    auto failedActor = new ConversationActor(failedInitial, config, brokenJournal, budget);
+    assert(failedActor.post(ActorCommand(ActorCommandKind.start, "Accepted before a failed journal write")) == ActorAdmission.accepted);
+    Thread.sleep(50.msecs);
+    assert(failedActor.post(ActorCommand(ActorCommandKind.steer, "Accepted steering")) == ActorAdmission.accepted);
+    assert(failedActor.post(ActorCommand(ActorCommandKind.followUp, "Accepted follow-up")) == ActorAdmission.accepted);
+    assert(failedActor.post(ActorCommand(ActorCommandKind.setDraft, "Unsent draft retained")) == ActorAdmission.accepted);
+    failedGate.release();
+    const failedDeadline = MonoTime.currTime + 5.seconds;
+    while (!failedActor.isClosed() && MonoTime.currTime < failedDeadline) Thread.sleep(2.msecs);
+    assert(failedActor.isClosed() && failedActor.fault().length);
+    bool visibleFailure;
+    foreach (change; failedActor.takeChanges())
+        if (change.kind == ActorChangeKind.fault) { visibleFailure = true; assert(!change.busy); }
+    assert(visibleFailure, "A failed owner closed without a reserved terminal notification");
+    auto failedState = parseJSON(failedActor.finalSnapshot());
+    assert(failedState["turnStatus"].str == "failed" && failedState["goalStatus"].str == "active");
+    assert(failedState["queuedFollowUps"].array[0].str == "Accepted before a failed journal write",
+        "Storage failure discarded accepted user input before it reached the graph");
+    assert(failedState["queuedFollowUps"].array[1].str == "Accepted follow-up" &&
+        failedState["queuedGuidance"].array[0].str == "Accepted steering" && failedState["draft"].str == "Unsent draft retained");
+    failedActor.close();
+    bool incomplete;
+    try failedActor.recordedTrace(); catch (Exception) { incomplete = true; }
+    assert(incomplete, "A failed reduction advertised a complete replay recording");
     writeln("PASS 8000 concurrent IDs, bounded mailbox/view, reserved Stop/snapshot, zero cancelled effects, accepted-input retention and replay");
     return 0;
 }

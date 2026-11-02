@@ -92,7 +92,8 @@ elapsed time. Tests use private executables/state.
    mailboxes and immutable UI change sets. Owned fields and the scalar reducer
    are foundations, not the completed extraction. The standalone actor now
    proves this ownership for ordinary tool/task/goal turns. Desktop command
-   routing, retry/failure recovery, title/model-compaction jobs,
+   routing, attachment input/hydration, live tool progress, retry/failure
+   recovery, title/model-compaction jobs,
    diagnostic/computer context, orchestration and exit/snapshot integration
    still need parity before replacing the existing service. Worker commands now
    cover Regenerate, edited prompts, Continue, branch selection, drafts and goal
@@ -197,6 +198,29 @@ The recipe/branch/mailbox checks passed in `build/architecture-checks-m25aak5q/`
 and goal/history/recovery/engine checks passed in
 `build/architecture-checks-pn0o4hpu/`, source fingerprint
 `6fca1cb68a20a8b4736e9875484ea12cc5e74ee9225dac340e83c9f21ac3f89d`.
+
+`ConversationProjection` applies immutable actor changes to a UI-owned session.
+It updates text/reasoning by message ID, advances the active leaf on appends,
+clears omitted optional fields in complete headers, ignores duplicate delivery,
+and requests a fresh snapshot on a revision gap or unavailable parent. Owner
+checks prevent one chat's changes from rewriting another chat. The real branch
+driver compares the projected graph/task state with the execution owner's final
+state, in addition to offline replay.
+
+An accepted-input ledger also retains ordinary requests, steering, queued
+follow-ups, goal edits and drafts if journal initialization/admission fails.
+The worker closes as failed with a reserved terminal notification; it cannot
+advertise that incomplete run as a valid replay trace. The failure fixture holds
+storage, accepts several inputs, releases a physically broken journal path and
+verifies that all accepted text survives in the final recovery state.
+Projection and failure checks passed in `build/architecture-checks-p79wu1ja/`,
+source fingerprint
+`8bf9e96fa60e1b4ddbcabec03ccc53ba49fd10536d85cd866f0cafb3b14d97fb`.
+The preceding full recipe/branch/projection checks passed in
+`build/architecture-checks-2bcd5y3z/`. Desktop routing and shutdown/fold-marker
+coordination are still pending; the running app has not adopted this owner.
+The same updated source fingerprint also passed the full actor recipe, mailbox
+and seven-request branch driver in `build/architecture-checks-gpox4qzk/`.
 
 ## Earlier hardening deployment
 

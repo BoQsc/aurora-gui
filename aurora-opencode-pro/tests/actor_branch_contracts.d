@@ -2,6 +2,8 @@ module actor_branch_contracts;
 
 import auroraopencode.core;
 import auroraopencode.conversationactor;
+import auroraopencode.conversationprojection;
+import auroraopencode.conversationencode : sessionToJson;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.file : mkdirRecurse, write, exists;
@@ -20,15 +22,25 @@ int main()
     ChatSession initial; initial.id = "branch-chat"; initial.model = "actor-branch-fixture";
     ActorConfiguration config; config.baseUrl = base; config.workspace = directory; config.recordTrace = true;
     auto actor = new ConversationActor(initial, config, null);
+    ChatSession mirror = initial;
+    auto projection = new ConversationProjection(initial);
     scope (exit) actor.close();
     void send(ActorCommand command) { assert(actor.post(command) == ActorAdmission.accepted); }
+    immutable(ActorChange)[] take()
+    {
+        auto changes = actor.takeChanges();
+        auto applied = projection.apply(mirror, changes);
+        assert(!applied.error.length, applied.error);
+        if (applied.needsSnapshot) send(ActorCommand(ActorCommandKind.snapshot));
+        return changes;
+    }
     void answer(string expected)
     {
         bool seen, idle;
         const deadline = MonoTime.currTime + 5.seconds;
         while ((!seen || !idle) && MonoTime.currTime < deadline)
         {
-            foreach (change; actor.takeChanges())
+            foreach (change; take())
             {
                 if (change.kind == ActorChangeKind.updated)
                 {
@@ -48,7 +60,7 @@ int main()
         const deadline = MonoTime.currTime + 5.seconds;
         while (MonoTime.currTime < deadline)
         {
-            foreach (change; actor.takeChanges())
+            foreach (change; take())
                 if (change.kind == ActorChangeKind.snapshot) return parseJSON(change.text);
             assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
         }
@@ -83,7 +95,7 @@ int main()
     const streaming = MonoTime.currTime + 5.seconds;
     while (!partial && MonoTime.currTime < streaming)
     {
-        foreach (change; actor.takeChanges())
+        foreach (change; take())
             if (change.kind == ActorChangeKind.delta && change.text == "partial") partial = true;
         Thread.sleep(2.msecs);
     }
@@ -108,7 +120,7 @@ int main()
     const rejection = MonoTime.currTime + 5.seconds;
     while (!rejectedTool && MonoTime.currTime < rejection)
     {
-        foreach (change; actor.takeChanges())
+        foreach (change; take())
             if (change.kind == ActorChangeKind.metadata && parseJSON(change.text)["turnStatus"].str == "failed") rejectedTool = true;
         assert(!actor.fault().length, actor.fault()); Thread.sleep(2.msecs);
     }
@@ -117,6 +129,8 @@ int main()
     assert(!("toolCalls" in refused["messages"].array[$ - 1].object), "A disabled tool request left an unpaired envelope");
     actor.close(); assert(!actor.fault().length, actor.fault());
     const finalState = actor.finalSnapshot();
+    assert(parseJSON(sessionToJson(mirror).toString()) == parseJSON(finalState),
+        "UI projection did not retain the execution owner's final graph and task state");
     Thread.sleep(1100.msecs); config.baseUrl = "http://127.0.0.1:1";
     assert(parseJSON(ConversationActor.replay(initial, config, actor.recordedTrace())) == parseJSON(finalState));
     write(buildPath(directory, "final.json"), finalState);

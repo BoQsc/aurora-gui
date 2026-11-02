@@ -6,6 +6,7 @@ import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.execution : ThreadEngine, RequestPhase;
 import auroraopencode.effectfacts;
+import auroraopencode.contextpolicy : checkpointSnippet;
 import auroraopencode.workerbudget : WorkerBudget;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind, ChatStartResult;
 import auroraopencode.repository : RepositoryRuntime;
@@ -88,9 +89,13 @@ public final class ConversationActor
     private Condition wake;
     private Thread worker;
     private WorkerBudget workerBudget;
-    private struct Envelope { ActorCommand command; ulong epoch; }
+    private struct Envelope { ActorCommand command; ulong epoch, serial; }
     private Envelope[] commands;
     private ulong admissionEpoch;
+    private ulong nextCommandSerial, currentCommandSerial;
+    private ActorCommand currentCommand;
+    private bool currentInputRetained;
+    private ActorCommand[ulong] unsettledInputs;
     private size_t commandBytes;
     private ActorChange[] changes;
     private size_t changeBytes;
@@ -98,6 +103,8 @@ public final class ConversationActor
     private bool joined;
     private bool snapshotPending, hasSnapshot, preserveInputs;
     private ActorChange pendingSnapshot;
+    private bool hasFault;
+    private ActorChange pendingFault;
     private ulong revision;
     private string failure;
     private ChatSession session;
@@ -163,7 +170,8 @@ public final class ConversationActor
             if (command.kind == ActorCommandKind.snapshot)
             { snapshotPending = true; wake.notifyAll(); return ActorAdmission.accepted; }
             const cost = ActorCommand.sizeof + command.text.length + command.targetId.length;
-            if (commands.length >= maxCommands || cost > maxCommandBytes - commandBytes)
+            if (commands.length >= maxCommands || unsettledInputs.length >= maxCommands * 2 ||
+                cost > maxCommandBytes - commandBytes)
                 return ActorAdmission.capacity;
             if (command.kind == ActorCommandKind.regenerate || command.kind == ActorCommandKind.editPrompt ||
                 command.kind == ActorCommandKind.selectBranch)
@@ -171,7 +179,9 @@ public final class ConversationActor
                 stopPending = true; ++admissionEpoch;
                 if (activeCancellation !is null) activeCancellation.cancel();
             }
-            commands ~= Envelope(command, admissionEpoch); commandBytes += cost; wake.notifyAll();
+            const serial = ++nextCommandSerial;
+            unsettledInputs[serial] = command;
+            commands ~= Envelope(command, admissionEpoch, serial); commandBytes += cost; wake.notifyAll();
             return ActorAdmission.accepted;
         }
     }
@@ -203,6 +213,8 @@ public final class ConversationActor
             changes = null; changeBytes = 0;
             if (needsSnapshot)
                 result ~= immutable(ActorChange)(ActorChangeKind.resync, revision);
+            if (hasFault)
+            { result ~= cast(immutable) pendingFault; hasFault = false; pendingFault = ActorChange.init; }
             return result;
         }
     }
@@ -239,6 +251,12 @@ public final class ConversationActor
         synchronized (mutex)
         {
             ++revision;
+            if (kind == ActorChangeKind.fault)
+            {
+                pendingFault = ActorChange(kind, revision, engine is null ? 0 : engine.activeRequestId,
+                    "", checkpointSnippet(text, 8 * 1024), false, false);
+                hasFault = true; return;
+            }
             if (needsSnapshot && kind != ActorChangeKind.snapshot && kind != ActorChangeKind.fault) return;
             const cost = ActorChange.sizeof + text.length + id.length;
             if (kind == ActorChangeKind.snapshot)
@@ -280,6 +298,7 @@ public final class ConversationActor
         message.id = messageId(); message.parentId = session.activeLeafId;
         if (!message.time.length) message.time = frameTime;
         session.messages ~= message; session.activeLeafId = message.id; session.updatedAt = frameUnix;
+        if (currentCommandSerial) currentInputRetained = true;
         engine.invalidateProjection();
         publish(AgentEventKind.itemAdded, runtimeMessagePayload(message), message.id);
         emit(ActorChangeKind.added, viewJson(messageToJson(message)), message.id);
@@ -304,6 +323,8 @@ public final class ConversationActor
     }
     private void metadata()
     {
+        if (currentCommandSerial && currentCommand.kind != ActorCommandKind.editPrompt)
+            currentInputRetained = true;
         publish(AgentEventKind.threadUpdated, runtimeThreadPayload(session));
         emit(ActorChangeKind.metadata, sessionMetaToJson(session).toString());
     }
@@ -405,6 +426,11 @@ public final class ConversationActor
             case ActorCommandKind.start:
                 if (running) { session.queuedFollowUps ~= command.text; metadata(); break; }
                 if (command.text.length) userRequest(command.text);
+                else if (!session.messages.length && session.queuedFollowUps.length)
+                {
+                    const next = session.queuedFollowUps[0]; session.queuedFollowUps = session.queuedFollowUps[1 .. $];
+                    userRequest(next);
+                }
                 else if (!preserveInputs) { engine.turnCancelled = false; request(); }
                 break;
             case ActorCommandKind.steer:
@@ -745,12 +771,12 @@ public final class ConversationActor
                 if (stop || finish)
                     foreach (input; pending)
                         if (finish || input.epoch < epoch)
-                            frame(input.command, OpenCodeEvent.init, false, JSONValue.init, true);
+                            processInput(input, true);
                 if (stop || (finish && running)) frame(ActorCommand(ActorCommandKind.stop,
                     pause || finish ? "" : "preserve-goal"), OpenCodeEvent.init, false);
                 if (finish) return;
                 foreach (input; pending)
-                    if (!stop || input.epoch >= epoch) frame(input.command, OpenCodeEvent.init, false);
+                    if (!stop || input.epoch >= epoch) processInput(input, false);
                 engine.client.drain(events, 64, 256 * 1024);
                 foreach (event; events)
                 {
@@ -764,9 +790,71 @@ public final class ConversationActor
         }
         catch (Throwable error)
         {
-            synchronized (mutex) failure = error.msg;
+            preserveUnsettledInput(error.msg);
+            running = false; session.turnStatus = "failed"; session.taskStatus = "blocked";
+            if (config.recordTrace) { traceTruncated = true; trace = null; }
             emit(ActorChangeKind.fault, error.msg);
         }
+    }
+
+    private void processInput(Envelope input, bool preserve)
+    {
+        currentCommandSerial = input.serial; currentCommand = input.command; currentInputRetained = false;
+        frame(input.command, OpenCodeEvent.init, false, JSONValue.init, preserve);
+        synchronized (mutex) unsettledInputs.remove(input.serial);
+        currentCommandSerial = 0;
+    }
+
+    private void preserveUnsettledInput(string error)
+    {
+        import std.algorithm : sort;
+        ActorCommand[ulong] remaining;
+        bool pause;
+        synchronized (mutex)
+        {
+            failure = error; pause = pauseOnStop || closing;
+            closing = true; remaining = unsettledInputs;
+            unsettledInputs = null; commands = null; commandBytes = 0;
+        }
+        auto serials = remaining.keys; serials.sort();
+        foreach (serial; serials)
+        {
+            if (serial == currentCommandSerial && currentInputRetained) continue;
+            const command = remaining[serial];
+            switch (command.kind)
+            {
+                case ActorCommandKind.start:
+                case ActorCommandKind.followUp:
+                case ActorCommandKind.editPrompt:
+                    if (command.text.length) session.queuedFollowUps ~= command.text;
+                    break;
+                case ActorCommandKind.steer:
+                    if (command.text.length) session.queuedGuidance ~= command.text;
+                    break;
+                case ActorCommandKind.setDraft: session.draft = command.text; break;
+                case ActorCommandKind.setGoal:
+                    const goal = clampGoalText(command.text.strip());
+                    const changed = session.goal != goal;
+                    session.goal = goal;
+                    if (session.goal.length)
+                    {
+                        session.goalStatus = command.activate ? "active" : "paused";
+                        session.goalStartedAt = frameUnix; session.goalTurns = 0;
+                        if (changed) resetTaskForNewGoal(session);
+                        recordGoalSet(session, frameUnix);
+                    }
+                    break;
+                case ActorCommandKind.pauseGoal:
+                    if (session.goal.length) session.goalStatus = "paused";
+                    break;
+                case ActorCommandKind.resumeGoal:
+                    if (session.goal.length) session.goalStatus = "active";
+                    break;
+                default: break;
+            }
+        }
+        if (pause && goalActive(session))
+        { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
     }
 
     /// Read after close: the worker has relinquished all model/trace ownership.
@@ -775,7 +863,7 @@ public final class ConversationActor
     string recordedTrace()
     {
         if (!isClosed()) throw new Exception("Close the actor before reading its trace");
-        if (traceTruncated) throw new Exception("Actor diagnostic trace exceeded its 8 MiB budget");
+        if (traceTruncated) throw new Exception("Actor diagnostic trace is incomplete or exceeded its recording budget");
         JSONValue value;
         value["schema"] = 2; value["initial"] = initialIdentity;
         value["configuration"] = configurationIdentity; value["frames"] = JSONValue(trace);
