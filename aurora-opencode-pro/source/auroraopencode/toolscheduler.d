@@ -149,7 +149,7 @@ public final class ToolBatch
         this.requestId = requestId;
         this.calls = calls.dup;
         this.workspace = workspace;
-        this.developerSource = developerToolSourceDirectory();
+        this.developerSource = context.developerCaptured ? context.developer.source : developerToolSourceDirectory();
         this.cancellation = cancellation;
         this.context = context;
     }

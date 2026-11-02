@@ -884,6 +884,7 @@ public final class ConversationActor
         const workspace = batchConfig.workspace;
         ChangeContext context; context.conversationId = session.id; context.turnId = to!string(id);
         context.diagnosticReadOnly = batchConfig.request.diagnosticReview;
+        context.developerCaptured = true; context.developer = batchConfig.developer;
         context.computer = ComputerUseContext(true, sessionRoutingKey(session),
             batchConfig.baseUrl, batchConfig.apiKey, roundModel, false, cast(uint) id);
         void launch()

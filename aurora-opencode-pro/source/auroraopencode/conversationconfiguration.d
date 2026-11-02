@@ -4,6 +4,7 @@ import auroraopencode.core : OpenCodeToolDef;
 import auroraopencode.requestpolicy : RequestPolicy;
 import auroraopencode.turnpolicy : TurnPolicy;
 import auroraopencode.projectioncache : ProjectionRevision;
+import auroraopencode.developerpolicy : DeveloperToolPolicy;
 import std.json : JSONValue, JSONType;
 import std.traits : FieldNameTuple, isIntegral, isSomeString, isUnsigned;
 import std.digest.sha : sha256Of;
@@ -16,6 +17,7 @@ public struct ActorConfiguration
     TurnPolicy turn;
     bool recordTrace;
     bool quickTitle, modelCompaction;
+    DeveloperToolPolicy developer;
     long outageBudgetMs = -1;
 }
 
@@ -24,6 +26,8 @@ public JSONValue actorBehaviorJson(const ref ActorConfiguration config)
 {
     JSONValue value; value["workspace"] = config.workspace; value["outageBudgetMs"] = config.outageBudgetMs;
     value["quickTitle"] = config.quickTitle; value["modelCompaction"] = config.modelCompaction;
+    value["developer"] = JSONValue.emptyObject;
+    static foreach (name; FieldNameTuple!DeveloperToolPolicy) value["developer"][name] = __traits(getMember, config.developer, name);
     static foreach (member; ["request", "turn"])
     {{
         value[member] = JSONValue.emptyObject;
@@ -53,6 +57,12 @@ public ActorConfiguration decodeActorBehavior(ActorConfiguration current, const 
 {
     current.workspace = value["workspace"].str;
     current.quickTitle = value["quickTitle"].boolean; current.modelCompaction = value["modelCompaction"].boolean;
+    static foreach (name; FieldNameTuple!DeveloperToolPolicy)
+    {
+        static if (is(typeof(__traits(getMember, current.developer, name)) == bool))
+            __traits(getMember, current.developer, name) = value["developer"][name].boolean;
+        else __traits(getMember, current.developer, name) = value["developer"][name].str;
+    }
     if (value["outageBudgetMs"].integer >= 0) current.outageBudgetMs = value["outageBudgetMs"].integer;
     static foreach (member; ["request", "turn"])
     {{

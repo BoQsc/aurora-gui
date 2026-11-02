@@ -394,6 +394,28 @@ still uses the legacy coordinator; this closes optional-job parity in the
 standalone owner, not the desktop migration. The default runner now has 51
 fixtures. Artifact retention follows the runner's configured newest-run limit.
 
+All 51 fixtures passed at that fingerprint in
+`build/architecture-checks-w50uv0ch/`; all eleven HTTP recovery cases passed in
+`build/architecture-checks-4jpqoyht/`, and lifecycle goal/recipe/branch checks in
+`build/architecture-checks-hrwjp5b6/`. The blocked-filesystem recovery was 91 ms
+with no surviving hosts. A 10,000-message owner detached 24 MB of logical text
+in 3.3 ms / 3.8 MB and transferred its detached model in 47 microseconds / 12 KB.
+These debug fixture measurements do not establish production release latency.
+
+Developer source path, latest-source/reapply choices and pending-operation state
+now travel with the captured tool context. Batches, write guards, sync and
+rebuild preflight no longer read host settings through root-bound callbacks.
+The host still receives the actual rebuild launch request. The queued-source
+fixture installs failing host callbacks, changes the caller's policy after
+admission, and proves the original guard remains while an explicitly empty
+source context stays usable. Focused source/resource checks pass in
+`build/architecture-checks-zedk7k2o/`; real HTTP hot configuration and offline
+replay pass in `build/architecture-checks-eosdb_o5/`, source fingerprint
+`677edf47b3ab6a6d0515156ba2f8f3caa17dd8215ec888cd72c67caf3b95dbea`.
+The default suite now includes this 52nd fixture. Native lifecycle callbacks,
+automatic diagnostic-model policy, orchestration and desktop adoption remain
+open; these are still source changes pending final delivery.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

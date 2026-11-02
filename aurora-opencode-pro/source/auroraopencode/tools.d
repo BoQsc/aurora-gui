@@ -60,6 +60,7 @@ import std.typecons : Tuple;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 import auroraopencode.workerbudget : WorkerBudget;
+import auroraopencode.developerpolicy : DeveloperToolPolicy, sourceEditBlocked, sourceRebuildBlocked, syncCapturedSource;
 import auroraopencode.checkout : checkoutIdentity, CheckoutLease;
 
 public __gshared string delegate() developerSourceDirectoryHandler;
@@ -2766,6 +2767,8 @@ public struct ChangeContext
     string conversationId;
     string turnId;
     bool diagnosticReadOnly;
+    bool developerCaptured;
+    DeveloperToolPolicy developer;
 }
 
 /// One filesystem path in Aurora's append-only mutation journal. File contents
@@ -6245,7 +6248,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
     {
         if (cancellation !is null && cancellation.cancelled())
             return ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
-        const developerSource = developerToolSourceDirectory();
+        const developerSource = changeContext.developerCaptured ? changeContext.developer.source : developerToolSourceDirectory();
         auto targets = mutationTargetPaths(call, workspace);
         auto leasePaths = targets.dup;
         const control = call.name == "calculate" || call.name == "process" || call.name == "tool_status" ||
@@ -6301,7 +6304,12 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             if (command && input.type == JSONType.object && jsonBool(input, "background"))
                 return ToolExecution(call.name,
                     "Error: Aurora source commands must run in the foreground so sync waits for the physical operation to finish.", true);
-            if (developerSourceEditCheckHandler !is null)
+            if (changeContext.developerCaptured)
+            {
+                const blocked = sourceEditBlocked(changeContext.developer, sourceTargets, sourceGitResolutionCommand(call, input));
+                if (blocked.length) return ToolExecution(call.name, "Error: " ~ blocked, true);
+            }
+            else if (developerSourceEditCheckHandler !is null)
             {
                 const blocked = developerSourceEditCheckHandler(developerSource, sourceTargets,
                     sourceGitResolutionCommand(call, input));
@@ -6352,7 +6360,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             string pendingIntent;
             if (changeContext.conversationId.length)
                 pendingIntent = persistNativeMutationIntent(call, workspace, changeContext, before);
-            result = dispatchTool(call, workspace, cancellation, observer);
+            result = dispatchTool(call, workspace, cancellation, observer, changeContext);
             if (!result.failed && hookConfig.hooks.length > 0)
                 runPostEditHooks(hookConfig.hooks, workspace, journalTargets,
                     cancellation, result, observer);
@@ -6379,7 +6387,7 @@ public ToolExecution executeTool(const OpenCodeToolCall call,
             }
         }
         else
-            result = dispatchTool(call, workspace, cancellation, observer);
+            result = dispatchTool(call, workspace, cancellation, observer, changeContext);
     }
     catch (Exception error)
         result = ToolExecution(call.name, "Error: tool execution failed: " ~ error.msg, true);
@@ -6767,7 +6775,7 @@ public __gshared string delegate(string arguments) syncRequestHandler;
 /// performs no build itself: `dub` cannot replace the running image, so only
 /// the app can drive the detached-helper flow. Returns a clear result either
 /// way so the model is never left believing a rebuild happened when it did not.
-private ToolExecution runRebuildTool(string arguments, string workspace)
+private ToolExecution runRebuildTool(string arguments, string workspace, ChangeContext context)
 {
     if (rebuildRequestHandler is null)
         return ToolExecution("rebuild",
@@ -6791,7 +6799,12 @@ private ToolExecution runRebuildTool(string arguments, string workspace)
             "conversation. This workspace is the general Aurora project or " ~
             "another Aurora app, so build and test that project directly " ~
             "instead of rebuilding Aurora OpenCode.", true);
-    if (rebuildSourceCheckHandler !is null)
+    if (context.developerCaptured)
+    {
+        const blocked = sourceRebuildBlocked(context.developer);
+        if (blocked.length) return ToolExecution("rebuild", "Error: " ~ blocked, true);
+    }
+    else if (rebuildSourceCheckHandler !is null)
     {
         const blocked = rebuildSourceCheckHandler();
         if (blocked.length > 0)
@@ -6813,8 +6826,13 @@ private ToolExecution runRebuildTool(string arguments, string workspace)
 /// Bridge the model's `sync` request to the host application, which performs
 /// the fetch/reapply against the configured Aurora source folder and returns
 /// the outcome.
-private ToolExecution runSyncTool(string arguments)
+private ToolExecution runSyncTool(string arguments, ChangeContext context)
 {
+    if (context.developerCaptured)
+    {
+        const output = syncCapturedSource(context.developer, arguments);
+        return ToolExecution("sync", output, output.startsWith("Error:"));
+    }
     if (syncRequestHandler is null)
         return ToolExecution("sync",
             "Error: the sync tool is only available inside the Aurora OpenCode " ~
@@ -6828,7 +6846,7 @@ private ToolExecution runSyncTool(string arguments)
 /// measured.
 private ToolExecution dispatchTool(const OpenCodeToolCall call,
     string workspace, ToolCancellation cancellation = null,
-    ToolOutputObserver observer = null)
+    ToolOutputObserver observer = null, ChangeContext context = ChangeContext.init)
 {
     switch (call.name)
     {
@@ -6968,9 +6986,9 @@ private ToolExecution dispatchTool(const OpenCodeToolCall call,
             return ToolExecution(call.name, routing[0], routing[1]);
         }
         case "rebuild":
-            return runRebuildTool(call.arguments, workspace);
+            return runRebuildTool(call.arguments, workspace, context);
         case "sync":
-            return runSyncTool(call.arguments);
+            return runSyncTool(call.arguments, context);
         default:
             return ToolExecution(call.name,
                 "Error: unknown tool '" ~ call.name ~ "'.", true);

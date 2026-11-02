@@ -21157,6 +21157,12 @@ private void pollButtonSuggestionRequest()
         changeContext.conversationId = _sessions[sessionIndex].id;
         changeContext.turnId = to!string(requestId);
         changeContext.diagnosticReadOnly = _execution.diagnosticActive;
+        changeContext.developerCaptured = true;
+        changeContext.developer.source = developerSourceDirectory();
+        changeContext.developer.requireLatest = _settings.developerRequireLatestSource;
+        changeContext.developer.autoReapply = _settings.developerAutoReapply;
+        changeContext.developer.operationPending = _updateChecking || _sourceFetching || _developerPublishing ||
+            _rebuildSourceChecking || _agentRebuildRequested || _rebuildPending;
         changeContext.computer = ComputerUseContext(true,
             sessionRoutingKey(*session), _client.baseUrl(), _client.apiKey(),
             session.model, false,
