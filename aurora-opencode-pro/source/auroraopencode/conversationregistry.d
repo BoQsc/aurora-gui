@@ -33,6 +33,7 @@ private final class Entry
     ConversationActor actor;
     ActorCommand[] pending;
     size_t bytes;
+    size_t deliveredPending = size_t.max;
     size_t stopAt = size_t.max;
     ulong generation;
     ConversationOwnerState state = ConversationOwnerState.waiting;
@@ -135,11 +136,13 @@ public final class ConversationRegistry
             {
                 const index = (begin + offset) % order.length;
                 auto entry = entries[order[index]];
+                size_t pending = entry.pending.length;
                 immutable(ActorChange)[] changes = entry.finalChanges;
                 entry.finalChanges = null;
                 if (entry.actor !is null && entry.state != ConversationOwnerState.retiring)
                 {
                     auto updates = entry.actor.takeChanges();
+                    pending += entry.actor.activity().unsettled;
                     if (entry.initialSnapshot)
                     {
                         bool snapshot;
@@ -153,10 +156,11 @@ public final class ConversationRegistry
                     }
                     changes ~= updates;
                 }
-                if (entry.changed || changes.length)
+                if (entry.changed || changes.length || pending != entry.deliveredPending)
                 {
                     result ~= ConversationDelivery(order[index], entry.generation, entry.state,
-                        entry.pending.length, changes, entry.error);
+                        pending, changes, entry.error);
+                    entry.deliveredPending = pending;
                     entry.changed = false; cursor = (index + 1) % order.length;
                     if (result.length >= maximumConversations) break;
                 }

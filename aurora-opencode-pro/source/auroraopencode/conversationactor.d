@@ -315,15 +315,16 @@ public final class ConversationActor
     }
 
     private void notify() { synchronized (mutex) wake.notifyAll(); }
+    private void notifyView()
+    {
+        void delegate() callback;
+        synchronized (mutex) callback = viewWake;
+        if (callback !is null) callback();
+    }
     private void emit(ActorChangeKind kind, string text = "", string id = "", bool reasoning = false)
     {
         if (replaying) return;
-        scope (exit)
-        {
-            void delegate() callback;
-            synchronized (mutex) callback = viewWake;
-            if (callback !is null) callback();
-        }
+        scope (exit) notifyView();
         synchronized (mutex)
         {
             publishedBusy = running;
@@ -1040,6 +1041,7 @@ public final class ConversationActor
         frame(input.command, OpenCodeEvent.init, false, JSONValue.init, preserve);
         synchronized (mutex) unsettledInputs.remove(input.serial);
         currentCommandSerial = 0;
+        notifyView();
     }
 
     private void preserveUnsettledInput(string error)
@@ -1065,43 +1067,43 @@ public final class ConversationActor
 
     public static void retainAcceptedInput(ref ChatSession session, const ref ActorCommand command, long timestamp)
     {
-            ChatPromptContext context;
-            try context = promptContext(command);
-            catch (Exception)
-            { context.text = command.context ~ "\nUnparsed image input retained for recovery:\n" ~ command.imagesJson; }
-            switch (command.kind)
-            {
-                case ActorCommandKind.start:
-                case ActorCommandKind.followUp:
-                case ActorCommandKind.editPrompt:
-                    if (command.text.length || command.imagesJson.length || command.context.length)
-                        queuePrompt(session, command.text, context, false);
-                    break;
-                case ActorCommandKind.steer:
-                    if (command.text.length || command.imagesJson.length || command.context.length)
-                        queuePrompt(session, command.text, context, true);
-                    break;
-                case ActorCommandKind.setDraft: session.draft = command.text; break;
-                case ActorCommandKind.setGoal:
-                    const goal = clampGoalText(command.text.strip());
-                    const changed = session.goal != goal;
-                    session.goal = goal;
-                    if (session.goal.length)
-                    {
-                        session.goalStatus = command.activate ? "active" : "paused";
-                        session.goalStartedAt = timestamp; session.goalTurns = 0;
-                        if (changed) resetTaskForNewGoal(session);
-                        recordGoalSet(session, timestamp);
-                    }
-                    break;
-                case ActorCommandKind.pauseGoal:
-                    if (session.goal.length) session.goalStatus = "paused";
-                    break;
-                case ActorCommandKind.resumeGoal:
-                    if (session.goal.length) session.goalStatus = "active";
-                    break;
-                default: break;
-            }
+        ChatPromptContext context;
+        try context = promptContext(command);
+        catch (Exception)
+        { context.text = command.context ~ "\nUnparsed image input retained for recovery:\n" ~ command.imagesJson; }
+        switch (command.kind)
+        {
+            case ActorCommandKind.start:
+            case ActorCommandKind.followUp:
+            case ActorCommandKind.editPrompt:
+                if (command.text.length || command.imagesJson.length || command.context.length)
+                    queuePrompt(session, command.text, context, false);
+                break;
+            case ActorCommandKind.steer:
+                if (command.text.length || command.imagesJson.length || command.context.length)
+                    queuePrompt(session, command.text, context, true);
+                break;
+            case ActorCommandKind.setDraft: session.draft = command.text; break;
+            case ActorCommandKind.setGoal:
+                const goal = clampGoalText(command.text.strip());
+                const changed = session.goal != goal;
+                session.goal = goal;
+                if (session.goal.length)
+                {
+                    session.goalStatus = command.activate ? "active" : "paused";
+                    session.goalStartedAt = timestamp; session.goalTurns = 0;
+                    if (changed) resetTaskForNewGoal(session);
+                    recordGoalSet(session, timestamp);
+                }
+                break;
+            case ActorCommandKind.pauseGoal:
+                if (session.goal.length) session.goalStatus = "paused";
+                break;
+            case ActorCommandKind.resumeGoal:
+                if (session.goal.length) session.goalStatus = "active";
+                break;
+            default: break;
+        }
     }
 
     /// Read after close: the worker has relinquished all model/trace ownership.
