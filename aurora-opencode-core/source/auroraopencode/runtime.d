@@ -1,4 +1,5 @@
 module auroraopencode.runtime;
+import auroraopencode.inputidentity : markInputCommitted;
 import auroraopencode.core : promptContextsFromJson;
 import auroraopencode.toolstate : parseToolState;
 
@@ -611,6 +612,7 @@ public void applyRuntimeThreadPayload(ref ChatSession session, JSONValue payload
     if (auto project = "projectId" in payload.object) normalized["project"] = *project;
     if (auto leaf = "activeLeafId" in payload.object) normalized["activeLeaf"] = *leaf;
     decodeSessionMetadata(normalized, session);
+    if (auto committed = "committedInput" in payload.object) markInputCommitted(session, committed.str);
     if (auto draft = "draft" in payload.object)
         if (draft.type == JSONType.string) session.draftRecorded = true;
 }
@@ -620,6 +622,9 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
     if (payload.type != JSONType.object) return;
     if (auto f = "role" in payload.object)
         if (f.type == JSONType.string) message.role = f.str;
+    if (auto f = "inputId" in payload.object)
+        if (f.type == JSONType.string) message.inputId = f.str;
+    if (auto f = "inputCommitted" in payload.object) message.inputCommitted = f.boolean;
     if (auto f = "authorId" in payload.object)
         if (f.type == JSONType.string) message.authorId = f.str;
     if (auto f = "content" in payload.object)

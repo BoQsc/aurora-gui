@@ -14,6 +14,8 @@ public JSONValue messageToJson(const ref ChatMessage message)
     if (message.authorId.length > 0)
         messageJson["authorId"] = message.authorId;
     messageJson["role"] = message.role;
+    if (message.inputId.length) messageJson["inputId"] = message.inputId;
+    if (message.inputCommitted) messageJson["inputCommitted"] = true;
     messageJson["content"] = message.content;
     if (message.retiredImages.length) messageJson["retiredImages"] = message.retiredImages;
     if (message.reasoning.length > 0)
@@ -292,6 +294,8 @@ public string runtimeMessagePayload(const ref ChatMessage message)
 {
     JSONValue payload;
     payload["role"] = message.role;
+    if (message.inputId.length) payload["inputId"] = message.inputId;
+    if (message.inputCommitted) payload["inputCommitted"] = true;
     if (message.authorId.length) payload["authorId"] = message.authorId;
     payload["content"] = message.content;
     if (message.retiredImages.length) payload["retiredImages"] = message.retiredImages;

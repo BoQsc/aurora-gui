@@ -134,6 +134,8 @@ public void decodeMessages(JSONValue field,
             message.authorId = f.str;
         if (auto f = "role" in messageValue.object)
             message.role = f.str;
+        if (auto f = "inputId" in messageValue.object) message.inputId = f.str;
+        if (auto f = "inputCommitted" in messageValue.object) message.inputCommitted = f.boolean;
         if (auto f = "content" in messageValue.object)
             message.content = f.str;
         if (auto f = "reasoning" in messageValue.object)

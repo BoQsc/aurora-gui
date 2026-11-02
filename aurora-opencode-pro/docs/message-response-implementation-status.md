@@ -460,6 +460,32 @@ projection, metadata and legacy orchestration checks pass in
 Desktop command/projection adoption, final exit/fold integration, full-app
 actor crash/restart proof and deployment remain open.
 
+All 52 default fixtures passed at that fingerprint in
+`build/architecture-checks-95qpr0vs/`. The 16-round desktop conversation passed
+in `build/architecture-checks-22ic7a2u/`, and image/attachment input cases in
+`build/architecture-checks-iz91_3cx/`. These still exercise the legacy desktop
+coordinator and standalone actors separately.
+
+Prompt submissions now carry stable IDs through messages, pending image/text
+contexts, journal replay and immutable projections. The owner acknowledges a
+submission only after its command-commit record. Repeated delivery cannot
+append another prompt or cancel a newer turn, including a replay presented as
+an edit. An append interrupted before command commit resumes its original node
+and adds missing hidden context once. IDs and commit flags never enter provider
+requests. The journal retains the distinction between an appended prompt and a
+fully committed input, so a crash cannot treat half a command as completed.
+Restored child intent is recovered after reducing an already accepted Stop.
+
+The real HTTP identity/recovery checks pass in
+`build/architecture-checks-qo44j2wz/`, orchestration in
+`build/architecture-checks-wlt5zgcl/`, and hot configuration in
+`build/architecture-checks-ellk4c7u/`, source fingerprint
+`eb6b0c1745eb88e3f0306535bbe631f577b0b9f87436eaa00569ebb85f9eeb34`.
+The identity proof submits more than 200 duplicates, reopens durable history,
+preserves pending context and simulates the append/commit crash gap. This is the
+deduplication boundary for the forthcoming durable composer outbox; that outbox,
+desktop adoption and final delivery are not yet implemented.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

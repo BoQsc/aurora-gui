@@ -7,7 +7,7 @@ public void queuePrompt(ref ChatSession session, string text, ChatPromptContext 
     auto texts = steering ? &session.queuedGuidance : &session.queuedFollowUps;
     auto contexts = steering ? &session.queuedGuidanceContext : &session.queuedFollowUpContext;
     // Legacy text additions need no attachment slots until one is supplied.
-    if (context.text.length || context.images.length)
+    if (context.text.length || context.images.length || context.inputId.length)
     { (*contexts).length = (*texts).length; *contexts ~= context; }
     *texts ~= text;
 }

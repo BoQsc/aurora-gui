@@ -773,6 +773,8 @@ public struct ChatMessage
     // See docs/multi-agent-single-conversation.md.
     string authorId;
     ToolState toolState;
+    string inputId;
+    bool inputCommitted;
 }
 
 /// Experimental multi-agent: one participant in a conversation's roster. The
@@ -1209,6 +1211,8 @@ public struct ChatPromptContext
 {
     string text;
     ChatImageAttachment[] images;
+    string inputId;
+    bool inputCommitted;
 }
 
 public JSONValue promptContextsToJson(const(ChatPromptContext)[] contexts)
@@ -1217,6 +1221,8 @@ public JSONValue promptContextsToJson(const(ChatPromptContext)[] contexts)
     foreach (context; contexts)
     {
         JSONValue value; value["text"] = context.text; value["images"] = JSONValue.emptyArray;
+        if (context.inputId.length) value["inputId"] = context.inputId;
+        if (context.inputCommitted) value["inputCommitted"] = true;
         foreach (image; context.images) value["images"].array ~= imageAttachmentToJson(image);
         values.array ~= value;
     }
@@ -1233,6 +1239,8 @@ public ChatPromptContext[] promptContextsFromJson(const ref JSONValue values)
         if (value.type == JSONType.object)
         {
             if (auto text = "text" in value.object) if (text.type == JSONType.string) context.text = text.str;
+            if (auto id = "inputId" in value.object) if (id.type == JSONType.string) context.inputId = id.str;
+            if (auto committed = "inputCommitted" in value.object) context.inputCommitted = committed.boolean;
             if (auto images = "images" in value.object) if (images.type == JSONType.array)
                 foreach (image; images.array) context.images ~= imageAttachmentFromJson(image);
         }

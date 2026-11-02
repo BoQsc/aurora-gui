@@ -4,6 +4,7 @@ import auroraopencode.core : ChatSession, ChatMessage;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import auroraopencode.conversationactor : ActorChange, ActorChangeKind;
 import auroraopencode.conversationview;
+import auroraopencode.inputidentity : markInputCommitted;
 import std.json : JSONValue, JSONType, parseJSON;
 
 public struct ConversationChanges
@@ -166,6 +167,7 @@ public final class ConversationProjection
                         result.executionChanged = true; break;
                     }
                     case ActorChangeKind.usage: break;
+                    case ActorChangeKind.inputCommitted: markInputCommitted(view, change.text); break;
                     default: throw new Exception("Unsupported conversation change");
                 }
                 result.executionChanged = result.executionChanged || requestId != change.requestId || busy != change.busy;

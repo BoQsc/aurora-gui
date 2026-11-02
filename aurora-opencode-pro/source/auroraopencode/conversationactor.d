@@ -7,6 +7,7 @@ import auroraopencode.conversationview;
 import auroraopencode.conversationmetadata : MetadataDelta;
 import auroraopencode.conversationjobs : ConversationJobs, ModelJobKind;
 import auroraopencode.conversationcoordination;
+import auroraopencode.inputidentity : inputRecorded, markInputCommitted;
 import auroraopencode.orchestrator : experimentalOrchestratorEnsureRoster, experimentalOrchestratorIsRouter,
     experimentalOrchestratorIdentityBlock, experimentalOrchestratorAgentModel, OrchestratorAssignment;
 import auroraopencode.agentresult : subagentResult;
@@ -54,7 +55,7 @@ import std.string : toLower, strip;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 
-public enum ActorAdmission { accepted, capacity, closed }
+public enum ActorAdmission { accepted, capacity, closed, invalid }
 public enum ActorStart { immediate, deferred }
 public struct ActorActivity
 {
@@ -83,13 +84,16 @@ public struct ActorCommand
     bool activate = true;
     string imagesJson, context;
     string connectionBase, connectionKey;
+    string inputId;
 }
+public struct ActorInputAcknowledgement { string threadId, inputId; bool retained; }
+public alias ActorInputReceiver = void delegate(ActorInputAcknowledgement);
 public struct ActorQueueStats
 {
     size_t commands, commandBytes, changes, changeBytes;
     bool resync;
 }
-public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice, toolProgress, metadataPatch }
+public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice, toolProgress, metadataPatch, inputCommitted }
 private enum EventLane { turn, title, compaction }
 /// Values contain immutable strings/scalars only, so readers cannot mutate an
 /// execution owner's graph, tool arrays or task state through a UI change.
@@ -172,6 +176,9 @@ public final class ConversationActor
     private ToolCancellation backgroundCancellation;
     private ConversationJobs jobs;
     private CoordinationReceiver coordinator;
+    private ActorInputReceiver inputReceiver;
+    private struct SeenInput { bool settled, retained; }
+    private SeenInput[string] seenInputs;
     private bool waitingChildren, coordinationRecovered;
     private enum maxCommands = 128;
     private enum maxCommandBytes = 1024 * 1024;
@@ -195,6 +202,9 @@ public final class ConversationActor
         auto initialCopy = cast(ChatSession) initial;
         session = adopt ? initialCopy : snapshotChatSessions([initialCopy])[0];
         waitingChildren = waitingForChildren(session);
+        foreach (message; session.messages) if (message.inputId.length && message.inputCommitted) seenInputs[message.inputId] = SeenInput(true, true);
+        foreach (contexts; [session.queuedGuidanceContext, session.queuedFollowUpContext])
+            foreach (context; contexts) if (context.inputId.length && context.inputCommitted) seenInputs[context.inputId] = SeenInput(true, true);
         if (config.recordTrace)
             initialIdentity = sha256Of(sessionToJson(session).toString()).toHexString().idup;
         configurationIdentity = configurationKey(config);
@@ -241,6 +251,8 @@ public final class ConversationActor
     }
     void setViewWake(void delegate() callback) { synchronized (mutex) viewWake = callback; }
     void setCoordinator(CoordinationReceiver callback) { synchronized (mutex) coordinator = callback; }
+    void setInputReceiver(ActorInputReceiver callback) { synchronized (mutex) inputReceiver = callback; }
+    bool knowsInput(string id) { synchronized (mutex) return id.length && (id in seenInputs) !is null; }
     ActorActivity activity()
     {
         synchronized (mutex) return ActorActivity(publishedBusy || publishedJobs || unsettledInputs.length > 0 ||
@@ -249,14 +261,20 @@ public final class ConversationActor
 
     ActorAdmission post(ActorCommand command)
     {
+        if (!validInputIdentity(command)) return ActorAdmission.invalid;
         if (command.kind == ActorCommandKind.stop) return stop();
+        ActorInputReceiver receiver; SeenInput seen;
         synchronized (mutex)
         {
             if (closing || closed) return ActorAdmission.closed;
+            auto previous = command.inputId.length ? command.inputId in seenInputs : null;
+            if (previous !is null) { seen = *previous; receiver = inputReceiver; }
+            else
+            {
             if (command.kind == ActorCommandKind.snapshot)
             { snapshotPending = true; wake.notifyAll(); return ActorAdmission.accepted; }
             const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
-                command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length;
+                command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length + command.inputId.length;
             if (commands.length >= maxCommands || unsettledInputs.length >= maxCommands * 2 ||
                 cost > maxCommandBytes - commandBytes)
                 return ActorAdmission.capacity;
@@ -268,10 +286,24 @@ public final class ConversationActor
                 backgroundCancellation.cancel();
             }
             const serial = ++nextCommandSerial;
+            if (command.inputId.length) seenInputs[command.inputId] = SeenInput.init;
             unsettledInputs[serial] = command;
             commands ~= Envelope(command, admissionEpoch, serial); commandBytes += cost; wake.notifyAll();
             return ActorAdmission.accepted;
+            }
         }
+        if (seen.settled && receiver !is null)
+            try receiver(ActorInputAcknowledgement(session.id, command.inputId, seen.retained));
+            catch (Exception) { return ActorAdmission.capacity; }
+        return ActorAdmission.accepted;
+    }
+    public static bool validInputIdentity(const ref ActorCommand command)
+    {
+        if (!command.inputId.length) return true;
+        return command.inputId.length <= 256 &&
+            (command.kind == ActorCommandKind.start || command.kind == ActorCommandKind.steer ||
+             command.kind == ActorCommandKind.followUp || command.kind == ActorCommandKind.editPrompt) &&
+            (command.text.length || command.imagesJson.length || command.context.length);
     }
 
     ActorAdmission configure(ActorConfiguration next, string model, bool thinking)
@@ -497,6 +529,7 @@ public final class ConversationActor
     private static ChatPromptContext promptContext(const ref ActorCommand command)
     {
         ChatPromptContext context; context.text = command.context;
+        context.inputId = command.inputId;
         if (command.imagesJson.length)
         {
             auto values = parseJSON(command.imagesJson);
@@ -517,10 +550,14 @@ public final class ConversationActor
     {
         diagnosticRemaining = 0; diagnosticActive = false; diagnosticUsed = false;
         ChatMessage message; message.role = "user"; message.content = text; message.images = context.images;
+        message.inputId = context.inputId;
+        message.inputCommitted = context.inputCommitted;
         append(message); acceptTaskRequest(session, text, session.activeLeafId);
         if (context.text.length)
         {
             ChatMessage detail; detail.role = "user"; detail.internal = true; detail.content = context.text;
+            detail.inputId = context.inputId;
+            detail.inputCommitted = context.inputCommitted;
             append(detail);
         }
     }
@@ -770,6 +807,32 @@ public final class ConversationActor
     }
     private void applyCommand(ActorCommand command)
     {
+        if (inputRecorded(session, command.inputId)) { currentInputRetained = true; return; }
+        if (inputRecorded(session, command.inputId, false))
+        {
+            currentInputRetained = true;
+            bool queued;
+            foreach (contexts; [session.queuedGuidanceContext, session.queuedFollowUpContext])
+                foreach (context; contexts) if (context.inputId == command.inputId) queued = true;
+            if (queued) return;
+            // Resume an append interrupted before its command commit, keeping
+            // the original prompt node and already persisted hidden context.
+            string promptId; bool hasContext;
+            foreach (message; session.messages) if (message.inputId == command.inputId)
+            { if (!message.internal) promptId = message.id; else hasContext = true; }
+            if (promptId.length)
+            {
+                cancelChildren();
+                if (!hasContext && command.context.length)
+                {
+                    ChatMessage detail; detail.role = "user"; detail.internal = true;
+                    detail.content = command.context; detail.inputId = command.inputId; append(detail);
+                }
+                acceptTaskRequest(session, command.text, promptId);
+                running = true; session.turnStatus = "running"; engine.turnCancelled = false; resetOutage();
+                metadata(); if (!preserveInputs) request(); return;
+            }
+        }
         final switch (command.kind)
         {
             case ActorCommandKind.start:
@@ -777,11 +840,11 @@ public final class ConversationActor
                 if (running || waitingChildren) { enqueue(command, false); break; }
                 if (command.text.length || command.imagesJson.length || command.context.length)
                     userRequest(command.text, promptContext(command));
-                else if (!session.messages.length && session.queuedFollowUps.length)
+                else if (session.queuedFollowUps.length && (!session.messages.length || session.turnStatus == "completed" || session.turnStatus == "idle" || !session.turnStatus.length))
                 {
                     auto next = takeQueuedPrompt(session, false); userRequest(next.text, next.context);
                 }
-                else if (!preserveInputs) { resetOutage(); engine.turnCancelled = false; request(); }
+                else if (!preserveInputs) { resetOutage(); engine.turnCancelled = false; applySteering(); request(); }
                 break;
             case ActorCommandKind.steer:
                 if (running || waitingChildren || preserveInputs) enqueue(command, true);
@@ -1325,15 +1388,6 @@ public final class ConversationActor
             auto baseline = runtimeThreadJson(session, true); baseline["planHistory"] = historyJson();
             journalMetadata.reset(baseline);
         }
-        if (!coordinationRecovered)
-        {
-            coordinationRecovered = true;
-            if (waitingChildren && !preserveInputs)
-            {
-                const state = parseJSON(session.orchestrationState);
-                coordinate(CoordinationKind.dispatch, state["round"].str, session.orchestrationState);
-            }
-        }
         if (provider && lane != EventLane.turn)
         {
             const kind = lane == EventLane.title ? ModelJobKind.title : ModelJobKind.compaction;
@@ -1343,7 +1397,23 @@ public final class ConversationActor
                 emit(ActorChangeKind.usage, eventJson(event).toString());
         }
         else if (provider) applyEvent(event); else applyCommand(command);
+        if (!coordinationRecovered)
+        {
+            coordinationRecovered = true;
+            if (waitingChildren && !preserveInputs)
+            {
+                const state = parseJSON(session.orchestrationState);
+                coordinate(CoordinationKind.dispatch, state["round"].str, session.orchestrationState);
+            }
+        }
         tryTitle();
+        if (!provider && command.inputId.length && inputRecorded(session, command.inputId, false) && !inputRecorded(session, command.inputId))
+        {
+            JSONValue acknowledgement; acknowledgement["committedInput"] = command.inputId;
+            publish(AgentEventKind.threadUpdated, acknowledgement.toString());
+            markInputCommitted(session, command.inputId);
+            emit(ActorChangeKind.inputCommitted, command.inputId);
+        }
         if (replaying)
         { if (replayId != frameIds.length) throw new Exception("Replay did not consume its recorded message IDs"); return; }
         if (!config.recordTrace || traceTruncated) return;
@@ -1353,6 +1423,7 @@ public final class ConversationActor
         value["lane"] = cast(int) lane;
         value["target"] = command.targetId; value["activate"] = command.activate;
         value["images"] = command.imagesJson; value["context"] = command.context;
+        value["inputId"] = command.inputId;
         value["preserve"] = preserveInputs;
         value["event"] = eventJson(event); value["time"] = frameTime; value["unix"] = frameUnix;
         value["elapsedMs"] = frameMs;
@@ -1435,6 +1506,19 @@ public final class ConversationActor
     {
         currentCommandSerial = input.serial; currentCommand = input.command; currentInputRetained = false;
         frame(input.command, OpenCodeEvent.init, false, JSONValue.init, preserve);
+        ActorInputReceiver receiver;
+        synchronized (mutex)
+        {
+            receiver = inputReceiver;
+            if (input.command.inputId.length) seenInputs[input.command.inputId] = SeenInput(true, currentInputRetained);
+        }
+        if (input.command.inputId.length && receiver !is null)
+        {
+            // This owner has already received the durable journal ack. The
+            // subscriber only records immutable admission state, never widgets.
+            try receiver(ActorInputAcknowledgement(session.id, input.command.inputId, currentInputRetained));
+            catch (Exception error) { emit(ActorChangeKind.notice, "Input acknowledgement could not be delivered: " ~ error.msg); }
+        }
         synchronized (mutex) unsettledInputs.remove(input.serial);
         currentCommandSerial = 0;
         notifyView();
@@ -1466,7 +1550,7 @@ public final class ConversationActor
         ChatPromptContext context;
         try context = promptContext(command);
         catch (Exception)
-        { context.text = command.context ~ "\nUnparsed image input retained for recovery:\n" ~ command.imagesJson; }
+        { context.text = command.context ~ "\nUnparsed image input retained for recovery:\n" ~ command.imagesJson; context.inputId = command.inputId; }
         switch (command.kind)
         {
             case ActorCommandKind.start:
@@ -1533,7 +1617,7 @@ public final class ConversationActor
         if (!config.recordTrace) throw new Exception("Actor diagnostic recording was not enabled");
         if (traceTruncated) throw new Exception("Actor diagnostic trace is incomplete or exceeded its recording budget");
         JSONValue value;
-        value["schema"] = 6; value["initial"] = initialIdentity;
+        value["schema"] = 7; value["initial"] = initialIdentity;
         value["outageBudgetMs"] = initialBudgetMs;
         value["configuration"] = configurationIdentity; value["frames"] = JSONValue(trace);
         return value.toString();
@@ -1543,7 +1627,7 @@ public final class ConversationActor
     {
         const recording = parseJSON(recordedTrace);
         if (config.outageBudgetMs < 0) config.outageBudgetMs = recording["outageBudgetMs"].integer;
-        if (recording["schema"].integer != 6 ||
+        if (recording["schema"].integer != 7 ||
             recording["initial"].str != sha256Of(sessionToJson(initial).toString()).toHexString() ||
             recording["configuration"].str != configurationKey(config))
             throw new Exception("Actor replay initial state or behavioral configuration does not match the recording");
@@ -1555,6 +1639,7 @@ public final class ConversationActor
             ActorCommand command; command.kind = cast(ActorCommandKind) entry["command"].integer; command.text = entry["text"].str;
             command.targetId = entry["target"].str; command.activate = entry["activate"].boolean;
             command.imagesJson = entry["images"].str; command.context = entry["context"].str;
+            command.inputId = entry["inputId"].str;
             owner.frame(command, eventFromJson(entry["event"]), entry["provider"].boolean, entry, false, cast(EventLane) entry["lane"].integer);
         }
         return sessionToJson(owner.session).toString();

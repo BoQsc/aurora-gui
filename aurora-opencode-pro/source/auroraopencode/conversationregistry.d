@@ -5,6 +5,7 @@ import auroraopencode.conversationactor;
 import auroraopencode.conversationencode : sessionToJson;
 import auroraopencode.conversationview;
 import auroraopencode.conversationcoordination;
+import auroraopencode.inputidentity : inputRecorded;
 import auroraopencode.conversationconfiguration : decodeActorBehavior, actorBehaviorJson;
 import auroraopencode.conversationcodec : decodeSessionMetadata;
 import auroraopencode.repository : RepositoryRuntime;
@@ -69,6 +70,7 @@ public final class ConversationRegistry
     private bool closing, closed, joined, statesTaken;
     private void delegate() viewWake;
     private ConversationTraceSink traceSink;
+    private ActorInputReceiver inputReceiver;
     private string[] traceErrors;
     private CoordinationEffect[] dispatches;
     private CoordinationEffect[string] reports, cancellations;
@@ -78,12 +80,13 @@ public final class ConversationRegistry
     private enum maxEntries = 256, maxPending = 128, maxPendingBytes = 1024 * 1024;
 
     this(RepositoryRuntime journal, size_t workers = 16, void delegate() viewWake = null,
-        ConversationTraceSink traceSink = null)
+        ConversationTraceSink traceSink = null, ActorInputReceiver inputReceiver = null)
     {
         if (workers < 1 || workers > 256) throw new Exception("Invalid conversation worker capacity");
         mutex = new Mutex(); joinMutex = new Mutex(); wake = new Condition(mutex);
         budget = new WorkerBudget(workers); this.journal = journal; this.viewWake = viewWake;
         this.traceSink = traceSink;
+        this.inputReceiver = inputReceiver;
         owner = new Thread(&run); owner.isDaemon = true; owner.start();
     }
 
@@ -108,12 +111,20 @@ public final class ConversationRegistry
             auto entry = new Entry(); entry.model = detached; entry.config = config;
             entry.state = ConversationOwnerState.dormant;
             entries[initial.id] = entry; order ~= initial.id; wake.notifyAll();
+            if (waitingForChildren(initial))
+            {
+                const state = parseJSON(initial.orchestrationState);
+                currentRounds[initial.id] = state["round"].str;
+                foreach (child; state["children"].array) if (!child["reported"].boolean)
+                    childrenByParent[initial.id] ~= child["id"].str;
+            }
         }
         notifyView(); return ActorAdmission.accepted;
     }
 
     ActorAdmission post(string id, ActorCommand command)
     {
+        if (!ConversationActor.validInputIdentity(command)) return ActorAdmission.invalid;
         synchronized (mutex)
         {
             if (closing || closed) return ActorAdmission.closed;
@@ -122,7 +133,10 @@ public final class ConversationRegistry
             auto entry = *found;
             if (command.kind == ActorCommandKind.stop || command.kind == ActorCommandKind.regenerate ||
                 command.kind == ActorCommandKind.editPrompt || command.kind == ActorCommandKind.selectBranch)
-                stopDescendants(id);
+            {
+                const duplicate = command.inputId.length && (entry.actor !is null ? entry.actor.knowsInput(command.inputId) : inputRecorded(entry.model, command.inputId));
+                if (!duplicate) stopDescendants(id);
+            }
             if (entry.actor !is null && entry.state != ConversationOwnerState.retiring)
             {
                 const result = entry.actor.post(command);
@@ -135,7 +149,7 @@ public final class ConversationRegistry
             else
             {
                 const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
-                    command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length;
+                    command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length + command.inputId.length;
                 if (entry.pending.length >= maxPending || cost > maxPendingBytes - entry.bytes)
                     return ActorAdmission.capacity;
                 entry.pending ~= command; entry.bytes += cost;
@@ -238,6 +252,7 @@ public final class ConversationRegistry
         auto actor = ConversationActor.adopt(entry.model, entry.config, journal, budget);
         actor.setViewWake(&notify);
         actor.setCoordinator(&coordinate);
+        actor.setInputReceiver(inputReceiver);
         synchronized (mutex)
         {
             entry.actor = actor; entry.model = ChatSession.init;
