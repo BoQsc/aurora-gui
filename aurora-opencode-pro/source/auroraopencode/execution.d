@@ -160,9 +160,12 @@ public class ThreadEngine
     MonoTime partialCheckpointAt;
 
     this(string baseUrl, string apiKey)
+    { this(baseUrl, apiKey, configuredProviderRetryPolicy()); }
+
+    this(string baseUrl, string apiKey, ProviderRetryPolicy policy)
     {
         projection = new RequestProjectionCache();
-        retryPolicy = configuredProviderRetryPolicy();
+        retryPolicy = policy;
         client = new OpenCodeClient(baseUrl, apiKey, retryPolicy);
         cancellation = new ToolCancellation();
     }

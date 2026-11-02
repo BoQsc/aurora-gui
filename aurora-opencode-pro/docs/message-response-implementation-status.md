@@ -222,6 +222,19 @@ coordination are still pending; the running app has not adopted this owner.
 The same updated source fingerprint also passed the full actor recipe, mailbox
 and seven-request branch driver in `build/architecture-checks-gpox4qzk/`.
 
+`test_actor_recovery.py` now exercises the autonomous owner against eight real
+HTTP scenarios: provisioning recovery, Stop during backoff, a three-attempt
+503 limit, a 250 ms outage budget, an explicit quota reset, three bounded
+protocol repairs, an unavailable tool during a tool-free completion handoff,
+and a failed summary request. All retain prior responses and replay the full
+final state offline. Exhausted transport recovery cannot restart an outer
+retry loop; explicit Stop cancels the pending timer. A provider's reset time
+is honored separately from the ordinary outage budget. Unusable output leaves
+the persistent goal active, and summary fallback cannot execute a tool.
+Proof: `build/architecture-checks-mrzwc_7y/`, source fingerprint
+`b9c162afd5bdaae509cbeed12a5f68fe4db6da7204f057e25d44c44c3bbcf62f`.
+These are standalone-owner checks; desktop adoption and delivery remain open.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.
