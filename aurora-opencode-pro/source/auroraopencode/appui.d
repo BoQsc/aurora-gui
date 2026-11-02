@@ -118,6 +118,7 @@ import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine, RequestPhase;
 import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
 import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult;
+import auroraopencode.toolprotocol : normalizeToolCalls;
 import auroraopencode.checkpointbarrier : CheckpointBarrier;
 import auroraopencode.agentresult : subagentResult;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
@@ -21047,21 +21048,6 @@ private void pollButtonSuggestionRequest()
         // pace readout stayed silent in exactly the mode it exists to measure.
         reactiveParagraphFirstDelta();
         _preparingToolCalls.length = 0;
-        // Some providers stream a tool call without an id, and a few reuse one
-        // id across calls in the same turn. The result ledger pairs each worker
-        // result back to its call by id, so an id-less or duplicated call would
-        // have its result silently dropped: the turn would never continue and
-        // its live rows would spin forever with no way to tell what is
-        // happening. Give every call a stable, unique id so each result always
-        // pairs back to the call that produced it.
-        OpenCodeToolCall[] calls = event.toolCalls.dup;
-        bool[string] seenCallIds;
-        foreach (index, ref call; calls)
-        {
-            if (call.id.length == 0 || call.id in seenCallIds)
-                call.id = "call_auto_" ~ to!string(index);
-            seenCallIds[call.id] = true;
-        }
         recordRequestTokenUsage(event.requestId, event.totalTokens,
             event.promptTokens, event.completionTokens);
         const sessionIndex = turnOwnerSessionIndex();
@@ -21071,6 +21057,9 @@ private void pollButtonSuggestionRequest()
         if (session.messages.length == 0) return;
         auto message = &session.messages[$ - 1];
         if (message.role != "assistant") return;
+
+        auto calls = normalizeToolCalls(event.toolCalls, session.messages,
+            message.id, event.requestId);
 
         // Pin the conversation that asked to be rebuilt. The `rebuild` tool only
         // records the request; the app performs it a few ticks later, after the
@@ -21129,7 +21118,7 @@ private void pollButtonSuggestionRequest()
         }
         markDirty();
 
-        if (completionHandoffPending(*session))
+        if (!goalActive(*session) && completionHandoffPending(*session))
         {
             const completedRequestId = _activeRequestId;
             appendSkippedToolResults(*session, calls,
