@@ -1248,6 +1248,8 @@ public struct ChatSession
     // recorded before its first prompt is sent.
     string id;
     string title;
+    bool titleManual;
+    uint titleAttempts;
     string model;
     bool thinking;
     string projectId;  // owning project; empty/unknown maps to the sandbox

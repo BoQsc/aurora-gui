@@ -11,6 +11,10 @@ public void decodeSessionMetadata(JSONValue sessionValue,
         session.id = field.str;
     if (auto field = "title" in sessionValue.object)
         session.title = field.str;
+    if (auto field = "titleManual" in sessionValue.object)
+        session.titleManual = field.boolean;
+    if (auto field = "titleAttempts" in sessionValue.object)
+        if (field.integer >= 0 && field.integer <= uint.max) session.titleAttempts = cast(uint) field.integer;
     if (auto field = "model" in sessionValue.object)
         session.model = field.str;
     if (auto field = "thinking" in sessionValue.object)

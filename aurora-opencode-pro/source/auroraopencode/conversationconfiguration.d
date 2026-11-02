@@ -15,6 +15,7 @@ public struct ActorConfiguration
     RequestPolicy request;
     TurnPolicy turn;
     bool recordTrace;
+    bool quickTitle, modelCompaction;
     long outageBudgetMs = -1;
 }
 
@@ -22,6 +23,7 @@ public struct ActorConfiguration
 public JSONValue actorBehaviorJson(const ref ActorConfiguration config)
 {
     JSONValue value; value["workspace"] = config.workspace; value["outageBudgetMs"] = config.outageBudgetMs;
+    value["quickTitle"] = config.quickTitle; value["modelCompaction"] = config.modelCompaction;
     static foreach (member; ["request", "turn"])
     {{
         value[member] = JSONValue.emptyObject;
@@ -50,6 +52,7 @@ public string configurationKey(const ref ActorConfiguration config)
 public ActorConfiguration decodeActorBehavior(ActorConfiguration current, const ref JSONValue value)
 {
     current.workspace = value["workspace"].str;
+    current.quickTitle = value["quickTitle"].boolean; current.modelCompaction = value["modelCompaction"].boolean;
     if (value["outageBudgetMs"].integer >= 0) current.outageBudgetMs = value["outageBudgetMs"].integer;
     static foreach (member; ["request", "turn"])
     {{

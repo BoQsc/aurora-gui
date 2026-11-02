@@ -5,6 +5,7 @@ import auroraopencode.conversationencode;
 import auroraopencode.conversationimages : ConversationImages;
 import auroraopencode.conversationview;
 import auroraopencode.conversationmetadata : MetadataDelta;
+import auroraopencode.conversationjobs : ConversationJobs, ModelJobKind;
 public import auroraopencode.conversationconfiguration : ActorConfiguration;
 import auroraopencode.conversationconfiguration : actorBehaviorJson, decodeActorBehavior, configurationKey;
 import auroraopencode.queuedprompts;
@@ -84,6 +85,7 @@ public struct ActorQueueStats
     bool resync;
 }
 public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice, toolProgress, metadataPatch }
+private enum EventLane { turn, title, compaction }
 /// Values contain immutable strings/scalars only, so readers cannot mutate an
 /// execution owner's graph, tool arrays or task state through a UI change.
 public struct ActorChange
@@ -104,7 +106,7 @@ public final class ConversationActor
     private Condition wake;
     private Thread worker;
     private WorkerBudget workerBudget;
-    private bool started, ownsWorkerSlot, publishedBusy, sessionTaken, reducing;
+    private bool started, ownsWorkerSlot, publishedBusy, publishedJobs, sessionTaken, reducing;
     private void delegate() viewWake;
     private struct Envelope { ActorCommand command; ulong epoch, serial; }
     private Envelope[] commands;
@@ -160,6 +162,8 @@ public final class ConversationActor
     private MonoTime lastCheckpoint;
     private size_t checkpointBytes;
     private ToolCancellation activeCancellation;
+    private ToolCancellation backgroundCancellation;
+    private ConversationJobs jobs;
     private enum maxCommands = 128;
     private enum maxCommandBytes = 1024 * 1024;
     private enum maxChanges = 256;
@@ -189,6 +193,7 @@ public final class ConversationActor
         this.journal = journal;
         mutex = new Mutex(); joinMutex = new Mutex(); wake = new Condition(mutex);
         journalMetadata = new MetadataDelta(); viewMetadata = new MetadataDelta();
+        jobs = new ConversationJobs(&notify); backgroundCancellation = new ToolCancellation();
         clockOrigin = MonoTime.currTime;
         workerBudget = budget is null ? actorWorkers : budget;
         if (launchWorker && launch() != ActorAdmission.accepted) throw new ActorCapacityException();
@@ -228,7 +233,7 @@ public final class ConversationActor
     void setViewWake(void delegate() callback) { synchronized (mutex) viewWake = callback; }
     ActorActivity activity()
     {
-        synchronized (mutex) return ActorActivity(publishedBusy || unsettledInputs.length > 0 ||
+        synchronized (mutex) return ActorActivity(publishedBusy || publishedJobs || unsettledInputs.length > 0 ||
             stopPending || snapshotPending || reducing, closed, unsettledInputs.length, revision);
     }
 
@@ -250,6 +255,7 @@ public final class ConversationActor
             {
                 stopPending = true; ++admissionEpoch;
                 if (activeCancellation !is null) activeCancellation.cancel();
+                backgroundCancellation.cancel();
             }
             const serial = ++nextCommandSerial;
             unsettledInputs[serial] = command;
@@ -278,6 +284,7 @@ public final class ConversationActor
             if (closed || closing) return ActorAdmission.closed;
             stopPending = true; pauseOnStop = true; ++admissionEpoch;
             if (activeCancellation !is null) activeCancellation.cancel();
+            backgroundCancellation.cancel();
             wake.notifyAll();
             return ActorAdmission.accepted;
         }
@@ -312,6 +319,7 @@ public final class ConversationActor
             if (closed || closing) return ActorAdmission.closed;
             closing = true;
             if (activeCancellation !is null) activeCancellation.cancel();
+            backgroundCancellation.cancel();
             wake.notifyAll();
             return ActorAdmission.accepted;
         }
@@ -535,7 +543,8 @@ public final class ConversationActor
         engine.client.setOpenCodeSession(sessionRoutingKey(session));
         engine.acceptRequest(id); running = true; session.turnStatus = "running";
         metadata();
-        if (replaying) return;
+        if (!replaying)
+        {
         auto receiver = engine.client;
         auto admission = new ToolCancellation();
         synchronized (mutex)
@@ -559,6 +568,30 @@ public final class ConversationActor
         if (journal is null) launch();
         else if (!engine.dispatchAfterCommit(journal, id, &launch))
             throw new Exception("Request effect could not be queued for durable admission");
+        }
+        if (config.modelCompaction && prepared.checkpointCreated)
+        {
+            auto messages = jobs.prepareCompaction(session, prepared.oldAnchor, prepared.oldSummary, policy.contextLimit);
+            if (messages.length) startJob(ModelJobKind.compaction, messages);
+        }
+    }
+    private void startJob(ModelJobKind kind, ChatRequestMessage[] messages)
+    {
+        ToolCancellation gate;
+        synchronized (mutex)
+        {
+            gate = backgroundCancellation;
+            if (stopPending || closing) gate.cancel();
+        }
+        jobs.start(kind, ++nextRequest, messages, config, session.model, sessionRoutingKey(session), frameMs, replaying, journal, gate);
+    }
+    private void tryTitle()
+    {
+        if (!config.quickTitle || preserveInputs || engine.turnCancelled || retryAtMs >= 0 ||
+            engine.phase == RequestPhase.waiting || engine.phase == RequestPhase.streaming) return;
+        auto messages = jobs.prepareTitle(session);
+        if (!messages.length) return;
+        metadata(); startJob(ModelJobKind.title, messages);
     }
     private void fail(string text, bool terminal = true)
     {
@@ -580,6 +613,8 @@ public final class ConversationActor
         const wasRunning = running;
         const previousStatus = session.turnStatus;
         retryAtMs = -1;
+        jobs.close();
+        synchronized (mutex) backgroundCancellation = new ToolCancellation();
         engine.stop(); engine.client.cancel();
         engine.client.closeSession();
         engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, engine.retryPolicy);
@@ -695,7 +730,8 @@ public final class ConversationActor
                 break;
             }
             case ActorCommandKind.setDraft: session.draft = command.text; metadata(); break;
-            case ActorCommandKind.setTitle: session.title = command.text; metadata(); break;
+            case ActorCommandKind.setTitle:
+                jobs.cancel(ModelJobKind.title); session.title = command.text; session.titleManual = true; metadata(); break;
             case ActorCommandKind.selectView:
                 viewed = command.activate;
                 if (viewed) session.unread = false;
@@ -717,6 +753,8 @@ public final class ConversationActor
                 if (command.connectionBase.length) next.baseUrl = command.connectionBase;
                 if (command.connectionBase.length || command.connectionKey.length) next.apiKey = command.connectionKey;
                 config = next; session.model = model; session.thinking = thinking;
+                if (!config.quickTitle) jobs.cancel(ModelJobKind.title);
+                if (!config.modelCompaction) jobs.cancel(ModelJobKind.compaction);
                 engine.retryPolicy = ProviderRetryPolicy(config.outageBudgetMs.msecs);
                 engine.client.setCredentials(config.baseUrl, config.apiKey);
                 engine.invalidateProjection(); metadata();
@@ -1038,12 +1076,12 @@ public final class ConversationActor
         }
     }
     private void frame(ActorCommand command, OpenCodeEvent event, bool provider,
-        JSONValue recorded = JSONValue.init, bool preserve = false)
+        JSONValue recorded = JSONValue.init, bool preserve = false, EventLane lane = EventLane.turn)
     {
         synchronized (mutex) reducing = true;
         scope (exit)
         {
-            synchronized (mutex) { reducing = false; publishedBusy = running; }
+            synchronized (mutex) { reducing = false; publishedBusy = running; publishedJobs = jobs.busy(); }
             notifyView();
         }
         auto facts = recorded.type == JSONType.object ? new EffectFacts(recorded["facts"])
@@ -1077,13 +1115,23 @@ public final class ConversationActor
             auto baseline = runtimeThreadJson(session, true); baseline["planHistory"] = historyJson();
             journalMetadata.reset(baseline);
         }
-        if (provider) applyEvent(event); else applyCommand(command);
+        if (provider && lane != EventLane.turn)
+        {
+            const kind = lane == EventLane.title ? ModelJobKind.title : ModelJobKind.compaction;
+            if (jobs.accept(kind, event, session, kind == ModelJobKind.title ? config.quickTitle : config.modelCompaction))
+            { engine.invalidateProjection(); metadata(); }
+            if (event.kind == OpenCodeEventKind.usage || event.kind == OpenCodeEventKind.done)
+                emit(ActorChangeKind.usage, eventJson(event).toString());
+        }
+        else if (provider) applyEvent(event); else applyCommand(command);
+        tryTitle();
         if (replaying)
         { if (replayId != frameIds.length) throw new Exception("Replay did not consume its recorded message IDs"); return; }
         if (!config.recordTrace || traceTruncated) return;
         if (!facts.complete) { trace = null; traceTruncated = true; return; }
         JSONValue value;
         value["provider"] = provider; value["command"] = cast(int) command.kind; value["text"] = command.text;
+        value["lane"] = cast(int) lane;
         value["target"] = command.targetId; value["activate"] = command.activate;
         value["images"] = command.imagesJson; value["context"] = command.context;
         value["preserve"] = preserveInputs;
@@ -1099,6 +1147,7 @@ public final class ConversationActor
     {
         scope (exit)
         {
+            jobs.close();
             if (engine !is null) engine.close();
             if (ownsWorkerSlot) workerBudget.release();
             synchronized (mutex) { closed = true; wake.notifyAll(); }
@@ -1134,6 +1183,18 @@ public final class ConversationActor
                 {
                     synchronized (mutex) if (stopPending || closing) break;
                     frame(ActorCommand.init, event, true);
+                }
+                foreach (kind; [ModelJobKind.title, ModelJobKind.compaction])
+                {
+                    const lane = kind == ModelJobKind.title ? EventLane.title : EventLane.compaction;
+                    jobs.drain(kind, events);
+                    foreach (event; events)
+                    {
+                        synchronized (mutex) if (stopPending || closing) break;
+                        frame(ActorCommand.init, event, true, JSONValue.init, false, lane);
+                    }
+                    if (jobs.expired(kind, (MonoTime.currTime - clockOrigin).total!"msecs"))
+                        frame(ActorCommand.init, jobs.timeout(kind), true, JSONValue.init, false, lane);
                 }
                 if (retryAtMs >= 0 && (MonoTime.currTime - clockOrigin).total!"msecs" >= retryAtMs)
                     frame(ActorCommand(ActorCommandKind.retryPending), OpenCodeEvent.init, false);
@@ -1200,7 +1261,7 @@ public final class ConversationActor
                     queuePrompt(session, command.text, context, true);
                 break;
             case ActorCommandKind.setDraft: session.draft = command.text; break;
-            case ActorCommandKind.setTitle: session.title = command.text; break;
+            case ActorCommandKind.setTitle: session.title = command.text; session.titleManual = true; break;
             case ActorCommandKind.selectView:
                 if (command.activate) session.unread = false;
                 break;
@@ -1253,7 +1314,7 @@ public final class ConversationActor
         if (!config.recordTrace) throw new Exception("Actor diagnostic recording was not enabled");
         if (traceTruncated) throw new Exception("Actor diagnostic trace is incomplete or exceeded its recording budget");
         JSONValue value;
-        value["schema"] = 5; value["initial"] = initialIdentity;
+        value["schema"] = 6; value["initial"] = initialIdentity;
         value["outageBudgetMs"] = initialBudgetMs;
         value["configuration"] = configurationIdentity; value["frames"] = JSONValue(trace);
         return value.toString();
@@ -1263,19 +1324,19 @@ public final class ConversationActor
     {
         const recording = parseJSON(recordedTrace);
         if (config.outageBudgetMs < 0) config.outageBudgetMs = recording["outageBudgetMs"].integer;
-        if (recording["schema"].integer != 5 ||
+        if (recording["schema"].integer != 6 ||
             recording["initial"].str != sha256Of(sessionToJson(initial).toString()).toHexString() ||
             recording["configuration"].str != configurationKey(config))
             throw new Exception("Actor replay initial state or behavioral configuration does not match the recording");
         auto owner = new ConversationActor(initial, config, null, null, false);
-        scope (exit) owner.engine.close();
+        scope (exit) { owner.jobs.close(); owner.engine.close(); }
         owner.running = false; owner.nextRequest = 0; owner.replaying = true;
         foreach (entry; recording["frames"].array)
         {
             ActorCommand command; command.kind = cast(ActorCommandKind) entry["command"].integer; command.text = entry["text"].str;
             command.targetId = entry["target"].str; command.activate = entry["activate"].boolean;
             command.imagesJson = entry["images"].str; command.context = entry["context"].str;
-            owner.frame(command, eventFromJson(entry["event"]), entry["provider"].boolean, entry);
+            owner.frame(command, eventFromJson(entry["event"]), entry["provider"].boolean, entry, false, cast(EventLane) entry["lane"].integer);
         }
         return sessionToJson(owner.session).toString();
     }

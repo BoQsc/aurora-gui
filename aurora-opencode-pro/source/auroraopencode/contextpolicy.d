@@ -711,10 +711,16 @@ public string compactionSource(const ref ChatSession session,
 }
 
 public bool applyModelCompactionSummary(ref ChatSession session,
-    string anchor, string leaf, string output, int contextLimit)
+    string anchor, string leaf, string output, int contextLimit, bool allowDescendant = false)
 {
-    if (anchor != session.compactedThroughMessageId ||
-        leaf != session.activeLeafId) return false;
+    if (anchor != session.compactedThroughMessageId) return false;
+    if (leaf != session.activeLeafId)
+    {
+        bool ancestor;
+        if (allowDescendant && leaf.length)
+            foreach (index; activeMessagePath(session)) if (session.messages[index].id == leaf) ancestor = true;
+        if (!ancestor) return false;
+    }
     const summary = output.strip();
     const size_t proportional = cast(size_t) contextLimit * 4 / 10;
     const size_t maximum = proportional < 24_000

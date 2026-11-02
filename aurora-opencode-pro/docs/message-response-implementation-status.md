@@ -377,6 +377,23 @@ recovery cases also pass at the preceding patch fingerprint in
 `build/architecture-checks-90xq7a9s/`. These are standalone owner checks; desktop
 adoption and deployment remain required.
 
+Optional title and model-summary jobs now run inside the conversation owner.
+The main response uses its extractive checkpoint immediately; it never waits
+for the optional model summary. A later summary requires the same checkpoint,
+task identity and captured leaf on the active branch. Titles use UTF-8-safe
+limits, two persisted attempts and a durable manual-rename guard. Both jobs
+have bounded output/deadlines, independent correlated clients and cancellation
+that also revokes queued journal admissions. Neither job can execute tools.
+Source fingerprint
+`d612eed34c50de89678deedab26b73c6b1c87942d9a13e28c029b516ba06f8d2`:
+`build/architecture-checks-1t2e4bp3/` covers eight actual HTTP cases, journal-only
+recovery and exact offline replay. Every foreground response finishes while
+its optional job is held. Renames, goal changes, branch changes, Stop, invalid
+tool output and title-attempt exhaustion are covered. The ordinary desktop
+still uses the legacy coordinator; this closes optional-job parity in the
+standalone owner, not the desktop migration. The default runner now has 51
+fixtures. Artifact retention follows the runner's configured newest-run limit.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

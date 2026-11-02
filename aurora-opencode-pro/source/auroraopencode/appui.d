@@ -23187,8 +23187,8 @@ private void pollButtonSuggestionRequest()
             runtime.titlePending = false;
             return;
         }
-        if (seed.length > quickTitleSeedChars)
-            seed = seed[0 .. quickTitleSeedChars];
+        import auroraopencode.titlepolicy : titlePrefix;
+        seed = titlePrefix(seed, quickTitleSeedChars);
         runtime.titleClient = new OpenCodeClient(_settings.baseUrl,
             activeApiKey(_settings));
         runtime.titleClient.setEventWake(_window.serviceWake());
@@ -23295,27 +23295,8 @@ private void pollButtonSuggestionRequest()
 
     private static string cleanGeneratedTitle(string raw)
     {
-        import std.string : splitLines;
-        string value;
-        foreach (line; splitLines(raw))
-        {
-            const trimmed = line.strip();
-            if (trimmed.length > 0)
-            {
-                value = trimmed;
-                break;
-            }
-        }
-        if (value.length == 0) return "";
-        if (value.length > 6 && value[0 .. 6].toLower() == "title:")
-            value = value[6 .. $].strip();
-        while (value.length >= 2 &&
-            (value[0] == '"' || value[0] == '`' || value[0] == '\'') &&
-            value[$ - 1] == value[0])
-            value = value[1 .. $ - 1].strip();
-        if (value.length > quickTitleMaxChars)
-            value = value[0 .. quickTitleMaxChars].strip();
-        return value;
+        import auroraopencode.titlepolicy;
+        return auroraopencode.titlepolicy.cleanGeneratedTitle(raw);
     }
 
 

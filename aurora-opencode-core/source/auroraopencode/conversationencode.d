@@ -108,6 +108,8 @@ public JSONValue sessionMetaToJson(const ref ChatSession session, bool includePl
     JSONValue root;
     if (session.id.length > 0) root["id"] = session.id;
     root["title"] = session.title;
+    if (session.titleManual) root["titleManual"] = true;
+    if (session.titleAttempts) root["titleAttempts"] = cast(long) session.titleAttempts;
     root["model"] = session.model;
     root["thinking"] = session.thinking;
     if (session.instructions.length > 0)
@@ -258,6 +260,8 @@ public JSONValue runtimeThreadJson(const ref ChatSession session, bool complete 
     payload["queuedFollowUpContext"] = promptContextsToJson(session.queuedFollowUpContext);
     if (complete)
     {
+        payload["titleManual"] = session.titleManual;
+        payload["titleAttempts"] = cast(long) session.titleAttempts;
         payload["instructions"] = session.instructions;
         payload["toolsMode"] = session.toolsMode;
         payload["unread"] = session.unread;
