@@ -3,6 +3,8 @@ module goal_mode_contracts;
 import auroraopencode.core : ChatMessage, ChatSession, Settings, TaskStep,
     ensureMessageGraph, goalHistoryFromJson, goalHistoryToJson;
 import auroraopencode.goalmode;
+import auroraopencode.goalmutation : resetTaskForNewGoal;
+import std.json : parseJSON;
 import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, executeTool,
@@ -205,6 +207,15 @@ int main()
         restored[0].goalHistory[0].text == "finish it",
         "journal projection lost persistent goal state");
     writeln("PASS durable goal state survives journal projection");
+    ChatSession contractOnly;
+    contractOnly.contract.id = "prior-analysis";
+    contractOnly.contract.intent = "analysis";
+    contractOnly.contract.requestedOutcome = "Inspect the saved evidence";
+    contractOnly.goal = "Deliver the replacement objective";
+    resetTaskForNewGoal(contractOnly);
+    require(contractOnly.taskArchive.length == 1 &&
+        parseJSON(contractOnly.taskArchive[0])["taskContract"]["id"].str == "prior-analysis",
+        "Replacing a goal lost an existing task contract with an empty display objective");
     writeln("goal mode contracts passed");
     return 0;
 }

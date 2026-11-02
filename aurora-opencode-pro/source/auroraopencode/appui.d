@@ -3,6 +3,7 @@ module auroraopencode.appui;
 import toolProgressPolicy = auroraopencode.toolprogresspolicy;
 
 import conversationEncoding = auroraopencode.conversationencode;
+import goalMutation = auroraopencode.goalmutation;
 
 import auroraopencode.turnpolicy : TurnPolicy, TurnAction, decideTurn, hasIncompleteTaskSteps;
 import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
@@ -22033,16 +22034,7 @@ private void pollButtonSuggestionRequest()
     /// restoration still has its normal recovery path.
     private static void resetTaskForNewGoal(ref ChatSession session)
     {
-        if (session.objective.length > 0)
-            session.taskArchive ~= activeTaskStateJson(session);
-        recordPlanHistory(session, "goal_changed",
-            "The goal changed; the previous plan was archived.");
-        session.objective = session.goal;
-        session.contract = TaskContract.init;
-        session.taskSteps = null;
-        session.nestedPlans = null;
-        session.verificationStatus = "not_required";
-        session.taskStatus = "active";
+        goalMutation.resetTaskForNewGoal(session);
     }
 
     private static bool hasUserMessage(const ref ChatSession session)

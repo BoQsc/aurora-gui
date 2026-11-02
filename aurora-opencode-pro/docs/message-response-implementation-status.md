@@ -92,9 +92,13 @@ elapsed time. Tests use private executables/state.
    mailboxes and immutable UI change sets. Owned fields and the scalar reducer
    are foundations, not the completed extraction. The standalone actor now
    proves this ownership for ordinary tool/task/goal turns. Desktop command
-   routing, branch edits/retry, failure recovery, title/model-compaction jobs,
+   routing, retry/failure recovery, title/model-compaction jobs,
    diagnostic/computer context, orchestration and exit/snapshot integration
-   still need parity before replacing the existing service.
+   still need parity before replacing the existing service. Worker commands now
+   cover Regenerate, edited prompts, Continue, branch selection, drafts and goal
+   replacement. Implicit branch cancellation keeps the persistent goal; explicit
+   Stop pauses it. Accepted edits survive a later Stop, and idle branch
+   navigation retains the completed turn status.
 2. Replay full recorded provider/tool traces. Shutdown/rebuild/update checkpoint
    barriers, journal admission, startup and internal history reads now avoid
    window-thread I/O waits. Replay
@@ -175,6 +179,24 @@ fingerprint `ba7ce67353d0e540f1d84a5e33797debcd5a159c032be5369033067227ec742b`.
 At that same fingerprint, the actor recipe/offline-replay checks passed in
 `build/architecture-checks-5b91tiin/` and the existing 16-round desktop HTTP
 conversation passed in `build/architecture-checks-1ggukg9t/`.
+
+The subsequent branch driver makes seven additional real HTTP requests:
+original answer, Regenerate, edited prompt, Continue, a held partial stream,
+editing that live prompt, and a provider tool request despite disabled tools.
+It retains every response version and the cancelled partial reply, rejects the
+disabled write without a dangling tool envelope, saves a replacement goal
+paused, and replays the complete final state offline. A separate goal mode
+uses eight main requests to prove bounded unusable-output recovery while
+preserving an active goal.
+
+`requestClose` returns without waiting for a held journal owner; final shutdown
+retains already accepted prompts/guidance and holds the physical worker slot
+until exit. UI attachment changes and resync snapshots contain blob references,
+while execution keeps pixels. Offline replay does not reopen those view blobs.
+The recipe/branch/mailbox checks passed in `build/architecture-checks-m25aak5q/`,
+and goal/history/recovery/engine checks passed in
+`build/architecture-checks-pn0o4hpu/`, source fingerprint
+`6fca1cb68a20a8b4736e9875484ea12cc5e74ee9225dac340e83c9f21ac3f89d`.
 
 ## Earlier hardening deployment
 

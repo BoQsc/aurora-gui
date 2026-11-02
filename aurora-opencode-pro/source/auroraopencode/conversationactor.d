@@ -3,7 +3,8 @@ module auroraopencode.conversationactor;
 import auroraopencode.core;
 import auroraopencode.conversationencode;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
-import auroraopencode.execution : ThreadEngine;
+import auroraopencode.attachmentstore : AttachmentStore;
+import auroraopencode.execution : ThreadEngine, RequestPhase;
 import auroraopencode.effectfacts;
 import auroraopencode.workerbudget : WorkerBudget;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind, ChatStartResult;
@@ -16,10 +17,12 @@ import auroraopencode.toolprotocol : normalizeToolCalls;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.tools : ChangeContext, ToolCancellation;
 import auroraopencode.toolprogresspolicy : isPlainDocumentMutation, isSubstantiveMutation, hasExhaustedRepeatedCall;
-import auroraopencode.taskflow : acceptTaskRequest, taskInvestigation;
+import auroraopencode.taskflow : acceptTaskRequest, taskInvestigation, restoreBranchTask;
 import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
 import auroraopencode.taskpolicy : verificationScope;
-import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome;
+import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome, clampGoalText, goalContinuationInstruction;
+import auroraopencode.planhistory : recordPlanHistory;
+import auroraopencode.goalmutation : resetTaskForNewGoal;
 import auroraopencode.outputrecovery : answerReplayed, goalAuditStalled, outputRecoveryCount, maxOutputRecoveries;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.imagehistory : pruneHistoryImages;
@@ -31,7 +34,7 @@ import std.datetime : Clock;
 import std.conv : to;
 import std.format : format;
 import std.json : JSONValue, JSONType, parseJSON;
-import std.path : extension;
+import std.path : buildPath;
 import std.string : toLower, strip;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
@@ -48,14 +51,15 @@ shared static this()
     if (capacity < 1 || capacity > 256) capacity = 16;
     actorWorkers = new WorkerBudget(capacity);
 }
-public enum ActorCommandKind { start, steer, followUp, stop, setGoal, pauseGoal, resumeGoal, snapshot }
-public struct ActorCommand { ActorCommandKind kind; string text; }
+public enum ActorCommandKind { start, steer, followUp, stop, setGoal, pauseGoal, resumeGoal, snapshot,
+    regenerate, editPrompt, continueAnswer, selectBranch, setDraft }
+public struct ActorCommand { ActorCommandKind kind; string text, targetId; bool activate = true; }
 public struct ActorQueueStats
 {
     size_t commands, commandBytes, changes, changeBytes;
     bool resync;
 }
-public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault }
+public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice }
 /// Values contain immutable strings/scalars only, so readers cannot mutate an
 /// execution owner's graph, tool arrays or task state through a UI change.
 public struct ActorChange
@@ -80,6 +84,7 @@ public struct ActorConfiguration
 public final class ConversationActor
 {
     private Mutex mutex;
+    private Mutex joinMutex;
     private Condition wake;
     private Thread worker;
     private WorkerBudget workerBudget;
@@ -90,6 +95,7 @@ public final class ConversationActor
     private ActorChange[] changes;
     private size_t changeBytes;
     private bool closing, closed, needsSnapshot;
+    private bool joined;
     private bool snapshotPending, hasSnapshot, preserveInputs;
     private ActorChange pendingSnapshot;
     private ulong revision;
@@ -137,7 +143,7 @@ public final class ConversationActor
         this.journal = journal;
         if (config.turn.orchestratorEnabled)
             throw new Exception("Conversation actor orchestration adapter is not installed");
-        mutex = new Mutex(); wake = new Condition(mutex);
+        mutex = new Mutex(); joinMutex = new Mutex(); wake = new Condition(mutex);
         if (launchWorker)
         {
             workerBudget = budget is null ? actorWorkers : budget;
@@ -156,9 +162,15 @@ public final class ConversationActor
             if (closing || closed) return ActorAdmission.closed;
             if (command.kind == ActorCommandKind.snapshot)
             { snapshotPending = true; wake.notifyAll(); return ActorAdmission.accepted; }
-            const cost = ActorCommand.sizeof + command.text.length;
+            const cost = ActorCommand.sizeof + command.text.length + command.targetId.length;
             if (commands.length >= maxCommands || cost > maxCommandBytes - commandBytes)
                 return ActorAdmission.capacity;
+            if (command.kind == ActorCommandKind.regenerate || command.kind == ActorCommandKind.editPrompt ||
+                command.kind == ActorCommandKind.selectBranch)
+            {
+                stopPending = true; ++admissionEpoch;
+                if (activeCancellation !is null) activeCancellation.cancel();
+            }
             commands ~= Envelope(command, admissionEpoch); commandBytes += cost; wake.notifyAll();
             return ActorAdmission.accepted;
         }
@@ -171,13 +183,14 @@ public final class ConversationActor
         synchronized (mutex)
         {
             if (closed || closing) return ActorAdmission.closed;
-            stopPending = true; ++admissionEpoch;
+            stopPending = true; pauseOnStop = true; ++admissionEpoch;
             if (activeCancellation !is null) activeCancellation.cancel();
             wake.notifyAll();
             return ActorAdmission.accepted;
         }
     }
     private bool stopPending;
+    private bool pauseOnStop;
 
     immutable(ActorChange)[] takeChanges()
     {
@@ -197,15 +210,26 @@ public final class ConversationActor
     ActorQueueStats queueStats()
     { synchronized (mutex) return ActorQueueStats(commands.length, commandBytes, changes.length, changeBytes, needsSnapshot); }
     bool isClosed() { synchronized (mutex) return closed; }
-    void close()
+    ActorAdmission requestClose()
     {
         synchronized (mutex)
         {
+            if (closed || closing) return ActorAdmission.closed;
             closing = true;
             if (activeCancellation !is null) activeCancellation.cancel();
             wake.notifyAll();
+            return ActorAdmission.accepted;
         }
-        if (worker !is null) worker.join();
+    }
+    void close()
+    {
+        synchronized (joinMutex)
+        {
+            if (joined) return;
+            requestClose();
+            if (worker !is null) worker.join();
+            joined = true;
+        }
     }
 
     private void notify() { synchronized (mutex) wake.notifyAll(); }
@@ -258,7 +282,7 @@ public final class ConversationActor
         session.messages ~= message; session.activeLeafId = message.id; session.updatedAt = frameUnix;
         engine.invalidateProjection();
         publish(AgentEventKind.itemAdded, runtimeMessagePayload(message), message.id);
-        emit(ActorChangeKind.added, messageToJson(message).toString(), message.id);
+        emit(ActorChangeKind.added, viewJson(messageToJson(message)), message.id);
     }
     private void updateLast()
     {
@@ -266,7 +290,17 @@ public final class ConversationActor
         const ref message = session.messages[$ - 1];
         engine.invalidateProjection();
         publish(AgentEventKind.itemUpdated, runtimeMessagePayload(message), message.id);
-        emit(ActorChangeKind.updated, messageToJson(message).toString(), message.id);
+        emit(ActorChangeKind.updated, viewJson(messageToJson(message)), message.id);
+    }
+    private string viewJson(JSONValue value)
+    {
+        if (replaying) return "";
+        // Presentation needs attachment metadata, while the execution owner
+        // retains pixels for request preparation. Never duplicate the pixels
+        // into the pending UI mailbox or its full-resync slot.
+        auto attachments = AttachmentStore(buildPath(opencodeStateDirectory(), "attachments"));
+        attachments.externalize(value);
+        return value.toString();
     }
     private void metadata()
     {
@@ -329,18 +363,25 @@ public final class ConversationActor
     }
     private void fail(string text)
     {
+        if (engine.phase != RequestPhase.failed)
+        {
+            OpenCodeEvent failure; failure.kind = OpenCodeEventKind.error;
+            failure.requestId = engine.activeRequestId; failure.text = text; engine.observe(failure);
+        }
         ensureAssistant(); session.messages[$ - 1].error = text; session.messages[$ - 1].failed = true;
         running = false; session.turnStatus = "failed"; session.taskStatus = "blocked";
         updateLast(); metadata(); publish(AgentEventKind.turnFailed, "{}");
     }
-    private void applyStop()
+    private void applyStop(bool pauseGoal = true)
     {
+        const wasRunning = running;
+        const previousStatus = session.turnStatus;
         engine.stop(); engine.client.cancel();
         engine.client.closeSession();
         engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, engine.retryPolicy);
         engine.client.setEventWake(&notify); engine.client.setOpenCodeSession(sessionRoutingKey(session));
-        running = false; session.turnStatus = "interrupted";
-        if (goalActive(session)) { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
+        running = false; session.turnStatus = wasRunning || pauseGoal ? "interrupted" : previousStatus;
+        if (pauseGoal && goalActive(session)) { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
         foreach (call; engine.pendingToolCalls)
             if (!(call.id in engine.reportedToolCallIds))
             {
@@ -352,9 +393,10 @@ public final class ConversationActor
             }
         engine.pendingToolCalls = null; engine.pendingToolResults = 0;
         engine.pendingToolImages = null; engine.reportedToolCallIds = null;
-        if (session.messages.length && session.messages[$ - 1].role == "assistant")
+        if (wasRunning && session.messages.length && session.messages[$ - 1].role == "assistant")
         { session.messages[$ - 1].finishReason = "cancelled"; updateLast(); }
-        metadata(); publish(AgentEventKind.turnInterrupted, "{}");
+        metadata();
+        if (wasRunning || pauseGoal) publish(AgentEventKind.turnInterrupted, "{}");
     }
     private void applyCommand(ActorCommand command)
     {
@@ -373,19 +415,78 @@ public final class ConversationActor
                 if (running || preserveInputs) { session.queuedFollowUps ~= command.text; metadata(); }
                 else userRequest(command.text);
                 break;
-            case ActorCommandKind.stop: applyStop(); break;
+            case ActorCommandKind.stop: applyStop(command.text != "preserve-goal"); break;
             case ActorCommandKind.setGoal:
-                session.goal = command.text; session.goalStatus = "active";
+                const goal = clampGoalText(command.text.strip());
+                if (!goal.length) { emit(ActorChangeKind.notice, "A goal requires a completion condition"); break; }
+                const changed = session.goal != goal;
+                session.goal = goal; session.goalStatus = command.activate ? "active" : "paused";
                 session.goalStartedAt = frameUnix; session.goalTurns = 0;
-                recordGoalSet(session, frameUnix); metadata(); break;
+                if (changed) resetTaskForNewGoal(session);
+                recordGoalSet(session, frameUnix); metadata();
+                if (command.activate && !preserveInputs)
+                {
+                    if (running) { session.queuedGuidance ~= "The user updated the persistent goal:\n" ~ goal; metadata(); }
+                    else if (!session.messages.length) userRequest(goal);
+                    else { internalNote(goalContinuationInstruction(session)); engine.turnCancelled = false; request(); }
+                }
+                break;
             case ActorCommandKind.pauseGoal:
-                session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); metadata(); break;
+                if (session.goal.length)
+                {
+                    session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); metadata();
+                    if (running && !preserveInputs) applyStop();
+                }
+                break;
             case ActorCommandKind.resumeGoal:
+                if (!session.goal.length) { emit(ActorChangeKind.notice, "There is no saved goal to resume"); break; }
                 session.goalStatus = "active"; recordGoalOutcome(session, "active", frameUnix); metadata();
-                if (!running && !preserveInputs) { engine.turnCancelled = false; request(); } break;
+                if (!preserveInputs)
+                {
+                    if (running) { session.queuedGuidance ~= goalContinuationInstruction(session); metadata(); }
+                    else { internalNote(goalContinuationInstruction(session)); engine.turnCancelled = false; request(); }
+                }
+                break;
             case ActorCommandKind.snapshot:
-                emit(ActorChangeKind.snapshot, sessionToJson(session).toString()); break;
+                emit(ActorChangeKind.snapshot, viewJson(sessionToJson(session))); break;
+            case ActorCommandKind.regenerate:
+            case ActorCommandKind.editPrompt:
+            case ActorCommandKind.selectBranch:
+            {
+                const index = messageIndex(command.targetId);
+                if (index == size_t.max ||
+                    (command.kind == ActorCommandKind.regenerate && session.messages[index].role != "assistant") ||
+                    (command.kind == ActorCommandKind.editPrompt && (session.messages[index].role != "user" || session.messages[index].internal)))
+                { emit(ActorChangeKind.notice, "The requested message is unavailable for this branch action"); break; }
+                session.activeLeafId = command.kind == ActorCommandKind.selectBranch
+                    ? session.messages[index].id : session.messages[index].parentId;
+                restoreBranchTask(session); engine.invalidateProjection(); metadata();
+                if (command.kind == ActorCommandKind.editPrompt && preserveInputs)
+                { userRequest(command.text); break; }
+                if (preserveInputs || command.kind == ActorCommandKind.selectBranch) break;
+                engine.turnCancelled = false;
+                if (command.kind == ActorCommandKind.editPrompt) userRequest(command.text);
+                else request();
+                break;
+            }
+            case ActorCommandKind.continueAnswer:
+            {
+                const index = messageIndex(command.targetId);
+                bool onBranch;
+                foreach (position; activeMessagePath(session)) if (position == index) onBranch = true;
+                if (running || !onBranch || index == size_t.max || session.messages[index].role != "assistant" || session.messages[index].failed)
+                { emit(ActorChangeKind.notice, "Continue requires an assistant response on the current idle branch"); break; }
+                internalNote("Continuation request: continue the current task from its durable objective and recorded evidence. Keep the current branch and successful results; do not repeat material already present.");
+                if (!preserveInputs) { engine.turnCancelled = false; request(); }
+                break;
+            }
+            case ActorCommandKind.setDraft: session.draft = command.text; metadata(); break;
         }
+    }
+    private size_t messageIndex(string id)
+    {
+        foreach (i, message; session.messages) if (message.id == id) return i;
+        return size_t.max;
     }
     private ulong workspaceRevision(string workspace)
     {
@@ -402,22 +503,22 @@ public final class ConversationActor
     private void toolsRequested(const ref OpenCodeEvent event)
     {
         ensureAssistant();
+        if (!config.request.toolsEnabled) { fail("Provider requested tools while tool access was disabled. No tool was executed."); return; }
         auto calls = normalizeToolCalls(event.toolCalls, session.messages, session.activeLeafId, event.requestId);
+        if (!calls.length) { fail("Provider returned an empty tool batch"); return; }
         auto assistant = &session.messages[$ - 1];
         assistant.toolCalls = calls.dup;
         assistant.promptTokens = event.promptTokens; assistant.completionTokens = event.completionTokens;
         assistant.totalTokens = event.totalTokens; updateLast();
         engine.pendingToolCalls = calls.dup; engine.pendingToolResults = cast(int) calls.length;
         engine.reportedToolCallIds = null; ++engine.toolRounds;
-        if (!calls.length) { fail("Provider returned an empty tool batch"); return; }
-        if (!config.request.toolsEnabled) { fail("Provider requested tools while tool access was disabled"); return; }
         if (hasExhaustedRepeatedCall(session, calls))
         {
             foreach (call; calls)
             {
                 ChatMessage skipped; skipped.role = "tool"; skipped.toolName = call.name;
                 skipped.toolCallId = call.id; skipped.toolArgs = call.arguments; skipped.failed = true;
-                skipped.toolState = ToolState.resourceBlocked;
+                skipped.toolState = ToolState.failed;
                 skipped.content = "This exact call already ran repeatedly in unchanged task state. No tool ran; choose a different action.";
                 append(skipped);
             }
@@ -534,6 +635,8 @@ public final class ConversationActor
         metadata();
         if (decision.continues()) { request(); return; }
         running = false; engine.activeRequestId = 0;
+        if (session.messages.length && session.messages[$ - 1].id == session.activeLeafId)
+        { session.messages[$ - 1].taskStateJson = activeTaskStateJson(session); updateLast(); }
         publish(AgentEventKind.turnCompleted, "{}"); metadata();
         if (decision.action == TurnAction.settle && session.queuedFollowUps.length)
         {
@@ -607,6 +710,7 @@ public final class ConversationActor
         if (!facts.complete) { trace = null; traceTruncated = true; return; }
         JSONValue value;
         value["provider"] = provider; value["command"] = cast(int) command.kind; value["text"] = command.text;
+        value["target"] = command.targetId; value["activate"] = command.activate;
         value["preserve"] = preserveInputs;
         value["event"] = eventJson(event); value["time"] = frameTime; value["unix"] = frameUnix;
         value["ids"] = JSONValue(frameIds); value["facts"] = facts.toJson();
@@ -630,10 +734,11 @@ public final class ConversationActor
             OpenCodeEvent[] events;
             while (true)
             {
-                Envelope[] pending; bool stop, finish, snapshot; ulong epoch;
+                Envelope[] pending; bool stop, finish, snapshot, pause; ulong epoch;
                 synchronized (mutex)
                 {
                     stop = stopPending; stopPending = false; finish = closing;
+                    pause = pauseOnStop; pauseOnStop = false;
                     epoch = admissionEpoch; snapshot = snapshotPending; snapshotPending = false;
                     pending = commands; commands = null; commandBytes = 0;
                 }
@@ -641,7 +746,8 @@ public final class ConversationActor
                     foreach (input; pending)
                         if (finish || input.epoch < epoch)
                             frame(input.command, OpenCodeEvent.init, false, JSONValue.init, true);
-                if (stop || (finish && running)) frame(ActorCommand(ActorCommandKind.stop), OpenCodeEvent.init, false);
+                if (stop || (finish && running)) frame(ActorCommand(ActorCommandKind.stop,
+                    pause || finish ? "" : "preserve-goal"), OpenCodeEvent.init, false);
                 if (finish) return;
                 foreach (input; pending)
                     if (!stop || input.epoch >= epoch) frame(input.command, OpenCodeEvent.init, false);
@@ -671,7 +777,7 @@ public final class ConversationActor
         if (!isClosed()) throw new Exception("Close the actor before reading its trace");
         if (traceTruncated) throw new Exception("Actor diagnostic trace exceeded its 8 MiB budget");
         JSONValue value;
-        value["schema"] = 1; value["initial"] = initialIdentity;
+        value["schema"] = 2; value["initial"] = initialIdentity;
         value["configuration"] = configurationIdentity; value["frames"] = JSONValue(trace);
         return value.toString();
     }
@@ -679,7 +785,7 @@ public final class ConversationActor
     public static string replay(const ref ChatSession initial, ActorConfiguration config, string recordedTrace)
     {
         const recording = parseJSON(recordedTrace);
-        if (recording["schema"].integer != 1 ||
+        if (recording["schema"].integer != 2 ||
             recording["initial"].str != sha256Of(sessionToJson(initial).toString()).toHexString() ||
             recording["configuration"].str != configurationKey(config))
             throw new Exception("Actor replay initial state or behavioral configuration does not match the recording");
@@ -689,6 +795,7 @@ public final class ConversationActor
         foreach (entry; recording["frames"].array)
         {
             ActorCommand command; command.kind = cast(ActorCommandKind) entry["command"].integer; command.text = entry["text"].str;
+            command.targetId = entry["target"].str; command.activate = entry["activate"].boolean;
             owner.frame(command, eventFromJson(entry["event"]), entry["provider"].boolean, entry);
         }
         return sessionToJson(owner.session).toString();

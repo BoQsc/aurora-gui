@@ -15,6 +15,7 @@ requests = []
 failures = []
 main_rounds = []
 title_after_rounds = []
+branch_requests = []
 hold = threading.Event()
 actor_mode = "--actor" in sys.argv or "--actor-recipe" in sys.argv
 recipe_mode = "--actor-recipe" in sys.argv
@@ -50,6 +51,26 @@ class Provider(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append(request)
+        if request.get("model") == "actor-branch-fixture":
+            branch_requests.append(request)
+            latest = next((m.get("content", "") for m in reversed(request["messages"]) if m["role"] == "user"), "")
+            if latest == "Unexpected tool call":
+                tool = call("forbidden", "write", {"filePath": "must-not-exist.txt", "content": "forbidden"})
+                tool["index"] = 0
+                answer = {"choices": [{"delta": {"tool_calls": [tool]}, "finish_reason": "tool_calls"}]}
+                self.respond('data: ' + json.dumps(answer) + '\n\ndata: [DONE]\n\n', "text/event-stream")
+                return
+            if latest == "Hold this reply":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(('data: ' + json.dumps({"choices": [{"delta": {"content": "partial"}, "finish_reason": None}]}) + '\n\n').encode())
+                self.wfile.flush(); hold.wait(20)
+                return
+            answer = {"choices": [{"delta": {"content": f"Actor answer {len(branch_requests)}"}, "finish_reason": "stop"}]}
+            self.respond('data: ' + json.dumps(answer) + '\n\ndata: [DONE]\n\n', "text/event-stream")
+            return
         if request.get("model") == "cancel-fixture":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -148,11 +169,13 @@ try:
         print("PASS built desktop image round trip; ARTIFACTS", directory, flush=True)
     else:
         result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
-                                 *(["actor_roundtrip", "actor_mailbox_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
+                                 *(["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
     expected_rounds = 8 if stalled_goal else 4
     assert len(main_rounds) == expected_rounds, f"Unexpected continuation count: {len(main_rounds)}"
     assert not failures, failures
+    if actor_mode:
+        assert len(branch_requests) == 7, f"Unexpected branch request count: {len(branch_requests)}"
     if "--production" not in sys.argv and not actor_mode:
         assert len(title_after_rounds) == 1 and 1 <= title_after_rounds[0] <= expected_rounds, \
             f"Title was lost, repeated or launched before the opening request: {title_after_rounds}"

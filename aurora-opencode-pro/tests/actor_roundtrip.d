@@ -25,6 +25,9 @@ int main()
     auto repository = new ConversationRepository(); scope (exit) repository.close();
     auto journal = new RepositoryRuntime(repository, buildPath(directory, "events.jsonl"));
     ChatSession initial; initial.id = "autonomous-chat"; initial.model = "fixture";
+    const stalledGoal = environment.get("AURORA_CONTRACT_GOAL_STALL", "") == "1";
+    if (stalledGoal)
+    { initial.goal = "Deliver and verify the requested fixture"; initial.goalStatus = "active"; }
     ActorConfiguration config; config.baseUrl = base; config.apiKey = "fixture";
     config.workspace = workspace; config.recordTrace = true;
     config.request.toolsEnabled = true; config.request.contextLimit = 64_000;
@@ -42,7 +45,7 @@ int main()
             if (change.kind == ActorChangeKind.metadata)
             {
                 auto header = parseJSON(change.text);
-                ready = header["turnStatus"].str == "completed";
+                ready = header["turnStatus"].str == (stalledGoal ? "failed" : "completed");
             }
         assert(!actor.fault().length, actor.fault());
         Thread.sleep(5.msecs);
@@ -54,6 +57,7 @@ int main()
     auto value = parseJSON(snapshot);
     assert(value["messages"].array[$ - 1]["content"].str == "READY");
     assert(value["verificationStatus"].str == "passed");
+    if (stalledGoal) assert(value["goalStatus"].str == "active", "Output recovery paused the user's persistent goal");
     const trace = actor.recordedTrace();
     write(buildPath(directory, "trace.json"), trace); write(buildPath(directory, "final.json"), snapshot);
     // Replay has neither the original workspace nor access to a provider.

@@ -4,11 +4,12 @@ import auroraopencode.core;
 import auroraopencode.conversationactor;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.workerbudget : WorkerBudget;
+import auroraopencode.attachmentstore : AttachmentStore;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
-import std.file : mkdirRecurse, write;
+import std.file : mkdirRecurse, write, rename;
 import std.path : absolutePath, buildPath;
 import std.json : parseJSON;
 import std.process : environment;
@@ -94,9 +95,9 @@ int main()
 
     // A UI can stop consuming changes while the worker remains productive.
     // Delivery coalesces to an explicit resync instead of growing without bound.
-    foreach (_; 0 .. 400)
+    foreach (i; 0 .. 400)
     {
-        while (actor.post(ActorCommand(ActorCommandKind.pauseGoal)) == ActorAdmission.capacity)
+        while (actor.post(ActorCommand(ActorCommandKind.setDraft, "draft-" ~ to!string(i))) == ActorAdmission.capacity)
         { assert(!actor.fault().length, actor.fault()); Thread.sleep(1.msecs); }
     }
     const changed = MonoTime.currTime + 8.seconds;
@@ -122,8 +123,51 @@ int main()
     assert(actor.post(ActorCommand(ActorCommandKind.start, "late")) == ActorAdmission.closed);
     assert(!actor.fault().length, actor.fault());
     const finalState = actor.finalSnapshot();
+    assert(parseJSON(finalState)["draft"].str == "draft-399");
     assert(parseJSON(ConversationActor.replay(initial, config, actor.recordedTrace())) == parseJSON(finalState));
     write(buildPath(directory, "final.json"), finalState);
+    auto closeGate = new Gate();
+    assert(repository.submit(&closeGate.block)); closeGate.waitEntered();
+    auto closingInitial = initial; closingInitial.id = "closing-chat";
+    auto closingActor = new ConversationActor(closingInitial, config, journal, budget);
+    assert(closingActor.post(ActorCommand(ActorCommandKind.start, "Accepted before closing")) == ActorAdmission.accepted);
+    Thread.sleep(50.msecs);
+    assert(closingActor.post(ActorCommand(ActorCommandKind.steer, "Preserve on exit")) == ActorAdmission.accepted);
+    const closeAt = MonoTime.currTime;
+    assert(closingActor.requestClose() == ActorAdmission.accepted);
+    assert((MonoTime.currTime - closeAt).total!"msecs" < 100 && budget.active() == 1);
+    assert(closingActor.post(ActorCommand(ActorCommandKind.start, "too late")) == ActorAdmission.closed);
+    closeGate.release(); closingActor.close(); closingActor.close();
+    assert(budget.active() == 0 && !closingActor.fault().length, closingActor.fault());
+    auto closedState = parseJSON(closingActor.finalSnapshot());
+    assert(closedState["messages"].array[0]["content"].str == "Accepted before closing");
+    assert(closedState["queuedGuidance"].array[0].str == "Preserve on exit");
+    assert(closedState["turnStatus"].str == "interrupted");
+    assert(parseJSON(ConversationActor.replay(closingInitial, config, closingActor.recordedTrace())) == closedState);
+
+    auto imageInitial = initial; imageInitial.id = "image-view";
+    ChatMessage imageMessage; imageMessage.id = "pixels"; imageMessage.role = "user";
+    ChatImageAttachment image; image.mimeType = "image/png"; image.name = "pixel.png";
+    image.base64Data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+    imageMessage.images = [image]; imageInitial.messages = [imageMessage]; imageInitial.activeLeafId = imageMessage.id;
+    auto imageActor = new ConversationActor(imageInitial, config, null, budget);
+    assert(imageActor.post(ActorCommand(ActorCommandKind.snapshot)) == ActorAdmission.accepted);
+    bool imageView;
+    const imageDeadline = MonoTime.currTime + 5.seconds;
+    while (!imageView && MonoTime.currTime < imageDeadline)
+    {
+        foreach (change; imageActor.takeChanges()) if (change.kind == ActorChangeKind.snapshot)
+        {
+            auto attachment = parseJSON(change.text)["messages"].array[0]["images"].array[0];
+            assert(!("base64Data" in attachment.object) && attachment["blob"].str.length == 64);
+            auto store = AttachmentStore(buildPath(opencodeStateDirectory(), "attachments"));
+            assert(store.get(attachment["blob"].str) == image.base64Data); imageView = true;
+        }
+        assert(!imageActor.fault().length, imageActor.fault()); Thread.sleep(2.msecs);
+    }
+    assert(imageView); imageActor.close();
+    rename(buildPath(opencodeStateDirectory(), "attachments"), buildPath(opencodeStateDirectory(), "offline-attachments"));
+    assert(parseJSON(ConversationActor.replay(imageInitial, config, imageActor.recordedTrace())) == parseJSON(imageActor.finalSnapshot()));
     writeln("PASS 8000 concurrent IDs, bounded mailbox/view, reserved Stop/snapshot, zero cancelled effects, accepted-input retention and replay");
     return 0;
 }
