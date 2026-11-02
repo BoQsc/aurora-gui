@@ -47,6 +47,13 @@ import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 
 public enum ActorAdmission { accepted, capacity, closed }
+public enum ActorStart { immediate, deferred }
+public struct ActorActivity
+{
+    bool busy, closed;
+    size_t unsettled;
+    ulong revision;
+}
 public final class ActorCapacityException : Exception
 { this() { super("Conversation workers are at capacity; no actor was started"); } }
 private __gshared WorkerBudget actorWorkers;
@@ -102,6 +109,8 @@ public final class ConversationActor
     private Condition wake;
     private Thread worker;
     private WorkerBudget workerBudget;
+    private bool started, ownsWorkerSlot, publishedBusy, sessionTaken;
+    private void delegate() viewWake;
     private struct Envelope { ActorCommand command; ulong epoch, serial; }
     private Envelope[] commands;
     private ulong admissionEpoch;
@@ -152,11 +161,11 @@ public final class ConversationActor
     private enum maxChangeBytes = 1024 * 1024;
 
     this(const ref ChatSession initial, ActorConfiguration config, RepositoryRuntime journal,
-        WorkerBudget budget = null)
-    { this(initial, config, journal, budget, true); }
+        WorkerBudget budget = null, ActorStart mode = ActorStart.immediate)
+    { this(initial, config, journal, budget, mode == ActorStart.immediate, mode == ActorStart.deferred); }
 
     private this(const ref ChatSession initial, ActorConfiguration config, RepositoryRuntime journal,
-        WorkerBudget budget, bool launchWorker)
+        WorkerBudget budget, bool launchWorker, bool deferred = false)
     {
         if (!initial.id.length) throw new Exception("A conversation actor requires a stable thread ID");
         if (config.outageBudgetMs < 0)
@@ -174,14 +183,37 @@ public final class ConversationActor
             throw new Exception("Conversation actor orchestration adapter is not installed");
         mutex = new Mutex(); joinMutex = new Mutex(); wake = new Condition(mutex);
         clockOrigin = MonoTime.currTime;
-        if (launchWorker)
+        workerBudget = budget is null ? actorWorkers : budget;
+        if (launchWorker && launch() != ActorAdmission.accepted) throw new ActorCapacityException();
+        else if (!launchWorker && !deferred)
+        { closed = true; engine = new ThreadEngine("", "", ProviderRetryPolicy(config.outageBudgetMs.msecs)); }
+    }
+
+    /// Bind an actor to its lifecycle owner and enqueue accepted input before
+    /// starting physical execution. Admission and Stop remain atomic while idle.
+    ActorAdmission launch()
+    {
+        synchronized (mutex)
         {
-            workerBudget = budget is null ? actorWorkers : budget;
-            if (!workerBudget.acquire()) throw new ActorCapacityException();
-            try { worker = new Thread(&run); worker.isDaemon = true; worker.start(); }
-            catch (Throwable error) { workerBudget.release(); throw error; }
+            if (closed || closing || joined) return ActorAdmission.closed;
+            if (started) return ActorAdmission.accepted;
+            if (!workerBudget.acquire()) return ActorAdmission.capacity;
+            ownsWorkerSlot = true;
+            try
+            {
+                worker = new Thread(&run); worker.isDaemon = true;
+                started = true; worker.start();
+            }
+            catch (Throwable error)
+            { started = false; ownsWorkerSlot = false; worker = null; workerBudget.release(); throw error; }
+            return ActorAdmission.accepted;
         }
-        else { closed = true; engine = new ThreadEngine("", "", ProviderRetryPolicy(config.outageBudgetMs.msecs)); }
+    }
+    void setViewWake(void delegate() callback) { synchronized (mutex) viewWake = callback; }
+    ActorActivity activity()
+    {
+        synchronized (mutex) return ActorActivity(publishedBusy || unsettledInputs.length > 0 ||
+            stopPending || snapshotPending, closed, unsettledInputs.length, revision);
     }
 
     ActorAdmission post(ActorCommand command)
@@ -263,7 +295,12 @@ public final class ConversationActor
         {
             if (joined) return;
             requestClose();
-            if (worker !is null) worker.join();
+            bool finishInline;
+            synchronized (mutex) if (!started && !closed) { started = true; finishInline = true; }
+            // A deferred actor has no physical job to join. The lifecycle
+            // owner applies already accepted inputs with effects disabled.
+            if (finishInline) run();
+            else if (worker !is null) worker.join();
             joined = true;
         }
     }
@@ -272,8 +309,15 @@ public final class ConversationActor
     private void emit(ActorChangeKind kind, string text = "", string id = "", bool reasoning = false)
     {
         if (replaying) return;
+        scope (exit)
+        {
+            void delegate() callback;
+            synchronized (mutex) callback = viewWake;
+            if (callback !is null) callback();
+        }
         synchronized (mutex)
         {
+            publishedBusy = running;
             ++revision;
             if (kind == ActorChangeKind.fault)
             {
@@ -932,7 +976,7 @@ public final class ConversationActor
         scope (exit)
         {
             if (engine !is null) engine.close();
-            workerBudget.release();
+            if (ownsWorkerSlot) workerBudget.release();
             synchronized (mutex) { closed = true; wake.notifyAll(); }
         }
         try
@@ -1045,7 +1089,19 @@ public final class ConversationActor
 
     /// Read after close: the worker has relinquished all model/trace ownership.
     string finalSnapshot()
-    { if (!isClosed()) throw new Exception("Close the actor before reading its final snapshot"); return sessionToJson(session).toString(); }
+    {
+        if (!isClosed() || sessionTaken) throw new Exception("Actor final state is unavailable or was already transferred");
+        return sessionToJson(session).toString();
+    }
+    ChatSession takeFinalSession()
+    {
+        synchronized (joinMutex)
+        {
+            if (!isClosed() || sessionTaken) throw new Exception("Actor final state is unavailable or was already transferred");
+            auto result = session; session = ChatSession.init; sessionTaken = true;
+            engine = null; images = null; return result;
+        }
+    }
     string recordedTrace()
     {
         if (!isClosed()) throw new Exception("Close the actor before reading its trace");

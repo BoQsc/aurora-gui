@@ -204,6 +204,19 @@ int main()
     bool incomplete;
     try failedActor.recordedTrace(); catch (Exception) { incomplete = true; }
     assert(incomplete, "A failed reduction advertised a complete replay recording");
+    auto deferredInitial = initial; deferredInitial.id = "deferred";
+    auto deferred = new ConversationActor(deferredInitial, config, null, budget, ActorStart.deferred);
+    assert(budget.active() == 0 && !deferred.activity().closed);
+    assert(deferred.post(ActorCommand(ActorCommandKind.start, "Accepted before physical worker admission")) == ActorAdmission.accepted);
+    assert(deferred.stop() == ActorAdmission.accepted);
+    assert(deferred.activity().busy && deferred.activity().unsettled == 1);
+    deferred.close();
+    assert(budget.active() == 0 && deferred.isClosed() && !deferred.fault().length, deferred.fault());
+    auto transferred = deferred.takeFinalSession();
+    assert(transferred.messages[0].content == "Accepted before physical worker admission" && transferred.turnStatus == "interrupted");
+    bool transferredOnce;
+    try deferred.takeFinalSession(); catch (Exception) { transferredOnce = true; }
+    assert(transferredOnce && deferred.launch() == ActorAdmission.closed);
     writeln("PASS 8000 concurrent IDs, bounded mailbox/view, reserved Stop/snapshot, zero cancelled effects, accepted-input retention and replay");
     return 0;
 }
