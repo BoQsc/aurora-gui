@@ -555,7 +555,7 @@ private OpenCodeToolDef goalCompleteToolDefinition()
 /// Record the visible plan, with at most one step in progress.
 private OpenCodeToolDef readPlanToolDefinition()
 {
-    return OpenCodeToolDef("read_plan", "Read this task without changing it. Summary shows objective, position and outstanding work. Details pages full outcome/action records, optionally under parent_id. Use this to recover precise acceptance, discoveries or follow-ups after compaction.",
+    return OpenCodeToolDef("read_plan", "Read this task without changing it. Summary shows objective, position and outstanding work. Details defaults to outcomes when a plan exists, otherwise actions. Outcome IDs belong in update_plan.plan. Set collection=actions (or parent_id) for action IDs: update those in update_plan.work_items. Recover exact acceptance, discoveries and follow-ups after compaction.",
         `{"type":"object","properties":{"view":{"type":"string","enum":["summary","details"]},"collection":{"type":"string","enum":["outcomes","actions"]},"parent_id":{"type":"string"},"include_completed":{"type":"boolean"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}`);
 }
 

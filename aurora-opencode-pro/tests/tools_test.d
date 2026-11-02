@@ -1150,7 +1150,7 @@ int main(string[] args)
             "Default to a short living plan for multi-step or ongoing work") >= 0 &&
         toolSteeringPrompt(false).indexOf("Update at phase changes or detours") >= 0 &&
         toolSteeringPrompt(false).indexOf(
-            "Plan maintenance never gates normal execution or completion") >= 0 &&
+            "Upkeep must not cause repeated deferrals or extra completion rounds") >= 0 &&
         toolSteeringPrompt(false).indexOf("Adapt steps as evidence changes") >= 0 &&
         toolSteeringPrompt(false).indexOf("Use update_plan.work_items for necessary discoveries/recovery") >= 0 &&
         toolSteeringPrompt(false).indexOf(

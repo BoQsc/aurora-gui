@@ -45,7 +45,7 @@ int main()
             "What happened? Please finish the task.", "How would you fix it? Please implement the fix.",
             "Can you fix it?", "Could you remove the obsolete file?"])
         assert(requestIntent(text) == RequestIntent.implementation, text);
-    foreach (text; ["What is left?", "How would we fix it?", "How would you fix it?",
+    foreach (text; ["Answer only: what is left?", "What is left?", "How would we fix it?", "How would you fix it?",
             "What would you change?", "Which files could you remove?", "Why did it stop?",
             "Explain why, and don't implement anything."])
         assert(answerOnlyRequest(text), text);
@@ -70,6 +70,18 @@ int main()
     const diagnosticDecision = decideTurn(diagnosis, diagnosticPolicy);
     assert(diagnosticDecision.action == TurnAction.settle && diagnosticDecision.taskStatus == "completed");
     assert(diagnosis.verificationStatus == "failed", "Diagnostic settlement erased the actual failed check");
+    ChatSession waiting;
+    request(waiting, "Write the invoice after obtaining its missing customer rate.");
+    waiting.goal="Deliver the invoice"; waiting.goalStatus="active";
+    append(waiting,"tool","Required customer rate","request_input");
+    waiting.messages[$-1].toolArgs=`{"reason":"Customer-owned rate is unavailable","question":"What rate applies?","required_fact":"customer rate","checked":["README.md"],"independent_work_complete":true}`;
+    waiting.taskStatus="waiting_input";
+    assert(taskAwaitingInput(waiting));
+    request(waiting,"Answer only: what is the pending question?");
+    append(waiting,"assistant","The customer rate is still pending.");
+    assert(taskAwaitingInput(waiting),"An answer-only question discarded the validated wait");
+    const waitingDecision=decideTurn(waiting,diagnosticPolicy);
+    assert(waitingDecision.action==TurnAction.waitInput && !waitingDecision.advanceGoal);
     ChatSession casual;
     request(casual, "Continue in this chat while I open another.");
     assert(!unfinishedTask(casual), "Casual continuation manufactured an action task");

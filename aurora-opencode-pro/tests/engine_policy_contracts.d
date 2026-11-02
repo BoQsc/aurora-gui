@@ -55,7 +55,11 @@ int main()
     session.goal = "Deliver every requested outcome";
     session.goalStatus = "active";
     session.goalTurns = 100;
+    append(session, "user", "Continue the task.");
     assert(decideTurn(session, turn).advanceGoal, "Useful long goals inherited a turn cap");
+    append(session, "user", "Answer only: what is the current status?");
+    assert(!decideTurn(session, turn).advanceGoal, "An answer-only question resumed the active goal");
+    append(session, "user", "Finish the requested task.");
     session.goalStatus = "completed";
     append(session, "user", completionHandoffMarker ~ "Summarize existing evidence", true);
     append(session, "assistant", "");

@@ -58,6 +58,8 @@ int main()
     session.goal = "Ship the goal bar";
     session.goalStatus = "active";
     auto prompt = goalPromptBlock(session);
+    require(prompt.indexOf("request_input") >= 0 && goalContinuationInstruction(session).indexOf("request_input") >= 0,
+        "Goal instructions omitted the validated input boundary");
     require(prompt.indexOf("Ship the goal bar") >= 0 &&
         prompt.indexOf("goal_complete") >= 0,
         "active-goal prompt lacks the goal or completion instruction");

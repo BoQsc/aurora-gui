@@ -67,6 +67,7 @@ public class ThreadEngine
     string compactionTask;
     MonoTime compactionStartedAt;
     ulong compactionRequestId;
+    size_t compactionByteBudget;
     OpenCodeClient titleClient;
     OpenCodeEvent[] titleEvents;
     string titleOutput;
@@ -319,7 +320,7 @@ public class ThreadEngine
 
     bool busy()
     {
-        return stopPending || turnInFlight || turnTiming || toolContinuationPending || client.busy() ||
+        return activeRequestId != 0 || stopPending || turnInFlight || turnTiming || toolContinuationPending || client.busy() ||
             compactionClient !is null || pendingToolCalls.length > 0 || pendingToolResults > 0;
     }
 }

@@ -21051,12 +21051,9 @@ private void pollButtonSuggestionRequest()
             handleOutputFailure(failure);
             return;
         }
-        // Normal mode never blocks tool execution for a missing plan; the
-        // advisory reminder in queueStalePlanGuidance nudges the model to plan
-        // instead (see below). Explicit strict mode can request a plan before
-        // substantial work. A batch already recording the plan must remain
-        // executable. This is bounded to one deferral; refusing to plan cannot
-        // deadlock.
+        // Complex goal work gets one forward-plan/acceptance preflight.
+        // Quick edits and answer-only requests do not acquire checklist debt.
+        // The single deferral cannot deadlock an uncooperative provider.
         const mutatingPending = firstMutatingCall(calls) >= 0;
         int pendingInspection;
         bool recordingPlan;
@@ -21068,20 +21065,35 @@ private void pollButtonSuggestionRequest()
         const explorationExhausted = readOnlyExplorationCount(*session) +
             pendingInspection >= earlyPlanExplorationCalls;
         const substantialMutation = mutatingPending && calls.length > 1;
-        if (experimentalStrictPlanEnabled() && (explorationExhausted || substantialMutation) &&
-            !recordingPlan && !hasIncompleteTaskSteps(*session) &&
-            !planRecordedThisTurn(*session) &&
-            !(session.id in _planGateFired ? _planGateFired[session.id] : false))
+        const goalAcceptanceMissing = goalActive(*session) && mutatingPending &&
+            (substantialMutation || explorationExhausted || session.taskSteps.length >= 3) &&
+            (!session.taskSteps.length || !session.contract.constraints.length);
+        const strictPlanMissing = experimentalStrictPlanEnabled() &&
+            (explorationExhausted || substantialMutation) && !hasIncompleteTaskSteps(*session) &&
+            !planRecordedThisTurn(*session);
+        const planGateKey = session.id ~ ":" ~ session.contract.id;
+        if ((goalAcceptanceMissing || strictPlanMissing) && !recordingPlan &&
+            !(planGateKey in _planGateFired ? _planGateFired[planGateKey] : false))
         {
-            _planGateFired[session.id] = true;
+            _planGateFired[planGateKey] = true;
             appendSkippedToolResults(*session, calls,
-                "Tool call deferred for planning: no durable plan recorded for this turn. " ~
+                goalAcceptanceMissing
+                ? "Tool call deferred for goal acceptance preflight. No command ran or failed. " ~
+                    "Record or update the forward plan and original acceptance constraints, preserving existing IDs, then repeat the calls."
+                : "Tool call deferred for planning: no durable plan recorded for this turn. " ~
                 "No command failed or ran. Call update_plan first with the concrete steps, " ~
                 "then repeat the call.");
             ChatMessage planGate;
             planGate.role = "user";
             planGate.internal = true;
-            planGate.content = mutatingPending
+            planGate.content = goalAcceptanceMissing
+                ? "Goal acceptance preflight: before implementing substantial changes, use update_plan to record " ~
+                    "a concise forward plan and constraints from the user's original requirements. Preserve existing IDs. " ~
+                    "Make done criteria observable, including units, limits and required boundary cases. " ~
+                    "Modified code, documentation and self-authored tests cannot redefine those requirements. " ~
+                    "Derive expected results independently from the original rules, then repeat the deferred calls. " ~
+                    "Reconcile these constraints when the user changes requirements; keep optional improvements out of scope."
+                : mutatingPending
                 ? "Plan-first gate: record the durable plan with one " ~
                     "update_plan call (the concrete remaining steps and their " ~
                     "statuses) before making changes. The edit call will then run."
@@ -22934,7 +22946,7 @@ private void pollButtonSuggestionRequest()
 
 
     private bool startModelCompaction(int sessionIndex, string oldAnchor,
-        string oldSummary, int contextLimit)
+        string oldSummary, int contextLimit, size_t byteBudget = 0)
     {
         auto session = &_sessions[sessionIndex];
         const source = compactionSource(*session, oldAnchor, oldSummary,
@@ -22951,6 +22963,7 @@ private void pollButtonSuggestionRequest()
         runtime.compactionLeaf = session.activeLeafId;
         runtime.compactionStartedAt = MonoTime.currTime;
         runtime.compactionTask = compactionTaskIdentity(*session);
+        runtime.compactionByteBudget = byteBudget;
         ChatRequestMessage instruction;
         instruction.role = "system";
         instruction.content = "Write a concise, faithful continuation checkpoint " ~
@@ -23039,7 +23052,8 @@ private void pollButtonSuggestionRequest()
         const applied = succeeded && taskUnchanged && applyModelCompactionSummary(*session,
             runtime.compactionAnchor, runtime.compactionLeaf,
             runtime.compactionOutput, testContextLimit > 0
-                ? testContextLimit : requestContextBudget(session.model));
+                ? testContextLimit : requestContextBudget(session.model), false,
+            runtime.compactionByteBudget);
         if (applied) { publishCompactionCheckpoint(*session); markDirty(); }
         JSONValue summaryDetails;
         summaryDetails["applied"] = applied;
@@ -23749,7 +23763,7 @@ private void pollButtonSuggestionRequest()
         }
         if (checkpointCreated && startModelCompaction(sessionIndex,
             oldCompactionAnchor, oldCompactionSummary,
-            requestContextBudget(orchestratorModel)))
+            requestContextBudget(orchestratorModel), prepared.summaryByteBudget))
         {
             setTurnInFlight(true);
             updateStatus("Compacting context before continuing...");
@@ -31633,6 +31647,24 @@ private void pollButtonSuggestionRequest()
     public bool sessionTurnBusyForTesting(int sessionIndex)
     {
         return sessionIsBusy(sessionIndex);
+    }
+
+    public string sessionBusyDetailsForTesting(int sessionIndex)
+    {
+        auto runtime = runtimeForSession(sessionIndex);
+        JSONValue details;
+        details["inFlight"] = runtime.turnInFlight;
+        details["requestId"] = cast(long) runtime.activeRequestId;
+        details["timing"] = runtime.turnTiming;
+        details["stopPending"] = runtime.stopPending;
+        details["continuation"] = runtime.toolContinuationPending;
+        details["clientBusy"] = runtime.client.busy();
+        details["compaction"] = runtime.compactionClient !is null;
+        details["pendingCalls"] = cast(long) runtime.pendingToolCalls.length;
+        details["pendingResults"] = runtime.pendingToolResults;
+        details["cancelled"] = runtime.turnCancelled;
+        details["status"] = _sessions[sessionIndex].turnStatus;
+        return details.toString();
     }
 
     /// Test-only: whether the sidebar flags this conversation as stopped

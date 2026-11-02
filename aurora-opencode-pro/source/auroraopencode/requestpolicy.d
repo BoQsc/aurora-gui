@@ -26,6 +26,7 @@ struct RequestPolicy
 
 struct PreparedRequest
 {
+    size_t summaryByteBudget;
     ChatRequestMessage[] messages;
     OpenCodeToolDef[] tools;
     bool checkpointCreated, fallbackCompacted, contextCompacted;
@@ -97,6 +98,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
         result.tools = experimentalOrchestratorFilterTools(result.tools, policy.orchestratorRouter);
 
     const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + responseContract.length + 64;
+    result.summaryByteBudget = compactionSummaryCapacity(policy.contextLimit, fixedBytes);
     result.oldAnchor = checkpointOnActivePath(session) ? session.compactedThroughMessageId : "";
     result.oldSummary = result.oldAnchor.length ? session.compactionSummary : "";
     ChatRequestMessage[] history;

@@ -210,7 +210,8 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "Skip plans for direct answers, quick exploration. Adapt steps as evidence changes. Update at phase changes or detours. " ~
         "Keep stable IDs and acceptance; tick proven outcomes. Use update_plan.work_items for necessary discoveries/recovery, " ~
         "action/next and detour exit/return in work_context. Optional follow-ups stay outside scope. " ~
-        "Use read_plan for task details and read_history to recover exact earlier messages or tool output after compaction. Do not guess omitted facts or repeat work just to reconstruct them. Plan maintenance never gates normal execution or completion.\n" ~
+        "Use read_plan for task details and read_history to recover exact earlier messages or tool output after compaction. Do not guess omitted facts or repeat work just to reconstruct them. " ~
+        "Record a forward plan and original acceptance rules before substantial goal work. Upkeep must not cause repeated deferrals or extra completion rounds.\n" ~
         "3. Read explicit paths directly, including outside the workspace. Discover unknown paths; read before editing. " ~
         "Batch related edits into the smallest complete change. Analysis authorizes findings; questions do not resume older work.\n" ~
         "4. Verification is an evidence phase, not a quota. Verify requested behavior and important boundaries, preserving existing assertions. " ~

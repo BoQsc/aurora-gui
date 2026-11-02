@@ -524,6 +524,38 @@ public bool checkpointOnActivePath(const ref ChatSession session)
     return false;
 }
 
+public size_t compactionSummaryCapacity(int contextLimit, size_t fixedRequestBytes)
+{
+    if (contextLimit <= 0) return 0;
+    const budget = compactionBudgetBytes(contextLimit);
+    if (fixedRequestBytes >= budget) return 0;
+    const maximum = cast(size_t) contextLimit * 4 / 10;
+    size_t capacity = maximum < 24_000 ? maximum : 24_000;
+    if (capacity > (budget - fixedRequestBytes) / 4) capacity = (budget - fixedRequestBytes) / 4;
+    return capacity;
+}
+
+private string recentUserDecisions(const ref ChatSession session, size_t budget)
+{
+    if (budget < 160) return "";
+    const latest = latestActualUserRequest(session);
+    string[] decisions;
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role != "user" || message.internal || message.content == latest ||
+            message.content == session.objective || message.content == session.goal) continue;
+        decisions ~= message.content;
+        if (decisions.length == 2) break;
+    }
+    if (!decisions.length) return "";
+    auto text = appender!string();
+    text.put("Recent user decisions (quoted; newer instructions supersede older ones):\n");
+    const perDecision = (budget - text.data.length) / decisions.length;
+    foreach_reverse (entry; decisions) text.put("- " ~ checkpointEdges(entry, perDecision - 3) ~ "\n");
+    return text.data;
+}
+
 /// Install one reusable checkpoint, leaving a generous recent tail for
 /// subsequent tool rounds. The boundary is a complete message/group; a
 /// provider-native tool envelope never crosses it. Earlier messages stay
@@ -535,7 +567,15 @@ public bool rollCompactionCheckpoint(ref ChatSession session,
     if (contextLimit <= 0) return false;
     const path = activeMessagePath(session);
     if (path.length < 2) return false;
-    const size_t tailBudget = cast(size_t) contextLimit * 4 / 3;
+    // Schemas and the system prompt consume real capacity. At 32K the native
+    // tools leave roughly 11 KB for history; a 12.8 KB checkpoint alone used
+    // to exceed that, forcing the current reads out on every continuation.
+    const requestBudget = compactionBudgetBytes(contextLimit);
+    if (fixedRequestBytes >= requestBudget) return false;
+    const available = requestBudget - fixedRequestBytes;
+    const summaryBudget = compactionSummaryCapacity(contextLimit, fixedRequestBytes);
+    if (summaryBudget < 900 || available <= summaryBudget + 128) return false;
+    const size_t tailBudget = (available - summaryBudget - 128) * 3 / 4;
     size_t start;
     if (checkpointOnActivePath(session))
         foreach (i, index; path)
@@ -545,20 +585,44 @@ public bool rollCompactionCheckpoint(ref ChatSession session,
                 start = i + 1;
                 break;
             }
-    const boundary = compactionBoundary(session, path, start, tailBudget,
+    auto boundary = compactionBoundary(session, path, start, tailBudget,
         imageLimit, cache, revision);
+    // The current batch is a working set, not old history. A byte selector
+    // may otherwise retire every result from a multi-read batch when that
+    // batch exceeds the target tail size, leaving the model nothing to act on.
+    foreach_reverse (i; 0 .. path.length)
+    {
+        const ref current = session.messages[path[i]];
+        if (current.role == "user" && !current.internal) break;
+        if (current.role == "assistant" && !current.toolCalls.length && current.content.length)
+            break; // A later answer has already consumed the older tool batch.
+        if (current.role == "assistant" && current.toolCalls.length)
+        {
+            if (boundary >= i)
+            {
+                const before = i ? session.messages[path[i - 1]].id : "";
+                const currentBatch = projectContext(session, before, false, imageLimit, cache, revision);
+                // Truly oversized output must still be pageable/compacted.
+                // Pin the complete batch only when it fits the remaining
+                // history capacity, rather than merely the smaller tail target.
+                if (requestMessageBytes(currentBatch) <= available - summaryBudget - 128)
+                {
+                    if (i <= start) return false;
+                    boundary = i - 1;
+                }
+            }
+            break;
+        }
+    }
     if (boundary == path.length || boundary < start) return false;
 
-    const size_t maximumSummary = cast(size_t) contextLimit * 4 / 10;
-    const size_t summaryBudget = maximumSummary < 24_000
-        ? maximumSummary : 24_000;
-    if (summaryBudget < 900 || fixedRequestBytes >=
-        cast(size_t) contextLimit * 4) return false;
     auto header = appender!string();
     header.put("Earlier conversation checkpoint. Full task records and transcript remain saved. " ~
         "Use read_history to recover omitted facts, exact instructions or tool results; read_plan for task details.\n");
     header.put(taskContext(session, latestActualUserRequest(session), true, summaryBudget / 2));
+    header.put(recentUserDecisions(session, summaryBudget / 4));
     header.put("## Earlier context\n");
+    if (header.data.length + 128 >= summaryBudget) return false;
     string previous;
     if (start > 0)
         previous = checkpointSnippet(session.compactionSummary,
@@ -711,7 +775,8 @@ public string compactionSource(const ref ChatSession session,
 }
 
 public bool applyModelCompactionSummary(ref ChatSession session,
-    string anchor, string leaf, string output, int contextLimit, bool allowDescendant = false)
+    string anchor, string leaf, string output, int contextLimit, bool allowDescendant = false,
+    size_t byteBudget = 0)
 {
     if (anchor != session.compactedThroughMessageId) return false;
     if (leaf != session.activeLeafId)
@@ -723,8 +788,12 @@ public bool applyModelCompactionSummary(ref ChatSession session,
     }
     const summary = output.strip();
     const size_t proportional = cast(size_t) contextLimit * 4 / 10;
-    const size_t maximum = proportional < 24_000
+    size_t maximum = proportional < 24_000
         ? proportional : 24_000;
+    // Refinement must fit the capacity reserved for the installed draft.
+    // Otherwise a successful optional summary can immediately retire the
+    // useful tail again and start another compaction before any real work.
+    if (byteBudget && maximum > byteBudget) maximum = byteBudget;
     string objective = session.objective;
     string latestUser;
     foreach (index; activeMessagePath(session))
@@ -740,6 +809,7 @@ public bool applyModelCompactionSummary(ref ChatSession session,
     if (latestUser.length > 0 && latestUser != objective)
         durable ~= "\nLatest user instruction: " ~
             checkpointEdges(latestUser, maximum / 8);
+    durable ~= "\n" ~ recentUserDecisions(session, maximum / 8);
     if (summary.length < 100 || summary.canFind("<think>") ||
         summary.length + durable.length + 240 > maximum) return false;
     session.compactionSummary = "Earlier conversation checkpoint. Use read_history for exact omitted messages and read_plan for task details.\n" ~

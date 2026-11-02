@@ -9,6 +9,8 @@ import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuati
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     completionHandoffMarker, completionHandoffInstruction, recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
+import auroraopencode.contextpolicy : latestActualUserRequest;
+import auroraopencode.requestintent : answerOnlyRequest;
 
 enum TurnAction { settle, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
 
@@ -142,7 +144,8 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         if (replan && policy.diagnosticAvailable) result.diagnosticRequests = 4;
         return result;
     }
-    if (goalActive(session) && !session.queuedFollowUps.length)
+    if (goalActive(session) && !session.queuedFollowUps.length &&
+        !answerOnlyRequest(latestActualUserRequest(session)) && !taskInvestigation(session))
     {
         result.advanceGoal = true;
         request(goalContinuationInstruction(session), "Continuing toward the goal…");

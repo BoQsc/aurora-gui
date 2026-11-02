@@ -470,7 +470,7 @@ string inferredPlanKind(string text)
 {
     text = text.strip().toLower();
     if (matchFirst(text, `^(test|check|verify)\s+(whether|if)\b`)) return "research";
-    if (matchFirst(text, `^(run|execute|perform)\b.*\b(tests?|checks?|checkers?|suites?|conformance|validation|regressions?|benchmarks?|compilation)\b`) ||
+    if (matchFirst(text, `^(run|execute|perform)\b.*\b(tests?|unittest|pytest|ctest|checks?|checkers?|suites?|conformance|validation|regressions?|benchmarks?|compilation)\b`) ||
         matchFirst(text, `^(compile|validate|benchmark)\b`)) return "verify";
     return legacyPlanKind(text);
 }
@@ -597,7 +597,13 @@ string planShapeError(JSONValue root)
     if (patch && "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_)
         return "Error: patch mode cannot replace the plan.";
     auto plan = "plan" in root.object;
-    if (plan is null) return patch ? "Error: patch mode requires plan updates." : "";
+    if (plan is null)
+    {
+        if (!patch) return "";
+        foreach (key; ["work_items", "work_context", "objective", "constraints", "decisions"])
+            if (key in root.object) return "";
+        return "Error: patch mode requires plan, action or task metadata updates.";
+    }
     if (plan.type != JSONType.array || !plan.array.length) return "Error: plan must be a non-empty array.";
     bool[string] seen;
     foreach (row; plan.array)
@@ -886,7 +892,19 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     if (root.type != JSONType.object) return "Error: update_plan requires an object.";
     const shapeError = planShapeError(root);
     if (shapeError.length) return shapeError;
-    if (incrementalPlan(root))
+    if (auto rows = "plan" in root.object)
+        foreach (row; rows.array)
+            if (auto id = "id" in row.object)
+            {
+                bool outcome;
+                foreach (old; previous) if (old.id == id.str) outcome = true;
+                if (!outcome)
+                    foreach (item; session.contract.workItems)
+                        if (item.step.id == id.str)
+                            return "Error: '" ~ id.str ~ "' is an action ID. Update it in work_items, not plan. " ~
+                                "read_plan view=details collection=outcomes returns outcome IDs; collection=actions returns action IDs.";
+            }
+    if (incrementalPlan(root) && "plan" in root.object)
         foreach (row; root["plan"].array)
         {
             bool found;
@@ -959,7 +977,8 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
         {
             bool retained;
             foreach (step; steps) if (samePlanStep(old, step)) retained = true;
-            if (!retained) return "Error: unfinished outcome omitted: " ~ old.text ~ ". Preserve it or use a subplan.";
+            if (!retained) return "Error: unfinished outcome omitted: " ~ old.text ~ " [id: " ~ old.id ~
+                "]. Use plan_mode=patch with existing outcome IDs to preserve untouched outcomes. Action IDs belong in work_items.";
         }
     if (!("plan" in root.object))
     {

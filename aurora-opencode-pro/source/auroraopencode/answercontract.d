@@ -13,6 +13,11 @@ string answerContract(string request, string verbosity)
         "Do not add speculative defects, future redesigns or unrelated improvements. " ~
         "For claims about existing code, distinguish the source, actual execution and the desired behavior. " ~
         "A calculator verifies only its input expression, not the program you inferred it from. " ~
+        "Derive expected results from the user's original rules, not from current code or self-authored tests. " ~
+        "For requirement changes, identify the exact semantic delta and preserve unaffected behavior. " ~
+        "Do not make a failing check green by changing its expected value unless the original specification or an explicit user change justifies it. " ~
+        "Track units through rates and limits: an output-amount limit cannot be applied to input quantities before conversion. " ~
+        "Check a nonzero limiting case, not only zero/default cases. " ~
         "When a numerical or branch claim determines the diagnosis, call the actual implementation with a minimal safe probe. " ~
         "If execution is unavailable or unsafe, give a clearly labelled static inference and its uncertainty. " ~
         "Use enough internal reasoning to check each claim; keep the visible answer appropriately brief.\n";

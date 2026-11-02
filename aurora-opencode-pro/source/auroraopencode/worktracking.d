@@ -207,7 +207,9 @@ string readPlanText(const ref ChatSession session, string arguments)
     }
     const completed = "include_completed" in args.object && args["include_completed"].type == JSONType.true_;
     auto rows = JSONValue(string[].init);
-    const outcomes = field("collection") == "outcomes";
+    const collection = field("collection");
+    if (collection.length && collection != "outcomes" && collection != "actions") return "Error: collection must be outcomes or actions.";
+    const outcomes = collection == "outcomes" || (!collection.length && !("parent_id" in args.object) && session.taskSteps.length);
     if (outcomes)
     {
         foreach (step; session.taskSteps)

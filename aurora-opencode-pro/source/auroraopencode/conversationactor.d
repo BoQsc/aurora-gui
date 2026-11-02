@@ -648,7 +648,8 @@ public final class ConversationActor
         }
         if (config.modelCompaction && prepared.checkpointCreated)
         {
-            auto messages = jobs.prepareCompaction(session, prepared.oldAnchor, prepared.oldSummary, policy.contextLimit);
+            auto messages = jobs.prepareCompaction(session, prepared.oldAnchor, prepared.oldSummary, policy.contextLimit,
+                prepared.summaryByteBudget);
             if (messages.length) startJob(ModelJobKind.compaction, messages);
         }
     }

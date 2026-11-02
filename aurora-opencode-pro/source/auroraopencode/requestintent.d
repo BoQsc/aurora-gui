@@ -56,7 +56,7 @@ RequestIntent requestIntent(string text)
         if (!requestedVerb(words, raw, i)) continue;
         if (["continue", "resume", "retry"].canFind(word)) { continuation = true; continue; }
         if (["finish", "complete"].canFind(word)) { completion = true; continue; }
-        if (["explain", "describe", "summarize", "summarise", "recap"].canFind(word))
+        if (["answer", "explain", "describe", "summarize", "summarise", "recap"].canFind(word))
         { clarification = true; continue; }
         // "Do it/that/this" is an instruction to act. Elsewhere "do" is an
         // auxiliary verb ("How do I fix it?") and must not imply action.

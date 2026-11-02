@@ -31,7 +31,10 @@ int main()
     first.pendingRouting.accept(one.routing); second.pendingRouting.accept(two.routing);
     assert(first.pendingRouting.assignments[0].agentId == "builder");
     assert(second.pendingRouting.assignments[0].agentId == "reviewer");
+    first.acceptRequest(41);
+    assert(first.busy(), "An admitted request was invisible before its network worker started");
     first.stop(); assert(first.pendingRouting.assignments.length == 0);
+    assert(!first.busy(), "Stopping did not revoke the admitted request");
     assert(second.pendingRouting.take().assignments[0].task == "Review Beta");
     assert(!second.pendingRouting.assignments.length);
     assert(settleToolResult(session, result, `{"agent_id":"unknown","task":"Work"}`, policy).message.failed);
@@ -117,7 +120,7 @@ int main()
     foreach (_; 0 .. 12) { window.onNativeTick(0.02); Thread.sleep(5.msecs); }
     foreach (i; 0 .. cast(int) root.sessionCountForTesting())
         if (root.sessionParentForTesting(i) == alpha || root.sessionParentForTesting(i) == beta)
-            assert(!root.sessionTurnBusyForTesting(i), "Stopping a parent left its child running");
+            assert(!root.sessionTurnBusyForTesting(i), "Stopping a parent left its child running: " ~ root.sessionBusyDetailsForTesting(i));
 
     root.newChatForTesting(); root.addConversationForTesting(["user"], ["Queued delegation"]);
     root.setSessionTurnStatusForTesting(root.currentSessionForTesting(), "running");

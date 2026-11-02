@@ -184,7 +184,14 @@ public string goalPromptBlock(const ref ChatSession session)
                 "routine execution or verification. When every outcome is complete and " ~
                 "checks pass, call `goal_complete` with a short summary and concrete " ~
                 "evidence (successful tool-call IDs or check receipts). Never call it " ~
-                "for prose, an attempted action, or unfinished work.\n");
+                "for prose, an attempted action, or unfinished work. " ~
+                "If an essential user-owned fact is missing, finish independent work, then call request_input " ~
+                "with required_fact, checked sources and the dependent blocked_steps. This records a wait while " ~
+                "keeping the goal active. A question or Remaining note in prose does not record that wait; " ~
+                "do not guess the fact, repeat completed checks or keep issuing final summaries instead. " ~
+                "Before changing referenced specifications, capture their behavioral rules and boundary expectations in update_plan constraints, not just file names and API signatures. " ~
+                "Reconcile the exact changed rule while preserving all unaffected rules; recover original read results with read_history if uncertain. " ~
+                "Passing generated tests does not prove those rules were implemented correctly.\n");
             break;
         case "paused":
             output.put("The user paused this goal. Preserve its state and do not start " ~
@@ -208,7 +215,10 @@ public string goalContinuationInstruction(const ref ChatSession session)
         "Continue from the recorded work and current evidence. Do work rather than " ~
         "restating the goal. If the goal is now demonstrably complete, call " ~
         "`goal_complete` with a concise summary and concrete evidence; otherwise keep " ~
-        "advancing the unfinished outcomes. The user can pause this goal at any time.";
+        "advancing the unfinished outcomes. If only an essential user-owned fact prevents completion, " ~
+        "call request_input now with the missing fact and blocked_steps; a prose question does not pause " ~
+        "the goal. Keep the goal active while waiting. Do not repeat completed work just to avoid this boundary. " ~
+        "The user can pause this goal at any time.";
 }
 
 /// Validate a model's `goal_complete` request. Completion is refused while the
