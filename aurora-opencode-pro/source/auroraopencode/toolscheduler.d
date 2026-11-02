@@ -18,10 +18,31 @@ import auroraopencode.checkout : checkoutIdentity;
 private __gshared Mutex _instanceMutex;
 private __gshared WorkScheduler _scheduler;
 private __gshared WorkScheduler _processScheduler;
+private __gshared bool _closing;
 shared static this()
 {
     _instanceMutex = new Mutex();
     toolStatusHandler = () => toolStatus();
+}
+
+// Daemon workers must stop before druntime finalizes GC-managed mutexes and
+// delegates. Leaving watchQueue alive caused intermittent shutdown AVs.
+shared static ~this() { shutdownToolSchedulers(); }
+
+public void shutdownToolSchedulers()
+{
+    WorkScheduler workspace, control;
+    synchronized (_instanceMutex)
+    {
+        if (_closing) return;
+        _closing = true;
+        workspace = _scheduler;
+        control = _processScheduler;
+    }
+    // Settlement may submit the next (already cancelled) batch. Do not hold
+    // the singleton lock while joining; all late admissions see closed pools.
+    if (workspace !is null) workspace.close();
+    if (control !is null) control.close();
 }
 
 private string toolStatus()
@@ -57,7 +78,11 @@ private WorkScheduler scheduler()
 {
     synchronized (_instanceMutex)
     {
-        if (_scheduler is null) _scheduler = new WorkScheduler();
+        if (_scheduler is null)
+        {
+            _scheduler = new WorkScheduler();
+            if (_closing) _scheduler.close();
+        }
         return _scheduler;
     }
 }
@@ -66,7 +91,11 @@ private WorkScheduler processScheduler()
 {
     synchronized (_instanceMutex)
     {
-        if (_processScheduler is null) _processScheduler = new WorkScheduler(2);
+        if (_processScheduler is null)
+        {
+            _processScheduler = new WorkScheduler(2);
+            if (_closing) _processScheduler.close();
+        }
         return _processScheduler;
     }
 }

@@ -1,4 +1,4 @@
-# Agent continuity and context recovery — 0.66.27
+# Agent continuity and context recovery — 0.66.28
 
 This change addresses reproduced causes of unnecessary continuation, lost
 context, false input pauses, and expensive compaction. It preserves the saved
@@ -14,6 +14,10 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   continuation. Phrases such as “please confirm” in assistant prose no longer
   silently pause it. Waiting retains the active goal; replying with the missing
   information releases the wait. Explicit Stop still pauses the goal.
+- Shared tool schedulers now join their workers and watchdogs before runtime
+  teardown. A post-rebuild multi-turn test exposed an intermittent shutdown
+  access violation; the minidump identified a still-running queue watchdog.
+  Late admissions during shutdown cannot leave a new worker pool running.
 - `read_history` searches exact saved text on the selected branch and pages
   complete messages or saved tool arguments using message IDs and byte offsets.
   Results label failed tools and historical status. Other branches, internal
@@ -49,6 +53,7 @@ provider. They do not contact a hosted model or use real user chats as fixtures.
 | Context selection across budgets and tool envelopes | Same cutoff as the previous algorithm, including complete and incomplete tool groups |
 | 1,603-message optimized cutoff microbenchmark | Previous selector 147,843 µs; new selector 621 µs in one measured sample |
 | Existing conversational flow | 16 HTTP rounds cover corrections, actual failed/passing checks, steering, queued follow-ups, Stop/resend, background chat and reload |
+| Repeated full-conversation shutdown | Eight consecutive candidate runs exit cleanly after compaction and recall; scheduler shutdown before initialization and late admissions also pass |
 | Native delivery fixture | Six streamed GUI deliveries over one reused connection; first paint before completion |
 
 The previous conversation fixture still required a redundant closing-summary
@@ -60,13 +65,14 @@ exercise that feature and its default setting.
 Reproduce from the repository root:
 
 ```text
-python aurora-opencode-pro/tests/run_architecture_checks.py goal_mode_contracts goal_ui_smoke compaction_validation long_task_context_contracts context_continuity_contracts history_preservation_contracts agent_workflow_contracts task_continuation_contracts
+python aurora-opencode-pro/tests/run_architecture_checks.py goal_mode_contracts goal_ui_smoke compaction_validation long_task_context_contracts context_continuity_contracts history_preservation_contracts agent_workflow_contracts task_continuation_contracts scheduler_shutdown_contracts
 python aurora-opencode-pro/tests/run_architecture_checks.py --release context_continuity_contracts
 python aurora-opencode-pro/tests/test_history_recall.py
 python aurora-opencode-pro/tests/test_goal_input.py
 python aurora-opencode-pro/tests/test_input_recovery.py
 python aurora-opencode-pro/tests/test_conversation_flow.py
 python aurora-opencode-pro/tests/test_goal_send_contracts.py
+python aurora-opencode-pro/tests/test_parallel_tool_batch.py
 python aurora-opencode-pro/tests/test_provider_roundtrip.py --production
 python aurora-opencode-pro/tests/test_latency_transport.py --delivery --release --vulkan
 ```
