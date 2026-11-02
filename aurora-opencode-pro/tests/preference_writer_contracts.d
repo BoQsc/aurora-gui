@@ -61,8 +61,12 @@ int main()
     });
     recovering.save(settings);
     recovering.flush();
+    bool rejected;
+    try recovering.flushChecked();
+    catch (Exception) { rejected = true; }
+    assert(rejected, "A failed preference save must reject the exit checkpoint");
     recovering.save(settings);
-    recovering.flush();
+    recovering.flushChecked();
     recovering.close();
     assert(attempts == 2, "A failed save must not kill the worker");
     writeln("PASS preference writer: stalled sink, bounded queue, detached state, failure recovery");

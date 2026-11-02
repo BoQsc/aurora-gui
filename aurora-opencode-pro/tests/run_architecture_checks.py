@@ -13,7 +13,10 @@ repo = package.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
 parser.add_argument('fixtures', nargs='*', default=['preference_writer_contracts', 'architecture_contracts', 'presentation_contracts', 'chat_performance_contracts', 'chat_consistency_smoke', 'history_preservation_contracts', 'journal_history_restore_contracts', 'tool_feedback_contracts', 'tool_feedback_ui_contracts', 'headless_pro_smoke', 'tools_test', 'execution_ui_contracts', 'flow_resilience_contracts', 'read_progress_contracts', 'read_progress_ui_contracts', 'image_latency_contracts', 'task_continuation_contracts', 'plan_receipt_contracts', 'followup_ui_contracts', 'background_process_ui_smoke', 'export_reveal_ui_smoke',
-                       'source_background_guard', 'duplicate_launch_contracts', 'markdown_viewport_contracts'])
+                       'source_background_guard', 'duplicate_launch_contracts', 'markdown_viewport_contracts',
+                       'repository_responsiveness_contracts', 'startup_responsiveness_contracts',
+                       'history_mailbox_contracts', 'corrupt_restore_contracts', 'application_crash_restore_contracts',
+                       'exit_checkpoint_contracts', 'goal_mode_contracts', 'output_recovery_contracts', 'scheduler_shutdown_contracts'])
 args = parser.parse_args()
 # The rebuild-button fixture requires an executable beneath the package's
 # recipe. Each run still has a distinct filename and private artifact folder.
@@ -37,7 +40,7 @@ print('ARTIFACTS', directory, 'SOURCE', fingerprint, flush=True)
 env = dict(os.environ)
 for fixture in ['filesystem_host', *args.fixtures]:
     executable = directory / (fixture + '.exe')
-    result = subprocess.run([
+    compile_command = [
         'dmd', '-i', '-verrors=20',
         *(['-O', '-inline'] if args.release and fixture != 'filesystem_host' else []),
         '-I' + str(package / 'source'), '-I' + str(package / 'shared'),
@@ -46,9 +49,23 @@ for fixture in ['filesystem_host', *args.fixtures]:
         '-J' + str(package / 'assets'), '-of' + str(executable),
         str(package / 'tests' / (fixture + '.d')),
         'user32.lib', 'gdi32.lib', 'shell32.lib', 'wininet.lib', 'winmm.lib',
-    ], cwd=directory, timeout=180 if args.release else 120)
+    ]
+    build_log = directory / (fixture + '.build.log')
+    with build_log.open('w', encoding='utf-8') as log:
+        result = subprocess.run(compile_command, cwd=directory,
+                                timeout=180 if args.release else 120,
+                                stdout=log, stderr=subprocess.STDOUT)
     if result.returncode:
-        raise SystemExit(result.returncode)
+        (directory / (fixture + '.result.json')).write_text(json.dumps({
+            **proof, 'fixture': fixture, 'status': 'compile-failed',
+            'exitCode': result.returncode, 'command': compile_command,
+        }), encoding='utf-8')
+        print('COMPILE FAILED', fixture, 'exitCode=', result.returncode, 'LOG', build_log, flush=True)
+        print(build_log.read_text(encoding='utf-8', errors='replace')[-6000:], flush=True)
+        raise SystemExit(1)
+    # Linked fixtures are retained as evidence; their compiler intermediates
+    # are reproducible and otherwise accumulate gigabytes during regression work.
+    executable.with_suffix('.obj').unlink(missing_ok=True)
     if fixture == 'filesystem_host':
         env['AURORA_FILESYSTEM_HOST'] = str(executable)
         continue

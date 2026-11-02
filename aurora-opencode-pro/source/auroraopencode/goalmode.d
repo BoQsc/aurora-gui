@@ -11,10 +11,6 @@ import std.utf : toUTF32, toUTF8;
 /// second transcript.
 public enum size_t maxGoalLength = 4000;
 
-/// A safety bound for autonomous continuations. The normal stop condition is
-/// the model's evidence-backed `goal_complete` call or the user pressing Stop.
-public enum int maxGoalTurns = 64;
-
 /// Goal continuation shares the task's validated input boundary. Prose can
 /// quote instructions, describe future setup, or ask an unnecessary question;
 /// none of those is evidence that authorized work requires user input.

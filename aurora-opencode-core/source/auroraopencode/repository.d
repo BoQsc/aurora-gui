@@ -94,12 +94,16 @@ public final class ConversationRepository
     }
 }
 
-/// Keep synchronous durable acknowledgements for intents. Partial stream
-/// checkpoints can queue asynchronously on the same owner.
+/// Journal I/O belongs to the ordered repository owner. UI queries read a
+/// short-lived metadata lock, never the lock held across a physical write.
 public final class RepositoryRuntime : AgentRuntime
 {
     private ConversationRepository _repository;
     private DurableAgentRuntime _journal;
+    private string _path;
+    private bool _initialized;
+    private ulong _sequence, _bytes;
+    private string _lastError;
     private ulong _checkpointFailureRevision;
     private string _checkpointError;
     private bool _effectsBlocked;
@@ -113,15 +117,62 @@ public final class RepositoryRuntime : AgentRuntime
     this(ConversationRepository repository, string path)
     {
         _repository = repository;
-        _repository.commit(delegate() { _journal = new DurableAgentRuntime(path); });
+        _path = path;
+        if (!_repository.submit(delegate() {
+            try initialize();
+            catch (Throwable error) { recordFailure(error.msg); }
+            synchronized (this) _initialized = true;
+            notify();
+        }))
+        {
+            recordFailure("Conversation repository is closed or at capacity.");
+            synchronized (this) _initialized = true;
+        }
+    }
+    bool initialized() const { synchronized (cast(Object) this) return _initialized; }
+    private void initialize()
+    {
+        if (_journal is null) _journal = new DurableAgentRuntime(_path);
+        refreshMetadata();
+    }
+    // Owner-thread only: never call journal methods while holding the metadata
+    // lock, or UI reads could inherit the journal's disk wait again.
+    private void refreshMetadata()
+    {
+        const sequence = _journal.latestSequence();
+        const bytes = _journal.journalSize();
+        const error = _journal.lastError();
+        synchronized (this) { _sequence = sequence; _bytes = bytes; _lastError = error; }
+    }
+    private bool publishOnOwner(AgentRuntimeEvent event)
+    {
+        try
+        {
+            initialize();
+            const success = _journal.publish(event);
+            refreshMetadata();
+            if (!success) recordFailure(lastError());
+            return success;
+        }
+        catch (Throwable error) { recordFailure(error.msg); return false; }
     }
     bool publish(AgentRuntimeEvent event)
     {
         bool success;
-        _repository.commit(delegate() { success = _journal.publish(event); });
+        _repository.commit(delegate() { success = publishOnOwner(event); });
         return success;
     }
-    void setWake(void delegate() wake) { synchronized (this) _wake = wake; }
+    void setWake(void delegate() wake)
+    {
+        synchronized (this) _wake = wake;
+        notify();
+    }
+    private void notify()
+    {
+        void delegate() wake;
+        synchronized (this) wake = _wake;
+        if (wake !is null) wake();
+    }
     private void recordFailure(string error)
     {
         void delegate() wake;
@@ -129,6 +180,7 @@ public final class RepositoryRuntime : AgentRuntime
         {
             ++_checkpointFailureRevision;
             _checkpointError = error;
+            _lastError = error;
             _effectsBlocked = true;
             wake = _wake;
         }
@@ -138,8 +190,16 @@ public final class RepositoryRuntime : AgentRuntime
     /// effects enter this same ordered owner only after preceding intents.
     bool enqueue(AgentRuntimeEvent event)
     {
+        const accepted = _repository.submit(delegate() { publishOnOwner(event); });
+        if (!accepted) recordFailure("Conversation journal queue is at capacity or closed.");
+        return accepted;
+    }
+    /// Large immutable snapshots are encoded on the owner, in journal order.
+    bool enqueueGenerated(AgentRuntimeEvent delegate() generate)
+    {
         const accepted = _repository.submit(delegate() {
-            if (!_journal.publish(event)) recordFailure(_journal.lastError());
+            try publishOnOwner(generate());
+            catch (Throwable error) { recordFailure(error.msg); }
         });
         if (!accepted) recordFailure("Conversation journal queue is at capacity or closed.");
         return accepted;
@@ -148,8 +208,9 @@ public final class RepositoryRuntime : AgentRuntime
     {
         return _repository.submit(delegate() {
             string error;
-            synchronized (this) if (_effectsBlocked) error = _checkpointError;
-            if (error.length) { failed(error); return; }
+            bool blocked;
+            synchronized (this) { blocked = _effectsBlocked; error = _checkpointError; }
+            if (blocked) { failed(error.length ? error : "Conversation checkpoint failed"); return; }
             try effect();
             catch (Throwable failure) { failed(failure.msg); }
         });
@@ -159,37 +220,32 @@ public final class RepositoryRuntime : AgentRuntime
     {
         synchronized (this)
             if (failureRevision == _checkpointFailureRevision &&
-                _journal.lastError().length == 0) _effectsBlocked = false;
+                _lastError.length == 0) _effectsBlocked = false;
     }
     bool effectsBlocked() { synchronized (this) return _effectsBlocked; }
     bool checkpoint(AgentRuntimeEvent event)
     {
-        return _repository.submit(delegate() {
-            if (!_journal.publish(event))
-                recordFailure(_journal.lastError());
-        });
+        return enqueue(event);
     }
     AgentRuntimeEvent[] history()
     {
         AgentRuntimeEvent[] events;
-        _repository.commit(delegate() { events = _journal.history(); });
+        _repository.commit(delegate() { initialize(); events = _journal.history(); });
         return events;
     }
     AgentRuntimeEvent[] eventsAfter(ulong sequence)
     {
         AgentRuntimeEvent[] events;
-        _repository.commit(delegate() { events = _journal.eventsAfter(sequence); });
+        _repository.commit(delegate() { initialize(); events = _journal.eventsAfter(sequence); });
         return events;
     }
     AgentRuntimeEvent[] eventsFrom(ulong offset)
     {
         AgentRuntimeEvent[] events;
-        _repository.commit(delegate() { events = _journal.eventsFrom(offset); });
+        _repository.commit(delegate() { initialize(); events = _journal.eventsFrom(offset); });
         return events;
     }
-    // These are read-only journal queries, protected by its own lock. They may
-    // also be called from snapshot effects on the repository worker.
-    ulong latestSequence() const { return _journal.latestSequence(); }
-    ulong journalSize() const { return _journal.journalSize(); }
-    string lastError() const { return _journal.lastError(); }
+    ulong latestSequence() const { synchronized (cast(Object) this) return _sequence; }
+    ulong journalSize() const { synchronized (cast(Object) this) return _bytes; }
+    string lastError() const { synchronized (cast(Object) this) return _lastError; }
 }

@@ -15,6 +15,7 @@ import std.file : exists, getSize, mkdirRecurse;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : dirName, buildPath;
 import auroraopencode.attachmentstore : AttachmentStore;
+import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import std.stdio : File;
 import core.stdc.stdio : SEEK_END;
 import auroraopencode.core : ChatMessage, ChatSession, OpenCodeToolCall,
@@ -117,7 +118,7 @@ public final class DurableAgentRuntime : AgentRuntime
         // Resume numbering from the last record only. Reading and parsing the
         // whole journal here (tens of MB after a while) just to find one
         // integer is seconds of startup work for a value on the final line.
-        _nextSequence = readLatestSequence(path) + 1;
+        _nextSequence = readLatestSequence(path, true) + 1;
         ensureAppendBoundary();
         _journalBytes = exists(path) ? getSize(path) : 0;
     }
@@ -132,7 +133,7 @@ public final class DurableAgentRuntime : AgentRuntime
     /// Events with a sequence greater than `afterSequence`, in file order.
     public AgentRuntimeEvent[] eventsAfter(ulong afterSequence)
     {
-        return readAgentRuntimeEventsAfter(_path, afterSequence);
+        return readAgentRuntimeEventsAfter(_path, afterSequence, true);
     }
 
     /// End of the journal in bytes. A snapshot saved after folding the journal
@@ -146,7 +147,7 @@ public final class DurableAgentRuntime : AgentRuntime
     /// Events written at or after `byteOffset`, in file order.
     public AgentRuntimeEvent[] eventsFrom(ulong byteOffset)
     {
-        return readAgentRuntimeEventsFrom(_path, byteOffset);
+        return readAgentRuntimeEventsFrom(_path, byteOffset, true);
     }
 
     public bool publish(AgentRuntimeEvent event)
@@ -185,7 +186,7 @@ public final class DurableAgentRuntime : AgentRuntime
 
     public AgentRuntimeEvent[] history()
     {
-        return readAgentRuntimeEvents(_path);
+        return readAgentRuntimeEvents(_path, true);
     }
 
     public string lastError() const
@@ -264,7 +265,7 @@ private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event, string p
 }
 
 /** Read every complete event, ignoring an invalid final line left by a crash. */
-public AgentRuntimeEvent[] readAgentRuntimeEvents(string path)
+public AgentRuntimeEvent[] readAgentRuntimeEvents(string path, bool strictIO = false)
 {
     AgentRuntimeEvent[] result;
     if (!exists(path)) return result;
@@ -285,9 +286,9 @@ public AgentRuntimeEvent[] readAgentRuntimeEvents(string path)
             }
         }
     }
-    catch (Exception)
+    catch (Exception error)
     {
-        // Startup must remain usable even when the optional journal is damaged.
+        if (strictIO) throw error;
     }
     return result;
 }
@@ -301,11 +302,13 @@ public AgentRuntimeEvent[] readAgentRuntimeEvents(string path)
  * tail that holds no complete record (one oversized line, or a torn file)
  * falls back to the full read so the value is still correct.
  */
-public ulong readLatestSequence(string path)
+public ulong readLatestSequence(string path, bool strictIO = false)
 {
     if (!exists(path)) return 0;
     try
     {
+        import std.file : isFile;
+        if (strictIO && !isFile(path)) throw new Exception("Journal path is not a regular file");
         const size_t size = getSize(path);
         if (size == 0) return 0;
         enum size_t tailBytes = 256 * 1024;
@@ -335,11 +338,14 @@ public ulong readLatestSequence(string path)
                 // Torn final line: step back to the previous complete record.
             }
         }
-        const events = readAgentRuntimeEvents(path);
+        const events = readAgentRuntimeEvents(path, strictIO);
         return events.length == 0 ? 0 : events[$ - 1].sequence;
     }
-    catch (Exception)
+    catch (Exception error)
+    {
+        if (strictIO) throw error;
         return 0;
+    }
 }
 
 /**
@@ -351,9 +357,9 @@ public ulong readLatestSequence(string path)
  * original "read everything" behaviour.
  */
 public AgentRuntimeEvent[] readAgentRuntimeEventsAfter(string path,
-    ulong afterSequence)
+    ulong afterSequence, bool strictIO = false)
 {
-    if (afterSequence == 0) return readAgentRuntimeEvents(path);
+    if (afterSequence == 0) return readAgentRuntimeEvents(path, strictIO);
     AgentRuntimeEvent[] result;
     if (!exists(path)) return result;
     try
@@ -374,9 +380,11 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsAfter(string path,
             }
         }
     }
-    catch (Exception)
+    catch (Exception error)
     {
-        // Recovery must stay usable when the optional journal is damaged.
+        // Torn JSON records are recoverable; physical read failures are not
+        // evidence of an empty history. The owner must surface them to callers.
+        if (strictIO) throw error;
     }
     return result;
 }
@@ -391,7 +399,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsAfter(string path,
  * no events are missed.
  */
 public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
-    ulong byteOffset)
+    ulong byteOffset, bool strictIO = false)
 {
     AgentRuntimeEvent[] result;
     if (!exists(path)) return result;
@@ -401,10 +409,9 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
         size_t start = byteOffset <= size ? cast(size_t) byteOffset : 0;
         auto file = File(path, "rb");
         file.seek(cast(long) start);
-        auto buffer = new ubyte[cast(size_t)(size - start)];
-        const filled = file.rawRead(buffer);
-        file.close();
-        foreach (line; (cast(string) filled).split('\n'))
+        // Stream the range instead of retaining a second full journal buffer
+        // and a split-line array during recovery of a long-running task.
+        foreach (line; file.byLineCopy())
         {
             if (line.length == 0) continue;
             try
@@ -418,9 +425,11 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
             }
         }
     }
-    catch (Exception)
+    catch (Exception error)
     {
-        // Recovery must stay usable when the optional journal is damaged.
+        // Torn JSON records are recoverable; physical read failures are not
+        // evidence of an empty history. The owner must surface them to callers.
+        if (strictIO) throw error;
     }
     return result;
 }
@@ -432,11 +441,21 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
  * authority when that cache is missing, stale, or was torn during a crash.
  */
 public ChatSession[] projectAgentRuntimeEvents(
-    const(AgentRuntimeEvent)[] events, bool incremental = false)
+    const(AgentRuntimeEvent)[] events, bool incremental = false,
+    JSONValue[string]* threadPatches = null)
 {
     ChatSession[] sessions;
     size_t[string] positions;
+    size_t[string][string] itemPositions;
     bool[string] deleted;
+    void recordField(string id, string key, JSONValue value)
+    {
+        if (threadPatches is null) return;
+        JSONValue patch;
+        if (auto previous = id in *threadPatches) patch = *previous;
+        patch[key] = value;
+        (*threadPatches)[id] = patch;
+    }
 
     foreach (event; events)
     {
@@ -470,27 +489,48 @@ public ChatSession[] projectAgentRuntimeEvents(
         if (event.kind == AgentEventKind.threadStarted ||
             event.kind == AgentEventKind.threadUpdated)
         {
-            applyThreadPayload(*session, payload);
+            // Duplicating a conversation is one durable operation. A crash
+            // before the compatibility snapshot cannot leave an empty copy.
+            if (event.kind == AgentEventKind.threadStarted && payload.type == JSONType.object)
+                if (auto complete = "snapshot" in payload.object)
+                    if (complete.type == JSONType.object)
+                    {
+                        ChatSession restored;
+                        decodeSessionMetadata(*complete, restored);
+                        if (auto messages = "messages" in complete.object) decodeMessages(*messages, restored);
+                        restored.id = event.threadId;
+                        *session = restored;
+                        size_t[string] indexes;
+                        foreach (i, message; session.messages) if (message.id.length) indexes[message.id] = i;
+                        itemPositions[event.threadId] = indexes;
+                    }
+            if (threadPatches !is null && payload.type == JSONType.object)
+                foreach (key, value; payload.object) recordField(event.threadId, key, value);
+            applyRuntimeThreadPayload(*session, payload);
             continue;
         }
         if (event.kind == AgentEventKind.turnStarted)
         {
             session.turnStatus = "running";
+            recordField(event.threadId, "turnStatus", JSONValue(session.turnStatus));
             continue;
         }
         if (event.kind == AgentEventKind.turnCompleted)
         {
             session.turnStatus = "completed";
+            recordField(event.threadId, "turnStatus", JSONValue(session.turnStatus));
             continue;
         }
         if (event.kind == AgentEventKind.turnInterrupted)
         {
             session.turnStatus = "interrupted";
+            recordField(event.threadId, "turnStatus", JSONValue(session.turnStatus));
             continue;
         }
         if (event.kind == AgentEventKind.turnFailed)
         {
             session.turnStatus = "failed";
+            recordField(event.threadId, "turnStatus", JSONValue(session.turnStatus));
             continue;
         }
         if (event.kind != AgentEventKind.itemAdded &&
@@ -499,18 +539,17 @@ public ChatSession[] projectAgentRuntimeEvents(
         ChatMessage message;
         bool foundMessage;
         size_t messageIndex;
-        foreach (i, existing; session.messages)
-            if (existing.id == event.itemId)
-            {
-                message = existing;
-                messageIndex = i;
-                foundMessage = true;
-                break;
-            }
+        if (auto indexes = event.threadId in itemPositions)
+            if (auto found = event.itemId in *indexes)
+            { messageIndex = *found; message = session.messages[messageIndex]; foundMessage = true; }
         message.id = event.itemId;
         applyMessagePayload(message, payload);
         if (foundMessage) session.messages[messageIndex] = message;
-        else session.messages ~= message;
+        else
+        {
+            itemPositions[event.threadId][message.id] = session.messages.length;
+            session.messages ~= message;
+        }
         if (event.kind == AgentEventKind.itemAdded)
             session.activeLeafId = message.id;
     }
@@ -545,9 +584,15 @@ public string[] deletedAgentRuntimeThreadIds(
     return result;
 }
 
-private void applyThreadPayload(ref ChatSession session, JSONValue payload)
+public void applyRuntimeThreadPayload(ref ChatSession session, JSONValue payload)
 {
     if (payload.type != JSONType.object) return;
+    if (auto complete = "snapshot" in payload.object)
+        if (complete.type == JSONType.object) decodeSessionMetadata(*complete, session);
+    if (auto f = "compactionSummary" in payload.object)
+        if (f.type == JSONType.string) session.compactionSummary = f.str;
+    if (auto f = "compactedThroughMessageId" in payload.object)
+        if (f.type == JSONType.string) session.compactedThroughMessageId = f.str;
     if (auto f = "title" in payload.object)
         if (f.type == JSONType.string) session.title = f.str;
     if (auto f = "draft" in payload.object)

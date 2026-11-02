@@ -1,5 +1,6 @@
 > Current work: [Agent continuity](agent-continuity.md) and
 > [Long reply rendering](long-reply-rendering.md).
+> [Storage and recovery](storage-recovery.md) records the current source work.
 > The user's 2026-11-02 request reactivates the entire remaining migration below.
 
 # Message-to-response migration status
@@ -36,10 +37,10 @@ It still runs on the window thread: it is **not** an autonomous actor.
 | Delivery | Native notifications service stream queues without widget ticks; remaining bounded-drain work is reposted and paint gets a turn between passes. Soft 8 MiB / 1,024-event producer limits, cancellation wakeups and UTF-8-safe drains retain text and terminal events. An indivisible event or consumer control reserve can exceed the soft bound. |
 | Tools | Shared four-worker scheduler, bounded pending queue, workspace read/write barriers and a global desktop lease. Captured computer routing is installed per worker. Leases remain held for physical effects. |
 | Verification | Recognized check identity, actual exit status, workspace and mutation generation. Command words alone cannot pass. Physical mutations invalidate older evidence even when Stop drops their late events. Rebuilding alone cannot satisfy unrelated checks. |
-| Storage | One ordered repository owner, dirty-thread snapshots and periodic partial-response checkpoints. Snapshot high-water marks are read on the owner without a UI-thread barrier. Durability failure gates new requests/tools and appears in status. |
+| Storage | One ordered journal owner, separate snapshot/history owner, cached metadata and asynchronous initialization. Startup receives decoded history and projected replay. Dirty snapshots, partial-response and compaction checkpoints preserve work. Copies journal their complete graph. Durability failure gates effects. |
 | Native recovery | Before-images and an intent manifest are saved before native file effects. Completion retires temporary blobs. Death leaves an explicitly uncertain operation with preserved before-images; it is never automatically replayed or undone. Changes reports pending operations. |
 | Attachments | Immutable content-addressed blobs replace repeated persisted base64. Missing/corrupt images retain references and appear unavailable; surrounding messages survive. Corrupt existing blobs are rejected. Legacy records remain readable. |
-| History | Selection loads asynchronously. Failed/missing history blocks Send and can be retried; it cannot silently become empty context. |
+| History | Selection and internal actions load asynchronously. A bounded ID-based mailbox retains actions through loading and retry. Failed/missing history blocks Send; failed startup preserves original files even on close. Replay patches retain metadata absent from the journal tail. |
 | Presentation | Settled rows are retained by identity/presentation inputs. Long pages use deferred descriptors, a height index, overscan and eviction. Selection/search targets are pinned; search spans and lazily reveals the active branch. |
 | Diagnostics/prompt | Shared lock initialization, bounded asynchronous diagnostics, rotation and measurement sampling. Prompt identity includes module generation and current feature flags; repeated instructions were shortened. |
 | Deployment | Apply through the existing self-helper. A per-build local publication switch preserves the normal publisher setting after the new app launches. |
@@ -81,9 +82,11 @@ elapsed time. Tests use private executables/state.
    coordination out of `OpenCodeRoot`. Give per-chat actors serialized command
    mailboxes and immutable UI change sets. Owned fields and the scalar reducer
    are foundations, not the completed extraction.
-2. Remove remaining synchronous intent acknowledgements/internal history reads
-   from window-thread paths while preserving durable acceptance. Replay full
-   recorded provider/tool traces to the same transcript and task.
+2. Replay full recorded provider/tool traces. Shutdown/rebuild/update checkpoint
+   barriers, journal admission, startup and internal history reads now avoid
+   window-thread I/O waits. Replay
+   full recorded provider/tool traces to the same transcript and task; the new
+   forced application-death proof covers copied branches and a settled mixed batch.
 3. Complete incremental transcript/group projection. Stable page reconciliation
    already preserves retained children and focus; complex tool groups remain
    eager. Long Markdown paint now has measured visibility indexing and real-chat

@@ -403,9 +403,9 @@ void main(string[] args)
             open.activate();
             assert(driver.paint());
         }
-        auto blockedTool = executeTool(OpenCodeToolCall("stale-rebuild", "rebuild", "{}"), state);
+        auto blockedTool = executeTool(OpenCodeToolCall("stale-rebuild", "rebuild", "{}"), source);
         assert(blockedTool.failed && blockedTool.output.indexOf("Resolve conflicts") >= 0,
-            "The same rejection must reach the agent before it is told a rebuild started");
+            "The same rejection must reach the agent before it is told a rebuild started: " ~ blockedTool.output);
         auto optOut = cast(CheckBox) find(root, "oc-developer-require-latest-source");
         optOut.setChecked(false);
         bool requested;
@@ -414,7 +414,7 @@ void main(string[] args)
             return DeveloperSyncResult.init;
         };
         rebuildRequestHandler = (string reason) { requested = true; return true; };
-        auto allowedTool = executeTool(OpenCodeToolCall("opted-out-rebuild", "rebuild", "{}"), state);
+        auto allowedTool = executeTool(OpenCodeToolCall("opted-out-rebuild", "rebuild", "{}"), source);
         assert(!allowedTool.failed && requested);
         rebuildSourceCheckHandler = null;
         rebuildRequestHandler = null;

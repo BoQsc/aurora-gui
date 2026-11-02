@@ -8,14 +8,29 @@ single complete invocation with no structured call.
 
 The failed response stays in the saved chat for diagnosis but is excluded from
 subsequent provider requests. Aurora retains tool schemas and successful tool
-results while requesting a valid action or supported answer. Repeated failures
-continue recovery and can route to the configured diagnostic reviewer. They do
-not require the user to restart an unfinished task. Stop still cancels execution.
+results while requesting a valid action or supported answer. Recovery can route
+to the configured diagnostic reviewer. Three consecutive unsuccessful recovery
+requests expose a provider failure while retaining the active goal and saved
+work. Useful successful tools reset the counter; plan chatter does not. Stop
+still cancels execution.
 
 Whole-answer replays with only a small addition also use this recovery path.
 For llama.cpp, folding a trailing system continuation now adds a wire-only user
 boundary, avoiding accidental prefill of the preceding assistant answer.
 Hosted providers retain chronological instruction messages.
+
+The 2026-11-02 source work also detects short repeated goal replies and repeated
+goal audits without useful action. Useful work no longer hits a 64-turn goal
+cap. Output recovery preserves the active goal; it does not silently convert
+provider failure into a user pause. A new human instruction opens a fresh
+recovery boundary. These changes are not yet deployed.
+
+A local HTTP fixture reproduced 68 requests when its provider wrote and checked
+the requested artifact but kept answering `READY` without `goal_complete`.
+The corrected path settles after eight main requests with a visible provider
+failure and the goal still active. The ordinary task explicitly disables goals
+and completes in four requests. Optional title generation waits for the opening
+request's durable admission, then can run between requests during a long task.
 
 The identical-call limit counts executions since the latest real user
 instruction or successful file mutation. Source edits, including comment and
@@ -48,6 +63,9 @@ From the repository root:
 python scripts/check-opencode-agent-loops.py
 python scripts/check-opencode-agent-loops.py --snapshot C:/path/to/chat-snapshot.zip
 python scripts/check-opencode-chat.py --pro
+python aurora-opencode-pro/tests/test_provider_roundtrip.py
+python aurora-opencode-pro/tests/test_provider_roundtrip.py --goal-stall
+python aurora-opencode-pro/tests/run_architecture_checks.py output_recovery_contracts
 ```
 
 The first check uses a local HTTP/SSE fixture and separate test executables.
@@ -55,3 +73,15 @@ It verifies recovery, no execution of printed XML, continued recovery after repe
 failure, prose-loop recovery, replay detection, diagnostic redaction, and build
 guard resets. The optional snapshot replays the three identified archived
 responses. These checks do not contact a model provider or replace the live app.
+
+The goal variation checks preserved verification and goal status, paired tool
+results, persisted reload, and twelve actual stalled-stream cancellations. The
+pure recovery fixture covers changing prose, plan chatter, new user boundaries
+and 100 useful goal continuations.
+
+Latest goal HTTP proof: `build/architecture-checks-y9hm_ymb/`, source fingerprint
+`da838b538b96e64e4ea3d1c95c1f48c6002bb64f92ddf97f8c7f728b2e5743b0`.
+The legacy HTTP loop driver also passed: three requests for recovered XML,
+four for repeated malformed XML followed by a usable response, and two for
+prose recovery. Compaction validation passed on the same source fingerprint in
+`build/architecture-checks-salqczf7/`.

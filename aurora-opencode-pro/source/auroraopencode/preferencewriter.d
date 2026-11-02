@@ -33,6 +33,7 @@ final class PreferenceWriter(T)
     private void delegate(T) sink;
     private T pending;
     private bool dirty, active, closed;
+    private string lastError;
 
     this(void delegate(T) sink)
     {
@@ -62,6 +63,15 @@ final class PreferenceWriter(T)
         synchronized (mutex) while (dirty || active) changed.wait();
     }
 
+    void flushChecked()
+    {
+        synchronized (mutex)
+        {
+            while (dirty || active) changed.wait();
+            if (lastError.length) throw new Exception(lastError);
+        }
+    }
+
     void close()
     {
         synchronized (mutex)
@@ -86,10 +96,16 @@ final class PreferenceWriter(T)
                 dirty = false;
                 active = true;
             }
+            string failure;
             try sink(value);
-            catch (Throwable error) logError("Preference save failed: " ~ error.msg);
+            catch (Throwable error)
+            {
+                failure = error.msg.length ? error.msg : "Preference save failed";
+                logError("Preference save failed: " ~ failure);
+            }
             synchronized (mutex)
             {
+                lastError = failure;
                 active = false;
                 changed.notifyAll();
             }

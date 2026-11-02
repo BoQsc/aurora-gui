@@ -6,7 +6,7 @@ import auroraopencode.runtime : readAgentRuntimeEvents, projectAgentRuntimeEvent
 import core.time : MonoTime, seconds, msecs;
 import core.thread : Thread;
 import std.conv : to;
-import std.json : JSONValue;
+import std.json : JSONValue, JSONType, parseJSON;
 import std.file : mkdirRecurse, write, readText;
 import std.path : buildPath, absolutePath;
 import std.process : environment;
@@ -15,6 +15,7 @@ import std.stdio : writeln;
 int main()
 {
     auto state = environment.get("AURORA_HISTORY_RESTORE_FIXTURE", "");
+    const ownFixture = !state.length;
     const scenario = environment.get("AURORA_HISTORY_RESTORE_CASE", "unfolded");
     if (!state.length)
     {
@@ -23,6 +24,17 @@ int main()
         write(buildPath(state, "settings.json"), `{"baseUrl":"http://127.0.0.1:9","quickTitle":false,"toolsEnabled":false}`);
         write(buildPath(state, "threads.index.json"),
             `{"version":2,"current":0,"currentId":"saved-chat","sessions":[{"id":"saved-chat","title":"Saved chat","activeLeaf":"failed-read","turnStatus":"interrupted"}]}`);
+        auto savedIndex = parseJSON(readText(buildPath(state, "threads.index.json")));
+        auto header = savedIndex["sessions"].array[0];
+        header["thinking"] = true;
+        header["goal"] = "Preserve the original objective";
+        header["goalStatus"] = "paused";
+        header["verificationScope"] = "fixture|generation|7";
+        header["taskContract"] = parseJSON(`{"id":"durable-task","startMessageId":"prompt","intent":"implementation","currentIntent":"implementation","constraints":["Keep every branch"],"workContext":{"action":"Inspect the failed read"}}`);
+        header["taskSteps"] = parseJSON(`[{"id":"inspect","text":"Inspect the failed read","status":"in_progress","kind":"research"}]`);
+        header["queuedGuidance"] = JSONValue(["Keep the source unchanged"]);
+        savedIndex["sessions"].array[0] = header;
+        write(buildPath(state, "threads.index.json"), savedIndex.toString());
         write(buildPath(state, "threads", "saved-chat.json"),
             `{"messages":[{"id":"prompt","role":"user","content":"Keep the entire chat"},` ~
             `{"id":"request","parentId":"prompt","role":"assistant","content":"Read the current source","toolCalls":[{"id":"read-call","name":"read","arguments":"{\"filePath\":\"source.d\"}"}]},` ~
@@ -87,6 +99,20 @@ int main()
     assert(root.messageColumnVisualCountForTesting() > 1, "Only the Read failure is rendered");
     root.persistForTesting(); root.reloadSessionsForTesting(); pump();
     assert(root.messageCountForTesting() == expected, "History disappeared after save/reload");
+    if (ownFixture)
+    {
+        assert(root.goalForTesting() == "Preserve the original objective" && root.goalStatusForTesting() == "paused");
+        assert(root.taskStepCountForTesting() == 1 && root.queuedGuidanceCountForTesting() == 1,
+            "A message-only replay discarded saved task metadata");
+        auto saved = parseJSON(readText(buildPath(state, "threads.index.json")));
+        foreach (session; saved["sessions"].array)
+            if (session["id"].str == "saved-chat")
+            {
+                assert(session["thinking"].type == JSONType.true_);
+                assert(session["verificationScope"].str == "fixture|generation|7");
+                assert(session["taskContract"]["constraints"].array[0].str == "Keep every branch");
+            }
+    }
     if (expected == 3)
     {
         assert(root.totalMessageCountForTesting() == 4, "An inactive response branch was lost");

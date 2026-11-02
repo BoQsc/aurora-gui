@@ -194,8 +194,8 @@ private string operatingContractSection(in SystemPromptContext ctx)
         "- Ask only for a fact that materially changes the result or authorizes an irreversible action; otherwise act.\n" ~
         "- Before substantial work, briefly state the first action. Update when the phase, evidence or approach changes.\n" ~
         "- Preserve requested step counts; use work_items for detail. Never invent work.\n" ~
-        "- Every lookup must resolve a named unknown. Batch independent lookups and reread changed or incomplete evidence. " ~
-        "If uncertainty blocks action, name the remaining unknown; legitimate validation and rereading remain available.\n" ~
+        "- When blocked, name the remaining unknown; legitimate validation and rereading remain available. " ~
+        "Batch independent lookups; reread changed or incomplete evidence.\n" ~
         "- Inspect running commands with process or do independent work. Never relaunch or end the turn because a command is running. " ~
         "Use native dshell sleep/wait only to observe a required external result.\n";
 }
@@ -221,8 +221,10 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "Repeat passing checks only after a change, failure or named concern.\n" ~
         "5. Finish authorized work and verification. Repeated output and plan rewrites are not progress. " ~
         "When stuck, compare evidence with the actual failure and reduce the case. Run one build at a time. " ~
-        "Recover internally; do not switch compilers or probe toolchains. Retry the documented check once, then report a blocker. " ~
-        "Use request_input only for an essential unavailable user fact after independent work. Never ask the user to say Continue.\n";
+        "Use the documented toolchain; do not switch compilers or probe toolchains unless the task requires it. " ~
+        "Diagnose repeatable failures and continue independent work. " ~
+        "A blocker requires missing user information or an external change, not a fixed retry count. " ~
+        "Use request_input only for essential unavailable user facts. Never ask the user to say Continue.\n";
 }
 
 /// Shared by normal, tools-disabled and final-answer requests.
@@ -239,11 +241,9 @@ private string editingAndSafetySection(in SystemPromptContext ctx)
     return "\n# Editing and safety\n" ~
         "- Prefer `apply_patch` for related files/hunks, `edit` for one replacement, " ~
         "and `write` for new files or rewrites. Comment only non-obvious code.\n" ~
-        "- Use native file tools, including `download`, for all workspace mutations " ~
-        "and bounded safety history. Small files can be restored; large-file contents " ~
-        "have no automatic restore. Never mutate workspace files with `run`, `bash` " ~
-        "or scripts: they operate outside the change journal. Temporary verification " ~
-        "output outside the workspace, such as screenshots, is allowed.\n" ~
+        "- Use native file tools, including `download`, for workspace mutations and recovery history. " ~
+        "Check the returned restore status. Shell/script mutations operate outside the change journal; " ~
+        "use them only for temporary verification output outside the workspace.\n" ~
         "- Change requested artifacts and relevant regression tests. Retain useful tests; put disposable " ~
         "checks outside the workspace. Avoid unrelated code or whitespace changes.\n" ~
         "- Preserve others' edits in dirty worktrees; ask only about direct conflicts. " ~
@@ -263,16 +263,11 @@ private string independentToolCallsSection(in SystemPromptContext ctx)
     // source snapshot. Production builds always include the directive.
     version (AuroraBatchingBaseline) return "";
     else return "\n# Independent tool calls\n" ~
-        "Before a tool round, collect the lookups whose inputs you already know. " ~
-        "When several read, glob, grep or checksum calls are independent, emit " ~
-        "them together in one assistant response's tool-call list. An initial plan " ~
-        "and independent inspection calls can share a response when permitted.\n" ~
-        "Wait for a result before choosing any path, argument, edit or check that " ~
-        "depends on it. Preserve requested ordering and mutation/verification " ~
-        "dependencies. Follow an explicit request for separate calls. Do not " ~
-        "guess future results or add speculative lookups to fill a batch.\n" ~
-        "Attach a brief progress update to the same response as its tool calls. " ~
-        "Batch related edits once prerequisites are known; preserve results and relevant validation.\n";
+        "Collect lookups with known inputs. Emit independent read, glob, grep or checksum calls together " ~
+        "in one response's tool-call list; an initial plan may share that response. " ~
+        "Wait for dependencies before choosing later paths, arguments, edits or checks. " ~
+        "Preserve requested ordering and separate calls when asked; never guess results to fill a batch. " ~
+        "Attach a brief progress update. Batch related edits once prerequisites are known, then validate.\n";
 }
 
 private string toolPolicySection(in SystemPromptContext ctx)

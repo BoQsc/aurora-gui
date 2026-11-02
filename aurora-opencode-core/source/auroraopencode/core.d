@@ -1016,7 +1016,6 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
 public void readTaskContract(ref ChatSession session, JSONValue root)
 {
     if (root.type != JSONType.object) return;
-    session.verificationScope = "";
     if (auto receiptScope = "verificationScope" in root.object)
         if (receiptScope.type == JSONType.string) session.verificationScope = receiptScope.str;
     if (auto value = "taskContract" in root.object)
@@ -1339,6 +1338,7 @@ public ChatSession[] snapshotChatSessions(ChatSession[] source)
     foreach (original; source)
     {
         auto session = original;
+        session.goalHistory = original.goalHistory.dup;
         session.messages = original.messages.dup;
         foreach (i, message; original.messages)
         {
@@ -2396,7 +2396,7 @@ public Settings loadSettings()
     return settings;
 }
 
-public void saveSettings(const ref Settings settings)
+public void saveSettings(const ref Settings settings, bool strictIO = false)
 {
     ensureStateDirectory();
     JSONValue root;
@@ -2493,6 +2493,7 @@ public void saveSettings(const ref Settings settings)
     catch (Exception error)
     {
         logError("failed to save settings: " ~ error.msg);
+        if (strictIO) throw error;
     }
 }
 
@@ -2838,7 +2839,7 @@ public ProjectState loadProjects()
     return state;
 }
 
-public void saveProjects(const ref ProjectState state)
+public void saveProjects(const ref ProjectState state, bool strictIO = false)
 {
     ensureStateDirectory();
     JSONValue root;
@@ -2877,6 +2878,7 @@ public void saveProjects(const ref ProjectState state)
     catch (Exception error)
     {
         logError("failed to save projects: " ~ error.msg);
+        if (strictIO) throw error;
     }
 }
 

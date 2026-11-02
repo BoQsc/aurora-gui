@@ -3,6 +3,7 @@ module auroraopencode.appui;
 import auroraopencode.contextcheckpoint : requestMessageBytes, compactionBoundary,
     compactionTaskIdentity, completeCompactionResponse, compactionTimeoutMs, compactionOutputLimit;
 import auroraopencode.historyrecall : readHistory;
+import auroraopencode.historymailbox : HistoryMailbox, HistoryAction, HistoryActionKind;
 
 import auroraopencode.developerworkflow : DeveloperWorkflow,
     DeveloperSyncResult, maintainerSourceBranch, rebuildSourceAgentPrompt,
@@ -27,7 +28,7 @@ import auroraopencode.markdown : MarkdownComposer, MdComposition, MdItemKind,
     parseMarkdown;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind, ChatStartResult, autoResendDelayMs, quotaResetDelayMs;
-import auroraopencode.runtime : AgentEventKind, AgentRuntime,
+import auroraopencode.runtime : applyRuntimeThreadPayload, AgentEventKind, AgentRuntime,
     AgentRuntimeEvent, DurableAgentRuntime, projectAgentRuntimeEvents,
     deletedAgentRuntimeThreadIds;
 import rebuild : RebuildOutcome, findAuroraRoot, isAuroraProject, isRebuildAware,
@@ -100,18 +101,22 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
     taskBlockerError, taskInputError, taskAwaitingInput, proactiveActionGuidance;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
     clampGoalText, goalCompletionError, goalContinuationInstruction,
-    goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength, maxGoalTurns,
+    goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength,
     parseGoalCommand,
     recordGoalOutcome, recordGoalSet, syncGoalHistory;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
-import auroraopencode.execution : ThreadEngine;
+import auroraopencode.execution : ThreadEngine, RequestPhase;
+import auroraopencode.checkpointbarrier : CheckpointBarrier;
 import auroraopencode.agentresult : subagentResult;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     completionHandoffMarker, completionHandoffInstruction, recordedCompletionHandoff;
 import auroraopencode.requestbuilder : projectRequestMessages;
+import auroraopencode.restorestore : RestoreBundle, readRestoreBundle, readThreadHistory, historyFilePath;
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
+import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
+    maxOutputRecoveries, goalAuditStalled;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
 import auroraopencode.turnsummary : TurnWorkSummary;
@@ -12072,17 +12077,6 @@ private string _suggestExcludeId;
     // Byte offset the cached events start at: a read only serves the startup
     // replay when it starts exactly at the checkpoint the replay seeks to.
     private ulong _journalTailOffset = ulong.max;
-    // The journal range the startup replay merges, read on the snapshot owner
-    // so the restore never parses the journal on the UI thread.
-    private AgentRuntimeEvent[] _replayEvents;
-    private ulong _replayBytes = ulong.max;
-    private ulong _replayOffset = ulong.max;
-    private bool _replayReady;
-    private bool _replayInFlight;
-    // Ticks the startup restore may wait for that read before reading through
-    // the runtime, so a checkpoint that keeps moving cannot stall the history.
-    private int _startupReplayWaits;
-    private static immutable int startupReplayWaitTicks = 600;
     // Settings writes are debounced off the click path for the same reason as
     // the session snapshot: a synchronous file write inside an input handler
     // delays the frame that shows the result of the click.
@@ -12216,6 +12210,10 @@ private string _suggestExcludeId;
      // helper does the work after this window closes (see shared/rebuild.d);
     // the pending flag keeps the transcript live until the helper is started.
     private bool _rebuildPending;
+    private CheckpointBarrier _exitCheckpoint;
+    private bool _exitCheckpointCommitted;
+    private bool _exitCheckpointFailed;
+    private string _exitCheckpointFailure;
     private bool _rebuildSourceChecking;
     private bool _rebuildSourceCheckDone;
     private DeveloperSyncResult _rebuildSourceCheckResult;
@@ -12578,6 +12576,7 @@ private string _suggestExcludeId;
         super(0);
         _window = window;
         _window.applicationService = &serviceExecution;
+        _window.onCloseRequested = &requestWindowClose;
         _window.afterPaintSubmitted = &recordLatencyPaint;
         // Phase timing, so a slow start can be attributed to a specific step
         // rather than guessed at from the total.
@@ -12595,8 +12594,8 @@ private string _suggestExcludeId;
         _fileContext = new FileContextStore(buildPath(opencodeStateDirectory(), "file-context"));
         // <<< filecontext:end
         _snapshotRepository = new ConversationRepository();
-        _settingsWriter = new PreferenceWriter!Settings((Settings value) { saveSettings(value); });
-        _projectsWriter = new PreferenceWriter!ProjectState((ProjectState value) { saveProjects(value); });
+        _settingsWriter = new PreferenceWriter!Settings((Settings value) { saveSettings(value, true); });
+        _projectsWriter = new PreferenceWriter!ProjectState((ProjectState value) { saveProjects(value, true); });
         _runtime = new RepositoryRuntime(_repository, buildPath(opencodeStateDirectory(),
             "runtime-events.jsonl"));
         (cast(RepositoryRuntime) _runtime).setWake(_window.serviceWake());
@@ -12674,15 +12673,15 @@ private string _suggestExcludeId;
 
     /// True until the deferred conversation load runs on the first tick.
     private bool _startupLoadPending;
-    // The conversation snapshots in their raw parsed form, produced off the UI
-    // thread by `startSnapshotPreparse`. `parseJSON` of the canonical
-    // `sessions.json` is the single largest startup cost - seconds for a
-    // multi-hundred-megabyte history - and running it on the UI thread froze
-    // the window until it finished. The trees are built on a worker while the
-    // chrome paints and the app stays responsive; the first tick that sees
-    // `_snapshotParseDone` walks them and populates the UI.
-    private JSONValue[string] _parsedSnapshots;
+    // The storage owner transfers decoded, detached input. The window never
+    // parses a conversation file or waits for journal initialization.
     private bool _snapshotParseDone;
+    private RestoreBundle _restoreBundle;
+    private MonoTime _restoreRetryAt;
+    private string _restoreError;
+
+    private bool snapshotParseDone()
+    { synchronized (this) return _snapshotParseDone; }
 
     /**
      * Parse the persisted conversations and wire the restored selection into
@@ -12693,6 +12692,19 @@ private string _suggestExcludeId;
      */
     private void loadStartupState()
     {
+        scope(exit)
+        {
+            _restoreBundle.events = null;
+            _restoreBundle.journalSessions = null;
+            _restoreBundle.journalPatches = null;
+            _restoreBundle.deletedThreads = null;
+            _restoreBundle.legacySnapshots = null;
+            _restoreBundle.sessions = null;
+            _restoreBundle.index = JSONValue.init;
+            _restoreBundle.candidates = null;
+        }
+        foreach (error; _restoreBundle.errors) logError("Conversation restore: " ~ error);
+
         auto phaseMark = MonoTime.currTime;
         void phase(string what)
         {
@@ -12808,6 +12820,20 @@ private string _suggestExcludeId;
     /// interrupted has an empty `messages` array and is invisible to the
     /// messages-based restart scans below - it would be neither continued nor
     /// flagged with the sidebar warning.
+    private void resumeLoadedSession(int index, string prompt)
+    {
+        if (!historyReady(index, HistoryAction("", HistoryActionKind.resume,
+            0, 0, false, 0, prompt))) return;
+        loadRuntime(index);
+        appendQueuedGuidance(_sessions[index]);
+        ChatMessage recovery;
+        recovery.role = "user"; recovery.internal = true;
+        recovery.content = prompt; recovery.time = currentTimestamp();
+        appendMessage(_sessions[index], recovery);
+        startChatRequest(index);
+        markDirty();
+    }
+
     private void materializeRunningThreads()
     {
         foreach (i, session; _sessions)
@@ -13472,7 +13498,7 @@ private string _suggestExcludeId;
             _miniChat = null;
         }
         flushSettings();
-        persistState();
+        if (!_exitCheckpointCommitted) persistState();
         _settingsWriter.close();
         _projectsWriter.close();
         closeRuntimeClients();
@@ -13684,12 +13710,6 @@ private string _suggestExcludeId;
         updateStatus("Rebuilding; Aurora OpenCode will reopen when the new "
             ~ "build is ready...");
 
-        // Record where the conversation stood, then hand the rebuild to the
-        // agent and close. The agent shows a small progress window while it
-        // builds; this process is gone for the whole compile.
-        persistState();
-        _projectsWriter.save(_projectState);
-
         auto plan = planRebuild(opencodeStateDirectory(), true,
             thisProcessID, thisExePath());
         // Rebuild the folder the source lives in, which need not be the folder
@@ -13703,17 +13723,101 @@ private string _suggestExcludeId;
             plan.helperImage = thisExePath();
         }
         plan.reason = reason;
-        if (!launchRebuild(plan))
+        return beginExitCheckpoint({
+            if (!launchRebuild(plan))
+                throw new Exception("Could not start the rebuild helper");
+        }, true);
+    }
+
+    private bool requestWindowClose()
+    {
+        if (_exitCheckpointCommitted || _startupLoadPending) return true;
+        if (_exitCheckpoint is null) beginExitCheckpoint();
+        return false;
+    }
+
+    /// Freeze command admission, transfer a detached final snapshot, and keep
+    /// the native message pump alive until the durability acknowledgement.
+    private bool beginExitCheckpoint(void delegate() afterSave = null, bool resume = false)
+    {
+        if (_exitCheckpoint !is null) return false;
+        if (_startupLoadPending)
         {
             _rebuildPending = false;
-            updateStatus("Rebuild failed: could not start the rebuild helper.");
+            updateStatus("Conversation recovery must finish before restarting.");
             return false;
         }
-        // A turn that was running leaves the note that resumes it on reopen.
-        writeResumeNoteIfTurnActive();
+        syncComposerDraft();
+        flushDraftCheckpoints();
+        flushSettings();
+        _projectsWriter.save(_projectState);
+        auto sessions = snapshotChatSessions(_sessions);
+        auto loaded = _threadLoaded.dup;
+        const current = _current;
+        const resumeSession = resume && anyTurnIsBusy() ? resumeOwnerSessionId() : "";
+        const stateDirectory = opencodeStateDirectory();
+        auto settingsWriter = _settingsWriter;
+        auto projectsWriter = _projectsWriter;
+        // >>> filecontext:begin
+        auto writeFileContext = _settings.smartFileContext ? fileContextPendingWrite() : null;
+        // <<< filecontext:end
+        _exitCheckpointFailed = false;
+        _exitCheckpointFailure = "";
+        _exitCheckpoint = new CheckpointBarrier(_window.serviceWake());
+        setEnabled(false);
+        updateStatus("Saving conversation state before closing…");
         closeRuntimeClients();
-        _window.close();
+        _exitCheckpoint.begin(_repository, _snapshotRepository,
+            cast(RepositoryRuntime) _runtime, (ulong sequence, ulong bytes) {
+                writeThreadStore(sessions, current, loaded);
+                // >>> filecontext:begin
+                if (writeFileContext !is null) writeFileContext();
+                // <<< filecontext:end
+                writeFoldedMarker(stateDirectory, sequence, bytes);
+                settingsWriter.flushChecked();
+                projectsWriter.flushChecked();
+                if (resumeSession.length && !exists(buildPath(stateDirectory, "restart-resume.json")))
+                    writeResumeNoteForRebuild("the application restarted while this turn was running", resumeSession);
+                if (afterSave !is null) afterSave();
+            });
         return true;
+    }
+
+    private bool pollExitCheckpoint()
+    {
+        if (_exitCheckpoint is null) return _exitCheckpointCommitted;
+        const result = _exitCheckpoint.poll();
+        if (!result.ready) return true;
+        _exitCheckpoint = null;
+        if (!result.error.length)
+        {
+            _exitCheckpointCommitted = true;
+            _window.close();
+            return true;
+        }
+        _exitCheckpointFailed = true;
+        _exitCheckpointFailure = result.error;
+        _rebuildPending = false;
+        _updateChecking = false;
+        const sourceBlocked = result.error.startsWith("Source update stopped:");
+        if (sourceBlocked) _updateStagedPath = "";
+        setEnabled(true);
+        // The cancelled clients cannot be reused. Keep durable work and goals,
+        // and let the next command create fresh per-conversation runtimes.
+        _conversationRuntimes = null;
+        _execution = new ConversationRuntime(_settings.baseUrl, activeApiKey(_settings));
+        _client.setEventWake(_window.serviceWake());
+        foreach (ref session; _sessions)
+            if (session.turnStatus == "running")
+            {
+                session.turnStatus = "interrupted";
+                publishThreadUpdated(session);
+            }
+        if (_current >= 0) loadRuntime(_current);
+        updateSendButton();
+        updateStatus("Could not close safely: " ~ result.error ~ ". Aurora remains open; your work is preserved.");
+        updateUpdateDialog("Update stopped: " ~ result.error, !sourceBlocked, sourceBlocked);
+        return false;
     }
 
     private void requestUpdate()
@@ -13792,46 +13896,47 @@ private string _suggestExcludeId;
 
     private void installPreparedUpdate()
     {
-        CheckoutLease lease;
-        scope (exit) { if (lease !is null) lease.release(); }
-        if (_settings.developerMode)
-        {
-            try
-            {
-                // Hold the physical checkout through the last conflict check
-                // and installer launch. A competing writer must finish first.
-                lease = new CheckoutLease(_updateSourcePath, null, 0);
-                DeveloperSyncResult checked;
-                synchronized (developerOperationMutex())
-                    checked = prepareUpdateSource(_updateSourcePath, _updateSourceRevision, false);
-                if (checked.failed) throw new Exception(checked.message);
-            }
-            catch (Exception e)
-            {
-                _updateStagedPath = "";
-                const message = "Source update stopped: " ~ e.msg ~
-                    "\nResolve conflicts, finish the Git operation, then retry Update. Aurora will stay open.";
-                updateStatus(message);
-                updateUpdateDialog(message, false, true);
-                return;
-            }
-        }
-        writeResumeNoteIfTurnActive();
-        persistState();
-        _projectsWriter.save(_projectState);
-        const started = updateInstallForTesting is null
-            ? launchUpdateHelper(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash)
-            : updateInstallForTesting(thisExePath(), _updateStagedPath, opencodeStateDirectory(), _updateHash);
-        if (!started)
-        {
-            updateStatus("Update failed: could not start the replacement helper.");
-            updateUpdateDialog("Update failed: could not start the replacement helper.", true);
-            return;
-        }
+        if (_exitCheckpoint !is null) return;
+        const developer = _settings.developerMode;
+        const source = _updateSourcePath;
+        const revision = _updateSourceRevision;
+        const staged = _updateStagedPath;
+        const hash = _updateHash;
+        const executable = thisExePath();
+        const directory = opencodeStateDirectory();
+        auto sourceCheck = updateSourceForTesting;
+        auto installer = updateInstallForTesting;
         _rebuildPending = true;
-        closeRuntimeClients();
-        updateStatus("Installing update and relaunching...");
-        _window.close();
+        _updateChecking = true;
+        if (!beginExitCheckpoint({
+            CheckoutLease lease;
+            scope(exit) { if (lease !is null) lease.release(); }
+            if (developer)
+            {
+                try
+                {
+                    // The checkout stays leased from the final check through
+                    // helper launch; neither operation runs on the window thread.
+                    lease = new CheckoutLease(source, null, 0);
+                    DeveloperSyncResult checked;
+                    synchronized (developerOperationMutex())
+                    {
+                        if (sourceCheck !is null) checked = sourceCheck(source, revision, false);
+                        else
+                        {
+                            auto workflow = new DeveloperWorkflow(ensureDeveloperTool("git", directory), "");
+                            checked = workflow.checkSourceBeforeEdit(source, null, false, false);
+                        }
+                    }
+                    if (checked.failed) throw new Exception(checked.message);
+                }
+                catch (Exception error) { throw new Exception("Source update stopped: " ~ error.msg); }
+            }
+            const started = installer is null
+                ? launchUpdateHelper(executable, staged, directory, hash)
+                : installer(executable, staged, directory, hash);
+            if (!started) throw new Exception("Could not start the replacement helper");
+        }, true)) { _updateChecking = false; _rebuildPending = false; }
     }
 
     private bool useDeveloperSourceFolder(string folder)
@@ -14488,7 +14593,7 @@ private string _suggestExcludeId;
     /// Leave a resume request the next launch consumes, so a deliberate rebuild
     /// reopens the requesting conversation with a "rebuilt" note rather than
     /// looking like a crash.
-    private void writeResumeNoteForRebuild(string reason, string sessionId)
+    private static void writeResumeNoteForRebuild(string reason, string sessionId)
     {
         const path = buildPath(opencodeStateDirectory(), "restart-resume.json");
         string json;
@@ -16645,6 +16750,36 @@ private string _suggestExcludeId;
             }
             markDirty();
         }
+    }
+
+    private void publishCopiedThread(ref ChatSession copy)
+    {
+        auto detached = snapshotChatSessions([copy])[0];
+        const header = runtimeThreadPayload(copy);
+        auto journal = cast(RepositoryRuntime) _runtime;
+        if (journal is null || !journal.enqueueGenerated(delegate() {
+            AgentRuntimeEvent event;
+            event.kind = AgentEventKind.threadStarted;
+            event.threadId = detached.id;
+            auto payload = parseJSON(header);
+            payload["snapshot"] = sessionToJson(detached);
+            event.payloadJson = payload.toString();
+            return event;
+        }))
+        {
+            _durabilityBlocked = true;
+            ++_storageFailureGeneration;
+            markDirty();
+            updateStatus("Copied history could not be queued for saving. New effects are paused.");
+        }
+    }
+
+    private void publishCompactionCheckpoint(const ref ChatSession session)
+    {
+        JSONValue payload;
+        payload["compactionSummary"] = session.compactionSummary;
+        payload["compactedThroughMessageId"] = session.compactedThroughMessageId;
+        publishRuntimeEvent(AgentEventKind.threadUpdated, session, "", "", "", payload.toString());
     }
 
     private static string runtimeThreadPayload(const ref ChatSession session)
@@ -19634,7 +19769,7 @@ private void pollButtonSuggestionRequest()
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        if (!ensureThreadLoaded(sessionIndex)) return;
+        if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.switchBranch, messageIndex, direction))) return;
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 ||
             messageIndex >= cast(int) session.messages.length)
@@ -19660,7 +19795,7 @@ private void pollButtonSuggestionRequest()
     private void selectMessageBranch(int sessionIndex, int messageIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
-        if (!ensureThreadLoaded(sessionIndex)) return;
+        if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.selectBranch, messageIndex))) return;
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length) return;
         cancelAutoResend();
@@ -20111,7 +20246,7 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
-        if (taskContinuation(*session, toolsEnabledForSession(*session)).action == TaskContinuationAction.settle &&
+        if (!goalActive(*session) && taskContinuation(*session, toolsEnabledForSession(*session)).action == TaskContinuationAction.settle &&
             completionHandoffNeeded(*session))
         {
             ChatMessage handoff;
@@ -20253,14 +20388,6 @@ private void pollButtonSuggestionRequest()
                 markDirty();
                 updateGoalBar();
             }
-            else if (session.goalTurns >= maxGoalTurns)
-            {
-                session.goalStatus = "paused";
-                publishThreadUpdated(*session);
-                markDirty();
-                updateGoalBar();
-                updateStatus("Goal paused at the safety turn limit. Press Start to continue.");
-            }
             else
             {
                 session.goalTurns++;
@@ -20319,7 +20446,7 @@ private void pollButtonSuggestionRequest()
         if (session.queuedGuidance.length > 0) return true;
         if (goalNeedsHumanInput(session)) return false;
         if (goalActive(session) && session.queuedFollowUps.length == 0 &&
-            !taskAwaitingInput(session) && session.goalTurns < maxGoalTurns)
+            !taskAwaitingInput(session))
             return true;
         return taskContinuation(session, toolsEnabledForSession(session)).action != TaskContinuationAction.settle ||
             (toolsEnabledForSession(session) && proactiveActionGuidance(session).length > 0) ||
@@ -20338,7 +20465,7 @@ private void pollButtonSuggestionRequest()
         return error;
     }
 
-    private void failAssistantMessage(string error)
+    private void failAssistantMessage(string error, bool preserveGoal = false)
     {
         error = clarifyProviderRequestError(error);
         const sessionIndex = turnOwnerSessionIndex();
@@ -20353,7 +20480,7 @@ private void pollButtonSuggestionRequest()
             return;
         }
         auto session = &_sessions[sessionIndex];
-        pauseActiveGoal(*session);
+        if (!preserveGoal) pauseActiveGoal(*session);
         // Attach the failure to the reply the ACTIVE branch is waiting on, not
         // merely the last stored message. The two differ after a Retry: the
         // re-run branches from the abandoned reply's parent, so the old failed
@@ -20754,46 +20881,13 @@ private void pollButtonSuggestionRequest()
         return false;
     }
 
-    private static int outputRecoveryCount(const ref ChatSession session)
-    {
-        int count;
-        foreach (index; activeMessagePath(session))
-        {
-            const message = session.messages[index];
-            if (message.role == "user" && !message.internal) count = 0;
-            else if (message.internal && message.content.startsWith(outputRecoveryMarker))
-                ++count;
-        }
-        return count;
-    }
-
-    private static bool answerReplayed(const ref ChatSession session)
-    {
-        const path = activeMessagePath(session);
-        if (path.length < 2) return false;
-        const current = session.messages[path[$ - 1]];
-        if (current.role != "assistant" || current.content.length < 512)
-            return false;
-        foreach_reverse (index; path[0 .. $ - 1])
-        {
-            const previous = session.messages[index];
-            if (previous.role == "user" && !previous.internal) return false;
-            if (previous.role != "assistant" || previous.failed) continue;
-            return previous.toolCalls.length == 0 && previous.content.length >= 512 &&
-                current.content.startsWith(previous.content) &&
-                current.content.length - previous.content.length <=
-                    previous.content.length / 5;
-        }
-        return false;
-    }
-
     /// A failed summary request cannot restart tool work or repeat the repair.
     private bool finishCompletionHandoffAfterFailure(string error)
     {
         const sessionIndex = turnOwnerSessionIndex();
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length ||
             _stopPending || computerUseAbortActive() ||
-            !completionHandoffPending(_sessions[sessionIndex])) return false;
+            !completionHandoffPending(_sessions[sessionIndex]) || goalActive(_sessions[sessionIndex])) return false;
         const previousStatus = _sessions[sessionIndex].taskStatus;
         const requestId = _activeRequestId;
         failAssistantMessage(error);
@@ -20834,13 +20928,15 @@ private void pollButtonSuggestionRequest()
             recordTurnUsage(*reply, event.totalTokens, event.promptTokens,
                 event.completionTokens, event.requestId);
         }
-        const recover = toolsEnabledForSession(*session) && !_stopPending &&
+        const exhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
+        const recover = !exhausted && toolsEnabledForSession(*session) && !_stopPending &&
             !computerUseAbortActive() &&
             !explanationOnlyRequest(latestActualUserRequest(*session));
         logInfo("agent-output request=" ~ to!string(event.requestId) ~
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
             " recovery=" ~ (recover ? "continuing" : "stopped"));
-        failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue));
+        failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue) ~
+            (exhausted ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue." : ""), true);
         dropAutoResendSchedule();
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
@@ -22003,6 +22099,8 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
 
+        _historyMailbox.cancel(_sessions[sessionIndex].id);
+
         JSONValue stopDetails;
         stopDetails["pendingTools"] = _pendingToolResults;
         logAgentLifecycle(_sessions[sessionIndex].id, _activeRequestId,
@@ -22250,7 +22348,8 @@ private void pollButtonSuggestionRequest()
         // autonomous diagnosis never runs. Fall back to a new chat if the
         // history cannot be loaded.
         auto reuse = recentEmergencySessionIndex();
-        if (reuse >= 0 && !ensureThreadLoaded(reuse)) reuse = -1;
+        if (reuse >= 0 && !historyReady(reuse, HistoryAction("", HistoryActionKind.emergency,
+            0, 0, false, 0, reason))) return;
 
         if (reuse >= 0)
         {
@@ -22506,16 +22605,6 @@ private void pollButtonSuggestionRequest()
             updateStatus("Goal active — steering this turn.");
             return;
         }
-        if (session.goalTurns >= maxGoalTurns)
-        {
-            session.goalStatus = "paused";
-            recordGoalOutcome(*session, "paused", Clock.currTime.toUnixTime());
-            publishThreadUpdated(*session);
-            markDirty();
-            updateGoalBar();
-            updateStatus("Goal paused at the safety turn limit. Press Start to continue.");
-            return;
-        }
         session.goalTurns++;
         ChatMessage guidance;
         guidance.role = "user";
@@ -22740,6 +22829,7 @@ private void pollButtonSuggestionRequest()
 
     private void sendMessage(bool allowSideQuestion = true)
     {
+        if (_exitCheckpoint !is null || _exitCheckpointCommitted) return;
         const submittedTicks = MonoTime.currTime.ticks;
         if (_updateChecking || _sourceFetching || _developerPublishing)
         {
@@ -24036,7 +24126,7 @@ private void pollButtonSuggestionRequest()
             runtime.compactionAnchor, runtime.compactionLeaf,
             runtime.compactionOutput, testContextLimit > 0
                 ? testContextLimit : requestContextBudget(session.model));
-        if (applied) markDirty();
+        if (applied) { publishCompactionCheckpoint(*session); markDirty(); }
         JSONValue summaryDetails;
         summaryDetails["applied"] = applied;
         summaryDetails["taskChanged"] = !taskUnchanged;
@@ -24122,48 +24212,28 @@ private void pollButtonSuggestionRequest()
         foreach (i, session; _sessions)
         {
             if (recovered >= quickTitleRecoveryLimit) break;
-            // Cheap pre-filter from the index alone: the rewrite only ever ran
-            // for a conversation whose title is still the raw placeholder, which
-            // is either "New chat"/empty or a truncation ending in the ellipsis
-            // `chatTitle` appends. Everything else is left alone without reading
-            // its thread, so a large history costs nothing.
             if (session.title.length > 0 && session.title != "New chat" &&
-                !session.title.endsWith("…"))
-                continue;
-            // The first user message lives in the lazily-loaded thread, so it
-            // must be read before the exact placeholder can be compared.
-            ensureThreadLoaded(cast(int) i);
-            // `ensureThreadLoaded` trusts the loader's `_threadLoaded` flag, which
-            // can already read true in the window before an async read fills the
-            // messages. Recovery needs the first prompt now, so read it directly
-            // when the array is still empty rather than skipping the chat.
-            if (!_sessions[i].messages.length)
-            {
-                auto forced = &_sessions[i];
-                if (!loadThreadMessages(*forced)) continue;
-            }
-            auto loaded = &_sessions[i];
-            string firstUser;
-            foreach (index; activeMessagePath(*loaded))
-            {
-                const message = loaded.messages[index];
-                if (message.role == "user" && !message.internal)
-                {
-                    firstUser = message.content;
-                    break;
-                }
-            }
-            if (firstUser.length == 0) continue;
-            const placeholder = chatTitle(firstUser);
-            if (session.title != placeholder && session.title != "New chat" &&
-                session.title.length > 0) continue;
-            auto runtime = runtimeForSession(cast(int) i);
-            if (runtime is null || runtime.titleClient !is null) continue;
-            logInfo("quick title recovery: re-queuing the rewrite left pending "
-                ~ "by an interrupted launch for session=" ~ session.id);
-            scheduleQuickTitle(cast(int) i);
+                !session.title.endsWith("…")) continue;
             ++recovered;
+            recoverQuickTitle(cast(int) i);
         }
+    }
+
+    private void recoverQuickTitle(int index)
+    {
+        if (!historyReady(index, HistoryAction("", HistoryActionKind.recoverTitle))) return;
+        auto session = &_sessions[index];
+        string firstUser;
+        foreach (slot; activeMessagePath(*session))
+            if (session.messages[slot].role == "user" && !session.messages[slot].internal)
+            { firstUser = session.messages[slot].content; break; }
+        if (!firstUser.length) return;
+        const placeholder = chatTitle(firstUser);
+        if (session.title != placeholder && session.title != "New chat" && session.title.length) return;
+        auto runtime = runtimeForSession(index);
+        if (runtime is null || runtime.titleClient !is null) return;
+        logInfo("quick title recovery: re-queuing pending rewrite for session=" ~ session.id);
+        scheduleQuickTitle(index);
     }
 
     /// One attempt, only while pending and nothing is in flight. Each attempt
@@ -24187,7 +24257,7 @@ private void pollButtonSuggestionRequest()
         // and routing key, so it only has to wait for the live request on
         // this conversation's own client, not for the turn to complete (and
         // it never waits on another conversation at all).
-        if (runtime.client.busy()) return;
+        if (runtime.phase == RequestPhase.waiting || runtime.effectPending() || runtime.client.busy()) return;
         if (runtime.titleAttempts >= quickTitleMaxAttempts)
         {
             runtime.titlePending = false;
@@ -24311,7 +24381,7 @@ private void pollButtonSuggestionRequest()
         // Match tryQuickTitle's gate: wait only for this conversation's own
         // in-flight request, not for the whole turn. A turn that keeps running
         // tool rounds otherwise starved the rewrite forever.
-        if (runtime.client.busy()) return;
+        if (runtime.phase == RequestPhase.waiting || runtime.effectPending() || runtime.client.busy()) return;
         tryQuickTitle(sessionIndex);
     }
 
@@ -24603,6 +24673,10 @@ private void pollButtonSuggestionRequest()
     private void startChatRequest(int sessionIndex, bool userTurn = true,
         long submittedTicks = 0)
     {
+        if (_exitCheckpoint !is null || _exitCheckpointCommitted) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.startRequest,
+            0, 0, userTurn, submittedTicks))) return;
         _execution.toolContinuationPending = false;
         _execution.missingWorkSince = MonoTime.init;
         const preparationStartedTicks = submittedTicks ? submittedTicks : MonoTime.currTime.ticks;
@@ -24622,8 +24696,6 @@ private void pollButtonSuggestionRequest()
             // A fresh user request clears the once-per-turn plan-first nudge.
             _planGateFired[_sessions[sessionIndex].id] = false;
         }
-        // A turn is about to read and extend this conversation's transcript.
-        if (!ensureThreadLoaded(sessionIndex)) return;
         // Continue, Regenerate and queued prompts also open user turns. Stop's
         // latch belongs to the old turn; leaving it set discards the new turn's
         // native tool progress/results even though those tools execute.
@@ -24865,6 +24937,7 @@ private void pollButtonSuggestionRequest()
         }
         else
             compactedRequestMessages = buildRequestMessages(*session);
+        if (checkpointCreated) publishCompactionCheckpoint(*session);
         _contextWasCompacted[session.id] = compactionEnabled &&
             (checkpointOnActivePath(*session) || fallbackCompacted);
         const newCompactionNotice = (checkpointCreated || fallbackCompacted) &&
@@ -25531,7 +25604,7 @@ private void pollButtonSuggestionRequest()
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        if (!ensureThreadLoaded(sessionIndex)) return;
+        if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.editPrompt, messageIndex))) return;
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
             return;
@@ -25563,7 +25636,7 @@ private void pollButtonSuggestionRequest()
         if (bubble is null) return;
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        if (!ensureThreadLoaded(sessionIndex)) return;
+        if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.editPrompt, messageIndex))) return;
         auto session = &_sessions[sessionIndex];
         if (messageIndex < 0 || messageIndex >= cast(int) session.messages.length)
             return;
@@ -28493,7 +28566,8 @@ private void pollButtonSuggestionRequest()
         // still working. `_turnTiming` spans the turn and survives those gaps.
         const busy = turnIsBusy();
         _sendButton.setText(_stopPending ? "Stopping…" : busy ? "Stop" : "Send");
-        _sendButton.setEnabled(!_stopPending && !threadLoadPending(_current) && !threadHistoryUnavailable(_current));
+        _sendButton.setEnabled(!_startupLoadPending && !_stopPending &&
+            !threadLoadPending(_current) && !threadHistoryUnavailable(_current));
         _sendButton.setAccent(!busy);
         if (_composerWasBusy != busy)
         {
@@ -29584,6 +29658,7 @@ private void pollButtonSuggestionRequest()
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
 
+        _historyMailbox.cancel(_sessions[sessionIndex].id);
         const removedCurrent = _current == sessionIndex;
         const removedId = _sessions[sessionIndex].id;
         auto removedRuntime = removedId in _conversationRuntimes;
@@ -29646,7 +29721,7 @@ private void pollButtonSuggestionRequest()
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        if (!ensureThreadLoaded(sessionIndex)) return;
+        if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.duplicate))) return;
 
         auto source = _sessions[sessionIndex];
         ChatSession copy;
@@ -29714,8 +29789,7 @@ private void pollButtonSuggestionRequest()
         foreach (ref target; _resumeTargets)
             if (target >= insertAt) ++target;
         if (_current >= insertAt) ++_current;
-        publishRuntimeEvent(AgentEventKind.threadStarted, copy,
-            "", "", "", runtimeThreadPayload(copy));
+        publishCopiedThread(copy);
         // Show the copy so the duplication is immediately visible.
         _current = insertAt;
         loadRuntime(_current);
@@ -29741,7 +29815,7 @@ private void pollButtonSuggestionRequest()
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
             return;
-        ensureThreadLoaded(sessionIndex);
+        if (!historyReady(sessionIndex, HistoryAction("", HistoryActionKind.compactCopy))) return;
 
         auto source = _sessions[sessionIndex];
         ChatSession copy;
@@ -29798,6 +29872,8 @@ private void pollButtonSuggestionRequest()
         // the entire transcript; the checkpoint note then replaces the history
         // for the model while the transcript stays on screen.
         copy.compactedThroughMessageId = copy.activeLeafId;
+        const compacted = copy.activeLeafId.length > 0 &&
+            rollCompactionCheckpoint(copy, requestContextBudget(copy.model), 0);
         // Insert below the source and shift the indices of everything after it,
         // exactly as duplicateSession shifts the other way.
         const insertAt = sessionIndex + 1;
@@ -29809,8 +29885,7 @@ private void pollButtonSuggestionRequest()
         foreach (ref target; _resumeTargets)
             if (target >= insertAt) ++target;
         if (_current >= insertAt) ++_current;
-        publishRuntimeEvent(AgentEventKind.threadStarted, copy,
-            "", "", "", runtimeThreadPayload(copy));
+        publishCopiedThread(copy);
         // Show the new conversation so the copy is immediately visible.
         _current = insertAt;
         loadRuntime(_current);
@@ -29829,18 +29904,6 @@ private void pollButtonSuggestionRequest()
         refreshUsageBadge();
         updateGoalBar();
         refreshTimerBadge(true);
-        // Install the extractive checkpoint immediately so the new chat is
-        // compacted even without a provider. It is the same rolling checkpoint
-        // the app builds when older context has to be retired.
-        bool compacted;
-        if (copy.activeLeafId.length > 0)
-            compacted = rollCompactionCheckpoint(_sessions[_current],
-                requestContextBudget(_sessions[_current].model), 0);
-        if (compacted)
-        {
-            markDirty();
-            rebuildMessageColumn();
-        }
         // With a live provider, refine that checkpoint with a real model
         // summary; the checkpoint anchor is unchanged, only its text improves.
         if (copy.activeLeafId.length > 0 &&
@@ -30236,11 +30299,9 @@ private void pollButtonSuggestionRequest()
 
     private void loadPinnedSessions()
     {
-        const path = buildPath(opencodeStateDirectory(), "pins.json");
-        if (!exists(path)) return;
         try
         {
-            auto value = parseJSON(readText(path));
+            auto value = _restoreBundle.pins;
             if (value.type != JSONType.array) return;
             string[] ids;
             foreach (item; value.array)
@@ -30308,11 +30369,9 @@ private void pollButtonSuggestionRequest()
 
     private void loadArchivedSessions()
     {
-        const path = buildPath(opencodeStateDirectory(), "archived.json");
-        if (!exists(path)) return;
         try
         {
-            auto value = parseJSON(readText(path));
+            auto value = _restoreBundle.archived;
             if (value.type != JSONType.array) return;
             string[] ids;
             foreach (item; value.array)
@@ -30445,8 +30504,8 @@ private void pollButtonSuggestionRequest()
         if (!_stateDirty)
             _persistDue = MonoTime.currTime + msecs(persistDebounceMs);
         _stateDirty = true;
-        // Message/task mutations are already appended synchronously to the
-        // durable runtime journal, which startup treats as the recovery
+        // Message/task mutations are enqueued in the ordered durable journal,
+        // and effects wait for its acknowledgement. Startup treats it as the recovery
         // authority. Re-serializing every conversation here made each streamed
         // tool result rewrite tens of megabytes. Keep the compatibility JSON
         // snapshot debounced; a crash between snapshots is recovered by replay.
@@ -30556,7 +30615,6 @@ private void pollButtonSuggestionRequest()
         foreach (session; sessions)
             list.array ~= sessionMetaToJson(session);
         root["sessions"] = list;
-        writeFileAtomically(threadsIndexPath(), root.toString());
         foreach (session; sessions)
         {
             if (session.id.length == 0) continue;
@@ -30572,10 +30630,14 @@ private void pollButtonSuggestionRequest()
             attachments.externalize(thread);
             writeFileAtomically(threadFilePath(session.id), thread.toString());
         }
+        writeFileAtomically(threadsIndexPath(), root.toString());
     }
 
     private void persistState()
     {
+        // Recovery has not established an authoritative in-memory snapshot.
+        // Closing during a failed read must preserve the original store.
+        if (_startupLoadPending) return;
         flushDraftCheckpoints();
         // The barrier is queued behind any earlier snapshot/checkpoint. A
         // timed-out competing writer can no longer overwrite shutdown state.
@@ -30626,6 +30688,7 @@ private void pollButtonSuggestionRequest()
      */
     private void persistStateAsync()
     {
+        if (_startupLoadPending || _exitCheckpoint !is null || _exitCheckpointCommitted) return;
         synchronized (this)
         {
             if (_persistWriteInFlight) return;
@@ -30802,40 +30865,14 @@ private void pollButtonSuggestionRequest()
             }, enabled);
     }
 
-    /// Read the snapshot checkpoint: the journal sequence folded into the
-    /// snapshot and the journal byte size at that moment. Returns false when
-    /// there is none, which makes startup replay the whole journal.
-    private static bool readFoldedMarker(string dir, out ulong sequence,
-        out ulong offset)
-    {
-        import std.algorithm : splitter;
-        import std.conv : to;
-        import std.file : exists, readText;
-        import std.path : buildPath;
-        try
-        {
-            const path = buildPath(dir, "journal.folded");
-            if (!exists(path)) return false;
-            auto fields = readText(path).splitter();
-            if (fields.empty) return false;
-            sequence = to!ulong(fields.front);
-            fields.popFront();
-            offset = fields.empty ? 0 : to!ulong(fields.front);
-            return true;
-        }
-        catch (Exception)
-            return false;
-    }
-
     private static void writeFoldedMarker(string dir, ulong sequence,
         ulong offset)
     {
         import std.conv : to;
         import std.file : write;
         import std.path : buildPath;
-        try write(buildPath(dir, "journal.folded"),
+        writeFileAtomically(buildPath(dir, "journal.folded"),
             to!string(sequence) ~ " " ~ to!string(offset) ~ "\n");
-        catch (Exception) {}
     }
 
     /**
@@ -31114,6 +31151,7 @@ private void pollButtonSuggestionRequest()
     private string[string] _threadLoadErrors;
     private struct HistoryResult { string id; ChatMessage[] messages; string error; }
     private HistoryResult[] _historyResults;
+    private HistoryMailbox _historyMailbox;
 
     private bool threadLoadPending(int index) const
     {
@@ -31129,6 +31167,19 @@ private void pollButtonSuggestionRequest()
         return flag !is null && !*flag && !_sessions[index].messages.length;
     }
 
+    private bool historyReady(int index, HistoryAction action)
+    {
+        if (ensureThreadLoaded(index)) return true;
+        if (index < 0 || index >= cast(int) _sessions.length) return false;
+        action.threadId = _sessions[index].id;
+        requestThreadLoad(index);
+        if (!_historyMailbox.enqueue(action))
+            updateStatus("Too many actions are waiting for history. Retry after it loads.");
+        else
+            updateStatus("Waiting for conversation history…");
+        return false;
+    }
+
     private void requestThreadLoad(int index)
     {
         if (index < 0 || index >= cast(int) _sessions.length) return;
@@ -31136,34 +31187,54 @@ private void pollButtonSuggestionRequest()
         auto loaded = id in _threadLoaded;
         if (!_threadStoreActive || loaded is null || *loaded ||
             _sessions[index].messages.length || id in _threadLoadsPending) return;
-        const path = threadFilePath(id);
+        const directory = opencodeStateDirectory();
+        const wake = _window.serviceWake();
         _threadLoadErrors.remove(id);
         _threadLoadsPending[id] = true;
-        if (!_repository.submit(delegate() {
+        // Large reads share the snapshot owner, never the intent/effect queue.
+        if (!_snapshotRepository.submit(delegate() {
             HistoryResult result;
             result.id = id;
-            try
-            {
-                ChatSession detached;
-                detached.id = id;
-                if (!exists(path)) throw new Exception("Conversation file is missing");
-                {
-                    auto value = parseJSON(readText(path));
-                    if (value.type != JSONType.object)
-                        throw new Exception("Invalid conversation file");
-                    if (auto messages = "messages" in value.object)
-                        parseMessagesJson(*messages, detached);
-                }
-                result.messages = detached.messages;
-            }
-            catch (Exception error) { result.error = error.msg; }
+            auto history = readThreadHistory(directory, id);
+            result.messages = history.messages;
+            result.error = history.error;
             synchronized (this) _historyResults ~= result;
+            if (wake !is null) wake();
         }))
         {
             _threadLoadsPending.remove(id);
             _threadLoadErrors[id] = "History loader queue is full";
             updateStatus("History loader is busy; select the conversation again to retry.");
         }
+    }
+
+    private void applyHistoryActions(string id)
+    {
+        foreach (action; _historyMailbox.take(id))
+        {
+            int index = -1;
+            foreach (i, session; _sessions)
+                if (session.id == id) { index = cast(int) i; break; }
+            if (index < 0) break;
+            loadRuntime(index);
+            final switch (action.kind)
+            {
+                case HistoryActionKind.startRequest:
+                    startChatRequest(index, action.userTurn, action.submittedTicks); break;
+                case HistoryActionKind.duplicate: duplicateSession(index); break;
+                case HistoryActionKind.compactCopy: duplicateSessionCompacted(index); break;
+                case HistoryActionKind.switchBranch:
+                    switchMessageBranch(index, action.argument, action.direction); break;
+                case HistoryActionKind.selectBranch:
+                    selectMessageBranch(index, action.argument); break;
+                case HistoryActionKind.editPrompt:
+                    if (_current == index) editAndResend(index, action.argument); break;
+                case HistoryActionKind.recoverTitle: recoverQuickTitle(index); break;
+                case HistoryActionKind.emergency: fireEmergencyChat(action.text); break;
+                case HistoryActionKind.resume: resumeLoadedSession(index, action.text); break;
+            }
+        }
+        if (_current >= 0 && _current < cast(int) _sessions.length) loadRuntime(_current);
     }
 
     private void drainHistoryResults()
@@ -31177,17 +31248,22 @@ private void pollButtonSuggestionRequest()
             {
                 _threadLoadErrors[result.id] = result.error;
                 logError("Conversation history could not be loaded: " ~ result.error);
-                updateStatus("Conversation history could not be loaded; select it again to retry.");
+                updateStatus("Conversation history could not be loaded; select it again to retry. Waiting actions are preserved.");
                 continue;
             }
             foreach (i, ref session; _sessions)
                 if (session.id == result.id)
                 {
-                    // Navigation or recovery may have materialized the thread
-                    // meanwhile. A late read can never replace newer messages.
+                    // A late read never replaces newer messages.
                     if (!session.messages.length) session.messages = result.messages;
                     _threadLoaded[result.id] = true;
                     _threadLoadErrors.remove(result.id);
+                    _restoreBundle.histories.remove(result.id);
+                    bool changed = repairRestoredParentLinks(session);
+                    ensureMessageGraph(session);
+                    changed |= initializeLegacyTask(session);
+                    if (session.turnStatus == "interrupted") changed |= recordInterruptedReads(session);
+                    if (changed) markDirty();
                     if (cast(int) i == _current)
                     {
                         rebuildMessageColumn();
@@ -31196,7 +31272,9 @@ private void pollButtonSuggestionRequest()
                     }
                     break;
                 }
+            applyHistoryActions(result.id);
         }
+        if (results.length) updateSendButton();
     }
 
     private static string threadsDirectory()
@@ -31211,14 +31289,7 @@ private void pollButtonSuggestionRequest()
 
     private static string threadFilePath(string id)
     {
-        // Session ids are file-safe ("t-m<digits>-<n>"), but a hand-edited or
-        // legacy id could contain a separator, so keep only safe bytes.
-        auto name = appender!string();
-        foreach (ch; id)
-            name.put((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ? ch : '_');
-        return buildPath(threadsDirectory(),
-            (name.data.length > 0 ? name.data : "unnamed") ~ ".json");
+        return historyFilePath(opencodeStateDirectory(), id);
     }
 
     private bool ensureThreadLoaded(int index)
@@ -31232,20 +31303,33 @@ private void pollButtonSuggestionRequest()
         if (!id.length) return false;
         auto flag = id in _threadLoaded;
         if (flag is null || *flag || !_threadStoreActive) return true;
-        foreach (ref session; _sessions)
+        foreach (i, ref session; _sessions)
             if (session.id == id)
             {
-                if (session.messages.length)
+                if (!session.messages.length)
                 {
-                    *flag = true;
-                    return true;
+                    if (auto prepared = id in _restoreBundle.histories)
+                    {
+                        if (prepared.error.length)
+                        {
+                            _threadLoadErrors[id] = prepared.error;
+                            return false;
+                        }
+                        session.messages = prepared.messages;
+                        _restoreBundle.histories.remove(id);
+                    }
+                    else
+                    {
+                        requestThreadLoad(cast(int) i);
+                        return false;
+                    }
                 }
-                if (!loadThreadMessages(session)) return false;
                 *flag = true;
+                ensureMessageGraph(session);
+                initializeLegacyTask(session);
                 if (!_restoringSessions)
                 {
                     bool changed = repairRestoredParentLinks(session);
-                    ensureMessageGraph(session);
                     if (session.turnStatus == "interrupted") changed |= recordInterruptedReads(session);
                     if (changed) markDirty();
                 }
@@ -31254,56 +31338,12 @@ private void pollButtonSuggestionRequest()
         return false;
     }
 
-    private bool loadThreadMessages(ref ChatSession session)
-    {
-        try
-        {
-            const path = threadFilePath(session.id);
-            if (!exists(path)) throw new Exception("Conversation file is missing");
-            auto value = parseJSON(readText(path));
-            if (value.type != JSONType.object)
-                throw new Exception("Invalid conversation file");
-            ChatSession detached;
-            if (auto messages = "messages" in value.object)
-                parseMessagesJson(*messages, detached);
-            session.messages = detached.messages;
-            ensureMessageGraph(session);
-            initializeLegacyTask(session);
-            _threadLoadErrors.remove(session.id);
-            return true;
-        }
-        catch (Exception error)
-        {
-            _threadLoadErrors[session.id] = error.msg;
-            logError("could not read conversation " ~ session.id ~ ": " ~ error.msg);
-            updateStatus("Conversation history could not be loaded; select it again to retry.");
-            return false;
-        }
-    }
-
     /// Read the metadata-only index, if present. Returns false when it is
     /// missing or unreadable, so the caller can fall back to the legacy
     /// snapshot parse and migrate on the next save.
     private bool loadThreadStore()
     {
-        const indexPath = threadsIndexPath();
-        if (!exists(indexPath)) return false;
-        JSONValue value;
-        try value = parseJSON(readText(indexPath));
-        catch (Exception error)
-        {
-            // A damaged primary may still have the previous good copy beside
-            // it; without a readable index the legacy snapshot is used instead.
-            const backup = indexPath ~ ".bak";
-            if (!exists(backup)) { logError("could not read the conversation index: " ~ error.msg); return false; }
-            try value = parseJSON(readText(backup));
-            catch (Exception backupError)
-            {
-                logError("could not read the conversation index: " ~
-                    backupError.msg);
-                return false;
-            }
-        }
+        auto value = _restoreBundle.index;
         if (value.type != JSONType.object) return false;
         if (auto versionField = "version" in value.object)
             if (versionField.type == JSONType.integer &&
@@ -31311,15 +31351,9 @@ private void pollButtonSuggestionRequest()
         auto sessionsField = "sessions" in value.object;
         if (sessionsField is null || sessionsField.type != JSONType.array)
             return false;
-        foreach (sessionValue; sessionsField.array)
-        {
-            if (sessionValue.type != JSONType.object) continue;
-            ChatSession session;
-            parseSessionMetaJson(sessionValue, session);
-            if (session.projectId.length == 0)
-                session.projectId = sandboxProjectId;
-            _sessions ~= session;
-        }
+        _sessions = _restoreBundle.sessions;
+        foreach (ref session; _sessions)
+            if (!session.projectId.length) session.projectId = sandboxProjectId;
         _threadLoaded = null;
         foreach (session; _sessions)
             if (session.id.length > 0)
@@ -31341,327 +31375,33 @@ private void pollButtonSuggestionRequest()
         return true;
     }
 
-    /// Metadata fields of one session object, matching `sessionMetaToJson`.
-    private static void parseSessionMetaJson(JSONValue sessionValue,
-        ref ChatSession session)
-    {
-        if (auto field = "id" in sessionValue.object)
-            session.id = field.str;
-        if (auto field = "title" in sessionValue.object)
-            session.title = field.str;
-        if (auto field = "model" in sessionValue.object)
-            session.model = field.str;
-        if (auto field = "thinking" in sessionValue.object)
-            session.thinking = field.type == JSONType.true_;
-        if (auto field = "instructions" in sessionValue.object)
-            if (field.type == JSONType.string)
-                session.instructions = field.str;
-        if (auto field = "toolsMode" in sessionValue.object)
-            if (field.type == JSONType.integer)
-                session.toolsMode = cast(int) field.integer;
-        if (auto field = "project" in sessionValue.object)
-            session.projectId = field.str;
-        if (auto field = "objective" in sessionValue.object)
-            session.objective = field.str;
-        if (auto field = "goal" in sessionValue.object)
-            if (field.type == JSONType.string) session.goal = field.str;
-        if (auto field = "goalStatus" in sessionValue.object)
-            if (field.type == JSONType.string) session.goalStatus = field.str;
-        if (auto field = "goalStartedAt" in sessionValue.object)
-            if (field.type == JSONType.integer) session.goalStartedAt = field.integer;
-        if (auto field = "goalTurns" in sessionValue.object)
-            if (field.type == JSONType.integer) session.goalTurns = cast(int) field.integer;
-        if (auto field = "goalHistory" in sessionValue.object)
-            session.goalHistory = goalHistoryFromJson(*field);
-        if (auto field = "taskStatus" in sessionValue.object)
-            session.taskStatus = field.str;
-        if (auto field = "turnStatus" in sessionValue.object)
-            session.turnStatus = field.str;
-        if (auto field = "unread" in sessionValue.object)
-            session.unread = field.type == JSONType.true_;
-        if (auto field = "verificationStatus" in sessionValue.object)
-            session.verificationStatus = field.str;
-        if (auto field = "taskSteps" in sessionValue.object)
-            if (field.type == JSONType.array)
-                foreach (item; field.array)
-                {
-                    if (item.type != JSONType.object) continue;
-                    TaskStep step;
-                    if (auto f = "text" in item.object)
-                        if (f.type == JSONType.string) step.text = f.str;
-                    if (auto f = "status" in item.object)
-                        if (f.type == JSONType.string) step.status = f.str;
-                    if (step.text.length > 0) session.taskSteps ~= step;
-                }
-        if (auto field = "nestedPlans" in sessionValue.object)
-            session.nestedPlans = nestedPlansFromJson(*field,
-                session.taskSteps.length);
-        readTaskContract(session, sessionValue);
-        if (auto field = "queuedGuidance" in sessionValue.object)
-            if (field.type == JSONType.array)
-                foreach (item; field.array)
-                    if (item.type == JSONType.string)
-                        session.queuedGuidance ~= item.str;
-        if (auto field = "queuedFollowUps" in sessionValue.object)
-            if (field.type == JSONType.array)
-                foreach (item; field.array)
-                    if (item.type == JSONType.string)
-                        session.queuedFollowUps ~= item.str;
-        if (auto field = "activeLeaf" in sessionValue.object)
-            session.activeLeafId = field.str;
-        if (auto field = "draft" in sessionValue.object)
-            if (field.type == JSONType.string) session.draft = field.str;
-        if (auto field = "updatedAt" in sessionValue.object)
-            if (field.type == JSONType.integer && field.integer > 0)
-                session.updatedAt = field.integer;
-        if (auto field = "compactionSummary" in sessionValue.object)
-            if (field.type == JSONType.string)
-                session.compactionSummary = field.str;
-        if (auto field = "compactedThroughMessageId" in sessionValue.object)
-            if (field.type == JSONType.string)
-                session.compactedThroughMessageId = field.str;
-        // experimental: orchestrator - read the persisted roster/speaker.
-        if (auto field = "agents" in sessionValue.object)
-            if (field.type == JSONType.array)
-                foreach (item; field.array)
-                {
-                    if (item.type != JSONType.object) continue;
-                    AgentSpec agent;
-                    if (auto f = "id" in item.object) agent.id = f.str;
-                    if (auto f = "name" in item.object) agent.name = f.str;
-                    if (auto f = "persona" in item.object) agent.persona = f.str;
-                    if (auto f = "model" in item.object) agent.model = f.str;
-                    if (auto f = "router" in item.object)
-                        agent.router = f.type == JSONType.true_;
-                    if (agent.id.length > 0) session.agents ~= agent;
-                }
-        if (auto field = "activeAgentId" in sessionValue.object)
-            if (field.type == JSONType.string)
-                session.activeAgentId = field.str;
-        if (auto field = "parentSession" in sessionValue.object)
-            if (field.type == JSONType.string)
-                session.parentSessionId = field.str;
-        if (auto field = "subagentId" in sessionValue.object)
-            if (field.type == JSONType.string)
-                session.subagentId = field.str;
-    }
-
-    /// Message fields of one conversation's `messages` array, matching
-    /// `messageToJson`.
-    private static void parseMessagesJson(JSONValue field,
-        ref ChatSession session)
-    {
-        if (field.type != JSONType.array) return;
-        auto attachments = AttachmentStore(buildPath(opencodeStateDirectory(), "attachments"));
-        attachments.hydrate(field);
-        foreach (messageValue; field.array)
-        {
-            if (messageValue.type != JSONType.object) continue;
-            ChatMessage message;
-            if (auto f = "id" in messageValue.object)
-                message.id = f.str;
-            if (auto f = "parentId" in messageValue.object)
-                message.parentId = f.str;
-            if (auto f = "authorId" in messageValue.object)
-                message.authorId = f.str;
-            if (auto f = "role" in messageValue.object)
-                message.role = f.str;
-            if (auto f = "content" in messageValue.object)
-                message.content = f.str;
-            if (auto f = "reasoning" in messageValue.object)
-                message.reasoning = f.str;
-            if (auto f = "time" in messageValue.object)
-                message.time = f.str;
-            if (auto f = "failed" in messageValue.object)
-                message.failed = f.type == JSONType.true_;
-            if (auto f = "error" in messageValue.object)
-                if (f.type == JSONType.string) message.error = f.str;
-            if (auto f = "finishReason" in messageValue.object)
-                if (f.type == JSONType.string) message.finishReason = f.str;
-            if (auto f = "internal" in messageValue.object)
-                message.internal = f.type == JSONType.true_;
-            if (auto f = "contextCompacted" in messageValue.object)
-                message.contextCompacted = f.type == JSONType.true_;
-            if (auto f = "taskStateJson" in messageValue.object)
-                if (f.type == JSONType.string) message.taskStateJson = f.str;
-            if (auto f = "workspaceChanged" in messageValue.object)
-                message.workspaceChanged = f.type == JSONType.true_;
-            if (auto f = "verificationCheck" in messageValue.object)
-                if (f.type == JSONType.string) message.verificationCheck = f.str;
-            if (auto f = "verificationScope" in messageValue.object)
-                if (f.type == JSONType.string) message.verificationScope = f.str;
-            if (auto f = "promptTokens" in messageValue.object)
-                if (f.type == JSONType.integer)
-                    message.promptTokens = cast(int) f.integer;
-            if (auto f = "completionTokens" in messageValue.object)
-                if (f.type == JSONType.integer)
-                    message.completionTokens = cast(int) f.integer;
-            if (auto f = "totalTokens" in messageValue.object)
-                if (f.type == JSONType.integer)
-                    message.totalTokens = cast(int) f.integer;
-            if (auto f = "tokensPerSecondTenths" in messageValue.object)
-                if (f.type == JSONType.integer)
-                    message.tokensPerSecondTenths = cast(int) f.integer;
-            if (auto f = "toolCallId" in messageValue.object)
-                message.toolCallId = f.str;
-            if (auto f = "toolName" in messageValue.object)
-                message.toolName = f.str;
-            if (auto f = "toolArgs" in messageValue.object)
-                message.toolArgs = f.str;
-            if (auto f = "diffAdditions" in messageValue.object)
-                if (f.type == JSONType.integer)
-                    message.diffAdditions = cast(int) f.integer;
-            if (auto f = "diffDeletions" in messageValue.object)
-                if (f.type == JSONType.integer)
-                    message.diffDeletions = cast(int) f.integer;
-            if (auto f = "toolDiff" in messageValue.object)
-                message.toolDiff = f.str;
-            if (auto f = "toolElapsedMs" in messageValue.object)
-                if (f.type == JSONType.integer)
-                    message.toolElapsedMs = cast(long) f.integer;
-            if (auto f = "workedSeconds" in messageValue.object)
-            {
-                if (f.type == JSONType.integer)
-                    message.workedSeconds = cast(double) f.integer;
-                else if (f.type == JSONType.float_)
-                    message.workedSeconds = f.floating;
-            }
-            if (auto f = "retiredImages" in messageValue.object)
-                if (f.type == JSONType.array)
-                    foreach (id; f.array)
-                        if (id.type == JSONType.string) message.retiredImages ~= id.str;
-            if (auto f = "images" in messageValue.object)
-            {
-                if (f.type == JSONType.array)
-                    foreach (imageValue; f.array)
-                    {
-                        if (imageValue.type != JSONType.object) continue;
-                        auto image = imageAttachmentFromJson(imageValue);
-                        if (image.base64Data.length > 0 || image.blob.length > 0 || image.originalBlob.length > 0)
-                            message.images ~= image;
-                    }
-            }
-            if (auto f = "toolCalls" in messageValue.object)
-            {
-                if (f.type == JSONType.array)
-                    foreach (callValue; f.array)
-                    {
-                        if (callValue.type != JSONType.object) continue;
-                        OpenCodeToolCall call;
-                        if (auto c = "id" in callValue.object)
-                            call.id = c.str;
-                        if (auto c = "name" in callValue.object)
-                            call.name = c.str;
-                        if (auto c = "arguments" in callValue.object)
-                            call.arguments = c.str;
-                        message.toolCalls ~= call;
-                    }
-            }
-            session.messages ~= message;
-        }
-    }
-
-    /// Snapshot files worth loading: the canonical state and its recovery copy
-    /// first, then any other `sessions*.json` left by a crash-safe save.
-    /// Quarantined (`.bad`) and preserved (`.preserve-...`) copies are skipped
-    /// because they are known not to parse.
-    private static string[] snapshotCandidates()
-    {
-        import std.algorithm.searching : startsWith;
-        import std.path : baseName;
-        import std.string : indexOf;
-        const dir = opencodeStateDirectory();
-        string[] candidates = [
-            buildPath(dir, "sessions.recovery.json"),
-            buildPath(dir, "sessions.json"),
-        ];
-        try
-        {
-            // Snapshots all live in the state directory itself. Recursing into
-            // it (breadth) walked the `changes/` blob store - thousands of
-            // files - on every launch for nothing.
-            foreach (entry; dirEntries(dir, SpanMode.shallow))
-            {
-                if (!entry.isFile) continue;
-                const name = baseName(entry.name);
-                if (!name.startsWith("sessions")) continue;
-                if (name.indexOf(".json") < 0) continue;
-                if (name.indexOf(".bad") >= 0 ||
-                    name.indexOf(".preserve") >= 0) continue;
-                candidates ~= entry.name;
-            }
-        }
-        catch (Exception scanError)
-            logError("could not scan the state directory: " ~ scanError.msg);
-        // The scan sees the canonical files too, so `sessions.json` and
-        // `sessions.recovery.json` were each parsed twice - seconds of startup
-        // work re-reading the same megabytes. Keep the first occurrence of each
-        // path.
-        bool[string] seen;
-        string[] unique;
-        foreach (candidate; candidates)
-        {
-            if (candidate in seen) continue;
-            seen[candidate] = true;
-            unique ~= candidate;
-        }
-        return unique;
-    }
-
-    /// Parse every snapshot off the UI thread. `restoreSessions` then reads the
-    /// cached trees instead of re-reading the files, so the window paints and
-    /// stays responsive while a multi-hundred-megabyte history is parsed.
-    /// Small histories - test fixtures and light profiles - parse in well under
-    /// a frame, so they are done inline to keep startup deterministic.
-    private static immutable ulong snapshotPreparseMaxSyncBytes = 16_000_000;
-
+    /// Read the entire startup input on an owned worker, including small
+    /// profiles, index files, required conversations and the unfolded journal.
     private void startSnapshotPreparse()
     {
-        // When the per-conversation store exists, restoreSessions never reads
-        // the monolithic snapshot, so do not parse it in the background.
-        if (exists(threadsIndexPath()))
-        {
-            _snapshotParseDone = true;
-            return;
-        }
-        const candidates = snapshotCandidates();
-        ulong totalBytes;
-        foreach (candidate; candidates)
-            if (exists(candidate))
-                try totalBytes += getSize(candidate);
-                catch (Exception) {}
-        if (totalBytes <= snapshotPreparseMaxSyncBytes)
-        {
-            foreach (candidate; candidates)
-                if (exists(candidate))
-                    try _parsedSnapshots[candidate] =
-                        parseJSON(readText(candidate));
-                    catch (Exception) {}
-            _snapshotParseDone = true;
-            return;
-        }
-        auto worker = new Thread({
-            JSONValue[string] parsed;
-            try
-            {
-                foreach (candidate; candidates)
-                {
-                    if (!exists(candidate)) continue;
-                    // A snapshot that fails to parse is simply not cached; the
-                    // main-thread restore reports the error when it falls back.
-                    try parsed[candidate] = parseJSON(readText(candidate));
-                    catch (Exception) {}
-                }
-            }
-            catch (Throwable) {}
+        const directory = opencodeStateDirectory();
+        auto runtime = _runtime;
+        auto wake = _window.serviceWake();
+        synchronized (this) _snapshotParseDone = false;
+        const accepted = _snapshotRepository.submit(delegate() {
+            RestoreBundle bundle;
+            try bundle = readRestoreBundle(directory, runtime);
+            catch (Throwable error) { bundle.journalError = error.msg; }
             synchronized (this)
             {
-                _parsedSnapshots = parsed;
+                _restoreBundle = bundle;
                 _snapshotParseDone = true;
             }
+            if (wake !is null) wake();
         });
-        worker.isDaemon = true;
-        worker.start();
+        if (!accepted)
+        {
+            synchronized (this)
+            {
+                _restoreBundle.journalError = "Conversation loader is closed or at capacity.";
+                _snapshotParseDone = true;
+            }
+        }
     }
 
     private void restoreSessions()
@@ -31702,16 +31442,14 @@ private void pollButtonSuggestionRequest()
                 ulong foldedSequence;
                 ulong foldedOffset;
                 const latest = _runtime.latestSequence();
-                if (!readFoldedMarker(opencodeStateDirectory(), foldedSequence,
-                        foldedOffset) || foldedSequence < latest)
+                if (!restoredFoldedMarker(foldedSequence, foldedOffset) || foldedSequence < latest)
                 {
-                    const events = replayJournalEvents(foldedOffset);
-                    foreach (deletedId; deletedAgentRuntimeThreadIds(events))
+                    foreach (deletedId; _restoreBundle.deletedThreads)
                         foreach_reverse (index; 0 .. _sessions.length)
                             if (_sessions[index].id == deletedId)
                                 _sessions = _sessions[0 .. index] ~
                                     _sessions[index + 1 .. $];
-                    foreach (session; projectAgentRuntimeEvents(events, true))
+                    foreach (session; _restoreBundle.journalSessions)
                     {
                         if (session.id.length > 0)
                             ensureThreadLoadedById(session.id);
@@ -31773,7 +31511,7 @@ private void pollButtonSuggestionRequest()
         // snapshot and merge them (keeping the most complete copy of each
         // conversation) instead of trusting a single file. The list mirrors the
         // preparse worker's, so every snapshot is already parsed by now.
-        auto candidates = snapshotCandidates();
+        auto candidates = _restoreBundle.candidates;
 
         // Trust the selection from the most complete snapshot, not merely the
         // first one read. A stale `sessions.recovery.json` (left by a build
@@ -31784,302 +31522,22 @@ private void pollButtonSuggestionRequest()
         int preferredCurrent = -1;
         int preferredCurrentCount = -1;
         string preferredCurrentId;
-        // The id recorded at a snapshot's `current` index, so the selection can
-        // be re-resolved against the merged list even when snapshots order
-        // their sessions differently.
-        string sessionIdAt(const JSONValue[] list, int index)
-        {
-            if (index < 0 || index >= cast(int) list.length) return "";
-            if (list[cast(size_t) index].type != JSONType.object) return "";
-            if (auto idField = "id" in list[cast(size_t) index].object)
-                if (idField.type == JSONType.string) return idField.str;
-            return "";
-        }
-        const canonicalPath = buildPath(dir, "sessions.json");
-        // The `.bak`/`.tmp` copies are previous generations of the same file.
-        // Once the canonical snapshot has parsed they hold the same history -
-        // tens of MB re-read for no new sessions - so they are only consulted
-        // as a fallback for when it is missing or unreadable.
-        bool canonicalLoaded;
-        static bool isBackupSnapshot(string path)
-        {
-            import std.path : baseName;
-            import std.string : indexOf;
-            const name = baseName(path);
-            return name.indexOf(".bak") >= 0 || name.indexOf(".tmp") >= 0;
-        }
         foreach (candidate; candidates)
         {
-            if (!exists(candidate)) continue;
-            if (canonicalLoaded && isBackupSnapshot(candidate)) continue;
-            try
+            auto snapshot = candidate in _restoreBundle.legacySnapshots;
+            if (snapshot is null) continue;
+            if (snapshot.hasCurrent && cast(int) snapshot.sessions.length > preferredCurrentCount)
             {
-                const parseBegan = MonoTime.currTime;
-                JSONValue value;
-                bool cached;
-                synchronized (this)
-                    if (auto preparsed = candidate in _parsedSnapshots)
-                    {
-                        value = *preparsed;
-                        cached = true;
-                    }
-                if (!cached)
-                    value = parseJSON(readText(candidate));
-                logInfo("restore: " ~ (cached ? "used preparsed " : "parsed ") ~
-                    candidate ~ " in " ~
-                    to!string((MonoTime.currTime - parseBegan).total!"msecs") ~
-                    " ms");
-                if (value.type != JSONType.object) continue;
-                // Only the live file is authoritative enough to make the
-                // backups redundant; a stale recovery copy is not.
-                if (candidate == canonicalPath) canonicalLoaded = true;
-                auto sessionsField = "sessions" in value.object;
-                const snapshotCount = sessionsField !is null &&
-                    sessionsField.type == JSONType.array
-                    ? cast(int) sessionsField.array.length : 0;
-                if (auto currentField = "current" in value.object)
-                    if (currentField.type == JSONType.integer &&
-                        snapshotCount > preferredCurrentCount)
-                    {
-                        preferredCurrent = cast(int) currentField.integer;
-                        preferredCurrentCount = snapshotCount;
-                        preferredCurrentId = sessionsField !is null &&
-                            sessionsField.type == JSONType.array
-                            ? sessionIdAt(sessionsField.array, preferredCurrent)
-                            : "";
-                    }
-                if (sessionsField !is null)
-                {
-                    if (sessionsField.type != JSONType.array) continue;
-                    foreach (sessionValue; sessionsField.array)
-                    {
-                        if (sessionValue.type != JSONType.object) continue;
-                        ChatSession session;
-                        if (auto field = "id" in sessionValue.object)
-                            session.id = field.str;
-                        if (auto field = "title" in sessionValue.object)
-                            session.title = field.str;
-                        if (auto field = "model" in sessionValue.object)
-                            session.model = field.str;
-                        if (auto field = "thinking" in sessionValue.object)
-                            session.thinking = field.type == JSONType.true_;
-                        if (auto field = "project" in sessionValue.object)
-                            session.projectId = field.str;
-                        if (auto field = "objective" in sessionValue.object)
-                            session.objective = field.str;
-                        if (auto field = "goal" in sessionValue.object)
-                            if (field.type == JSONType.string)
-                                session.goal = field.str;
-                        if (auto field = "goalStatus" in sessionValue.object)
-                            if (field.type == JSONType.string)
-                                session.goalStatus = field.str;
-                        if (auto field = "goalStartedAt" in sessionValue.object)
-                            if (field.type == JSONType.integer)
-                                session.goalStartedAt = field.integer;
-                        if (auto field = "goalTurns" in sessionValue.object)
-                            if (field.type == JSONType.integer)
-                                session.goalTurns = cast(int) field.integer;
-                        if (auto field = "goalHistory" in sessionValue.object)
-                            session.goalHistory = goalHistoryFromJson(*field);
-                        if (auto field = "taskStatus" in sessionValue.object)
-                            session.taskStatus = field.str;
-                        if (auto field = "turnStatus" in sessionValue.object)
-                            session.turnStatus = field.str;
-                        if (auto field = "unread" in sessionValue.object)
-                            session.unread = field.type == JSONType.true_;
-                        if (auto field = "verificationStatus" in
-                            sessionValue.object)
-                            session.verificationStatus = field.str;
-                        if (auto field = "taskSteps" in sessionValue.object)
-                            if (field.type == JSONType.array)
-                                foreach (item; field.array)
-                                {
-                                    if (item.type != JSONType.object) continue;
-                                    TaskStep step;
-                                    if (auto f = "text" in item.object)
-                                        if (f.type == JSONType.string)
-                                            step.text = f.str;
-                                    if (auto f = "status" in item.object)
-                                        if (f.type == JSONType.string)
-                                            step.status = f.str;
-                                    if (step.text.length > 0)
-                                        session.taskSteps ~= step;
-                                }
-                        if (auto field = "nestedPlans" in sessionValue.object)
-                            session.nestedPlans = nestedPlansFromJson(*field,
-                                session.taskSteps.length);
-                        readTaskContract(session, sessionValue);
-                        if (auto field = "queuedGuidance" in sessionValue.object)
-                            if (field.type == JSONType.array)
-                                foreach (item; field.array)
-                                    if (item.type == JSONType.string)
-                                        session.queuedGuidance ~= item.str;
-                        if (auto field = "queuedFollowUps" in sessionValue.object)
-                            if (field.type == JSONType.array)
-                                foreach (item; field.array)
-                                    if (item.type == JSONType.string)
-                                        session.queuedFollowUps ~= item.str;
-                        if (session.projectId.length == 0)
-                            session.projectId = sandboxProjectId;
-                        if (auto field = "activeLeaf" in sessionValue.object)
-                            session.activeLeafId = field.str;
-                        if (auto field = "draft" in sessionValue.object)
-                            if (field.type == JSONType.string)
-                                session.draft = field.str;
-                        if (auto field = "updatedAt" in sessionValue.object)
-                            if (field.type == JSONType.integer &&
-                                field.integer > 0)
-                                session.updatedAt = field.integer;
-                        if (auto field = "compactionSummary" in
-                            sessionValue.object)
-                            if (field.type == JSONType.string)
-                                session.compactionSummary = field.str;
-                        if (auto field = "compactedThroughMessageId" in
-                            sessionValue.object)
-                            if (field.type == JSONType.string)
-                                session.compactedThroughMessageId = field.str;
-                        if (auto field = "messages" in sessionValue.object)
-                        {
-                            if (field.type == JSONType.array)
-                            {
-                                foreach (messageValue; field.array)
-                                {
-                                    if (messageValue.type != JSONType.object)
-                                        continue;
-                                    ChatMessage message;
-            if (auto f = "id" in messageValue.object)
-                message.id = f.str;
-            if (auto f = "parentId" in messageValue.object)
-                message.parentId = f.str;
-            if (auto f = "authorId" in messageValue.object)
-                message.authorId = f.str;
-            if (auto f = "role" in messageValue.object)
-                message.role = f.str;
-                                    if (auto f = "content" in messageValue.object)
-                                        message.content = f.str;
-                                    if (auto f = "reasoning" in messageValue.object)
-                                        message.reasoning = f.str;
-                                    if (auto f = "time" in messageValue.object)
-                                        message.time = f.str;
-                                    if (auto f = "failed" in messageValue.object)
-                                        message.failed = f.type == JSONType.true_;
-                                    if (auto f = "error" in messageValue.object)
-                                        if (f.type == JSONType.string) message.error = f.str;
-                                    if (auto f = "finishReason" in
-                                        messageValue.object)
-                                        if (f.type == JSONType.string)
-                                            message.finishReason = f.str;
-                                    if (auto f = "internal" in messageValue.object)
-                                        message.internal = f.type == JSONType.true_;
-                                    if (auto f = "contextCompacted" in
-                                        messageValue.object)
-                                        message.contextCompacted =
-                                            f.type == JSONType.true_;
-                                    if (auto f = "taskStateJson" in messageValue.object)
-                                        if (f.type == JSONType.string) message.taskStateJson = f.str;
-                                    if (auto f = "workspaceChanged" in messageValue.object)
-                                        message.workspaceChanged = f.type == JSONType.true_;
-                                    if (auto f = "verificationCheck" in messageValue.object)
-                                        if (f.type == JSONType.string) message.verificationCheck = f.str;
-                                    if (auto f = "verificationScope" in messageValue.object)
-                                        if (f.type == JSONType.string) message.verificationScope = f.str;
-                                    if (auto f = "promptTokens" in messageValue.object)
-                                        if (f.type == JSONType.integer)
-                                            message.promptTokens = cast(int) f.integer;
-                                    if (auto f = "completionTokens" in messageValue.object)
-                                        if (f.type == JSONType.integer)
-                                            message.completionTokens = cast(int) f.integer;
-                                    if (auto f = "totalTokens" in messageValue.object)
-                                        if (f.type == JSONType.integer)
-                                            message.totalTokens = cast(int) f.integer;
-                                    if (auto f = "tokensPerSecondTenths" in
-                                        messageValue.object)
-                                        if (f.type == JSONType.integer)
-                                            message.tokensPerSecondTenths =
-                                                cast(int) f.integer;
-                                    if (auto f = "toolCallId" in messageValue.object)
-                                        message.toolCallId = f.str;
-                                    if (auto f = "toolName" in messageValue.object)
-                                        message.toolName = f.str;
-                                    if (auto f = "toolArgs" in messageValue.object)
-                                        message.toolArgs = f.str;
-                                    if (auto f = "diffAdditions" in messageValue.object)
-                                        if (f.type == JSONType.integer)
-                                            message.diffAdditions = cast(int) f.integer;
-                                    if (auto f = "diffDeletions" in messageValue.object)
-                                        if (f.type == JSONType.integer)
-                                            message.diffDeletions = cast(int) f.integer;
-                                    if (auto f = "toolDiff" in messageValue.object)
-                                        message.toolDiff = f.str;
-                                    if (auto f = "toolElapsedMs" in messageValue.object)
-                                        if (f.type == JSONType.integer)
-                                            message.toolElapsedMs = cast(long) f.integer;
-                                    if (auto f = "workedSeconds" in messageValue.object)
-                                    {
-                                        if (f.type == JSONType.integer)
-                                            message.workedSeconds = cast(double) f.integer;
-                                        else if (f.type == JSONType.float_)
-                                            message.workedSeconds = f.floating;
-                                    }
-                                    if (auto f = "retiredImages" in messageValue.object)
-                                        if (f.type == JSONType.array)
-                                            foreach (id; f.array)
-                                                if (id.type == JSONType.string) message.retiredImages ~= id.str;
-                                    if (auto f = "images" in messageValue.object)
-                                    {
-                                        if (f.type == JSONType.array)
-                                        {
-                                            foreach (imageValue; f.array)
-                                            {
-                                                if (imageValue.type !=
-                                                    JSONType.object)
-                                                    continue;
-                                                auto image = imageAttachmentFromJson(imageValue);
-                                                if (image.base64Data.length > 0 || image.blob.length > 0 || image.originalBlob.length > 0)
-                                                    message.images ~= image;
-                                            }
-                                        }
-                                    }
-                                    if (auto f = "toolCalls" in messageValue.object)
-                                    {
-                                        if (f.type == JSONType.array)
-                                        {
-                                            foreach (callValue; f.array)
-                                            {
-                                                if (callValue.type != JSONType.object)
-                                                    continue;
-                                                OpenCodeToolCall call;
-                                                if (auto c = "id" in callValue.object)
-                                                    call.id = c.str;
-                                                if (auto c = "name" in callValue.object)
-                                                    call.name = c.str;
-                                                if (auto c = "arguments" in callValue.object)
-                                                    call.arguments = c.str;
-                                                message.toolCalls ~= call;
-                                            }
-                                        }
-                                    }
-                                    session.messages ~= message;
-                                }
-                            }
-                        }
-                        mergeRestoredSession(session);
-                                    }
-                                }
-                            }
-                        catch (Exception error)
-                        {
-                            // A single unreadable snapshot must not discard the
-                            // sessions already merged from the other snapshots.
-                            logError("skipping unreadable sessions snapshot " ~
-                                candidate ~ ": " ~ error.msg);
-                        }
-                        }
-        // Every session has been copied out of the parsed trees, so release
-        // them. The DOM nodes are no longer needed (the string payloads stay
-        // alive through the restored sessions that reference them), and holding
-        // both the trees and the sessions doubled the history's footprint.
-        _parsedSnapshots = null;
+                preferredCurrent = snapshot.current;
+                preferredCurrentCount = cast(int) snapshot.sessions.length;
+                preferredCurrentId = snapshot.currentId;
+            }
+            foreach (session; snapshot.sessions)
+            {
+                if (!session.projectId.length) session.projectId = sandboxProjectId;
+                mergeRestoredSession(session);
+            }
+        }
         restorePhase("snapshots parsed+merged");
         // The event journal is the recovery authority. Merge it after every
         // snapshot so the latest flushed item/task update wins even when the
@@ -32095,16 +31553,14 @@ private void pollButtonSuggestionRequest()
             ulong foldedSequence;
             ulong foldedOffset;
             const latest = _runtime.latestSequence();
-            if (!readFoldedMarker(opencodeStateDirectory(), foldedSequence,
-                    foldedOffset) || foldedSequence < latest)
+            if (!restoredFoldedMarker(foldedSequence, foldedOffset) || foldedSequence < latest)
             {
-                const events = replayJournalEvents(foldedOffset);
-                foreach (deletedId; deletedAgentRuntimeThreadIds(events))
+                foreach (deletedId; _restoreBundle.deletedThreads)
                     foreach_reverse (index; 0 .. _sessions.length)
                         if (_sessions[index].id == deletedId)
                             _sessions = _sessions[0 .. index] ~
                                 _sessions[index + 1 .. $];
-                foreach (session; projectAgentRuntimeEvents(events, true))
+                foreach (session; _restoreBundle.journalSessions)
                     mergeJournalSession(session);
             }
         }
@@ -32425,90 +31881,29 @@ private void pollButtonSuggestionRequest()
             synchronized (this) _journalTailInFlight = false;
     }
 
-    /// Whether the snapshot owner has already read the journal range the
-    /// startup replay merges, so the restore never parses the journal on the UI
-    /// thread. The range starts at the checkpoint the replay seeks to, or at the
-    /// start of the journal when there is no usable checkpoint. After a bounded
-    /// number of ticks the restore proceeds and reads through the runtime, so a
-    /// checkpoint that keeps moving cannot stall the restored history.
+    private bool restoredFoldedMarker(out ulong sequence, out ulong offset)
+    {
+        sequence = _restoreBundle.foldedSequence;
+        offset = _restoreBundle.foldedOffset;
+        return _restoreBundle.folded;
+    }
+
     private bool startupReplayReady()
     {
-        if (_runtime is null) return true;
-        if (++_startupReplayWaits > startupReplayWaitTicks) return true;
-        ulong bytes;
-        try bytes = _runtime.journalSize();
-        catch (Throwable) return true;
-        ulong foldedSequence;
-        ulong foldedOffset;
-        const marked = readFoldedMarker(opencodeStateDirectory(), foldedSequence,
-            foldedOffset);
-        bool needed;
-        try needed = !marked || foldedSequence < _runtime.latestSequence();
-        catch (Throwable) needed = true;
-        if (!needed) return true;
-        const offset = marked ? foldedOffset : 0;
-        return replayRangeReady(bytes, offset);
-    }
-
-    /// The replayed journal range, taken from the read the snapshot owner
-    /// performed for exactly that range. Reads through the runtime only when
-    /// that read produced nothing, which `startupReplayReady` has already waited
-    /// out, so this never waits on the journal in the normal case.
-    private AgentRuntimeEvent[] replayJournalEvents(ulong offset)
-    {
-        ulong bytes;
-        try bytes = _runtime.journalSize();
-        catch (Throwable) return _runtime.eventsFrom(offset);
-        bool cached;
-        synchronized (this)
-            cached = _replayReady && _replayBytes == bytes &&
-                _replayOffset == offset;
-        return cached && _replayEvents !is null ? _replayEvents
-            : _runtime.eventsFrom(offset);
-    }
-
-    /// True once the snapshot owner has finished reading the replay range, even
-    /// when that read produced nothing, so the restore runs without reading the
-    /// journal on the UI thread.
-    private bool replayRangeReady(ulong bytes, ulong offset)
-    {
-        synchronized (this)
-            if (_replayReady && _replayBytes == bytes && _replayOffset == offset)
-                return true;
-        requestReplayRange(bytes, offset);
-        return false;
-    }
-
-    /// Read the journal range the startup replay merges on the snapshot owner,
-    /// for the same reason the repair tail is read there: the restore must
-    /// never parse the journal on the UI thread.
-    private void requestReplayRange(ulong bytes, ulong offset)
-    {
-        if (_runtime is null) return;
-        synchronized (this)
+        if (!_restoreBundle.journalError.length) return true;
+        if (_restoreError != _restoreBundle.journalError)
         {
-            if (_replayInFlight || (_replayReady && _replayBytes == bytes &&
-                    _replayOffset == offset))
-                return;
-            _replayInFlight = true;
+            _restoreError = _restoreBundle.journalError;
+            logError("Conversation recovery failed: " ~ _restoreError);
+            updateStatus("Conversation recovery could not read storage. Retrying…");
+            _restoreRetryAt = MonoTime.currTime + msecs(3000);
         }
-        const accepted = _snapshotRepository.submit(delegate() {
-            AgentRuntimeEvent[] events;
-            try events = _runtime.eventsFrom(offset);
-            catch (Throwable) {}
-            synchronized (this)
-            {
-                _replayEvents = events;
-                _replayBytes = bytes;
-                _replayOffset = offset;
-                // The read is finished either way: a failed one falls back to
-                // the runtime at the replay site instead of holding the restore.
-                _replayReady = true;
-                _replayInFlight = false;
-            }
-        });
-        if (!accepted)
-            synchronized (this) _replayInFlight = false;
+        if (MonoTime.currTime >= _restoreRetryAt)
+        {
+            _restoreRetryAt = MonoTime.currTime + msecs(3000);
+            startSnapshotPreparse();
+        }
+        return false;
     }
 
     /// Apply a repair that was queued while the journal tail was still being
@@ -32544,41 +31939,11 @@ private void pollButtonSuggestionRequest()
         foreach (ref existing; _sessions)
         {
             if (!sameRestoredConversation(existing, recovered)) continue;
-            if (recovered.title.length > 0) existing.title = recovered.title;
-            if (recovered.model.length > 0) existing.model = recovered.model;
-            if (recovered.projectId.length > 0)
-                existing.projectId = recovered.projectId;
-            existing.thinking = recovered.thinking;
-            if (recovered.objective.length > 0)
-                existing.objective = recovered.objective;
-            if (recovered.goal.length > 0)
-            {
-                existing.goal = recovered.goal;
-                existing.goalStatus = recovered.goalStatus;
-                existing.goalStartedAt = recovered.goalStartedAt;
-                existing.goalTurns = recovered.goalTurns;
-            }
-            if (recovered.goalHistory.length >= existing.goalHistory.length)
-                existing.goalHistory = recovered.goalHistory.dup;
-            if (recovered.taskStatus.length > 0)
-                existing.taskStatus = recovered.taskStatus;
-            if (recovered.turnStatus.length > 0)
-                existing.turnStatus = recovered.turnStatus;
-            if (recovered.verificationStatus.length > 0)
-                existing.verificationStatus = recovered.verificationStatus;
-            if (recovered.taskSteps.length > 0)
-            {
-                existing.taskSteps = recovered.taskSteps.dup;
-                existing.nestedPlans = recovered.nestedPlans.dup;
-            }
-            existing.queuedGuidance = recovered.queuedGuidance.dup;
-            copyTaskContract(existing, recovered);
-            existing.queuedFollowUps = recovered.queuedFollowUps.dup;
-            if (recovered.draftRecorded)
-            {
-                existing.draft = recovered.draft;
-                existing.draftRecorded = true;
-            }
+            // A tail contains patches, not a complete replacement of task
+            // metadata. Missing fields retain the saved value; explicit empty
+            // arrays/strings still clear it when the journal records that edit.
+            if (auto patch = recovered.id in _restoreBundle.journalPatches)
+                applyRuntimeThreadPayload(existing, *patch);
             foreach (message; recovered.messages)
             {
                 bool found;
@@ -32764,6 +32129,7 @@ private void pollButtonSuggestionRequest()
     /// Native timers keep it running during Win32's modal border resize loop.
     private void serviceExecution(double deltaSeconds)
     {
+        if (pollExitCheckpoint()) return;
         if (_servicingExecution) return;
         pollButtonSuggestionRequest();
         if (_sessions.length == 0) return;
@@ -32991,7 +32357,7 @@ private void pollButtonSuggestionRequest()
                     if (!event.cancelled && toolsEnabledForSession(_sessions[runtimeIndex]) &&
                         !completionHandoffPending(_sessions[runtimeIndex]) &&
                         !explanationOnlyRequest(latestActualUserRequest(_sessions[runtimeIndex])) &&
-                        answerReplayed(_sessions[runtimeIndex]))
+                        (answerReplayed(_sessions[runtimeIndex]) || goalAuditStalled(_sessions[runtimeIndex])))
                     {
                         auto failure = *event;
                         failure.outputIssue = "replayed_prose";
@@ -33219,6 +32585,7 @@ private void pollButtonSuggestionRequest()
 
     protected override void onTick(double deltaSeconds)
     {
+        if (pollExitCheckpoint()) return;
         drainHistoryResults();
         // Apply a parent-link repair whose journal read landed after the
         // conversation was loaded. The read runs on the snapshot owner, so the
@@ -33250,7 +32617,7 @@ private void pollButtonSuggestionRequest()
         // Wait for the off-thread snapshot parse before walking the trees: the
         // window is already painted and responsive, so the restore only needs
         // to run once its data is ready.
-        if (_startupLoadPending && _snapshotParseDone && startupReplayReady())
+        if (_startupLoadPending && snapshotParseDone() && startupReplayReady())
         {
             _startupLoadPending = false;
             loadStartupState();
@@ -33310,19 +32677,7 @@ private void pollButtonSuggestionRequest()
             foreach (index; targets)
             {
                 if (index < 0 || index >= cast(int) _sessions.length) continue;
-                // Each conversation owns its own runtime: load it so the
-                // request streams through that chat's client, not the visible
-                // chat's. The visible context is restored after the loop.
-                if (!ensureThreadLoaded(index)) continue;
-                loadRuntime(index);
-                appendQueuedGuidance(_sessions[index]);
-                ChatMessage recovery;
-                recovery.role = "user";
-                recovery.internal = true;
-                recovery.content = scopedResumePrompt(prompt, _sessions[index].id == _resumeOwnerId);
-                recovery.time = currentTimestamp();
-                appendMessage(_sessions[index], recovery);
-                startChatRequest(index);
+                resumeLoadedSession(index, scopedResumePrompt(prompt, _sessions[index].id == _resumeOwnerId));
             }
             if (_current >= 0 && _current < cast(int) _sessions.length)
                 loadRuntime(_current);
@@ -33580,10 +32935,19 @@ private void pollButtonSuggestionRequest()
     }
 
     public void deleteSessionForTesting(int index) { deleteSession(index); }
+    public void duplicateSessionForTesting(int index) { duplicateSession(index); }
+    public void duplicateSessionCompactedForTesting(int index) { duplicateSessionCompacted(index); }
+    public size_t pendingHistoryActionsForTesting() const { return _historyMailbox.length; }
+    public bool queueSnapshotWorkForTesting(void delegate() work) { return _snapshotRepository.submit(work); }
     public bool historyUnavailableForTesting() const { return threadHistoryUnavailable(_current); }
     public bool historyPendingForTesting() const { return threadLoadPending(_current); }
     public bool startupPendingForTesting() const { return _startupLoadPending; }
     public bool sendEnabledForTesting() const { return _sendButton.enabled(); }
+    public bool beginExitCheckpointForTesting(void delegate() afterSave = null)
+    { return beginExitCheckpoint(afterSave); }
+    public bool exitCheckpointPendingForTesting() const { return _exitCheckpoint !is null; }
+    public bool exitCheckpointFailedForTesting() const { return _exitCheckpointFailed; }
+    public bool exitCheckpointCommittedForTesting() const { return _exitCheckpointCommitted; }
     public bool hasLiveBubbleForTesting() const { return _streamBubble !is null; }
     public bool storageBlockedForTesting() const { return _durabilityBlocked; }
     public size_t materializedTranscriptRowsForTesting()
@@ -33615,6 +32979,16 @@ private void pollButtonSuggestionRequest()
         _execution.partialCheckpointAt = MonoTime.currTime - msecs(3000);
     }
     public void flushRepositoryForTesting() { _repository.flush(); _snapshotRepository.flush(); _settingsWriter.flush(); _projectsWriter.flush(); }
+    public void flushJournalForTesting() { _repository.flush(); }
+    public bool queueRepositoryWorkForTesting(void delegate() work)
+    { return _repository.submit(work); }
+    public void reloadStartupAsyncForTesting()
+    {
+        _startupLoadPending = true;
+        startSnapshotPreparse();
+        updateSendButton();
+    }
+
 
     public void selectSessionForTesting(int index)
     {
@@ -35663,6 +35037,10 @@ private void pollButtonSuggestionRequest()
     /// can prove branch ids / active leaf / version history survive a save.
     public void reloadSessionsForTesting()
     {
+        _repository.flush();
+        _snapshotRepository.flush();
+        _restoreBundle = readRestoreBundle(opencodeStateDirectory(), _runtime);
+        assert(!_restoreBundle.journalError.length, _restoreBundle.journalError);
         restoreSessions();
     }
 

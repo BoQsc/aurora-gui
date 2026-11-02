@@ -51,19 +51,20 @@ int main()
     writeln("PASS inline drafts grow with edited text, cap height, cancel without changing history, and preserve both versions on Save/reload");
 
     root.newChatForTesting(); root.addConversationForTesting(["user", "assistant"], ["Implement and verify a change", ""]);
+    root.pauseToolContinuationForTesting();
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
         `{"plan":[{"step":"Investigate","status":"in_progress"},{"step":"Implement","status":"pending"},{"step":"Verify","status":"pending"}]}`);
     foreach (_; 0 .. 8) root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
-    pump(); assert(root.planNeedsUpdateForTesting());
-    assert(!root.queueStalePlanGuidanceForTesting(), "Same-phase guidance repeated");
+    pump(); assert(!root.planNeedsUpdateForTesting(), "Useful inspection made an active plan stale merely by call count");
+    assert(!root.queueStalePlanGuidanceForTesting(), "Same-phase guidance interrupted useful work");
     root.injectToolResultForTesting("edit", "Edited source", false, `{"filePath":"source.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
-    pump(); assert(root.lastUserMessageForTesting().indexOf("9 tool results") >= 0,
+    pump(); assert(root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0,
         "Moving from inspection to editing did not reissue the stale-plan reminder");
     assert(!root.queueStalePlanGuidanceForTesting());
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
-        `{"plan":[{"step":"Investigate","status":"completed"},{"step":"Implement","status":"completed"},{"step":"Verify","status":"in_progress"}]}`);
+        `{"explanation":"Editing the observed issue while the remaining investigation and checks stay open.","plan":[{"step":"Investigate","status":"pending"},{"step":"Implement","status":"in_progress"},{"step":"Verify","status":"pending"}]}`);
     pump(); assert(!root.planNeedsUpdateForTesting() && root.toolResultsSincePlanUpdateForTesting() == 0);
-    writeln("PASS visible stale-plan status, one reminder per phase, editing transition and clearing the warning after a fresh plan");
+    writeln("PASS useful inspection stays quiet; phase changes receive one reminder and a fresh plan clears the warning");
 
     const logs = buildPath(state, "quiet-logs"); mkdirRecurse(logs); setLogDirectory(logs);
     setDebugLogging(false); noteActivity("rebuild quiet-marker");
