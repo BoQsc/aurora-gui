@@ -24,6 +24,7 @@ int main()
     settings.baseUrl = base; settings.apiKey = "fixture"; settings.model = "conversation-fixture";
     settings.workspace = workspace; settings.toolsEnabled = true; settings.quickTitle = false;
     settings.legacyTools = false;
+    settings.autoGoalFromFirstMessage = false; // This fixture tests task continuation, not opt-in goal mode.
     saveSettings(settings);
     WindowOptions options;
     options.width = 1000; options.height = 700; options.renderer = RendererPreference.software;

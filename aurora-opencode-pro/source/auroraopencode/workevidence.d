@@ -52,7 +52,7 @@ private string resultBody(string text)
 /// A checker receipt can still establish a first successful check without stdout.
 string observedResultKey(const ref ChatMessage message)
 {
-    if (message.role != "tool" || message.failed || ["update_plan", "read_plan", "update_subplan", "process",
+    if (message.role != "tool" || message.failed || ["update_plan", "read_plan", "read_history", "update_subplan", "process",
             "tool_status", "request_input", "task_blocker", "retire_images", "assign", "finish", "ask_user"].canFind(message.toolName)) return "";
     const body = resultBody(message.content);
     const lower = body.toLower();
@@ -88,7 +88,7 @@ string recentWorkBrief(const ref ChatSession session, const(size_t)[] path, size
     foreach (index; path[begin .. $])
     {
         const ref message = session.messages[index];
-        if (message.role != "tool" || ["update_plan", "read_plan", "update_subplan"].canFind(message.toolName)) continue;
+        if (message.role != "tool" || ["update_plan", "read_plan", "read_history", "update_subplan"].canFind(message.toolName)) continue;
         const target = message.toolName ~ "\n" ~ resultTarget(message);
         if (message.failed) unresolved[target] = index;
         else unresolved.remove(target);

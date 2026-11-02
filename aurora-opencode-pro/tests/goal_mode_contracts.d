@@ -125,16 +125,18 @@ int main()
     humanHelp.messages ~= msg("user", "Install and verify the app.");
     humanHelp.messages ~= msg("assistant",
         "I need you to provide the signing certificate before I can continue.");
+    humanHelp.activeLeafId = "";
     ensureMessageGraph(humanHelp);
-    require(goalNeedsHumanInput(humanHelp),
-        "a goal blocked on human action was not detected");
+    require(!goalNeedsHumanInput(humanHelp),
+        "unvalidated prose paused the goal");
     humanHelp.messages ~= msg("user",
         "The user action above is still required.", true);
     humanHelp.messages ~= msg("assistant",
         "I need you to provide the signing certificate before I can continue.");
+    humanHelp.activeLeafId = "";
     ensureMessageGraph(humanHelp);
-    require(goalNeedsHumanInput(humanHelp),
-        "a repeated human-action request was not detected");
+    require(!goalNeedsHumanInput(humanHelp),
+        "repeated prose bypassed the validated input tool");
     ChatSession progressing;
     progressing.goal = "finish the task";
     progressing.goalStatus = "active";
@@ -144,7 +146,24 @@ int main()
     ensureMessageGraph(progressing);
     require(!goalNeedsHumanInput(progressing),
         "normal completion prose was mistaken for a human-help request");
-    writeln("PASS repeated human-action requests stop goal continuation");
+    humanHelp.taskStatus = "waiting_input";
+    auto input = msg("tool", "Signing identity required");
+    input.toolName = "request_input";
+    input.toolArgs = `{"reason":"Signing identity is absent from configuration","required_fact":"Signing identity","question":"Which signing identity should be used?","checked":["Signing configuration"],"independent_work_complete":true}`;
+    humanHelp.messages ~= input;
+    humanHelp.activeLeafId = "";
+    ensureMessageGraph(humanHelp);
+    require(goalNeedsHumanInput(humanHelp), "validated missing information did not suspend goal continuation");
+    humanHelp.messages ~= msg("user", "Use the configured test identity.");
+    humanHelp.activeLeafId = "";
+    ensureMessageGraph(humanHelp);
+    require(!goalNeedsHumanInput(humanHelp), "a user reply did not release the input boundary");
+    require(humanHelp.goalStatus == "active", "waiting for input altered the user's goal");
+    foreach (text; ["Hello", "What is compaction?", "Remember this reference for later.", "Explain how the renderer works", "Plan the migration without changing files"])
+        require(!automaticGoalRequest(text), "ordinary answer became a persistent goal: " ~ text);
+    foreach (text; ["Ship the first-message goal", "Implement the migration", "Fix the broken renderer"])
+        require(automaticGoalRequest(text), "action request lost automatic goal adoption: " ~ text);
+    writeln("PASS automatic goals require action; validated input suspends continuation and a reply releases it");
 
     foreach (definitions; [nativeOnlyToolDefinitions(), builtinToolDefinitions()])
     {

@@ -1,5 +1,9 @@
 module auroraopencode.appui;
 
+import auroraopencode.contextcheckpoint : requestMessageBytes, compactionBoundary,
+    compactionTaskIdentity, completeCompactionResponse, compactionTimeoutMs, compactionOutputLimit;
+import auroraopencode.historyrecall : readHistory;
+
 import auroraopencode.developerworkflow : DeveloperWorkflow,
     DeveloperSyncResult, maintainerSourceBranch, rebuildSourceAgentPrompt,
     developerOperationMutex, ensureDeveloperTool, findDeveloperTool;
@@ -96,7 +100,7 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
     taskBlockerError, taskInputError, taskAwaitingInput, proactiveActionGuidance;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
     clampGoalText, goalCompletionError, goalContinuationInstruction,
-    goalNeedsHumanInput, goalPromptBlock, maxGoalLength, maxGoalTurns,
+    goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength, maxGoalTurns,
     parseGoalCommand,
     recordGoalOutcome, recordGoalSet, syncGoalHistory;
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
@@ -20042,25 +20046,16 @@ private void pollButtonSuggestionRequest()
             startChatRequest(sessionIndex, false);
             return;
         }
-        // A goal that needs the user must not start another autonomous turn.
-        // The last prose answer asked for human action, so pause and stop here
-        // instead of repeating the same request every continuation.
+        // Keep a user's active goal intact while a validated missing fact
+        // waits. Their next reply resumes it; only an explicit Stop pauses it.
         if (goalNeedsHumanInput(*session))
         {
-            if (goalActive(*session))
-            {
-                session.goalStatus = "paused";
-                recordGoalOutcome(*session, "paused",
-                    Clock.currTime.toUnixTime());
-            }
             session.turnStatus = "completed";
             session.taskStatus = "waiting_input";
-            session.contract.blocker =
-                "Waiting for the user's action requested in the last answer.";
             publishThreadUpdated(*session);
             markDirty();
             updateGoalBar();
-            updateStatus("Stopped for your input. The goal is paused; act, then press Start.");
+            updateStatus("Waiting for required information. Reply to continue.");
             markUnreadIfBackground(sessionIndex);
             return;
         }
@@ -21498,7 +21493,9 @@ private void pollButtonSuggestionRequest()
             ? nestedPlanError(*session, toolArgs) : "";
         const imageError = !event.toolFailed && event.toolName == "retire_images"
             ? retireImagesSessionError(*session, toolArgs) : "";
-        const planView = !event.toolFailed && event.toolName == "read_plan" ? readPlanText(*session, toolArgs) : "";
+        const planView = event.toolFailed ? "" : event.toolName == "read_plan"
+            ? readPlanText(*session, toolArgs) : event.toolName == "read_history"
+            ? readHistory(*session, toolArgs) : "";
         const planViewError = planView.startsWith("Error:") ? planView : "";
         const blockerError = !event.toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input")
             ? taskInputError(*session, toolArgs) : "";
@@ -21514,7 +21511,7 @@ private void pollButtonSuggestionRequest()
             blockerError.length > 0 ? blockerError :
             goalError.length > 0 ? goalError :
             !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) :
-            !toolFailed && event.toolName == "read_plan" ? planView : event.text;
+            !toolFailed && (event.toolName == "read_plan" || event.toolName == "read_history") ? planView : event.text;
         // The recipe tool already rejects stale inputs and recipes, and it
         // executes compile/test steps without a scheduler mutation revision.
         // Adopt the current revision so its successful result can satisfy the
@@ -22365,15 +22362,16 @@ private void pollButtonSuggestionRequest()
         return false;
     }
 
-    /// Optional default behavior: the first user message becomes the durable
-    /// goal. Later messages never replace it; only an explicit /goal or the
+    /// Optional default behavior: an actionable first message becomes the durable
+    /// goal. Questions, reference notes and analysis do not open a persistent task.
+    /// Later messages never replace it; only an explicit /goal or the
     /// goal-row Set/Edit controls change the goal after this point.
     private bool maybeAdoptFirstMessageGoal(ref ChatSession session, string text)
     {
         if (!_settings.autoGoalFromFirstMessage || session.goal.length > 0 ||
             hasUserMessage(session)) return false;
         const goal = clampGoalText(text.strip());
-        if (!goal.length || goal.startsWith("/")) return false;
+        if (!goal.length || goal.startsWith("/") || !automaticGoalRequest(goal)) return false;
         const now = Clock.currTime.toUnixTime();
         session.goal = goal;
         session.goalStatus = "active";
@@ -23226,34 +23224,6 @@ private void pollButtonSuggestionRequest()
     /// tool_calls message", HTTP 400), so keep the calls only when the full
     /// contiguous set of replies is present; otherwise downgrade the assistant
     /// to a plain message and drop the orphan tool replies.
-    private static size_t requestMessageBytes(
-        const(ChatRequestMessage)[] messages)
-    {
-        size_t total;
-        foreach (m; messages)
-        {
-            // The client serializes saved assistant reasoning_content too.
-            // Omitting it from this estimate let thinking-heavy local chats
-            // exceed llama.cpp's n_ctx before compaction ran.
-            total += m.role.length + m.content.length +
-                m.reasoningContent.length + m.toolCallId.length + 16;
-            foreach (call; m.toolCalls)
-                total += call.name.length + call.arguments.length + 16;
-            // Inline images are counted as a fixed per-image cost. Their base64
-            // would otherwise dominate a text estimate and trigger compaction
-            // on a request whose text is tiny; a vision model bills an image by
-            // its tiles, not by the size of the encoded payload.
-            foreach (image; m.images)
-                total += requestImageTokenBytes;
-        }
-        return total;
-    }
-
-    /// The bytes-per-image stand-in used by the local token estimate. A
-    /// full-size image is billed in the low thousands of tokens, and this
-    /// estimate runs at four bytes per token.
-    private enum size_t requestImageTokenBytes = 4 * 1400;
-
     /// Conservative local fallback for providers that omit streamed usage.
     /// Count the exact compacted messages plus advertised tool schemas, then
     /// use four bytes per token for the meter's approximate display.
@@ -23763,22 +23733,8 @@ private void pollButtonSuggestionRequest()
                     start = i + 1;
                     break;
                 }
-        size_t boundary = path.length;
-        // Walk backward to keep the largest recent complete suffix that fits.
-        foreach_reverse (i; start .. path.length)
-        {
-            const message = session.messages[path[i]];
-            // A just-completed tool result may itself exceed the window. Let
-            // the summary carry it rather than re-sending an oversized result.
-            if (i + 1 == path.length && message.role != "tool") continue;
-            if (message.role == "assistant" && message.toolCalls.length > 0)
-                continue;
-            if (message.role == "tool" && i + 1 < path.length &&
-                session.messages[path[i + 1]].role == "tool") continue;
-            const tail = buildRequestMessages(session, message.id);
-            if (requestMessageBytes(tail) > tailBudget) break;
-            boundary = i;
-        }
+        const boundary = compactionBoundary(session, path, start, tailBudget,
+            experimentalImageHistoryLimit());
         if (boundary == path.length || boundary < start) return false;
 
         const size_t maximumSummary = cast(size_t) contextLimit * 4 / 10;
@@ -23787,8 +23743,9 @@ private void pollButtonSuggestionRequest()
         if (summaryBudget < 900 || fixedRequestBytes >=
             cast(size_t) contextLimit * 4) return false;
         auto header = appender!string();
-        header.put("Earlier conversation checkpoint. Full task records and transcript remain saved.\n");
-        header.put(taskContext(session, latestActualUserRequest(session), true, summaryBudget * 2 / 3));
+        header.put("Earlier conversation checkpoint. Full task records and transcript remain saved. " ~
+            "Use read_history to recover omitted facts, exact instructions or tool results; read_plan for task details.\n");
+        header.put(taskContext(session, latestActualUserRequest(session), true, summaryBudget / 2));
         header.put("## Earlier context\n");
         string previous;
         if (start > 0)
@@ -23800,7 +23757,7 @@ private void pollButtonSuggestionRequest()
         {
             const message = session.messages[path[i]];
             if (message.internal) continue;
-            string entry = "- " ~ message.role ~ ": ";
+            string entry = "- " ~ message.role ~ " message_id=" ~ message.id ~ ": ";
             if (message.role == "tool")
                 entry ~= message.toolName ~ " tool_call_id=" ~ message.toolCallId ~ "; accepted_check=" ~ message.verificationCheck ~ " result: " ~
                     checkpointSnippet(shortenToolOutput(message.content, 350), 900);
@@ -23911,13 +23868,13 @@ private void pollButtonSuggestionRequest()
         {
             const message = session.messages[path[i]];
             if (message.internal) continue;
-            string entry = "[" ~ message.role ~ "] ";
+            string entry = "[" ~ message.role ~ " message_id=" ~ message.id ~ "] ";
             if (message.role == "tool")
                 entry ~= message.toolName ~ " tool_call_id=" ~ message.toolCallId ~ "; accepted_check=" ~ message.verificationCheck ~ ": " ~
                     checkpointEdges(message.content, 1600);
             else
                 entry ~= checkpointEdges(message.content,
-                    message.role == "user" ? 4000 : 2200);
+                    message.role == "user" ? sourceBudget / 2 : 2200);
             if (message.toolCalls.length > 0)
                 foreach (call; message.toolCalls)
                     entry ~= "\n[tool call] " ~ call.name ~ " id=" ~ call.id ~ " " ~
@@ -23932,7 +23889,12 @@ private void pollButtonSuggestionRequest()
             entryBytes -= entries[0].length;
             entries = entries[1 .. $];
         }
-        foreach (entry; entries) prefix.put(entry);
+        foreach (entry; entries)
+        {
+            const remaining = sourceBudget - prefix.data.length;
+            if (remaining < 64) break;
+            prefix.put(checkpointEdges(entry, remaining));
+        }
         return prefix.data;
     }
 
@@ -23952,6 +23914,8 @@ private void pollButtonSuggestionRequest()
         runtime.compactionOutput = "";
         runtime.compactionAnchor = session.compactedThroughMessageId;
         runtime.compactionLeaf = session.activeLeafId;
+        runtime.compactionStartedAt = MonoTime.currTime;
+        runtime.compactionTask = compactionTaskIdentity(*session);
         ChatRequestMessage instruction;
         instruction.role = "system";
         instruction.content = "Write a concise, faithful continuation checkpoint " ~
@@ -23973,6 +23937,7 @@ private void pollButtonSuggestionRequest()
         summaryDetails["contextBudget"] = contextLimit;
         summaryDetails["messageBytes"] = cast(long) source.length;
         logAgentLifecycle(session.id, requestId, "compaction.started", summaryDetails);
+        runtime.compactionRequestId = requestId;
         if (runtime.compactionClient.startChatMessages(
             [instruction, sourceMessage], null, session.model, false, requestId) != ChatStartResult.accepted)
         {
@@ -23992,17 +23957,26 @@ private void pollButtonSuggestionRequest()
         runtime.compactionClient.drain(runtime.compactionEvents);
         bool finished;
         bool succeeded;
-        ulong summaryRequestId;
+        bool invalid;
+        ulong summaryRequestId = runtime.compactionRequestId;
         string summaryErrorCategory, summaryFinishReason;
         foreach (event; runtime.compactionEvents)
         {
             summaryRequestId = event.requestId;
             if (event.kind == OpenCodeEventKind.delta && !event.reasoning)
-                runtime.compactionOutput ~= event.text;
+            {
+                if (event.text.length > compactionOutputLimit - runtime.compactionOutput.length)
+                {
+                    invalid = true;
+                    finished = true;
+                    summaryErrorCategory = "summary_output_limit";
+                }
+                else if (!invalid) runtime.compactionOutput ~= event.text;
+            }
             else if (event.kind == OpenCodeEventKind.done)
             {
                 finished = true;
-                succeeded = !event.cancelled;
+                succeeded = completeCompactionResponse(event.cancelled, event.finishReason);
                 summaryFinishReason = event.finishReason;
                 recordRequestTokenUsage(event.requestId, event.totalTokens,
                     event.promptTokens, event.completionTokens);
@@ -24010,30 +23984,44 @@ private void pollButtonSuggestionRequest()
             else if (event.kind == OpenCodeEventKind.error)
             {
                 finished = true;
+                invalid = true;
                 summaryErrorCategory = lifecycleErrorCategory(event.text);
                 _requestTokenKeyIds.remove(event.requestId);
             }
         }
         runtime.compactionEvents.length = 0;
+        if (!finished && MonoTime.currTime - runtime.compactionStartedAt >= compactionTimeoutMs.msecs)
+        {
+            finished = true;
+            invalid = true;
+            summaryErrorCategory = "summary_timeout";
+        }
         if (!finished) return;
+        succeeded = succeeded && !invalid;
+        _requestTokenKeyIds.remove(runtime.compactionRequestId);
         auto session = &_sessions[sessionIndex];
-        const applied = succeeded && applyModelCompactionSummary(*session,
+        const taskUnchanged = runtime.compactionTask == compactionTaskIdentity(*session);
+        const applied = succeeded && taskUnchanged && applyModelCompactionSummary(*session,
             runtime.compactionAnchor, runtime.compactionLeaf,
             runtime.compactionOutput, testContextLimit > 0
                 ? testContextLimit : requestContextBudget(session.model));
         if (applied) markDirty();
         JSONValue summaryDetails;
         summaryDetails["applied"] = applied;
+        summaryDetails["taskChanged"] = !taskUnchanged;
         summaryDetails["failed"] = !succeeded;
         summaryDetails["finishReason"] = summaryFinishReason;
         summaryDetails["errorCategory"] = summaryErrorCategory;
         summaryDetails["outputBytes"] = cast(long) runtime.compactionOutput.length;
+        summaryDetails["durationMs"] = (MonoTime.currTime - runtime.compactionStartedAt).total!"msecs";
         logAgentLifecycle(session.id, summaryRequestId, "compaction.finished", summaryDetails);
         runtime.compactionClient.closeSession();
         runtime.compactionClient = null;
         runtime.compactionOutput = "";
         runtime.compactionAnchor = "";
         runtime.compactionLeaf = "";
+        runtime.compactionTask = "";
+        runtime.compactionRequestId = 0;
         if (resume && !_turnCancelled && session.turnStatus == "running")
             startChatRequest(sessionIndex, false);
     }
@@ -24340,14 +24328,14 @@ private void pollButtonSuggestionRequest()
                     objective = session.messages[index].content;
                 latestUser = session.messages[index].content;
             }
-        string durable = "Objective: " ~
-            checkpointEdges(objective, maximum / 6);
+        string durable = taskContext(session, latestUser, true, maximum / 3);
+        durable ~= "Objective: " ~ checkpointEdges(objective, maximum / 8);
         if (latestUser.length > 0 && latestUser != objective)
             durable ~= "\nLatest user instruction: " ~
-                checkpointEdges(latestUser, maximum / 6);
+                checkpointEdges(latestUser, maximum / 8);
         if (summary.length < 100 || summary.canFind("<think>") ||
-            summary.length + durable.length + 100 > maximum) return false;
-        session.compactionSummary = "Earlier conversation checkpoint.\n" ~
+            summary.length + durable.length + 240 > maximum) return false;
+        session.compactionSummary = "Earlier conversation checkpoint. Use read_history for exact omitted messages and read_plan for task details.\n" ~
             "Durable objective and constraints:\n" ~ durable ~
             "\nModel summary of earlier work:\n" ~ summary;
         return true;
@@ -27628,7 +27616,7 @@ private void pollButtonSuggestionRequest()
         // goal. On by default; later messages never replace it.
         auto autoGoalRow = new HBox(8);
         autoGoalRow.layoutHints().preferredHeight = 32;
-        auto autoGoalCheck = new CheckBox("Goal from first message");
+        auto autoGoalCheck = new CheckBox("Goal from first action request");
         autoGoalCheck.setId("oc-autogoal");
         autoGoalCheck.setChecked(_settings.autoGoalFromFirstMessage, false);
         autoGoalCheck.onChanged = delegate(bool value)
@@ -36421,21 +36409,24 @@ private void pollButtonSuggestionRequest()
     }
 
     public bool finishModelCompactionEventsForTesting(string text,
-        int contextLimit)
+        int contextLimit, string finishReason = "stop", bool timeout = false, bool stale = false, bool staleTask = false)
     {
         if (_current < 0) return false;
         auto session = &_sessions[_current];
         auto runtime = runtimeForSession(_current);
         runtime.compactionClient = new OpenCodeClient("", "");
         runtime.compactionAnchor = session.compactedThroughMessageId;
-        runtime.compactionLeaf = session.activeLeafId;
+        runtime.compactionLeaf = stale ? "stale-leaf" : session.activeLeafId;
+        runtime.compactionTask = staleTask ? "stale-task" : compactionTaskIdentity(*session);
+        runtime.compactionStartedAt = MonoTime.currTime - (timeout ? compactionTimeoutMs : 0).msecs;
         OpenCodeEvent delta;
         delta.kind = OpenCodeEventKind.delta;
         delta.text = text;
         runtime.compactionClient.pushLocalEvent(delta);
         OpenCodeEvent done;
         done.kind = OpenCodeEventKind.done;
-        runtime.compactionClient.pushLocalEvent(done);
+        done.finishReason = finishReason;
+        if (!timeout) runtime.compactionClient.pushLocalEvent(done);
         pollModelCompaction(_current, false, contextLimit);
         return session.compactionSummary.canFind(text);
     }

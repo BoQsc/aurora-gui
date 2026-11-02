@@ -114,10 +114,11 @@ try:
         (state / "settings.json").write_text(json.dumps({
             "baseUrl": env["AURORA_CONTRACT_PROVIDER_BASE"], "apiKey": "local-fixture",
             "model": "fixture", "workspace": str(workspace), "toolsEnabled": True,
-            "legacyTools": False, "quickTitle": False,
+            "legacyTools": False, "quickTitle": False, "autoGoalFromFirstMessage": False,
         }), encoding="utf-8")
         env["APPDATA"] = str(directory / "appdata")
-        executable = package / "aurora-opencode-pro.exe"
+        executable = (Path(sys.argv[sys.argv.index("--executable") + 1]).resolve()
+                      if "--executable" in sys.argv else package / "aurora-opencode-pro.exe")
         started = time.monotonic()
         result = subprocess.run([str(executable), "--headless",
             "Write out.txt containing success, verify its contents with unittest, then reply READY."],

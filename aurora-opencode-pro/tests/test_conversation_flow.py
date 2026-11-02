@@ -164,9 +164,9 @@ try:
                     "conversation_flow_contracts"], cwd=package.parent, env=env, check=True, timeout=180)
     assert not failures, failures
     assert finals["save"] == 1, "Static document verification manufactured an extra model turn"
-    assert finals["handoff"] == 1, f"Substantial repair did not receive exactly one closing summary: {finals}"
-    assert len(requests) == 17, f"Unexpected request/continuation count: {len(requests)}"
-    print("PASS 17 HTTP rounds: casual context, correction, document readback, failed tool recovery, closing summary, steering, queued follow-up, Stop/resend, background chat and reload")
+    assert finals["handoff"] == 0, f"A healthy final answer triggered an unnecessary closing-summary request: {finals}"
+    assert len(requests) == 16, f"Unexpected request/continuation count: {len(requests)}"
+    print("PASS 16 HTTP rounds: casual context, correction, document readback, failed tool recovery, one final answer, steering, queued follow-up, Stop/resend, background chat and reload")
 finally:
     server.shutdown()
     server.server_close()

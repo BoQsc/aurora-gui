@@ -55,7 +55,7 @@ RequestIntent requestIntent(string text)
             return RequestIntent.implementation;
         if (["fix", "repair", "implement", "apply", "change", "refactor", "optimize", "optimise",
                 "create", "add", "remove", "delete", "replace", "rename", "move", "save", "commit",
-                "publish", "deploy", "install", "launch", "play", "run", "try",
+                "ship", "publish", "deploy", "install", "launch", "play", "run", "try",
                 "select", "update", "build", "resolve", "improve", "make", "write", "rebuild", "test", "verify",
                 "redesign", "generate", "code", "rewrite", "integrate", "upgrade", "migrate", "enable", "disable",
                 "extract", "convert", "configure", "connect", "download", "open", "copy"].canFind(word))

@@ -14,9 +14,11 @@ import auroraopencode.completionhandoff : completionHandoffMarker;
 // Wire projection is independent of widgets, settings, and provider I/O.
 public ChatRequestMessage[] projectRequestMessages(
         const ref ChatSession session, string afterMessageId = "",
-        bool orchestratorSummaryView = false, size_t imageLimit = 2)
+        bool orchestratorSummaryView = false, size_t imageLimit = 2,
+        size_t[]* sourcePositions = null)
     {
         ChatRequestMessage[] messages;
+        if (sourcePositions !is null) *sourcePositions = null;
         const path = activeMessagePath(session);
         size_t controlBoundary;
         size_t instructionBoundary;
@@ -101,6 +103,7 @@ public ChatRequestMessage[] projectRequestMessages(
                     request.reasoningContent = message.reasoning;
                     request.toolCalls = message.toolCalls.dup;
                     messages ~= request;
+                    if (sourcePositions !is null) *sourcePositions ~= slot;
                     foreach (k; slot + 1 .. replyEnd)
                     {
                         const reply = session.messages[path[k]];
@@ -109,6 +112,7 @@ public ChatRequestMessage[] projectRequestMessages(
                         tool.content = reply.toolName == "grep" ? compactGrepHistory(reply.content) : reply.content;
                         tool.toolCallId = reply.toolCallId;
                         messages ~= tool;
+                        if (sourcePositions !is null) *sourcePositions ~= k;
                     }
                 }
                 else if (message.content.length > 0 ||
@@ -119,6 +123,7 @@ public ChatRequestMessage[] projectRequestMessages(
                     request.content = message.content;
                     request.reasoningContent = message.reasoning;
                     messages ~= request;
+                    if (sourcePositions !is null) *sourcePositions ~= slot;
                 }
                 slot = replyEnd;
                 continue;
@@ -163,6 +168,7 @@ public ChatRequestMessage[] projectRequestMessages(
                 request.content ~= "]";
             }
             messages ~= request;
+            if (sourcePositions !is null) *sourcePositions ~= slot;
             ++slot;
         }
         return messages;

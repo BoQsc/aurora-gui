@@ -1726,7 +1726,7 @@ public struct Settings
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
     bool quickTitle = true;
-    // Write the persistent goal from a conversation's first user message. On by
+    // Write the persistent goal from an actionable first user message. On by
     // default; later messages never replace it unless the user explicitly uses
     // /goal, Set goal, or Edit.
     bool autoGoalFromFirstMessage = true;

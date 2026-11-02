@@ -58,6 +58,9 @@ public class ThreadEngine
     string compactionOutput;
     string compactionAnchor;
     string compactionLeaf;
+    string compactionTask;
+    MonoTime compactionStartedAt;
+    ulong compactionRequestId;
     OpenCodeClient titleClient;
     OpenCodeEvent[] titleEvents;
     string titleOutput;

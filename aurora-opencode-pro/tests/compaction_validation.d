@@ -126,6 +126,7 @@ int main()
     foreach (i; 0 .. 110)
         root.addConversationForTesting(["assistant", "user"],
             ["Recorded result ".replicate(500), "Continue the same sizing objective"]);
+    root.setGoalForTesting("Finish the current sizing corpus without restarting the live preview", "active");
     const savedTask = root.taskStateJsonForTesting();
     const savedCount = root.totalMessageCountForTesting();
     bool created;
@@ -144,6 +145,26 @@ int main()
     }
     assert(root.taskStateJsonForTesting() == savedTask);
     assert(root.totalMessageCountForTesting() == savedCount + 5);
+    const checkpointBefore = root.rollingRequestMessagesForTesting(64_000, created)[0].content;
+    const validSummary = "Goal: Resolve the browser sizing corpus. Constraints: preserve history. Decisions: use the independent reference. Evidence: earlier outcomes remain saved. Blocker: none. Next action: finish sizing and verification.";
+    foreach (reason; ["length", "content_filter", "tool_calls"])
+    {
+        assert(!root.finishModelCompactionEventsForTesting(validSummary, 64_000, reason));
+        assert(root.rollingRequestMessagesForTesting(64_000, created)[0].content == checkpointBefore);
+    }
+    assert(!root.finishModelCompactionEventsForTesting(validSummary, 64_000, "stop", true));
+    assert(!root.finishModelCompactionEventsForTesting(validSummary, 64_000, "stop", false, true));
+    assert(!root.finishModelCompactionEventsForTesting(validSummary, 64_000, "stop", false, false, true));
+    assert(!root.finishModelCompactionEventsForTesting("overflow".replicate(4000), 64_000));
+    assert(root.rollingRequestMessagesForTesting(64_000, created)[0].content == checkpointBefore);
+    assert(root.finishModelCompactionEventsForTesting(validSummary, 64_000));
+    const improvedCheckpoint = root.rollingRequestMessagesForTesting(64_000, created)[0].content;
+    assert(improvedCheckpoint.indexOf("Keep complete history") >= 0);
+    assert(improvedCheckpoint.indexOf("outcome-0") >= 0);
+    assert(improvedCheckpoint.indexOf("read_history") >= 0);
+    assert(improvedCheckpoint.indexOf("without restarting the live preview") >= 0);
+    assert(root.totalMessageCountForTesting() == savedCount + 5);
+    writeln("PASS truncated, stale, timed-out and oversized summaries preserve fallback; accepted summary retains durable constraints");
     root.persistForTesting();
     root.reloadSessionsForTesting();
     assert(root.compactionAnchorForTesting() == anchor);

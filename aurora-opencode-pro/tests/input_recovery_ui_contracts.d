@@ -19,6 +19,7 @@ int main()
     setOpencodeStateDirectoryForTesting(directory);
     Settings settings; settings.baseUrl=base; settings.apiKey="fixture"; settings.model="recovery-fixture";
     settings.workspace=workspace; settings.toolsEnabled=true; settings.quickTitle=false; settings.legacyTools=false;
+    settings.autoGoalFromFirstMessage = false; // This fixture tests task continuation, not opt-in goal mode.
     saveSettings(settings);
     WindowOptions options; options.renderer=RendererPreference.software;
     auto window=new GuiWindow(options,opencodeTheme()); auto root=new OpenCodeRoot(window); window.setRoot(root);
