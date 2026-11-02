@@ -236,9 +236,19 @@ public string goalCompletionError(const ref ChatSession session, string argument
     auto evidence = "evidence" in value.object;
     if (evidence is null || evidence.type != JSONType.array || !evidence.array.length)
         return "goal_complete requires concrete evidence: successful tool-call IDs or check receipts.";
+    import auroraopencode.taskflow : taskEvidenceIndex;
+    const recorded = taskEvidenceIndex(session, false);
     size_t usable;
     foreach (entry; evidence.array)
-        if (entry.type == JSONType.string && entry.str.strip().length) ++usable;
+    {
+        if (entry.type != JSONType.string || !entry.str.strip().length)
+            return "goal_complete evidence must contain successful recorded tool-call IDs.";
+        const id = entry.str.strip();
+        if ((id in recorded) is null)
+            return "goal_complete evidence '" ~ id ~ "' is not a successful recorded result on the active task. " ~
+                "Use the toolCallId from the actual result; do not invent a receipt.";
+        ++usable;
+    }
     if (!usable) return "goal_complete evidence must contain non-empty tool-call IDs or check receipts.";
     if (session.verificationStatus == "required" || session.verificationStatus == "failed")
         return "Verification is still outstanding. Run the required check, then call goal_complete.";

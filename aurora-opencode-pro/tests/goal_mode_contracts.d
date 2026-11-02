@@ -67,8 +67,20 @@ int main()
 
     session.goalStatus = "active";
     require(goalCompletionError(session,
+        `{"summary":"done","evidence":["call-1"]}`).length > 0,
+        "invented completion evidence was accepted");
+    auto receipt = msg("tool", "Saved the requested change");
+    receipt.toolName = "write"; receipt.toolCallId = "call-1";
+    session.messages ~= receipt;
+    ensureMessageGraph(session);
+    require(goalCompletionError(session,
         `{"summary":"done","evidence":["call-1"]}`).length == 0,
         "a verified, evidence-backed completion was rejected");
+    session.messages[$ - 1].failed = true;
+    require(goalCompletionError(session,
+        `{"summary":"done","evidence":["call-1"]}`).length > 0,
+        "failed completion evidence was accepted");
+    session.messages[$ - 1].failed = false;
     require(goalCompletionError(session,
         `{"summary":"done","evidence":[]}`).length > 0,
         "completion without evidence was accepted");

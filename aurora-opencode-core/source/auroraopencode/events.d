@@ -1,5 +1,6 @@
 module auroraopencode.events;
 
+import auroraopencode.retrypolicy : RetryReason;
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall;
 
 /// Correlated messages shared by provider, execution and presentation owners.
@@ -68,5 +69,7 @@ struct OpenCodeEvent
     // Local progress crossed the worker-start boundary. Retained when queued
     // output snapshots coalesce, so presentation can stop counting queue time.
     bool toolStarted;
+    RetryReason retryReason;
+    bool retryExhausted;
 }
 

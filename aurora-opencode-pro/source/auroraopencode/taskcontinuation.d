@@ -6,6 +6,7 @@ import auroraopencode.requestintent : RequestIntent, actionApprovalRequest, answ
     permissionQuestionReply, requestIntent;
 import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
 import auroraopencode.workevidence : observedResultKey;
+import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.json : JSONValue, JSONType, parseJSON;
@@ -15,7 +16,6 @@ import std.regex : matchFirst;
 enum taskContinuationMarker = "Continuation: unfinished authorized work\n";
 enum proactiveActionMarker = "Proactive action checkpoint: ";
 enum taskStallLimit = 3;
-enum taskVerificationAttemptLimit = 3;
 
 enum TaskContinuationAction { settle, continueWork, replan }
 
@@ -65,7 +65,7 @@ struct TaskContinuation
     }
 }
 
-bool unfinishedTask(const ref ChatSession session)
+bool unfinishedTask(const ref ChatSession session, bool strictPlan = experimentalStrictPlanEnabled())
 {
     auto evidenceIndex = taskEvidenceIndex(session, false);
     foreach (step; session.taskSteps)
@@ -80,13 +80,13 @@ bool unfinishedTask(const ref ChatSession session)
             (session.contract.id.length && !supportedStep(session, item.step, evidenceIndex)))) return true;
     if (session.contract.id.length && session.taskSteps.length == 0 &&
         (session.contract.currentIntent == "implementation" || session.contract.currentIntent == "continuation") &&
-        (!taskHasActionEvidence(session) || taskRequiresPlan(session))) return true;
+        (!taskHasActionEvidence(session) || taskRequiresPlan(session, strictPlan))) return true;
     return session.verificationStatus == "required" ||
         session.verificationStatus == "failed";
 }
 
 /// True when every outcome is complete and the only outstanding requirement is
-/// a verification receipt. Repeated receipt churn must not run forever.
+/// a verification receipt. Repeated receipt churn triggers a new diagnosis.
 private bool verificationOnly(const ref ChatSession session)
 {
     auto evidenceIndex = taskEvidenceIndex(session, false);
@@ -112,11 +112,12 @@ private bool verificationOnly(const ref ChatSession session)
 /// calls, novel searches and plan rewrites cannot reset it. Completed outcomes
 /// and accepted verification can. Stalls change diagnosis; they never exhaust
 /// the authorization to complete the task.
-TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabled)
+TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabled,
+    bool strictPlan = experimentalStrictPlanEnabled())
 {
     TaskContinuation result;
     if (!toolsEnabled || taskAwaitingInput(session) || taskInvestigation(session) ||
-        session.queuedFollowUps.length || !unfinishedTask(session)) return result;
+        session.queuedFollowUps.length || !unfinishedTask(session, strictPlan)) return result;
     auto path = activeMessagePath(session);
     size_t begin;
     string request;
@@ -202,7 +203,7 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     const onlyVerification = verificationOnly(session);
     if (onlyVerification && result.verificationRequired && !result.verified)
         result.verificationAttempts = previousVerificationAttempts + 1;
-    if (!session.taskSteps.length && taskRequiresPlan(session))
+    if (!session.taskSteps.length && taskRequiresPlan(session, strictPlan))
         result.remaining ~= "This task now requires an outcome checklist. Record the already requested outcomes " ~
             "with update_plan and cite successful tool-call IDs for completed work; do not invent extra work. ";
     if (!taskHasActionEvidence(session) && session.contract.intent != "analysis")
@@ -239,12 +240,9 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
             if (auto value = "replans" in previous.object)
                 if (value.type == JSONType.integer) result.replans = cast(int) value.integer;
     }
-    result.action = onlyVerification &&
-        result.verificationAttempts > taskVerificationAttemptLimit
-        ? TaskContinuationAction.settle
-        : result.stalled >= taskStallLimit
-            ? TaskContinuationAction.replan
-            : TaskContinuationAction.continueWork;
+    result.action = result.stalled >= taskStallLimit
+        ? TaskContinuationAction.replan
+        : TaskContinuationAction.continueWork;
     return result;
 }
 

@@ -616,7 +616,14 @@ private void verifyRetryPill(OpenCodeRoot root, UiTestDriver driver)
     assert(root.invokeLastBubbleSecondaryActionForTesting() &&
         !root.autoResendPendingForTesting(),
         "the stopped retry was left scheduled");
-    writeln("A failed request still retries on its own; the pill stops or starts it");
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"], ["Finish the repair", ""]);
+    root.setGoalForTesting("Finish the repair", "active");
+    root.failRequestThroughServiceForTesting("Upstream returned HTTP 429: temporarily unavailable", true);
+    assert(!root.autoResendPendingForTesting(), "An exhausted provider budget restarted through UI resend");
+    assert(root.goalStatusForTesting() == "active", "A provider outage silently paused the user's goal");
+    assert(root.lastBubbleActionForTesting() == "Retry");
+    writeln("PASS unified retry exhaustion, retained goal, explicit retry and stop controls");
 }
 
 private void verifyTitleTooltipLeavesWindow(OpenCodeRoot root, UiTestDriver driver,

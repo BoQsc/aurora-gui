@@ -16,7 +16,8 @@ parser.add_argument('fixtures', nargs='*', default=['preference_writer_contracts
                        'source_background_guard', 'duplicate_launch_contracts', 'markdown_viewport_contracts',
                        'repository_responsiveness_contracts', 'startup_responsiveness_contracts',
                        'history_mailbox_contracts', 'corrupt_restore_contracts', 'application_crash_restore_contracts',
-                       'exit_checkpoint_contracts', 'goal_mode_contracts', 'output_recovery_contracts', 'scheduler_shutdown_contracts'])
+                       'exit_checkpoint_contracts', 'goal_mode_contracts', 'output_recovery_contracts',
+                       'engine_policy_contracts', 'projection_cache_contracts', 'verification_revision_contracts', 'retry_policy_contracts', 'scheduler_shutdown_contracts'])
 args = parser.parse_args()
 # The rebuild-button fixture requires an executable beneath the package's
 # recipe. Each run still has a distinct filename and private artifact folder.

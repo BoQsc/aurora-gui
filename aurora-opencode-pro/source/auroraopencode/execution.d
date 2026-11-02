@@ -4,6 +4,8 @@ import auroraopencode.core : OpenCodeToolCall, ChatImageAttachment;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeEventKind;
 import auroraopencode.tools : ToolCancellation;
 import auroraopencode.repository : RepositoryRuntime;
+import auroraopencode.projectioncache : RequestProjectionCache;
+import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy;
 import core.time : MonoTime, msecs;
 import core.sync.mutex : Mutex;
 import auroraopencode.lifecyclediagnostics : logAgentLifecycle, lifecycleErrorCategory;
@@ -45,6 +47,9 @@ private final class EffectAdmission
 /// are copied through a shared root when another conversation is serviced.
 public class ThreadEngine
 {
+    RequestProjectionCache projection;
+    ulong graphRevision;
+    void invalidateProjection() { ++graphRevision; projection.clear(); }
     string threadId;
     int diagnosticRequestsRemaining;
     bool diagnosticActive;
@@ -133,6 +138,8 @@ public class ThreadEngine
     int lastPreparingSeconds = -1;
     int lastRetryStatusSeconds = -1;
     int speakerToolRoundsBase = -1;
+    ProviderRetryPolicy retryPolicy;
+    MonoTime outageStartedAt;
     bool autoResendPending;
     MonoTime autoResendAt;
     int autoResendSession = -1;
@@ -152,7 +159,9 @@ public class ThreadEngine
 
     this(string baseUrl, string apiKey)
     {
-        client = new OpenCodeClient(baseUrl, apiKey);
+        projection = new RequestProjectionCache();
+        retryPolicy = configuredProviderRetryPolicy();
+        client = new OpenCodeClient(baseUrl, apiKey, retryPolicy);
         cancellation = new ToolCancellation();
     }
 

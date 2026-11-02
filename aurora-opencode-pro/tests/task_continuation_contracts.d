@@ -111,13 +111,13 @@ int main()
     session.verificationStatus = "passed";
     assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
 
-    // A verification-only task cannot keep auto-continuing forever when the
-    // checker never produces an acceptable receipt.
+    // Missing verification changes the diagnosis rather than abandoning the
+    // authorized task after an arbitrary number of checker attempts.
     session = pending();
     session.taskSteps[0].status = "completed";
     session.taskSteps[1].status = "completed";
     session.verificationStatus = "required";
-    foreach (i; 0 .. taskVerificationAttemptLimit)
+    foreach (i; 0 .. taskStallLimit)
     {
         decision = taskContinuation(session, true);
         assert(decision.action == TaskContinuationAction.continueWork);
@@ -127,9 +127,18 @@ int main()
             "run-" ~ to!string(i));
     }
     decision = taskContinuation(session, true);
-    assert(decision.action == TaskContinuationAction.settle,
-        "Verification-only churn did not stop");
-    assert(decision.verificationAttempts > taskVerificationAttemptLimit);
+    assert(decision.action == TaskContinuationAction.replan,
+        "Verification-only churn did not change diagnosis");
+    foreach (i; 0 .. 20)
+    {
+        append(session, "user", decision.guidance(), true);
+        append(session, "tool", "Checker still failing", false, "run", "checker");
+        decision = taskContinuation(session, true);
+        assert(decision.action != TaskContinuationAction.settle,
+            "Outstanding verification was silently abandoned");
+    }
+    session.verificationStatus = "passed";
+    assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
 
     session = pending();
     append(session, "user", "What happened to the unfinished plan?");

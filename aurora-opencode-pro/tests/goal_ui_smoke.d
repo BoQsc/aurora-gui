@@ -11,6 +11,8 @@ import aurora.widgets.popup : currentTransientPopup;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : opencodeContentMaxWidth, opencodeTheme,
     setOpencodeStateDirectoryForTesting;
+import core.thread : Thread;
+import core.time : MonoTime, seconds, msecs;
 import std.conv : to;
 import std.file : mkdirRecurse, tempDir, write;
 import std.path : buildPath;
@@ -46,7 +48,7 @@ private Point globalCenter(Widget widget)
 
 int main()
 {
-    const state = buildPath(tempDir(), "aurora-goal-ui-smoke");
+    const state = buildPath(tempDir(), "aurora-goal-ui-smoke-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(state);
     setOpencodeStateDirectoryForTesting(state);
     write(buildPath(state, "settings.json"),
@@ -60,11 +62,13 @@ int main()
     auto root = new OpenCodeRoot(window);
     window.setRoot(root);
     root.isolateClipboardForTesting(true);
-    foreach (_; 0 .. 100)
+    const ready = MonoTime.currTime + 5.seconds;
+    while (root.startupPendingForTesting() && MonoTime.currTime < ready)
     {
         root.tickTree(0.02);
-        if (!root.startupPendingForTesting()) break;
+        Thread.sleep(2.msecs);
     }
+    assert(!root.startupPendingForTesting(), "Conversation startup did not settle");
     root.newChatForTesting();
     root.tickTree(0.02);
     auto driver = new UiTestDriver(window);

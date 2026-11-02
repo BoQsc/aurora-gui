@@ -25,6 +25,13 @@ cap. Output recovery preserves the active goal; it does not silently convert
 provider failure into a user pause. A new human instruction opens a fresh
 recovery boundary. These changes are not yet deployed.
 
+Provider outage recovery and terminal resend now share typed policy decisions.
+The configured outage budget also bounds backoff; an exhausted provider attempt
+cannot restart through UI resend. Explicit reset-time waits and manual Retry
+remain available. Provider failures retain the persistent goal. Verification-only
+work changes diagnosis after stalled attempts instead of silently settling with
+checks outstanding. Goal completion rejects invented and failed evidence IDs.
+
 A local HTTP fixture reproduced 68 requests when its provider wrote and checked
 the requested artifact but kept answering `READY` without `goal_complete`.
 The corrected path settles after eight main requests with a visible provider
@@ -79,9 +86,19 @@ results, persisted reload, and twelve actual stalled-stream cancellations. The
 pure recovery fixture covers changing prose, plan chatter, new user boundaries
 and 100 useful goal continuations.
 
-Latest goal HTTP proof: `build/architecture-checks-y9hm_ymb/`, source fingerprint
-`da838b538b96e64e4ea3d1c95c1f48c6002bb64f92ddf97f8c7f728b2e5743b0`.
+Latest goal HTTP proof: `build/architecture-checks-zn397i0i/`, source fingerprint
+`3d81653690efea4b05f2b8897de84c63e879d4d4ec9359dc150103b9eea7cf2b`.
 The legacy HTTP loop driver also passed: three requests for recovered XML,
 four for repeated malformed XML followed by a usable response, and two for
 prose recovery. Compaction validation passed on the same source fingerprint in
 `build/architecture-checks-salqczf7/`.
+
+All 37 default architecture fixtures passed in `build/architecture-checks-26xxct18/`
+on that fingerprint. After the verification-continuation and queued-message ID
+fixes, task, policy, native headless and goal UI checks passed in
+`build/architecture-checks-_9fw6k9j/`; the 16-round HTTP conversation scenario
+passed in `build/architecture-checks-6fw7s2sx/`, fingerprint
+`a62fd91debf0528637629afd3d6eed426039284778099fba247a9b8d7d25cdaa`.
+The real HTTP transport proof in `build/architecture-checks-8w9d05af/` verifies
+one request for a 100 ms busy budget, three attempts for repeated 503s, typed
+exhaustion, cancellation and connection reuse.

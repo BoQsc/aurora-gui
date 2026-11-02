@@ -31,12 +31,13 @@ It still runs on the window thread: it is **not** an autonomous actor.
 | Boundary | Result |
 | --- | --- |
 | Execution state | Direct per-chat ownership replaces save/load field copying. A scalar deterministic request reducer tracks phase/correlation. Stop rejects late output; unknown/duplicate tool results are rejected. Delayed operations survive chat insertion/deletion. |
+| Request and task policy | Context compaction, request assembly, turn decisions, tool-result validation and plan mutations now have separate modules. The root captures settings and applies decisions. A revision-keyed immutable request projection cache reuses full projections for suffixes, retaining complete tool envelopes and private caller arrays. Its 4 MiB logical budget includes omitted-history index entries. |
 | Service | Round-robin native application service runs during resize, uses a soft six-millisecond budget and bounded drains, and retains unconsumed events in order. |
 | Provider | Wire projection and stream accumulation/usage interpretation have separate modules. Shared asynchronous WinHTTP connections, isolated request cancellation and optional exact token preflight improve startup. Physically running requests have a configurable cap: `AURORA_PROVIDER_WORKERS`, default 16. A stopped worker retains its slot until it returns. Launch rejection is explicit. |
-| Retry | Typed HTTP recovery has an outage budget: `AURORA_PROVIDER_OUTAGE_MS`, default 120 seconds; explicit zero means unlimited. Hard quota errors are distinguished. Root resend remains separate. |
+| Retry | HTTP recovery and terminal resend use the same typed policy and outage configuration: `AURORA_PROVIDER_OUTAGE_MS`, default 120 seconds; explicit zero means unlimited. Exhausted provider recovery carries a terminal flag, so the UI cannot restart its budget. Backoff is clipped to remaining time. Explicit quota reset waits and manual Retry remain available. A failed request preserves the persistent goal. |
 | Delivery | Native notifications service stream queues without widget ticks; remaining bounded-drain work is reposted and paint gets a turn between passes. Soft 8 MiB / 1,024-event producer limits, cancellation wakeups and UTF-8-safe drains retain text and terminal events. An indivisible event or consumer control reserve can exceed the soft bound. |
 | Tools | Shared four-worker scheduler, bounded pending queue, workspace read/write barriers and a global desktop lease. Captured computer routing is installed per worker. Leases remain held for physical effects. |
-| Verification | Recognized check identity, actual exit status, workspace and mutation generation. Command words alone cannot pass. Physical mutations invalidate older evidence even when Stop drops their late events. Rebuilding alone cannot satisfy unrelated checks. |
+| Verification | Recognized check identity, actual exit status, workspace and mutation generation. Recipe and direct receipts retain the checked revision; a delayed receipt cannot inherit a later mutation. Completion revalidates current scope even without an intervening service tick. Goal evidence must reference successful recorded results in the active task. Physical mutations invalidate older evidence even when Stop drops their late events. Rebuilding alone cannot satisfy unrelated checks. |
 | Storage | One ordered journal owner, separate snapshot/history owner, cached metadata and asynchronous initialization. Startup receives decoded history and projected replay. Dirty snapshots, partial-response and compaction checkpoints preserve work. Copies journal their complete graph. Durability failure gates effects. |
 | Native recovery | Before-images and an intent manifest are saved before native file effects. Completion retires temporary blobs. Death leaves an explicitly uncertain operation with preserved before-images; it is never automatically replayed or undone. Changes reports pending operations. |
 | Attachments | Immutable content-addressed blobs replace repeated persisted base64. Missing/corrupt images retain references and appear unavailable; surrounding messages survive. Corrupt existing blobs are rejected. Legacy records remain readable. |
@@ -93,9 +94,11 @@ elapsed time. Tests use private executables/state.
    forced-rebuild/input tests, including a 10,000-row diff. Finish group laziness,
    image-heavy history benchmarks and allocation reduction; these measurements
    do not establish that arbitrary long histories are fast.
-4. Extract orchestration/title/compaction/computer/continuation policy effects,
-   consolidate root resend with typed retry, and cache immutable request
-   projections by graph and capability revisions.
+4. Finish extracting orchestration/title/compaction/computer/continuation effect
+   coordination. Request/context/turn/tool/plan policy modules, unified typed
+   retry decisions and revision-keyed request projection caching are implemented.
+   Recipe evidence inspection still performs filesystem work and must move with
+   effect ownership; extracting a function alone does not remove that I/O.
 5. Add explicit queued/resource-blocked outcomes and isolation for truly
    uninterruptible native calls. Bounded pools do not make those calls
    interruptible. Evaluate Windows Job Objects and transport replacement from

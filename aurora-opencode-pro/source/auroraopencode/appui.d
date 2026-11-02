@@ -1,5 +1,14 @@
 module auroraopencode.appui;
 
+import auroraopencode.turnpolicy : TurnPolicy, TurnAction, decideTurn, hasIncompleteTaskSteps;
+import auroraopencode.requestpolicy : RequestPolicy, prepareAgentRequest;
+import contextPolicy = auroraopencode.contextpolicy;
+import auroraopencode.contextpolicy : latestActualUserRequest, durableTaskPrompt,
+    estimateRequestTokens, requestToolDefinitionBytes, checkpointSnippet, checkpointEdges,
+    shortenToolOutput, collapsibleToolGroupCount, collapseCompletedToolHistory,
+    compactionBudgetBytes, compactRequestMessages, checkpointOnActivePath,
+    compactionSource, applyModelCompactionSummary, sessionInstructionsBlock;
+
 import auroraopencode.contextcheckpoint : requestMessageBytes, compactionBoundary,
     compactionTaskIdentity, completeCompactionResponse, compactionTimeoutMs, compactionOutputLimit;
 import auroraopencode.historyrecall : readHistory;
@@ -107,6 +116,8 @@ import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
 import auroraopencode.taskpolicy : taskWorkspace, sameCheckout, requiredEvidence, satisfiesEvidence, verificationScope, verificationCoverage, scopedResumePrompt, diagnosticToolAllowed;
 import auroraopencode.websearch : experimentalWebSearchEnabled;
 import auroraopencode.execution : ThreadEngine, RequestPhase;
+import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
+import auroraopencode.toolsettlement : ToolResultPolicy, settleToolResult;
 import auroraopencode.checkpointbarrier : CheckpointBarrier;
 import auroraopencode.agentresult : subagentResult;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
@@ -12160,7 +12171,6 @@ private string _suggestExcludeId;
     /// How many times one failed turn may be sent again on its own. Bounded
     /// because each attempt keeps the previous reply as a branch version,
     /// exactly as pressing Retry does.
-    private enum int maxAutoResends = 6;
 
     /// An opaque HTTP 400 is treated as an overflow only when the request we
     /// sent was at least this large; a small one is some other client error
@@ -12402,7 +12412,7 @@ private string _suggestExcludeId;
         return status == "completed" ? "done" : status;
     }
 
-    private bool hasPendingSubagents(string hubId)
+    private bool hasPendingSubagents(string hubId) const
     {
         auto pending = hubId in _subagentPending;
         if (pending !is null && (*pending).length > 0) return true;
@@ -16825,45 +16835,7 @@ private string _suggestExcludeId;
         return payload.toString();
     }
 
-    /// Internal checkpoints cannot supersede the human's latest request.
-    private static string latestActualUserRequest(const ref ChatSession session)
-    {
-        if (session.queuedGuidance.length > 0) return session.queuedGuidance[$ - 1];
-        foreach_reverse (index; activeMessagePath(session))
-            if (session.messages[index].role == "user" && !session.messages[index].internal)
-                return session.messages[index].content;
-        return "";
-    }
 
-    /// Machine-readable task state supplied on every request. Compaction and
-    /// restarts retain the objective without overriding the latest user intent.
-    private static string durableTaskPrompt(const ref ChatSession session,
-        bool nestedEnabled)
-    {
-        if (session.objective.length == 0 && session.taskSteps.length == 0 &&
-            session.verificationStatus.length == 0 && session.goal.length == 0)
-            return "";
-        auto prompt = appender!string();
-        const currentRequest = latestActualUserRequest(session);
-        prompt.put(goalPromptBlock(session));
-        prompt.put("\n\n# Durable Task State\n" ~ taskContext(session, currentRequest, nestedEnabled));
-        const evidence = requiredEvidence(session);
-        if (evidence.length)
-        {
-            prompt.put("Required evidence (current source inputs):");
-            foreach (kind; evidence) prompt.put(" " ~ kind);
-            prompt.put(". Use a saved verify recipe; a compiler check alone does not satisfy these outcomes.\n");
-        }
-        if (answerOnlyRequest(currentRequest) || taskInvestigation(session))
-            prompt.put("The latest request asks for an explanation. Answer it from the " ~
-                "evidence; do not resume desktop actions or reconcile the older checklist. " ~
-                "Preserve the parent objective, current step and return point. The unfinished work remains recorded for resume.\n");
-        else
-            prompt.put("Treat this state as authoritative. Update the plan as work " ~
-                "changes. Do not claim completion while verification is required " ~
-                "or a checklist item remains pending/in_progress.\n");
-        return prompt.data;
-    }
 
     private import auroraopencode.controlhistory : durableTaskCheckpointPrefix,
         controlHistoryBoundary, controlHistoryCompactionNeeded;
@@ -16911,6 +16883,7 @@ private string _suggestExcludeId;
 
     private void publishThreadUpdated(const ref ChatSession session)
     {
+        if (auto runtime = session.id in _conversationRuntimes) (*runtime).invalidateProjection();
         publishRuntimeEvent(AgentEventKind.threadUpdated, session,
             "", "", "", runtimeThreadPayload(session));
     }
@@ -17035,6 +17008,7 @@ private string _suggestExcludeId;
     private void publishMessageEvent(AgentEventKind kind,
         const ref ChatSession session, const ref ChatMessage message)
     {
+        if (auto runtime = session.id in _conversationRuntimes) (*runtime).invalidateProjection();
         _dirtyThreads[session.id] = true;
         publishRuntimeEvent(kind, session, runtimeTurnId(session), message.id,
             runtimeItemKind(message), runtimeMessagePayload(message));
@@ -20187,252 +20161,75 @@ private void pollButtonSuggestionRequest()
     /// same turn; an explicitly queued follow-up opens a distinct user turn.
     /// Incomplete durable work remains active/verifying instead of being
     /// mislabeled as blocked merely because one transport turn ended.
+    private TurnPolicy turnPolicy(int sessionIndex, bool cancelled, string finishReason = "") const
+    {
+        TurnPolicy policy;
+        policy.cancelled = cancelled;
+        policy.finishReason = finishReason;
+        policy.toolsEnabled = toolsEnabledForSession(_sessions[sessionIndex]);
+        policy.strictPlan = experimentalStrictPlanEnabled();
+        policy.orchestratorEnabled = experimentalOrchestratorEnabled();
+        policy.pendingChildren = hasPendingSubagents(_sessions[sessionIndex].id);
+        policy.diagnosticAvailable = _settings.diagnosticModel.length > 0;
+        policy.speakerToolRoundsBase = _speakerToolRoundsBase;
+        policy.toolRounds = _toolRounds;
+        return policy;
+    }
+
     private void continueOrCompleteTask(bool cancelled)
     {
         const sessionIndex = turnOwnerSessionIndex();
-        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
-            return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
-        if (cancelled)
+        const decision = decideTurn(*session, turnPolicy(sessionIndex, cancelled));
+        if (decision.recordedSummary.length)
         {
-            session.turnStatus = "interrupted";
-            if (session.taskStatus.length == 0) session.taskStatus = "active";
-            markUnreadIfBackground(sessionIndex);
-            publishThreadUpdated(*session);
-            markDirty();
-            return;
+            ChatMessage summary;
+            summary.role = "assistant"; summary.time = currentTimestamp();
+            summary.content = decision.recordedSummary;
+            appendMessage(*session, summary);
+            rebuildMessageColumn();
         }
-        if (appendQueuedGuidance(*session))
-        {
-            session.taskStatus = "active";
-            publishThreadUpdated(*session);
-            setTurnActiveMarker(true, session.id);
-            setTurnInFlight(true);
-            updateStatus("Applying queued guidance…");
-            startChatRequest(sessionIndex, false);
-            return;
-        }
-        // Keep a user's active goal intact while a validated missing fact
-        // waits. Their next reply resumes it; only an explicit Stop pauses it.
-        if (goalNeedsHumanInput(*session))
-        {
-            session.turnStatus = "completed";
-            session.taskStatus = "waiting_input";
-            publishThreadUpdated(*session);
-            markDirty();
-            updateGoalBar();
-            updateStatus("Waiting for required information. Reply to continue.");
-            markUnreadIfBackground(sessionIndex);
-            return;
-        }
-        const proactiveGuidance = toolsEnabledForSession(*session)
-            ? proactiveActionGuidance(*session) : "";
-        if (taskContinuation(*session, toolsEnabledForSession(*session)).action ==
-                TaskContinuationAction.settle && proactiveGuidance.length)
-        {
-            ChatMessage guidance;
-            guidance.role = "user";
-            guidance.internal = true;
-            guidance.time = currentTimestamp();
-            guidance.content = proactiveGuidance;
-            appendMessage(*session, guidance);
-            session.turnStatus = "running";
-            session.taskStatus = "active";
-            publishThreadUpdated(*session);
-            markDirty();
-            setTurnActiveMarker(true, session.id);
-            setTurnInFlight(true);
-            updateStatus("Choosing a reasonable default and continuing…");
-            startChatRequest(sessionIndex, false);
-            return;
-        }
-        if (!goalActive(*session) && taskContinuation(*session, toolsEnabledForSession(*session)).action == TaskContinuationAction.settle &&
-            completionHandoffNeeded(*session))
-        {
-            ChatMessage handoff;
-            handoff.time = currentTimestamp();
-            if (completionHandoffPending(*session))
-            {
-                handoff.role = "assistant";
-                handoff.content = recordedCompletionHandoff(*session);
-                appendMessage(*session, handoff);
-                rebuildMessageColumn();
-            }
-            else
-            {
-                handoff.role = "user";
-                handoff.internal = true;
-                handoff.content = completionHandoffMarker ~ completionHandoffInstruction;
-                appendMessage(*session, handoff);
-                session.turnStatus = "running";
-                publishThreadUpdated(*session);
-                markDirty();
-                setTurnActiveMarker(true, session.id);
-                setTurnInFlight(true);
-                updateStatus("Summarizing completed work…");
-                startChatRequest(sessionIndex, false);
-                return;
-            }
-        }
-        // experimental: orchestrator - each participant works in its own chat. A
-        // subagent's chat reports back to its parent; the parent waits while a
-        // dispatched round is still running and resumes once it reports back.
-        const childNeedsWork = session.parentSessionId.length &&
-            taskContinuation(*session, toolsEnabledForSession(*session)).action != TaskContinuationAction.settle;
-        if (experimentalOrchestratorEnabled() && session.agents.length > 0 && !childNeedsWork)
-        {
-            // A subagent's own chat reports back and never loops on its own.
-            if (session.parentSessionId.length > 0)
-            {
-                if (taskContinuation(*session, toolsEnabledForSession(*session)).action == TaskContinuationAction.settle)
-                {
-                    collectSubagentResult(sessionIndex);
-                    return;
-                }
-            }
-            // The orchestrator dispatched a round: wait for the subagents.
-            if (hasPendingSubagents(session.id)) return;
-            const finishedSpeaker = session.activeAgentId;
-            string nextSpeaker = session.nextSpeakerId;
-            if (nextSpeaker.length == 0 &&
-                !experimentalOrchestratorIsRouter(*session, finishedSpeaker))
-                nextSpeaker = "orchestrator";
-            // Do not bounce back to the orchestrator when a participant only
-            // talked (no tool work): that A<->B chatter is what looked like a
-            // frozen app. End the dispatch instead.
-            const didWork = _speakerToolRoundsBase >= 0 &&
-                _toolRounds > _speakerToolRoundsBase;
-            if (nextSpeaker == "orchestrator" &&
-                !experimentalOrchestratorIsRouter(*session, finishedSpeaker) &&
-                !didWork)
-                nextSpeaker = "";
-            // Bound a runaway dispatch.
-            session.agentHops++;
-            if (session.agentHops > 8) nextSpeaker = "";
-            if (nextSpeaker.length > 0)
-            {
-                session.activeAgentId = nextSpeaker;
-                session.nextSpeakerId = "";
-                if (nextSpeaker == "orchestrator" &&
-                    finishedSpeaker.length > 0 &&
-                    finishedSpeaker != "orchestrator")
-                {
-                    ChatMessage review;
-                    review.role = "user";
-                    review.internal = true;
-                    review.time = currentTimestamp();
-                    review.content = "Multi-agent update: participant \"" ~
-                        experimentalOrchestratorAgentName(*session,
-                            finishedSpeaker) ~ "\" finished its turn. Review " ~
-                        "the work in this conversation against the user's goal, " ~
-                        "then either assign the next task or call finish.";
-                    appendMessage(*session, review);
-                }
-                session.taskStatus = "active";
-                publishThreadUpdated(*session);
-                setTurnActiveMarker(true, session.id);
-                setTurnInFlight(true);
-                updateStatus("Continuing with " ~ session.activeAgentId ~ "…");
-                startChatRequest(sessionIndex, false);
-                return;
-            }
-            else if (experimentalOrchestratorIsRouter(*session,
-                finishedSpeaker))
-            {
-                // Dispatch completion uses the same outcome/evidence gate as
-                // a single agent. A routing summary cannot certify completion.
-                session.nextSpeakerId = "";
-            }
-        }
-        // A reviewer that has reported its diagnosis hands control back to the
-        // main model. Its report is not completion of the user's objective.
-        if (_execution.diagnosticActive)
+        if (decision.action == TurnAction.reportChild) { collectSubagentResult(sessionIndex); return; }
+        if (decision.action == TurnAction.waitChildren) return;
+        if (decision.action == TurnAction.applySteering) appendQueuedGuidance(*session);
+        if (decision.advanceHop) ++session.agentHops;
+        if (decision.clearNextSpeaker) session.nextSpeakerId = "";
+        if (decision.nextSpeaker.length) session.activeAgentId = decision.nextSpeaker;
+        if (decision.clearDiagnostic)
         {
             _execution.diagnosticActive = false;
-            _execution.diagnosticRequestsRemaining = 0;
+            _execution.diagnosticRequestsRemaining = decision.diagnosticRequests;
         }
-        if (session.taskStatus == "waiting_input" && !taskAwaitingInput(*session))
-        { session.taskStatus = "active"; session.contract.blocker = ""; }
-        const continuation = taskContinuation(*session, toolsEnabledForSession(*session));
-        if (continuation.action == TaskContinuationAction.continueWork ||
-            continuation.action == TaskContinuationAction.replan)
+        if (decision.clearBlocker) session.contract.blocker = "";
+        if (decision.advanceGoal) ++session.goalTurns;
+        if (decision.guidance.length)
         {
             ChatMessage guidance;
-            guidance.role = "user";
-            guidance.internal = true;
-            guidance.time = currentTimestamp();
-            guidance.content = continuation.guidance();
-            if (continuation.action == TaskContinuationAction.replan && _settings.diagnosticModel.length)
-                _execution.diagnosticRequestsRemaining = 4;
+            guidance.role = "user"; guidance.internal = true;
+            guidance.time = currentTimestamp(); guidance.content = decision.guidance;
             appendMessage(*session, guidance);
-            session.turnStatus = "running";
-            session.taskStatus = "active";
-            publishThreadUpdated(*session);
-            markDirty();
+        }
+        session.turnStatus = decision.turnStatus;
+        session.taskStatus = decision.taskStatus;
+        publishThreadUpdated(*session);
+        markDirty();
+        if (decision.status.length) updateStatus(decision.status);
+        if (decision.continues())
+        {
             setTurnActiveMarker(true, session.id);
             setTurnInFlight(true);
-            updateStatus(continuation.action == TaskContinuationAction.replan
-                ? "Changing diagnosis for the unfinished outcome…" : "Continuing unfinished work…");
             startChatRequest(sessionIndex, false);
             return;
         }
-        // A persistent goal is a second, independent stop condition. The plan
-        // may be settled while the user's goal still needs work, so start the
-        // next goal turn even when the task checklist has no continuation.
-        if (goalActive(*session) && session.queuedFollowUps.length == 0)
-        {
-            if (taskAwaitingInput(*session))
-            {
-                session.goalStatus = "paused";
-                publishThreadUpdated(*session);
-                markDirty();
-                updateGoalBar();
-            }
-            else
-            {
-                session.goalTurns++;
-                ChatMessage guidance;
-                guidance.role = "user";
-                guidance.internal = true;
-                guidance.time = currentTimestamp();
-                guidance.content = goalContinuationInstruction(*session);
-                appendMessage(*session, guidance);
-                session.turnStatus = "running";
-                session.taskStatus = "active";
-                publishThreadUpdated(*session);
-                markDirty();
-                setTurnActiveMarker(true, session.id);
-                setTurnInFlight(true);
-                updateStatus("Continuing toward the goal…");
-                startChatRequest(sessionIndex, false);
-                return;
-            }
-        }
-        session.turnStatus = "completed";
-        if (session.taskStatus == "waiting_input")
-            updateStatus("Independent work complete · awaiting required information.");
-        else if (taskInvestigation(*session))
-            session.taskStatus = session.verificationStatus == "required" ? "verifying" : "active";
-        else if (hasIncompleteTaskSteps(*session))
-        {
-            session.taskStatus = "active";
-            updateStatus("Answer complete · task still has checklist items.");
-        }
-        else if (session.verificationStatus == "required")
-        {
-            session.taskStatus = "verifying";
-            updateStatus("Answer complete · verification is still required.");
-        }
-        else
-            session.taskStatus = "completed";
+        markUnreadIfBackground(sessionIndex);
+        if (decision.action == TurnAction.waitInput) updateGoalBar();
+        if (decision.action != TurnAction.settle) return;
         if (session.messages.length && session.messages[$ - 1].id == session.activeLeafId)
         {
             session.messages[$ - 1].taskStateJson = activeTaskStateJson(*session);
             publishMessageEvent(AgentEventKind.itemUpdated, *session, session.messages[$ - 1]);
         }
-        markUnreadIfBackground(sessionIndex);
-        publishThreadUpdated(*session);
-        markDirty();
         maybeAutoContinue(sessionIndex);
         startNextQueuedFollowUp(sessionIndex);
     }
@@ -20440,17 +20237,8 @@ private void pollButtonSuggestionRequest()
     private bool taskContinuesAfterDone(bool cancelled, string finishReason = "") const
     {
         const sessionIndex = turnOwnerSessionIndex();
-        if (cancelled || sessionIndex < 0 ||
-            sessionIndex >= cast(int) _sessions.length) return false;
-        const session = _sessions[sessionIndex];
-        if (session.queuedGuidance.length > 0) return true;
-        if (goalNeedsHumanInput(session)) return false;
-        if (goalActive(session) && session.queuedFollowUps.length == 0 &&
-            !taskAwaitingInput(session))
-            return true;
-        return taskContinuation(session, toolsEnabledForSession(session)).action != TaskContinuationAction.settle ||
-            (toolsEnabledForSession(session) && proactiveActionGuidance(session).length > 0) ||
-            (!completionHandoffPending(session) && completionHandoffNeeded(session, finishReason));
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return false;
+        return decideTurn(_sessions[sessionIndex], turnPolicy(sessionIndex, cancelled, finishReason)).continues();
     }
 
     private string clarifyProviderRequestError(string error) const
@@ -20465,7 +20253,7 @@ private void pollButtonSuggestionRequest()
         return error;
     }
 
-    private void failAssistantMessage(string error, bool preserveGoal = false)
+    private void failAssistantMessage(string error, bool preserveGoal = true)
     {
         error = clarifyProviderRequestError(error);
         const sessionIndex = turnOwnerSessionIndex();
@@ -21574,6 +21362,7 @@ private void pollButtonSuggestionRequest()
         result.verificationWorkspace = execution.verification.workspace;
         result.verificationRevision = execution.verification.revision;
         result.verificationPassed = execution.verification.passed;
+        result.verificationExitCode = execution.verification.exitCode;
         result.diffAdditions = execution.additions;
         result.diffDeletions = execution.deletions;
         result.diffText = execution.diff;
@@ -21611,86 +21400,28 @@ private void pollButtonSuggestionRequest()
             }
 
         initializeLegacyTask(*session);
+        invalidateChangedWorkspaceEvidence();
         const receiptWorkspace = workspaceForSession(sessionIndex);
-        session.verificationScope = verificationScope(receiptWorkspace, toolWorkspaceRevision(receiptWorkspace));
-        const planError = !event.toolFailed && event.toolName == "update_plan"
-            ? planReplacementError(*session, toolArgs) : "";
-        const subplanError = !event.toolFailed &&
-            event.toolName == "update_subplan"
-            ? nestedPlanError(*session, toolArgs) : "";
-        const imageError = !event.toolFailed && event.toolName == "retire_images"
-            ? retireImagesSessionError(*session, toolArgs) : "";
-        const planView = event.toolFailed ? "" : event.toolName == "read_plan"
-            ? readPlanText(*session, toolArgs) : event.toolName == "read_history"
-            ? readHistory(*session, toolArgs) : "";
-        const planViewError = planView.startsWith("Error:") ? planView : "";
-        const blockerError = !event.toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input")
-            ? taskInputError(*session, toolArgs) : "";
-        const goalError = !event.toolFailed && event.toolName == "goal_complete"
-            ? goalCompletionError(*session, toolArgs) : "";
-        const toolFailed = event.toolFailed || planError.length > 0 ||
-            subplanError.length > 0 || imageError.length > 0 ||
-            blockerError.length > 0 || goalError.length > 0 ||
-            planViewError.length > 0;
-        string toolText = planViewError.length > 0 ? planViewError : planError.length > 0 ? planError :
-            subplanError.length > 0 ? subplanError :
-            imageError.length > 0 ? imageError :
-            blockerError.length > 0 ? blockerError :
-            goalError.length > 0 ? goalError :
-            !toolFailed && event.toolName == "update_plan" ? planUpdateText(*session, toolArgs) :
-            !toolFailed && (event.toolName == "read_plan" || event.toolName == "read_history") ? planView : event.text;
-        // The recipe tool already rejects stale inputs and recipes, and it
-        // executes compile/test steps without a scheduler mutation revision.
-        // Adopt the current revision so its successful result can satisfy the
-        // same evidence gate as a direct checker command.
-        const verificationWorkspace = event.verificationWorkspace.length
-            ? event.verificationWorkspace : workspaceForSession(sessionIndex);
-        const verificationRevision = event.toolName == "verify"
-            ? toolWorkspaceRevision(verificationWorkspace)
-            : event.verificationRevision;
-        const scopedVerification = !toolFailed && event.verificationPassed && event.verificationExitCode == 0 &&
-            event.verificationCheck.length > 0 &&
-            sameCheckout(verificationWorkspace, workspaceForSession(sessionIndex)) &&
-            verificationRevision == toolWorkspaceRevision(verificationWorkspace);
-        const checkerAttempt = event.verificationCheck.length || event.toolName == "verify";
-        const coverage = checkerAttempt ? verificationCoverage(*session, scopedVerification ? event.verificationCheck : "") : "";
-        const acceptedVerification = scopedVerification && satisfiesEvidence(coverage, requiredEvidence(*session));
-        if (checkerAttempt)
+        const currentScope = verificationScope(receiptWorkspace, toolWorkspaceRevision(receiptWorkspace));
+        if (session.verificationStatus == "passed" && session.verificationScope != currentScope)
         {
-            JSONValue receipt;
-            receipt["toolCallId"] = event.toolCallId;
-            receipt["check"] = event.verificationCheck;
-            receipt["acceptedForCurrentSource"] = scopedVerification;
-            receipt["coverageComplete"] = acceptedVerification;
-            receipt["coverage"] = coverage;
-            string[] remaining;
-            foreach (kind; requiredEvidence(*session))
-                if (!satisfiesEvidence(coverage, [kind])) remaining ~= kind;
-            receipt["remaining"] = JSONValue(remaining);
-            if (!scopedVerification) receipt["reason"] = toolFailed ? "The checker failed." : "Checker workspace or source revision does not match the current task.";
-            else if (!acceptedVerification) receipt["reason"] = "This check is valid evidence; overall task verification still needs the remaining required categories.";
-            if (event.toolName == "verify")
-            {
-                try { auto result = parseJSON(toolText); result["receipt"] = receipt; toolText = result.toPrettyString(); }
-                catch (Exception) {}
-            }
-            else toolText ~= "\nVerification receipt: " ~ receipt.toString();
+            session.verificationStatus = "required";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
         }
-        ChatMessage toolMessage;
-        toolMessage.role = "tool";
-        toolMessage.content = toolText;
-        toolMessage.toolCallId = event.toolCallId;
-        toolMessage.toolName = event.toolName;
-        toolMessage.toolArgs = toolArgs;
-        toolMessage.failed = toolFailed;
-        toolMessage.diffAdditions = event.diffAdditions;
-        toolMessage.diffDeletions = event.diffDeletions;
-        toolMessage.toolDiff = event.diffText;
-        toolMessage.workspaceChanged = event.workspaceChanged;
-        toolMessage.verificationCheck = scopedVerification ? event.verificationCheck : "";
-        toolMessage.verificationScope = checkerAttempt ? session.verificationScope : "";
-        toolMessage.toolElapsedMs = event.elapsedMs;
-        toolMessage.time = currentTimestamp();
+        session.verificationScope = currentScope;
+        const verificationWorkspace = event.verificationWorkspace.length
+            ? event.verificationWorkspace : receiptWorkspace;
+        const verificationRevision = event.verificationRevision;
+        const policy = ToolResultPolicy(_settings.experimentalNestedPlans, receiptWorkspace,
+            verificationWorkspace, currentTimestamp(), toolWorkspaceRevision(verificationWorkspace));
+        auto settlement = settleToolResult(*session, event, toolArgs, policy);
+        auto toolMessage = settlement.message;
+        const toolFailed = toolMessage.failed;
+        const toolText = toolMessage.content;
+        const checkerAttempt = settlement.checkerAttempt;
+        const scopedVerification = settlement.scopedVerification;
+        const acceptedVerification = settlement.acceptedVerification;
         appendMessage(*session, toolMessage);
         if (event.images.length > 0)
             _pendingToolImages ~= event.images;
@@ -21724,23 +21455,18 @@ private void pollButtonSuggestionRequest()
         }
         else if (acceptedVerification)
         {
-            invalidateChangedWorkspaceEvidence();
             const evidenceKey = buildNormalizedPath(verificationWorkspace).toLower();
-            // The scheduler may advance after the recipe settles (for example,
-            // while this result is being applied). Adopt the revision that is
-            // current now; restoring the older event revision would make this
-            // successful check invalidate itself on the next service tick.
-            const currentRevision =
-                toolWorkspaceRevision(verificationWorkspace);
-            _observedWorkspaceRevisions[evidenceKey] = currentRevision;
+            // Retain the exact checked revision. A later mutation must revoke
+            // this receipt rather than silently inherit its passing result.
+            _observedWorkspaceRevisions[evidenceKey] = verificationRevision;
             _execution.verificationRecorded = true;
             _execution.verifiedWorkspace = verificationWorkspace;
-            _execution.verifiedWorkspaceRevision = currentRevision;
+            _execution.verifiedWorkspaceRevision = verificationRevision;
             if (auto tracked = session.id in _conversationRuntimes)
             {
                 (*tracked).verificationRecorded = true;
                 (*tracked).verifiedWorkspace = verificationWorkspace;
-                (*tracked).verifiedWorkspaceRevision = currentRevision;
+                (*tracked).verifiedWorkspaceRevision = verificationRevision;
             }
             session.verificationStatus = "passed";
             if (session.taskStatus != "waiting_input" && !taskInvestigation(*session))
@@ -21906,111 +21632,15 @@ private void pollButtonSuggestionRequest()
 
     private void applyDurablePlan(ref ChatSession session, string arguments)
     {
-        JSONValue root;
-        try root = parseJSON(arguments);
-        catch (Exception) return;
-        if (root.type != JSONType.object) return;
-        auto plan = "plan" in root.object;
-        if (plan !is null && plan.type != JSONType.array) return;
-        // The model rewrites the durable objective here so the plan card shows
-        // the task's actual goal instead of a copy of the user's message, which
-        // is also the chat title. An omitted field keeps the current objective.
-        if (auto field = "objective" in root.object)
-            if (!taskInvestigation(session) && field.type == JSONType.string)
-            {
-                const value = field.str.strip();
-                if (value.length > 0) session.objective = value;
-            }
-        const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        auto steps = plan !is null ? normalizedPlan(session, *plan, session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps.dup;
-        foreach (key; ["constraints", "decisions"])
-            if (auto field = key in root.object)
-                if (field.type == JSONType.array)
-                {
-                    string[] values;
-                    foreach (item; field.array) if (item.type == JSONType.string) values ~= item.str;
-                    if (key == "constraints") session.contract.constraints = values;
-                    else
-                    {
-                        foreach (decision; session.contract.decisions)
-                            if (decision.startsWith("Plan change: ") && !values.canFind(decision)) values ~= decision;
-                        session.contract.decisions = values;
-                    }
-                }
-        session.nestedPlans = replacement ? null : retainNestedWork(session.taskSteps, steps, session.nestedPlans);
-        rememberPlanRevision(session, root, session.taskSteps, steps);
-        session.contract.workItems = normalizedWorkItems(session, root, steps);
-        session.contract.work = workContextForPlan(session, steps, root);
-        session.taskSteps = steps;
-        initializeLegacyTask(session);
-        bool complete = steps.length > 0;
-        foreach (step; steps)
-            if (step.status != "completed") complete = false;
-        if (complete && !requiredWorkRemaining(session))
-            session.taskStatus = session.verificationStatus == "required"
-                ? "verifying" : "completed";
-        else if (session.taskStatus != "reviewing")
-            session.taskStatus = "active";
-        recordPlanHistory(session, "update_plan", root);
+        applyTaskPlan(session, arguments);
         publishThreadUpdated(session);
-    }
-
-    private string nestedPlanError(const ref ChatSession session,
-        string arguments)
-    {
-        if (!_settings.experimentalNestedPlans)
-            return "Error: experimental nested plans are disabled in Settings.";
-        JSONValue root;
-        try root = parseJSON(arguments);
-        catch (Exception) return "Error: invalid subplan arguments.";
-        if (root.type != JSONType.object)
-            return "Error: invalid subplan arguments.";
-        auto parent = "parent_step" in root.object;
-        if (parent is null || parent.type != JSONType.integer ||
-            parent.integer < 1 || parent.integer > session.taskSteps.length)
-            return "Error: parent_step must name an existing top-level " ~
-                "plan step (1 through " ~
-                to!string(session.taskSteps.length) ~ ").";
-        const(TaskStep)[] previous;
-        foreach (nested; session.nestedPlans)
-            if (nested.parentStep == parent.integer) previous = nested.steps;
-        return planUpdateError(session, arguments, previous);
     }
 
     private void applyNestedPlan(ref ChatSession session, string arguments)
     {
-        auto root = parseJSON(arguments);
-        const parent = cast(size_t) root["parent_step"].integer;
-        TaskStep[] previous;
-        foreach (nested; session.nestedPlans) if (nested.parentStep == parent) previous = nested.steps;
-        const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        auto steps = normalizedPlan(session, root["plan"], previous, !replacement, incrementalPlan(root));
-        foreach (ref nested; session.nestedPlans)
-            if (nested.parentStep == parent)
-            {
-                rememberPlanRevision(session, root, nested.steps, steps);
-                nested.steps = steps;
-                recordPlanHistory(session, "subplan", root);
-                publishThreadUpdated(session);
-                markDirty();
-                return;
-            }
-        NestedPlan nested;
-        nested.parentStep = parent;
-        nested.steps = steps;
-        session.nestedPlans ~= nested;
-        recordPlanHistory(session, "subplan", root);
+        applyTaskSubplan(session, arguments);
         publishThreadUpdated(session);
         markDirty();
-    }
-
-    private static bool hasIncompleteTaskSteps(const ref ChatSession session)
-    {
-        foreach (step; session.taskSteps)
-            if (step.status != "completed") return true;
-        foreach (plan; session.nestedPlans)
-            foreach (step; plan.steps) if (step.status != "completed") return true;
-        return requiredWorkRemaining(session);
     }
 
     /// Move guidance entered during a live turn into the transcript only at a
@@ -22025,7 +21655,7 @@ private void pollButtonSuggestionRequest()
             guidance.content = text;
             guidance.time = currentTimestamp();
             appendMessage(session, guidance);
-            acceptTaskRequest(session, text, guidance.id);
+            acceptTaskRequest(session, text, session.activeLeafId);
         }
         session.queuedGuidance.length = 0;
         session.taskStatus = "active";
@@ -23309,7 +22939,7 @@ private void pollButtonSuggestionRequest()
         userMessage.content = text;
         userMessage.time = currentTimestamp();
         appendMessage(*session, userMessage);
-        acceptTaskRequest(*session, text, userMessage.id);
+        acceptTaskRequest(*session, text, session.activeLeafId);
         appendComposerContext(*session, text, workspaceForSession(sessionIndex));
         session.taskStatus = "active";
         session.turnStatus = "running";
@@ -23332,31 +22962,6 @@ private void pollButtonSuggestionRequest()
         startChatRequest(sessionIndex);
     }
 
-    /// Start the streaming request for the current session history. When
-    /// tools are enabled, the structured history (including tool calls and
-    /// results) is sent together with the tool definitions and a steering
-    /// prompt that directs the model toward the native D tools.
-    /// Build the outgoing history from the active branch, defensively. A stored
-    /// assistant message may carry `tool_calls` whose results never arrived
-    /// (the app was closed mid-tool, a tool run was abandoned, or a save
-    /// predates the tool-reply guarantee). The provider rejects an assistant
-    /// `tool_calls` message that is not immediately followed by a `tool`
-    /// message for every call id ("insufficient tool messages following
-    /// tool_calls message", HTTP 400), so keep the calls only when the full
-    /// contiguous set of replies is present; otherwise downgrade the assistant
-    /// to a plain message and drop the orphan tool replies.
-    /// Conservative local fallback for providers that omit streamed usage.
-    /// Count the exact compacted messages plus advertised tool schemas, then
-    /// use four bytes per token for the meter's approximate display.
-    private static int estimateRequestTokens(
-        const(ChatRequestMessage)[] messages,
-        const(OpenCodeToolDef)[] tools)
-    {
-        const size_t bytes = requestMessageBytes(messages) +
-            requestToolDefinitionBytes(tools);
-        const size_t tokens = (bytes + 3) / 4;
-        return tokens > cast(size_t) int.max ? int.max : cast(int) tokens;
-    }
 
     /// Qwen and DeepSeek have authoritative accounting paths in this client:
     /// local llama.cpp applies the loaded model's tokenizer before inference,
@@ -23370,654 +22975,35 @@ private void pollButtonSuggestionRequest()
             normalized.startsWith("deepseek");
     }
 
-    private static size_t requestToolDefinitionBytes(
-        const(OpenCodeToolDef)[] tools)
-    {
-        size_t bytes;
-        foreach (tool; tools)
-            bytes += tool.name.length + tool.description.length +
-                tool.parametersJson.length + 64;
-        return bytes;
-    }
 
-    /// A short, UTF-8-safe excerpt for deterministic checkpoints. Keep text
-    /// across line breaks so a multi-line task does not lose its requirements.
-    /// Compaction must never copy a multi-megabyte message into its summary.
-    private static string checkpointSnippet(string text, size_t limit = 480)
-    {
-        size_t cut = text.length < limit ? text.length : limit;
-        while (cut > 0 &&
-            cut < text.length &&
-            (cast(ubyte) text[cut] & cast(ubyte) 0xC0) == cast(ubyte) 0x80)
-            --cut;
-        const excerpt = text[0 .. cut].replace("\r", " ").replace("\n", " ").strip();
-        return cut < text.length ? excerpt ~ "..." : excerpt;
-    }
 
-    /// Long instructions and outcomes often place the decisive constraint at
-    /// the end. Keep both edges when carrying them into a rolling checkpoint.
-    private static string checkpointEdges(string value, size_t limit)
-    {
-        if (value.length <= limit) return checkpointSnippet(value, limit);
-        const size_t edge = limit > 64 ? (limit - 32) / 2 : limit / 2;
-        size_t head = edge;
-        while (head > 0 &&
-            (cast(ubyte) value[head] & cast(ubyte) 0xC0) ==
-                cast(ubyte) 0x80) --head;
-        size_t tail = value.length - edge;
-        while (tail < value.length &&
-            (cast(ubyte) value[tail] & cast(ubyte) 0xC0) ==
-                cast(ubyte) 0x80) ++tail;
-        return value[0 .. head].replace("\r", " ").replace("\n", " ") ~
-            " ... [middle omitted] ... " ~
-            value[tail .. $].replace("\r", " ").replace("\n", " ");
-    }
 
-    /// Keep both the opening and the outcome of an old tool result. A bare
-    /// "output shortened" marker erased the only record of what a read,
-    /// build, or test returned when a local model first hit its context cap.
-    private static string shortenToolOutput(string content,
-        size_t edgeBytes = 512)
-    {
-        if (content.length <= edgeBytes * 2 + 64) return content;
-        size_t head = edgeBytes;
-        while (head > 0 &&
-            (cast(ubyte) content[head] & cast(ubyte) 0xC0) ==
-                cast(ubyte) 0x80) --head;
-        size_t tail = content.length - edgeBytes;
-        while (tail < content.length &&
-            (cast(ubyte) content[tail] & cast(ubyte) 0xC0) ==
-                cast(ubyte) 0x80) ++tail;
-        return content[0 .. head] ~
-            "\n... middle of older tool output omitted ...\n" ~
-            content[tail .. $];
-    }
 
-    /// A completed group can be removed only if it is outside the active tool
-    /// round. Preserve that round's envelope and replies for the provider.
-    private static size_t collapsibleToolGroupCount(
-        const(ChatRequestMessage)[] messages)
-    {
-        size_t groupCount;
-        size_t lastUser;
-        bool haveUser;
-        foreach (i, m; messages)
-        {
-            // Internal Continue and recovery controls are system messages;
-            // they do not end the tool round being continued.
-            if (m.role == "user")
-            {
-                lastUser = i;
-                haveUser = true;
-            }
-            if (m.role == "assistant" && m.toolCalls.length > 0)
-                ++groupCount;
-        }
-        // Only an actively continuing tool round needs its exact envelope. A
-        // later real user instruction starts a new round, so every earlier
-        // completed envelope can be checkpointed. Keeping eight old groups was
-        // both expensive and fragile: one legacy group with missing reasoning
-        // could make the provider reject an otherwise unrelated follow-up.
-        size_t groupsAfterInstruction;
-        foreach (i, m; messages)
-            if (m.role == "assistant" && m.toolCalls.length > 0 &&
-                (!haveUser || i > lastUser))
-                ++groupsAfterInstruction;
-        const size_t keepRecentToolGroups = groupsAfterInstruction > 0 ? 1 : 0;
-        return groupCount > keepRecentToolGroups
-            ? groupCount - keepRecentToolGroups : 0;
-    }
 
-    /// Collapse only the oldest `collapseCount` completed tool groups. The
-    /// caller chooses the smallest count needed to fit the request budget.
-    private static ChatRequestMessage[] collapseCompletedToolHistory(
-        ChatRequestMessage[] messages, size_t collapseCount)
-    {
-        if (collapseCount == 0) return messages;
-        int[string] callCounts;
-        string[] callOrder;
-        size_t seenGroups;
-        foreach (m; messages)
-        {
-            if (m.role != "assistant" || m.toolCalls.length == 0) continue;
-            if (seenGroups++ >= collapseCount) break;
-            foreach (call; m.toolCalls)
-            {
-                if (call.name !in callCounts) callOrder ~= call.name;
-                ++callCounts[call.name];
-            }
-        }
 
-        string objective = "Continue the user's current task.";
-        foreach (m; messages)
-            if (m.role == "user")
-            {
-                const excerpt = checkpointSnippet(m.content, 700);
-                if (excerpt.length > 0) objective = excerpt;
-                break;
-            }
 
-        string[] concreteOutcomes;
-        string[] failures;
-        size_t groupsSeen;
-        foreach (m; messages)
-        {
-            if (m.role == "assistant" && m.toolCalls.length > 0)
-            {
-                if (groupsSeen++ >= collapseCount) break;
-                continue;
-            }
-            if (groupsSeen > 0 && groupsSeen <= collapseCount &&
-                m.role == "tool")
-            {
-                const excerpt = checkpointSnippet(
-                    shortenToolOutput(m.content, 300), 700);
-                if (excerpt.length == 0) continue;
-                const lower = excerpt.toLower();
-                const failed = lower.canFind("error") ||
-                    lower.canFind("failed") ||
-                    lower.canFind("cannot") ||
-                    lower.canFind("tool call skipped") ||
-                    lower.canFind("exited with code");
-                if (failed)
-                {
-                    failures ~= excerpt;
-                    if (failures.length > 6) failures = failures[1 .. $];
-                }
-                else
-                {
-                    concreteOutcomes ~= excerpt;
-                    if (concreteOutcomes.length > 12)
-                        concreteOutcomes = concreteOutcomes[1 .. $];
-                }
-            }
-        }
 
-        auto noteText = appender!string();
-        noteText.put("## Objective\n- " ~ objective ~
-            "\n\n## Important Details\n- Earlier completed tool activity " ~
-            "was checkpointed after " ~ to!string(collapseCount) ~
-            " rounds.\n- Tool activity: ");
-        foreach (i, name; callOrder)
-        {
-            if (i > 0) noteText.put(", ");
-            noteText.put(name ~ " x" ~ to!string(callCounts[name]));
-        }
-        noteText.put(".\n\n## Work State\n### Completed\n");
-        if (concreteOutcomes.length == 0)
-            noteText.put("- No concrete successful outcome was retained.\n");
-        else
-            foreach (outcome; concreteOutcomes)
-                noteText.put("- " ~ outcome ~ "\n");
-        noteText.put("\n### Active\n- Continue from the retained recent " ~
-            "messages and tool results.\n\n### Blocked\n");
-        if (failures.length == 0)
-            noteText.put("- (none recorded in the checkpointed tool rounds)\n");
-        else
-            foreach (failure; failures)
-                noteText.put("- " ~ failure ~ "\n");
-        noteText.put("\n## Next Move\n- Use the retained recent context; " ~
-            "make a targeted lookup only when an exact fact is missing. Do not " ~
-            "repeat old exploration merely because raw output was shortened.");
-        ChatRequestMessage note;
-        note.role = "system";
-        note.content = noteText.data;
 
-        ChatRequestMessage[] result;
-        bool inserted;
-        size_t collapsed;
-        size_t slot;
-        while (slot < messages.length)
-        {
-            auto m = messages[slot];
-            if (collapsed < collapseCount && m.role == "assistant" &&
-                m.toolCalls.length > 0)
-            {
-                if (!inserted)
-                {
-                    result ~= note;
-                    inserted = true;
-                }
-                ++collapsed;
-                ++slot;
-                while (slot < messages.length && messages[slot].role == "tool")
-                    ++slot;
-                continue;
-            }
-            result ~= m;
-            ++slot;
-        }
-        return result;
-    }
 
-    private static size_t compactionBudgetBytes(int contextLimit)
-    {
-        if (contextLimit <= 0) return 0;
-        const size_t contextTokens = cast(size_t) contextLimit;
-        const size_t proportionalReserve = contextTokens / 10;
-        size_t reserveTokens = proportionalReserve > 20_000
-            ? proportionalReserve : 20_000;
-        const size_t maximumReserve = contextTokens * 4 / 10;
-        if (reserveTokens > maximumReserve) reserveTokens = maximumReserve;
-        // Code and tool JSON often tokenize at fewer than four UTF-8 bytes per
-        // token. Leave room for that difference before the server rejects the
-        // request, while the separate output reserve remains in token units.
-        return (contextTokens - reserveTokens) * 3;
-    }
-
-    /// Deterministically shrink a request only when it approaches the model's
-    /// context budget. Keeping the model-visible prefix stable below that limit
-    /// avoids needless context churn on every tool continuation.
-    private static ChatRequestMessage[] compactRequestMessages(
-        ChatRequestMessage[] messages, int contextLimit,
-        size_t fixedRequestBytes = 0)
-    {
-        if (messages.length == 0) return messages;
-        if (contextLimit <= 0) return messages;
-        // Reserve 10% or 20k tokens (whichever is larger), capped at 40% for
-        // small windows. This follows the same preflight/headroom shape as
-        // Codex and OpenCode rather than compacting on every continuation.
-        const size_t budget = compactionBudgetBytes(contextLimit);
-        size_t total = fixedRequestBytes + requestMessageBytes(messages);
-        if (total <= budget) return messages;
-
-        auto result = messages.dup;
-        // Saved reasoning is sent to the provider, but older non-tool
-        // reasoning is not needed to preserve the visible conversation.
-        // Remove it before shortening tool results or dialogue. Keep the
-        // newest assistant's reasoning unless pressure still remains.
-        size_t newestAssistant = result.length;
-        foreach (i, m; result)
-            if (m.role == "assistant" && m.toolCalls.length == 0)
-                newestAssistant = i;
-        foreach (i, ref m; result)
-        {
-            if (total <= budget) break;
-            if (i == newestAssistant || m.role != "assistant" ||
-                m.toolCalls.length > 0 || m.reasoningContent.length == 0)
-                continue;
-            total -= m.reasoningContent.length;
-            m.reasoningContent = "";
-        }
-        if (total <= budget) return result;
-        // Pass 1: shorten only as many old tool results as needed. Previously
-        // we collapsed every completed tool round first, even when a single
-        // shortened output would have put the request under budget.
-        enum size_t keepRecentTools = 1;
-        size_t[] toolIndexes;
-        foreach (i, m; result)
-            if (m.role == "tool") toolIndexes ~= i;
-        if (toolIndexes.length > keepRecentTools)
-        {
-            foreach (idx; toolIndexes[0 .. $ - keepRecentTools])
-            {
-                if (total <= budget) break;
-                const shortened = shortenToolOutput(result[idx].content);
-                if (shortened.length >= result[idx].content.length) continue;
-                total -= result[idx].content.length - shortened.length;
-                result[idx].content = shortened;
-            }
-        }
-        if (total <= budget) return result;
-
-        if (newestAssistant < result.length &&
-            result[newestAssistant].reasoningContent.length > 0)
-        {
-            total -= result[newestAssistant].reasoningContent.length;
-            result[newestAssistant].reasoningContent = "";
-            if (total <= budget) return result;
-        }
-
-        // Pass 2: if output trimming was insufficient, collapse the smallest
-        // number of oldest completed envelopes that gets under budget. Keep
-        // recent exact tool exchanges so a continuation can use their results.
-        const maxCollapse = collapsibleToolGroupCount(result);
-        if (maxCollapse > 0)
-        {
-            size_t low = 1;
-            size_t high = maxCollapse;
-            while (low < high)
-            {
-                const mid = low + (high - low) / 2;
-                const candidate = collapseCompletedToolHistory(result, mid);
-                if (fixedRequestBytes + requestMessageBytes(candidate) <= budget)
-                    high = mid;
-                else
-                    low = mid + 1;
-            }
-            result = collapseCompletedToolHistory(result, low);
-            total = fixedRequestBytes + requestMessageBytes(result);
-            if (total <= budget) return result;
-        }
-
-        // Pass 3: replace older dialogue with one structured handoff rather
-        // than dozens of content-free "message elided" placeholders. The full
-        // transcript remains persisted; only this model request is compacted.
-        if (total > budget)
-        {
-            size_t protectHead;
-            foreach (i, m; result)
-            {
-                protectHead = i + 1;
-                if (m.role != "system") break;
-            }
-            // Keep a recent slice by size, not by message count. Eight large
-            // messages could otherwise exceed a local server's entire window.
-            size_t tailStart = result.length;
-            size_t tailBytes;
-            const size_t tailBudget = budget > fixedRequestBytes
-                ? (budget - fixedRequestBytes) * 3 / 4 : 0;
-            while (tailStart > protectHead)
-            {
-                const candidate = requestMessageBytes(
-                    result[tailStart - 1 .. tailStart]);
-                if (tailBytes + candidate > tailBudget &&
-                    tailStart < result.length) break;
-                tailBytes += candidate;
-                --tailStart;
-            }
-            // Always preserve the latest user instruction, even when a long
-            // tool round leaves it outside the recent byte slice.
-            size_t latestUser = result.length;
-            foreach (i, m; result)
-                if (m.role == "user") latestUser = i;
-            bool[] remove = new bool[](result.length);
-            string[] userDetails;
-            string[] completed;
-            string[] blockers;
-            foreach (i, m; result)
-            {
-                if (i < protectHead) continue;
-                if (i >= tailStart) continue;
-                if (i == latestUser) continue;
-                if (m.role == "system" || m.role == "tool") continue;
-                if (i == protectHead && m.role == "user") continue;
-                if (m.toolCalls.length > 0) continue;
-                remove[i] = true;
-                const excerpt = checkpointSnippet(m.content);
-                if (excerpt.length == 0) continue;
-                if (m.role == "user")
-                {
-                    userDetails ~= excerpt;
-                    if (userDetails.length > 8)
-                        userDetails = userDetails[1 .. $];
-                }
-                else if (m.role == "assistant")
-                {
-                    completed ~= excerpt;
-                    if (completed.length > 8)
-                        completed = completed[1 .. $];
-                    const lower = excerpt.toLower();
-                    if (lower.canFind("error") || lower.canFind("cannot") ||
-                        lower.canFind("couldn't") || lower.canFind("blocked"))
-                    {
-                        blockers ~= excerpt;
-                        if (blockers.length > 4)
-                            blockers = blockers[1 .. $];
-                    }
-                }
-            }
-
-            auto checkpoint = appender!string();
-            string objective = "Continue the user's current task.";
-            foreach (m; result)
-                if (m.role == "user")
-                {
-                    const excerpt = checkpointSnippet(m.content, 700);
-                    if (excerpt.length > 0) objective = excerpt;
-                    break;
-                }
-            checkpoint.put("## Objective\n- " ~ objective ~
-                "\n\n## Important Details\n");
-            if (userDetails.length == 0) checkpoint.put("- (none)\n");
-            else foreach (detail; userDetails) checkpoint.put("- " ~ detail ~ "\n");
-            checkpoint.put("\n## Work State\n### Completed\n");
-            if (completed.length == 0) checkpoint.put("- (none)\n");
-            else foreach (item; completed) checkpoint.put("- " ~ item ~ "\n");
-            checkpoint.put("\n### Active\n- Continue from the retained recent " ~
-                "messages and exact tool results.\n\n### Blocked\n");
-            if (blockers.length == 0) checkpoint.put("- (none)\n");
-            else foreach (item; blockers) checkpoint.put("- " ~ item ~ "\n");
-            checkpoint.put("\n## Next Move\n- Complete the current request, " ~
-                "then run focused verification and report the result.");
-
-            ChatRequestMessage checkpointMessage;
-            checkpointMessage.role = "system";
-            checkpointMessage.content = checkpoint.data;
-            ChatRequestMessage[] compacted;
-            bool inserted;
-            foreach (i, m; result)
-            {
-                if (remove[i])
-                {
-                    if (!inserted)
-                    {
-                        compacted ~= checkpointMessage;
-                        inserted = true;
-                    }
-                    continue;
-                }
-                compacted ~= m;
-            }
-            result = compacted;
-        }
-        return result;
-    }
-
-    private static bool checkpointOnActivePath(const ref ChatSession session)
-    {
-        if (session.compactedThroughMessageId.length == 0 ||
-            session.compactionSummary.length == 0) return false;
-        foreach (index; activeMessagePath(session))
-            if (session.messages[index].id == session.compactedThroughMessageId)
-                return true;
-        return false;
-    }
-
-    /// A short plan for one phase must not silently erase a large unfinished
-    /// parent plan. Explicit user-directed replacement remains available.
-    private static string planReplacementError(const ref ChatSession session,
-        string arguments)
-    {
-        const error = planUpdateError(session, arguments, session.taskSteps);
-        if (error.length) return error;
-        const root = parseJSON(arguments);
-        const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
-        const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps;
-        foreach (nested; session.nestedPlans)
-            if (nested.parentStep <= session.taskSteps.length)
-                foreach (step; steps)
-                    if ((step.id == session.taskSteps[nested.parentStep - 1].id ||
-                        step.text == session.taskSteps[nested.parentStep - 1].text) && step.status == "completed")
-                        foreach (child; nested.steps)
-                            if (child.status != "completed") return "Error: finish the outstanding substeps before completing their parent.";
-        return "";
-    }
-
-    /// Install one reusable checkpoint, leaving a generous recent tail for
-    /// subsequent tool rounds. The boundary is a complete message/group; a
-    /// provider-native tool envelope never crosses it. Earlier messages stay
-    /// untouched in the saved graph and are available when switching branches.
     private static bool rollCompactionCheckpoint(ref ChatSession session,
         int contextLimit, size_t fixedRequestBytes)
     {
-        if (contextLimit <= 0) return false;
-        const path = activeMessagePath(session);
-        if (path.length < 2) return false;
-        const size_t tailBudget = cast(size_t) contextLimit * 4 / 3;
-        size_t start;
-        if (checkpointOnActivePath(session))
-            foreach (i, index; path)
-                if (session.messages[index].id ==
-                    session.compactedThroughMessageId)
-                {
-                    start = i + 1;
-                    break;
-                }
-        const boundary = compactionBoundary(session, path, start, tailBudget,
-            experimentalImageHistoryLimit());
-        if (boundary == path.length || boundary < start) return false;
-
-        const size_t maximumSummary = cast(size_t) contextLimit * 4 / 10;
-        const size_t summaryBudget = maximumSummary < 24_000
-            ? maximumSummary : 24_000;
-        if (summaryBudget < 900 || fixedRequestBytes >=
-            cast(size_t) contextLimit * 4) return false;
-        auto header = appender!string();
-        header.put("Earlier conversation checkpoint. Full task records and transcript remain saved. " ~
-            "Use read_history to recover omitted facts, exact instructions or tool results; read_plan for task details.\n");
-        header.put(taskContext(session, latestActualUserRequest(session), true, summaryBudget / 2));
-        header.put("## Earlier context\n");
-        string previous;
-        if (start > 0)
-            previous = checkpointSnippet(session.compactionSummary,
-                (summaryBudget - header.data.length) / 3);
-        string[] entries;
-        size_t entryBytes;
-        foreach (i; start .. boundary + 1)
-        {
-            const message = session.messages[path[i]];
-            if (message.internal) continue;
-            string entry = "- " ~ message.role ~ " message_id=" ~ message.id ~ ": ";
-            if (message.role == "tool")
-                entry ~= message.toolName ~ " tool_call_id=" ~ message.toolCallId ~ "; accepted_check=" ~ message.verificationCheck ~ " result: " ~
-                    checkpointSnippet(shortenToolOutput(message.content, 350), 900);
-            else
-                entry ~= checkpointEdges(message.content,
-                    message.role == "user" ? 1800 : 900);
-            if (message.toolCalls.length > 0)
-                foreach (call; message.toolCalls)
-                    entry ~= " [called " ~ call.name ~ " id=" ~ call.id ~ ": " ~
-                        checkpointSnippet(call.arguments, 240) ~ "]";
-            entry ~= "\n";
-            entries ~= entry;
-            entryBytes += entry.length;
-        }
-        const size_t entryBudget = summaryBudget - header.data.length -
-            previous.length - 100;
-        while (entries.length > 1 && entryBytes > entryBudget)
-        {
-            entryBytes -= entries[0].length;
-            entries = entries[1 .. $];
-        }
-        auto checkpoint = appender!string();
-        checkpoint.put(header.data);
-        if (previous.length > 0)
-            checkpoint.put("Previous checkpoint excerpt:\n" ~ previous ~ "\n");
-        foreach (entry; entries) checkpoint.put(checkpointSnippet(entry, entryBudget));
-        session.compactionSummary = checkpoint.data;
-        session.compactedThroughMessageId = session.messages[path[boundary]].id;
-        return true;
+        return contextPolicy.rollCompactionCheckpoint(session, contextLimit,
+            fixedRequestBytes, experimentalImageHistoryLimit());
     }
 
-    private static ChatRequestMessage[] checkpointRequestMessages(
-        const ref ChatSession session)
+    private static ChatRequestMessage[] checkpointRequestMessages(const ref ChatSession session)
     {
-        if (!checkpointOnActivePath(session))
-            return buildRequestMessages(session);
-        ChatRequestMessage note;
-        note.role = "system";
-        note.content = session.compactionSummary;
-        auto result = [note];
-        result ~= buildRequestMessages(session,
-            session.compactedThroughMessageId);
-        return result;
+        return contextPolicy.checkpointRequestMessages(session, experimentalImageHistoryLimit());
     }
 
-    private static ChatRequestMessage[] prepareCompactedRequest(
-        ref ChatSession session, int contextLimit, size_t fixedRequestBytes,
-        out bool checkpointCreated, out bool fallbackCompacted)
+    private static ChatRequestMessage[] prepareCompactedRequest(ref ChatSession session,
+        int contextLimit, size_t fixedRequestBytes, out bool checkpointCreated, out bool fallbackCompacted)
     {
-        checkpointCreated = false;
-        fallbackCompacted = false;
-        auto request = checkpointRequestMessages(session);
-        if (contextLimit <= 0 || fixedRequestBytes +
-            requestMessageBytes(request) <= compactionBudgetBytes(contextLimit))
-            return request;
-        checkpointCreated = rollCompactionCheckpoint(session, contextLimit,
-            fixedRequestBytes);
-        if (checkpointCreated) request = checkpointRequestMessages(session);
-        auto bounded = compactRequestMessages(request, contextLimit,
-            fixedRequestBytes);
-        fallbackCompacted = requestMessageBytes(bounded) <
-            requestMessageBytes(request);
-        return bounded;
+        return contextPolicy.prepareCompactedRequest(session, contextLimit, fixedRequestBytes,
+            checkpointCreated, fallbackCompacted, experimentalImageHistoryLimit());
     }
 
-    /// The summary model sees the prefix being retired, plus the preceding
-    /// checkpoint. Textual roles avoid replaying old provider-specific tool or
-    /// reasoning blocks in a new summarization request.
-    private static string compactionSource(const ref ChatSession session,
-        string oldAnchor, string oldSummary, int contextLimit)
-    {
-        const path = activeMessagePath(session);
-        size_t start;
-        if (oldAnchor.length > 0)
-            foreach (i, index; path)
-                if (session.messages[index].id == oldAnchor)
-                {
-                    start = i + 1;
-                    break;
-                }
-        size_t end = path.length;
-        foreach (i, index; path)
-            if (session.messages[index].id ==
-                session.compactedThroughMessageId)
-            {
-                end = i + 1;
-                break;
-            }
-        if (end <= start || end > path.length) return "";
-        const size_t proportional = cast(size_t) contextLimit * 2;
-        const size_t sourceBudget = proportional < 180_000
-            ? proportional : 180_000;
-        if (sourceBudget < 4_000) return "";
-        auto prefix = appender!string();
-        prefix.put("Current durable task objective: " ~
-            checkpointEdges(session.objective, 1800) ~ "\n");
-        prefix.put(durableTaskPrompt(session, true));
-        if (oldAnchor.length > 0 && oldSummary.length > 0)
-            prefix.put("Prior checkpoint:\n" ~
-                checkpointSnippet(oldSummary,
-                    sourceBudget / 4) ~ "\n");
-        prefix.put("Extractive draft (verify and improve it):\n" ~
-            session.compactionSummary ~ "\n\nEarlier messages:\n");
-        if (prefix.data.length >= sourceBudget) return "";
-        string[] entries;
-        size_t entryBytes;
-        foreach (i; start .. end)
-        {
-            const message = session.messages[path[i]];
-            if (message.internal) continue;
-            string entry = "[" ~ message.role ~ " message_id=" ~ message.id ~ "] ";
-            if (message.role == "tool")
-                entry ~= message.toolName ~ " tool_call_id=" ~ message.toolCallId ~ "; accepted_check=" ~ message.verificationCheck ~ ": " ~
-                    checkpointEdges(message.content, 1600);
-            else
-                entry ~= checkpointEdges(message.content,
-                    message.role == "user" ? sourceBudget / 2 : 2200);
-            if (message.toolCalls.length > 0)
-                foreach (call; message.toolCalls)
-                    entry ~= "\n[tool call] " ~ call.name ~ " id=" ~ call.id ~ " " ~
-                        checkpointEdges(call.arguments, 800);
-            entry ~= "\n\n";
-            entries ~= entry;
-            entryBytes += entry.length;
-        }
-        const size_t available = sourceBudget - prefix.data.length;
-        while (entries.length > 1 && entryBytes > available)
-        {
-            entryBytes -= entries[0].length;
-            entries = entries[1 .. $];
-        }
-        foreach (entry; entries)
-        {
-            const remaining = sourceBudget - prefix.data.length;
-            if (remaining < 64) break;
-            prefix.put(checkpointEdges(entry, remaining));
-        }
-        return prefix.data;
-    }
 
     private bool startModelCompaction(int sessionIndex, string oldAnchor,
         string oldSummary, int contextLimit)
@@ -24410,37 +23396,6 @@ private void pollButtonSuggestionRequest()
         return value;
     }
 
-    private static bool applyModelCompactionSummary(ref ChatSession session,
-        string anchor, string leaf, string output, int contextLimit)
-    {
-        if (anchor != session.compactedThroughMessageId ||
-            leaf != session.activeLeafId) return false;
-        const summary = output.strip();
-        const size_t proportional = cast(size_t) contextLimit * 4 / 10;
-        const size_t maximum = proportional < 24_000
-            ? proportional : 24_000;
-        string objective = session.objective;
-        string latestUser;
-        foreach (index; activeMessagePath(session))
-            if (session.messages[index].role == "user" &&
-                !session.messages[index].internal)
-            {
-                if (objective.length == 0)
-                    objective = session.messages[index].content;
-                latestUser = session.messages[index].content;
-            }
-        string durable = taskContext(session, latestUser, true, maximum / 3);
-        durable ~= "Objective: " ~ checkpointEdges(objective, maximum / 8);
-        if (latestUser.length > 0 && latestUser != objective)
-            durable ~= "\nLatest user instruction: " ~
-                checkpointEdges(latestUser, maximum / 8);
-        if (summary.length < 100 || summary.canFind("<think>") ||
-            summary.length + durable.length + 240 > maximum) return false;
-        session.compactionSummary = "Earlier conversation checkpoint. Use read_history for exact omitted messages and read_plan for task details.\n" ~
-            "Durable objective and constraints:\n" ~ durable ~
-            "\nModel summary of earlier work:\n" ~ summary;
-        return true;
-    }
 
     private static ChatRequestMessage[] buildRequestMessages(
         const ref ChatSession session, string afterMessageId = "",
@@ -24620,13 +23575,6 @@ private void pollButtonSuggestionRequest()
             : _settings.toolsEnabled;
     }
 
-    /// Optional per-session system-prompt section. Kept outside the cached
-    /// prompt so one session's instructions never leak into another.
-    private static string sessionInstructionsBlock(const ref ChatSession session)
-    {
-        if (session.instructions.length == 0) return "";
-        return "\n# Session instructions\n" ~ session.instructions ~ "\n";
-    }
 
     /// Cached wrapper around `buildSystemPrompt`. The prompt is composed from
     /// modules and is multi-kilobyte; its inputs only change with the
@@ -24687,6 +23635,7 @@ private void pollButtonSuggestionRequest()
         if (userTurn && !_autoResending)
         {
             _autoResendCount = 0;
+            _execution.outageStartedAt = MonoTime.init;
             _contextOverflowRetryUsed = false;
         }
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
@@ -24763,7 +23712,7 @@ private void pollButtonSuggestionRequest()
             if (modelOverride.length > 0)
                 orchestratorModel = resolveAvailableModel(modelOverride);
         }
-        const summaryOnly = completionHandoffPending(*session);
+        const summaryOnly = !goalActive(*session) && completionHandoffPending(*session);
         const diagnosticReview = !summaryOnly && _execution.diagnosticRequestsRemaining > 0 &&
             _settings.diagnosticModel.length > 0;
         _execution.diagnosticActive = diagnosticReview;
@@ -24773,179 +23722,50 @@ private void pollButtonSuggestionRequest()
             --_execution.diagnosticRequestsRemaining;
             updateStatus("Reviewing the stalled diagnosis with " ~ orchestratorModel ~ "…");
         }
-        ChatRequestMessage[] messages;
-        if (toolsEnabled)
-        {
-            ChatRequestMessage systemPrompt;
-            systemPrompt.role = "system";
-            const workspace = workspaceForSession(sessionIndex);
-            version (Windows)
-                const platform = "win32";
-            else version (Posix)
-                const platform = "posix";
-            else
-                const platform = "unknown";
-            if (_finalAnswerRequested || summaryOnly)
-                systemPrompt.content = "Produce the final response now from " ~
-                    "the evidence already gathered. No tools are available in " ~
-                    "this request. Give the concise useful result and accurately state " ~
-                    "any remaining outcome. Do not ask permission to call tools." ~
-                    (summaryOnly ? "\n" ~ completionHandoffInstruction : "") ~
-                    responsePlanReviewPrompt() ~
-                    // The final-answer round builds its own minimal prompt, so
-                    // it must re-apply the selected response style; otherwise
-                    // the answer the user reads would ignore verbosity.
-                    promptVerbosityDirective(_settings.verbosity);
-            else
-            {
-                // Native tools are the main tool set; the legacy shell tool is
-                // an opt-in addition from Settings.
-                registerContextSystemPromptModules(workspace);
-                systemPrompt.content = cachedSystemPrompt(
-                    !_settings.legacyTools, workspace, platform,
-                    _settings.verbosity);
-                if (_settings.experimentalNestedPlans)
-                    systemPrompt.content ~= "\n# Experimental nested plans\n" ~
-                        "When one existing plan step needs a detailed " ~
-                        "checklist, use update_subplan with its 1-based " ~
-                        "parent_step. This adds one collapsible level without " ~
-                        "replacing the main plan. Keep the parent step " ~
-                    "in_progress until its outcome is complete.\n";
-                // experimental: planmode - invariants only, no step template.
-                systemPrompt.content ~= trackedPlanPromptBlock();
-            }
-            if (experimentalOrchestratorEnabled() &&
-                orchestratorSpeaker.length > 0)
-                systemPrompt.content ~= experimentalOrchestratorIdentityBlock(
-                    *session, orchestratorSpeaker);
-            systemPrompt.content ~= sessionInstructionsBlock(*session);
-            messages ~= systemPrompt;
-        }
-        else
-        {
-            // Tools are off, so this is the only system message; keep the
-            // selected response style in it.
-            const taskPrompt = durableTaskPrompt(*session,
-                _settings.experimentalNestedPlans) ~
-                responsePlanReviewPrompt() ~
-                trackedPlanPromptBlock() ~
-                sessionInstructionsBlock(*session) ~
-                promptVerbosityDirective(_settings.verbosity);
-            if (taskPrompt.length > 0)
-            {
-                ChatRequestMessage systemPrompt;
-                systemPrompt.role = "system";
-                systemPrompt.content = taskPrompt;
-                messages ~= systemPrompt;
-            }
-        }
-        OpenCodeToolDef[] tools;
-        if (diagnosticReview)
-        {
-            ChatRequestMessage review;
-            review.role = "system";
-            review.content = "Perform an independent read-only diagnosis. Identify the exact failing outcome, " ~
-                "contradictory evidence, rejected hypotheses and a reduced reproducer or concrete next fix. " ~
-                "Do not edit files or mark the task complete. Report your findings for the main model to apply. " ~
-                "Use at most four focused tool rounds. Source and screenshots are evidence; prior claims are not proof.";
-            messages ~= review;
-        }
-        if (toolsEnabled && !_finalAnswerRequested && !summaryOnly)
-            tools = _settings.legacyTools
-                ? builtinToolDefinitions()
-                : nativeOnlyToolDefinitions();
-        if (diagnosticReview)
-        {
-            OpenCodeToolDef[] inspection;
-            foreach (tool; tools)
-                if (diagnosticToolAllowed(tool.name)) inspection ~= tool;
-            tools = inspection;
-        }
-        if (!_settings.experimentalNestedPlans)
-        {
-            OpenCodeToolDef[] filtered;
-            foreach (tool; tools)
-                if (tool.name != "update_subplan") filtered ~= tool;
-            tools = filtered;
-        }
-        // The completion tool is only meaningful while a goal is active.
-        if (!goalActive(*session))
-        {
-            OpenCodeToolDef[] filtered;
-            foreach (tool; tools)
-                if (tool.name != "goal_complete") filtered ~= tool;
-            tools = filtered;
-        }
-        // experimental: orchestrator - a router sees only its routing tools;
-        // other participants never see them.
-        if (experimentalOrchestratorEnabled())
-            tools = experimentalOrchestratorFilterTools(tools,
-                orchestratorRouter);
-        const fixedRequestBytes = requestMessageBytes(messages) +
-            requestToolDefinitionBytes(tools);
-        const compactionEnabled = diagnosticReview || contextCompactionForModel(_settings,
+        RequestPolicy policy;
+        policy.toolsEnabled = toolsEnabled;
+        policy.finalAnswer = _finalAnswerRequested;
+        policy.summaryOnly = summaryOnly;
+        policy.diagnosticReview = diagnosticReview;
+        policy.nestedPlans = _settings.experimentalNestedPlans;
+        policy.orchestratorEnabled = experimentalOrchestratorEnabled();
+        policy.orchestratorRouter = orchestratorRouter;
+        policy.compactionEnabled = diagnosticReview || contextCompactionForModel(_settings,
             _settings.baseUrl, session.model);
-        const oldCompactionAnchor = checkpointOnActivePath(*session)
-            ? session.compactedThroughMessageId : "";
-        const oldCompactionSummary = oldCompactionAnchor.length > 0
-            ? session.compactionSummary : "";
-        ChatRequestMessage[] compactedRequestMessages;
-        bool checkpointCreated;
-        bool fallbackCompacted;
-        // A provider-sized rejection sets `_forceCompactNextRequest` so this
-        // retry is trimmed to the learned budget even though auto-compaction is
-        // off; the identical untrimmed bytes would just be refused again.
-        const forceCompact = _forceCompactNextRequest;
+        policy.forceCompact = _forceCompactNextRequest;
         _forceCompactNextRequest = false;
-        // experimental: orchestrator - sub-agent turns run on their own bounded
-        // context (task + this turn), not the shared transcript.
-        const contextAnchor = multiAgentContextAnchor(*session,
-            orchestratorSpeaker);
-        if (contextAnchor.length > 0)
+        const normalContextLimit = requestContextBudget(orchestratorModel);
+        policy.contextLimit = diagnosticReview && normalContextLimit > 64_000 ? 64_000 : normalContextLimit;
+        policy.imageLimit = experimentalImageHistoryLimit();
+        policy.contextAnchor = multiAgentContextAnchor(*session, orchestratorSpeaker);
+        policy.planPrompt = trackedPlanPromptBlock();
+        policy.reviewPrompt = responsePlanReviewPrompt();
+        policy.verbosity = promptVerbosityDirective(_settings.verbosity);
+        if (policy.orchestratorEnabled && orchestratorSpeaker.length)
+            policy.identityBlock = experimentalOrchestratorIdentityBlock(*session, orchestratorSpeaker);
+        if (toolsEnabled && !policy.finalAnswer && !summaryOnly)
         {
-            compactedRequestMessages = buildRequestMessages(*session,
-                contextAnchor);
-            checkpointCreated = false;
-            fallbackCompacted = false;
+            const workspace = workspaceForSession(sessionIndex);
+            version (Windows) const platform = "win32";
+            else version (Posix) const platform = "posix";
+            else const platform = "unknown";
+            registerContextSystemPromptModules(workspace);
+            policy.baseSystemPrompt = cachedSystemPrompt(!_settings.legacyTools, workspace, platform, _settings.verbosity);
+            policy.availableTools = _settings.legacyTools ? builtinToolDefinitions() : nativeOnlyToolDefinitions();
         }
-        else if (orchestratorRouter)
-        {
-            // The orchestrator sees only each sub-agent's prose result, not the
-            // shared "subchat" detail, so its request stays small instead of
-            // re-sending everything.
-            compactedRequestMessages = buildRequestMessages(*session, "", true);
-            checkpointCreated = false;
-            fallbackCompacted = false;
-        }
-        else if (compactionEnabled)
-        {
-            const normalContextLimit = requestContextBudget(orchestratorModel);
-            const contextLimit = diagnosticReview && normalContextLimit > 64_000 ? 64_000 : normalContextLimit;
-            compactedRequestMessages = prepareCompactedRequest(*session,
-                contextLimit, fixedRequestBytes, checkpointCreated,
-                fallbackCompacted);
-            if (checkpointCreated) markDirty();
-        }
-        else if (forceCompact)
-        {
-            // Trim locally instead of running a model summarization round: the
-            // summary request could itself be refused as too large, and the
-            // trim is what actually shrinks the bytes the gateway sees.
-            compactedRequestMessages = compactRequestMessages(
-                buildRequestMessages(*session),
-                requestContextBudget(orchestratorModel), fixedRequestBytes);
-        }
-        else
-            compactedRequestMessages = buildRequestMessages(*session);
-        if (checkpointCreated) publishCompactionCheckpoint(*session);
-        _contextWasCompacted[session.id] = compactionEnabled &&
-            (checkpointOnActivePath(*session) || fallbackCompacted);
-        const newCompactionNotice = (checkpointCreated || fallbackCompacted) &&
-            markContextCompactionNotice(*session);
-        // Inline images ride on their own turn's request message (copied in
-        // buildRequestMessages), so a screenshot stays part of the conversation
-        // rather than expiring as soon as another message follows it.
-        messages ~= compactedRequestMessages;
+        policy.revision.graph = _execution.graphRevision;
+        policy.revision.capabilities = systemPromptGeneration();
+        auto prepared = prepareAgentRequest(*session, policy, _execution.projection);
+        auto messages = prepared.messages;
+        auto tools = prepared.tools;
+        const checkpointCreated = prepared.checkpointCreated;
+        const fallbackCompacted = prepared.fallbackCompacted;
+        const oldCompactionAnchor = prepared.oldAnchor;
+        const oldCompactionSummary = prepared.oldSummary;
+        const forceCompact = policy.forceCompact;
+        if (checkpointCreated) { markDirty(); publishCompactionCheckpoint(*session); }
+        _contextWasCompacted[session.id] = prepared.contextCompacted;
+        const newCompactionNotice = (checkpointCreated || fallbackCompacted) && markContextCompactionNotice(*session);
         // Qwen/DeepSeek use only authoritative counts. Clear the preceding
         // request's measurement while the new request is being counted so the
         // badge never presents stale input as current. Unknown custom models
@@ -25119,7 +23939,7 @@ private void pollButtonSuggestionRequest()
     /// when its message stated one, otherwise a short interval that widens with
     /// each attempt. A failure that needs a decision (a bad key, a quota wall
     /// with no time) is left alone, because replaying it only hides the reason.
-    private void scheduleAutoResend(string failureText)
+    private void scheduleAutoResend(string failureText, bool exhausted = false)
     {
         dropAutoResendSchedule();
         const sessionIndex = turnOwnerSessionIndex();
@@ -25129,17 +23949,14 @@ private void pollButtonSuggestionRequest()
         if (session.messages.length == 0) return;
         const reply = session.messages[$ - 1];
         if (reply.role != "assistant" || !reply.failed) return;
-        const delayMs = autoResendDelayMs(failureText,
-            cast(uint) _autoResendCount);
-        if (delayMs < 0) return;
+        if (_execution.outageStartedAt == MonoTime.init) _execution.outageStartedAt = MonoTime.currTime;
+        const recovery = _execution.retryPolicy.resend(failureText, cast(uint) _autoResendCount,
+            MonoTime.currTime - _execution.outageStartedAt, false, exhausted);
+        if (!recovery.retry) return;
+        const delayMs = recovery.delayMs;
         armAutoResend(sessionIndex, cast(int) session.messages.length - 1,
             delayMs, quotaResetDelayMs(failureText));
     }
-
-    /// Wait this long before an explicitly started automatic re-send when the
-    /// failure itself states no reset time: the same first interval the
-    /// automatic path uses, so a manual start is not a hammering loop.
-    private enum long manualAutoResendDelayMs = 3_000;
 
     /// Record a pending automatic re-send for one reply and repaint the pill
     /// that controls it (the failure path refreshed the pill before the
@@ -25155,8 +23972,7 @@ private void pollButtonSuggestionRequest()
         _lastAutoResendSeconds = -1;
         logInfo("sending this turn again automatically in " ~
             to!string(delayMs) ~ " ms [auto-retry " ~
-            to!string(_autoResendCount + 1) ~ "/" ~
-            to!string(maxAutoResends) ~ "]");
+            to!string(_autoResendCount + 1) ~ "]");
         refreshAutoRetryPill(sessionIndex);
     }
 
@@ -25176,12 +23992,15 @@ private void pollButtonSuggestionRequest()
             return false;
         const reply = session.messages[cast(size_t) messageIndex];
         if (reply.role != "assistant" || !reply.failed) return false;
-        const delayMs = autoResendDelayMs(reply.error,
-            cast(uint) _autoResendCount);
-        if (delayMs < 0 && !manual) return false;
+        if (manual || _execution.outageStartedAt == MonoTime.init)
+            _execution.outageStartedAt = MonoTime.currTime;
+        const recovery = _execution.retryPolicy.resend(reply.error, cast(uint) _autoResendCount,
+            MonoTime.currTime - _execution.outageStartedAt, manual);
+        if (!recovery.retry) return false;
+        const delayMs = recovery.delayMs;
         dropAutoResendSchedule();
         armAutoResend(sessionIndex, messageIndex,
-            delayMs >= 0 ? delayMs : manualAutoResendDelayMs,
+            delayMs,
             quotaResetDelayMs(reply.error));
         return true;
     }
@@ -25257,10 +24076,10 @@ private void pollButtonSuggestionRequest()
         if (_processingRuntimeSession >= 0 &&
             _processingRuntimeSession != _autoResendSession) return;
         if (_client.busy() || _turnTiming) return;
-        // A conversation the user has left must not start a turn behind their
-        // back, and a spent budget means the reason in the transcript is the
-        // answer for now.
-        if (_autoResendCount >= maxAutoResends)
+        // Background chats retain their own recovery. Exhaustion leaves the
+        // failure and manual Retry visible without opening another outage loop.
+        if (_autoResendResetMs == 0 && !_execution.retryPolicy.available(
+            MonoTime.currTime - _execution.outageStartedAt))
         {
             const sessionIndex = _autoResendSession;
             dropAutoResendSchedule();
@@ -25306,8 +24125,7 @@ private void pollButtonSuggestionRequest()
         }
         ++_autoResendCount;
         updateStatus("Sending the failed turn again (attempt " ~
-            to!string(_autoResendCount) ~ " of " ~
-            to!string(maxAutoResends) ~ ")…");
+            to!string(_autoResendCount) ~ ")…");
         _autoResending = true;
         scope (exit) _autoResending = false;
         regenerateLastReply(sessionIndex, messageIndex);
@@ -25322,8 +24140,7 @@ private void pollButtonSuggestionRequest()
                 "when it resets in " ~ remaining ~
                 " (send a message to cancel)";
         return "Provider was busy — sending this turn again in " ~ remaining ~
-            " (attempt " ~ to!string(_autoResendCount + 1) ~ " of " ~
-            to!string(maxAutoResends) ~ ")";
+            " (attempt " ~ to!string(_autoResendCount + 1) ~ ")";
     }
 
     /// A compact "3h 52m" / "1m 30s" / "12s" wait.
@@ -32364,7 +31181,11 @@ private void pollButtonSuggestionRequest()
                         handleOutputFailure(failure);
                         break;
                     }
-                    if (!event.cancelled) _autoResendCount = 0;
+                    if (!event.cancelled)
+                    {
+                        _autoResendCount = 0;
+                        _execution.outageStartedAt = MonoTime.init;
+                    }
                     const completedRequestId = event.requestId;
                     const taskContinues = taskContinuesAfterDone(event.cancelled, event.finishReason);
                     finishAssistantMessage(event.cancelled, event.promptTokens,
@@ -32389,7 +31210,7 @@ private void pollButtonSuggestionRequest()
                     if (finishCompletionHandoffAfterFailure(event.text)) break;
                     failAssistantMessage(event.text);
                     if (!scheduleContextOverflowRetry(event.text))
-                        scheduleAutoResend(event.text);
+                        scheduleAutoResend(event.text, event.retryExhausted);
                     if (_activeRequestId == event.requestId)
                     {
                         _activeRequestId = 0;
@@ -34210,12 +33031,13 @@ private void pollButtonSuggestionRequest()
     /// Test-only: deliver an `error` event through the real service path, so the
     /// automatic re-send policy runs exactly as it does for a failed request
     /// (`failAssistantMessage` alone bypasses that policy).
-    public void failRequestThroughServiceForTesting(string error)
+    public void failRequestThroughServiceForTesting(string error, bool exhausted = false)
     {
         if (_current < 0) return;
         OpenCodeEvent event;
         event.kind = OpenCodeEventKind.error;
         event.text = error;
+        event.retryExhausted = exhausted;
         runtimeForSession(_current).client.pushLocalEvent(event);
         serviceExecution(0.0);
     }
@@ -36468,7 +35290,8 @@ private void pollButtonSuggestionRequest()
     public void injectToolResultForTesting(string name, string output,
         bool failed, string arguments = "{}", int additions = 0,
         int deletions = 0, string diff = "",
-        const(ChatImageAttachment)[] images = null, string verifiedCheck = "")
+        const(ChatImageAttachment)[] images = null, string verifiedCheck = "",
+        ulong receiptRevision = ulong.max)
     {
         if (_pendingToolCalls.length == 0)
         {
@@ -36494,7 +35317,8 @@ private void pollButtonSuggestionRequest()
         event.verificationPassed = verifiedCheck.length > 0 && !failed;
         event.verificationExitCode = verifiedCheck.length ? 0 : int.min;
         event.verificationWorkspace = workspaceForSession(turnOwnerSessionIndex());
-        event.verificationRevision = toolWorkspaceRevision(event.verificationWorkspace);
+        event.verificationRevision = receiptRevision == ulong.max
+            ? toolWorkspaceRevision(event.verificationWorkspace) : receiptRevision;
         applyToolResult(event);
     }
 

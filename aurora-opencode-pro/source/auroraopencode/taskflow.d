@@ -499,11 +499,11 @@ bool taskHasActionEvidence(const ref ChatSession session, bool includeResearch =
     return false;
 }
 
-bool taskRequiresPlan(const ref ChatSession session)
+bool taskRequiresPlan(const ref ChatSession session, bool strictPlan = experimentalStrictPlanEnabled())
 {
     // Work size may suggest a plan, but only the explicitly enabled strict
     // mode can require one. Completed work must not trigger planning rounds.
-    if (!experimentalStrictPlanEnabled()) return false;
+    if (!strictPlan) return false;
     bool[string] changedPaths;
     int actions;
     foreach (index; taskMessagePath(session))

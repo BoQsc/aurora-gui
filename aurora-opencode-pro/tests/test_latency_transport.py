@@ -57,9 +57,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
             time.sleep(0.1)
         if model == "history":
             time.sleep(0.4 if attempt == 3 else 0.1)
-        if model == "retry" and attempt == 1:
+        if model in ("always-busy", "always-failing") or (model == "retry" and attempt == 1):
             payload = b'{"error":{"message":"brief unavailable"}}'
-            self.send_response(503)
+            self.send_response(429 if model == "always-busy" else 503)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -121,6 +121,8 @@ try:
     warm_port = next(port for model, path, port in received if model == "warm")
     assert first_port == warm_port, "Different chats did not reuse the actual TCP connection"
     assert attempts["retry"] == 2
+    assert attempts["always-busy"] == 1
+    assert attempts["always-failing"] == 3
     assert len(parallel_arrived) == 8
     print("PASS actual TCP reuse across clients, skipped tokenizer call, exact-count opt-in and bounded recovery", flush=True)
 finally:

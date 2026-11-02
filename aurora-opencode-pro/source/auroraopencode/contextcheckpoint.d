@@ -1,7 +1,7 @@
 module auroraopencode.contextcheckpoint;
 
 import auroraopencode.core : ChatSession, ChatRequestMessage;
-import auroraopencode.requestbuilder : projectRequestMessages;
+import auroraopencode.projectioncache : projectContext, RequestProjectionCache, ProjectionRevision;
 import std.json : JSONValue;
 
 /// Shared request accounting: reasoning, tool envelopes and image token costs
@@ -21,10 +21,11 @@ size_t requestMessageBytes(const(ChatRequestMessage)[] messages)
 /// Project once, then walk suffix costs once. Previously every candidate
 /// rebuilt the full branch, image retirement index, and provider envelopes.
 size_t compactionBoundary(const ref ChatSession session, const(size_t)[] path,
-    size_t start, size_t tailBudget, size_t imageLimit = 2)
+    size_t start, size_t tailBudget, size_t imageLimit = 2,
+    RequestProjectionCache cache = null, ProjectionRevision revision = ProjectionRevision.init)
 {
     size_t[] positions;
-    const projected = projectRequestMessages(session, "", false, imageLimit, &positions);
+    const projected = projectContext(session, "", false, imageLimit, cache, revision, &positions);
     size_t[] costs = new size_t[](path.length + 1);
     foreach (i, message; projected)
         costs[positions[i]] += requestMessageBytes(projected[i .. i + 1]);

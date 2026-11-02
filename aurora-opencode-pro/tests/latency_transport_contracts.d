@@ -9,7 +9,7 @@ import auroraopencode.systemprompt : SystemPromptContext, renderSystemPrompt,
     setSystemPromptModules, textModule;
 import auroraopencode.core : ChatRequestMessage, OpenCodeToolDef;
 import auroraopencode.workerbudget : WorkerBudget;
-import auroraopencode.retrypolicy : ProviderRetryPolicy;
+import auroraopencode.retrypolicy : ProviderRetryPolicy, RetryReason;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
@@ -102,6 +102,32 @@ int main()
     environment.remove("AURORA_TOKEN_PREFLIGHT");
     const retried = complete(base, "retry", 1004);
     assert(retried.microseconds[LatencyStage.firstToken] >= 0);
+
+    foreach (model; ["always-busy", "always-failing"])
+    {
+        auto unavailable = new OpenCodeClient(base, "fixture-key",
+            ProviderRetryPolicy(model == "always-busy" ? 100.msecs : 5.seconds));
+        scope(exit) unavailable.closeSession();
+        assert(unavailable.startChatMessages(null, null, model, false, 1010) == ChatStartResult.accepted);
+        const deadline = MonoTime.currTime + 3.seconds;
+        bool failed;
+        OpenCodeEvent[] failures;
+        while (!failed && MonoTime.currTime < deadline)
+        {
+            unavailable.drain(failures);
+            foreach (event; failures)
+                if (event.kind == OpenCodeEventKind.error)
+                {
+                    assert(event.retryExhausted, "Provider exhaustion lost its typed boundary");
+                    assert(event.retryReason == (model == "always-busy" ?
+                        RetryReason.providerBusy : RetryReason.transientFailure));
+                    failed = true;
+                }
+            if (!failed) Thread.sleep(1.msecs);
+        }
+        assert(failed, "Unavailable provider outlived its recovery policy");
+    }
+    writeln("PASS real HTTP outage and attempt exhaustion carry terminal retry decisions");
 
     // All eight requests must reach the server before it releases any headers.
     // Cancel one stream after their first chunks; the remaining seven survive.

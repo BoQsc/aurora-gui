@@ -6,7 +6,9 @@ import auroraopencode.workerbudget : WorkerBudget, providerWorkerBudget;
 import auroraopencode.httptransport : AsyncHttpRequest;
 import auroraopencode.latency : RequestLatency, LatencyStage;
 import std.process : environment;
-import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy;
+import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy,
+    RetryReason, isPersistentRateLimit;
+public import auroraopencode.retrypolicy : autoResendDelayMs, quotaResetDelayMs;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
 import core.thread : Thread;
@@ -111,129 +113,10 @@ private bool mayRetryTransientStatus(DWORD status, uint nextAttempt)
  * and retrying it forever hides both the reason and the reset time, so the
  * turn fails immediately and shows the provider's own sentence.
  */
-private bool isPersistentRateLimit(string detail)
-{
-    return containsAsciiIgnoreCase(detail, "usage limit") ||
-        containsAsciiIgnoreCase(detail, "limit reached") ||
-        containsAsciiIgnoreCase(detail, "resets in") ||
-        containsAsciiIgnoreCase(detail, "reset in") ||
-        containsAsciiIgnoreCase(detail, "quota") ||
-        containsAsciiIgnoreCase(detail, "available balance");
-}
-
 /// Test-only: exposes the quota-wall decision.
 public bool persistentRateLimitForTesting(string detail)
 {
     return isPersistentRateLimit(detail);
-}
-
-/// How long an automatic re-send may be postponed. Bounds a misread duration
-/// ("reset in 9000 days") to something a running app can still honour.
-private enum long maxAutoResendDelayMs = 86_400_000;
-
-/**
- * How long to wait before sending a failed turn again on its own, in
- * milliseconds. Negative means "do not": the failure needs the user's
- * decision, and replaying it would only hide the reason the provider gave.
- *
- * `attempt` counts the automatic re-sends already made for this turn, so a
- * provider that stays unreachable is polled at a widening interval instead of
- * being hammered.
- *
- * A failed turn used to wait for the user to press Retry even when the
- * provider had already said exactly when it would accept work again.
- */
-public long autoResendDelayMs(string failureText, uint attempt)
-{
-    // A stated reset time is the provider answering "when", so use it as given.
-    const resetMs = quotaResetDelayMs(failureText);
-    if (resetMs > 0)
-        return resetMs > maxAutoResendDelayMs ? maxAutoResendDelayMs : resetMs;
-    // A quota wall with no time, or a request the server rejected on its own
-    // terms (a bad key, an unknown route), fails identically when replayed.
-    // A 400 is deliberately NOT in this set: gateways route those to model
-    // provisioning/model-not-ready conditions that answer a bare body such as
-    // {"model":"..."} and clear on their own, so a random 400 used to kill the
-    // turn outright. It is replayed on the same bounded schedule as any other
-    // blip, and the provider's own sentence stays in the failed reply either
-    // way, so nothing is hidden.
-    if (isPersistentRateLimit(failureText)) return -1;
-    if (containsAsciiIgnoreCase(failureText, "HTTP 401") ||
-        containsAsciiIgnoreCase(failureText, "HTTP 403") ||
-        containsAsciiIgnoreCase(failureText, "HTTP 404") ||
-        containsAsciiIgnoreCase(failureText, "HTTP 422"))
-        return -1;
-    // Anything else is a transport or provider blip (a stream that died, a
-    // gateway that refused, a socket error): wait, then send the same turn
-    // again, backing off to half a minute.
-    const delay = 3_000 + 3_000 * cast(long) attempt;
-    return delay > 30_000 ? 30_000 : delay;
-}
-
-/**
- * Milliseconds until the moment a "... resets in 3hr 52min" notice names, or 0
- * when the failure text states no reset time.
- *
- * The provider's own sentence is the only reliable "when" available, so it is
- * read rather than guessed. The duration is scanned as number/unit pairs and
- * stops at the first pair without a unit, so the prose that follows
- * ("To continue using this model now, ...") cannot be misread as more time.
- */
-public long quotaResetDelayMs(string failureText)
-{
-    const lower = failureText.toLower();
-    const marker = lower.indexOf("reset");
-    if (marker < 0) return 0;
-    auto rest = lower[cast(size_t) marker + 5 .. $];
-    // The notice reads "resets in <duration>" (or "reset in ...").
-    const inIndex = rest.indexOf("in ");
-    if (inIndex < 0 || inIndex > 3) return 0;
-    rest = rest[cast(size_t) inIndex + 3 .. $];
-
-    long total;
-    size_t index;
-    int fields;
-    while (index < rest.length && fields < 4)
-    {
-        while (index < rest.length &&
-            (rest[index] == ' ' || rest[index] == ',')) ++index;
-        if (index >= rest.length || rest[index] < '0' || rest[index] > '9')
-            break;
-        long value;
-        while (index < rest.length && rest[index] >= '0' && rest[index] <= '9')
-        {
-            value = value * 10 + (rest[index] - '0');
-            ++index;
-        }
-        while (index < rest.length && rest[index] == ' ') ++index;
-        size_t unitLength;
-        const unitMs = resetUnitMs(rest[index .. $], unitLength);
-        if (unitMs == 0) break;
-        index += unitLength;
-        total += value * unitMs;
-        ++fields;
-    }
-    return total;
-}
-
-/// Duration of the unit keyword at the start of `text`, and its length. Longest
-/// keyword first, so "min" is not read as "m" followed by prose.
-private long resetUnitMs(string text, out size_t length)
-{
-    static immutable string[] words = ["days", "day", "hours", "hour", "hrs",
-        "hr", "minutes", "minute", "mins", "min", "seconds", "second", "secs",
-        "sec", "h", "m", "s"];
-    static immutable long[] durations = [86_400_000, 86_400_000, 3_600_000,
-        3_600_000, 3_600_000, 3_600_000, 60_000, 60_000, 60_000, 60_000,
-        1_000, 1_000, 1_000, 1_000, 3_600_000, 60_000, 1_000];
-    foreach (index, word; words)
-        if (startsWithAscii(text, word))
-        {
-            length = word.length;
-            return durations[index];
-        }
-    length = 0;
-    return 0;
 }
 
 /// Pause before replaying a transient failure. A 5xx keeps the original short
@@ -1183,6 +1066,8 @@ final class OpenCodeClient
         }
 
         bool cancelled;
+        bool retryExhausted;
+        RetryReason terminalRetryReason;
 
         try
         {
@@ -1307,6 +1192,8 @@ final class OpenCodeClient
                 AsyncHttpRequest http;
                 bool requestRegistered;
                 bool retry;
+                bool retryUsesBudget;
+                int retryDelayMs;
                 DWORD retryStatus;
                 string retryNote;
                 string retryReason;
@@ -1403,9 +1290,14 @@ final class OpenCodeClient
                             isPersistentRateLimit(detail);
                         const recovery = _retryPolicy.decide(statusCode,
                             attempt + 1, MonoTime.currTime - waitStart, quotaWall);
+                        terminalRetryReason = recovery.reason;
+                        retryExhausted = !recovery.retry &&
+                            (recovery.reason == RetryReason.providerBusy || recovery.reason == RetryReason.transientFailure);
                         if (recovery.retry)
                         {
                             retry = true;
+                            retryUsesBudget = true;
+                            retryDelayMs = recovery.delayMs;
                             retryStatus = statusCode;
                             retryReason = condenseUpstreamDetail(
                                 formatHttpErrorDetail(detail));
@@ -1534,7 +1426,7 @@ final class OpenCodeClient
 
                 if (!retry) break;
                 ++attempt;
-                const backoffMs = transientRetryBackoffMs(retryStatus, attempt);
+                const backoffMs = retryUsesBudget ? retryDelayMs : transientRetryBackoffMs(retryStatus, attempt);
                 logInfo("chat upstream returned HTTP " ~
                     to!string(retryStatus) ~
                     (retryNote.length > 0 ? " (" ~ retryNote ~ ")" : "") ~
@@ -1547,7 +1439,7 @@ final class OpenCodeClient
                 setTransientRetry();
                 // Poll shutdown so Stop stays immediate, and closing the window
                 // never waits on this loop.
-                foreach (_; 0 .. backoffMs / 50)
+                foreach (_; 0 .. (backoffMs + 49) / 50)
                 {
                     Thread.sleep(50.msecs);
                     if (shuttingDown())
@@ -1558,6 +1450,12 @@ final class OpenCodeClient
                 }
                 clearTransientRetry();
                 if (cancelled) break;
+                if (retryUsesBudget && !_retryPolicy.available(MonoTime.currTime - waitStart))
+                {
+                    retryExhausted = true;
+                    throw new Exception("Provider recovery budget exhausted after HTTP " ~
+                        to!string(retryStatus) ~ (retryReason.length ? ": " ~ retryReason : "."));
+                }
             }
 
             if (cancelled)
@@ -1580,7 +1478,14 @@ final class OpenCodeClient
                     _decoder._streamContent, false, null, true, _decoder._lastPromptTokens,
                     _decoder._lastCompletionTokens, _decoder._lastTotalTokens));
             else
-                pushStreamEvent(OpenCodeEvent(OpenCodeEventKind.error, error.msg));
+            {
+                OpenCodeEvent failure;
+                failure.kind = OpenCodeEventKind.error;
+                failure.text = error.msg;
+                failure.retryExhausted = retryExhausted;
+                failure.retryReason = terminalRetryReason;
+                pushStreamEvent(failure);
+            }
         }
     }
 
