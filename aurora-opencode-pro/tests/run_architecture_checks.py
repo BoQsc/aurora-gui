@@ -7,6 +7,7 @@ import time
 import hashlib
 import os
 import shutil
+import stat
 from pathlib import Path
 
 package = Path(__file__).resolve().parents[1]
@@ -44,14 +45,24 @@ def prune_architecture_runs(keep: int, current: Path | None = None) -> int:
     runs.sort(key=lambda item: item[0], reverse=True)
     # The just-created run consumes one retention slot when present.
     retain_old = max(0, keep - (1 if current is not None else 0))
+    def remove_readonly(function, path, excinfo):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            function(path)
+        except OSError as error:
+            print(f'PRUNE WARNING {path}: {error}', flush=True)
+
     removed = 0
     for _, candidate in runs[retain_old:]:
         try:
-            shutil.rmtree(candidate)
+            shutil.rmtree(candidate, onexc=remove_readonly)
         except OSError as error:
             print(f'PRUNE WARNING {candidate}: {error}', flush=True)
         else:
-            removed += 1
+            if candidate.exists():
+                print(f'PRUNE WARNING {candidate}: incomplete removal', flush=True)
+            else:
+                removed += 1
     return removed
 
 if args.prune_only:
