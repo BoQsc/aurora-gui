@@ -416,6 +416,25 @@ The default suite now includes this 52nd fixture. Native lifecycle callbacks,
 automatic diagnostic-model policy, orchestration and desktop adoption remain
 open; these are still source changes pending final delivery.
 
+Automatic diagnostic-model recovery now runs through the actor's ordinary
+request/tool path. A review gets at most four requests, read-only schemas and
+the same native execution fence; it cannot replace the selected model, complete
+the task or consume an unlimited optional outage budget. Prose completion,
+request exhaustion or provider failure hands evidence back to the main model.
+Stop cancels it normally. A fresh user instruction or a successful main-model
+mutation/check can admit a new review; repeated read-only diagnosis cannot
+continually renew its own budget. Execution projections identify the effective
+request model and review phase without changing durable model selection.
+Five actual HTTP cases pass with journal recovery and exact offline replay in
+`build/architecture-checks-mn7mibpd/`. The four-request cases include both valid
+native reads and unoffered writes, with no forbidden file created. Optional
+title/compaction cases still pass in `build/architecture-checks-cqhgfizm/`, and
+all eleven ordinary recovery cases in `build/architecture-checks-ghdr__d3/`.
+Source fingerprint:
+`f5230a3b84c91283f9ed63e4915c2b503b558f48615a17d08677412e40fa6b0f`.
+Orchestration, native host lifecycle delivery and desktop actor adoption remain
+required before the final rebuild/publish.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

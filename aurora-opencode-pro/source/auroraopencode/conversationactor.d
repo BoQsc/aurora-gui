@@ -28,7 +28,7 @@ import auroraopencode.toolprotocol : normalizeToolCalls;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision;
 import auroraopencode.tools : ChangeContext, ToolCancellation;
 import auroraopencode.toolprogresspolicy : isPlainDocumentMutation, isSubstantiveMutation, hasExhaustedRepeatedCall;
-import auroraopencode.taskflow : acceptTaskRequest, taskInvestigation, restoreBranchTask;
+import auroraopencode.taskflow : acceptTaskRequest, taskInvestigation, restoreBranchTask, executionRecoveryDue, executionDiagnosisMarker;
 import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
 import auroraopencode.taskpolicy : verificationScope;
 import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome, clampGoalText, goalContinuationInstruction;
@@ -152,6 +152,8 @@ public final class ConversationActor
     private long initialBudgetMs;
     private ActorConfiguration roundConfig, batchConfig;
     private string roundModel;
+    private uint diagnosticRemaining;
+    private bool diagnosticActive, diagnosticUsed;
     private ConversationImages images;
     private ConversationToolView[] liveTools;
     private size_t omittedTools;
@@ -458,6 +460,7 @@ public final class ConversationActor
         ConversationExecutionView execution;
         execution.phase = to!string(engine.phase);
         execution.routingKey = engine.client.openCodeSession();
+        execution.requestModel = roundModel; execution.diagnosticReview = diagnosticActive || config.request.diagnosticReview;
         execution.resendCount = resendCount;
         execution.retryRemainingMs = retryAtMs < 0 ? -1 : retryAtMs > frameMs ? retryAtMs - frameMs : 0;
         execution.toolRounds = engine.toolRounds;
@@ -503,6 +506,7 @@ public final class ConversationActor
     }
     private void appendUser(string text, ChatPromptContext context = ChatPromptContext.init)
     {
+        diagnosticRemaining = 0; diagnosticActive = false; diagnosticUsed = false;
         ChatMessage message; message.role = "user"; message.content = text; message.images = context.images;
         append(message); acceptTaskRequest(session, text, session.activeLeafId);
         if (context.text.length)
@@ -521,20 +525,31 @@ public final class ConversationActor
     private void request()
     {
         if (engine.turnCancelled) return;
-        if (clientBudgetMs != config.outageBudgetMs)
+        if (diagnosticActive && !diagnosticRemaining) finishDiagnostic();
+        const diagnostic = config.diagnosticModel.length && diagnosticRemaining > 0;
+        const budget = diagnostic && (config.outageBudgetMs <= 0 || config.outageBudgetMs > 15_000) ? 15_000 : config.outageBudgetMs;
+        if (clientBudgetMs != budget)
         {
             engine.client.closeSession();
-            engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, engine.retryPolicy);
-            engine.client.setEventWake(&notify); clientBudgetMs = config.outageBudgetMs;
+            engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, ProviderRetryPolicy(budget.msecs));
+            engine.client.setEventWake(&notify); clientBudgetMs = budget;
         }
         refreshVerification();
         if (images.prepare(session, config.request.imageLimit)) engine.invalidateProjection();
         auto policy = config.request;
         policy.summaryOnly = !goalActive(session) && (policy.summaryOnly || completionHandoffPending(session));
+        diagnosticActive = diagnostic && !policy.summaryOnly;
+        if (diagnosticActive)
+        {
+            --diagnosticRemaining; policy.diagnosticReview = true; policy.compactionEnabled = true;
+            if (policy.contextLimit <= 0 || policy.contextLimit > 64_000) policy.contextLimit = 64_000;
+        }
+        else diagnosticRemaining = 0;
         policy.revision.graph = engine.graphRevision;
         auto prepared = prepareAgentRequest(session, policy, engine.projection);
         roundConfig = config;
-        roundModel = session.model;
+        roundConfig.request = policy;
+        roundModel = diagnosticActive ? config.diagnosticModel : session.model;
         offeredTools = prepared.tools.length > 0;
         offeredToolNames = null;
         foreach (tool; prepared.tools) offeredToolNames[tool.name] = true;
@@ -552,8 +567,8 @@ public final class ConversationActor
             activeCancellation = admission;
             if (stopPending || closing) admission.cancel();
         }
-        auto model = session.model;
-        auto thinking = session.thinking;
+        auto model = roundModel;
+        auto thinking = diagnosticActive ? false : session.thinking;
         void launch()
         {
             if (admission.cancelled()) return;
@@ -593,6 +608,16 @@ public final class ConversationActor
         if (!messages.length) return;
         metadata(); startJob(ModelJobKind.title, messages);
     }
+    private bool beginDiagnostic()
+    {
+        if (!config.diagnosticModel.length || diagnosticUsed || diagnosticActive) return false;
+        diagnosticRemaining = 4; diagnosticUsed = true; return true;
+    }
+    private void finishDiagnostic()
+    {
+        diagnosticRemaining = 0; diagnosticActive = false;
+        internalNote(executionDiagnosisMarker ~ "Independent read-only review has ended. The main model must assess its recorded findings and apply the next useful fix or verification. A diagnosis is not task completion.");
+    }
     private void fail(string text, bool terminal = true)
     {
         if (engine.phase != RequestPhase.failed)
@@ -613,6 +638,7 @@ public final class ConversationActor
         const wasRunning = running;
         const previousStatus = session.turnStatus;
         retryAtMs = -1;
+        diagnosticRemaining = 0; diagnosticActive = false;
         jobs.close();
         synchronized (mutex) backgroundCancellation = new ToolCancellation();
         engine.stop(); engine.client.cancel();
@@ -755,6 +781,7 @@ public final class ConversationActor
                 config = next; session.model = model; session.thinking = thinking;
                 if (!config.quickTitle) jobs.cancel(ModelJobKind.title);
                 if (!config.modelCompaction) jobs.cancel(ModelJobKind.compaction);
+                if (!config.diagnosticModel.length) diagnosticRemaining = 0;
                 engine.retryPolicy = ProviderRetryPolicy(config.outageBudgetMs.msecs);
                 engine.client.setCredentials(config.baseUrl, config.apiKey);
                 engine.invalidateProjection(); metadata();
@@ -816,6 +843,7 @@ public final class ConversationActor
                 append(skipped);
             }
             engine.pendingToolCalls = null; engine.pendingToolResults = 0;
+            if (diagnosticActive) { finishDiagnostic(); request(); return; }
             if (!goalActive(session) && completionHandoffPending(session)) completeFromEvidence();
             else fail("Provider requested tools that were unavailable for this request. No tool was executed.");
             return;
@@ -835,6 +863,11 @@ public final class ConversationActor
         if (!allowed.length)
         {
             engine.pendingToolCalls = null; engine.reportedToolCallIds = null;
+            if (diagnosticActive)
+            {
+                internalNote(executionDiagnosisMarker ~ "The review requested an unavailable tool. Use only the supplied read-only tools and report findings for the main model.");
+                request(); return;
+            }
             if (outputRecoveryCount(session) >= maxOutputRecoveries)
                 fail("Provider repeatedly requested unavailable tools. The task was preserved; no unavailable tool was executed.");
             else
@@ -856,6 +889,7 @@ public final class ConversationActor
                 append(skipped);
             }
             engine.pendingToolCalls = null; engine.pendingToolResults = 0;
+            if (diagnosticActive) { finishDiagnostic(); request(); return; }
             if (outputRecoveryCount(session) >= maxOutputRecoveries) fail("Repeated tool calls added no progress; the task and goal were preserved.");
             else { internalNote(outputRecoveryMarker ~ "Change the unsuccessful approach and continue with a useful action."); request(); }
             return;
@@ -957,6 +991,7 @@ public final class ConversationActor
                 session.taskStatus = hasIncompleteTaskSteps(session) ? "active" : "completed";
         }
         engine.pendingToolImages ~= event.images;
+        if (!diagnosticActive && !settled.message.failed && (settled.acceptedVerification || event.workspaceChanged)) diagnosticUsed = false;
         metadata();
         if (--engine.pendingToolResults > 0) return;
         engine.pendingToolCalls = null; engine.reportedToolCallIds = null;
@@ -967,6 +1002,11 @@ public final class ConversationActor
             images.content = "Image evidence from the preceding tool results. Inspect the actual pixels before acting.";
             images.images = engine.pendingToolImages; engine.pendingToolImages = null; append(images);
             pruneHistoryImages(session, activeMessagePath(session), config.request.imageLimit);
+        }
+        if (!diagnosticActive && executionRecoveryDue(session))
+        {
+            internalNote(executionDiagnosisMarker ~ "Repeated tools added no supported outcome. Reject the unsuccessful hypothesis and inspect a reduced failing case or a different source.");
+            beginDiagnostic();
         }
         applySteering(); request();
     }
@@ -987,16 +1027,20 @@ public final class ConversationActor
         message.retiredImages = completedReplyImageIds(session, message.id, config.request.imageLimit);
         updateLast();
         if (event.cancelled) { applyStop(); return; }
+        if (diagnosticActive) { finishDiagnostic(); applySteering(); request(); return; }
         if (answerReplayed(session) || goalAuditStalled(session) ||
             (config.request.toolsEnabled && taskAuditStalled(session)))
         {
             if (outputRecoveryCount(session) >= maxOutputRecoveries)
             { fail("Provider output repeatedly added no progress. Retry continues the preserved task and goal."); return; }
             internalNote(outputRecoveryMarker ~ "The response added no new action or evidence. Continue the unfinished task with a different useful action.");
+            beginDiagnostic();
             request(); return;
         }
         auto policy = config.turn; policy.toolsEnabled = config.request.toolsEnabled; policy.finishReason = event.finishReason;
+        policy.diagnosticAvailable = config.diagnosticModel.length > 0;
         const decision = decideTurn(session, policy);
+        if (decision.diagnosticRequests > 0) beginDiagnostic();
         if (decision.action == TurnAction.applySteering) applySteering();
         if (decision.recordedSummary.length)
         { ChatMessage summary; summary.role = "assistant"; summary.content = decision.recordedSummary; append(summary); }
@@ -1024,6 +1068,11 @@ public final class ConversationActor
     }
     private void failed(const ref OpenCodeEvent event)
     {
+        if (diagnosticActive)
+        {
+            ensureAssistant(); session.messages[$ - 1].failed = true; session.messages[$ - 1].error = event.text; updateLast();
+            finishDiagnostic(); applySteering(); request(); return;
+        }
         if (!goalActive(session) && completionHandoffPending(session))
         {
             ensureAssistant(); session.messages[$ - 1].failed = true;
@@ -1035,6 +1084,7 @@ public final class ConversationActor
             session.messages[$ - 1].error = event.text; updateLast();
             if (outputRecoveryCount(session) >= maxOutputRecoveries)
             { fail("Provider output repeatedly failed protocol validation. Retry continues the preserved task and goal."); return; }
+            if (outputRecoveryCount(session) > 0) beginDiagnostic();
             internalNote(outputRecoveryMarker ~ "The provider returned unusable output. Use the structured tool protocol and take a different useful action; do not repeat the rejected output.");
             request(); return;
         }

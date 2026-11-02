@@ -13,6 +13,7 @@ import std.digest : toHexString;
 public struct ActorConfiguration
 {
     string baseUrl, apiKey, workspace;
+    string diagnosticModel;
     RequestPolicy request;
     TurnPolicy turn;
     bool recordTrace;
@@ -26,6 +27,7 @@ public JSONValue actorBehaviorJson(const ref ActorConfiguration config)
 {
     JSONValue value; value["workspace"] = config.workspace; value["outageBudgetMs"] = config.outageBudgetMs;
     value["quickTitle"] = config.quickTitle; value["modelCompaction"] = config.modelCompaction;
+    value["diagnosticModel"] = config.diagnosticModel;
     value["developer"] = JSONValue.emptyObject;
     static foreach (name; FieldNameTuple!DeveloperToolPolicy) value["developer"][name] = __traits(getMember, config.developer, name);
     static foreach (member; ["request", "turn"])
@@ -57,6 +59,7 @@ public ActorConfiguration decodeActorBehavior(ActorConfiguration current, const 
 {
     current.workspace = value["workspace"].str;
     current.quickTitle = value["quickTitle"].boolean; current.modelCompaction = value["modelCompaction"].boolean;
+    current.diagnosticModel = value["diagnosticModel"].str;
     static foreach (name; FieldNameTuple!DeveloperToolPolicy)
     {
         static if (is(typeof(__traits(getMember, current.developer, name)) == bool))
