@@ -620,6 +620,8 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
     if (payload.type != JSONType.object) return;
     if (auto f = "role" in payload.object)
         if (f.type == JSONType.string) message.role = f.str;
+    if (auto f = "authorId" in payload.object)
+        if (f.type == JSONType.string) message.authorId = f.str;
     if (auto f = "content" in payload.object)
         if (f.type == JSONType.string) message.content = f.str;
     if (auto f = "reasoning" in payload.object)

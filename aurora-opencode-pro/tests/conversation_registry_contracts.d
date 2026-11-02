@@ -135,7 +135,7 @@ int main()
     // One invalid optional configuration must not block other conversations
     // or discard its own accepted text, goal, image and hidden file context.
     auto failures = new ConversationRegistry(null, 1); scope (exit) failures.close();
-    auto invalid = config; invalid.turn.orchestratorEnabled = true;
+    auto invalid = config; invalid.request.contextLimit = -1;
     auto broken = first; broken.id = "unsupported-configuration";
     broken.goal = "Keep this persistent goal"; broken.goalStatus = "active";
     assert(failures.register(broken, invalid) == ActorAdmission.accepted);

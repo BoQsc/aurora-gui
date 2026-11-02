@@ -435,6 +435,31 @@ Source fingerprint:
 Orchestration, native host lifecycle delivery and desktop actor adoption remain
 required before the final rebuild/publish.
 
+Child orchestration now has a separate bounded backend subscriber. Durable
+round intent contains stable child identities and tasks; reports require the
+current round, child and author, and stopped rounds cannot resume the parent.
+Parents waiting for children can relinquish their physical worker while their
+UI projection remains busy. Child chats are reused by participant across later
+rounds, preserving their graphs. Stop also reaches children when the parent is
+dormant or the physical actor pool is full. Dispatch is bounded to 64 values /
+1 MiB, with reserved cancellation/report slots and an explicit failure for
+oversized handoffs. Lifecycle trace sinks are optional and independent of UI
+delivery; each retired generation can replay from its captured initial state.
+
+Five actual HTTP cases pass without draining any presentation updates in
+`build/architecture-checks-orc52bao/`, source fingerprint
+`5688ea2d22ff4b292d5cc092e3ca45fc18f9395a09e69e5df2acc75fdc5d60b9`.
+They cover serial rounds with one physical worker, parallel children, Stop at
+capacity, Stop before routing settles, and two concurrent parents. All 26 actor
+generations replay exactly offline, and every final chat equals journal-only
+recovery. The proof exposed and fixed missing author IDs in item journal
+encoding/replay and a child terminal-status mismatch. Lifecycle goal/recipe/
+branch checks pass in `build/architecture-checks-3limymt8/`; registry,
+projection, metadata and legacy orchestration checks pass in
+`build/architecture-checks-ny3786cu/` at the same fingerprint.
+Desktop command/projection adoption, final exit/fold integration, full-app
+actor crash/restart proof and deployment remain open.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

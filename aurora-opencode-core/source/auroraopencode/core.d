@@ -1320,6 +1320,7 @@ public struct ChatSession
     // own nested chat, opened from its parent's plan UI. Empty for an ordinary
     // top-level conversation. `subagentId` is the roster id this chat runs as.
     string parentSessionId;
+    string parentDispatchId, orchestrationState;
     string subagentId;
     // experimental multi-agent: how many participant turns the current dispatch
     // has taken, to bound a runaway orchestrator loop. Reset on a user turn.

@@ -11,6 +11,8 @@ public void decodeSessionMetadata(JSONValue sessionValue,
         session.id = field.str;
     if (auto field = "title" in sessionValue.object)
         session.title = field.str;
+    if (auto field = "parentDispatchId" in sessionValue.object) session.parentDispatchId = field.str;
+    if (auto field = "orchestrationState" in sessionValue.object) session.orchestrationState = field.str;
     if (auto field = "titleManual" in sessionValue.object)
         session.titleManual = field.boolean;
     if (auto field = "titleAttempts" in sessionValue.object)

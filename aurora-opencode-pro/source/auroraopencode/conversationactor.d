@@ -6,6 +6,10 @@ import auroraopencode.conversationimages : ConversationImages;
 import auroraopencode.conversationview;
 import auroraopencode.conversationmetadata : MetadataDelta;
 import auroraopencode.conversationjobs : ConversationJobs, ModelJobKind;
+import auroraopencode.conversationcoordination;
+import auroraopencode.orchestrator : experimentalOrchestratorEnsureRoster, experimentalOrchestratorIsRouter,
+    experimentalOrchestratorIdentityBlock, experimentalOrchestratorAgentModel, OrchestratorAssignment;
+import auroraopencode.agentresult : subagentResult;
 public import auroraopencode.conversationconfiguration : ActorConfiguration;
 import auroraopencode.conversationconfiguration : actorBehaviorJson, decodeActorBehavior, configurationKey;
 import auroraopencode.queuedprompts;
@@ -70,7 +74,8 @@ shared static this()
     actorWorkers = new WorkerBudget(capacity);
 }
 public enum ActorCommandKind { start, steer, followUp, stop, setGoal, pauseGoal, resumeGoal, snapshot,
-    regenerate, editPrompt, continueAnswer, selectBranch, setDraft, retryPending, configure, setTitle, selectView }
+    regenerate, editPrompt, continueAnswer, selectBranch, setDraft, retryPending, configure, setTitle, selectView,
+    startAssignment, childReport, coordinationFailed }
 public struct ActorCommand
 {
     ActorCommandKind kind;
@@ -166,6 +171,8 @@ public final class ConversationActor
     private ToolCancellation activeCancellation;
     private ToolCancellation backgroundCancellation;
     private ConversationJobs jobs;
+    private CoordinationReceiver coordinator;
+    private bool waitingChildren, coordinationRecovered;
     private enum maxCommands = 128;
     private enum maxCommandBytes = 1024 * 1024;
     private enum maxChanges = 256;
@@ -182,12 +189,12 @@ public final class ConversationActor
         if (config.outageBudgetMs < 0)
             config.outageBudgetMs = configuredProviderRetryPolicy().outageBudget.total!"msecs";
         initialBudgetMs = config.outageBudgetMs;
-        if (config.turn.orchestratorEnabled)
-            throw new Exception("Conversation actor orchestration adapter is not installed");
+        if (config.request.contextLimit < 0) throw new Exception("Conversation context budget cannot be negative");
         // Immutable text/pixels may be shared. Detach only mutable containers;
         // production admission must not stringify an entire long transcript.
         auto initialCopy = cast(ChatSession) initial;
         session = adopt ? initialCopy : snapshotChatSessions([initialCopy])[0];
+        waitingChildren = waitingForChildren(session);
         if (config.recordTrace)
             initialIdentity = sha256Of(sessionToJson(session).toString()).toHexString().idup;
         configurationIdentity = configurationKey(config);
@@ -233,6 +240,7 @@ public final class ConversationActor
         }
     }
     void setViewWake(void delegate() callback) { synchronized (mutex) viewWake = callback; }
+    void setCoordinator(CoordinationReceiver callback) { synchronized (mutex) coordinator = callback; }
     ActorActivity activity()
     {
         synchronized (mutex) return ActorActivity(publishedBusy || publishedJobs || unsettledInputs.length > 0 ||
@@ -253,7 +261,7 @@ public final class ConversationActor
                 cost > maxCommandBytes - commandBytes)
                 return ActorAdmission.capacity;
             if (command.kind == ActorCommandKind.regenerate || command.kind == ActorCommandKind.editPrompt ||
-                command.kind == ActorCommandKind.selectBranch)
+                command.kind == ActorCommandKind.selectBranch || command.kind == ActorCommandKind.startAssignment)
             {
                 stopPending = true; ++admissionEpoch;
                 if (activeCancellation !is null) activeCancellation.cancel();
@@ -368,7 +376,7 @@ public final class ConversationActor
             if (kind == ActorChangeKind.snapshot)
             {
                 changes = null; changeBytes = 0; needsSnapshot = false;
-                pendingSnapshot = ActorChange(kind, revision, engine is null ? 0 : engine.activeRequestId, id, text, reasoning, running);
+                pendingSnapshot = ActorChange(kind, revision, engine is null ? 0 : engine.activeRequestId, id, text, reasoning, running || waitingChildren);
                 hasSnapshot = true;
                 return;
             }
@@ -376,7 +384,7 @@ public final class ConversationActor
             {
                 changes = null; changeBytes = 0; needsSnapshot = true; return;
             }
-            changes ~= ActorChange(kind, revision, engine is null ? 0 : engine.activeRequestId, id, text, reasoning, running);
+            changes ~= ActorChange(kind, revision, engine is null ? 0 : engine.activeRequestId, id, text, reasoning, running || waitingChildren);
             changeBytes += cost;
         }
     }
@@ -459,6 +467,7 @@ public final class ConversationActor
         value["planHistory"] = historyJson();
         ConversationExecutionView execution;
         execution.phase = to!string(engine.phase);
+        if (waitingChildren) execution.phase = "waiting_agents";
         execution.routingKey = engine.client.openCodeSession();
         execution.requestModel = roundModel; execution.diagnosticReview = diagnosticActive || config.request.diagnosticReview;
         execution.resendCount = resendCount;
@@ -478,7 +487,7 @@ public final class ConversationActor
     {
         if (!session.messages.length || session.messages[$ - 1].role != "assistant" ||
             session.messages[$ - 1].id != session.activeLeafId || session.messages[$ - 1].toolCalls.length)
-        { ChatMessage message; message.role = "assistant"; append(message); }
+        { ChatMessage message; message.role = "assistant"; if (config.turn.orchestratorEnabled) message.authorId = session.activeAgentId; append(message); }
     }
     private void internalNote(string text)
     {
@@ -517,6 +526,7 @@ public final class ConversationActor
     }
     private void userRequest(string text, ChatPromptContext context = ChatPromptContext.init)
     {
+        cancelChildren();
         resetOutage();
         appendUser(text, context);
         session.turnStatus = "running"; running = true; engine.turnCancelled = false;
@@ -537,6 +547,13 @@ public final class ConversationActor
         refreshVerification();
         if (images.prepare(session, config.request.imageLimit)) engine.invalidateProjection();
         auto policy = config.request;
+        if (config.turn.orchestratorEnabled)
+        {
+            experimentalOrchestratorEnsureRoster(session);
+            policy.orchestratorEnabled = true;
+            policy.orchestratorRouter = experimentalOrchestratorIsRouter(session, session.activeAgentId);
+            policy.identityBlock ~= experimentalOrchestratorIdentityBlock(session, session.activeAgentId);
+        }
         policy.summaryOnly = !goalActive(session) && (policy.summaryOnly || completionHandoffPending(session));
         diagnosticActive = diagnostic && !policy.summaryOnly;
         if (diagnosticActive)
@@ -550,6 +567,11 @@ public final class ConversationActor
         roundConfig = config;
         roundConfig.request = policy;
         roundModel = diagnosticActive ? config.diagnosticModel : session.model;
+        if (!diagnosticActive && config.turn.orchestratorEnabled)
+        {
+            const overrideModel = experimentalOrchestratorAgentModel(session, session.activeAgentId);
+            if (overrideModel.length) roundModel = overrideModel;
+        }
         offeredTools = prepared.tools.length > 0;
         offeredToolNames = null;
         foreach (tool; prepared.tools) offeredToolNames[tool.name] = true;
@@ -602,7 +624,7 @@ public final class ConversationActor
     }
     private void tryTitle()
     {
-        if (!config.quickTitle || preserveInputs || engine.turnCancelled || retryAtMs >= 0 ||
+        if (!config.quickTitle || waitingChildren || preserveInputs || engine.turnCancelled || retryAtMs >= 0 ||
             engine.phase == RequestPhase.waiting || engine.phase == RequestPhase.streaming) return;
         auto messages = jobs.prepareTitle(session);
         if (!messages.length) return;
@@ -618,6 +640,85 @@ public final class ConversationActor
         diagnosticRemaining = 0; diagnosticActive = false;
         internalNote(executionDiagnosisMarker ~ "Independent read-only review has ended. The main model must assess its recorded findings and apply the next useful fix or verification. A diagnosis is not task completion.");
     }
+    private void coordinate(CoordinationKind kind, string round, string payload)
+    {
+        if (replaying) return;
+        CoordinationReceiver receiver;
+        synchronized (mutex) receiver = coordinator;
+        auto effect = CoordinationEffect(kind, session.id, round, payload);
+        if (kind == CoordinationKind.dispatch)
+        {
+            effect.behavior = actorBehaviorJson(config).toString();
+            effect.connectionBase = config.baseUrl; effect.connectionKey = config.apiKey;
+            effect.recordTrace = config.recordTrace;
+        }
+        if (receiver is null || !receiver(effect)) throw new Exception("Conversation coordination is unavailable or at capacity; its durable intent was preserved");
+    }
+    private void cancelChildren()
+    {
+        if (!waitingChildren) return;
+        const state = parseJSON(session.orchestrationState);
+        waitingChildren = false; session.orchestrationState = "";
+        coordinate(CoordinationKind.cancel, state["round"].str, "");
+    }
+    private void dispatchChildren(const(OrchestratorAssignment)[] assignments)
+    {
+        auto previous = session.orchestrationState.length ? parseJSON(session.orchestrationState) : JSONValue.init;
+        cancelChildren();
+        const round = messageId(); string[] childIds;
+        foreach (assignment; assignments)
+        {
+            string existing;
+            if (previous.type == JSONType.object)
+                foreach (child; previous["children"].array) if (child["agent"].str == assignment.agentId) existing = child["id"].str;
+            childIds ~= existing.length ? existing : "t-" ~ messageId();
+        }
+        auto next = dispatchState(session, round, assignments, childIds);
+        if (previous.type == JSONType.object)
+            foreach (old; previous["children"].array)
+            {
+                bool retained;
+                foreach (child; next["children"].array) if (child["agent"].str == old["agent"].str) retained = true;
+                if (!retained) { old["reported"] = true; next["children"].array ~= old; }
+            }
+        session.orchestrationState = next.toString();
+        waitingChildren = true; running = false; engine.activeRequestId = 0;
+        session.turnStatus = "running"; session.activeAgentId = "orchestrator"; session.nextSpeakerId = "";
+        jobs.close(); metadata();
+        coordinate(CoordinationKind.dispatch, round, session.orchestrationState);
+    }
+    private void reportAssignment()
+    {
+        if (!session.parentSessionId.length || !session.parentDispatchId.length) return;
+        auto note = subagentResult(session); metadata();
+        JSONValue result; result["parent"] = session.parentSessionId; result["child"] = session.id;
+        result["note"] = messageToJson(note);
+        coordinate(CoordinationKind.report, session.parentDispatchId, result.toString());
+    }
+    private void acceptChildReport(const ref ActorCommand command)
+    {
+        if (!waitingChildren || preserveInputs) return;
+        auto state = parseJSON(session.orchestrationState);
+        if (state["round"].str != command.targetId) return;
+        auto result = parseJSON(command.text);
+        if (result["parent"].str != session.id) return;
+        foreach (ref child; state["children"].array)
+            if (child["id"].str == result["child"].str && !child["reported"].boolean)
+            {
+                ChatSession decoded; decodeMessages(JSONValue([result["note"]]), decoded);
+                if (decoded.messages.length != 1 || decoded.messages[0].authorId != child["agent"].str ||
+                    decoded.messages[0].role != "user" || !decoded.messages[0].internal)
+                    throw new Exception("Child report identity did not match its assignment");
+                append(decoded.messages[0]); child["reported"] = true;
+                session.orchestrationState = state.toString(); waitingChildren = waitingForChildren(session); metadata();
+                if (!waitingChildren)
+                {
+                    session.activeAgentId = "orchestrator";
+                    running = true; engine.turnCancelled = false; applySteering(); request();
+                }
+                return;
+            }
+    }
     private void fail(string text, bool terminal = true)
     {
         if (engine.phase != RequestPhase.failed)
@@ -631,14 +732,15 @@ public final class ConversationActor
         session.taskStatus = terminal ? "blocked" : "active";
         if (terminal) { retryAtMs = -1; if (!viewed) session.unread = true; }
         updateLast(); metadata();
-        if (terminal) publish(AgentEventKind.turnFailed, "{}");
+        if (terminal) { publish(AgentEventKind.turnFailed, "{}"); reportAssignment(); }
     }
     private void applyStop(bool pauseGoal = true)
     {
-        const wasRunning = running;
+        const wasRunning = running || waitingChildren;
         const previousStatus = session.turnStatus;
         retryAtMs = -1;
         diagnosticRemaining = 0; diagnosticActive = false;
+        cancelChildren();
         jobs.close();
         synchronized (mutex) backgroundCancellation = new ToolCancellation();
         engine.stop(); engine.client.cancel();
@@ -664,13 +766,15 @@ public final class ConversationActor
         { session.messages[$ - 1].finishReason = "cancelled"; updateLast(); }
         metadata();
         if (wasRunning || pauseGoal) publish(AgentEventKind.turnInterrupted, "{}");
+        if (wasRunning) reportAssignment();
     }
     private void applyCommand(ActorCommand command)
     {
         final switch (command.kind)
         {
             case ActorCommandKind.start:
-                if (running) { enqueue(command, false); break; }
+                if (waitingChildren && !command.text.length && !command.imagesJson.length && !command.context.length) break;
+                if (running || waitingChildren) { enqueue(command, false); break; }
                 if (command.text.length || command.imagesJson.length || command.context.length)
                     userRequest(command.text, promptContext(command));
                 else if (!session.messages.length && session.queuedFollowUps.length)
@@ -680,11 +784,11 @@ public final class ConversationActor
                 else if (!preserveInputs) { resetOutage(); engine.turnCancelled = false; request(); }
                 break;
             case ActorCommandKind.steer:
-                if (running || preserveInputs) enqueue(command, true);
+                if (running || waitingChildren || preserveInputs) enqueue(command, true);
                 else userRequest(command.text, promptContext(command));
                 break;
             case ActorCommandKind.followUp:
-                if (running || preserveInputs) enqueue(command, false);
+                if (running || waitingChildren || preserveInputs) enqueue(command, false);
                 else userRequest(command.text, promptContext(command));
                 break;
             case ActorCommandKind.stop: applyStop(command.text != "preserve-goal"); break;
@@ -698,7 +802,7 @@ public final class ConversationActor
                 recordGoalSet(session, frameUnix); metadata();
                 if (command.activate && !preserveInputs)
                 {
-                    if (running) { session.queuedGuidance ~= "The user updated the persistent goal:\n" ~ goal; metadata(); }
+                    if (running || waitingChildren) { session.queuedGuidance ~= "The user updated the persistent goal:\n" ~ goal; metadata(); }
                     else if (!session.messages.length) userRequest(goal);
                     else { internalNote(goalContinuationInstruction(session)); engine.turnCancelled = false; request(); }
                 }
@@ -707,7 +811,7 @@ public final class ConversationActor
                 if (session.goal.length)
                 {
                     session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); metadata();
-                    if (running && !preserveInputs) applyStop();
+                    if ((running || waitingChildren) && !preserveInputs) applyStop();
                 }
                 break;
             case ActorCommandKind.resumeGoal:
@@ -715,7 +819,7 @@ public final class ConversationActor
                 session.goalStatus = "active"; recordGoalOutcome(session, "active", frameUnix); metadata();
                 if (!preserveInputs)
                 {
-                    if (running) { session.queuedGuidance ~= goalContinuationInstruction(session); metadata(); }
+                    if (running || waitingChildren) { session.queuedGuidance ~= goalContinuationInstruction(session); metadata(); }
                     else { internalNote(goalContinuationInstruction(session)); engine.turnCancelled = false; request(); }
                 }
                 break;
@@ -749,7 +853,7 @@ public final class ConversationActor
                 const index = messageIndex(command.targetId);
                 bool onBranch;
                 foreach (position; activeMessagePath(session)) if (position == index) onBranch = true;
-                if (running || !onBranch || index == size_t.max || session.messages[index].role != "assistant" || session.messages[index].failed)
+                if (running || waitingChildren || !onBranch || index == size_t.max || session.messages[index].role != "assistant" || session.messages[index].failed)
                 { emit(ActorChangeKind.notice, "Continue requires an assistant response on the current idle branch"); break; }
                 internalNote("Continuation request: continue the current task from its durable objective and recorded evidence. Keep the current branch and successful results; do not repeat material already present.");
                 if (!preserveInputs) { resetOutage(); engine.turnCancelled = false; request(); }
@@ -771,7 +875,7 @@ public final class ConversationActor
                 {
                     auto value = parseJSON(command.text);
                     next = decodeActorBehavior(config, value);
-                    if (next.turn.orchestratorEnabled) throw new Exception("Conversation orchestration adapter is unavailable");
+                    if (next.request.contextLimit < 0) throw new Exception("Conversation context budget cannot be negative");
                     model = value["model"].str; thinking = value["thinking"].boolean;
                 }
                 catch (Exception error)
@@ -800,6 +904,37 @@ public final class ConversationActor
                 if (session.messages.length && session.messages[$ - 1].role == "assistant" && session.messages[$ - 1].failed)
                     session.activeLeafId = session.messages[$ - 1].parentId;
                 applySteering(); request(); break;
+            case ActorCommandKind.childReport: acceptChildReport(command); break;
+            case ActorCommandKind.coordinationFailed:
+                if (waitingChildren && parseJSON(session.orchestrationState)["round"].str == command.targetId)
+                { applyStop(false); fail(command.text); }
+                break;
+            case ActorCommandKind.startAssignment:
+            {
+                if (!session.parentSessionId.length || !command.targetId.length)
+                { emit(ActorChangeKind.notice, "An assignment requires its parent and dispatch identity"); break; }
+                const same = session.parentDispatchId == command.targetId;
+                if (command.context.length)
+                {
+                    ChatSession seed; decodeSessionMetadata(parseJSON(command.context), seed);
+                    if (seed.id != session.id || seed.parentSessionId != session.parentSessionId)
+                        throw new Exception("Assignment metadata belongs to another child");
+                    session.agents = seed.agents; session.instructions = seed.instructions;
+                    session.activeAgentId = seed.activeAgentId; session.projectId = seed.projectId; session.toolsMode = seed.toolsMode;
+                }
+                session.parentDispatchId = command.targetId;
+                if (same && session.turnStatus == "completed") { reportAssignment(); break; }
+                if (preserveInputs) { enqueue(command, false); break; }
+                if (!same || !session.messages.length)
+                {
+                    ChatMessage task; task.role = "user"; task.internal = true; task.authorId = session.subagentId;
+                    task.content = "Task from the orchestrator: " ~ command.text ~ "\nWork with the available tools, then report the result concisely.";
+                    append(task); acceptTaskRequest(session, command.text, session.activeLeafId);
+                }
+                else internalNote("Resume the preserved assignment using its recorded evidence: " ~ command.text);
+                resetOutage(); engine.turnCancelled = false; running = true; session.turnStatus = "running";
+                metadata(); request(); break;
+            }
         }
     }
     private size_t messageIndex(string id)
@@ -962,12 +1097,15 @@ public final class ConversationActor
         { session.verificationStatus = "required"; session.taskStatus = "active"; }
         session.verificationScope = currentScope;
         const verificationWorkspace = event.verificationWorkspace.length ? event.verificationWorkspace : workspace;
-        const policy = ToolResultPolicy(batchConfig.request.nestedPlans, workspace, verificationWorkspace,
+        auto policy = ToolResultPolicy(batchConfig.request.nestedPlans, workspace, verificationWorkspace,
             frameTime, workspaceRevision(verificationWorkspace));
+        policy.orchestratorEnabled = batchConfig.turn.orchestratorEnabled;
+        policy.routingHalted = engine.pendingRouting.halt;
         auto settled = settleToolResult(session, event, admission.arguments, policy);
         append(settled.message);
         if (!settled.message.failed)
         {
+            engine.pendingRouting.accept(settled.routing);
             if (event.toolName == "update_plan") applyTaskPlan(session, admission.arguments);
             if (event.toolName == "update_subplan") applyTaskSubplan(session, admission.arguments);
             if (event.toolName == "goal_complete")
@@ -996,6 +1134,21 @@ public final class ConversationActor
         if (--engine.pendingToolResults > 0) return;
         engine.pendingToolCalls = null; engine.reportedToolCallIds = null;
         liveTools = null; omittedTools = 0;
+        if (config.turn.orchestratorEnabled)
+        {
+            const routing = engine.pendingRouting.take();
+            if (routing.halt)
+            {
+                if (routing.question.length) session.contract.blocker = routing.question;
+                session.taskStatus = routing.status; session.turnStatus = "completed";
+                running = false; engine.activeRequestId = 0;
+                if (!viewed) session.unread = true;
+                ChatMessage reply; reply.role = "assistant";
+                reply.content = routing.question.length ? routing.question : settled.message.content; append(reply);
+                publish(AgentEventKind.turnCompleted, "{}"); metadata(); reportAssignment(); return;
+            }
+            if (routing.assignments.length) { dispatchChildren(routing.assignments); return; }
+        }
         if (engine.pendingToolImages.length)
         {
             ChatMessage images; images.role = "user"; images.internal = true;
@@ -1039,6 +1192,7 @@ public final class ConversationActor
         }
         auto policy = config.turn; policy.toolsEnabled = config.request.toolsEnabled; policy.finishReason = event.finishReason;
         policy.diagnosticAvailable = config.diagnosticModel.length > 0;
+        policy.pendingChildren = waitingChildren;
         const decision = decideTurn(session, policy);
         if (decision.diagnosticRequests > 0) beginDiagnostic();
         if (decision.action == TurnAction.applySteering) applySteering();
@@ -1047,13 +1201,18 @@ public final class ConversationActor
         if (decision.guidance.length) internalNote(decision.guidance);
         if (decision.clearBlocker) session.contract.blocker = "";
         if (decision.advanceGoal) ++session.goalTurns;
+        if (decision.advanceHop) ++session.agentHops;
+        if (decision.clearNextSpeaker) session.nextSpeakerId = "";
+        if (decision.nextSpeaker.length) session.activeAgentId = decision.nextSpeaker;
         session.taskStatus = decision.taskStatus; session.turnStatus = decision.turnStatus;
+        if (decision.action == TurnAction.reportChild) session.turnStatus = "completed";
         if (decision.continues()) { metadata(); request(); return; }
         running = false; engine.activeRequestId = 0;
         if (!viewed) session.unread = true;
         if (session.messages.length && session.messages[$ - 1].id == session.activeLeafId)
         { session.messages[$ - 1].taskStateJson = activeTaskStateJson(session); updateLast(); }
         publish(AgentEventKind.turnCompleted, "{}"); metadata();
+        reportAssignment();
         if (decision.action == TurnAction.settle && session.queuedFollowUps.length)
         {
             auto next = takeQueuedPrompt(session, false); userRequest(next.text, next.context);
@@ -1165,6 +1324,15 @@ public final class ConversationActor
             }
             auto baseline = runtimeThreadJson(session, true); baseline["planHistory"] = historyJson();
             journalMetadata.reset(baseline);
+        }
+        if (!coordinationRecovered)
+        {
+            coordinationRecovered = true;
+            if (waitingChildren && !preserveInputs)
+            {
+                const state = parseJSON(session.orchestrationState);
+                coordinate(CoordinationKind.dispatch, state["round"].str, session.orchestrationState);
+            }
         }
         if (provider && lane != EventLane.turn)
         {

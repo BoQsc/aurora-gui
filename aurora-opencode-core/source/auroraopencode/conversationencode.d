@@ -108,6 +108,8 @@ public JSONValue sessionMetaToJson(const ref ChatSession session, bool includePl
     JSONValue root;
     if (session.id.length > 0) root["id"] = session.id;
     root["title"] = session.title;
+    if (session.parentDispatchId.length) root["parentDispatchId"] = session.parentDispatchId;
+    if (session.orchestrationState.length) root["orchestrationState"] = session.orchestrationState;
     if (session.titleManual) root["titleManual"] = true;
     if (session.titleAttempts) root["titleAttempts"] = cast(long) session.titleAttempts;
     root["model"] = session.model;
@@ -261,6 +263,8 @@ public JSONValue runtimeThreadJson(const ref ChatSession session, bool complete 
     if (complete)
     {
         payload["titleManual"] = session.titleManual;
+        payload["parentDispatchId"] = session.parentDispatchId;
+        payload["orchestrationState"] = session.orchestrationState;
         payload["titleAttempts"] = cast(long) session.titleAttempts;
         payload["instructions"] = session.instructions;
         payload["toolsMode"] = session.toolsMode;
@@ -288,6 +292,7 @@ public string runtimeMessagePayload(const ref ChatMessage message)
 {
     JSONValue payload;
     payload["role"] = message.role;
+    if (message.authorId.length) payload["authorId"] = message.authorId;
     payload["content"] = message.content;
     if (message.retiredImages.length) payload["retiredImages"] = message.retiredImages;
     payload["parentId"] = message.parentId;

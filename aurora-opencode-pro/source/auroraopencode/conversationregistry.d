@@ -4,6 +4,9 @@ import auroraopencode.core;
 import auroraopencode.conversationactor;
 import auroraopencode.conversationencode : sessionToJson;
 import auroraopencode.conversationview;
+import auroraopencode.conversationcoordination;
+import auroraopencode.conversationconfiguration : decodeActorBehavior, actorBehaviorJson;
+import auroraopencode.conversationcodec : decodeSessionMetadata;
 import auroraopencode.repository : RepositoryRuntime;
 import auroraopencode.workerbudget : WorkerBudget;
 import core.sync.mutex : Mutex;
@@ -11,7 +14,7 @@ import core.sync.condition : Condition;
 import core.thread : Thread;
 import core.time : msecs;
 import std.datetime : Clock;
-import std.json : JSONValue, JSONType;
+import std.json : JSONValue, JSONType, parseJSON;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 
@@ -25,6 +28,13 @@ public struct ConversationDelivery
     immutable(ActorChange)[] changes;
     string error;
 }
+public struct ConversationTrace
+{
+    string threadId;
+    ulong generation;
+    string initial, behavior, recording, finalState;
+}
+public alias ConversationTraceSink = void delegate(ConversationTrace);
 
 private final class Entry
 {
@@ -41,6 +51,7 @@ private final class Entry
     ulong viewRevision;
     immutable(ActorChange)[] finalChanges;
     string error;
+    string traceInitial;
 }
 
 /// Lifecycle work, graph detachment, retirement and final recovery snapshots
@@ -57,13 +68,22 @@ public final class ConversationRegistry
     private size_t cursor;
     private bool closing, closed, joined, statesTaken;
     private void delegate() viewWake;
+    private ConversationTraceSink traceSink;
+    private string[] traceErrors;
+    private CoordinationEffect[] dispatches;
+    private CoordinationEffect[string] reports, cancellations;
+    private string[string] assignedRounds, cancelledRounds, currentRounds;
+    private string[][string] childrenByParent;
+    private size_t coordinationBytes;
     private enum maxEntries = 256, maxPending = 128, maxPendingBytes = 1024 * 1024;
 
-    this(RepositoryRuntime journal, size_t workers = 16, void delegate() viewWake = null)
+    this(RepositoryRuntime journal, size_t workers = 16, void delegate() viewWake = null,
+        ConversationTraceSink traceSink = null)
     {
         if (workers < 1 || workers > 256) throw new Exception("Invalid conversation worker capacity");
         mutex = new Mutex(); joinMutex = new Mutex(); wake = new Condition(mutex);
         budget = new WorkerBudget(workers); this.journal = journal; this.viewWake = viewWake;
+        this.traceSink = traceSink;
         owner = new Thread(&run); owner.isDaemon = true; owner.start();
     }
 
@@ -100,6 +120,9 @@ public final class ConversationRegistry
             auto found = id in entries;
             if (found is null) return ActorAdmission.closed;
             auto entry = *found;
+            if (command.kind == ActorCommandKind.stop || command.kind == ActorCommandKind.regenerate ||
+                command.kind == ActorCommandKind.editPrompt || command.kind == ActorCommandKind.selectBranch)
+                stopDescendants(id);
             if (entry.actor !is null && entry.state != ConversationOwnerState.retiring)
             {
                 const result = entry.actor.post(command);
@@ -175,6 +198,7 @@ public final class ConversationRegistry
     }
 
     size_t activeWorkers() { return budget.active(); }
+    string[] traceFailures() { synchronized (mutex) return traceErrors.dup; }
     bool isClosed() { synchronized (mutex) return closed; }
     void requestClose()
     {
@@ -210,8 +234,10 @@ public final class ConversationRegistry
     {
         // Entry.model is lifecycle-owned while starting; callers can append
         // immutable commands but cannot replace this graph with a stale view.
+        if (entry.config.recordTrace && traceSink !is null) entry.traceInitial = sessionToJson(entry.model).toString();
         auto actor = ConversationActor.adopt(entry.model, entry.config, journal, budget);
         actor.setViewWake(&notify);
+        actor.setCoordinator(&coordinate);
         synchronized (mutex)
         {
             entry.actor = actor; entry.model = ChatSession.init;
@@ -242,6 +268,14 @@ public final class ConversationRegistry
         actor.close();
         const activity = actor.activity();
         const error = forcedError.length ? forcedError : actor.fault();
+        if (entry.traceInitial.length && traceSink !is null)
+        {
+            try traceSink(ConversationTrace(parseJSON(entry.traceInitial)["id"].str, entry.generation,
+                entry.traceInitial, actorBehaviorJson(entry.config).toString(), actor.recordedTrace(), actor.finalSnapshot()));
+            catch (Exception traceError)
+            { synchronized (mutex) if (traceErrors.length < 16) traceErrors ~= traceError.msg; }
+            entry.traceInitial = "";
+        }
         const config = actor.finalConfiguration();
         auto model = actor.takeFinalSession();
         // Hydrated pixels are transient. Failed, not-yet-archived input keeps
@@ -269,7 +303,8 @@ public final class ConversationRegistry
         const snapshot = value.toString();
         synchronized (mutex)
         {
-            entry.finalChanges = [ActorChange(ActorChangeKind.snapshot, ++entry.viewRevision, 0, "", snapshot)].idup;
+            entry.finalChanges = [ActorChange(ActorChangeKind.snapshot, ++entry.viewRevision, 0, "", snapshot, false,
+                !entry.error.length && entry.model.turnStatus == "running" && waitingForChildren(entry.model))].idup;
             entry.snapshotRequested = false;
             entry.changed = true;
         }
@@ -282,6 +317,7 @@ public final class ConversationRegistry
         while (true)
         {
             Entry retireNext, startNext, snapshotNext;
+            CoordinationEffect control; bool hasControl;
             bool finish;
             synchronized (mutex)
             {
@@ -318,12 +354,20 @@ public final class ConversationRegistry
                 if (retireNext is null && startNext is null && snapshotNext is null)
                 {
                     if (finish) return;
-                    wake.wait(20.msecs); continue;
+                    if (cancellations.length) { control = cancellations[cancellations.keys[0]]; hasControl = true; }
+                    else if (reports.length) { control = reports[reports.keys[0]]; hasControl = true; }
+                    else if (dispatches.length) { control = dispatches[0]; hasControl = true; }
+                    else { wake.wait(20.msecs); continue; }
                 }
             }
             try
             {
-                if (snapshotNext !is null) publishState(snapshotNext);
+                if (hasControl)
+                {
+                    if (!applyCoordination(control))
+                        synchronized (mutex) wake.wait(20.msecs);
+                }
+                else if (snapshotNext !is null) publishState(snapshotNext);
                 else if (retireNext !is null) retire(retireNext);
                 else if (startNext !is null)
                 {
@@ -333,6 +377,17 @@ public final class ConversationRegistry
             }
             catch (Throwable error)
             {
+                if (hasControl)
+                {
+                    synchronized (mutex)
+                    {
+                        removeCoordination(control);
+                        auto failed = CoordinationEffect(CoordinationKind.failure, control.owner, control.round,
+                            "Child coordination failed: " ~ error.msg);
+                        reports[control.owner] = failed;
+                    }
+                    continue;
+                }
                 auto entry = snapshotNext !is null ? snapshotNext : retireNext !is null ? retireNext : startNext;
                 if (entry.actor !is null)
                 { retire(entry, error.msg); continue; }
@@ -347,6 +402,135 @@ public final class ConversationRegistry
                 notifyView();
             }
         }
+    }
+
+    private static size_t coordinationCost(const ref CoordinationEffect effect)
+    { return CoordinationEffect.sizeof + effect.owner.length + effect.round.length + effect.payload.length +
+        effect.behavior.length + effect.connectionBase.length + effect.connectionKey.length; }
+
+    private void stopDescendants(string id)
+    {
+        auto round = id in currentRounds;
+        if (round is null) return;
+        cancelledRounds[id] = *round;
+        foreach (childId; childrenByParent[id])
+            if (auto child = childId in entries)
+            {
+                if ((*child).actor !is null) (*child).actor.stop();
+                else { (*child).stopAt = (*child).pending.length; (*child).state = ConversationOwnerState.waiting; }
+            }
+    }
+
+    private bool coordinate(CoordinationEffect effect)
+    {
+        synchronized (mutex)
+        {
+            if (closed) return false;
+            if (closing) return effect.kind != CoordinationKind.dispatch;
+            if (!(effect.owner in entries)) return false;
+            if (effect.kind == CoordinationKind.cancel)
+            {
+                cancellations[effect.owner] = effect; cancelledRounds[effect.owner] = effect.round;
+                if (auto round = effect.owner in currentRounds)
+                    if (*round == effect.round)
+                        foreach (id; childrenByParent[effect.owner])
+                            if (auto child = id in entries)
+                            {
+                                if ((*child).actor !is null) (*child).actor.stop();
+                                else { (*child).stopAt = (*child).pending.length; (*child).state = ConversationOwnerState.waiting; }
+                            }
+            }
+            else if (effect.kind == CoordinationKind.report)
+            {
+                if (effect.payload.length > 512 * 1024)
+                {
+                    const parent = parseJSON(effect.payload)["parent"].str;
+                    effect = CoordinationEffect(CoordinationKind.failure, parent, effect.round,
+                        "Child report exceeded the handoff budget. The complete child conversation was preserved: " ~ effect.owner);
+                }
+                reports[effect.owner] = effect;
+            }
+            else
+            {
+                const cost = coordinationCost(effect);
+                if (dispatches.length >= 64 || cost > 1024 * 1024 - coordinationBytes) return false;
+                dispatches ~= effect; coordinationBytes += cost;
+            }
+            wake.notifyAll();
+        }
+        return true;
+    }
+    private void removeCoordination(const ref CoordinationEffect effect)
+    {
+        if (effect.kind == CoordinationKind.cancel)
+        { if (auto pending = effect.owner in cancellations) if (pending.round == effect.round) cancellations.remove(effect.owner); }
+        else if (effect.kind == CoordinationKind.report || effect.kind == CoordinationKind.failure)
+        { if (auto pending = effect.owner in reports) if (pending.round == effect.round && pending.payload == effect.payload) reports.remove(effect.owner); }
+        else if (dispatches.length)
+        { coordinationBytes -= coordinationCost(dispatches[0]); dispatches = dispatches[1 .. $]; }
+    }
+    private bool applyCoordination(const ref CoordinationEffect effect)
+    {
+        if (effect.kind == CoordinationKind.cancel)
+        {
+            // Cancellation was reserved synchronously, including each already
+            // registered child. Dispatch also checks that fence after posting.
+        }
+        else if (effect.kind == CoordinationKind.report || effect.kind == CoordinationKind.failure)
+        {
+            const parent = effect.kind == CoordinationKind.failure ? effect.owner : parseJSON(effect.payload)["parent"].str;
+            auto command = ActorCommand(effect.kind == CoordinationKind.failure ? ActorCommandKind.coordinationFailed : ActorCommandKind.childReport,
+                effect.payload, effect.round);
+            if (post(parent, command) == ActorAdmission.capacity) return false;
+        }
+        else
+        {
+            bool cancelled;
+            synchronized (mutex) if (auto round = effect.owner in cancelledRounds) cancelled = *round == effect.round;
+            if (!cancelled)
+            {
+                const state = parseJSON(effect.payload);
+                size_t missing;
+                synchronized (mutex)
+                {
+                    foreach (child; state["children"].array) if (!child["reported"].boolean && !(child["id"].str in entries)) ++missing;
+                    if (missing > maxEntries - entries.length) throw new Exception("Conversation capacity cannot admit this child round");
+                    currentRounds[effect.owner] = effect.round;
+                    childrenByParent[effect.owner] = null;
+                    foreach (child; state["children"].array) if (!child["reported"].boolean) childrenByParent[effect.owner] ~= child["id"].str;
+                }
+                auto behavior = parseJSON(effect.behavior);
+                auto config = decodeActorBehavior(ActorConfiguration.init, behavior);
+                config.baseUrl = effect.connectionBase; config.apiKey = effect.connectionKey;
+                config.recordTrace = effect.recordTrace;
+                config.quickTitle = false;
+                foreach (child; state["children"].array)
+                {
+                    if (child["reported"].boolean) continue;
+                    const id = child["id"].str;
+                    bool assigned;
+                    synchronized (mutex) if (auto round = id in assignedRounds) assigned = *round == effect.round;
+                    if (assigned) continue;
+                    ChatSession seed; decodeSessionMetadata(child["seed"], seed);
+                    if (register(seed, config) != ActorAdmission.accepted) throw new Exception("Child registration was not admitted");
+                    if (configure(id, config, seed.model, seed.thinking) != ActorAdmission.accepted)
+                        throw new Exception("Child configuration was not admitted");
+                    auto command = ActorCommand(ActorCommandKind.startAssignment, child["task"].str, effect.round);
+                    command.context = child["seed"].toString();
+                    if (post(id, command) != ActorAdmission.accepted)
+                        throw new Exception("Child assignment was not admitted");
+                    bool cancelledAfterAdmission;
+                    synchronized (mutex)
+                    {
+                        assignedRounds[id] = effect.round;
+                        if (auto stopped = effect.owner in cancelledRounds) cancelledAfterAdmission = *stopped == effect.round;
+                    }
+                    if (cancelledAfterAdmission) post(id, ActorCommand(ActorCommandKind.stop));
+                }
+            }
+        }
+        synchronized (mutex) removeCoordination(effect);
+        return true;
     }
 
     private void preservePending(Entry entry)
