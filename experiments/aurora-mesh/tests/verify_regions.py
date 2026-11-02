@@ -33,6 +33,20 @@ def pixels(path):
     return data[3]
 
 
+def viewport(path, max_width=640):
+    """The drawn viewport only, without the sidebar.
+
+    The sidebar prints the outcome, so a refusal legitimately changes that text; the
+    question these comparisons ask is whether the model changed.
+    """
+    data = Path(path).read_bytes().split(b"\n", 3)
+    width, height = map(int, data[1].split())
+    keep = min(width, max_width)
+    step = width * 3
+    body = data[3]
+    return b"".join(body[y * step:y * step + keep * 3] for y in range(height))
+
+
 FEET = {"type": "region", "name": "feet", "kind": "box",
         "a": [-0.30, -0.02, -0.25], "b": [0.30, 0.15, 0.25], "falloff": 0.35}
 
@@ -110,7 +124,7 @@ class RegionEditing(unittest.TestCase):
                            "shapes": [{"kind": "sphere",
                                        "center": [10.0, 10.0, 10.0],
                                        "radius": 0.5}]}], "bad2")
-        self.assertEqual(pixels(plain), pixels(refused),
+        self.assertEqual(viewport(plain), viewport(refused),
                          "a refused replacement must leave the model untouched")
 
     def test_carve_is_sound(self):

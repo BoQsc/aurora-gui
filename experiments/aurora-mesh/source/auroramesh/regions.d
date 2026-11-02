@@ -326,3 +326,113 @@ unittest
     foreach (vertex; mesh.vertices)
         assert(isFinite(vertex.x) && isFinite(vertex.y) && isFinite(vertex.z));
 }
+
+/**
+ * Numbers for a region: overall extents plus, sliced along one axis, how far the
+ * geometry reaches on the other two.
+ *
+ * Judging a shape from its triangle count does not work, and judging it from a
+ * thumbnail hides depth. The extents answer the questions that actually decide a
+ * form: how long, how tall, how wide, and where does it stop.
+ */
+string describeRegionExtent(const Mesh mesh, const RegionVolume region,
+    size_t axis = 1, int slices = 6)
+{
+    import std.format : format;
+
+    enum infinity = double.infinity;
+    double[] low = [infinity, infinity, infinity];
+    double[] high = [-infinity, -infinity, -infinity];
+    size_t counted;
+    foreach (vertex; mesh.vertices)
+    {
+        if (regionMask(region, vertex) <= 0)
+            continue;
+        ++counted;
+        const values = [vertex.x, vertex.y, vertex.z];
+        foreach (index; 0 .. 3)
+        {
+            if (values[index] < low[index])
+                low[index] = values[index];
+            if (values[index] > high[index])
+                high[index] = values[index];
+        }
+    }
+    if (counted == 0)
+        return "empty";
+    if (slices < 1)
+        slices = 1;
+    const a = axis % 3;
+    const b = (a + 1) % 3;
+    const c = (a + 2) % 3;
+    const span = high[a] - low[a];
+    auto text = format("n=%d x[%.3f,%.3f] y[%.3f,%.3f] z[%.3f,%.3f]", counted,
+        low[0], high[0], low[1], high[1], low[2], high[2]);
+    if (!(span > 0))
+        return text;
+    auto sliceLow = new double[](slices * 2);
+    auto sliceHigh = new double[](slices * 2);
+    auto sliceCount = new int[](slices);
+    foreach (index; 0 .. slices * 2)
+    {
+        sliceLow[index] = infinity;
+        sliceHigh[index] = -infinity;
+    }
+    foreach (vertex; mesh.vertices)
+    {
+        if (regionMask(region, vertex) <= 0)
+            continue;
+        const values = [vertex.x, vertex.y, vertex.z];
+        auto slot = cast(size_t) ((values[a] - low[a]) / span * slices);
+        if (slot >= slices)
+            slot = slices - 1;
+        ++sliceCount[slot];
+        foreach (pair, other; [b, c])
+        {
+            if (values[other] < sliceLow[slot * 2 + pair])
+                sliceLow[slot * 2 + pair] = values[other];
+            if (values[other] > sliceHigh[slot * 2 + pair])
+                sliceHigh[slot * 2 + pair] = values[other];
+        }
+    }
+    foreach (slot; 0 .. slices)
+    {
+        const from = low[a] + span * slot / slices;
+        const to = low[a] + span * (slot + 1) / slices;
+        if (sliceCount[slot] == 0)
+        {
+            text ~= format(" | %.3f-%.3f empty", from, to);
+            continue;
+        }
+        text ~= format(" | %.3f-%.3f n=%d %c[%.3f,%.3f] %c[%.3f,%.3f]", from, to,
+            sliceCount[slot], "xyz"[b], sliceLow[slot * 2],
+            sliceHigh[slot * 2], "xyz"[c], sliceLow[slot * 2 + 1],
+            sliceHigh[slot * 2 + 1]);
+    }
+    return text;
+}
+
+unittest
+{
+    // A slab 0.2 long, 0.04 tall and 0.10 wide: the numbers must say so, because a
+    // slab is exactly the shape that a triangle count cannot distinguish from a foot.
+    auto mesh = Mesh();
+    foreach (x; 0 .. 5)
+        foreach (y; 0 .. 3)
+            foreach (z; 0 .. 3)
+                mesh.addVertex(Vec3(x * 0.05 - 0.1, y * 0.02, z * 0.05 - 0.05));
+    const box = RegionVolume("slab", RegionKind.box, Vec3(-1, -1, -1),
+        Vec3(1, 1, 1), 1.0, 0.0);
+    const report = describeRegionExtent(mesh, box, 2, 4);
+    assert(report.length > 0 && report != "empty", report);
+    assert(report.startsWith("n=45"), report);
+    assert(report.index("x[-0.100,0.100]") >= 0, report);
+    assert(report.index("y[0.000,0.040]") >= 0, report);
+    assert(report.index("z[-0.050,0.050]") >= 0, report);
+    // Slicing along z must show four populated slices and the same x span in each.
+    assert(report.index("empty") < 0, report);
+    // A region that covers nothing reports it rather than inventing numbers.
+    const far = RegionVolume("far", RegionKind.sphere, Vec3(9, 9, 9), Vec3(), 0.1,
+        0.0);
+    assert(describeRegionExtent(mesh, far) == "empty");
+}

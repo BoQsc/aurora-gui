@@ -277,3 +277,118 @@ unittest
     const zOnly = screenDelta(camera, 600, 12, 7, 3);
     assert(zOnly.x == 0 && zOnly.y == 0);
 }
+
+/**
+ * Move the vertices near a world point along a direction with a smooth falloff.
+ *
+ * This is the document-side brush: the mouse selects with `brushVertices`, but a
+ * stroke that has to survive a rebuild needs a world address and no camera, so the
+ * same falloff is applied around a point instead of a pixel.
+ */
+int brushWorld(ref Mesh mesh, Vec3 center, double radius, Vec3 direction,
+    double amount)
+{
+    if (!(radius > 0) || amount == 0 || mesh.vertices.length == 0)
+        return 0;
+    const aim = length(direction);
+    if (!(aim > 0))
+        return 0;
+    const step = scale(direction, amount / aim);
+    int moved;
+    foreach (ref vertex; mesh.vertices)
+    {
+        const offset = sub(vertex, center);
+        const distance = length(offset);
+        if (distance >= radius)
+            continue;
+        const falloff = 1.0 - distance / radius;
+        vertex = add(vertex, scale(step, falloff * falloff));
+        ++moved;
+    }
+    return moved;
+}
+
+unittest
+{
+    // The brush must move what is under it, leave the rest alone, and fade towards
+    // the rim: a hard edge at the rim would show as a crease on the surface.
+    auto mesh = Mesh();
+    foreach (x; 0 .. 5)
+        mesh.addVertex(Vec3(x * 0.01, 0, 0));
+    const base = mesh.vertices[0];
+    const moved = brushWorld(mesh, Vec3(0, 0, 0), 0.03, Vec3(0, 1, 0), 0.01);
+    assert(moved == 3, "only the vertices under the brush may move");
+    assert(mesh.vertices[0].y > 0.009, "the centre takes the full amount");
+    assert(mesh.vertices[1].y > 0 && mesh.vertices[1].y < mesh.vertices[0].y,
+        "the falloff must fade towards the rim");
+    assert(mesh.vertices[2].y > 0 && mesh.vertices[2].y < mesh.vertices[1].y);
+    assert(mesh.vertices[3] == base + Vec3(0.03, 0, 0),
+        "a vertex outside the brush must not move");
+    assert(brushWorld(mesh, Vec3(0, 0, 0), 0.0, Vec3(0, 1, 0), 0.01) == 0);
+}
+
+/**
+ * Relax the vertices near a point towards their neighbours, with the same falloff.
+ *
+ * Pushing a surface with a brush leaves a crease where the stroke stops; relaxing it
+ * is what removes that, so the two modes belong together.
+ */
+int smoothWorld(ref Mesh mesh, Vec3 center, double radius, double amount,
+    int passes = 1)
+{
+    if (!(radius > 0) || !(amount > 0) || mesh.vertices.length == 0 || passes <= 0)
+        return 0;
+    // Neighbour positions per vertex, from the faces.
+    Vec3[][] rings;
+    rings.length = mesh.vertices.length;
+    foreach (face; mesh.faces)
+    {
+        rings[face.a] ~= mesh.vertices[face.b];
+        rings[face.a] ~= mesh.vertices[face.c];
+        rings[face.b] ~= mesh.vertices[face.a];
+        rings[face.b] ~= mesh.vertices[face.c];
+        rings[face.c] ~= mesh.vertices[face.a];
+        rings[face.c] ~= mesh.vertices[face.b];
+    }
+    int moved;
+    foreach (pass; 0 .. passes)
+    {
+        Vec3[] relaxed;
+        relaxed.length = mesh.vertices.length;
+        foreach (index, vertex; mesh.vertices)
+        {
+            relaxed[index] = vertex;
+            const offset = sub(vertex, center);
+            const distance = length(offset);
+            if (distance >= radius || rings[index].length == 0)
+                continue;
+            auto average = Vec3(0, 0, 0);
+            foreach (neighbour; rings[index])
+                average = add(average, neighbour);
+            average = scale(average, 1.0 / rings[index].length);
+            const falloff = 1.0 - distance / radius;
+            const weight = amount * falloff * falloff;
+            relaxed[index] = add(vertex, scale(sub(average, vertex), weight));
+        }
+        mesh.vertices = relaxed;
+        moved += cast(int) mesh.vertices.length;
+    }
+    return moved;
+}
+
+unittest
+{
+    // A spike must be pulled towards its neighbours, and a vertex outside the brush
+    // must stay exactly where it is.
+    auto mesh = Mesh();
+    const left = mesh.addVertex(Vec3(-0.02, 0, 0));
+    const right = mesh.addVertex(Vec3(0.02, 0, 0));
+    const spike = mesh.addVertex(Vec3(0.0, 0.05, 0));
+    const far = mesh.addVertex(Vec3(1.0, 0, 0));
+    mesh.addTriangle(left, spike, right, 0);
+    const before = mesh.vertices[spike];
+    const farBefore = mesh.vertices[far];
+    assert(smoothWorld(mesh, before, 0.05, 0.5) == 4);
+    assert(mesh.vertices[spike].y < before.y, "the spike must be relaxed");
+    assert(mesh.vertices[far] == farBefore, "outside the brush nothing moves");
+}

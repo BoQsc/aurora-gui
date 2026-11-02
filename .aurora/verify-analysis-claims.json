@@ -1,0 +1,21 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/controlhistory.d",
+    "aurora-opencode-pro/source/auroraopencode/goalmode.d",
+    "aurora-opencode-pro/source/auroraopencode/taskflow.d",
+    "aurora-opencode-pro/source/auroraopencode/toolscheduler.d",
+    "aurora-opencode-pro/source/auroraopencode/tools.d",
+    "aurora-opencode-pro/source/auroraopencode/requestintent.d"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-u", "-B", "-m", "unittest", "-v", "test_source_claims"],
+        "workdir": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-mine",
+        "timeout": 900000
+      }
+    }
+  ]
+}

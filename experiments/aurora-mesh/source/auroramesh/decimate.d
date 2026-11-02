@@ -4,6 +4,100 @@ import auroramesh.mesh : Face, Material, Mesh, Vec3, add, computeSmoothNormals,
     cross, dot, length, normalize, scale, sub, watertight;
 import std.math : isFinite;
 
+/// Symmetric 4x4 quadric, written out: the squared distance to a set of planes.
+private struct Quadric
+{
+    double xx, xy, xz, xw, yy, yz, yw, zz, zw, ww;
+
+    static Quadric plane(Vec3 normal, double offset)
+    {
+        Quadric quadric;
+        quadric.xx = normal.x * normal.x;
+        quadric.xy = normal.x * normal.y;
+        quadric.xz = normal.x * normal.z;
+        quadric.xw = normal.x * offset;
+        quadric.yy = normal.y * normal.y;
+        quadric.yz = normal.y * normal.z;
+        quadric.yw = normal.y * offset;
+        quadric.zz = normal.z * normal.z;
+        quadric.zw = normal.z * offset;
+        quadric.ww = offset * offset;
+        return quadric;
+    }
+
+    double error(Vec3 point) const
+    {
+        return xx * point.x * point.x + 2 * xy * point.x * point.y +
+            2 * xz * point.x * point.z + 2 * xw * point.x +
+            yy * point.y * point.y + 2 * yz * point.y * point.z +
+            2 * yw * point.y + zz * point.z * point.z + 2 * zw * point.z +
+            ww;
+    }
+}
+
+private Quadric quadricSum(Quadric first, Quadric second)
+{
+    Quadric sum;
+    sum.xx = first.xx + second.xx;
+    sum.xy = first.xy + second.xy;
+    sum.xz = first.xz + second.xz;
+    sum.xw = first.xw + second.xw;
+    sum.yy = first.yy + second.yy;
+    sum.yz = first.yz + second.yz;
+    sum.yw = first.yw + second.yw;
+    sum.zz = first.zz + second.zz;
+    sum.zw = first.zw + second.zw;
+    sum.ww = first.ww + second.ww;
+    return sum;
+}
+
+/// Plane quadrics summed per vertex: the geometric error of moving that vertex.
+private Quadric[] vertexQuadrics(Mesh mesh)
+{
+    auto quadrics = new Quadric[mesh.vertices.length];
+    foreach (face; mesh.faces)
+    {
+        const first = mesh.vertices[face.a];
+        const second = mesh.vertices[face.b];
+        const third = mesh.vertices[face.c];
+        const normal = cross(sub(second, first), sub(third, first));
+        const size = length(normal);
+        if (!(size > 1.0e-12))
+            continue;
+        const unit = scale(normal, 1.0 / size);
+        const planeQuadric = Quadric.plane(unit, -dot(unit, first));
+        quadrics[face.a] = quadricSum(quadrics[face.a], planeQuadric);
+        quadrics[face.b] = quadricSum(quadrics[face.b], planeQuadric);
+        quadrics[face.c] = quadricSum(quadrics[face.c], planeQuadric);
+    }
+    return quadrics;
+}
+
+unittest
+{
+    // A sharp corner must cost more to flatten than a flat sheet costs to collapse
+    // within: that difference is what keeps small features like toes. Costing by edge
+    // length alone cannot tell the two apart, which is why the toes went first.
+    auto cube = Mesh();
+    cubeAt(cube, 0.0, 1.0);
+    const cubeQuadrics = vertexQuadrics(cube);
+    const cornerCost = quadricSum(cubeQuadrics[0], cubeQuadrics[1]).error(
+        scale(add(cube.vertices[0], cube.vertices[1]), 0.5));
+    assert(cornerCost > 0.01, "collapsing a cube corner must cost real error");
+
+    auto sheet = Mesh();
+    const s0 = sheet.addVertex(Vec3(0, 0, 0));
+    const s1 = sheet.addVertex(Vec3(1, 0, 0));
+    const s2 = sheet.addVertex(Vec3(0, 1, 0));
+    const s3 = sheet.addVertex(Vec3(1, 1, 0));
+    sheet.addTriangle(s0, s1, s2, cast(Material) 0);
+    sheet.addTriangle(s1, s3, s2, cast(Material) 0);
+    const sheetQuadrics = vertexQuadrics(sheet);
+    const flatCost = quadricSum(sheetQuadrics[s0], sheetQuadrics[s1]).error(
+        scale(add(sheet.vertices[s0], sheet.vertices[s1]), 0.5));
+    assert(flatCost <= 1.0e-9, "collapsing inside a flat sheet must cost nothing");
+}
+
 private struct Candidate
 {
     int a;
@@ -13,7 +107,14 @@ private struct Candidate
     int versionB;
 }
 
-/** Shortest-edge collapse with a closed-manifold link check and normal guard. */
+/**
+ * Quadric-error collapse with a closed-manifold link check and normal guard.
+ *
+ * The cost of collapsing an edge is the squared distance from the merged point to the
+ * planes of the faces around that edge, so removing a sharp small feature (a toe) costs
+ * far more than removing a smooth large one (a thigh). Costing by edge length instead —
+ * as this did — deletes the smallest features first, which is exactly backwards.
+ */
 Mesh decimateMesh(Mesh source, int targetFaces)
 {
     if (source.faces.length <= targetFaces)
@@ -41,13 +142,22 @@ Mesh decimateMesh(Mesh source, int targetFaces)
     int aliveFaces = cast(int) mesh.faces.length;
     Candidate[] heap;
 
+    // Each vertex accumulates the planes of its faces, which is what makes the cost
+    // geometric error rather than edge length.
+    auto quadrics = vertexQuadrics(mesh);
+
     void pushEdge(int a, int b, bool checkEdge)
     {
         if (a == b)
             return;
         if (checkEdge && !shareEdge(a, b, vertexFaces, faceAlive, mesh.faces))
             return;
-        const cost = edgeCost(mesh, a, b);
+        // Geometric error at the merged point, with edge length only breaking ties.
+        const midpoint = scale(add(mesh.vertices[a], mesh.vertices[b]), 0.5);
+        const error = quadricSum(quadrics[a], quadrics[b]).error(midpoint);
+        const lengthCost = edgeCost(mesh, a, b);
+        const cost = isFinite(error) && error > 0
+            ? error + 1.0e-9 * lengthCost : lengthCost;
         heapPush(heap, Candidate(a, b, cost, versions[a], versions[b]));
     }
 
@@ -93,13 +203,14 @@ Mesh decimateMesh(Mesh source, int targetFaces)
             mesh.faces);
         const neighborB = neighborsOf(candidate.b, vertexFaces, faceAlive,
             mesh.faces);
-        bool[int] neighborBSet;
-        foreach (neighbor; neighborB)
-            neighborBSet[neighbor] = true;
         int common;
         foreach (neighbor; neighborA)
-            if (neighbor in neighborBSet)
-                ++common;
+            foreach (other; neighborB)
+                if (other == neighbor)
+                {
+                    ++common;
+                    break;
+                }
         // A closed edge has exactly the two opposite vertices in common.
         if (common != 2)
             continue;
@@ -155,6 +266,8 @@ Mesh decimateMesh(Mesh source, int targetFaces)
         const keep = candidate.a;
         const remove = candidate.b;
         mesh.vertices[keep] = midpoint;
+        quadrics[keep] = quadricSum(quadrics[keep], quadrics[remove]);
+        quadrics[remove] = Quadric.init;
         ++versions[keep];
         ++versions[remove];
 
@@ -306,21 +419,27 @@ private int edgeFaceCount(int a, int b, const int[][] vertexFaces,
 private int[] neighborsOf(int vertex, const int[][] vertexFaces,
     const bool[] faceAlive, const Face[] faces)
 {
+    // Degrees are tiny, so a linear scan beats allocating a hash set for every query:
+    // this runs twice per candidate collapse and dominated decimation time.
     int[] result;
-    bool[int] seen;
+    result.reserve(12);
+    void consider(int candidate)
+    {
+        if (candidate == vertex)
+            return;
+        foreach (existing; result)
+            if (existing == candidate)
+                return;
+        result ~= candidate;
+    }
     foreach (index; vertexFaces[vertex])
     {
         if (!faceAlive[index])
             continue;
         const face = faces[index];
-        const candidates = [face.a, face.b, face.c];
-        foreach (candidate; candidates)
-        {
-            if (candidate == vertex || candidate in seen)
-                continue;
-            seen[candidate] = true;
-            result ~= candidate;
-        }
+        consider(face.a);
+        consider(face.b);
+        consider(face.c);
     }
     return result;
 }

@@ -3,7 +3,8 @@ module auroramesh.editor;
 import auroramesh.camera : Camera, project;
 import auroramesh.collision : CollisionReport, collisionClusters,
     findSelfIntersections;
-import auroramesh.edit : brushVertices, pickNearest, screenDelta;
+import auroramesh.edit : brushVertices, brushWorld, pickNearest, screenDelta,
+    smoothWorld;
 import auroramesh.glb : fromGlb, toGlb;
 import auroramesh.gltf_scene : GltfScene, Mat4, PoseOverride, bakeGltfFrame,
     gltfAnimationDuration, gltfRotateVector, gltfTransformNormal,
@@ -18,10 +19,12 @@ import auroramesh.human_v3 : humanBaseMeshV3;
 import auroramesh.renderer : RgbFrame, RenderOptions, renderMesh, writePpm;
 import auroramesh.reshape : RegionBox, RegionEdit, regionBox, regionVertices,
     reshapeBox, reshapeRegion;
-import auroramesh.regions : RegionKind, RegionVolume, deformRegion, regionMask,
-    selectRegion;
-import auroramesh.remesh : appendMesh, carveRegion, decimateTo,
-    replaceChecked, sdfShell, subdivideMesh;
+import auroramesh.regions : RegionKind, RegionVolume, deformRegion,
+     describeRegionExtent, regionMask, selectRegion;
+import auroramesh.remesh : appendMesh, boundaryLoops, carveRegion, clipToPlane,
+     decimateTo, dropSmallShells, fillHoles, orientOutward,
+     mergeOverlappingShells, meshShellCount, replaceChecked, sdfShell,
+     subdivideMesh;
 import auroramesh.sdf : SdfField, SdfShape, ellipsoid, plane, sphere, taper;
 import core.time : MonoTime;
 import auroramesh.sculpt : cloneMesh, inflateVertices, mirrorVertex,
@@ -1618,6 +1621,7 @@ final class MeshEditor : Widget
         _replaceCommands.length = 0;
         _replaceShells.length = 0;
         _deformCommands.length = 0;
+        _brushCommands.length = 0;
         _reshapecs.length = 0;
         const changed = applyLiveDocument(document);
         if (changed)
@@ -1791,6 +1795,15 @@ final class MeshEditor : Widget
     private Mesh[] _replaceShells;
     // Deforms are state too: a rebake would otherwise drop them silently.
     private JSONValue[] _deformCommands;
+    // Brush strokes are state as well: shaping a foot is several of them.
+    private JSONValue[] _brushCommands;
+    // How many vertices the last stroke moved, so the ack can show it.
+    private int _lastBrushed;
+    // Extents of the last measured region: numbers instead of a guess about a form.
+    private string _measureReport = "";
+    // The first refusal in the current document. A later command that succeeds must
+    // not hide it: a silently refused cut once cost a whole session of shaping.
+    private string _firstRefusal = "";
 
     private RegionVolume* activeRegion()
     {
@@ -1898,6 +1911,10 @@ final class MeshEditor : Widget
     /// Draw the active region's volume as a translucent wireframe over the view.
     private void drawRegionOverlay(Canvas canvas, int width, int height)
     {
+        // The overlay is an editing aid. Hiding the region must hide the volume as
+        // well as the tint, or a capture shows teal slabs instead of the model.
+        if (!_showRegion)
+            return;
         auto region = activeRegion();
         if (region is null || width <= 0 || height <= 0)
             return;
@@ -2024,6 +2041,82 @@ final class MeshEditor : Widget
             changed = carveRegion(candidate, *region, removed);
             extendLimits(*region, minimum, maximum);
         }
+        else if (kind == "cut-plane")
+        {
+            // A plane cut is how a coarse limb is trimmed: whole-face removal cannot
+            // cut a leg that is one long triangle.
+            const surface = liveNumbers(liveChild(command, "point"));
+            const facing = liveNumbers(liveChild(command, "normal"));
+            if (surface.length < 3 || facing.length < 3)
+            {
+                _lastReplaceOk = false;
+                _lastReplaceReason = "cut-plane needs a point and a normal";
+                return false;
+            }
+            int capped;
+            changed = clipToPlane(candidate,
+                Vec3(surface[0], surface[1], surface[2]),
+                Vec3(facing[0], facing[1], facing[2]), capped);
+            // Report the cut ring's radius: a replacement shape has to meet the opening it
+            // fills, and guessing that size wastes runs.
+            if (changed != 0)
+            {
+                double radius = 0;
+                auto widest = 0;
+                const loops = boundaryLoops(candidate);
+                foreach (index, loop; loops)
+                    if (cast(int) loop.length > widest)
+                    {
+                        widest = cast(int) loop.length;
+                        auto centre = Vec3(0, 0, 0);
+                        foreach (vertex; loop)
+                            centre = Vec3(centre.x + candidate.vertices[vertex].x,
+                                centre.y + candidate.vertices[vertex].y,
+                                centre.z + candidate.vertices[vertex].z);
+                        centre = Vec3(centre.x / loop.length,
+                            centre.y / loop.length, centre.z / loop.length);
+                        auto sum = 0.0;
+                        foreach (vertex; loop)
+                        {
+                            const offset = candidate.vertices[vertex];
+                            const dx = offset.x - centre.x;
+                            const dy = offset.y - centre.y;
+                            const dz = offset.z - centre.z;
+                            sum += sqrt(dx * dx + dy * dy + dz * dz);
+                        }
+                        radius = sum / loop.length;
+                    }
+                writeReport("build/cut-radius.json", format(
+                    `{"revision":%d,"loop":%d,"radius":%.4f}`,
+                    _liveRevision, widest, radius));
+            }
+        }
+        else if (kind == "merge")
+        {
+            // Joining shells is how a shape takes the place of the geometry it replaces
+            // instead of sitting inside it: cull, join, bridge the seam.
+            const name = liveString(liveChild(command, "region"), _activeRegion);
+            auto region = name in _regions;
+            if (region is null)
+            {
+                _lastReplaceOk = false;
+                _lastReplaceReason = "no region to merge";
+                return false;
+            }
+            extendLimits(*region, minimum, maximum);
+            string why;
+            changed = mergeOverlappingShells(candidate, *region, why,
+                cast(int) liveNumber(liveChild(command, "faces"), 28000),
+                liveNumber(liveChild(command, "cell"), 0.0),
+                liveNumber(liveChild(command, "sliver"), 0.05),
+                liveNumber(liveChild(command, "blendCells"), 1.5));
+            if (changed == 0)
+            {
+                _lastReplaceOk = false;
+                _lastReplaceReason = why.length > 0 ? why : "nothing to do";
+                return false;
+            }
+        }
         else if (kind == "sdf")
         {
             const name = liveString(liveChild(command, "region"),
@@ -2044,6 +2137,23 @@ final class MeshEditor : Widget
             producedShell = sdfShell(field,
                 liveNumber(liveChild(command, "cell"), 0.006), _shellLo,
                 _shellHi);
+            // A sampled shell can carry pinholes where the band ran out; a shell is meant
+            // to be a closed solid, so seal them here rather than leaving holes in a model.
+            fillHoles(producedShell, 0);
+            // And a shell that came out inside-out renders dark without being damaged.
+            orientOutward(producedShell);
+            // Where two primitives cross the surface they leave a pimple; a light
+            // relaxation removes those without changing the intended form.
+            const relax = liveNumber(liveChild(command, "relax"), 0.0);
+            if (relax > 0 && producedShell.vertices.length > 0)
+            {
+                auto every = new int[producedShell.vertices.length];
+                foreach (index; 0 .. every.length)
+                    every[index] = cast(int) index;
+                smoothVertices(producedShell, every, relax);
+            }
+            // A cut can leave detached specks, which add shells without adding shape.
+            dropSmallShells(producedShell, 60);
             _shellFaces = cast(int) producedShell.faces.length;
             changed = appendMesh(candidate, producedShell);
         }
@@ -2060,6 +2170,9 @@ final class MeshEditor : Widget
         {
             _lastOpMs = elapsed;
             _lastReplaceOk = ok;
+            if (!ok && _firstRefusal.length == 0)
+                _firstRefusal = kind ~ ": " ~ (changed == 0 ?
+                    "nothing to do" : reason);
             _lastReplaceReason = ok ? "ok" : (changed == 0 ?
                 "nothing to do" : reason);
             _lastOp = kind;
@@ -2070,7 +2183,11 @@ final class MeshEditor : Widget
             _replaceCommands ~= command;
             // A carve refines the whole mesh, so its result is cached whole; an SDF
             // shell is cached as the geometry to splice on.
-            _replaceShells ~= kind == "carve" ? _mesh : producedShell;
+            // A whole-mesh cache must be a copy: kept by reference it also carries the
+            // selection tint that is painted on afterwards, so every rebuild showed
+            // teal patches instead of skin.
+            _replaceShells ~= (kind == "carve" || kind == "cut-plane") ?
+                cloneMesh(_mesh) : producedShell;
         }
         return ok;
     }
@@ -2106,6 +2223,48 @@ final class MeshEditor : Widget
             applyDeformCommand(command, false);
     }
 
+    /// Apply one brush stroke, optionally recording it so a rebake keeps it.
+    private bool applyBrushCommand(JSONValue command, bool record)
+    {
+        // Report the stroke even when it moves nothing, so the ack distinguishes "the
+        // command was understood" from "the document never reached the handler".
+        if (record)
+        {
+            _lastOp = "brush";
+            _lastOpMs = 0;
+        }
+        const surface = liveNumbers(liveChild(command, "point"));
+        const facing = liveNumbers(liveChild(command, "direction"));
+        if (surface.length < 3 || facing.length < 3)
+            return false;
+        const radius = liveNumber(liveChild(command, "radius"), 0.02);
+        const amount = liveNumber(liveChild(command, "amount"), 0.005);
+        const centre = Vec3(surface[0], surface[1], surface[2]);
+        // One command covers both modes: a stroke moves the surface, and a relaxation
+        // smooths the crease a stroke leaves behind.
+        const mode = liveString(liveChild(command, "mode"), "move");
+        const moved = mode == "smooth" ?
+            smoothWorld(_mesh, centre, radius, amount,
+                cast(int) liveNumber(liveChild(command, "passes"), 1)) :
+            brushWorld(_mesh, centre, radius,
+                Vec3(facing[0], facing[1], facing[2]), amount);
+        if (record)
+            _lastBrushed = moved;
+        if (record && moved > 0)
+        {
+            _brushCommands ~= command;
+            _lastOp = "brush";
+        }
+        return moved > 0;
+    }
+
+    /// Replay recorded brush strokes in the order they were given.
+    private void applyBrushEdits()
+    {
+        foreach (command; _brushCommands)
+            applyBrushCommand(command, false);
+    }
+
     /// Replay accepted replacements onto a freshly baked mesh.
     private void applyReplacements()
     {
@@ -2117,10 +2276,11 @@ final class MeshEditor : Widget
             if (index < _replaceShells.length &&
                 _replaceShells[index].faces.length > 0)
             {
-                if (liveString(liveChild(command, "kind"), "") == "carve")
+                const kind = liveString(liveChild(command, "kind"), "");
+                if (kind == "carve" || kind == "cut-plane")
                 {
                     _mesh = cloneMesh(_replaceShells[index]);
-                    _lastOp = "carve";
+                    _lastOp = kind;
                     continue;
                 }
                 const before = _mesh.faces.length;
@@ -2139,7 +2299,7 @@ final class MeshEditor : Widget
     {
         try
             writeReport("build/live-ack.json", format(
-                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f,"regions":%d,"region":"%s","maskVerts":%d,"maskFaces":%d,"op":"%s","opMs":%.2f,"replaceOk":%s,"replaceReason":"%s","shellFaces":%d,"shellLo":[%.3f,%.3f,%.3f],"shellHi":[%.3f,%.3f,%.3f],"camTarget":[%.3f,%.3f,%.3f],"camYaw":%.3f,"camPitch":%.3f,"camDistance":%.3f,"meshVerts":%d,"meshFaces":%d,"meshWarning":"%s"}`,
+                `{"revision":%d,"status":"ok","objects":%d,"poses":%d,"clip":"%s","frame":%d,"frames":%d,"playing":%s,"tracks":%d,"keys":%d,"valid":%s,"nonFinite":%d,"invalidFaces":%d,"warnings":"%s","frameScan":%d,"invalidFrames":%d,"limbHits":%d,"collisionFrames":%d,"collisionPairs":%d,"scanRunning":%s,"scanFrame":%d,"scanTotal":%d,"ticks":%d,"advances":%d,"renderer":"%s","hardware":%s,"rendererFallback":"%s","awarenessValid":%s,"frameScanPath":"build/live-frames.json","capture":"%s","sheet":"%s","collisions":%d,"baselineCollisions":%d,"collisionSample":[%.4f,%.4f,%.4f],"collisionFaces":[%d,%d],"follows":%d,"clusterFaces":%d,"strayFaces":%d,"reshape":"%s","reshaped":%d,"reshapeMs":%.2f,"regions":%d,"region":"%s","maskVerts":%d,"maskFaces":%d,"op":"%s","opMs":%.2f,"replaceOk":%s,"replaceReason":"%s","shellFaces":%d,"shellLo":[%.3f,%.3f,%.3f],"shellHi":[%.3f,%.3f,%.3f],"camTarget":[%.3f,%.3f,%.3f],"camYaw":%.3f,"camPitch":%.3f,"camDistance":%.3f,"meshVerts":%d,"meshFaces":%d,"meshWarning":"%s","brushed":%d,"measure":"%s","refused":"%s","shells":%d}`,
                 _liveRevision, _liveExtras.length, _poseOverrides.length,
                 jsonEscape(_hasLiveAnimation ? _liveClip.name : ""),
                 cast(int) (_time * 30 + 0.5), animationFrameCount(),
@@ -2170,7 +2330,9 @@ final class MeshEditor : Widget
                 _camera.target.x, _camera.target.y, _camera.target.z,
                 _camera.yaw, _camera.pitch, _camera.distance,
                 _mesh.vertices.length, _mesh.faces.length,
-                jsonEscape(_meshWarning)));
+                jsonEscape(_meshWarning), _lastBrushed,
+                jsonEscape(_measureReport), jsonEscape(_firstRefusal),
+                meshShellCount(_mesh)));
         catch (Exception)
         {
         }
@@ -2236,6 +2398,9 @@ final class MeshEditor : Widget
         // Replacements are replayed onto the fresh bake, so an accepted shell or
         // subdivision is not lost the next time the mesh is rebuilt.
         applyReplacements();
+        // Strokes come last: sculpting acts on what replacements produced, so a stroke
+        // on a shell must be replayed after the shell is spliced in.
+        applyBrushEdits();
         _dirty = true;
         invalidate();
     }
@@ -2272,6 +2437,8 @@ final class MeshEditor : Widget
             _replaceCommands.length = 0;
             _replaceShells.length = 0;
             _deformCommands.length = 0;
+            _brushCommands.length = 0;
+            _firstRefusal = "";
             _reshapecs.length = 0;
             _regions = null;
             _activeRegion = "";
@@ -2470,9 +2637,62 @@ final class MeshEditor : Widget
             invalidate();
             return moved > 0;
         }
+        if (type == "measure")
+        {
+            // Numbers for the region: length, height, width and where each slice stops,
+            // so a shape can be checked instead of guessed from a triangle count.
+            // An inline box keeps a measurement from needing a named region, whose
+            // selection tint would otherwise colour the mesh just to read numbers.
+            RegionVolume local;
+            if (liveHas(command, "box"))
+            {
+                const box = liveChild(command, "box");
+                const low = liveNumbers(liveChild(box, "a"));
+                const high = liveNumbers(liveChild(box, "b"));
+                if (low.length < 3 || high.length < 3)
+                    return false;
+                local = RegionVolume("measure", RegionKind.box,
+                    Vec3(low[0], low[1], low[2]),
+                    Vec3(high[0], high[1], high[2]), 1.0, 0.0);
+            }
+            else
+            {
+                const name = liveString(liveChild(command, "region"), _activeRegion);
+                auto region = name in _regions;
+                if (region is null)
+                    return false;
+                local = *region;
+                _activeRegion = name;
+            }
+            _measureReport = describeRegionExtent(_mesh, local,
+                cast(size_t) liveNumber(liveChild(command, "axis"), 1),
+                cast(int) liveNumber(liveChild(command, "slices"), 6));
+            _lastOp = "measure";
+            _lastOpMs = 0;
+            _dirty = true;
+            invalidate();
+            return true;
+        }
+        if (type == "brush")
+        {
+            // One snapshot per stroke, so undo steps back a whole stroke.
+            _undo ~= cloneMesh(_mesh);
+            const moved = applyBrushCommand(command, true);
+            refreshMaskStats();
+            tintSelection();
+            _dirty = true;
+            invalidate();
+            return moved > 0;
+        }
         if (type == "replace")
         {
             const ok = applyReplaceCommand(command, true);
+            // Every refusal passes through here, including the ones that return before
+            // the health gate, so a refused command can never hide behind a later one.
+            if (!ok && _firstRefusal.length == 0)
+                _firstRefusal = liveString(liveChild(command, "kind"), "replace") ~
+                    ": " ~ (_lastReplaceReason.length > 0 ? _lastReplaceReason :
+                        "refused");
             refreshMaskStats();
             tintSelection();
             _dirty = true;

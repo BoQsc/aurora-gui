@@ -17,7 +17,8 @@ private immutable int[] EdgeB = [1, 3, 2, 0, 5, 7, 6, 4, 4, 5, 6, 7];
  * naive surface nets. This produces one connected organic skin instead of a
  * collection of intersecting primitives.
  */
-Mesh surfaceNets(const SdfField field, Vec3 minimum, Vec3 maximum, double cell)
+Mesh surfaceNets(F)(const F field, Vec3 minimum, Vec3 maximum, double cell)
+    if (is(typeof(field.eval(Vec3(0, 0, 0))) : double))
 {
     const nx = cast(int) ceil((maximum.x - minimum.x) / cell) + 1;
     const ny = cast(int) ceil((maximum.y - minimum.y) / cell) + 1;
@@ -185,7 +186,8 @@ private void addQuad(ref Mesh mesh, int a, int b, int c, int d)
     }
 }
 
-private Vec3 gradient(const SdfField field, Vec3 point, double epsilon)
+private Vec3 gradient(F)(const F field, Vec3 point, double epsilon)
+    if (is(typeof(field.eval(Vec3(0, 0, 0))) : double))
 {
     const dx = field.eval(add(point, Vec3(epsilon, 0, 0))) -
         field.eval(sub(point, Vec3(epsilon, 0, 0)));
