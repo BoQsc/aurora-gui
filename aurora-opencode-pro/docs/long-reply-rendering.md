@@ -61,3 +61,18 @@ Checkpoint reveal; task completion supplies its final response before asserting
 that no handoff is needed. The simulation helper resolves the loaded conversation
 before older background turns. Full smoke, image normalization/attachment and
 Export reveal checks passed in `build/architecture-checks-_061hlqw/`.
+
+## Subsequent selection correction (source, not yet deployed)
+
+Visual slices of a wrapped code line now share one logical copy range. Select
+All previously repeated the entire line for each slice. Pointer hit testing,
+selection clipping and search highlights now use the visible panel bounds while
+retaining the original layout coordinates. Code Copy preserves leading blank
+lines, and selection preserves internal blank lines and repeated logical lines.
+
+`wrapped_code_selection_contracts` checks exact copy text for long ASCII,
+combining marks, mixed scripts and emoji, plus a real drag across two visual
+wraps. It passed in `build/architecture-checks-ugxiwf2m/`, source fingerprint
+`8c877dbf33094e5ae274ccfa49b4c5530c254d108c6af5dadab0a1c2f81a2eac`.
+The native headless smoke and existing viewport pixel/geometry checks passed
+before the final test expansion in `build/architecture-checks-w8izecto/`.

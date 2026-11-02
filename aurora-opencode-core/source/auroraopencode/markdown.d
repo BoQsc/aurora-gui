@@ -93,6 +93,7 @@ struct MdItem
     double clipW;
     dstring target;   // link URL for text items, empty otherwise
     dstring codeText; // source text for code-block panels (copy button)
+    bool textContinuation; // another visible slice of the preceding logical code line
 }
 
 struct MdComposition
@@ -1495,6 +1496,7 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                     text.clipText = true;
                     text.clipX = pad;
                     text.clipW = inner;
+                    text.textContinuation = sourceX > 0;
                     c.items ~= text;
                     codeHeight += text.h;
                 }
@@ -1550,9 +1552,9 @@ void composeMarkdownInto(ref MdComposition c, MarkdownBlock[] blocks,
                 panel.w = lineWidth;
                 panel.h = panelH;
                 panel.color = mdPanelBg;
-                foreach (codeLine; block.codeLines)
+                foreach (index, codeLine; block.codeLines)
                 {
-                    if (panel.codeText.length > 0) panel.codeText ~= '\n';
+                    if (index > 0) panel.codeText ~= '\n';
                     panel.codeText ~= codeLine;
                 }
                 c.items[panelIndex] = panel;

@@ -180,7 +180,7 @@ import auroraopencode.emergency : emergencyHeartbeat,
 import auroraopencode.projectdriver : buildProjectReviewPrompt;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, minutes, seconds;
-import std.algorithm : canFind, endsWith, max, sort;
+import std.algorithm : canFind, endsWith, min, max, sort;
 import std.array : appender, join;
 import std.conv : to;
 import std.datetime : Clock, SysTime;
@@ -979,6 +979,11 @@ private final class MessageBubble : Widget
         int y;
         int w;
         int h;
+        bool code, continuation;
+        int clipX = int.min;
+        int clipW;
+        int left() const { return clipX == int.min ? x : clipX; }
+        int visibleWidth() const { return clipX == int.min ? w : clipW; }
     }
     private SelectSegment[] _selSegments;
     private bool _selecting;
@@ -2591,7 +2596,7 @@ private final class MessageBubble : Widget
                 if (at == size_t.max) break;
                 foreach (rect; segment.layout.selectionRects(at,
                     at + needle.length))
-                    canvas.fillRect(Rect(segment.x + cast(int) rect.x,
+                    canvas.clipped(Rect(segment.left(), segment.y, maxInt(1, segment.visibleWidth()), segment.h)).fillRect(Rect(segment.x + cast(int) rect.x,
                         segment.y + cast(int) rect.y,
                         maxInt(1, cast(int) rect.width),
                         maxInt(1, cast(int) rect.height)),
@@ -3228,9 +3233,17 @@ private final class MessageBubble : Widget
             // block, but a drag can also select an individual line.
             if (item.kind == MdItemKind.text && item.layout !is null)
             {
-                _selSegments ~= SelectSegment(item.layout,
+                auto segment = SelectSegment(item.layout,
                     cast(int)(padH + item.x), cast(int)(contentY + item.y),
                     maxInt(1, cast(int) item.w), maxInt(1, cast(int) item.h));
+                if (item.clipText)
+                {
+                    segment.code = true;
+                    segment.continuation = item.textContinuation;
+                    segment.clipX = cast(int)(padH + item.clipX);
+                    segment.clipW = maxInt(1, cast(int) min(item.w, item.clipW));
+                }
+                _selSegments ~= segment;
             }
 
             if (item.kind == MdItemKind.text && item.target.length > 0)
@@ -3290,14 +3303,20 @@ private final class MessageBubble : Widget
             if (seg < 0 || seg >= cast(int) _selSegments.length) continue;
             const layout = _selSegments[seg].layout;
             const len = layout.text().length;
+            int logicalEnd = seg;
+            while (logicalEnd < lastSeg && logicalEnd + 1 < _selSegments.length &&
+                _selSegments[logicalEnd + 1].continuation &&
+                _selSegments[logicalEnd + 1].layout is layout) ++logicalEnd;
             const from = seg == firstSeg
                 ? (firstChar < len ? firstChar : len) : 0;
-            const endIndex = seg == lastSeg
+            const endIndex = logicalEnd == lastSeg
                 ? (lastChar < len ? lastChar : len) : len;
-            if (endIndex <= from) continue;
             const y = _selSegments[seg].y;
+            const emptyCodeLine = len == 0 && _selSegments[seg].code;
+            seg = logicalEnd;
+            if (endIndex == from && !emptyCodeLine) continue;
             if (haveLine && y != lastY) result ~= '\n';
-            result ~= to!string(layout.text()[from .. endIndex]);
+            result ~= to!string(layout.text()[min(from, endIndex) .. max(from, endIndex)]);
             lastY = y;
             haveLine = true;
         }
@@ -3346,7 +3365,7 @@ private final class MessageBubble : Widget
     {
         if (_selSegments.length == 0) return Point(-1, -1);
         const segment = _selSegments[0];
-        return localToGlobal(Point(segment.x + 1,
+        return localToGlobal(Point(segment.left() + 1,
             segment.y + maxInt(1, segment.h / 2)));
     }
 
@@ -3367,7 +3386,15 @@ private final class MessageBubble : Widget
     {
         if (_selSegments.length == 0) return Point(-1, -1);
         const segment = _selSegments[0];
-        return localToGlobal(Point(segment.x + maxInt(1, segment.w - 1),
+        return localToGlobal(Point(segment.left() + maxInt(1, segment.visibleWidth() - 1),
+            segment.y + maxInt(1, segment.h / 2)));
+    }
+
+    public Point selectionRunPointForTesting(size_t index, bool end)
+    {
+        if (index >= _selSegments.length) return Point(-1, -1);
+        const segment = _selSegments[index];
+        return localToGlobal(Point(segment.left() + (end ? maxInt(1, segment.visibleWidth() - 1) : 1),
             segment.y + maxInt(1, segment.h / 2)));
     }
 
@@ -3420,8 +3447,8 @@ private final class MessageBubble : Widget
                 ? (lastChar < len ? lastChar : len) : len;
             // Clip to the run's visible slice so a highlight on a clipped code
             // line cannot bleed past the panel edge.
-            auto clipped = canvas.clipped(Rect(segment.x, segment.y,
-                maxInt(1, segment.w), maxInt(1, segment.h)));
+            auto clipped = canvas.clipped(Rect(segment.left(), segment.y,
+                maxInt(1, segment.visibleWidth()), maxInt(1, segment.h)));
             foreach (rect; layout.selectionRects(from, endIndex))
                 clipped.fillRect(Rect(segment.x + cast(int) rect.x,
                     segment.y + cast(int) rect.y,
@@ -3438,7 +3465,7 @@ private final class MessageBubble : Widget
         charIndex = 0;
         foreach (index, segment; _selSegments)
         {
-            if (position.x < segment.x || position.x >= segment.x + segment.w ||
+            if (position.x < segment.left() || position.x >= segment.left() + segment.visibleWidth() ||
                 position.y < segment.y || position.y >= segment.y + segment.h)
                 continue;
             segIndex = cast(int) index;
@@ -3478,8 +3505,10 @@ private final class MessageBubble : Widget
             }
         }
         _selFocusSeg = nearest;
-        _selFocusChar = position.y < _selSegments[nearest].y
-            ? 0 : _selSegments[nearest].layout.text().length;
+        const segment = _selSegments[nearest];
+        _selFocusChar = wordSnappedFocus(nearest, segment.layout.hitTest(
+            clampInt(position.x, segment.left(), segment.left() + segment.visibleWidth()) - segment.x,
+            clampInt(position.y - segment.y, 0, segment.h)));
     }
 
     private void clearSelection()
@@ -33085,6 +33114,12 @@ private void pollButtonSuggestionRequest()
     {
         auto bubble = messageBubbleForTesting(index);
         return bubble is null ? "" : bubble.selectedText();
+    }
+
+    public Point messageSelectionRunPointForTesting(int index, size_t run, bool end)
+    {
+        auto bubble = messageBubbleForTesting(index);
+        return bubble is null ? Point(-1, -1) : bubble.selectionRunPointForTesting(run, end);
     }
 
     /// Test-only: the text the message bubble at `index` last copied via Ctrl+C.
