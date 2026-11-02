@@ -42,7 +42,14 @@ public final class ConversationImages
     }
 
     void archive(ref ChatSession session)
-    { foreach (ref message; session.messages) archive(message); }
+    {
+        foreach (ref message; session.messages) archive(message);
+        foreach (contexts; [session.queuedGuidanceContext, session.queuedFollowUpContext])
+            foreach (ref context; contexts)
+            {
+                ChatMessage message; message.images = context.images; archive(message);
+            }
+    }
 
     bool prepare(ref ChatSession session, size_t imageLimit)
     {

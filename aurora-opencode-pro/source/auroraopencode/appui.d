@@ -28484,6 +28484,8 @@ private void pollButtonSuggestionRequest()
         copyTaskContract(copy, source);
         copy.queuedGuidance = source.queuedGuidance;
         copy.queuedFollowUps = source.queuedFollowUps;
+        copy.queuedGuidanceContext = source.queuedGuidanceContext;
+        copy.queuedFollowUpContext = source.queuedFollowUpContext;
         // A copy is new work the reader has not seen yet; it starts read.
         copy.unread = false;
         copy.updatedAt = Clock.currTime.toUnixTime();
@@ -28580,6 +28582,8 @@ private void pollButtonSuggestionRequest()
         copyTaskContract(copy, source);
         copy.queuedGuidance = source.queuedGuidance;
         copy.queuedFollowUps = source.queuedFollowUps;
+        copy.queuedGuidanceContext = source.queuedGuidanceContext;
+        copy.queuedFollowUpContext = source.queuedFollowUpContext;
         copy.unread = false;
         copy.updatedAt = Clock.currTime.toUnixTime();
         // Copy the whole message graph, re-keying ids in one pass, then remap

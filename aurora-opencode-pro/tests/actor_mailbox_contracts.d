@@ -177,7 +177,10 @@ int main()
     auto failedActor = new ConversationActor(failedInitial, config, brokenJournal, budget);
     assert(failedActor.post(ActorCommand(ActorCommandKind.start, "Accepted before a failed journal write")) == ActorAdmission.accepted);
     Thread.sleep(50.msecs);
-    assert(failedActor.post(ActorCommand(ActorCommandKind.steer, "Accepted steering")) == ActorAdmission.accepted);
+    auto steering = ActorCommand(ActorCommandKind.steer, "Accepted steering");
+    steering.imagesJson = `[{"mimeType":"image/png","name":"accepted.png","base64Data":"accepted-pixels"}]`;
+    steering.context = "Accepted file context";
+    assert(failedActor.post(steering) == ActorAdmission.accepted);
     assert(failedActor.post(ActorCommand(ActorCommandKind.followUp, "Accepted follow-up")) == ActorAdmission.accepted);
     assert(failedActor.post(ActorCommand(ActorCommandKind.setDraft, "Unsent draft retained")) == ActorAdmission.accepted);
     failedGate.release();
@@ -194,6 +197,9 @@ int main()
         "Storage failure discarded accepted user input before it reached the graph");
     assert(failedState["queuedFollowUps"].array[1].str == "Accepted follow-up" &&
         failedState["queuedGuidance"].array[0].str == "Accepted steering" && failedState["draft"].str == "Unsent draft retained");
+    assert(failedState["queuedGuidanceContext"].array[0]["images"].array[0]["base64Data"].str == "accepted-pixels" &&
+        failedState["queuedGuidanceContext"].array[0]["text"].str == "Accepted file context",
+        "Storage failure discarded an accepted attachment or hidden context");
     failedActor.close();
     bool incomplete;
     try failedActor.recordedTrace(); catch (Exception) { incomplete = true; }

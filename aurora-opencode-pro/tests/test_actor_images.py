@@ -10,6 +10,7 @@ import threading
 package = Path(__file__).resolve().parents[1]
 image_counts = []
 failures = []
+routing_keys = []
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -20,6 +21,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        routing_keys.append(self.headers.get("x-opencode-session"))
         images = [part for message in request["messages"] if isinstance(message["content"], list)
                   for part in message["content"] if part.get("type") == "image_url"]
         image_counts.append(len(images))
@@ -40,9 +42,10 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 try:
     env = dict(os.environ, AURORA_CONTRACT_PROVIDER_BASE=f"http://127.0.0.1:{server.server_port}/v1")
     result = subprocess.run([sys.executable, str(package / "tests/run_architecture_checks.py"),
-                             "actor_image_contracts"], cwd=package.parent, env=env, timeout=150)
+                             "actor_image_contracts", "actor_attachment_command_contracts"], cwd=package.parent, env=env, timeout=150)
     assert result.returncode == 0, "Actor image fixture failed"
-    assert image_counts == [2, 0, 2], f"Image retirement or branch hydration failed: {image_counts}"
+    assert image_counts == [2, 0, 2, 1, 1], f"Image retirement, command input or branch hydration failed: {image_counts}"
+    assert routing_keys == [None] * 5, "Local providers received a gateway-only header"
     assert not failures, failures
     print("PASS real HTTP image window, text-only follow-up, branch reload", image_counts)
 finally:

@@ -13,7 +13,7 @@ public struct ConversationToolView
 
 public struct ConversationExecutionView
 {
-    string phase;
+    string phase, routingKey;
     uint resendCount;
     long retryRemainingMs = -1;
     int toolRounds;
@@ -45,7 +45,7 @@ public ConversationToolView decodeToolView(const ref JSONValue value)
 public JSONValue executionViewJson(const ref ConversationExecutionView execution)
 {
     JSONValue value;
-    static foreach (field; ["phase", "resendCount", "retryRemainingMs", "toolRounds",
+    static foreach (field; ["phase", "routingKey", "resendCount", "retryRemainingMs", "toolRounds",
         "selectedImages", "selectedImageBytes", "imageSizeReads", "imageBlobReads", "omittedTools"])
         value[field] = __traits(getMember, execution, field);
     value["tools"] = JSONValue.emptyArray;
@@ -58,6 +58,7 @@ public ConversationExecutionView decodeExecutionView(const ref JSONValue value)
     ConversationExecutionView result;
     if (value.type != JSONType.object) return result;
     if (auto field = "phase" in value.object) result.phase = field.str;
+    if (auto field = "routingKey" in value.object) result.routingKey = field.str;
     static foreach (field; ["resendCount", "retryRemainingMs", "toolRounds", "selectedImages",
         "selectedImageBytes", "imageSizeReads", "imageBlobReads", "omittedTools"])
         if (auto number = field in value.object)

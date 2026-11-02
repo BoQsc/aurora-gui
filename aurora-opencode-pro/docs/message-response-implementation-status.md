@@ -262,6 +262,25 @@ read-only mode. Proof: `build/architecture-checks-31sa3csh/` and
 `build/architecture-checks-v5gd5ljc/`, source fingerprint
 `1532c0fa1955f09d4be68e7a89bd39fcc7972e714e603dc281b2c50fbe6f7cdb`.
 
+Image-bearing user commands now use immutable image JSON plus hidden file
+context. Busy steering/follow-ups archive pixels before durable queue admission;
+their saved contexts align with the existing text queues. Journal projection,
+snapshot copying and offline replay retain those references. A failed journal
+also retains accepted inline pixels and file context in the recovery state.
+The five-request image/attachment driver passes in
+`build/architecture-checks-imjoed5_/`; the recipe/branch/mailbox driver passes in
+`build/architecture-checks-gpe2xqpt/`.
+
+All 47 default fixtures pass in `build/architecture-checks-kbvcyzx3/`, and all
+eight HTTP recovery cases pass in `build/architecture-checks-egs2p77u/`, at
+source fingerprint
+`9868fd1cb8ab48de147899e68662db029682491b84e68a60e1874c1f2d83a254`.
+The local-provider image test also checks that new chats leave the default
+client routing key and branch navigation retains it. Gateway-specific headers
+remain confined to the gateway. Real gateway validation is still pending.
+The desktop continues to use its legacy coordinator; these source-only checks
+do not establish adoption, rebuild, relaunch or delivery.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

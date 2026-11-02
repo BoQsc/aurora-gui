@@ -1205,6 +1205,42 @@ public PlanHistoryEntry[] planHistoryFromJson(JSONValue value)
     return result;
 }
 
+public struct ChatPromptContext
+{
+    string text;
+    ChatImageAttachment[] images;
+}
+
+public JSONValue promptContextsToJson(const(ChatPromptContext)[] contexts)
+{
+    auto values = JSONValue.emptyArray;
+    foreach (context; contexts)
+    {
+        JSONValue value; value["text"] = context.text; value["images"] = JSONValue.emptyArray;
+        foreach (image; context.images) value["images"].array ~= imageAttachmentToJson(image);
+        values.array ~= value;
+    }
+    return values;
+}
+
+public ChatPromptContext[] promptContextsFromJson(const ref JSONValue values)
+{
+    ChatPromptContext[] contexts;
+    if (values.type != JSONType.array) return contexts;
+    foreach (value; values.array)
+    {
+        ChatPromptContext context;
+        if (value.type == JSONType.object)
+        {
+            if (auto text = "text" in value.object) if (text.type == JSONType.string) context.text = text.str;
+            if (auto images = "images" in value.object) if (images.type == JSONType.array)
+                foreach (image; images.array) context.images ~= imageAttachmentFromJson(image);
+        }
+        contexts ~= context;
+    }
+    return contexts;
+}
+
 public struct ChatSession
 {
     // Stable runtime identity. Messages have always had graph ids, but an
@@ -1253,6 +1289,9 @@ public struct ChatSession
     // Alt+Enter explicitly queues a separate follow-up turn. Unlike steering,
     // these prompts are not injected into the active turn.
     string[] queuedFollowUps;
+    // Optional contexts align with their text queues. Empty trailing slots are
+    // omitted, preserving compatibility with text-only saved conversations.
+    ChatPromptContext[] queuedGuidanceContext, queuedFollowUpContext;
     ChatMessage[] messages;
     // Model-visible rolling checkpoint. The complete message graph above stays
     // available for display and branch switching; requests on this branch use
@@ -1357,6 +1396,10 @@ public ChatSession[] snapshotChatSessions(ChatSession[] source)
         copyTaskContract(session, original);
         session.queuedGuidance = original.queuedGuidance.dup;
         session.queuedFollowUps = original.queuedFollowUps.dup;
+        session.queuedGuidanceContext = original.queuedGuidanceContext.dup;
+        session.queuedFollowUpContext = original.queuedFollowUpContext.dup;
+        foreach (ref context; session.queuedGuidanceContext) context.images = context.images.dup;
+        foreach (ref context; session.queuedFollowUpContext) context.images = context.images.dup;
         session.agents = original.agents.dup;
         result ~= session;
     }

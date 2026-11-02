@@ -4,6 +4,7 @@ import auroraopencode.core;
 import auroraopencode.conversationencode;
 import auroraopencode.conversationimages : ConversationImages;
 import auroraopencode.conversationview;
+import auroraopencode.queuedprompts;
 import auroraopencode.computeruse : ComputerUseContext;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import auroraopencode.attachmentstore : AttachmentStore;
@@ -59,7 +60,13 @@ shared static this()
 }
 public enum ActorCommandKind { start, steer, followUp, stop, setGoal, pauseGoal, resumeGoal, snapshot,
     regenerate, editPrompt, continueAnswer, selectBranch, setDraft, retryPending }
-public struct ActorCommand { ActorCommandKind kind; string text, targetId; bool activate = true; }
+public struct ActorCommand
+{
+    ActorCommandKind kind;
+    string text, targetId;
+    bool activate = true;
+    string imagesJson, context;
+}
 public struct ActorQueueStats
 {
     size_t commands, commandBytes, changes, changeBytes;
@@ -185,7 +192,8 @@ public final class ConversationActor
             if (closing || closed) return ActorAdmission.closed;
             if (command.kind == ActorCommandKind.snapshot)
             { snapshotPending = true; wake.notifyAll(); return ActorAdmission.accepted; }
-            const cost = ActorCommand.sizeof + command.text.length + command.targetId.length;
+            const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
+                command.imagesJson.length + command.context.length;
             if (commands.length >= maxCommands || unsettledInputs.length >= maxCommands * 2 ||
                 cost > maxCommandBytes - commandBytes)
                 return ActorAdmission.capacity;
@@ -350,6 +358,7 @@ public final class ConversationActor
         auto value = sessionMetaToJson(session);
         ConversationExecutionView execution;
         execution.phase = to!string(engine.phase);
+        execution.routingKey = engine.client.openCodeSession();
         execution.resendCount = resendCount;
         execution.retryRemainingMs = retryAtMs < 0 ? -1 : retryAtMs > frameMs ? retryAtMs - frameMs : 0;
         execution.toolRounds = engine.toolRounds;
@@ -374,11 +383,39 @@ public final class ConversationActor
         ChatMessage message; message.role = "user"; message.internal = true; message.content = text;
         append(message);
     }
-    private void userRequest(string text)
+    private ChatPromptContext promptContext(const ref ActorCommand command)
+    {
+        ChatPromptContext context; context.text = command.context;
+        if (command.imagesJson.length)
+        {
+            auto values = parseJSON(command.imagesJson);
+            if (values.type != JSONType.array) throw new Exception("Prompt images must be an array");
+            foreach (image; values.array) context.images ~= imageAttachmentFromJson(image);
+        }
+        return context;
+    }
+    private void enqueue(ActorCommand command, bool steering)
+    {
+        auto context = promptContext(command);
+        ChatMessage attachment; attachment.images = context.images; images.archive(attachment);
+        context.images = attachment.images;
+        foreach (ref image; context.images) image.base64Data = "";
+        queuePrompt(session, command.text, context, steering); metadata();
+    }
+    private void appendUser(string text, ChatPromptContext context = ChatPromptContext.init)
+    {
+        ChatMessage message; message.role = "user"; message.content = text; message.images = context.images;
+        append(message); acceptTaskRequest(session, text, session.activeLeafId);
+        if (context.text.length)
+        {
+            ChatMessage detail; detail.role = "user"; detail.internal = true; detail.content = context.text;
+            append(detail);
+        }
+    }
+    private void userRequest(string text, ChatPromptContext context = ChatPromptContext.init)
     {
         resetOutage();
-        ChatMessage message; message.role = "user"; message.content = text; append(message);
-        acceptTaskRequest(session, text, session.activeLeafId);
+        appendUser(text, context);
         session.turnStatus = "running"; running = true; engine.turnCancelled = false;
         metadata(); if (!preserveInputs) request();
     }
@@ -394,6 +431,7 @@ public final class ConversationActor
         offeredTools = prepared.tools.length > 0;
         if (prepared.checkpointCreated) metadata();
         const id = ++nextRequest;
+        engine.client.setOpenCodeSession(sessionRoutingKey(session));
         engine.acceptRequest(id); running = true; session.turnStatus = "running";
         metadata();
         if (replaying) return;
@@ -465,22 +503,22 @@ public final class ConversationActor
         final switch (command.kind)
         {
             case ActorCommandKind.start:
-                if (running) { session.queuedFollowUps ~= command.text; metadata(); break; }
-                if (command.text.length) userRequest(command.text);
+                if (running) { enqueue(command, false); break; }
+                if (command.text.length || command.imagesJson.length || command.context.length)
+                    userRequest(command.text, promptContext(command));
                 else if (!session.messages.length && session.queuedFollowUps.length)
                 {
-                    const next = session.queuedFollowUps[0]; session.queuedFollowUps = session.queuedFollowUps[1 .. $];
-                    userRequest(next);
+                    auto next = takeQueuedPrompt(session, false); userRequest(next.text, next.context);
                 }
                 else if (!preserveInputs) { resetOutage(); engine.turnCancelled = false; request(); }
                 break;
             case ActorCommandKind.steer:
-                if (running || preserveInputs) { session.queuedGuidance ~= command.text; metadata(); }
-                else userRequest(command.text);
+                if (running || preserveInputs) enqueue(command, true);
+                else userRequest(command.text, promptContext(command));
                 break;
             case ActorCommandKind.followUp:
-                if (running || preserveInputs) { session.queuedFollowUps ~= command.text; metadata(); }
-                else userRequest(command.text);
+                if (running || preserveInputs) enqueue(command, false);
+                else userRequest(command.text, promptContext(command));
                 break;
             case ActorCommandKind.stop: applyStop(command.text != "preserve-goal"); break;
             case ActorCommandKind.setGoal:
@@ -530,11 +568,11 @@ public final class ConversationActor
                     ? session.messages[index].id : session.messages[index].parentId;
                 restoreBranchTask(session); engine.invalidateProjection(); metadata();
                 if (command.kind == ActorCommandKind.editPrompt && preserveInputs)
-                { userRequest(command.text); break; }
+                { userRequest(command.text, promptContext(command)); break; }
                 if (preserveInputs || command.kind == ActorCommandKind.selectBranch) break;
                 resetOutage();
                 engine.turnCancelled = false;
-                if (command.kind == ActorCommandKind.editPrompt) userRequest(command.text);
+                if (command.kind == ActorCommandKind.editPrompt) userRequest(command.text, promptContext(command));
                 else request();
                 break;
             }
@@ -736,12 +774,8 @@ public final class ConversationActor
     private void applySteering()
     {
         if (!session.queuedGuidance.length) return;
-        const guidance = session.queuedGuidance; session.queuedGuidance = null;
-        foreach (text; guidance)
-        {
-            ChatMessage message; message.role = "user"; message.content = text; append(message);
-            acceptTaskRequest(session, text, session.activeLeafId);
-        }
+        while (session.queuedGuidance.length)
+        { auto next = takeQueuedPrompt(session, true); appendUser(next.text, next.context); }
         metadata();
     }
     private void completed(const ref OpenCodeEvent event)
@@ -778,8 +812,7 @@ public final class ConversationActor
         publish(AgentEventKind.turnCompleted, "{}"); metadata();
         if (decision.action == TurnAction.settle && session.queuedFollowUps.length)
         {
-            const next = session.queuedFollowUps[0]; session.queuedFollowUps = session.queuedFollowUps[1 .. $];
-            userRequest(next);
+            auto next = takeQueuedPrompt(session, false); userRequest(next.text, next.context);
         }
     }
     private void completeFromEvidence()
@@ -884,6 +917,7 @@ public final class ConversationActor
         JSONValue value;
         value["provider"] = provider; value["command"] = cast(int) command.kind; value["text"] = command.text;
         value["target"] = command.targetId; value["activate"] = command.activate;
+        value["images"] = command.imagesJson; value["context"] = command.context;
         value["preserve"] = preserveInputs;
         value["event"] = eventJson(event); value["time"] = frameTime; value["unix"] = frameUnix;
         value["elapsedMs"] = frameMs;
@@ -976,10 +1010,12 @@ public final class ConversationActor
                 case ActorCommandKind.start:
                 case ActorCommandKind.followUp:
                 case ActorCommandKind.editPrompt:
-                    if (command.text.length) session.queuedFollowUps ~= command.text;
+                    if (command.text.length || command.imagesJson.length || command.context.length)
+                        queuePrompt(session, command.text, promptContext(command), false);
                     break;
                 case ActorCommandKind.steer:
-                    if (command.text.length) session.queuedGuidance ~= command.text;
+                    if (command.text.length || command.imagesJson.length || command.context.length)
+                        queuePrompt(session, command.text, promptContext(command), true);
                     break;
                 case ActorCommandKind.setDraft: session.draft = command.text; break;
                 case ActorCommandKind.setGoal:
@@ -1015,7 +1051,7 @@ public final class ConversationActor
         if (!isClosed()) throw new Exception("Close the actor before reading its trace");
         if (traceTruncated) throw new Exception("Actor diagnostic trace is incomplete or exceeded its recording budget");
         JSONValue value;
-        value["schema"] = 3; value["initial"] = initialIdentity;
+        value["schema"] = 4; value["initial"] = initialIdentity;
         value["outageBudgetMs"] = config.outageBudgetMs;
         value["configuration"] = configurationIdentity; value["frames"] = JSONValue(trace);
         return value.toString();
@@ -1025,7 +1061,7 @@ public final class ConversationActor
     {
         const recording = parseJSON(recordedTrace);
         if (config.outageBudgetMs < 0) config.outageBudgetMs = recording["outageBudgetMs"].integer;
-        if (recording["schema"].integer != 3 ||
+        if (recording["schema"].integer != 4 ||
             recording["initial"].str != sha256Of(sessionToJson(initial).toString()).toHexString() ||
             recording["configuration"].str != configurationKey(config))
             throw new Exception("Actor replay initial state or behavioral configuration does not match the recording");
@@ -1036,6 +1072,7 @@ public final class ConversationActor
         {
             ActorCommand command; command.kind = cast(ActorCommandKind) entry["command"].integer; command.text = entry["text"].str;
             command.targetId = entry["target"].str; command.activate = entry["activate"].boolean;
+            command.imagesJson = entry["images"].str; command.context = entry["context"].str;
             owner.frame(command, eventFromJson(entry["event"]), entry["provider"].boolean, entry);
         }
         return sessionToJson(owner.session).toString();

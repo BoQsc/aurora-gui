@@ -430,6 +430,9 @@ final class OpenCodeClient
         if (value.length > 0) _opencodeSession = value;
     }
 
+    string openCodeSession()
+    { synchronized (_mutex) return _opencodeSession; }
+
     bool busy()
     {
         _mutex.lock();

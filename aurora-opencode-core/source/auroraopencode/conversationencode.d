@@ -163,6 +163,10 @@ public JSONValue sessionMetaToJson(const ref ChatSession session)
             followUps.array ~= JSONValue(item);
         root["queuedFollowUps"] = followUps;
     }
+    if (session.queuedGuidanceContext.length)
+        root["queuedGuidanceContext"] = promptContextsToJson(session.queuedGuidanceContext);
+    if (session.queuedFollowUpContext.length)
+        root["queuedFollowUpContext"] = promptContextsToJson(session.queuedFollowUpContext);
     // experimental: orchestrator - persist the participant roster and the
     // active speaker so a multi-agent conversation resumes correctly.
     if (session.agents.length > 0)
@@ -257,6 +261,8 @@ public string runtimeThreadPayload(const ref ChatSession session)
     foreach (item; session.queuedFollowUps)
         followUps.array ~= JSONValue(item);
     payload["queuedFollowUps"] = followUps;
+    payload["queuedGuidanceContext"] = promptContextsToJson(session.queuedGuidanceContext);
+    payload["queuedFollowUpContext"] = promptContextsToJson(session.queuedFollowUpContext);
     return payload.toString();
 }
 

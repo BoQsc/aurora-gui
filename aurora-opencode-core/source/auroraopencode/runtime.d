@@ -1,4 +1,5 @@
 module auroraopencode.runtime;
+import auroraopencode.core : promptContextsFromJson;
 import auroraopencode.toolstate : parseToolState;
 
 /**
@@ -650,6 +651,10 @@ public void applyRuntimeThreadPayload(ref ChatSession session, JSONValue payload
         session.nestedPlans = nestedPlansFromJson(*f,
             session.taskSteps.length);
     readTaskContract(session, payload);
+    if (auto field = "queuedGuidanceContext" in payload.object)
+        session.queuedGuidanceContext = promptContextsFromJson(*field);
+    if (auto field = "queuedFollowUpContext" in payload.object)
+        session.queuedFollowUpContext = promptContextsFromJson(*field);
     if (auto f = "queuedGuidance" in payload.object)
         if (f.type == JSONType.array)
         {

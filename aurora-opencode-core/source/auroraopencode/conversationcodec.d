@@ -69,6 +69,10 @@ public void decodeSessionMetadata(JSONValue sessionValue,
             foreach (item; field.array)
                 if (item.type == JSONType.string)
                     session.queuedFollowUps ~= item.str;
+    if (auto field = "queuedGuidanceContext" in sessionValue.object)
+        session.queuedGuidanceContext = promptContextsFromJson(*field);
+    if (auto field = "queuedFollowUpContext" in sessionValue.object)
+        session.queuedFollowUpContext = promptContextsFromJson(*field);
     if (auto field = "activeLeaf" in sessionValue.object)
         session.activeLeafId = field.str;
     if (auto field = "draft" in sessionValue.object)

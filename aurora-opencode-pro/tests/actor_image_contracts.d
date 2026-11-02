@@ -73,6 +73,7 @@ int main()
         }
         assert(ready, "Image turn did not complete");
         const execution = latest["execution"];
+        assert(execution["routingKey"].str == "aurora-reference-0", "Branch navigation changed the stable provider route");
         assert(execution["selectedImages"].integer == (round == 1 ? 0 : 2));
         assert(execution["selectedImageBytes"].integer <= requestImageByteBudget);
         assert(execution["imageSizeReads"].integer <= 3 && execution["imageBlobReads"].integer <= 2,
