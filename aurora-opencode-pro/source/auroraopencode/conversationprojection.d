@@ -3,12 +3,13 @@ module auroraopencode.conversationprojection;
 import auroraopencode.core : ChatSession, ChatMessage;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import auroraopencode.conversationactor : ActorChange, ActorChangeKind;
+import auroraopencode.conversationview;
 import std.json : JSONValue, JSONType, parseJSON;
 
 public struct ConversationChanges
 {
     string[] messages, notices;
-    bool structureChanged, metadataChanged, needsSnapshot;
+    bool structureChanged, metadataChanged, executionChanged, needsSnapshot;
     string error;
 }
 
@@ -25,6 +26,7 @@ public final class ConversationProjection
     private bool resync;
     public bool busy;
     public ulong requestId;
+    public ConversationExecutionView execution;
 
     this(const ref ChatSession initial)
     { threadId = initial.id; resync = !index(initial); }
@@ -58,6 +60,8 @@ public final class ConversationProjection
             if (change.kind == ActorChangeKind.fault)
             {
                 busy = false; view.turnStatus = "failed"; view.taskStatus = "blocked";
+                execution.phase = "failed"; execution.tools = null;
+                result.executionChanged = true;
                 resync = false;
                 result.error = change.text; result.metadataChanged = true;
                 appliedRevision = change.revision; continue;
@@ -77,6 +81,8 @@ public final class ConversationProjection
                             throw new Exception("Worker metadata belongs to another conversation");
                         ChatSession header;
                         decodeSessionMetadata(value, header);
+                        const executionValue = "execution" in value.object;
+                        auto nextExecution = executionValue is null ? ConversationExecutionView.init : decodeExecutionView(*executionValue);
                         if (change.kind == ActorChangeKind.snapshot)
                         {
                             if (!("messages" in value.object) || value["messages"].type != JSONType.array)
@@ -98,6 +104,7 @@ public final class ConversationProjection
                             header.messages = view.messages; view = header;
                         }
                         result.metadataChanged = true;
+                        execution = nextExecution; result.executionChanged = true;
                         break;
                     }
                     case ActorChangeKind.added:
@@ -139,6 +146,18 @@ public final class ConversationProjection
                         break;
                     }
                     case ActorChangeKind.notice: result.notices ~= change.text; break;
+                    case ActorChangeKind.toolProgress:
+                    {
+                        auto value = parseJSON(change.text);
+                        auto tool = decodeToolView(value);
+                        if (tool.id != change.itemId) throw new Exception("Live tool identity does not match its payload");
+                        bool found;
+                        foreach (ref row; execution.tools)
+                            if (row.id == tool.id)
+                            { row = tool; found = true; break; }
+                        if (!found) throw new Exception("Live tool progress requires an unavailable call");
+                        result.executionChanged = true; break;
+                    }
                     case ActorChangeKind.usage: break;
                     default: throw new Exception("Unsupported conversation change");
                 }

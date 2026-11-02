@@ -3,6 +3,8 @@ module auroraopencode.conversationactor;
 import auroraopencode.core;
 import auroraopencode.conversationencode;
 import auroraopencode.conversationimages : ConversationImages;
+import auroraopencode.conversationview;
+import auroraopencode.computeruse : ComputerUseContext;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.execution : ThreadEngine, RequestPhase;
@@ -63,7 +65,7 @@ public struct ActorQueueStats
     size_t commands, commandBytes, changes, changeBytes;
     bool resync;
 }
-public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice }
+public enum ActorChangeKind { metadata, added, updated, delta, usage, resync, snapshot, fault, notice, toolProgress }
 /// Values contain immutable strings/scalars only, so readers cannot mutate an
 /// execution owner's graph, tool arrays or task state through a UI change.
 public struct ActorChange
@@ -132,6 +134,8 @@ public final class ConversationActor
     private uint resendCount;
     private bool quotaWait, offeredTools;
     private ConversationImages images;
+    private ConversationToolView[] liveTools;
+    private size_t omittedTools;
     private MonoTime lastCheckpoint;
     private size_t checkpointBytes;
     private ToolCancellation activeCancellation;
@@ -344,16 +348,17 @@ public final class ConversationActor
     private JSONValue headerView()
     {
         auto value = sessionMetaToJson(session);
-        JSONValue execution;
-        execution["phase"] = to!string(engine.phase);
-        execution["resendCount"] = resendCount;
-        execution["retryRemainingMs"] = retryAtMs < 0 ? -1 : retryAtMs > frameMs ? retryAtMs - frameMs : 0;
-        execution["toolRounds"] = engine.toolRounds;
-        execution["selectedImages"] = images.lastRequest.selectedImages;
-        execution["selectedImageBytes"] = images.lastRequest.selectedBytes;
-        execution["imageSizeReads"] = images.lastRequest.sizeReads;
-        execution["imageBlobReads"] = images.lastRequest.blobReads;
-        value["execution"] = execution;
+        ConversationExecutionView execution;
+        execution.phase = to!string(engine.phase);
+        execution.resendCount = resendCount;
+        execution.retryRemainingMs = retryAtMs < 0 ? -1 : retryAtMs > frameMs ? retryAtMs - frameMs : 0;
+        execution.toolRounds = engine.toolRounds;
+        execution.selectedImages = images.lastRequest.selectedImages;
+        execution.selectedImageBytes = images.lastRequest.selectedBytes;
+        execution.imageSizeReads = images.lastRequest.sizeReads;
+        execution.imageBlobReads = images.lastRequest.blobReads;
+        execution.tools = liveTools; execution.omittedTools = omittedTools;
+        value["execution"] = executionViewJson(execution);
         return value;
     }
     private void resetOutage()
@@ -449,6 +454,7 @@ public final class ConversationActor
             }
         engine.pendingToolCalls = null; engine.pendingToolResults = 0;
         engine.pendingToolImages = null; engine.reportedToolCallIds = null;
+        liveTools = null; omittedTools = 0;
         if (wasRunning && session.messages.length && session.messages[$ - 1].role == "assistant")
         { session.messages[$ - 1].finishReason = "cancelled"; updateLast(); }
         metadata();
@@ -509,7 +515,8 @@ public final class ConversationActor
                 }
                 break;
             case ActorCommandKind.snapshot:
-                emit(ActorChangeKind.snapshot, viewJson(sessionToJson(session))); break;
+                auto snapshot = headerView(); snapshot["messages"] = messagesToJson(session.messages);
+                emit(ActorChangeKind.snapshot, viewJson(snapshot)); break;
             case ActorCommandKind.regenerate:
             case ActorCommandKind.editPrompt:
             case ActorCommandKind.selectBranch:
@@ -619,6 +626,17 @@ public final class ConversationActor
             return;
         }
         auto token = new ToolCancellation(); engine.cancellation = token;
+        liveTools = null; omittedTools = 0;
+        foreach (i, call; calls)
+        {
+            if (i >= 64) { ++omittedTools; continue; }
+            ConversationToolView view;
+            view.id = call.id; view.name = call.name;
+            view.arguments = checkpointSnippet(call.arguments, 2048);
+            view.output = "Queued: waiting for durable admission and a tool worker.";
+            liveTools ~= view;
+        }
+        metadata();
         synchronized (mutex)
         {
             activeCancellation = token;
@@ -629,6 +647,9 @@ public final class ConversationActor
         const id = engine.activeRequestId;
         const workspace = config.workspace;
         ChangeContext context; context.conversationId = session.id; context.turnId = to!string(id);
+        context.diagnosticReadOnly = config.request.diagnosticReview;
+        context.computer = ComputerUseContext(true, sessionRoutingKey(session),
+            config.baseUrl, config.apiKey, session.model, false, cast(uint) id);
         void launch()
         { if (!token.cancelled()) scheduleToolBatch(receiver, id, calls, workspace, token, context); }
         if (journal is null) launch();
@@ -637,9 +658,32 @@ public final class ConversationActor
     }
     private void toolResult(const ref OpenCodeEvent event)
     {
-        if (event.toolRunning) return;
+        if (event.toolRunning)
+        {
+            if (event.toolCallId in engine.reportedToolCallIds) return;
+            foreach (ref view; liveTools)
+                if (view.id == event.toolCallId)
+                {
+                    if (view.name != event.toolName) return;
+                    view.state = event.toolState;
+                    view.started = view.started || event.toolStarted;
+                    view.elapsedMs = event.elapsedMs;
+                    view.output = checkpointSnippet(event.text, 2048);
+                    emit(ActorChangeKind.toolProgress, toolViewJson(view).toString(), view.id);
+                    break;
+                }
+            return;
+        }
         const admission = engine.admitToolResult(event.toolCallId);
         if (!admission.accepted) return;
+        foreach (ref view; liveTools)
+            if (view.id == event.toolCallId)
+            {
+                view.state = event.toolState; view.elapsedMs = event.elapsedMs;
+                view.output = checkpointSnippet(event.text, 2048);
+                emit(ActorChangeKind.toolProgress, toolViewJson(view).toString(), view.id);
+                break;
+            }
         const workspace = config.workspace;
         const current = workspaceRevision(workspace);
         const currentScope = verificationScope(workspace, current);
@@ -679,6 +723,7 @@ public final class ConversationActor
         metadata();
         if (--engine.pendingToolResults > 0) return;
         engine.pendingToolCalls = null; engine.reportedToolCallIds = null;
+        liveTools = null; omittedTools = 0;
         if (engine.pendingToolImages.length)
         {
             ChatMessage images; images.role = "user"; images.internal = true;

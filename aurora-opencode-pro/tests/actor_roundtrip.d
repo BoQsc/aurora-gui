@@ -3,6 +3,7 @@ module actor_roundtrip;
 import auroraopencode.core;
 import auroraopencode.conversationactor;
 import auroraopencode.conversationencode;
+import auroraopencode.conversationprojection;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.tools : buildSystemPrompt, nativeOnlyToolDefinitions;
 import core.thread : Thread;
@@ -34,6 +35,9 @@ int main()
     config.request.baseSystemPrompt = buildSystemPrompt(true, workspace, "win32", "auto");
     config.request.availableTools = nativeOnlyToolDefinitions();
     auto actor = new ConversationActor(initial, config, journal);
+    auto projection = new ConversationProjection(initial);
+    ChatSession view = initial;
+    bool sawRunningTool, sawCompletedTool;
     assert(actor.post(ActorCommand(ActorCommandKind.start,
         "Write out.txt containing success, verify its contents with unittest, then reply READY.")) == ActorAdmission.accepted);
     bool ready;
@@ -41,20 +45,35 @@ int main()
     // There is no GuiWindow, native tick, layout or UI service in this process.
     while (MonoTime.currTime < deadline && !ready)
     {
-        foreach (change; actor.takeChanges())
+        auto changes = actor.takeChanges();
+        auto applied = projection.apply(view, changes);
+        assert(!applied.error.length, applied.error);
+        if (applied.needsSnapshot) actor.post(ActorCommand(ActorCommandKind.snapshot));
+        foreach (change; changes)
+        {
+            if (change.kind == ActorChangeKind.toolProgress)
+            {
+                const progress = parseJSON(change.text);
+                sawRunningTool = sawRunningTool || progress["state"].str == "running";
+                sawCompletedTool = sawCompletedTool || progress["state"].str == "completed";
+            }
             if (change.kind == ActorChangeKind.metadata)
             {
                 auto header = parseJSON(change.text);
                 ready = header["turnStatus"].str == (stalledGoal ? "failed" : "completed");
             }
+        }
         assert(!actor.fault().length, actor.fault());
         Thread.sleep(5.msecs);
     }
     assert(ready, "Autonomous turn never settled");
     actor.close(); assert(!actor.fault().length, actor.fault());
+    auto applied = projection.apply(view, actor.takeChanges()); assert(!applied.error.length, applied.error);
+    assert(sawRunningTool && sawCompletedTool, "Live tool state never reached the UI projection");
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     const snapshot = actor.finalSnapshot();
     auto value = parseJSON(snapshot);
+    assert(sessionToJson(view) == value, "Tool progress projection changed the conversation model");
     assert(value["messages"].array[$ - 1]["content"].str == "READY");
     assert(value["verificationStatus"].str == "passed");
     if (stalledGoal) assert(value["goalStatus"].str == "active", "Output recovery paused the user's persistent goal");

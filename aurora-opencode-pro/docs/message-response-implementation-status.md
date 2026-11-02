@@ -249,6 +249,19 @@ Recovery and recipe/mailbox/branch checks passed at that same fingerprint in
 `build/architecture-checks-g5jmwry_/` and `build/architecture-checks-6rlbbouu/`.
 User attachment commands and desktop lifecycle integration still need adoption.
 
+The immutable projection also carries bounded live tool rows and execution
+state. Tool progress is keyed by call ID, distinguishes queued/running/terminal
+states and retains the worker-start boundary. An authoritative resync snapshot
+includes those rows. Ordinary progress does not publish a new durable thread
+header. At most 64 rows retain 2 KiB of arguments and 2 KiB of output each;
+additional calls remain in the durable model and have an explicit omitted count.
+The live recipe driver checks running/completed progress and equality of the
+projected transcript/task state. Unknown call progress requests resync.
+Tool jobs now receive the conversation's computer-use context and diagnostic
+read-only mode. Proof: `build/architecture-checks-31sa3csh/` and
+`build/architecture-checks-v5gd5ljc/`, source fingerprint
+`1532c0fa1955f09d4be68e7a89bd39fcc7972e714e603dc281b2c50fbe6f7cdb`.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.

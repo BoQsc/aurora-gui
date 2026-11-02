@@ -4,6 +4,7 @@ import auroraopencode.core;
 import auroraopencode.conversationactor : ActorChange, ActorChangeKind;
 import auroraopencode.conversationprojection;
 import auroraopencode.conversationencode;
+import auroraopencode.conversationview;
 import std.stdio : writeln;
 
 int main()
@@ -51,6 +52,20 @@ int main()
     assert(applied.error.length && unrelated.messages[1].content == "Recovered answer");
     applied = projection.apply(view, [ActorChange(ActorChangeKind.fault, 14, 1, "", "Storage failed")].idup);
     assert(!projection.busy && !applied.needsSnapshot && applied.error == "Storage failed" && view.turnStatus == "failed");
+    auto snapshot = sessionToJson(complete);
+    ConversationExecutionView execution; execution.phase = "executingTools";
+    ConversationToolView tool; tool.id = "live"; tool.name = "read"; tool.arguments = "{}"; tool.output = "Queued";
+    execution.tools = [tool]; snapshot["execution"] = executionViewJson(execution);
+    applied = projection.apply(view, [ActorChange(ActorChangeKind.snapshot, 15, 2, "", snapshot.toString(), false, true)].idup);
+    assert(!applied.error.length && projection.busy && projection.execution.tools[0].state == ToolState.queued);
+    tool.state = ToolState.running; tool.started = true; tool.elapsedMs = 120; tool.output = "Reading";
+    applied = projection.apply(view, [ActorChange(ActorChangeKind.toolProgress, 16, 2, tool.id, toolViewJson(tool).toString(), false, true)].idup);
+    assert(applied.executionChanged && !applied.needsSnapshot && projection.execution.tools[0].started &&
+        projection.execution.tools[0].elapsedMs == 120 && projection.execution.tools[0].output == "Reading");
+    assert(execution.tools[0].state == ToolState.queued, "Projection shared a mutable execution view with its source");
+    tool.id = "unknown";
+    applied = projection.apply(view, [ActorChange(ActorChangeKind.toolProgress, 17, 2, tool.id, toolViewJson(tool).toString(), false, true)].idup);
+    assert(applied.needsSnapshot && applied.error.length, "Unknown live progress silently invented a tool call");
     writeln("PASS immutable UI projection, separate reasoning/text, cleared fields, duplicate delivery, gap resync and owner isolation");
     return 0;
 }
