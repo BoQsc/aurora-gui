@@ -1,5 +1,7 @@
 module auroraopencode.core;
 
+public import auroraopencode.toolstate : ToolState, toolStateName, parseToolState;
+
 import aurora;
 import auroraopencode.logging : logError;
 import std.conv : to;
@@ -770,6 +772,7 @@ public struct ChatMessage
     // means the default single agent, so legacy transcripts are unaffected.
     // See docs/multi-agent-single-conversation.md.
     string authorId;
+    ToolState toolState;
 }
 
 /// Experimental multi-agent: one participant in a conversation's roster. The

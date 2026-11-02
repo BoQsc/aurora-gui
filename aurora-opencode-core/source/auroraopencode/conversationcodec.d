@@ -179,6 +179,8 @@ public void decodeMessages(JSONValue field,
         if (auto f = "toolElapsedMs" in messageValue.object)
             if (f.type == JSONType.integer)
                 message.toolElapsedMs = cast(long) f.integer;
+        if (auto f = "toolState" in messageValue.object)
+            if (f.type == JSONType.string) message.toolState = parseToolState(f.str);
         if (auto f = "workedSeconds" in messageValue.object)
         {
             if (f.type == JSONType.integer)

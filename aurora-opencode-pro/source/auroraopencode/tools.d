@@ -1,4 +1,5 @@
 module auroraopencode.tools;
+import auroraopencode.toolstate : ToolState;
 import auroraopencode.verificationrecipe : verificationToolDefinition;
 import auroraopencode.core : imageAttachmentToJson, imageAttachmentFromJson;
 import auroraopencode.imagecontext : retireImagesArgumentsError;
@@ -1026,6 +1027,7 @@ public struct ToolExecution
     // The bounded command snapshot covers the active checkout, not a separate
     // self-host source checkout that still needs conservative invalidation.
     bool workspaceObservationOnly;
+    ToolState state;
 }
 
 public __gshared string delegate() toolStatusHandler;

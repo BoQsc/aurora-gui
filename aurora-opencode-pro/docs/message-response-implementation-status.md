@@ -36,11 +36,11 @@ It still runs on the window thread: it is **not** an autonomous actor.
 | Provider | Wire projection and stream accumulation/usage interpretation have separate modules. Shared asynchronous WinHTTP connections, isolated request cancellation and optional exact token preflight improve startup. Physically running requests have a configurable cap: `AURORA_PROVIDER_WORKERS`, default 16. A stopped worker retains its slot until it returns. Launch rejection is explicit. |
 | Retry | HTTP recovery and terminal resend use the same typed policy and outage configuration: `AURORA_PROVIDER_OUTAGE_MS`, default 120 seconds; explicit zero means unlimited. Exhausted provider recovery carries a terminal flag, so the UI cannot restart its budget. Backoff is clipped to remaining time. Explicit quota reset waits and manual Retry remain available. A failed request preserves the persistent goal. |
 | Delivery | Native notifications service stream queues without widget ticks; remaining bounded-drain work is reposted and paint gets a turn between passes. Soft 8 MiB / 1,024-event producer limits, cancellation wakeups and UTF-8-safe drains retain text and terminal events. An indivisible event or consumer control reserve can exceed the soft bound. |
-| Tools | Shared four-worker scheduler, bounded pending queue, workspace read/write barriers and a global desktop lease. Captured computer routing is installed per worker. Leases remain held for physical effects. |
+| Tools | Shared four-worker scheduler, bounded pending queue, workspace read/write barriers and a global desktop lease. Captured computer routing is installed per worker. Leases remain held for physical effects. Queued, running, completed, failed, cancelled and resource-blocked states are explicit; terminal states survive snapshots and journal replay. Missing, duplicate and historically reused call IDs are normalized before ledger admission. |
 | Verification | Recognized check identity, actual exit status, workspace and mutation generation. Recipe and direct receipts retain the checked revision; a delayed receipt cannot inherit a later mutation. Completion revalidates current scope even without an intervening service tick. Goal evidence must reference successful recorded results in the active task. Physical mutations invalidate older evidence even when Stop drops their late events. Rebuilding alone cannot satisfy unrelated checks. |
 | Storage | One ordered journal owner, separate snapshot/history owner, cached metadata and asynchronous initialization. Startup receives decoded history and projected replay. Dirty snapshots, partial-response and compaction checkpoints preserve work. Copies journal their complete graph. Durability failure gates effects. |
 | Native recovery | Before-images and an intent manifest are saved before native file effects. Completion retires temporary blobs. Death leaves an explicitly uncertain operation with preserved before-images; it is never automatically replayed or undone. Changes reports pending operations. |
-| Attachments | Immutable content-addressed blobs replace repeated persisted base64. Missing/corrupt images retain references and appear unavailable; surrounding messages survive. Corrupt existing blobs are rejected. Legacy records remain readable. |
+| Attachments | Immutable content-addressed blobs replace repeated persisted base64. Concurrent writers use unique temporary files and validate the winning content. Missing/corrupt images retain references and appear unavailable; surrounding messages survive. Bounded maintenance conservatively retains every durable reference and process-live pin; corrupt, incomplete or oversized reference scans abort deletion. Legacy records remain readable. |
 | History | Selection and internal actions load asynchronously. A bounded ID-based mailbox retains actions through loading and retry. Failed/missing history blocks Send; failed startup preserves original files even on close. Replay patches retain metadata absent from the journal tail. |
 | Presentation | Settled rows are retained by identity/presentation inputs. Long pages use deferred descriptors, a height index, overscan and eviction. Tool groups retain cheap result metadata while collapsed and use a nested viewport presenter when expanded. Selection/search targets are pinned; search spans and lazily reveals the active branch. Wrapped code copies logical lines once and retains blank lines. |
 | Diagnostics/prompt | Shared lock initialization, bounded asynchronous diagnostics, rotation and measurement sampling. Prompt identity includes module generation and current feature flags; repeated instructions were shortened. |
@@ -88,8 +88,11 @@ elapsed time. Tests use private executables/state.
    window-thread I/O waits. Replay
    full recorded provider/tool traces to the same transcript and task; the new
    forced application-death proof covers copied branches and a settled mixed batch.
-3. Complete incremental transcript projection, image-heavy history benchmarks
-   and remaining allocation/cold-layout reduction. Stable page reconciliation
+3. Complete incremental transcript projection and remaining allocation/cold-layout
+   reduction. An image-heavy repeated-reference benchmark now covers restore,
+   replay, provider budgets, attachment chips, input and search. A bounded
+   restore cache shares immutable pixels and avoids repeated serialized copies.
+   Stable page reconciliation
    preserves retained children and focus. Tool details now construct lazily,
    including a virtualized expanded group. Long Markdown paint has measured
    visibility indexing and real-chat forced-rebuild/input tests, including a
@@ -100,12 +103,14 @@ elapsed time. Tests use private executables/state.
    retry decisions and revision-keyed request projection caching are implemented.
    Recipe evidence inspection still performs filesystem work and must move with
    effect ownership; extracting a function alone does not remove that I/O.
-5. Add explicit queued/resource-blocked outcomes and isolation for truly
-   uninterruptible native calls. Bounded pools do not make those calls
+5. Finish isolation for truly uninterruptible native calls. Explicit queued and
+   resource-blocked outcomes are implemented. Bounded pools do not make calls
    interruptible. Evaluate Windows Job Objects and transport replacement from
    measured failures.
-6. Tighten consumer-event reserves, blob garbage collection, memory budgets and
-   mixed-batch abrupt-restart proofs at the full application boundary.
+6. Tighten consumer-event reserves, remaining memory budgets and mixed-batch
+   abrupt-restart proofs at the full application boundary. Conservative blob
+   garbage collection is implemented; it retains referenced journal/backups
+   and defers new process-live orphans until a later launch.
 7. Validate real gateway behavior and interactive performance after deployment.
    A deterministic local provider cannot establish production reliability or
    explain every previously reported hang.

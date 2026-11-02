@@ -5,11 +5,12 @@ import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent, OpenCodeE
 import auroraopencode.tools : ToolCancellation, ToolExecution, ChangeContext, executeTool,
     toolStatusHandler, developerToolSourceDirectory, installDeveloperToolSource, restoreDeveloperToolSource;
 import std.json : JSONValue, JSONType;
-import auroraopencode.workscheduler : WorkItem, WorkScheduler;
+import auroraopencode.workscheduler : WorkItem, WorkScheduler, WorkAdmission;
+import auroraopencode.toolstate : ToolState, terminalToolState, toolStateName;
 import auroraopencode.computeruse : installComputerUseContext;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
-import core.time : MonoTime, seconds;
+import core.time : MonoTime, seconds, msecs;
 import auroraopencode.lifecyclediagnostics : logAgentLifecycle;
 import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress;
 import auroraopencode.readprogress : ReadProgress, decodeReadProgress;
@@ -135,6 +136,8 @@ public final class ToolBatch
     ToolCancellation cancellation;
     ChangeContext context;
     size_t cursor, remaining;
+    WorkScheduler workspaceLane, controlLane;
+    long queueTimeoutMs = 30_000;
 
     this(OpenCodeClient client, ulong requestId, const(OpenCodeToolCall)[] calls,
         string workspace, ToolCancellation cancellation, ChangeContext context)
@@ -169,6 +172,7 @@ public final class ToolBatch
                 OpenCodeEvent waiting;
                 waiting.kind = OpenCodeEventKind.toolResult;
                 waiting.toolRunning = true;
+                waiting.toolState = ToolState.queued;
                 waiting.text = "Queued: waiting for earlier tools in this batch.";
                 waiting.toolName = call.name;
                 waiting.toolCallId = call.id;
@@ -183,11 +187,18 @@ public final class ToolBatch
             job.progress("Queued: waiting for a tool worker or workspace lease. Stop cancels this turn.");
             // Process inspection and termination must remain available while
             // workspace commands occupy the normal workers and writer lease.
-            auto lane = controlTool(job.call.name) ? processScheduler() : scheduler();
-            if (!lane.submit(job))
+            auto lane = controlTool(job.call.name)
+                ? (controlLane is null ? processScheduler() : controlLane)
+                : (workspaceLane is null ? scheduler() : workspaceLane);
+            const admission = lane.admit(job);
+            if (admission != WorkAdmission.accepted)
             {
-                job.result = ToolExecution(job.call.name, "Error: tool queue is at capacity; retry this call.", true);
-                job.settle(scheduler().revision(workspace));
+                const cancelled = cancellation.cancelled() || admission == WorkAdmission.closed;
+                job.result = ToolExecution(job.call.name, cancelled
+                    ? "Stopped: the tool scheduler is closed or this turn was cancelled. This tool was not executed."
+                    : "Resource blocked: the tool queue is at capacity. This tool was not executed. Use tool_status to inspect active work before retrying.", true);
+                job.result.state = cancelled ? ToolState.cancelled : ToolState.resourceBlocked;
+                job.settle(lane.revision(workspace));
             }
         }
     }
@@ -224,7 +235,7 @@ private final class ToolJob : WorkItem
         this.call = call;
         label = call.name;
         queuedAt = MonoTime.currTime;
-        queueDeadline = queuedAt + 30.seconds;
+        queueDeadline = queuedAt + batch.queueTimeoutMs.msecs;
         workspace = batch.workspace;
         exclusive = !parallelTool(call) && !controlTool(call.name);
         if (call.name == "computer") resource = "desktop";
@@ -240,10 +251,11 @@ private final class ToolJob : WorkItem
         diagnostic(batch.cancellation.cancelled() ? "tool.cancelled_before_start" : "tool.queue_deadline");
         result = ToolExecution(call.name, batch.cancellation.cancelled()
             ? "Stopped: queued tool cancelled before it started."
-            : "Error: tool could not acquire a worker or workspace lease within 30 seconds; " ~
+            : "Resource blocked: the tool could not acquire a worker or workspace lease before its queue deadline; " ~
               "it was not executed. Use tool_status to inspect active native tools and " ~
               "process to inspect commands. Stop the owning turn before retrying; " ~
               "removing finished process records does not release an active tool's lease.", true);
+        result.state = batch.cancellation.cancelled() ? ToolState.cancelled : ToolState.resourceBlocked;
     }
 
     override void execute()
@@ -255,6 +267,7 @@ private final class ToolJob : WorkItem
         if (batch.cancellation.cancelled())
         {
             result = ToolExecution(call.name, "Stopped: tool cancelled before it started.", true);
+            result.state = ToolState.cancelled;
             return;
         }
         import auroraopencode.taskpolicy : diagnosticToolAllowed;
@@ -343,6 +356,7 @@ private final class ToolJob : WorkItem
         OpenCodeEvent event;
         event.kind = OpenCodeEventKind.toolResult;
         event.toolRunning = true;
+        event.toolState = startedAt == MonoTime.init ? ToolState.queued : ToolState.running;
         event.toolStarted = started;
         event.elapsedMs = startedAt == MonoTime.init ? 0 :
             (MonoTime.currTime - startedAt).total!"msecs";
@@ -356,8 +370,11 @@ private final class ToolJob : WorkItem
     override void settle(ulong revision)
     {
         scope (exit) batch.completed();
+        result.state = batch.cancellation.cancelled() && result.failed
+            ? ToolState.cancelled : terminalToolState(result.state, result.failed);
         JSONValue details;
         details["failed"] = result.failed;
+        details["state"] = toolStateName(result.state);
         details["cancelled"] = batch.cancellation.cancelled();
         details["outputBytes"] = cast(long) result.output.length;
         details["verificationPassed"] = result.verification.passed;
@@ -371,6 +388,7 @@ private final class ToolJob : WorkItem
         event.toolName = call.name;
         event.toolCallId = call.id;
         event.toolFailed = result.failed;
+        event.toolState = result.state;
         event.diffAdditions = result.additions;
         event.diffDeletions = result.deletions;
         event.diffText = result.diff;

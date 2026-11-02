@@ -90,5 +90,58 @@ It verifies that a failed snapshot cannot launch the helper, a failed helper
 leaves the application usable, and a later successful checkpoint preserves the
 draft before closing. Evidence: `build/architecture-checks-wkvag72k/`.
 
+## Attachment maintenance and concurrent writers
+
+Source changes, not yet deployed: attachment writes use a unique temporary file
+per writer and validate a competing writer's result. Reads and writes pin their
+digest for the process lifetime, including reused blobs whose new reference has
+not reached the journal yet. At 65,536 pins, collection is disabled for that
+directory rather than allowing pin memory to grow without a bound.
+
+The snapshot owner attempts collection at most once per hour after a successful
+store write. It marks all conversation files, backups, legacy snapshots and the
+entire retained journal. Incomplete or invalid reference sources abort deletion.
+Defaults cap a pass at 128 MiB of reference input, 8 MiB per JSON snapshot,
+2 MiB per journal line, 65,536 references, 16,384 files and 128 deletions, with a
+500 ms scan/deletion budget and a 24-hour age grace period. Time is checked
+between filesystem operations; it cannot interrupt an individual blocked read.
+Journal-referenced blobs remain retained even if no longer in the active branch.
+Newly orphaned live pins become eligible on a later launch.
+
+`attachment_collection_contracts` covers retained branches/backups/journal and
+archived original pixels,
+in-flight and loaded references, corrupt/torn/over-budget scan aborts, age grace,
+checksum rejection, and eight concurrent writers during collection. It passed
+with the architecture, forced-application-death and exit-checkpoint fixtures in
+`build/architecture-checks-kflpthk6/`, source fingerprint
+`ef6ba8835f9fe31ea32403c2ee71c060ce3342c664dd551d859a707617783381`.
+
+The full suite exposed a Windows path-length regression in temporary names;
+temporary files now have shorter names than the final digest path, and a
+near-MAX_PATH fixture covers writes. The corrected original-reference and path
+checks passed in `build/architecture-checks-kcrtvy2n/`.
+
+Restore operations share immutable hydrated payloads through a local cache capped
+at 16 MiB and 256 entries. Replay retains compact on-disk references in
+`payloadJson` and the hydrated value in `parsedPayload`, avoiding an additional
+serialized pixel copy per event. This does not cap the total size of a loaded
+conversation containing many distinct images.
+
+`image_history_performance_contracts` uses 512 references to eight real PNGs,
+representing 134,479,872 logical image bytes. In one debug run, snapshot restore
+took 64,515 microseconds and allocated 4,268,144 bytes; journal restore/projection
+took 74,613 microseconds and allocated 6,316,288 bytes. The request retained two
+images within its byte budget. The current UI renders attachment chips, and its
+input/forced-rebuild/paint test measured median 17,006 and p95 24,973 microseconds.
+Search revealed an old attachment row with fewer than 100 materialized rows.
+This tests repeated references, not a bound for arbitrary unique-image histories.
+Evidence: `build/architecture-checks-e056kl3s/`, source fingerprint
+`70d02224e5281c47177777ffaea8484486d4625d669910a94d226dc8cf68c599`.
+
+All 43 default architecture fixtures subsequently passed at that same source
+fingerprint in `build/architecture-checks-hbxvbc4w/`. The independent 16-round
+HTTP conversation check also passed before the final hydration-cache change
+in `build/architecture-checks-279zcqo1/`; deployment remains pending.
+
 Full autonomous execution remains in the parent migration. These tests establish
 process-crash recovery, not power-loss behavior or real-provider quality.

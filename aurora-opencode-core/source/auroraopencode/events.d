@@ -1,6 +1,7 @@
 module auroraopencode.events;
 
 import auroraopencode.retrypolicy : RetryReason;
+import auroraopencode.toolstate : ToolState;
 import auroraopencode.core : ChatImageAttachment, OpenCodeToolCall;
 
 /// Correlated messages shared by provider, execution and presentation owners.
@@ -71,5 +72,6 @@ struct OpenCodeEvent
     bool toolStarted;
     RetryReason retryReason;
     bool retryExhausted;
+    ToolState toolState;
 }
 

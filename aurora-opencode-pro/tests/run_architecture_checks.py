@@ -13,11 +13,11 @@ repo = package.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
 parser.add_argument('fixtures', nargs='*', default=['preference_writer_contracts', 'architecture_contracts', 'presentation_contracts', 'chat_performance_contracts', 'chat_consistency_smoke', 'history_preservation_contracts', 'journal_history_restore_contracts', 'tool_feedback_contracts', 'tool_feedback_ui_contracts', 'headless_pro_smoke', 'tools_test', 'execution_ui_contracts', 'flow_resilience_contracts', 'read_progress_contracts', 'read_progress_ui_contracts', 'image_latency_contracts', 'task_continuation_contracts', 'plan_receipt_contracts', 'followup_ui_contracts', 'background_process_ui_smoke', 'export_reveal_ui_smoke',
-                       'source_background_guard', 'duplicate_launch_contracts', 'markdown_viewport_contracts', 'wrapped_code_selection_contracts', 'lazy_tool_group_contracts',
+                       'source_background_guard', 'duplicate_launch_contracts', 'markdown_viewport_contracts', 'wrapped_code_selection_contracts', 'lazy_tool_group_contracts', 'image_history_performance_contracts',
                        'repository_responsiveness_contracts', 'startup_responsiveness_contracts',
                        'history_mailbox_contracts', 'corrupt_restore_contracts', 'application_crash_restore_contracts',
                        'exit_checkpoint_contracts', 'goal_mode_contracts', 'output_recovery_contracts',
-                       'engine_policy_contracts', 'projection_cache_contracts', 'verification_revision_contracts', 'retry_policy_contracts', 'tool_protocol_contracts', 'scheduler_shutdown_contracts'])
+                       'engine_policy_contracts', 'projection_cache_contracts', 'verification_revision_contracts', 'retry_policy_contracts', 'tool_protocol_contracts', 'tool_resource_contracts', 'attachment_collection_contracts', 'scheduler_shutdown_contracts'])
 args = parser.parse_args()
 # The rebuild-button fixture requires an executable beneath the package's
 # recipe. Each run still has a distinct filename and private artifact folder.

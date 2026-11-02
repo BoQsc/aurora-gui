@@ -2,6 +2,7 @@ module auroraopencode.toolsettlement;
 
 import auroraopencode.core : ChatSession, ChatMessage;
 import auroraopencode.opencode_client : OpenCodeEvent;
+import auroraopencode.toolstate : terminalToolState;
 import auroraopencode.taskflow : planUpdateText;
 import auroraopencode.taskmutation : nestedPlanError, planReplacementError;
 import auroraopencode.imagecontext : retireImagesSessionError;
@@ -93,6 +94,7 @@ ToolSettlement settleToolResult(const ref ChatSession session,
     toolMessage.toolName = event.toolName;
     toolMessage.toolArgs = toolArgs;
     toolMessage.failed = toolFailed;
+    toolMessage.toolState = terminalToolState(event.toolState, toolFailed);
     toolMessage.diffAdditions = event.diffAdditions;
     toolMessage.diffDeletions = event.diffDeletions;
     toolMessage.toolDiff = event.diffText;

@@ -1,4 +1,5 @@
 module auroraopencode.runtime;
+import auroraopencode.toolstate : parseToolState;
 
 /**
  * Backend-neutral agent runtime events.
@@ -14,7 +15,7 @@ import std.datetime.systime : Clock;
 import std.file : exists, getSize, mkdirRecurse;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : dirName, buildPath;
-import auroraopencode.attachmentstore : AttachmentStore;
+import auroraopencode.attachmentstore : AttachmentStore, AttachmentHydrationCache;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import std.stdio : File;
 import core.stdc.stdio : SEEK_END;
@@ -80,10 +81,9 @@ public struct AgentRuntimeEvent
     string itemId;
     string itemKind;
     string payloadJson = "{}";
-    /// Parsed form of `payloadJson`, filled in when the event is read back from
-    /// the journal so a large payload is parsed once instead of twice (once to
-    /// read the record, again to apply it). `null` for in-memory events, where
-    /// only `payloadJson` is meaningful.
+    /// Hydrated parsed payload on replay; payloadJson retains the compact
+    /// on-disk references. This avoids serializing the same image bytes again
+    /// for every record. Null for in-memory events, where payloadJson is used.
     JSONValue parsedPayload;
 }
 
@@ -227,7 +227,8 @@ private JSONValue eventToJson(const ref AgentRuntimeEvent event)
     return root;
 }
 
-private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event, string path)
+private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event, string path,
+    AttachmentHydrationCache cache = null)
 {
     if (root.type != JSONType.object) return false;
     auto type = "type" in root.object;
@@ -254,11 +255,10 @@ private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event, string p
         if (field.type == JSONType.string) event.itemKind = field.str;
     if (auto field = "payload" in root.object)
     {
-        // Keep the JSON text (the public field) and remember the parsed form,
-        // so applying the event does not parse the same payload again.
-        auto attachments = AttachmentStore(buildPath(dirName(path), "attachments"));
-        attachments.hydrate(*field);
+        // Preserve the compact wire record before hydrating its parsed view.
         event.payloadJson = field.toString();
+        auto attachments = AttachmentStore(buildPath(dirName(path), "attachments"));
+        attachments.hydrate(*field, cache);
         event.parsedPayload = *field;
     }
     return true;
@@ -268,6 +268,7 @@ private bool eventFromJson(JSONValue root, out AgentRuntimeEvent event, string p
 public AgentRuntimeEvent[] readAgentRuntimeEvents(string path, bool strictIO = false)
 {
     AgentRuntimeEvent[] result;
+    auto cache = new AttachmentHydrationCache();
     if (!exists(path)) return result;
     try
     {
@@ -277,7 +278,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEvents(string path, bool strictIO = f
             try
             {
                 AgentRuntimeEvent event;
-                if (eventFromJson(parseJSON(line), event, path)) result ~= event;
+                if (eventFromJson(parseJSON(line), event, path, cache)) result ~= event;
             }
             catch (Exception)
             {
@@ -361,6 +362,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsAfter(string path,
 {
     if (afterSequence == 0) return readAgentRuntimeEvents(path, strictIO);
     AgentRuntimeEvent[] result;
+    auto cache = new AttachmentHydrationCache();
     if (!exists(path)) return result;
     try
     {
@@ -370,7 +372,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsAfter(string path,
             try
             {
                 AgentRuntimeEvent event;
-                if (eventFromJson(parseJSON(line), event, path) &&
+                if (eventFromJson(parseJSON(line), event, path, cache) &&
                     event.sequence > afterSequence)
                     result ~= event;
             }
@@ -402,6 +404,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
     ulong byteOffset, bool strictIO = false)
 {
     AgentRuntimeEvent[] result;
+    auto cache = new AttachmentHydrationCache();
     if (!exists(path)) return result;
     try
     {
@@ -417,7 +420,7 @@ public AgentRuntimeEvent[] readAgentRuntimeEventsFrom(string path,
             try
             {
                 AgentRuntimeEvent event;
-                if (eventFromJson(parseJSON(line), event, path)) result ~= event;
+                if (eventFromJson(parseJSON(line), event, path, cache)) result ~= event;
             }
             catch (Exception)
             {
@@ -723,6 +726,8 @@ private void applyMessagePayload(ref ChatMessage message, JSONValue payload)
         if (f.type == JSONType.string) message.toolDiff = f.str;
     if (auto f = "toolElapsedMs" in payload.object)
         if (f.type == JSONType.integer) message.toolElapsedMs = f.integer;
+    if (auto f = "toolState" in payload.object)
+        if (f.type == JSONType.string) message.toolState = parseToolState(f.str);
     if (auto f = "workedSeconds" in payload.object)
     {
         if (f.type == JSONType.integer)

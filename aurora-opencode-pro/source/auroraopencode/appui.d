@@ -25,6 +25,7 @@ import auroraopencode.searchprogress : SearchProgress, decodeSearchProgress, sea
 import auroraopencode.readprogress : ReadProgress, decodeReadProgress, readProgressText;
 
 import auroraopencode.attachmentstore : AttachmentStore;
+import auroraopencode.attachmentgc : collectAttachmentGarbageIfDue;
 import auroraopencode.computeruse : ComputerUseContext;
 
 import aurora;
@@ -17009,6 +17010,8 @@ private string _suggestExcludeId;
         if (message.toolDiff.length > 0) payload["toolDiff"] = message.toolDiff;
         if (message.toolElapsedMs > 0)
             payload["toolElapsedMs"] = message.toolElapsedMs;
+        if (message.toolState != ToolState.unspecified)
+            payload["toolState"] = toolStateName(message.toolState);
         // Inline images are part of the item: the journal replays items over
         // the snapshot on restore, so omitting them here silently dropped a
         // vision turn back to text on the next launch.
@@ -21364,6 +21367,7 @@ private void pollButtonSuggestionRequest()
             result.toolFailed = true;
             result.text = "Error: tool dispatch did not start within 30 seconds while waiting for conversation storage. " ~
                 "This tool did not access files. Its queued admission was revoked; retry after storage recovers.";
+            result.toolState = ToolState.resourceBlocked;
             applyToolResult(result);
         }
     }
@@ -21390,6 +21394,8 @@ private void pollButtonSuggestionRequest()
             row.setDetail(event.text);
         }
         if (event.toolStarted) updateStatus("Running tools…");
+        else if (event.toolState == ToolState.queued && !_liveToolStartedAt.length)
+            updateStatus("Tools queued — waiting for resources…");
         _messagesScroll.invalidate();
     }
 
@@ -21403,6 +21409,7 @@ private void pollButtonSuggestionRequest()
         result.toolName = call.name;
         result.toolCallId = call.id;
         result.toolFailed = execution.failed;
+        result.toolState = execution.state;
         result.verificationCheck = execution.verification.check;
         result.verificationWorkspace = execution.verification.workspace;
         result.verificationRevision = execution.verification.revision;
@@ -29493,6 +29500,7 @@ private void pollButtonSuggestionRequest()
             writeFileAtomically(threadFilePath(session.id), thread.toString());
         }
         writeFileAtomically(threadsIndexPath(), root.toString());
+        collectAttachmentGarbageIfDue(opencodeStateDirectory());
     }
 
     private void persistState()
@@ -29851,6 +29859,8 @@ private void pollButtonSuggestionRequest()
         // reloaded transcript still shows how long each command took.
         if (message.toolElapsedMs > 0)
             messageJson["toolElapsedMs"] = message.toolElapsedMs;
+        if (message.toolState != ToolState.unspecified)
+            messageJson["toolState"] = toolStateName(message.toolState);
         // Inline images are part of the conversation: a continued or
         // replayed turn must still reach the model as a vision request.
         if (message.images.length > 0)

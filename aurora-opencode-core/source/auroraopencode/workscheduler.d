@@ -23,6 +23,8 @@ public abstract class WorkItem
 
 private struct Lease { size_t readers; bool writer; ulong revision; }
 
+public enum WorkAdmission { accepted, capacity, closed }
+
 public struct WorkStatus
 {
     string tool, workspace;
@@ -67,14 +69,20 @@ public final class WorkScheduler
 
     bool submit(WorkItem item)
     {
+        return admit(item) == WorkAdmission.accepted;
+    }
+
+    WorkAdmission admit(WorkItem item)
+    {
         const identity = checkoutIdentity(item.workspace);
         synchronized (_mutex)
         {
-            if (_closed || _pending.length >= _capacity) return false;
+            if (_closed) return WorkAdmission.closed;
+            if (_pending.length >= _capacity) return WorkAdmission.capacity;
             _identities[item.workspace] = identity;
             _pending ~= item;
             _wake.notifyAll();
-            return true;
+            return WorkAdmission.accepted;
         }
     }
 
@@ -202,7 +210,13 @@ public final class WorkScheduler
             _running[item] = MonoTime.currTime;
             _mutex.unlock();
             // WorkItem implementations must turn failures into terminal values.
-            try item.execute();
+            try
+            {
+                // A newly available worker must not overtake cancellation or
+                // a queue deadline between watchdog passes.
+                if (item.abandonQueued()) item.queueAbandoned();
+                else item.execute();
+            }
             catch (Throwable) {}
             _mutex.lock();
             lease = &_leases[workspace];

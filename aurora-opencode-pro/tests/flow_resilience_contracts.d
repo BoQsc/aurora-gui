@@ -119,7 +119,7 @@ int main()
     write(buildPath(directory, "image.png"), pixels);
     const image = executeTool(OpenCodeToolCall("image", "view_image", `{"filePath":"image.png"}`), directory);
     assert(!image.failed && image.images.length == 1 && image.images[0].name == "image.png" &&
-        image.images[0].mimeType == "image/png" && Base64.decode(image.images[0].base64Data) == pixels);
+        image.images[0].mimeType == "image/png" && Base64.decode(image.images[0].base64Data) == pixels, image.output);
     writeln("PASS image evidence retains name, MIME type and exact pixels across host IPC");
 
     auto repository = new ConversationRepository();
