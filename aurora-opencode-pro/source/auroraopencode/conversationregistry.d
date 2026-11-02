@@ -148,8 +148,7 @@ public final class ConversationRegistry
                 entry.snapshotRequested = true;
             else
             {
-                const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
-                    command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length + command.inputId.length;
+                const cost = ConversationActor.commandCost(command);
                 if (entry.pending.length >= maxPending || cost > maxPendingBytes - entry.bytes)
                     return ActorAdmission.capacity;
                 entry.pending ~= command; entry.bytes += cost;

@@ -118,117 +118,127 @@ public void decodeSessionMetadata(JSONValue sessionValue,
 
 /// Message fields of one conversation's `messages` array, matching
 /// `messageToJson`.
-public void decodeMessages(JSONValue field,
-    ref ChatSession session)
+public void applyMessageFields(JSONValue messageValue, ref ChatMessage message)
+{
+    if (messageValue.type != JSONType.object) return;
+    if (auto field = "retiredImages" in messageValue.object)
+        if (field.type == JSONType.array) message.retiredImages = null;
+    if (auto field = "images" in messageValue.object)
+        if (field.type == JSONType.array) message.images = null;
+    if (auto field = "toolCalls" in messageValue.object)
+        if (field.type == JSONType.array) message.toolCalls = null;
+    if (auto f = "id" in messageValue.object)
+        message.id = f.str;
+    if (auto f = "parentId" in messageValue.object)
+        message.parentId = f.str;
+    if (auto f = "authorId" in messageValue.object)
+        message.authorId = f.str;
+    if (auto f = "role" in messageValue.object)
+        message.role = f.str;
+    if (auto f = "inputId" in messageValue.object) message.inputId = f.str;
+    if (auto f = "inputCommitted" in messageValue.object) message.inputCommitted = f.boolean;
+    if (auto f = "content" in messageValue.object)
+        message.content = f.str;
+    if (auto f = "reasoning" in messageValue.object)
+        message.reasoning = f.str;
+    if (auto f = "time" in messageValue.object)
+        message.time = f.str;
+    if (auto f = "failed" in messageValue.object)
+        message.failed = f.type == JSONType.true_;
+    if (auto f = "error" in messageValue.object)
+        if (f.type == JSONType.string) message.error = f.str;
+    if (auto f = "finishReason" in messageValue.object)
+        if (f.type == JSONType.string) message.finishReason = f.str;
+    if (auto f = "internal" in messageValue.object)
+        message.internal = f.type == JSONType.true_;
+    if (auto f = "contextCompacted" in messageValue.object)
+        message.contextCompacted = f.type == JSONType.true_;
+    if (auto f = "taskStateJson" in messageValue.object)
+        if (f.type == JSONType.string) message.taskStateJson = f.str;
+    if (auto f = "workspaceChanged" in messageValue.object)
+        message.workspaceChanged = f.type == JSONType.true_;
+    if (auto f = "verificationCheck" in messageValue.object)
+        if (f.type == JSONType.string) message.verificationCheck = f.str;
+    if (auto f = "verificationScope" in messageValue.object)
+        if (f.type == JSONType.string) message.verificationScope = f.str;
+    if (auto f = "promptTokens" in messageValue.object)
+        if (f.type == JSONType.integer)
+            message.promptTokens = cast(int) f.integer;
+    if (auto f = "completionTokens" in messageValue.object)
+        if (f.type == JSONType.integer)
+            message.completionTokens = cast(int) f.integer;
+    if (auto f = "totalTokens" in messageValue.object)
+        if (f.type == JSONType.integer)
+            message.totalTokens = cast(int) f.integer;
+    if (auto f = "tokensPerSecondTenths" in messageValue.object)
+        if (f.type == JSONType.integer)
+            message.tokensPerSecondTenths = cast(int) f.integer;
+    if (auto f = "toolCallId" in messageValue.object)
+        message.toolCallId = f.str;
+    if (auto f = "toolName" in messageValue.object)
+        message.toolName = f.str;
+    if (auto f = "toolArgs" in messageValue.object)
+        message.toolArgs = f.str;
+    if (auto f = "diffAdditions" in messageValue.object)
+        if (f.type == JSONType.integer)
+            message.diffAdditions = cast(int) f.integer;
+    if (auto f = "diffDeletions" in messageValue.object)
+        if (f.type == JSONType.integer)
+            message.diffDeletions = cast(int) f.integer;
+    if (auto f = "toolDiff" in messageValue.object)
+        message.toolDiff = f.str;
+    if (auto f = "toolElapsedMs" in messageValue.object)
+        if (f.type == JSONType.integer)
+            message.toolElapsedMs = cast(long) f.integer;
+    if (auto f = "toolState" in messageValue.object)
+        if (f.type == JSONType.string) message.toolState = parseToolState(f.str);
+    if (auto f = "workedSeconds" in messageValue.object)
+    {
+        if (f.type == JSONType.integer)
+            message.workedSeconds = cast(double) f.integer;
+        else if (f.type == JSONType.float_)
+            message.workedSeconds = f.floating;
+    }
+    if (auto f = "retiredImages" in messageValue.object)
+        if (f.type == JSONType.array)
+            foreach (id; f.array)
+                if (id.type == JSONType.string) message.retiredImages ~= id.str;
+    if (auto f = "images" in messageValue.object)
+    {
+        if (f.type == JSONType.array)
+            foreach (imageValue; f.array)
+            {
+                if (imageValue.type != JSONType.object) continue;
+                auto image = imageAttachmentFromJson(imageValue);
+                if (image.base64Data.length > 0 || image.blob.length > 0 || image.originalBlob.length > 0)
+                    message.images ~= image;
+            }
+    }
+    if (auto f = "toolCalls" in messageValue.object)
+    {
+        if (f.type == JSONType.array)
+            foreach (callValue; f.array)
+            {
+                if (callValue.type != JSONType.object) continue;
+                OpenCodeToolCall call;
+                if (auto c = "id" in callValue.object)
+                    call.id = c.str;
+                if (auto c = "name" in callValue.object)
+                    call.name = c.str;
+                if (auto c = "arguments" in callValue.object)
+                    call.arguments = c.str;
+                message.toolCalls ~= call;
+            }
+    }
+}
+
+public void decodeMessages(JSONValue field, ref ChatSession session)
 {
     if (field.type != JSONType.array) return;
     foreach (messageValue; field.array)
     {
         if (messageValue.type != JSONType.object) continue;
-        ChatMessage message;
-        if (auto f = "id" in messageValue.object)
-            message.id = f.str;
-        if (auto f = "parentId" in messageValue.object)
-            message.parentId = f.str;
-        if (auto f = "authorId" in messageValue.object)
-            message.authorId = f.str;
-        if (auto f = "role" in messageValue.object)
-            message.role = f.str;
-        if (auto f = "inputId" in messageValue.object) message.inputId = f.str;
-        if (auto f = "inputCommitted" in messageValue.object) message.inputCommitted = f.boolean;
-        if (auto f = "content" in messageValue.object)
-            message.content = f.str;
-        if (auto f = "reasoning" in messageValue.object)
-            message.reasoning = f.str;
-        if (auto f = "time" in messageValue.object)
-            message.time = f.str;
-        if (auto f = "failed" in messageValue.object)
-            message.failed = f.type == JSONType.true_;
-        if (auto f = "error" in messageValue.object)
-            if (f.type == JSONType.string) message.error = f.str;
-        if (auto f = "finishReason" in messageValue.object)
-            if (f.type == JSONType.string) message.finishReason = f.str;
-        if (auto f = "internal" in messageValue.object)
-            message.internal = f.type == JSONType.true_;
-        if (auto f = "contextCompacted" in messageValue.object)
-            message.contextCompacted = f.type == JSONType.true_;
-        if (auto f = "taskStateJson" in messageValue.object)
-            if (f.type == JSONType.string) message.taskStateJson = f.str;
-        if (auto f = "workspaceChanged" in messageValue.object)
-            message.workspaceChanged = f.type == JSONType.true_;
-        if (auto f = "verificationCheck" in messageValue.object)
-            if (f.type == JSONType.string) message.verificationCheck = f.str;
-        if (auto f = "verificationScope" in messageValue.object)
-            if (f.type == JSONType.string) message.verificationScope = f.str;
-        if (auto f = "promptTokens" in messageValue.object)
-            if (f.type == JSONType.integer)
-                message.promptTokens = cast(int) f.integer;
-        if (auto f = "completionTokens" in messageValue.object)
-            if (f.type == JSONType.integer)
-                message.completionTokens = cast(int) f.integer;
-        if (auto f = "totalTokens" in messageValue.object)
-            if (f.type == JSONType.integer)
-                message.totalTokens = cast(int) f.integer;
-        if (auto f = "tokensPerSecondTenths" in messageValue.object)
-            if (f.type == JSONType.integer)
-                message.tokensPerSecondTenths = cast(int) f.integer;
-        if (auto f = "toolCallId" in messageValue.object)
-            message.toolCallId = f.str;
-        if (auto f = "toolName" in messageValue.object)
-            message.toolName = f.str;
-        if (auto f = "toolArgs" in messageValue.object)
-            message.toolArgs = f.str;
-        if (auto f = "diffAdditions" in messageValue.object)
-            if (f.type == JSONType.integer)
-                message.diffAdditions = cast(int) f.integer;
-        if (auto f = "diffDeletions" in messageValue.object)
-            if (f.type == JSONType.integer)
-                message.diffDeletions = cast(int) f.integer;
-        if (auto f = "toolDiff" in messageValue.object)
-            message.toolDiff = f.str;
-        if (auto f = "toolElapsedMs" in messageValue.object)
-            if (f.type == JSONType.integer)
-                message.toolElapsedMs = cast(long) f.integer;
-        if (auto f = "toolState" in messageValue.object)
-            if (f.type == JSONType.string) message.toolState = parseToolState(f.str);
-        if (auto f = "workedSeconds" in messageValue.object)
-        {
-            if (f.type == JSONType.integer)
-                message.workedSeconds = cast(double) f.integer;
-            else if (f.type == JSONType.float_)
-                message.workedSeconds = f.floating;
-        }
-        if (auto f = "retiredImages" in messageValue.object)
-            if (f.type == JSONType.array)
-                foreach (id; f.array)
-                    if (id.type == JSONType.string) message.retiredImages ~= id.str;
-        if (auto f = "images" in messageValue.object)
-        {
-            if (f.type == JSONType.array)
-                foreach (imageValue; f.array)
-                {
-                    if (imageValue.type != JSONType.object) continue;
-                    auto image = imageAttachmentFromJson(imageValue);
-                    if (image.base64Data.length > 0 || image.blob.length > 0 || image.originalBlob.length > 0)
-                        message.images ~= image;
-                }
-        }
-        if (auto f = "toolCalls" in messageValue.object)
-        {
-            if (f.type == JSONType.array)
-                foreach (callValue; f.array)
-                {
-                    if (callValue.type != JSONType.object) continue;
-                    OpenCodeToolCall call;
-                    if (auto c = "id" in callValue.object)
-                        call.id = c.str;
-                    if (auto c = "name" in callValue.object)
-                        call.name = c.str;
-                    if (auto c = "arguments" in callValue.object)
-                        call.arguments = c.str;
-                    message.toolCalls ~= call;
-                }
-        }
+        ChatMessage message; applyMessageFields(messageValue, message);
         session.messages ~= message;
     }
 }

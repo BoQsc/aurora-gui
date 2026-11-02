@@ -182,6 +182,10 @@ public final class ConversationActor
     private bool waitingChildren, coordinationRecovered;
     private enum maxCommands = 128;
     private enum maxCommandBytes = 1024 * 1024;
+    public static size_t commandCost(const ref ActorCommand command)
+    { return ActorCommand.sizeof + command.text.length + command.targetId.length + command.imagesJson.length + command.context.length +
+        command.connectionBase.length + command.connectionKey.length + command.inputId.length; }
+    public static bool oversizedCommand(const ref ActorCommand command) { return commandCost(command) > maxCommandBytes; }
     private enum maxChanges = 256;
     private enum maxChangeBytes = 1024 * 1024;
 
@@ -273,8 +277,7 @@ public final class ConversationActor
             {
             if (command.kind == ActorCommandKind.snapshot)
             { snapshotPending = true; wake.notifyAll(); return ActorAdmission.accepted; }
-            const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
-                command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length + command.inputId.length;
+            const cost = commandCost(command);
             if (commands.length >= maxCommands || unsettledInputs.length >= maxCommands * 2 ||
                 cost > maxCommandBytes - commandBytes)
                 return ActorAdmission.capacity;

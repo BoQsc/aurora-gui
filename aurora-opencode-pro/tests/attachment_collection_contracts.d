@@ -48,6 +48,7 @@ int main()
     const backup = seed("retained backup");
     const legacy = seed("retained legacy");
     const journal = seed("retained journal");
+    const composer = seed("retained composer submission");
     const inFlight = seed("reused before reference commit");
     const loaded = seed("loaded but no longer in the index");
     const originalInFlight = seed("original retained by an in-flight snapshot");
@@ -59,6 +60,7 @@ int main()
     write(buildPath(directory, "sessions.json"), reference(legacy));
     const journalPath = buildPath(directory, "runtime-events.jsonl");
     write(journalPath, reference(journal) ~ "\n");
+    write(buildPath(directory, "composer-state.json"), `{"pending":[` ~ reference(composer) ~ `]}`);
     assert(store.put("reused before reference commit") == inFlight);
     assert(store.get(loaded) == "loaded but no longer in the index");
     auto pendingImage = parseJSON(`{"mimeType":"image/png","originalBlob":"` ~ originalInFlight ~ `"}`);
@@ -67,7 +69,7 @@ int main()
     policy.minimumAgeHours = 0; policy.timeBudgetMs = 5_000;
     auto result = collectAttachmentGarbage(directory, policy);
     assert(result.marked && result.deleted == 1 && !present(orphan), result.error);
-    foreach (digest; [branch, original, backup, legacy, journal, inFlight, originalInFlight, loaded]) assert(present(digest));
+    foreach (digest; [branch, original, backup, legacy, journal, composer, inFlight, originalInFlight, loaded]) assert(present(digest));
 
     const pending = seed("must survive incomplete scans");
     const broken = buildPath(histories, "broken.json");

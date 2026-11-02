@@ -650,7 +650,7 @@ public JSONValue imageAttachmentToJson(const ref ChatImageAttachment image)
     if (image.error.length) value["attachmentError"] = image.error;
     if (image.originalBlob.length) value["originalBlob"] = image.originalBlob;
     if (image.originalMimeType.length) value["originalMimeType"] = image.originalMimeType;
-    if (image.normalizationVersion) value["normalizationVersion"] = image.normalizationVersion;
+    if (image.normalizationVersion) value["normalizationVersion"] = cast(long) image.normalizationVersion;
     if (image.originalDetail) value["originalDetail"] = true;
     if (image.width > 0) value["width"] = image.width;
     if (image.height > 0) value["height"] = image.height;
@@ -683,7 +683,7 @@ public ChatImageAttachment imageAttachmentFromJson(const ref JSONValue value)
     if (auto field = "originalDetail" in value.object)
         if (field.type == JSONType.true_ || field.type == JSONType.false_) image.originalDetail = field.boolean;
     if (auto field = "normalizationVersion" in value.object)
-        if (field.type == JSONType.integer && field.integer >= 0)
+        if (field.type == JSONType.integer && field.integer >= 0 && field.integer <= uint.max)
             image.normalizationVersion = cast(uint) field.integer;
     foreach (key; ["width", "height", "originalWidth", "originalHeight"])
         if (auto field = key in value.object)

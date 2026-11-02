@@ -6,21 +6,21 @@ import json
 import time
 import hashlib
 import os
-import shutil
-import stat
+import atexit
+from architecture_retention import FileLease, prune_runs
 from pathlib import Path
 
 package = Path(__file__).resolve().parents[1]
 repo = package.parent
 parser = argparse.ArgumentParser()
 parser.add_argument('--release', action='store_true', help='Measure optimized fixtures using release compiler flags')
-parser.add_argument('--keep-runs', type=int, default=3, help='Retain this many newest architecture-check run directories')
+parser.add_argument('--keep-runs', type=int, default=3, help='Retain this many completed runs, plus every active run')
 parser.add_argument('--prune-only', action='store_true', help='Prune old architecture-check runs and exit')
 parser.add_argument('fixtures', nargs='*', default=['preference_writer_contracts', 'architecture_contracts', 'presentation_contracts', 'chat_performance_contracts', 'chat_consistency_smoke', 'history_preservation_contracts', 'journal_history_restore_contracts', 'tool_feedback_contracts', 'tool_feedback_ui_contracts', 'headless_pro_smoke', 'tools_test', 'execution_ui_contracts', 'flow_resilience_contracts', 'read_progress_contracts', 'read_progress_ui_contracts', 'image_latency_contracts', 'task_continuation_contracts', 'plan_receipt_contracts', 'followup_ui_contracts', 'background_process_ui_smoke', 'export_reveal_ui_smoke',
                        'source_background_guard', 'developer_context_contracts', 'duplicate_launch_contracts', 'markdown_viewport_contracts', 'wrapped_code_selection_contracts', 'lazy_tool_group_contracts', 'image_history_performance_contracts',
                        'repository_responsiveness_contracts', 'startup_responsiveness_contracts',
                        'history_mailbox_contracts', 'corrupt_restore_contracts', 'application_crash_restore_contracts',
-                       'exit_checkpoint_contracts', 'goal_mode_contracts', 'output_recovery_contracts',
+                       'exit_checkpoint_contracts', 'composer_store_contracts', 'goal_mode_contracts', 'output_recovery_contracts',
                        'engine_policy_contracts', 'projection_cache_contracts', 'verification_revision_contracts', 'retry_policy_contracts', 'tool_protocol_contracts', 'tool_resource_contracts', 'attachment_collection_contracts', 'orchestration_ownership_contracts', 'orchestrator_headless_smoke', 'actor_mailbox_contracts', 'conversation_projection_contracts', 'conversation_metadata_contracts', 'conversation_registry_contracts', 'conversation_job_contracts', 'actor_owner_performance_contracts', 'scheduler_shutdown_contracts'])
 args = parser.parse_args()
 if args.keep_runs < 1:
@@ -31,39 +31,7 @@ build_root = package / 'build'
 build_root.mkdir(exist_ok=True)
 
 def prune_architecture_runs(keep: int, current: Path | None = None) -> int:
-    """Remove old retained runs while preserving the newest `keep` snapshots."""
-    runs = []
-    for candidate in build_root.iterdir():
-        if candidate == current or candidate.is_symlink() or not candidate.is_dir():
-            continue
-        if not candidate.name.startswith('architecture-checks-'):
-            continue
-        try:
-            runs.append((candidate.stat().st_mtime, candidate))
-        except OSError:
-            continue
-    runs.sort(key=lambda item: item[0], reverse=True)
-    # The just-created run consumes one retention slot when present.
-    retain_old = max(0, keep - (1 if current is not None else 0))
-    def remove_readonly(function, path, excinfo):
-        try:
-            os.chmod(path, stat.S_IWRITE)
-            function(path)
-        except OSError as error:
-            print(f'PRUNE WARNING {path}: {error}', flush=True)
-
-    removed = 0
-    for _, candidate in runs[retain_old:]:
-        try:
-            shutil.rmtree(candidate, onexc=remove_readonly)
-        except OSError as error:
-            print(f'PRUNE WARNING {candidate}: {error}', flush=True)
-        else:
-            if candidate.exists():
-                print(f'PRUNE WARNING {candidate}: incomplete removal', flush=True)
-            else:
-                removed += 1
-    return removed
+    return prune_runs(build_root, keep, current)
 
 if args.prune_only:
     removed = prune_architecture_runs(args.keep_runs)
@@ -71,6 +39,11 @@ if args.prune_only:
     raise SystemExit(0)
 
 directory = Path(tempfile.mkdtemp(prefix='architecture-checks-', dir=build_root))
+run_lease = FileLease(directory / '.running.lock')
+def finish_retention():
+    run_lease.close()
+    prune_architecture_runs(args.keep_runs)
+atexit.register(finish_retention)
 (directory / 'build').mkdir()
 removed = prune_architecture_runs(args.keep_runs, directory)
 if removed:

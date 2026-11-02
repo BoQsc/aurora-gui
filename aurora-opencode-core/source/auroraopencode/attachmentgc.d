@@ -135,7 +135,7 @@ public AttachmentCollection collectAttachmentGarbage(string directory,
         {
             const name = baseName(entry.name);
             if (!entry.isFile) continue;
-            if ((name.startsWith("sessions") || name.startsWith("threads.index")) && name.indexOf(".json") >= 0)
+            if ((name.startsWith("sessions") || name.startsWith("threads.index") || name.startsWith("composer-state")) && name.indexOf(".json") >= 0)
                 scan(entry.name, false);
             else if (name.startsWith("runtime-events.jsonl")) scan(entry.name, true);
         }

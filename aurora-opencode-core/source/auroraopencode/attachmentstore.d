@@ -233,11 +233,10 @@ public struct AttachmentStore
                 if (auto blob = key in value.object)
                     if (blob.type == JSONType.string && "mimeType" in value.object) pin(blob.str);
             if (auto data = "base64Data" in value.object)
-                if (data.type == JSONType.string && data.str.length && "mimeType" in value.object)
+                if (data.type == JSONType.string && "mimeType" in value.object)
                 {
-                    const digest = put(data.str);
+                    if (data.str.length) value["blob"] = put(data.str);
                     value.object.remove("base64Data");
-                    value["blob"] = digest;
                 }
             foreach (ref child; value.object) externalize(child);
         }

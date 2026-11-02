@@ -29620,33 +29620,8 @@ private void pollButtonSuggestionRequest()
      */
     private static void writeFileAtomically(string path, string contents)
     {
-        // Write the new contents beside the target first: a crash here only
-        // ever risks the temporary file, never the live one.
-        const temporary = path ~ ".tmp";
-        write(temporary, contents);
-        // Keep the last good copy as `.bak` for recovery, without moving the
-        // primary out of the way. This is best effort; a failure here must not
-        // prevent the save.
-        if (exists(path))
-        {
-            const backup = path ~ ".bak";
-            try
-            {
-                if (exists(backup)) fileRemove(backup);
-                write(backup, readText(path));
-            }
-            catch (Exception)
-            {
-                // A missing backup is not a reason to fail the save.
-            }
-        }
-        // Install the new contents with a single atomic replace
-        // (MoveFileEx + MOVEFILE_REPLACE_EXISTING, via std.file.rename): the
-        // target is always either the whole old file or the whole new one.
-        // The primary is never renamed away first, so there is no instant at
-        // which it does not exist. That window is what let a crash mid-save
-        // leave no sessions.json at all and blank the conversation list.
-        rename(temporary, path);
+        import auroraopencode.atomicfile;
+        auroraopencode.atomicfile.writeFileAtomically(path, contents);
     }
 
     private static JSONValue messageToJson(const ref ChatMessage message)

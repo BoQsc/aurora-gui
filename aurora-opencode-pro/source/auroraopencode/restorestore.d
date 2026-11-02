@@ -1,6 +1,7 @@
 module auroraopencode.restorestore;
 
 import auroraopencode.core : ChatMessage, ChatSession;
+import auroraopencode.atomicfile : preserveBackupOnNextWrite;
 import auroraopencode.runtime : AgentRuntime, AgentRuntimeEvent, AgentEventKind,
     projectAgentRuntimeEvents, deletedAgentRuntimeThreadIds;
 import auroraopencode.attachmentstore : AttachmentStore;
@@ -117,7 +118,10 @@ public RestoreBundle readRestoreBundle(string directory, AgentRuntime runtime)
     result.index = readJson(primaryIndex);
     const primaryValid = usableIndex(result.index);
     if (!primaryValid)
+    {
         result.index = readJson(buildPath(directory, "threads.index.json.bak"));
+        if (usableIndex(result.index)) preserveBackupOnNextWrite(primaryIndex);
+    }
     result.folded = readRestoreMarker(directory, result.foldedSequence, result.foldedOffset);
     // A backup can predate the fold marker. Replay the authority in full when
     // the corresponding primary index cannot be trusted.

@@ -1,12 +1,15 @@
 > Current work: [Agent continuity](agent-continuity.md) and
 > [Long reply rendering](long-reply-rendering.md).
 > [Storage and recovery](storage-recovery.md) records the current source work.
-> The user's 2026-11-02 request reactivates the entire remaining migration below.
+> The user's latest 2026-11-02 instruction freezes expansion for a human review
+> checkpoint. See [Stabilization review](stabilization-review.md) for the active
+> desktop changes, unused groundwork, verification and review interactions.
 
 # Message-to-response migration status
 
 Updated 2026-11-02. The full migration in `message-response-architecture-review.md`
-is **not complete**. All seven remaining requirements remain in scope.
+is **not complete**. The remaining migration is deferred pending human feedback
+on the bounded 0.66.30 review build. Do not resume it automatically.
 
 The subsequent transport/startup latency stage is documented in
 `latency-improvements.md`, including its controls, timing evidence and deployment.
@@ -485,6 +488,26 @@ The identity proof submits more than 200 duplicates, reopens durable history,
 preserves pending context and simulates the append/commit crash gap. This is the
 deduplication boundary for the forthcoming durable composer outbox; that outbox,
 desktop adoption and final delivery are not yet implemented.
+
+## Stabilization review checkpoint
+
+The final standalone composer stage captures drafts without UI disk I/O, archives
+images on its worker, persists ordered submission intent before actor admission,
+and removes it only after the actor's durable input acknowledgement. A newer
+draft survives acknowledgement of an older submission. This store remains
+disconnected from the desktop. Shared journal/snapshot decoding now retains
+image retirement and original/normalized metadata; recovered backups survive a
+failed first primary replacement. Parallel fixture retention preserves active
+runs. These shared storage changes do apply to the existing desktop path.
+
+At fingerprint
+`c32eaf9be43e1b1a456252f60ffad9bf9b8aa15b2e0386dc246cd1dc0a976e33`,
+all 53 default fixtures, the 16-round desktop HTTP conversation and the five
+actor orchestration cases passed. The latter replayed 26 generations exactly.
+Evidence is retained under `build/stabilization-review-06630/` outside the
+automatic fixture retention prefix. The 0.66.30 release is a bounded human
+review checkpoint, not completion of the actor migration. Further expansion
+is deferred as requested; see `stabilization-review.md` for human checks.
 
 ## Earlier hardening deployment
 
