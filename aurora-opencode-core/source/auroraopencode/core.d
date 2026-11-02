@@ -986,7 +986,7 @@ public struct TaskContract
     TaskWorkItem[] workItems;
 }
 
-public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
+public void writeTaskContract(ref JSONValue root, const ref ChatSession session, bool includePlanHistory = true)
 {
     JSONValue value;
     value["id"] = session.contract.id;
@@ -1013,7 +1013,7 @@ public void writeTaskContract(ref JSONValue root, const ref ChatSession session)
     root["taskArchive"] = JSONValue(session.taskArchive);
     root["taskSteps"] = taskStepsToJson(session.taskSteps);
     root["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
-    root["planHistory"] = planHistoryToJson(session.planHistory);
+    if (includePlanHistory) root["planHistory"] = planHistoryToJson(session.planHistory);
 }
 
 public void readTaskContract(ref ChatSession session, JSONValue root)
@@ -1083,7 +1083,7 @@ public string activeTaskStateJson(const ref ChatSession session)
     state["objective"] = session.objective;
     state["taskStatus"] = session.taskStatus;
     state["verificationStatus"] = session.verificationStatus;
-    writeTaskContract(state, session);
+    writeTaskContract(state, session, false);
     state.object.remove("taskArchive");
     // An archived task snapshot is restored as a whole, so nesting the full
     // plan history inside it would duplicate every revision on each reset.

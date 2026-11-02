@@ -43,32 +43,23 @@ public void decodeSessionMetadata(JSONValue sessionValue,
         session.unread = field.type == JSONType.true_;
     if (auto field = "verificationStatus" in sessionValue.object)
         session.verificationStatus = field.str;
-    if (auto field = "taskSteps" in sessionValue.object)
-        if (field.type == JSONType.array)
-            foreach (item; field.array)
-            {
-                if (item.type != JSONType.object) continue;
-                TaskStep step;
-                if (auto f = "text" in item.object)
-                    if (f.type == JSONType.string) step.text = f.str;
-                if (auto f = "status" in item.object)
-                    if (f.type == JSONType.string) step.status = f.str;
-                if (step.text.length > 0) session.taskSteps ~= step;
-            }
-    if (auto field = "nestedPlans" in sessionValue.object)
-        session.nestedPlans = nestedPlansFromJson(*field,
-            session.taskSteps.length);
     readTaskContract(session, sessionValue);
     if (auto field = "queuedGuidance" in sessionValue.object)
         if (field.type == JSONType.array)
+        {
+            session.queuedGuidance = null;
             foreach (item; field.array)
                 if (item.type == JSONType.string)
                     session.queuedGuidance ~= item.str;
+        }
     if (auto field = "queuedFollowUps" in sessionValue.object)
         if (field.type == JSONType.array)
+        {
+            session.queuedFollowUps = null;
             foreach (item; field.array)
                 if (item.type == JSONType.string)
                     session.queuedFollowUps ~= item.str;
+        }
     if (auto field = "queuedGuidanceContext" in sessionValue.object)
         session.queuedGuidanceContext = promptContextsFromJson(*field);
     if (auto field = "queuedFollowUpContext" in sessionValue.object)
@@ -78,7 +69,7 @@ public void decodeSessionMetadata(JSONValue sessionValue,
     if (auto field = "draft" in sessionValue.object)
         if (field.type == JSONType.string) session.draft = field.str;
     if (auto field = "updatedAt" in sessionValue.object)
-        if (field.type == JSONType.integer && field.integer > 0)
+        if (field.type == JSONType.integer && field.integer >= 0)
             session.updatedAt = field.integer;
     if (auto field = "compactionSummary" in sessionValue.object)
         if (field.type == JSONType.string)
@@ -89,6 +80,8 @@ public void decodeSessionMetadata(JSONValue sessionValue,
     // experimental: orchestrator - read the persisted roster/speaker.
     if (auto field = "agents" in sessionValue.object)
         if (field.type == JSONType.array)
+        {
+            session.agents = null;
             foreach (item; field.array)
             {
                 if (item.type != JSONType.object) continue;
@@ -101,6 +94,7 @@ public void decodeSessionMetadata(JSONValue sessionValue,
                     agent.router = f.type == JSONType.true_;
                 if (agent.id.length > 0) session.agents ~= agent;
             }
+        }
     if (auto field = "activeAgentId" in sessionValue.object)
         if (field.type == JSONType.string)
             session.activeAgentId = field.str;
@@ -110,6 +104,10 @@ public void decodeSessionMetadata(JSONValue sessionValue,
     if (auto field = "subagentId" in sessionValue.object)
         if (field.type == JSONType.string)
             session.subagentId = field.str;
+    if (auto field = "nextSpeakerId" in sessionValue.object)
+        if (field.type == JSONType.string) session.nextSpeakerId = field.str;
+    if (auto field = "agentHops" in sessionValue.object)
+        if (field.type == JSONType.integer) session.agentHops = cast(int) field.integer;
 }
 
 /// Message fields of one conversation's `messages` array, matching

@@ -591,86 +591,28 @@ public string[] deletedAgentRuntimeThreadIds(
 public void applyRuntimeThreadPayload(ref ChatSession session, JSONValue payload)
 {
     if (payload.type != JSONType.object) return;
+    if (auto id = "id" in payload.object)
+        if (id.type == JSONType.string && id.str.length && session.id.length && id.str != session.id)
+            throw new Exception("Journal metadata belongs to another conversation");
     if (auto complete = "snapshot" in payload.object)
-        if (complete.type == JSONType.object) decodeSessionMetadata(*complete, session);
-    if (auto f = "compactionSummary" in payload.object)
-        if (f.type == JSONType.string) session.compactionSummary = f.str;
-    if (auto f = "compactedThroughMessageId" in payload.object)
-        if (f.type == JSONType.string) session.compactedThroughMessageId = f.str;
-    if (auto f = "title" in payload.object)
-        if (f.type == JSONType.string) session.title = f.str;
-    if (auto f = "draft" in payload.object)
-        if (f.type == JSONType.string)
         {
-            session.draft = f.str;
-            session.draftRecorded = true;
-        }
-    if (auto f = "model" in payload.object)
-        if (f.type == JSONType.string) session.model = f.str;
-    if (auto f = "thinking" in payload.object)
-        session.thinking = f.type == JSONType.true_;
-    if (auto f = "projectId" in payload.object)
-        if (f.type == JSONType.string) session.projectId = f.str;
-    if (auto f = "activeLeafId" in payload.object)
-        if (f.type == JSONType.string) session.activeLeafId = f.str;
-    if (auto f = "objective" in payload.object)
-        if (f.type == JSONType.string) session.objective = f.str;
-    if (auto f = "goal" in payload.object)
-        if (f.type == JSONType.string) session.goal = f.str;
-    if (auto f = "goalStatus" in payload.object)
-        if (f.type == JSONType.string) session.goalStatus = f.str;
-    if (auto f = "goalStartedAt" in payload.object)
-        if (f.type == JSONType.integer) session.goalStartedAt = f.integer;
-    if (auto f = "goalTurns" in payload.object)
-        if (f.type == JSONType.integer) session.goalTurns = cast(int) f.integer;
-    if (auto f = "goalHistory" in payload.object)
-        session.goalHistory = goalHistoryFromJson(*f);
-    if (auto f = "taskStatus" in payload.object)
-        if (f.type == JSONType.string) session.taskStatus = f.str;
-    if (auto f = "turnStatus" in payload.object)
-        if (f.type == JSONType.string) session.turnStatus = f.str;
-    if (auto f = "verificationStatus" in payload.object)
-        if (f.type == JSONType.string) session.verificationStatus = f.str;
-    if (auto f = "taskSteps" in payload.object)
-        if (f.type == JSONType.array)
-        {
-            TaskStep[] steps;
-            foreach (item; f.array)
+            if (complete.type == JSONType.object)
             {
-                if (item.type != JSONType.object) continue;
-                TaskStep step;
-                if (auto value = "text" in item.object)
-                    if (value.type == JSONType.string) step.text = value.str;
-                if (auto value = "status" in item.object)
-                    if (value.type == JSONType.string) step.status = value.str;
-                if (step.text.length > 0) steps ~= step;
+                if (auto id = "id" in complete.object)
+                    if (id.type == JSONType.string && id.str.length && session.id.length && id.str != session.id)
+                        throw new Exception("Journal snapshot belongs to another conversation");
+                decodeSessionMetadata(*complete, session);
             }
-            session.taskSteps = steps;
         }
-    if (auto f = "nestedPlans" in payload.object)
-        session.nestedPlans = nestedPlansFromJson(*f,
-            session.taskSteps.length);
-    readTaskContract(session, payload);
-    if (auto field = "queuedGuidanceContext" in payload.object)
-        session.queuedGuidanceContext = promptContextsFromJson(*field);
-    if (auto field = "queuedFollowUpContext" in payload.object)
-        session.queuedFollowUpContext = promptContextsFromJson(*field);
-    if (auto f = "queuedGuidance" in payload.object)
-        if (f.type == JSONType.array)
-        {
-            session.queuedGuidance.length = 0;
-            foreach (item; f.array)
-                if (item.type == JSONType.string)
-                    session.queuedGuidance ~= item.str;
-        }
-    if (auto f = "queuedFollowUps" in payload.object)
-        if (f.type == JSONType.array)
-        {
-            session.queuedFollowUps.length = 0;
-            foreach (item; f.array)
-                if (item.type == JSONType.string)
-                    session.queuedFollowUps ~= item.str;
-        }
+    // Old journals use projectId/activeLeafId; snapshots use project/activeLeaf.
+    // Both routes now share the same replacement semantics and task decoder.
+    auto normalized = JSONValue.emptyObject;
+    foreach (key, value; payload.object) if (key != "id" || value.str.length) normalized[key] = value;
+    if (auto project = "projectId" in payload.object) normalized["project"] = *project;
+    if (auto leaf = "activeLeafId" in payload.object) normalized["activeLeaf"] = *leaf;
+    decodeSessionMetadata(normalized, session);
+    if (auto draft = "draft" in payload.object)
+        if (draft.type == JSONType.string) session.draftRecorded = true;
 }
 
 private void applyMessagePayload(ref ChatMessage message, JSONValue payload)

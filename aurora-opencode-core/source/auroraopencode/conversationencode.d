@@ -103,7 +103,7 @@ public JSONValue messagesToJson(const ChatMessage[] messages)
     return array;
 }
 
-public JSONValue sessionMetaToJson(const ref ChatSession session)
+public JSONValue sessionMetaToJson(const ref ChatSession session, bool includePlanHistory = true)
 {
     JSONValue root;
     if (session.id.length > 0) root["id"] = session.id;
@@ -148,7 +148,7 @@ public JSONValue sessionMetaToJson(const ref ChatSession session)
     }
     if (session.nestedPlans.length > 0)
         root["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
-    writeTaskContract(root, session);
+    writeTaskContract(root, session, includePlanHistory);
     if (session.queuedGuidance.length > 0)
     {
         JSONValue guidance = JSONValue(string[].init);
@@ -194,6 +194,8 @@ public JSONValue sessionMetaToJson(const ref ChatSession session)
         if (session.subagentId.length > 0)
             root["subagentId"] = session.subagentId;
     }
+    if (session.nextSpeakerId.length) root["nextSpeakerId"] = session.nextSpeakerId;
+    if (session.agentHops) root["agentHops"] = session.agentHops;
     if (session.activeLeafId.length > 0)
         root["activeLeaf"] = session.activeLeafId;
     // An unsubmitted prompt must survive a restart or rebuild; without this
@@ -222,6 +224,9 @@ public JSONValue sessionToJson(const ref ChatSession session)
 }
 
 public string runtimeThreadPayload(const ref ChatSession session)
+{ return runtimeThreadJson(session).toString(); }
+
+public JSONValue runtimeThreadJson(const ref ChatSession session, bool complete = false)
 {
     JSONValue payload;
     payload["title"] = session.title;
@@ -239,21 +244,9 @@ public string runtimeThreadPayload(const ref ChatSession session)
     payload["taskStatus"] = session.taskStatus;
     payload["turnStatus"] = session.turnStatus;
     payload["verificationStatus"] = session.verificationStatus;
-    JSONValue steps = JSONValue(string[].init);
-    foreach (step; session.taskSteps)
-    {
-        JSONValue value;
-        value["text"] = step.text;
-        value["status"] = step.status;
-        steps.array ~= value;
-    }
-    payload["taskSteps"] = steps;
-    payload["nestedPlans"] = nestedPlansToJson(session.nestedPlans);
-    writeTaskContract(payload, session);
-    // The journal repeats a thread payload on every turn and tool update;
-    // carrying the full plan history would multiply it across events. The
-    // session snapshot is the canonical store for that metadata.
-    payload.object.remove("planHistory");
+    // History is recorded only when it changes. Do not build hundreds of
+    // revisions just to remove them from every ordinary metadata event.
+    writeTaskContract(payload, session, false);
     JSONValue guidance = JSONValue(string[].init);
     foreach (item; session.queuedGuidance) guidance.array ~= JSONValue(item);
     payload["queuedGuidance"] = guidance;
@@ -263,7 +256,28 @@ public string runtimeThreadPayload(const ref ChatSession session)
     payload["queuedFollowUps"] = followUps;
     payload["queuedGuidanceContext"] = promptContextsToJson(session.queuedGuidanceContext);
     payload["queuedFollowUpContext"] = promptContextsToJson(session.queuedFollowUpContext);
-    return payload.toString();
+    if (complete)
+    {
+        payload["instructions"] = session.instructions;
+        payload["toolsMode"] = session.toolsMode;
+        payload["unread"] = session.unread;
+        payload["updatedAt"] = session.updatedAt;
+        payload["compactionSummary"] = session.compactionSummary;
+        payload["compactedThroughMessageId"] = session.compactedThroughMessageId;
+        payload["activeAgentId"] = session.activeAgentId;
+        payload["nextSpeakerId"] = session.nextSpeakerId;
+        payload["agentHops"] = session.agentHops;
+        payload["parentSession"] = session.parentSessionId;
+        payload["subagentId"] = session.subagentId;
+        payload["agents"] = JSONValue.emptyArray;
+        foreach (agent; session.agents)
+        {
+            JSONValue item; item["id"] = agent.id; item["name"] = agent.name;
+            item["persona"] = agent.persona; item["model"] = agent.model; item["router"] = agent.router;
+            payload["agents"].array ~= item;
+        }
+    }
+    return payload;
 }
 
 public string runtimeMessagePayload(const ref ChatMessage message)

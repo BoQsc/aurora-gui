@@ -103,7 +103,7 @@ public final class ConversationActor
     private Condition wake;
     private Thread worker;
     private WorkerBudget workerBudget;
-    private bool started, ownsWorkerSlot, publishedBusy, sessionTaken;
+    private bool started, ownsWorkerSlot, publishedBusy, sessionTaken, reducing;
     private void delegate() viewWake;
     private struct Envelope { ActorCommand command; ulong epoch, serial; }
     private Envelope[] commands;
@@ -152,6 +152,9 @@ public final class ConversationActor
     private ConversationImages images;
     private ConversationToolView[] liveTools;
     private size_t omittedTools;
+    private const(PlanHistoryEntry)[] encodedHistorySource, journalHistorySource;
+    private JSONValue encodedPlanHistory;
+    private bool hasEncodedHistory, hasJournalHistory;
     private MonoTime lastCheckpoint;
     private size_t checkpointBytes;
     private ToolCancellation activeCancellation;
@@ -223,7 +226,7 @@ public final class ConversationActor
     ActorActivity activity()
     {
         synchronized (mutex) return ActorActivity(publishedBusy || unsettledInputs.length > 0 ||
-            stopPending || snapshotPending, closed, unsettledInputs.length, revision);
+            stopPending || snapshotPending || reducing, closed, unsettledInputs.length, revision);
     }
 
     ActorAdmission post(ActorCommand command)
@@ -416,12 +419,30 @@ public final class ConversationActor
     {
         if (currentCommandSerial && currentCommand.kind != ActorCommandKind.editPrompt)
             currentInputRetained = true;
-        publish(AgentEventKind.threadUpdated, runtimeThreadPayload(session));
-        emit(ActorChangeKind.metadata, headerView().toString());
+        auto payload = runtimeThreadJson(session, true);
+        const historyChanged = !hasJournalHistory || journalHistorySource.ptr != session.planHistory.ptr ||
+            journalHistorySource.length != session.planHistory.length;
+        if (historyChanged) payload["planHistory"] = historyJson();
+        publish(AgentEventKind.threadUpdated, payload.toString());
+        if (historyChanged) { journalHistorySource = session.planHistory; hasJournalHistory = true; }
+        bool deliver;
+        synchronized (mutex) deliver = !needsSnapshot;
+        if (deliver) emit(ActorChangeKind.metadata, headerView().toString());
+    }
+    private JSONValue historyJson()
+    {
+        if (!hasEncodedHistory || encodedHistorySource.ptr != session.planHistory.ptr ||
+            encodedHistorySource.length != session.planHistory.length)
+        {
+            encodedPlanHistory = planHistoryToJson(session.planHistory);
+            encodedHistorySource = session.planHistory; hasEncodedHistory = true;
+        }
+        return encodedPlanHistory;
     }
     private JSONValue headerView()
     {
-        auto value = sessionMetaToJson(session);
+        auto value = sessionMetaToJson(session, false);
+        value["planHistory"] = historyJson();
         ConversationExecutionView execution;
         execution.phase = to!string(engine.phase);
         execution.routingKey = engine.client.openCodeSession();
@@ -1014,6 +1035,12 @@ public final class ConversationActor
     private void frame(ActorCommand command, OpenCodeEvent event, bool provider,
         JSONValue recorded = JSONValue.init, bool preserve = false)
     {
+        synchronized (mutex) reducing = true;
+        scope (exit)
+        {
+            synchronized (mutex) { reducing = false; publishedBusy = running; }
+            notifyView();
+        }
         auto facts = recorded.type == JSONType.object ? new EffectFacts(recorded["facts"])
             : config.recordTrace ? new EffectFacts() : null;
         auto previous = installEffectFacts(facts); scope (exit) installEffectFacts(previous);
@@ -1068,6 +1095,7 @@ public final class ConversationActor
             if (engine !is null) engine.close();
             if (ownsWorkerSlot) workerBudget.release();
             synchronized (mutex) { closed = true; wake.notifyAll(); }
+            notifyView();
         }
         try
         {

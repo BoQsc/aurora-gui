@@ -352,6 +352,19 @@ All 49 default fixtures now pass in `build/architecture-checks-7k8om0xa/` at
 that same source fingerprint. These changes remain source-only; the desktop
 still uses its legacy execution coordinator.
 
+The owner now journals compaction anchors/summaries, unread state, instructions,
+per-chat tools mode and roster metadata. Plan history is cached and emitted only
+when its append/prune identity changes; ordinary task-state encoding no longer
+builds history merely to remove it. The 8,000-step metadata fixture allocates
+18.6 KB for ordinary state encoding, preserves journal-only recovery after 50
+draft updates and a history prune, and verifies idempotent replacement/clearing
+and owner isolation. Source fingerprint
+`b4a137e9c1f2f5752084acd8dc68fc80b31ed8b7bf747e7351ed108ee26c62d0`:
+`build/architecture-checks-ir5lbogg/` (metadata and killed-process recovery) and
+`build/architecture-checks-vvm5eh2l/` (recipe/mailbox/branch/offline replay).
+Snapshot and journal metadata now share one decoder; arrays replace existing
+values rather than appending duplicates during a second application.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.
