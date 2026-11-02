@@ -348,8 +348,9 @@ passed three repeated runs. Evidence:
 `build/blob-sharing-proof-1793645357385855900/` and focused checks in
 `build/architecture-checks-d1c4awmb/`, source fingerprint
 `cf72b9be5d3bb0aa6037e7707ddc05305ab5039f98581a87861444d3ad96164b`.
-The full 49-fixture rerun is pending. These changes remain source-only; the
-desktop still uses its legacy execution coordinator.
+All 49 default fixtures now pass in `build/architecture-checks-7k8om0xa/` at
+that same source fingerprint. These changes remain source-only; the desktop
+still uses its legacy execution coordinator.
 
 ## Earlier hardening deployment
 
