@@ -112,7 +112,7 @@ public final class ConversationRegistry
             else
             {
                 const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
-                    command.imagesJson.length + command.context.length;
+                    command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length;
                 if (entry.pending.length >= maxPending || cost > maxPendingBytes - entry.bytes)
                     return ActorAdmission.capacity;
                 entry.pending ~= command; entry.bytes += cost;

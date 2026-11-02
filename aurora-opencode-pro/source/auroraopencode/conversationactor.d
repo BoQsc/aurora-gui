@@ -4,6 +4,8 @@ import auroraopencode.core;
 import auroraopencode.conversationencode;
 import auroraopencode.conversationimages : ConversationImages;
 import auroraopencode.conversationview;
+public import auroraopencode.conversationconfiguration : ActorConfiguration;
+import auroraopencode.conversationconfiguration : actorBehaviorJson, decodeActorBehavior, configurationKey;
 import auroraopencode.queuedprompts;
 import auroraopencode.computeruse : ComputerUseContext;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
@@ -66,13 +68,14 @@ shared static this()
     actorWorkers = new WorkerBudget(capacity);
 }
 public enum ActorCommandKind { start, steer, followUp, stop, setGoal, pauseGoal, resumeGoal, snapshot,
-    regenerate, editPrompt, continueAnswer, selectBranch, setDraft, retryPending }
+    regenerate, editPrompt, continueAnswer, selectBranch, setDraft, retryPending, configure, setTitle, selectView }
 public struct ActorCommand
 {
     ActorCommandKind kind;
     string text, targetId;
     bool activate = true;
     string imagesJson, context;
+    string connectionBase, connectionKey;
 }
 public struct ActorQueueStats
 {
@@ -89,15 +92,6 @@ public struct ActorChange
     string itemId, text;
     bool reasoning, busy;
 }
-public struct ActorConfiguration
-{
-    string baseUrl, apiKey, workspace;
-    RequestPolicy request;
-    TurnPolicy turn;
-    bool recordTrace;
-    long outageBudgetMs = -1; // capture the configured policy at admission
-}
-
 /// The mailbox, provider drain, policies and effect admission run on a single
 /// conversation-owned thread. No widget/native-window callbacks are invoked.
 /// Desktop adoption waits for optional-feature/command parity; the standalone
@@ -149,6 +143,10 @@ public final class ConversationActor
     private long frameMs, outageStartedMs = -1, retryAtMs = -1;
     private uint resendCount;
     private bool quotaWait, offeredTools;
+    private bool viewed = true;
+    private long clientBudgetMs;
+    private ActorConfiguration roundConfig, batchConfig;
+    private string roundModel;
     private ConversationImages images;
     private ConversationToolView[] liveTools;
     private size_t omittedTools;
@@ -234,7 +232,7 @@ public final class ConversationActor
             if (command.kind == ActorCommandKind.snapshot)
             { snapshotPending = true; wake.notifyAll(); return ActorAdmission.accepted; }
             const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
-                command.imagesJson.length + command.context.length;
+                command.imagesJson.length + command.context.length + command.connectionBase.length + command.connectionKey.length;
             if (commands.length >= maxCommands || unsettledInputs.length >= maxCommands * 2 ||
                 cost > maxCommandBytes - commandBytes)
                 return ActorAdmission.capacity;
@@ -249,6 +247,17 @@ public final class ConversationActor
             commands ~= Envelope(command, admissionEpoch, serial); commandBytes += cost; wake.notifyAll();
             return ActorAdmission.accepted;
         }
+    }
+
+    ActorAdmission configure(ActorConfiguration next, string model, bool thinking)
+    { return post(configurationCommand(next, model, thinking)); }
+
+    public static ActorCommand configurationCommand(ActorConfiguration next, string model, bool thinking)
+    {
+        auto value = actorBehaviorJson(next); value["model"] = model; value["thinking"] = thinking;
+        auto command = ActorCommand(ActorCommandKind.configure, value.toString());
+        command.connectionBase = next.baseUrl; command.connectionKey = next.apiKey;
+        return command;
     }
 
     /// Cancellation bypasses a saturated ordinary command mailbox. The owner
@@ -476,12 +485,20 @@ public final class ConversationActor
     private void request()
     {
         if (engine.turnCancelled) return;
+        if (clientBudgetMs != config.outageBudgetMs)
+        {
+            engine.client.closeSession();
+            engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, engine.retryPolicy);
+            engine.client.setEventWake(&notify); clientBudgetMs = config.outageBudgetMs;
+        }
         refreshVerification();
         if (images.prepare(session, config.request.imageLimit)) engine.invalidateProjection();
         auto policy = config.request;
         policy.summaryOnly = !goalActive(session) && (policy.summaryOnly || completionHandoffPending(session));
         policy.revision.graph = engine.graphRevision;
         auto prepared = prepareAgentRequest(session, policy, engine.projection);
+        roundConfig = config;
+        roundModel = session.model;
         offeredTools = prepared.tools.length > 0;
         if (prepared.checkpointCreated) metadata();
         const id = ++nextRequest;
@@ -522,6 +539,7 @@ public final class ConversationActor
         }
         ensureAssistant(); session.messages[$ - 1].error = text; session.messages[$ - 1].failed = true;
         running = false; session.turnStatus = "failed"; session.taskStatus = "blocked";
+        if (!viewed) session.unread = true;
         updateLast(); metadata(); publish(AgentEventKind.turnFailed, "{}");
     }
     private void applyStop(bool pauseGoal = true)
@@ -534,6 +552,7 @@ public final class ConversationActor
         engine.client = new OpenCodeClient(config.baseUrl, config.apiKey, engine.retryPolicy);
         engine.client.setEventWake(&notify); engine.client.setOpenCodeSession(sessionRoutingKey(session));
         running = false; session.turnStatus = wasRunning || pauseGoal ? "interrupted" : previousStatus;
+        if (!viewed && (wasRunning || pauseGoal)) session.unread = true;
         if (pauseGoal && goalActive(session)) { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
         foreach (call; engine.pendingToolCalls)
             if (!(call.id in engine.reportedToolCallIds))
@@ -642,6 +661,33 @@ public final class ConversationActor
                 break;
             }
             case ActorCommandKind.setDraft: session.draft = command.text; metadata(); break;
+            case ActorCommandKind.setTitle: session.title = command.text; metadata(); break;
+            case ActorCommandKind.selectView:
+                viewed = command.activate;
+                if (viewed) session.unread = false;
+                metadata(); break;
+            case ActorCommandKind.configure:
+            {
+                ActorConfiguration next;
+                string model;
+                bool thinking;
+                try
+                {
+                    auto value = parseJSON(command.text);
+                    next = decodeActorBehavior(config, value);
+                    if (next.turn.orchestratorEnabled) throw new Exception("Conversation orchestration adapter is unavailable");
+                    model = value["model"].str; thinking = value["thinking"].boolean;
+                }
+                catch (Exception error)
+                { emit(ActorChangeKind.notice, "Configuration was not changed: " ~ error.msg); break; }
+                if (command.connectionBase.length) next.baseUrl = command.connectionBase;
+                if (command.connectionBase.length || command.connectionKey.length) next.apiKey = command.connectionKey;
+                config = next; session.model = model; session.thinking = thinking;
+                engine.retryPolicy = ProviderRetryPolicy(config.outageBudgetMs.msecs);
+                engine.client.setCredentials(config.baseUrl, config.apiKey);
+                engine.invalidateProjection(); metadata();
+                break;
+            }
             case ActorCommandKind.retryPending:
                 if (retryAtMs < 0 || frameMs < retryAtMs || engine.turnCancelled) break;
                 if (!quotaWait && !engine.retryPolicy.available((frameMs - outageStartedMs).msecs))
@@ -718,6 +764,7 @@ public final class ConversationActor
             return;
         }
         auto token = new ToolCancellation(); engine.cancellation = token;
+        batchConfig = roundConfig;
         liveTools = null; omittedTools = 0;
         foreach (i, call; calls)
         {
@@ -737,11 +784,11 @@ public final class ConversationActor
         if (replaying) return;
         auto receiver = engine.client;
         const id = engine.activeRequestId;
-        const workspace = config.workspace;
+        const workspace = batchConfig.workspace;
         ChangeContext context; context.conversationId = session.id; context.turnId = to!string(id);
-        context.diagnosticReadOnly = config.request.diagnosticReview;
+        context.diagnosticReadOnly = batchConfig.request.diagnosticReview;
         context.computer = ComputerUseContext(true, sessionRoutingKey(session),
-            config.baseUrl, config.apiKey, session.model, false, cast(uint) id);
+            batchConfig.baseUrl, batchConfig.apiKey, roundModel, false, cast(uint) id);
         void launch()
         { if (!token.cancelled()) scheduleToolBatch(receiver, id, calls, workspace, token, context); }
         if (journal is null) launch();
@@ -776,14 +823,14 @@ public final class ConversationActor
                 emit(ActorChangeKind.toolProgress, toolViewJson(view).toString(), view.id);
                 break;
             }
-        const workspace = config.workspace;
+        const workspace = batchConfig.workspace;
         const current = workspaceRevision(workspace);
         const currentScope = verificationScope(workspace, current);
         if (session.verificationStatus == "passed" && session.verificationScope != currentScope)
         { session.verificationStatus = "required"; session.taskStatus = "active"; }
         session.verificationScope = currentScope;
         const verificationWorkspace = event.verificationWorkspace.length ? event.verificationWorkspace : workspace;
-        const policy = ToolResultPolicy(config.request.nestedPlans, workspace, verificationWorkspace,
+        const policy = ToolResultPolicy(batchConfig.request.nestedPlans, workspace, verificationWorkspace,
             frameTime, workspaceRevision(verificationWorkspace));
         auto settled = settleToolResult(session, event, admission.arguments, policy);
         append(settled.message);
@@ -861,6 +908,7 @@ public final class ConversationActor
         metadata();
         if (decision.continues()) { request(); return; }
         running = false; engine.activeRequestId = 0;
+        if (!viewed) session.unread = true;
         if (session.messages.length && session.messages[$ - 1].id == session.activeLeafId)
         { session.messages[$ - 1].taskStateJson = activeTaskStateJson(session); updateLast(); }
         publish(AgentEventKind.turnCompleted, "{}"); metadata();
@@ -992,6 +1040,7 @@ public final class ConversationActor
         try
         {
             engine = new ThreadEngine(config.baseUrl, config.apiKey, ProviderRetryPolicy(config.outageBudgetMs.msecs)); engine.threadId = session.id;
+            clientBudgetMs = config.outageBudgetMs;
             engine.client.setEventWake(&notify); engine.client.setOpenCodeSession(sessionRoutingKey(session));
             OpenCodeEvent[] events;
             while (true)
@@ -1084,6 +1133,10 @@ public final class ConversationActor
                     queuePrompt(session, command.text, context, true);
                 break;
             case ActorCommandKind.setDraft: session.draft = command.text; break;
+            case ActorCommandKind.setTitle: session.title = command.text; break;
+            case ActorCommandKind.selectView:
+                if (command.activate) session.unread = false;
+                break;
             case ActorCommandKind.setGoal:
                 const goal = clampGoalText(command.text.strip());
                 const changed = session.goal != goal;
@@ -1127,7 +1180,7 @@ public final class ConversationActor
         if (!config.recordTrace) throw new Exception("Actor diagnostic recording was not enabled");
         if (traceTruncated) throw new Exception("Actor diagnostic trace is incomplete or exceeded its recording budget");
         JSONValue value;
-        value["schema"] = 4; value["initial"] = initialIdentity;
+        value["schema"] = 5; value["initial"] = initialIdentity;
         value["outageBudgetMs"] = config.outageBudgetMs;
         value["configuration"] = configurationIdentity; value["frames"] = JSONValue(trace);
         return value.toString();
@@ -1137,7 +1190,7 @@ public final class ConversationActor
     {
         const recording = parseJSON(recordedTrace);
         if (config.outageBudgetMs < 0) config.outageBudgetMs = recording["outageBudgetMs"].integer;
-        if (recording["schema"].integer != 4 ||
+        if (recording["schema"].integer != 5 ||
             recording["initial"].str != sha256Of(sessionToJson(initial).toString()).toHexString() ||
             recording["configuration"].str != configurationKey(config))
             throw new Exception("Actor replay initial state or behavioral configuration does not match the recording");
@@ -1153,36 +1206,6 @@ public final class ConversationActor
         }
         return sessionToJson(owner.session).toString();
     }
-}
-
-private string configurationKey(const ref ActorConfiguration config)
-{
-    import std.traits : FieldNameTuple, isIntegral, isSomeString;
-    import auroraopencode.projectioncache : ProjectionRevision;
-    JSONValue value;
-    value["workspace"] = config.workspace;
-    value["outageBudgetMs"] = config.outageBudgetMs;
-    static foreach (member; ["request", "turn"])
-    {{
-        value[member] = JSONValue.emptyObject;
-        static foreach (name; FieldNameTuple!(typeof(__traits(getMember, ActorConfiguration.init, member))))
-        {{
-            alias T = typeof(__traits(getMember, __traits(getMember, ActorConfiguration.init, member), name));
-            const field = __traits(getMember, __traits(getMember, config, member), name);
-            static if (is(T == bool) || isSomeString!T) value[member][name] = field;
-            else static if (isIntegral!T) value[member][name] = cast(long) field;
-            else static if (is(T == OpenCodeToolDef[]))
-            {
-                value[member][name] = JSONValue.emptyArray;
-                foreach (tool; field)
-                    value[member][name].array ~= JSONValue([tool.name, tool.description, tool.parametersJson]);
-            }
-            else static if (is(T == ProjectionRevision))
-                value[member][name] = JSONValue([cast(long) field.graph, cast(long) field.capabilities]);
-            else static assert(false, "Unrecorded actor policy field: " ~ name);
-        }}
-    }}
-    return sha256Of(value.toString()).toHexString().idup;
 }
 
 private JSONValue eventJson(const ref OpenCodeEvent event)
