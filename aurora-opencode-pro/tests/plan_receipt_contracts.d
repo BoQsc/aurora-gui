@@ -3,6 +3,8 @@ module plan_receipt_contracts;
 import auroraopencode.core;
 import auroraopencode.taskflow;
 import auroraopencode.worktracking;
+import auroraopencode.toolsettlement;
+import auroraopencode.opencode_client : OpenCodeEvent;
 import std.json : JSONValue, parseJSON;
 import std.stdio : writeln;
 import std.string : indexOf;
@@ -127,5 +129,19 @@ int main()
     assert(!planUpdateError(s, research.toString(), null).length,
         "A successful observational command was rejected as research");
     writeln("PASS existing pending plans, explicit categories, historical completions, incremental work records and observational commands");
+    OpenCodeEvent assertion;
+    assertion.toolName="run"; assertion.toolCallId="bad-generated-test";
+    assertion.toolFailed=true; assertion.verificationCheck="unittest";
+    assertion.text="FAIL: test_generated_expectation\nAssertionError: '17.00' != '7.00'";
+    ChatSession mismatchSession; ToolResultPolicy mismatchPolicy;
+    const mismatch=settleToolResult(mismatchSession,assertion,`{"program":"python","args":["-m","unittest"]}`,mismatchPolicy);
+    assert(mismatch.message.failed && !mismatch.acceptedVerification);
+    assert(mismatch.message.content.indexOf(assertion.text)==0);
+    assert(mismatch.message.content.indexOf("not program output")>=0 && mismatch.message.content.indexOf("compute the expected result independently")>=0);
+    assertion.toolFailed=false;
+    assert(settleToolResult(mismatchSession,assertion,"{}",mismatchPolicy).message.content.indexOf("check-recovery guidance")<0);
+    assertion.toolFailed=true; assertion.text="Permission denied";
+    assert(settleToolResult(mismatchSession,assertion,"{}",mismatchPolicy).message.content.indexOf("check-recovery guidance")<0);
+    writeln("PASS failed assertions retain their failure receipt and observed output; recovery distinguishes generated expectations from original rules");
     return 0;
 }

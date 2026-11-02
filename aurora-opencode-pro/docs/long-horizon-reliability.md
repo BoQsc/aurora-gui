@@ -1,4 +1,4 @@
-# Long-horizon reliability: 0.66.33
+# Long-horizon reliability: 0.66.33 and 0.66.34
 
 This release follows live failures in the active desktop assistant. The scope is
 answering, durable goals, planning and compaction; the standalone actor migration
@@ -99,6 +99,26 @@ answers. The passing candidate returned:
 ```
 
 ## Reproduction and limits
+
+The 0.66.33 production repeat did **not** reproduce the candidate's success: it
+timed out at 300 seconds in stage one. It generated incorrect test expectations,
+observed the implementation returning `17.00` for two 10-unit charges at rate 1
+with a maximum refund credit of 3, then argued for `7.00` using a wrong charge
+operand. Other generated cap tests also had incorrect expectations. The package's
+passing candidate run is therefore insufficient evidence of reliable semantic
+performance. The failed production workspace and original generated tests are
+retained in `build/long-horizon-06633/rejected-production-workspace/`.
+
+0.66.34 addresses that recovery path. Failed assertion results retain their
+failure/verification status and exact observed output, followed by a clearly
+separate instruction to recover the original rule, identify operands/units and
+compute the expected value independently before editing. Generated assertions
+remain hypotheses: correcting them is appropriate when justified by the original
+rule and independent computation. User-owned tests remain protected. The same
+distinction is part of the post-history answer contract, so compaction cannot
+remove the recovery policy. The change does not treat a failed assertion as proof
+that implementation or runtime is defective. Final 0.66.34 evidence is stored
+separately under `build/long-horizon-06634/`.
 
 Run `python benchmarks/long_horizon.py --live --context 64000 --output <new-private-directory>`
 after building. `--exe` selects an isolated image. Live checks use the configured

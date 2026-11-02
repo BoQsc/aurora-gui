@@ -14,7 +14,7 @@ import auroraopencode.taskcontinuation : taskInputError;
 import auroraopencode.goalmode : goalCompletionError;
 import auroraopencode.taskpolicy : verificationCoverage, requiredEvidence, satisfiesEvidence, sameCheckout;
 import std.json : JSONValue, parseJSON;
-import std.string : startsWith;
+import std.string : startsWith, indexOf;
 
 struct ToolResultPolicy
 {
@@ -99,6 +99,16 @@ ToolSettlement settleToolResult(const ref ChatSession session,
         }
         else toolText ~= "\nVerification receipt: " ~ receipt.toString();
     }
+    if (toolFailed && (checkerAttempt || event.toolName == "run") &&
+        (event.text.indexOf("AssertionError") >= 0 || event.text.indexOf("FAIL:") >= 0 ||
+         event.text.indexOf("assertion failed") >= 0))
+        toolText ~= "\nAssistant check-recovery guidance (not program output): " ~
+            "A failed assertion establishes a mismatch, not which side is wrong. " ~
+            "Recover the original requirement, identify exact inputs and units, and compute the expected result independently " ~
+            "with calculator or a small standard-library calculation before editing. Compare that result with the observed implementation. " ~
+            "Generated test expectations can be wrong: correct them when the original rule and independent calculation justify it. " ~
+            "Preserve user-owned tests unless changing them is authorized. Do not infer stale code or a runtime defect solely from a bad expectation. " ~
+            "For an analysis-only request, explain the evidence without starting a repair.";
     ChatMessage toolMessage;
     toolMessage.role = "tool";
     toolMessage.content = toolText;
