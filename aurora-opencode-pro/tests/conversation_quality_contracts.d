@@ -59,6 +59,17 @@ int main()
     assert(!answerOnlyRequest("go ahead"));
     assert(requestIntent("Analyze the conversation flow.") == RequestIntent.analysis);
     assert(requestIntent("Continue the task.") == RequestIntent.continuation);
+    ChatSession diagnosis;
+    request(diagnosis, "Analyze the failing checks; do not edit files.");
+    diagnosis.verificationStatus = "failed";
+    append(diagnosis, "assistant", "The behavior violates the requested threshold; the reproducer fails.");
+    assert(taskContinuation(diagnosis, true).action == TaskContinuationAction.settle,
+        "A diagnostic failure silently authorized repeated checks or repair");
+    import auroraopencode.turnpolicy : decideTurn, TurnPolicy, TurnAction;
+    TurnPolicy diagnosticPolicy; diagnosticPolicy.toolsEnabled = true;
+    const diagnosticDecision = decideTurn(diagnosis, diagnosticPolicy);
+    assert(diagnosticDecision.action == TurnAction.settle && diagnosticDecision.taskStatus == "completed");
+    assert(diagnosis.verificationStatus == "failed", "Diagnostic settlement erased the actual failed check");
     ChatSession casual;
     request(casual, "Continue in this chat while I open another.");
     assert(!unfinishedTask(casual), "Casual continuation manufactured an action task");

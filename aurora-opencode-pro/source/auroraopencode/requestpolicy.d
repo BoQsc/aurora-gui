@@ -36,6 +36,8 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     RequestProjectionCache projection = null)
 {
     PreparedRequest result;
+    import auroraopencode.answercontract : answerContract;
+    const responseContract = answerContract(latestActualUserRequest(session), policy.verbosity);
     if (policy.toolsEnabled)
     {
         ChatRequestMessage system;
@@ -94,7 +96,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     if (policy.orchestratorEnabled)
         result.tools = experimentalOrchestratorFilterTools(result.tools, policy.orchestratorRouter);
 
-    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools);
+    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + responseContract.length + 64;
     result.oldAnchor = checkpointOnActivePath(session) ? session.compactedThroughMessageId : "";
     result.oldSummary = result.oldAnchor.length ? session.compactionSummary : "";
     ChatRequestMessage[] history;
@@ -112,5 +114,8 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     result.contextCompacted = policy.compactionEnabled &&
         (checkpointOnActivePath(session) || result.fallbackCompacted);
     result.messages ~= history;
+    ChatRequestMessage contract;
+    contract.role = "system"; contract.content = responseContract;
+    result.messages ~= contract;
     return result;
 }

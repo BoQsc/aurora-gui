@@ -117,6 +117,7 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
 {
     TaskContinuation result;
     if (!toolsEnabled || taskAwaitingInput(session) || taskInvestigation(session) ||
+        (session.contract.currentIntent == "analysis" && verificationOnly(session)) ||
         session.queuedFollowUps.length || !unfinishedTask(session, strictPlan)) return result;
     auto path = activeMessagePath(session);
     size_t begin;

@@ -158,6 +158,10 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         result.taskStatus = "active";
         result.status = "Answer complete · task still has checklist items.";
     }
+    else if (session.contract.currentIntent == "analysis" && session.contract.intent == "analysis")
+        // Reproducing a defect is a successful diagnostic outcome. Keep the
+        // failed receipt, but do not turn an analysis into an authorized repair.
+        result.taskStatus = "completed";
     else if (session.verificationStatus == "required" || session.verificationStatus == "failed")
     {
         result.taskStatus = "verifying";

@@ -517,7 +517,9 @@ private OpenCodeToolDef applyPatchToolDefinition()
 private OpenCodeToolDef calculateToolDefinition()
 {
     return OpenCodeToolDef("calculate",
-        "Verify arithmetic and numerical examples without running code or changing files. " ~
+        "Evaluate standalone arithmetic, not program behavior. This tool cannot read source, resolve branches or call functions. " ~
+        "To establish what existing code returns, use run to call the actual implementation with representative inputs; " ~
+        "do not translate code into guessed arithmetic and report it as observed behavior. " ~
         "Batch 1 to 16 expressions. Supports + - * / % ^, parentheses, decimal and scientific numbers; " ~
         "^ means exponentiation. Uses finite double precision, not exact financial accounting. " ~
         "Use the returned values when reporting calculations; do not claim a mental estimate was verified.",
