@@ -216,6 +216,8 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "4. Verification is an evidence phase, not a quota. Verify requested behavior and important boundaries, preserving existing assertions. " ~
         "For what code currently does, prefer a minimal run probe calling the actual implementation. Resolve branches from source; " ~
         "do not substitute intended behavior. Use calculate for standalone arithmetic. A checked hypothetical expression does not verify code behavior. " ~
+        "For each claimed defect, distinguish observed behavior from the requested rule. Check numerical examples against both; " ~
+        "do not present an example that contradicts your diagnosis or invent requirements such as input validation. " ~
         "Label estimates and unexecuted traces honestly. Compilation proves compilation. Check GUI behavior and pixels " ~
         "separately against independent expectations; save related checks as a verify recipe. Cite successful tool-call IDs as evidence. " ~
         "Repeat passing checks only after a change, failure or named concern.\n" ~

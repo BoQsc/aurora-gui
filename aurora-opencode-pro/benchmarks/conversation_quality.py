@@ -59,7 +59,10 @@ parser.add_argument("--regrade", type=Path, help="Recheck saved artifacts, compl
 parser.add_argument("--exe", type=Path, default=package / "aurora-opencode-pro.exe")
 parser.add_argument("--output", type=Path)
 parser.add_argument("--extended", action="store_true", help="Also grade a numerical claim against independently computed values")
+parser.add_argument("--advice", action="store_true", help="Start with a hypothetical repair question; source must remain unchanged")
 args = parser.parse_args()
+if args.advice:
+    prompts[0] = ("analysis", "How would you fix invoice.py? Delivery should cost 5 below a merchandise subtotal of 50 and be free at 50 or above. Coupons should discount only merchandise by 10%. Explain your proposed approach and tradeoffs.")
 if args.extended:
     prompts.insert(1, ("calculation", "Analyze invoice.py without editing it. For subtotal 49 with the coupon enabled, calculate the current return value and the required return value under the original rules: delivery costs 5 below 50 and coupons discount only merchandise. Return one JSON object with numeric keys actual and expected."))
 if args.regrade:
@@ -136,7 +139,8 @@ try:
                         raise RuntimeError(f"App exited during {name}: {process.returncode}")
             response = response.strip()
             if name in ("analysis", "question", "calculation"):
-                passed, detail = source.read_bytes() == initial, "Read-only request preserved source"
+                passed = source.read_bytes() == initial
+                detail = "Read-only request preserved source" if passed else "Read-only request changed source"
                 if name == "calculation":
                     try:
                         value = json.loads(response.removeprefix("```json").removesuffix("```").strip())

@@ -42,9 +42,11 @@ int main()
     const started = MonoTime.currTime;
     foreach (text; ["Can you refactor the remaining implementation?", "Could you optimize it?",
             "Explain the failure and refactor it.", "Help me fix this.", "I want you to improve this.",
-            "What happened? Please finish the task."])
+            "What happened? Please finish the task.", "How would you fix it? Please implement the fix.",
+            "Can you fix it?", "Could you remove the obsolete file?"])
         assert(requestIntent(text) == RequestIntent.implementation, text);
-    foreach (text; ["What is left?", "How would we fix it?", "Why did it stop?",
+    foreach (text; ["What is left?", "How would we fix it?", "How would you fix it?",
+            "What would you change?", "Which files could you remove?", "Why did it stop?",
             "Explain why, and don't implement anything."])
         assert(answerOnlyRequest(text), text);
     foreach (text; ["do it", "Do that.", "Please do it.", "Yes, do it."])
@@ -66,6 +68,16 @@ int main()
     auto visual = s.contract.id;
     s.taskSteps = [TaskStep("Render", "pending", "render", "edit", "Reference image matches")];
     s.verificationStatus = "required";
+    foreach (question; ["How would you fix it?", "What would you change?", "Which files could you remove?"])
+    {
+        request(s, question);
+        assert(s.contract.id == visual && s.taskSteps.length == 1 && s.verificationStatus == "required",
+            "Advice discarded the existing plan or verification state");
+        assert(taskContinuation(s, true).action == TaskContinuationAction.settle,
+            "Advice resumed unfinished implementation");
+        import auroraopencode.goalmode : automaticGoalRequest;
+        assert(!automaticGoalRequest(question), "Advice manufactured an automatic goal");
+    }
     request(s, "What remains?");
     assert(s.contract.id == visual && s.taskSteps.length == 1 && s.verificationStatus == "required");
     assert(taskContinuation(s, true).action == TaskContinuationAction.settle);

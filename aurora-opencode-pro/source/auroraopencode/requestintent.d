@@ -18,6 +18,16 @@ private string[] requestWords(string text)
 
 private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
 {
+    // A modal question about an approach is advice, not a command. Restrict
+    // this to its clause so a later "Please implement it" still takes effect.
+    if (i >= 2 && ["you", "we", "i"].canFind(words[i - 1]) &&
+        ["can", "could", "would", "should", "will", "might"].canFind(words[i - 2]))
+    {
+        size_t clause;
+        foreach_reverse (j; 0 .. i)
+            if (raw[j].length && ".!?:;".canFind(raw[j][$ - 1])) { clause = j + 1; break; }
+        if (clause < i && ["what", "how", "which", "why", "where", "when", "who"].canFind(words[clause])) return false;
+    }
     const sentenceStart = i > 0 && raw[i - 1].length && ".!?:;".canFind(raw[i - 1][$ - 1]);
     const clauseStart = i > 0 && raw[i - 1].length && raw[i - 1][$ - 1] == ',' &&
         !["what", "how", "why", "when", "where", "who", "which"].canFind(words[0]);
