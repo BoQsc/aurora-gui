@@ -22,18 +22,21 @@ public bool isScreenshot(const ref ChatMessage message,
 
 public enum size_t requestImageByteBudget = 3 * 1024 * 1024;
 public enum size_t requestImageCountBudget = 8;
+public alias ImagePayloadSize = size_t delegate(const ref ChatImageAttachment);
 
 /// One current screen or its focused recovery pair per request. User attachments
 /// retain their own window; previous desktop evidence never accumulates.
 /// Empty metadata chips never occupy a place in that window.
 public size_t[][] requestHistoryImageIndices(const ref ChatSession session,
-    const(size_t)[] path, size_t start, size_t userMessageLimit)
+    const(size_t)[] path, size_t start, size_t userMessageLimit,
+    ImagePayloadSize payloadSize = null)
 {
     size_t[][] result;
     result.length = path.length;
     size_t screens, userMessages, toolMessages;
     size_t screenSlot = size_t.max;
     bool recoveryPair;
+    size_t[size_t][size_t] lengths;
     const retired = retiredImageIds(session, path);
     foreach_reverse (slot; start .. path.length)
     {
@@ -41,7 +44,15 @@ public size_t[][] requestHistoryImageIndices(const ref ChatSession session,
         bool keptUser, keptTool;
         foreach_reverse (i, image; message.images)
         {
-            if (image.base64Data.length == 0 || imageReferenceId(session, path[slot], i) in retired) continue;
+            if (imageReferenceId(session, path[slot], i) in retired) continue;
+            const screen = isScreenshot(message, image);
+            if (screen && screenSlot != size_t.max && (slot != screenSlot ||
+                (recoveryPair && !isRecoveryScreenshot(message, image)))) continue;
+            if (!screen && message.internal && toolMessages >= 1) continue;
+            if (!screen && !message.internal && userMessageLimit > 0 && userMessages >= userMessageLimit) continue;
+            const length = payloadSize is null ? image.base64Data.length : payloadSize(image);
+            if (!length) continue;
+            lengths[slot][i] = length;
             if (isScreenshot(message, image))
             {
                 if (screenSlot == size_t.max)
@@ -79,8 +90,9 @@ public size_t[][] requestHistoryImageIndices(const ref ChatSession session,
         {
             const image = session.messages[path[slot]].images[i];
             const budget = image.originalDetail && count == 0 ? 6 * 1024 * 1024 : requestImageByteBudget;
-            if (count >= requestImageCountBudget || bytes + image.base64Data.length > budget) continue;
-            bytes += image.base64Data.length;
+            const length = lengths[slot][i];
+            if (count >= requestImageCountBudget || length > budget || bytes > budget - length) continue;
+            bytes += length;
             ++count;
             bounded = i ~ bounded;
         }

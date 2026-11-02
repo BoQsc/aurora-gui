@@ -2,6 +2,7 @@ module auroraopencode.conversationactor;
 
 import auroraopencode.core;
 import auroraopencode.conversationencode;
+import auroraopencode.conversationimages : ConversationImages;
 import auroraopencode.conversationcodec : decodeSessionMetadata, decodeMessages;
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.execution : ThreadEngine, RequestPhase;
@@ -28,7 +29,7 @@ import auroraopencode.planhistory : recordPlanHistory;
 import auroraopencode.goalmutation : resetTaskForNewGoal;
 import auroraopencode.outputrecovery : answerReplayed, goalAuditStalled, outputRecoveryCount, maxOutputRecoveries;
 import auroraopencode.outputguard : outputRecoveryMarker;
-import auroraopencode.imagehistory : pruneHistoryImages;
+import auroraopencode.imagehistory : pruneHistoryImages, completedReplyImageIds;
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
 import core.thread : Thread;
@@ -130,6 +131,7 @@ public final class ConversationActor
     private long frameMs, outageStartedMs = -1, retryAtMs = -1;
     private uint resendCount;
     private bool quotaWait, offeredTools;
+    private ConversationImages images;
     private MonoTime lastCheckpoint;
     private size_t checkpointBytes;
     private ToolCancellation activeCancellation;
@@ -305,6 +307,7 @@ public final class ConversationActor
     }
     private void append(ChatMessage message)
     {
+        images.archive(message);
         message.id = messageId(); message.parentId = session.activeLeafId;
         if (!message.time.length) message.time = frameTime;
         session.messages ~= message; session.activeLeafId = message.id; session.updatedAt = frameUnix;
@@ -346,6 +349,10 @@ public final class ConversationActor
         execution["resendCount"] = resendCount;
         execution["retryRemainingMs"] = retryAtMs < 0 ? -1 : retryAtMs > frameMs ? retryAtMs - frameMs : 0;
         execution["toolRounds"] = engine.toolRounds;
+        execution["selectedImages"] = images.lastRequest.selectedImages;
+        execution["selectedImageBytes"] = images.lastRequest.selectedBytes;
+        execution["imageSizeReads"] = images.lastRequest.sizeReads;
+        execution["imageBlobReads"] = images.lastRequest.blobReads;
         value["execution"] = execution;
         return value;
     }
@@ -374,6 +381,7 @@ public final class ConversationActor
     {
         if (engine.turnCancelled) return;
         refreshVerification();
+        if (images.prepare(session, config.request.imageLimit)) engine.invalidateProjection();
         auto policy = config.request;
         policy.summaryOnly = !goalActive(session) && (policy.summaryOnly || completionHandoffPending(session));
         policy.revision.graph = engine.graphRevision;
@@ -698,6 +706,7 @@ public final class ConversationActor
         ensureAssistant(); auto message = &session.messages[$ - 1];
         message.finishReason = event.finishReason; message.promptTokens = event.promptTokens;
         message.completionTokens = event.completionTokens; message.totalTokens = event.totalTokens;
+        message.retiredImages = completedReplyImageIds(session, message.id, config.request.imageLimit);
         updateLast();
         if (event.cancelled) { applyStop(); return; }
         if (answerReplayed(session) || goalAuditStalled(session))
@@ -812,6 +821,8 @@ public final class ConversationActor
         }
         if (!journalStarted)
         {
+            images = new ConversationImages(buildPath(opencodeStateDirectory(), "attachments"));
+            images.archive(session);
             journalStarted = true;
             if (!replaying && journal !is null)
             {

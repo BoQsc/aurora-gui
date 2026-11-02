@@ -2,7 +2,7 @@ module auroraopencode.attachmentstore;
 
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
-import std.file : exists, mkdirRecurse, readText, rename, remove, isFile, isSymlink;
+import std.file : exists, mkdirRecurse, readText, rename, remove, isFile, isSymlink, getSize;
 import std.json : JSONValue, JSONType;
 import std.path : buildPath, buildNormalizedPath, absolutePath;
 import std.stdio : File;
@@ -158,6 +158,13 @@ public struct AttachmentStore
         if (sha256Of(data).toHexString() != digest)
             throw new Exception("Attachment checksum mismatch");
         return data;
+    }
+
+    ulong byteLength(string digest)
+    {
+        if (!validAttachmentDigest(digest)) throw new Exception("Invalid attachment reference");
+        pin(digest);
+        return getSize(buildPath(directory, digest ~ ".b64"));
     }
 
     void externalize(ref JSONValue value)

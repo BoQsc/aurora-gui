@@ -235,6 +235,20 @@ Proof: `build/architecture-checks-mrzwc_7y/`, source fingerprint
 `b9c162afd5bdaae509cbeed12a5f68fe4db6da7204f057e25d44c44c3bbcf62f`.
 These are standalone-owner checks; desktop adoption and delivery remain open.
 
+The owner now archives inline image bytes before pruning and lazily hydrates
+only the bounded request window. Full UI snapshots keep references. A live
+three-request image driver sends two images, sends none after the answer
+retires them, then reloads two when regenerating the earlier branch. Of 49
+historical references, each request checks at most three sizes and opens at
+most two blobs. An unavailable reference keeps its diagnostic and cannot
+discard the surrounding conversation. The same trace replays after renaming
+the attachment directory offline. Size arithmetic rejects overflowing payloads.
+Proof: `build/architecture-checks-5o__2e5u/`, source fingerprint
+`120a1d26f77b8161139e3115399d3a670a056f2fd101302fd604c7007adbb969`.
+Recovery and recipe/mailbox/branch checks passed at that same fingerprint in
+`build/architecture-checks-g5jmwry_/` and `build/architecture-checks-6rlbbouu/`.
+User attachment commands and desktop lifecycle integration still need adoption.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.
