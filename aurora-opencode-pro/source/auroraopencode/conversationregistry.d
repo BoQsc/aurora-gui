@@ -10,6 +10,7 @@ import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
 import core.thread : Thread;
 import core.time : msecs;
+import std.datetime : Clock;
 import std.json : JSONValue, JSONType;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
@@ -35,7 +36,8 @@ private final class Entry
     size_t stopAt = size_t.max;
     ulong generation;
     ConversationOwnerState state = ConversationOwnerState.waiting;
-    bool changed = true, initialSnapshot = true;
+    bool changed = true, initialSnapshot = true, snapshotRequested;
+    ulong viewRevision;
     immutable(ActorChange)[] finalChanges;
     string error;
 }
@@ -105,7 +107,7 @@ public final class ConversationRegistry
             if (command.kind == ActorCommandKind.stop)
                 entry.stopAt = entry.pending.length;
             else if (command.kind == ActorCommandKind.snapshot)
-                entry.changed = true;
+                entry.snapshotRequested = true;
             else
             {
                 const cost = ActorCommand.sizeof + command.text.length + command.targetId.length +
@@ -114,7 +116,8 @@ public final class ConversationRegistry
                     return ActorAdmission.capacity;
                 entry.pending ~= command; entry.bytes += cost;
             }
-            if (entry.state == ConversationOwnerState.dormant || entry.state == ConversationOwnerState.failed)
+            if (command.kind != ActorCommandKind.snapshot &&
+                (entry.state == ConversationOwnerState.dormant || entry.state == ConversationOwnerState.failed))
                 entry.state = ConversationOwnerState.waiting;
             entry.changed = true; wake.notifyAll();
         }
@@ -204,6 +207,7 @@ public final class ConversationRegistry
         {
             entry.actor = actor; entry.model = ChatSession.init;
             ++entry.generation; entry.initialSnapshot = true; entry.finalChanges = null;
+            entry.snapshotRequested = false; entry.viewRevision = 0;
             entry.error = "";
             foreach (i, command; entry.pending)
             {
@@ -223,28 +227,38 @@ public final class ConversationRegistry
         notifyView();
     }
 
-    private void retire(Entry entry)
+    private void retire(Entry entry, string forcedError = "")
     {
         auto actor = entry.actor;
         actor.close();
         const activity = actor.activity();
-        const error = actor.fault();
+        const error = forcedError.length ? forcedError : actor.fault();
         auto model = actor.takeFinalSession();
         // Hydrated pixels are transient. Failed, not-yet-archived input keeps
         // its pixels in the private recovery model until storage can save it.
         foreach (ref message; model.messages)
             foreach (ref image; message.images) if (image.blob.length) image.base64Data = "";
-        auto value = sessionToJson(model);
+        synchronized (mutex)
+        {
+            entry.model = model; entry.actor = null; entry.error = error;
+            entry.state = entry.pending.length || entry.stopAt != size_t.max ? ConversationOwnerState.waiting :
+                error.length ? ConversationOwnerState.failed : ConversationOwnerState.dormant;
+            entry.initialSnapshot = false; entry.viewRevision = activity.revision;
+        }
+        publishState(entry);
+    }
+
+    private void publishState(Entry entry)
+    {
+        auto value = sessionToJson(entry.model);
         referencePixels(value);
-        ConversationExecutionView execution; execution.phase = error.length ? "failed" : "idle";
-        execution.routingKey = sessionRoutingKey(model); value["execution"] = executionViewJson(execution);
+        ConversationExecutionView execution; execution.phase = entry.error.length ? "failed" : "idle";
+        execution.routingKey = sessionRoutingKey(entry.model); value["execution"] = executionViewJson(execution);
         const snapshot = value.toString();
         synchronized (mutex)
         {
-            entry.model = model; entry.actor = null;
-            entry.state = error.length ? ConversationOwnerState.failed : ConversationOwnerState.dormant;
-            entry.error = error; entry.initialSnapshot = false;
-            entry.finalChanges = [ActorChange(ActorChangeKind.snapshot, activity.revision + 1, 0, "", snapshot)].idup;
+            entry.finalChanges = [ActorChange(ActorChangeKind.snapshot, ++entry.viewRevision, 0, "", snapshot)].idup;
+            entry.snapshotRequested = false;
             entry.changed = true;
         }
         notifyView();
@@ -255,7 +269,7 @@ public final class ConversationRegistry
         scope (exit) { synchronized (mutex) closed = true; notifyView(); }
         while (true)
         {
-            Entry retireNext, startNext;
+            Entry retireNext, startNext, snapshotNext;
             bool finish;
             synchronized (mutex)
             {
@@ -270,7 +284,8 @@ public final class ConversationRegistry
                     foreach (id; order)
                     {
                         auto entry = entries[id];
-                        if (entry.actor is null && (entry.pending.length || entry.stopAt != size_t.max))
+                        if (entry.actor is null && entry.state != ConversationOwnerState.failed &&
+                            (entry.pending.length || entry.stopAt != size_t.max))
                         { startNext = entry; break; }
                     }
                 if (startNext !is null && !finish && budget.active() >= budget.capacity)
@@ -285,6 +300,10 @@ public final class ConversationRegistry
                 }
                 if (startNext !is null) startNext.state = ConversationOwnerState.starting;
                 if (retireNext is null && startNext is null)
+                    foreach (id; order)
+                        if (entries[id].actor is null && entries[id].snapshotRequested)
+                        { snapshotNext = entries[id]; break; }
+                if (retireNext is null && startNext is null && snapshotNext is null)
                 {
                     if (finish) return;
                     wake.wait(20.msecs); continue;
@@ -292,7 +311,8 @@ public final class ConversationRegistry
             }
             try
             {
-                if (retireNext !is null) retire(retireNext);
+                if (snapshotNext !is null) publishState(snapshotNext);
+                else if (retireNext !is null) retire(retireNext);
                 else if (startNext !is null)
                 {
                     bind(startNext);
@@ -301,18 +321,17 @@ public final class ConversationRegistry
             }
             catch (Throwable error)
             {
-                auto entry = retireNext !is null ? retireNext : startNext;
+                auto entry = snapshotNext !is null ? snapshotNext : retireNext !is null ? retireNext : startNext;
+                if (entry.actor !is null)
+                { retire(entry, error.msg); continue; }
                 synchronized (mutex)
-                { entry.state = ConversationOwnerState.failed; entry.error = error.msg; entry.changed = true; }
+                {
+                    preservePending(entry);
+                    entry.state = ConversationOwnerState.failed; entry.error = error.msg;
+                    entry.changed = true; entry.snapshotRequested = false;
+                }
+                if (snapshotNext is null) publishState(entry);
                 notifyView();
-                // A construction failure retains the original model and all
-                // pending commands. Only a new user command retries admission.
-                if (entry.actor is null)
-                    synchronized (mutex)
-                    {
-                        if (closing) { preservePending(entry); }
-                        else while (!closing && entry.state == ConversationOwnerState.failed) wake.wait(20.msecs);
-                    }
             }
         }
     }
@@ -321,11 +340,9 @@ public final class ConversationRegistry
     {
         // Construction can fail before an actor exists. Keep exact accepted
         // input in a recoverable model rather than silently dropping it.
-        foreach (command; entry.pending)
-        {
-            if (command.kind == ActorCommandKind.setDraft) entry.model.draft = command.text;
-            else if (command.text.length) entry.model.queuedFollowUps ~= command.text;
-        }
+        const timestamp = Clock.currTime.toUnixTime();
+        foreach (command; entry.pending) ConversationActor.retainAcceptedInput(entry.model, command, timestamp);
+        if (entry.stopAt != size_t.max && entry.model.goalStatus == "active") entry.model.goalStatus = "paused";
         entry.pending = null; entry.bytes = 0; entry.stopAt = size_t.max;
     }
 }

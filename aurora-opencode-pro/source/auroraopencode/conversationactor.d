@@ -427,7 +427,7 @@ public final class ConversationActor
         ChatMessage message; message.role = "user"; message.internal = true; message.content = text;
         append(message);
     }
-    private ChatPromptContext promptContext(const ref ActorCommand command)
+    private static ChatPromptContext promptContext(const ref ActorCommand command)
     {
         ChatPromptContext context; context.text = command.context;
         if (command.imagesJson.length)
@@ -1048,18 +1048,29 @@ public final class ConversationActor
         foreach (serial; serials)
         {
             if (serial == currentCommandSerial && currentInputRetained) continue;
-            const command = remaining[serial];
+            retainAcceptedInput(session, remaining[serial], frameUnix);
+        }
+        if (pause && goalActive(session))
+        { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
+    }
+
+    public static void retainAcceptedInput(ref ChatSession session, const ref ActorCommand command, long timestamp)
+    {
+            ChatPromptContext context;
+            try context = promptContext(command);
+            catch (Exception)
+            { context.text = command.context ~ "\nUnparsed image input retained for recovery:\n" ~ command.imagesJson; }
             switch (command.kind)
             {
                 case ActorCommandKind.start:
                 case ActorCommandKind.followUp:
                 case ActorCommandKind.editPrompt:
                     if (command.text.length || command.imagesJson.length || command.context.length)
-                        queuePrompt(session, command.text, promptContext(command), false);
+                        queuePrompt(session, command.text, context, false);
                     break;
                 case ActorCommandKind.steer:
                     if (command.text.length || command.imagesJson.length || command.context.length)
-                        queuePrompt(session, command.text, promptContext(command), true);
+                        queuePrompt(session, command.text, context, true);
                     break;
                 case ActorCommandKind.setDraft: session.draft = command.text; break;
                 case ActorCommandKind.setGoal:
@@ -1069,9 +1080,9 @@ public final class ConversationActor
                     if (session.goal.length)
                     {
                         session.goalStatus = command.activate ? "active" : "paused";
-                        session.goalStartedAt = frameUnix; session.goalTurns = 0;
+                        session.goalStartedAt = timestamp; session.goalTurns = 0;
                         if (changed) resetTaskForNewGoal(session);
-                        recordGoalSet(session, frameUnix);
+                        recordGoalSet(session, timestamp);
                     }
                     break;
                 case ActorCommandKind.pauseGoal:
@@ -1082,9 +1093,6 @@ public final class ConversationActor
                     break;
                 default: break;
             }
-        }
-        if (pause && goalActive(session))
-        { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
     }
 
     /// Read after close: the worker has relinquished all model/trace ownership.
