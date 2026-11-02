@@ -281,6 +281,37 @@ remain confined to the gateway. Real gateway validation is still pending.
 The desktop continues to use its legacy coordinator; these source-only checks
 do not establish adoption, rebuild, relaunch or delivery.
 
+`ConversationRegistry` now owns construction, physical admission, idle
+retirement and final recovery state off the UI thread. At capacity it retains
+accepted commands with an explicit waiting state. Stop has a separate reserved
+position, and a deferred actor can settle accepted input on shutdown without
+starting a physical worker or an effect. New owner generations begin with an
+authoritative snapshot. Final states transfer once, after closure; no live
+mutable graph is shared with presentation. Construction failure retains input,
+goals and attachments without blocking other chats. Lifecycle inputs waiting
+for actor processing are distinct from a durable journal acknowledgement.
+
+The lifecycle HTTP driver completes four real SSE/native-tool/verification
+requests without draining a single presentation update, then resynchronizes the
+entire final state. The goal variant settles bounded unusable output after
+eight requests and preserves the active goal. Proofs:
+`build/architecture-checks-oocql2pv/` and `build/architecture-checks-mudazy6y/`.
+At source fingerprint
+`acdf2098c8c778575f5e10fbb2e5e8103497a434ab96769c8650ad979b6e10ad`,
+lifecycle/performance checks pass in `build/architecture-checks-_7qftumu/`,
+recipe/branch/replay checks in `build/architecture-checks-q60qcex6/`, image
+commands in `build/architecture-checks-j0m4zf9p/` and recovery in
+`build/architecture-checks-97xafq6j/`.
+
+Production admission now detaches mutable containers instead of serializing
+the whole transcript. The 10,000-message debug fixture (24 MB logical body)
+measured 3.2 ms / 3.8 MB for detachment and 44 microseconds / 9.4 KB for
+transferring an already detached model. These are isolated measurements, not
+desktop release latency guarantees. Desktop routing, hot configuration,
+optional title/compaction/orchestration jobs, exit/fold coordination and final
+deployment still remain open. The default runner now includes 49 fixtures;
+the preceding full suite proof covers its former 47-fixture set.
+
 ## Earlier hardening deployment
 
 The self-helper completed the release rebuild with exit code 0 and no compiler errors.
