@@ -165,28 +165,37 @@ public final class ConversationActor
     { this(initial, config, journal, budget, mode == ActorStart.immediate, mode == ActorStart.deferred); }
 
     private this(const ref ChatSession initial, ActorConfiguration config, RepositoryRuntime journal,
-        WorkerBudget budget, bool launchWorker, bool deferred = false)
+        WorkerBudget budget, bool launchWorker, bool deferred = false, bool adopt = false)
     {
         if (!initial.id.length) throw new Exception("A conversation actor requires a stable thread ID");
         if (config.outageBudgetMs < 0)
             config.outageBudgetMs = configuredProviderRetryPolicy().outageBudget.total!"msecs";
-        // Configuration arrays are detached from the caller before admission.
-        auto initialCopy = initial;
-        // Encoder/decoder also gives this worker exclusive mutable containers.
-        auto value = sessionToJson(initialCopy);
-        initialIdentity = sha256Of(value.toString()).toHexString().idup;
-        configurationIdentity = configurationKey(config);
-        decodeSessionMetadata(value, session); decodeMessages(value["messages"], session);
-        this.config = config; this.config.request.availableTools = config.request.availableTools.dup;
-        this.journal = journal;
         if (config.turn.orchestratorEnabled)
             throw new Exception("Conversation actor orchestration adapter is not installed");
+        // Immutable text/pixels may be shared. Detach only mutable containers;
+        // production admission must not stringify an entire long transcript.
+        auto initialCopy = cast(ChatSession) initial;
+        session = adopt ? initialCopy : snapshotChatSessions([initialCopy])[0];
+        if (config.recordTrace)
+            initialIdentity = sha256Of(sessionToJson(session).toString()).toHexString().idup;
+        configurationIdentity = configurationKey(config);
+        this.config = config; this.config.request.availableTools = config.request.availableTools.dup;
+        this.journal = journal;
         mutex = new Mutex(); joinMutex = new Mutex(); wake = new Condition(mutex);
         clockOrigin = MonoTime.currTime;
         workerBudget = budget is null ? actorWorkers : budget;
         if (launchWorker && launch() != ActorAdmission.accepted) throw new ActorCapacityException();
         else if (!launchWorker && !deferred)
         { closed = true; engine = new ThreadEngine("", "", ProviderRetryPolicy(config.outageBudgetMs.msecs)); }
+    }
+
+    /// The lifecycle owner already detached this model from presentation.
+    /// Transfer its containers once, clearing the old owner's top-level value.
+    public static ConversationActor adopt(ref ChatSession initial, ActorConfiguration config,
+        RepositoryRuntime journal, WorkerBudget budget)
+    {
+        auto result = new ConversationActor(initial, config, journal, budget, false, true, true);
+        initial = ChatSession.init; return result;
     }
 
     /// Bind an actor to its lifecycle owner and enqueue accepted input before
@@ -1113,6 +1122,7 @@ public final class ConversationActor
     string recordedTrace()
     {
         if (!isClosed()) throw new Exception("Close the actor before reading its trace");
+        if (!config.recordTrace) throw new Exception("Actor diagnostic recording was not enabled");
         if (traceTruncated) throw new Exception("Actor diagnostic trace is incomplete or exceeded its recording budget");
         JSONValue value;
         value["schema"] = 4; value["initial"] = initialIdentity;

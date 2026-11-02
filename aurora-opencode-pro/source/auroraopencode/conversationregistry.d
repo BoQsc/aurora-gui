@@ -201,7 +201,7 @@ public final class ConversationRegistry
     {
         // Entry.model is lifecycle-owned while starting; callers can append
         // immutable commands but cannot replace this graph with a stale view.
-        auto actor = new ConversationActor(entry.model, entry.config, journal, budget, ActorStart.deferred);
+        auto actor = ConversationActor.adopt(entry.model, entry.config, journal, budget);
         actor.setViewWake(&notify);
         synchronized (mutex)
         {
@@ -252,7 +252,9 @@ public final class ConversationRegistry
     {
         auto value = sessionToJson(entry.model);
         referencePixels(value);
-        ConversationExecutionView execution; execution.phase = entry.error.length ? "failed" : "idle";
+        ConversationExecutionView execution;
+        execution.phase = entry.error.length || entry.model.turnStatus == "failed" ? "failed" :
+            entry.model.turnStatus == "completed" ? "completed" : entry.model.turnStatus == "interrupted" ? "cancelled" : "idle";
         execution.routingKey = sessionRoutingKey(entry.model); value["execution"] = executionViewJson(execution);
         const snapshot = value.toString();
         synchronized (mutex)
@@ -328,6 +330,7 @@ public final class ConversationRegistry
                 {
                     preservePending(entry);
                     entry.state = ConversationOwnerState.failed; entry.error = error.msg;
+                    entry.model.turnStatus = "failed"; entry.model.taskStatus = "blocked";
                     entry.changed = true; entry.snapshotRequested = false;
                 }
                 if (snapshotNext is null) publishState(entry);
