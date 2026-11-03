@@ -15061,7 +15061,7 @@ private string _suggestExcludeId;
         _modelButton = composerControls.add(modelButton);
         _modelButton.setId("oc-model");
         _modelButton.onClick = delegate() { showModelPicker(); };
-        modelButton.onContextMenuRequested = &showContextTargetMenu;
+        modelButton.onContextMenuRequested = &showModelSelectorMenu;
 
         _usageBadge = composerControls.add(new ContextUsageBadge());
         _usageBadge.setId("oc-usage");
@@ -24534,12 +24534,32 @@ private void pollButtonSuggestionRequest()
         list.revealSelection();
     }
 
+    /// Right-click on the composer's model selector. It lists only the providers
+    /// for a one-click switch of endpoint, credential and default model; the
+    /// context-target controls live on the usage badge instead.
+    private void showModelSelectorMenu(Point globalPosition)
+    {
+        if (_activePopup !is null) _activePopup.dismiss();
+        _usageTooltipPending = false;
+        if (_usageTooltipOpen) setContextUsageTooltipOpen(false);
+        const active = activeProviderPresetIndex();
+        ContextMenuItem[] items;
+        items ~= ContextMenuItem.command("Provider", delegate() {}, "", false);
+        foreach (index; 0 .. providerPresets.length)
+            items ~= providerQuickSwitchItem(cast(int) index, active);
+        showContextMenu(_modelButton, globalPosition, items);
+    }
+
     private void showContextTargetMenu(Point globalPosition)
     {
         if (_activePopup !is null) _activePopup.dismiss();
         _usageTooltipPending = false;
         if (_usageTooltipOpen) setContextUsageTooltipOpen(false);
+        showContextMenu(_modelButton, globalPosition, contextTargetMenuItems());
+    }
 
+    private ContextMenuItem[] contextTargetMenuItems()
+    {
         const model = _settings.model;
         const providerLimit = effectiveContextLimit(model);
         const selected = contextBudgetForModel(_settings, _settings.baseUrl, model);
@@ -24575,7 +24595,62 @@ private void pollButtonSuggestionRequest()
         foreach (target; [0, 64_000, 128_000, 200_000, 500_000])
             items ~= contextBudgetMenuItem(model, target, selected,
                 target == 0 || target <= providerLimit);
-        showContextMenu(_modelButton, globalPosition, items);
+        return items;
+    }
+
+    /// Index of the preset serving the current endpoint, disambiguated by the
+    /// model for presets that share one (Qwen and the generic llama.cpp entry),
+    /// or -1 for a hand-edited endpoint.
+    private int activeProviderPresetIndex()
+    {
+        if (providerPresetIndexForBaseUrl(_settings.baseUrl) < 0) return -1;
+        const label = providerPresetLabel(_settings.baseUrl, _settings.model);
+        foreach (index, preset; providerPresets)
+            if (preset.name == label) return cast(int) index;
+        return -1;
+    }
+
+    /// A provider preset as a context-menu check item bound to its own index (a
+    /// factory, so each item captures a distinct index).
+    private ContextMenuItem providerQuickSwitchItem(int index, int activeIndex)
+    {
+        const preset = providerPresets[cast(size_t) index];
+        return ContextMenuItem.check(preset.name, index == activeIndex,
+            delegate() { selectProviderPreset(index); });
+    }
+
+    /// Switch providers without opening Settings: move the endpoint, that
+    /// provider's stored credential and its default model together, then restart
+    /// model discovery for the new catalog.
+    private void selectProviderPreset(int index)
+    {
+        if (index < 0 || index >= cast(int) providerPresets.length) return;
+        if (activeProviderPresetIndex() == index) return;
+        const preset = providerPresets[cast(size_t) index];
+        _settings.baseUrl = preset.baseUrl;
+        // Each provider keeps its own saved keys; fall back to its env/file
+        // credential when none has been stored for this endpoint yet.
+        if (auto keys = findProviderApiKeys(_settings, preset.baseUrl))
+            _settings.apiKey = activeKeyOf(*keys);
+        else
+            _settings.apiKey = readProviderKey(preset.id);
+        // The generic llama.cpp preset has no preferred alias: discovery picks
+        // whatever the server has loaded.
+        if (preset.model.length > 0)
+        {
+            _settings.model = preset.model;
+            if (_current >= 0) _sessions[_current].model = preset.model;
+        }
+        // The cached catalog belongs to the previous endpoint. Drop it before
+        // discovery so the model picker cannot briefly offer models the new
+        // provider does not serve.
+        _models = defaultModels.dup;
+        _modelsFetched = false;
+        applyApiKeyToClient();
+        updateModelButton();
+        refreshUsageBadge();
+        _client.fetchModels();
+        updateStatus("Provider switched to " ~ preset.name ~ ".");
     }
 
     private void showReasoningControlMenu()
@@ -30943,12 +31018,23 @@ private void pollButtonSuggestionRequest()
                     if (_contextLimitsBaseUrl != _settings.baseUrl)
                         _providerContextLimits = null;
                     foreach (model, limit; event.modelContextLimits)
+                    {
+                        // Dropping a budget learned from a smaller window: left
+                        // in place it pins the meter at 100% and compacts every
+                        // request against a window the server no longer has.
+                        auto learned = model in _providerContextLimits;
+                        if (learned !is null &&
+                            advertisesLargerContext(*learned, limit))
+                            _learnedCompactionBudgets.remove(model);
                         _providerContextLimits[model] = limit;
+                    }
                     _contextLimitsBaseUrl = _settings.baseUrl;
                     _llamaCppEndpoint = event.llamaCppServer;
                     _reasoningCapsBaseUrl = _settings.baseUrl;
                     applyModels(event.modelIds);
+                    refreshUsageBadge();
                     break;
+
                 case OpenCodeEventKind.modelsError:
                     // Discovery is independent of chat. Keep the configured
                     // model usable and never turn this into a failed reply or

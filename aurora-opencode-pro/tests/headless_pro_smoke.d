@@ -13,7 +13,7 @@ import auroraopencode.core : ChatMessage, ChatRequestMessage, ChatSession,
     setReasoningControlForModel,
     activeMessagePath, ensureMessageGraph, newMessageId,
     opencodeComposerHeight, opencodeContentMaxWidth, opencodeTheme,
-    setOpencodeStateDirectoryForTesting, siblingMessages;
+    providerPresets, setOpencodeStateDirectoryForTesting, siblingMessages;
 import auroraopencode.opencode_client : OpenCodeClient, OpenCodeEvent,
     OpenCodeEventKind;
 import auroraopencode.markdown : BlockType, MdComposition, MdItemKind,
@@ -442,6 +442,74 @@ private void verifyToolHeaderContextMenu(OpenCodeRoot root,
         "their file");
 }
 
+/// The model selector's right-click lists the configured providers for a quick
+/// switch. The active provider is checked; choosing another moves the endpoint
+/// and its default model, persists them, and the reopened menu reflects it.
+private void verifyModelSelectorProviderMenu(OpenCodeRoot root,
+    UiTestDriver driver)
+{
+    const originalConnection = loadSettings();
+    size_t activeProvider = size_t.max;
+    size_t otherProvider = size_t.max;
+    foreach (index, preset; providerPresets)
+    {
+        if (preset.baseUrl == originalConnection.baseUrl &&
+            preset.model == originalConnection.model)
+            activeProvider = index;
+        else if (otherProvider == size_t.max && preset.model.length > 0)
+            otherProvider = index;
+    }
+    assert(activeProvider != size_t.max && otherProvider != size_t.max,
+        "Fixture must match one provider and offer another");
+    auto modelControl = requireWidget!Widget(root, "oc-model");
+    driver.click(globalCenter(modelControl), MouseButton.right);
+    root.tickTree(0.02);
+    auto providerMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(providerMenu !is null,
+        "Right-click did not open the model menu for providers");
+    assert(providerMenu.items().length ==
+            root.providerPresetNamesForTesting().length + 1,
+        "The model menu must contain only the Provider header and provider rows");
+    assert(providerMenu.items()[0].label == toUTF32("Provider") &&
+        !providerMenu.items()[0].enabled,
+        "Provider list should lead the model context menu");
+    foreach (item; providerMenu.items())
+        assert(item.label != toUTF32("Compact old context automatically") &&
+            item.label != toUTF32("Provider limit: 1,000,000 tokens") &&
+            item.label != toUTF32("Context target: Auto (provider limit)") &&
+            item.label != toUTF32("Compaction target (when enabled)"),
+            "Context control duplicated on the provider-only model menu");
+    foreach (index, name; root.providerPresetNamesForTesting())
+        assert(providerMenu.items()[index + 1].label == toUTF32(name),
+            "Provider entry missing from the model menu: " ~ name);
+    assert(providerMenu.items()[activeProvider + 1].checked,
+        "The active provider should be checked in the model menu");
+    providerMenu.items()[otherProvider + 1].action();
+    dismissContextMenus(root);
+    root.tickTree(0.02);
+    root.flushSettingsForTesting();
+    auto switchedProvider = loadSettings();
+    assert(switchedProvider.baseUrl ==
+            providerPresets[otherProvider].baseUrl &&
+        switchedProvider.model == providerPresets[otherProvider].model,
+        "Provider quick select did not switch endpoint and model");
+    driver.click(globalCenter(modelControl), MouseButton.right);
+    root.tickTree(0.02);
+    providerMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(providerMenu !is null &&
+        providerMenu.items()[otherProvider + 1].checked,
+        "The switched provider should be checked in the model menu");
+    providerMenu.items()[activeProvider + 1].action();
+    dismissContextMenus(root);
+    root.tickTree(0.02);
+    root.flushSettingsForTesting();
+    auto restoredProvider = loadSettings();
+    assert(restoredProvider.baseUrl == originalConnection.baseUrl &&
+        restoredProvider.model == originalConnection.model,
+        "Restoring the original provider failed");
+    writeln("Model selector right-click lists providers and switches them");
+}
+
 /// Regression for the "previous content vanished after a restart / rebuild"
 /// report. A conversation left mid-turn in the BACKGROUND is not the restored
 /// selection, so after a reload the lazy per-thread store has no messages for
@@ -838,6 +906,12 @@ int main(string[] args)
         // Focused run for the tool-header context-menu fix: run alone so the
         // regression can be exercised without the rest of the suite.
         verifyToolHeaderContextMenu(root, driver, stateDir);
+        return 0;
+    }
+    if (args.length > 1 && args[$ - 1] == "--model-menu-only")
+    {
+        // Focused run for the model selector's provider quick-select menu.
+        verifyModelSelectorProviderMenu(root, driver);
         return 0;
     }
     if (args.length > 1 && args[$ - 1] == "--title-tooltip-only")
@@ -2748,8 +2822,9 @@ int main(string[] args)
         writeln("Reasoning effort and llama.cpp budget follow provider capability");
     }
 
-    // Context targets live on the model button and context badge. The meter
-    // measures against the selected target (falling back to the provider
+    // Context targets live on the usage badge. The model selector's right-click
+    // is provider-only, so the two menus no longer duplicate each other. The
+    // meter measures against the selected target (falling back to the provider
     // window while the target is automatic).
     {
         root.recordContextUsageForTesting(240000, 10000, 250000);
@@ -2760,9 +2835,34 @@ int main(string[] args)
         auto modelControl = requireWidget!Widget(root, "oc-model");
         driver.click(globalCenter(modelControl), MouseButton.right);
         root.tickTree(0.02);
+        auto providerMenu = cast(ContextMenu) currentTransientPopup(root);
+        assert(providerMenu !is null,
+            "Right-clicking the model should open the provider menu");
+        assert(providerMenu.items().length ==
+                root.providerPresetNamesForTesting().length + 1,
+            "The model menu should contain only the Provider header and one " ~
+            "row per provider");
+        assert(providerMenu.items()[0].label == toUTF32("Provider") &&
+            !providerMenu.items()[0].enabled,
+            "The model menu must lead with the provider list");
+        foreach (index, name; root.providerPresetNamesForTesting())
+            assert(providerMenu.items()[index + 1].label == toUTF32(name),
+                "Provider entry missing from the model menu: " ~ name);
+        foreach (item; providerMenu.items())
+            assert(item.label != toUTF32("Compact old context automatically") &&
+                item.label != toUTF32("Provider limit: 1,000,000 tokens") &&
+                item.label != toUTF32("Context target: Auto (provider limit)") &&
+                item.label != toUTF32("Compaction target (when enabled)"),
+                "Context control duplicated on the model menu");
+        dismissContextMenus(root);
+        root.tickTree(0.02);
+
+        // The usage badge keeps the full context-target menu unchanged.
+        driver.click(globalCenter(usageBadge));
+        root.tickTree(0.02);
         auto targetMenu = cast(ContextMenu) currentTransientPopup(root);
         assert(targetMenu !is null,
-            "Right-clicking the model should open context targets");
+            "Clicking the context badge should open context targets");
         assert(targetMenu.items().length == 12,
             "Context menu should show the target, the provider limit, a " ~
             "compaction switch and five targets");
@@ -2806,14 +2906,19 @@ int main(string[] args)
         assert(contextCompactionForModel(reloadedTargets,
             reloadedTargets.baseUrl, "deepseek-v4.1-flash"),
             "The compaction choice should survive settings reload");
-        driver.click(globalCenter(modelControl), MouseButton.right);
+
+        // The same right-click quick-switches providers; the helper checks the
+        // provider-only contents and restores the original selection.
+        verifyModelSelectorProviderMenu(root, driver);
+
+        driver.click(globalCenter(usageBadge));
         root.tickTree(0.02);
         targetMenu = cast(ContextMenu) currentTransientPopup(root);
         assert(targetMenu !is null && targetMenu.items()[2].checked,
-            "The model menu should show the saved compaction choice");
+            "The context menu should show the saved compaction choice");
         assert(targetMenu.items()[0].label ==
             toUTF32("Context target: 500,000 tokens"),
-            "The model menu must show the selected context target");
+            "The context menu must show the selected context target");
         targetMenu.items()[2].action();
         dismissContextMenus(root);
         root.tickTree(0.02);

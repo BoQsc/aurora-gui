@@ -458,6 +458,38 @@ private int catalogContextLimitForModel(string model)
     }
 }
 
+/**
+ * Whether a window the provider now advertises supersedes one it reported when
+ * it refused an oversized request.
+ *
+ * A refusal teaches the meter two numbers: the window and a compaction budget
+ * three quarters of it. Both are kept for the rest of the session. When the
+ * same provider later advertises a larger window - a llama.cpp server
+ * relaunched with a bigger `-c`, for example - that learned budget is the
+ * smaller number forever: the meter saturates at 100% and every request is
+ * compacted against the old window even though the new one fits.
+ *
+ * An equal or smaller advertisement keeps the learned budget, because it is
+ * what holds requests under a limit the provider really has.
+ */
+public bool advertisesLargerContext(int learnedWindow, int advertisedWindow)
+{
+    return learnedWindow > 0 && advertisedWindow > learnedWindow;
+}
+
+unittest
+{
+    // A relaunched server that now advertises 98304 supersedes the 8192 it
+    // reported when it refused a request; equal, smaller, and absent
+    // advertisements keep the learned window.
+    assert(advertisesLargerContext(8_192, 98_304));
+    assert(!advertisesLargerContext(8_192, 8_192));
+    assert(!advertisesLargerContext(98_304, 8_192));
+    assert(!advertisesLargerContext(0, 98_304));
+    assert(!advertisesLargerContext(8_192, 0));
+}
+
+
 unittest
 {
     // The 500K compaction toggle caps DeepSeek 4.1's effective window for the

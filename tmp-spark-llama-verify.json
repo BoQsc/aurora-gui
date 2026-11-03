@@ -1,0 +1,40 @@
+{
+  "inputs": ["tmp-spark-llama-verify.json"],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Windows\\System32\\curl.exe",
+        "args": ["-sS", "-f", "http://127.0.0.1:8080/health"],
+        "workdir": ".",
+        "timeout": 30000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Windows\\System32\\curl.exe",
+        "args": ["-sS", "-f", "http://127.0.0.1:8080/v1/models"],
+        "workdir": ".",
+        "timeout": 30000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Windows\\System32\\curl.exe",
+        "args": [
+          "-sS",
+          "-f",
+          "http://127.0.0.1:8080/v1/chat/completions",
+          "-H",
+          "Content-Type: application/json",
+          "-d",
+          "{\"model\":\"spark-x2.6-4b\",\"messages\":[{\"role\":\"user\",\"content\":\"Name the capital of France in one word.\"}],\"max_tokens\":40,\"temperature\":0,\"chat_template_kwargs\":{\"enable_thinking\":false}}"
+        ],
+        "workdir": ".",
+        "timeout": 120000
+      }
+    }
+  ]
+}
