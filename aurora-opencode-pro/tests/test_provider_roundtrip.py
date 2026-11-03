@@ -20,6 +20,8 @@ hold = threading.Event()
 registry_mode = "--registry" in sys.argv
 actor_mode = "--actor" in sys.argv or "--actor-recipe" in sys.argv or registry_mode
 recipe_mode = "--actor-recipe" in sys.argv
+audit_stall = "--goal-audit-stall" in sys.argv
+recovery_requests = 0
 
 def call(identity, name, arguments):
     return {"id": identity, "type": "function",
@@ -50,6 +52,7 @@ class Provider(http.server.BaseHTTPRequestHandler):
                      "application/json")
 
     def do_POST(self):
+        global recovery_requests
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         requests.append(request)
         if request.get("model") == "actor-branch-fixture":
@@ -99,6 +102,10 @@ class Provider(http.server.BaseHTTPRequestHandler):
                         failures.append("Unpaired or duplicate tool result: " + identity)
                     results.add(identity)
             main_rounds.append(request)
+            if any(isinstance(m.get("content"), str) and
+                   m["content"].startswith("Agent output recovery:")
+                   for m in messages):
+                recovery_requests += 1
             number = len(main_rounds)
             if number == 1:
                 test = ("import unittest\nfrom pathlib import Path\n"
@@ -124,7 +131,8 @@ class Provider(http.server.BaseHTTPRequestHandler):
                                         "finish_reason": None}]},
                           {"choices": [{"delta": {"tool_calls": fragments}, "finish_reason": "tool_calls"}]}]
             else:
-                rounds = [{"choices": [{"delta": {"content": "READY"}, "finish_reason": "stop"}]}]
+                content = f"READY audit {number}" if audit_stall else "READY"
+                rounds = [{"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]}]
         rounds.append({"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120}})
         self.respond("".join("data: " + json.dumps(row) + "\n\n" for row in rounds) + "data: [DONE]\n\n",
                      "text/event-stream")
@@ -139,6 +147,9 @@ try:
     stalled_goal = "--goal-stall" in sys.argv
     if stalled_goal:
         env["AURORA_CONTRACT_GOAL_STALL"] = "1"
+    if audit_stall:
+        env["AURORA_CONTRACT_GOAL_STALL"] = "1"
+        env["AURORA_CONTRACT_GOAL_AUDIT_STALL"] = "1"
     if "--production" in sys.argv:
         directory = Path(tempfile.mkdtemp(prefix="production-roundtrip-", dir=package / "build"))
         workspace = directory / "workspace"
@@ -173,15 +184,18 @@ try:
                                  *(["registry_roundtrip", "conversation_registry_contracts", "actor_branch_contracts"] if registry_mode else
                                    ["actor_roundtrip", "actor_mailbox_contracts", "actor_branch_contracts"] if actor_mode else ["provider_roundtrip"])], cwd=package.parent, env=env, timeout=120)
         assert result.returncode == 0, "Desktop round trip failed"
-    expected_rounds = 8 if stalled_goal else 4
+    expected_rounds = 6 if audit_stall else 8 if stalled_goal else 4
     assert len(main_rounds) == expected_rounds, f"Unexpected continuation count: {len(main_rounds)}"
     assert not failures, failures
+    if audit_stall:
+        assert recovery_requests == 0, "An audit stall must not launch recovery requests"
     if actor_mode:
         assert len(branch_requests) == 7, f"Unexpected branch request count: {len(branch_requests)}"
     if "--production" not in sys.argv and not actor_mode:
         assert len(title_after_rounds) == 1 and 1 <= title_after_rounds[0] <= expected_rounds, \
             f"Title was lost, repeated or launched before the opening request: {title_after_rounds}"
-    print("PASS bounded goal output recovery" if stalled_goal else
+    print("PASS one failure for a stalled goal audit" if audit_stall else
+          "PASS bounded goal output recovery" if stalled_goal else
           "PASS four real HTTP/SSE rounds, native tools, request pairing and final settlement", flush=True)
 finally:
     hold.set()

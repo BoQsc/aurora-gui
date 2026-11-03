@@ -1828,6 +1828,10 @@ public struct Settings
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
     bool autoRetireImages = true; // use completed visual answers as later text context
+    // After a reply settles, generate one short suggestion for the user's next
+    // message and show it dimmed inside an empty composer; Tab inserts it. On
+    // by default; the Settings dialog owns the switch.
+    bool composerSuggestion = true;
     string diagnosticModel; // opt-in, same-provider read-only review of stalled tasks
     bool hideHunkHeaders = true;
     // Split a tool round into runs of the same kind of action, so each run
@@ -2192,6 +2196,9 @@ public Settings loadSettings()
                 if (auto found = "autoRetireImages" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.autoRetireImages = found.type == JSONType.true_;
+                if (auto found = "composerSuggestion" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.composerSuggestion = found.type == JSONType.true_;
                 if (auto found = "diagnosticModel" in value.object)
                     if (found.type == JSONType.string) settings.diagnosticModel = found.str;
                 if (auto found = "hideHunkHeaders" in value.object)
@@ -2546,6 +2553,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
     root["quickTitle"] = settings.quickTitle;
     root["autoGoalFromFirstMessage"] = settings.autoGoalFromFirstMessage;
     root["autoRetireImages"] = settings.autoRetireImages;
+    root["composerSuggestion"] = settings.composerSuggestion;
     root["diagnosticModel"] = settings.diagnosticModel;
     root["hideHunkHeaders"] = settings.hideHunkHeaders;
     root["groupSameAction"] = settings.groupSameAction;

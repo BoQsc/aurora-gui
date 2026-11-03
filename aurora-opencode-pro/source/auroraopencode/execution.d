@@ -74,6 +74,14 @@ public class ThreadEngine
     string titleSessionId;
     bool titlePending;
     int titleAttempts;
+    // Composer suggestion: one tiny stateless request for the user's next line.
+    OpenCodeClient suggestionClient;
+    OpenCodeEvent[] suggestionEvents;
+    string suggestionOutput;
+    string suggestionSessionId;
+    bool suggestionPending;
+    // The settled reply this suggestion belongs to, so a reload never re-asks.
+    string suggestionAnchor;
     ToolCancellation cancellation;
     private ToolCancellation _effectCancellation;
     private ulong _effectRequestId;
@@ -316,6 +324,7 @@ public class ThreadEngine
         foreach (agent; agentClients) agent.closeSession();
         if (compactionClient !is null) compactionClient.closeSession();
         if (titleClient !is null) titleClient.closeSession();
+        if (suggestionClient !is null) suggestionClient.closeSession();
     }
 
     bool busy()

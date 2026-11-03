@@ -1,7 +1,7 @@
 module auroraopencode.outputrecovery;
 
-import auroraopencode.core : ChatSession, activeMessagePath;
-import auroraopencode.outputguard : outputRecoveryMarker;
+import auroraopencode.core : ChatMessage, ChatSession, activeMessagePath;
+import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker;
 import auroraopencode.goalmode : goalActive;
 import auroraopencode.taskcontinuation : taskContinuationMarker;
 import std.string : startsWith, strip;
@@ -26,6 +26,42 @@ int outputRecoveryCount(const ref ChatSession session)
         else if (message.internal && message.content.startsWith(outputRecoveryMarker)) ++count;
     }
     return count;
+}
+
+/// Goal and task continuation audits are not provider-format failures. The
+/// continuation counter that triggered them is still in the transcript, so a
+/// recovery request would be rejected again and append another failure bubble
+/// without new evidence. Report one failure and let the user continue.
+bool auditStallIssue(string issue)
+{
+    return issue == "goal_audit_stalled" || issue == "task_audit_stalled";
+}
+
+/// A recovery request is useful only for provider output that can change on a
+/// resend. Goal/task audits keep the continuation counter that produced them,
+/// so they stop after one report instead of repeating the same failure.
+bool outputRecoveryAllowed(string issue, bool exhausted, bool toolsEnabled,
+    bool stopped, bool aborting, bool explanationOnly)
+{
+    return !auditStallIssue(issue) && !exhausted && toolsEnabled &&
+        !stopped && !aborting && !explanationOnly;
+}
+
+/// After an audit stop, automatic continuation must wait for a real user
+/// message. Otherwise the next automatic turn sees the same unfinished task
+/// state and produces another audit failure.
+bool suppressAuditContinuation(bool auditStalled, bool automaticContinuation)
+{
+    return auditStalled && automaticContinuation;
+}
+
+/// A surfaced output failure ends its audit interval. Without this boundary a
+/// later retry sees the same stale continuation prompts and is rejected again
+/// before the provider has a chance to act.
+private bool endsAuditInterval(const ref ChatMessage message)
+{
+    return message.role == "assistant" && message.failed &&
+        message.error.startsWith(outputFailurePrefix);
 }
 
 bool answerReplayed(const ref ChatSession session)
@@ -57,6 +93,7 @@ bool goalAuditStalled(const ref ChatSession session)
     foreach_reverse (index; activeMessagePath(session))
     {
         const ref message = session.messages[index];
+        if (endsAuditInterval(message)) break;
         if ((message.role == "user" && !message.internal) ||
             (message.role == "tool" && !message.failed && usefulTool(message.toolName))) break;
         if (message.internal && message.content.startsWith("Persistent goal continuation:")) ++audits;
@@ -73,6 +110,7 @@ bool taskAuditStalled(const ref ChatSession session)
     foreach_reverse (index; activeMessagePath(session))
     {
         const ref message = session.messages[index];
+        if (endsAuditInterval(message)) break;
         if ((message.role == "user" && !message.internal) ||
             (message.role == "tool" && usefulTool(message.toolName))) break;
         if (message.internal && message.content.startsWith(taskContinuationMarker)) ++continuations;

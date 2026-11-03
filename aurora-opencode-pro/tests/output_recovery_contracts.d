@@ -2,21 +2,25 @@ module output_recovery_contracts;
 
 import auroraopencode.core : ChatMessage, ChatSession;
 import auroraopencode.outputrecovery;
-import auroraopencode.outputguard : outputRecoveryMarker;
+import auroraopencode.outputguard : outputFailurePrefix, outputIssueDescription,
+    outputRecoveryMarker;
 import auroraopencode.taskcontinuation : taskContinuationMarker;
 import std.stdio : writeln;
 import std.conv : to;
+import std.string : indexOf;
 
 int main()
 {
     ChatSession session;
     session.goal = "Write and verify the requested artifact";
     session.goalStatus = "active";
-    void add(string role, string content, bool internal = false, string tool = "")
+    void add(string role, string content, bool internal = false, string tool = "",
+        bool failed = false, string error = "")
     {
         ChatMessage message;
         message.role = role; message.content = content;
         message.internal = internal; message.toolName = tool;
+        message.failed = failed; message.error = error;
         message.id = "m" ~ to!string(session.messages.length);
         message.parentId = session.activeLeafId;
         session.activeLeafId = message.id;
@@ -45,6 +49,34 @@ int main()
     add("user", "Persistent goal continuation: audit the result", true);
     add("assistant", "Everything looks good");
     assert(goalAuditStalled(session), "Varying prose must not create an endless goal audit");
+    assert(auditStallIssue("goal_audit_stalled") &&
+        auditStallIssue("task_audit_stalled") && !auditStallIssue("replayed_prose"));
+    assert(!outputRecoveryAllowed("goal_audit_stalled", false, true, false, false, false),
+        "A goal audit must not launch a recovery request");
+    assert(!outputRecoveryAllowed("task_audit_stalled", false, true, false, false, false),
+        "A task audit must not launch a recovery request");
+    assert(outputRecoveryAllowed("replayed_prose", false, true, false, false, false),
+        "A real replay still gets bounded recovery");
+    assert(!outputRecoveryAllowed("replayed_prose", true, true, false, false, false),
+        "Exhausted recovery stays stopped");
+    assert(suppressAuditContinuation(true, true),
+        "An audit stop must pause automatic continuation");
+    assert(!suppressAuditContinuation(true, false),
+        "Queued user guidance still applies after an audit stop");
+    assert(!suppressAuditContinuation(false, true),
+        "Ordinary automatic continuation is unchanged");
+    assert(outputIssueDescription("goal_audit_stalled").indexOf("goal") >= 0);
+    assert(outputIssueDescription("replayed_prose").indexOf("same prose") >= 0,
+        "A real replay keeps its explicit description");
+    // A surfaced failure ends its audit interval. A retry then needs fresh
+    // no-action continuations instead of inheriting the stale counter.
+    add("assistant", "Agent output stalled: goal audit", false, "", true,
+        outputFailurePrefix ~ outputIssueDescription("goal_audit_stalled"));
+    assert(!goalAuditStalled(session), "A surfaced failure must end its audit interval");
+    add("user", "Persistent goal continuation: fresh interval", true);
+    add("user", "Persistent goal continuation: still no action", true);
+    assert(goalAuditStalled(session),
+        "Two fresh no-action continuations must still trip the goal guard");
     add("user", "Reply READY again");
     add("assistant", "READY");
     assert(!answerReplayed(session) && !goalAuditStalled(session));
@@ -56,6 +88,9 @@ int main()
     add("user", taskContinuationMarker ~ "verification still remains", true);
     add("assistant", "Everything is complete");
     assert(taskAuditStalled(session), "Short or varied no-action replies escaped the continuation guard");
+    add("assistant", "Agent output stalled: task audit", false, "", true,
+        outputFailurePrefix ~ outputIssueDescription("task_audit_stalled"));
+    assert(!taskAuditStalled(session), "A surfaced failure must end its task audit interval");
     foreach (_; 0 .. 100)
     {
         add("tool", "A concrete attempt or observation", false, "read");

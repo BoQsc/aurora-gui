@@ -76,5 +76,11 @@ public string outputIssueDescription(string issue)
         return "the provider printed tool calls as text; those calls were not executed.";
     if (issue == "repeated_tool_call")
         return "the provider kept requesting an exhausted tool call without changed files or new instructions.";
-    return "the provider repeated the same prose without taking an action.";
+    if (issue == "goal_audit_stalled")
+        return "the provider kept answering without advancing the active goal or taking an action.";
+    if (issue == "task_audit_stalled")
+        return "the provider kept answering without advancing the unfinished work or taking an action.";
+    if (issue == "replayed_prose" || issue == "repeated_prose")
+        return "the provider repeated the same prose without taking an action.";
+    return "the provider produced no usable action.";
 }

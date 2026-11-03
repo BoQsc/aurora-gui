@@ -131,7 +131,8 @@ import auroraopencode.restorestore : RestoreBundle, readRestoreBundle, readThrea
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker,
     outputIssueDescription;
 import auroraopencode.outputrecovery : answerReplayed, outputRecoveryCount,
-    maxOutputRecoveries, goalAuditStalled, taskAuditStalled;
+    maxOutputRecoveries, goalAuditStalled, taskAuditStalled, auditStallIssue,
+    outputRecoveryAllowed, suppressAuditContinuation;
 import auroraopencode.transcriptpresenter : TranscriptPresenter, StableRowCache, DeferredTranscriptRow,
     transcriptVirtualThreshold;
 import auroraopencode.turnsummary : TurnWorkSummary;
@@ -140,6 +141,8 @@ import auroraopencode.buttonsuggest : ButtonSuggestion,
     conversationDigest, parseSuggestionResponse, recentConversationPaths,
     suggestionsForPaths,
     suggestButtonsFromRecentConversations, suggestionInstruction;
+import auroraopencode.composersuggestion : cleanComposerSuggestion,
+    composerSuggestionInstruction;
 import auroraopencode.toolscheduler : scheduleToolBatch, toolWorkspaceRevision, invalidateToolWorkspace;
 import auroraopencode.repository : ConversationRepository, RepositoryRuntime;
 import auroraopencode.preferencewriter : PreferenceWriter;
@@ -8119,13 +8122,53 @@ private final class ChatInput : TextArea
     bool delegate(string before, string after) onLargePaste;
     bool delegate() onImagePaste;
 
+    // Dimmed guess at the user's next message. It is painted only while the box
+    // is empty, Tab accepts it, and typing or sending discards it.
+    private string _suggestion;
+    private string _wantedPlaceholder;
+    private static immutable int suggestionInset = 6;
+
     this()
     {
         super("");
     }
 
+    /// The suggestion currently offered, or "" when there is none.
+    string suggestion() const { return _suggestion; }
+
+    void setSuggestion(string value)
+    {
+        if (_suggestion == value) return;
+        _suggestion = value;
+        // The base class paints its unfocused placeholder in the same spot, so
+        // suppress it while a suggestion occupies the empty box.
+        super.setPlaceholder(_suggestion.length ? "" : _wantedPlaceholder);
+        invalidate();
+    }
+
+    /// Tab inserts the suggestion only while the box is still empty.
+    private bool suggestionReady() const
+    {
+        return _suggestion.length > 0 && textUtf8().strip().length == 0;
+    }
+
+    override void setPlaceholder(string value)
+    {
+        _wantedPlaceholder = value;
+        super.setPlaceholder(_suggestion.length ? "" : value);
+    }
+
     override bool onKeyDown(ref Event event)
     {
+        if (event.key == Key.tab && !event.shift() && !event.control() &&
+            !event.meta() && suggestionReady())
+        {
+            const accepted = _suggestion;
+            _suggestion = "";
+            super.setPlaceholder(_wantedPlaceholder);
+            setText(accepted); // setText leaves the caret after the text
+            return true;
+        }
         if (event.key == Key.enter && event.alt() && !event.shift())
         {
             if (onQueueRequested !is null) onQueueRequested();
@@ -8164,6 +8207,37 @@ private final class ChatInput : TextArea
         const after = textUtf8();
         if (onLargePaste !is null && onLargePaste(before, after)) return true;
         return true;
+    }
+
+    override bool onTextInput(ref Event event)
+    {
+        // Typing supersedes a guess made for the previous reply.
+        if (_suggestion.length > 0) setSuggestion("");
+        return super.onTextInput(event);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        super.onPaint(canvas);
+        if (!suggestionReady()) return;
+        const palette = theme();
+        const room = maxInt(0, bounds().width - suggestionInset * 2);
+        if (room <= 0) return;
+        auto text = toUTF32(_suggestion);
+        bool trimmed;
+        while (text.length > 1 &&
+            canvas.measureText(text, palette.fontScale, FontRole.monospace,
+                palette.monospaceFont).width > room)
+        {
+            text = text[0 .. $ - 1];
+            trimmed = true;
+        }
+        if (trimmed) text ~= "…";
+        auto content = canvas.clipped(
+            Rect(0, 0, bounds().width, bounds().height));
+        content.drawText(Point(suggestionInset, suggestionInset), text,
+            palette.textMuted, palette.fontScale, FontRole.monospace,
+            palette.monospaceFont);
     }
 }
 
@@ -11622,6 +11696,10 @@ public final class OpenCodeRoot : VBox
     private PreferenceWriter!Settings _settingsWriter;
     private PreferenceWriter!ProjectState _projectsWriter;
     private bool[string] _dirtyThreads;
+    // Audit stalls pause automatic continuation until a real user message.
+    // Otherwise the same stale continuation prompts can re-trigger the guard
+    // after a retry and append another failure row.
+    private bool[string] _auditSuppressed;
     private bool _persistFailed;
     private bool _durabilityBlocked;
     private ulong _storageFailureGeneration;
@@ -17045,6 +17123,10 @@ private string _suggestExcludeId;
         ChatMessage message)
     {
         if (session.id.length == 0) session.id = newSessionId();
+        // A real user instruction is a fresh boundary; automatic continuation
+        // may resume for the new request.
+        if (message.role == "user" && !message.internal)
+            _auditSuppressed.remove(session.id);
         // Any new message is fresh interaction, so the conversation moves to
         // the top of a recency-ordered sidebar.
         session.updatedAt = Clock.currTime.toUnixTime();
@@ -17068,6 +17150,12 @@ private string _suggestExcludeId;
         // frames as soon as a new image arrives.
         if (session.messages[$ - 1].images.length > 0)
             pruneTranscriptImagePayloads(session);
+    }
+
+    /// Whether an audit stop is pausing automatic continuation for this chat.
+    private bool auditStallSuppressed(string sessionId)
+    {
+        return (sessionId in _auditSuppressed) !is null;
     }
 
     /// Bound screenshot payloads across active and inactive branches.
@@ -20159,6 +20247,8 @@ private void pollButtonSuggestionRequest()
             publishRuntimeEvent(cancelled ? AgentEventKind.turnInterrupted :
                 AgentEventKind.turnCompleted, _sessions[sessionIndex],
                 runtimeTurnId(_sessions[sessionIndex]));
+        // A settled reply is where a guess at the user's next message starts.
+        if (!cancelled && terminal) queueComposerSuggestion(sessionIndex);
         // The streamed bubble was built for streaming only (no timestamp, usage
         // footer, context menu or collapse wiring). Rebuild so the settled view
         // is canonical immediately — otherwise the transcript silently
@@ -20211,6 +20301,11 @@ private void pollButtonSuggestionRequest()
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
         auto session = &_sessions[sessionIndex];
         const decision = decideTurn(*session, turnPolicy(sessionIndex, cancelled));
+        // An audit stop pauses only automatic continuation. Queued guidance is
+        // explicit user intent and still applies.
+        const suppressContinue = suppressAuditContinuation(
+            auditStallSuppressed(session.id),
+            decision.action == TurnAction.request);
         if (decision.recordedSummary.length)
         {
             ChatMessage summary;
@@ -20232,7 +20327,7 @@ private void pollButtonSuggestionRequest()
         }
         if (decision.clearBlocker) session.contract.blocker = "";
         if (decision.advanceGoal) ++session.goalTurns;
-        if (decision.guidance.length)
+        if (decision.guidance.length && !suppressContinue)
         {
             ChatMessage guidance;
             guidance.role = "user"; guidance.internal = true;
@@ -20244,6 +20339,26 @@ private void pollButtonSuggestionRequest()
         publishThreadUpdated(*session);
         markDirty();
         if (decision.status.length) updateStatus(decision.status);
+        if (suppressContinue)
+        {
+            session.turnStatus = "completed";
+            session.taskStatus = "blocked";
+            // finishAssistantMessage kept the clock alive because it expected a
+            // continuation. This branch starts none, so settle the turn or the
+            // missing-operation watchdog fails it five seconds later.
+            freezeTurnTiming();
+            refreshTurnActiveMarker(sessionIndex);
+            setTurnInFlight(false);
+            clearActivity();
+            publishThreadUpdated(*session);
+            markDirty();
+            updateStatus("Paused automatic continuation after an audit stall. Continue when ready.");
+            markUnreadIfBackground(sessionIndex);
+            refreshBubbleActions();
+            updateSendButton();
+            startNextQueuedFollowUp(sessionIndex);
+            return;
+        }
         if (decision.continues())
         {
             setTurnActiveMarker(true, session.id);
@@ -20698,15 +20813,23 @@ private void pollButtonSuggestionRequest()
             recordTurnUsage(*reply, event.totalTokens, event.promptTokens,
                 event.completionTokens, event.requestId);
         }
-        const exhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
-        const recover = !exhausted && toolsEnabledForSession(*session) && !_stopPending &&
-            !computerUseAbortActive() &&
-            !explanationOnlyRequest(latestActualUserRequest(*session));
+        const auditStall = auditStallIssue(event.outputIssue);
+        if (auditStall) _auditSuppressed[session.id] = true;
+        const exhausted = !auditStall &&
+            outputRecoveryCount(*session) >= maxOutputRecoveries;
+        const recover = outputRecoveryAllowed(event.outputIssue, exhausted,
+            toolsEnabledForSession(*session), _stopPending,
+            computerUseAbortActive(),
+            explanationOnlyRequest(latestActualUserRequest(*session)));
         logInfo("agent-output request=" ~ to!string(event.requestId) ~
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
             " recovery=" ~ (recover ? "continuing" : "stopped"));
         failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue) ~
-            (exhausted ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue." : ""), true);
+            (auditStall
+                ? " Saved work is unchanged; continue when you want another attempt."
+                : exhausted
+                    ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue."
+                    : ""), true);
         dropAutoResendSchedule();
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
@@ -20714,7 +20837,9 @@ private void pollButtonSuggestionRequest()
         _activeRequestSession = -1;
         if (!recover)
         {
-            updateStatus("Stopped repeated agent output. See the conversation for details.");
+            updateStatus(auditStall
+                ? "Stopped a stalled agent continuation. See the conversation for details."
+                : "Stopped repeated agent output. See the conversation for details.");
             refreshBubbleActions();
             startNextQueuedFollowUp(sessionIndex);
             return;
@@ -23377,6 +23502,166 @@ private void pollButtonSuggestionRequest()
     {
         import auroraopencode.titlepolicy;
         return auroraopencode.titlepolicy.cleanGeneratedTitle(raw);
+    }
+
+    // -- composer suggestion ------------------------------------------------
+    // One tiny stateless request on its own client and routing key that guesses
+    // the user's next message after a reply settles. It never touches the live
+    // turn: no tools, no reasoning, one short prompt.
+
+    private static immutable size_t composerSuggestionExcerptChars = 2400;
+    private static immutable size_t composerSuggestionMaxChars = 140;
+
+    /// Id of the settled reply a suggestion belongs to; tool rows can be last,
+    /// so the search walks backward instead of reading the final message.
+    private static string lastSettledAssistantId(const ref ChatSession session)
+    {
+        foreach_reverse (index; activeMessagePath(session))
+        {
+            const ref message = session.messages[index];
+            if (message.role != "assistant" || message.internal) continue;
+            if (message.toolCalls.length) continue;
+            return message.id;
+        }
+        return "";
+    }
+
+    /// The newest turns of the active path, clipped so the request stays tiny.
+    private static string composerSuggestionExcerpt(const ref ChatSession session)
+    {
+        string[] lines;
+        foreach (index; activeMessagePath(session))
+        {
+            const ref message = session.messages[index];
+            if (message.internal) continue;
+            if (message.role != "user" && message.role != "assistant") continue;
+            auto text = message.content.strip();
+            if (text.length == 0) continue;
+            if (text.length > 700) text = text[0 .. 700];
+            lines ~= (message.role == "user" ? "User: " : "Assistant: ") ~ text;
+        }
+        string excerpt;
+        foreach_reverse (i; 0 .. lines.length)
+        {
+            if (excerpt.length && excerpt.length + lines[i].length + 1 >
+                composerSuggestionExcerptChars)
+                break;
+            excerpt = lines[i] ~ "\n" ~ excerpt;
+        }
+        return excerpt;
+    }
+
+    /// Queue one suggestion for this conversation's newest settled reply. The
+    /// anchor prevents asking twice for the same reply (retries, reloads).
+    private void queueComposerSuggestion(int sessionIndex)
+    {
+        if (!_settings.composerSuggestion) return;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        if (_current < 0 || _sessions[_current].id != _sessions[sessionIndex].id)
+            return;
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null) return;
+        const anchor = lastSettledAssistantId(_sessions[sessionIndex]);
+        if (anchor.length == 0 || runtime.suggestionAnchor == anchor) return;
+        runtime.suggestionAnchor = anchor;
+        runtime.suggestionPending = true;
+    }
+
+    /// One attempt, only while pending and this conversation's own client is
+    /// idle. Its own routing key means it never waits on another conversation.
+    private void tryComposerSuggestion(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null || !runtime.suggestionPending ||
+            runtime.suggestionClient !is null) return;
+        if (!_settings.composerSuggestion)
+        {
+            runtime.suggestionPending = false;
+            return;
+        }
+        // Only the visible conversation owns the composer the line appears in.
+        if (_current < 0 || _sessions[_current].id != _sessions[sessionIndex].id)
+        {
+            runtime.suggestionPending = false;
+            return;
+        }
+        if (runtime.phase == RequestPhase.waiting || runtime.effectPending() ||
+            runtime.client.busy()) return;
+        auto session = &_sessions[sessionIndex];
+        const excerpt = composerSuggestionExcerpt(*session);
+        if (excerpt.length == 0)
+        {
+            runtime.suggestionPending = false;
+            return;
+        }
+        const endpoint = providerForSession(sessionIndex);
+        runtime.suggestionClient = new OpenCodeClient(endpoint,
+            credentialForProvider(endpoint));
+        runtime.suggestionClient.setEventWake(_window.serviceWake());
+        runtime.suggestionClient.setOpenCodeSession(
+            sessionRoutingKey(*session) ~ "-suggest");
+        runtime.suggestionSessionId = session.id;
+        runtime.suggestionOutput = "";
+        ChatRequestMessage instruction;
+        instruction.role = "system";
+        instruction.content = composerSuggestionInstruction();
+        ChatRequestMessage request;
+        request.role = "user";
+        request.content = excerpt;
+        const requestId = ++_nextRequestId;
+        _requestTokenKeyIds[requestId] = apiTokenUsageKeyId(activeApiKey(_settings));
+        const started = runtime.suggestionClient.startChatMessages(
+            [instruction, request], null, session.model, false, requestId);
+        if (started != ChatStartResult.accepted)
+        {
+            _requestTokenKeyIds.remove(requestId);
+            runtime.suggestionClient.closeSession();
+            runtime.suggestionClient = null;
+            if (started == ChatStartResult.closed || started == ChatStartResult.failed)
+                runtime.suggestionPending = false;
+        }
+    }
+
+    /// Settle a finished suggestion request and offer it in an empty composer.
+    private void pollComposerSuggestion(int sessionIndex)
+    {
+        auto runtime = runtimeForSession(sessionIndex);
+        if (runtime is null || runtime.suggestionClient is null) return;
+        runtime.suggestionClient.drain(runtime.suggestionEvents);
+        bool finished, succeeded;
+        foreach (event; runtime.suggestionEvents)
+        {
+            if (event.kind == OpenCodeEventKind.delta && !event.reasoning)
+                runtime.suggestionOutput ~= event.text;
+            else if (event.kind == OpenCodeEventKind.done)
+            {
+                finished = true;
+                succeeded = !event.cancelled;
+                recordRequestTokenUsage(event.requestId, event.totalTokens,
+                    event.promptTokens, event.completionTokens);
+            }
+            else if (event.kind == OpenCodeEventKind.error)
+            {
+                finished = true;
+                _requestTokenKeyIds.remove(event.requestId);
+            }
+        }
+        runtime.suggestionEvents.length = 0;
+        if (!finished) return;
+        runtime.suggestionClient.closeSession();
+        runtime.suggestionClient = null;
+        runtime.suggestionPending = false;
+        const candidate = succeeded
+            ? cleanComposerSuggestion(runtime.suggestionOutput,
+                composerSuggestionMaxChars) : "";
+        runtime.suggestionOutput = "";
+        const sessionId = runtime.suggestionSessionId;
+        runtime.suggestionSessionId = "";
+        if (candidate.length == 0 || !_settings.composerSuggestion) return;
+        if (_current < 0 || _sessions[_current].id != sessionId) return;
+        if (_input is null || _input.textUtf8().strip().length > 0) return;
+        _input.setSuggestion(candidate);
     }
 
 
@@ -26281,6 +26566,24 @@ private void pollButtonSuggestionRequest()
         };
         workedRow.add(workedCheck);
         optionsBody.add(workedRow);
+
+        // Composer suggestion: a dimmed guess at the user's next message inside
+        // the empty input after a reply settles. Tab accepts it. On by default.
+        auto suggestionRow = new HBox(8);
+        suggestionRow.layoutHints().preferredHeight = 32;
+        auto suggestionCheck = new CheckBox("Suggest the next message");
+        suggestionCheck.setId("oc-suggestion");
+        suggestionCheck.setChecked(_settings.composerSuggestion, false);
+        suggestionCheck.onChanged = delegate(bool value)
+        {
+            _settings.composerSuggestion = value;
+            saveSettingsNow();
+            if (_input is null) return;
+            if (value) queueComposerSuggestion(_current);
+            else _input.setSuggestion("");
+        };
+        suggestionRow.add(suggestionCheck);
+        optionsBody.add(suggestionRow);
 
         // Detached plan: the durable plan as a floating card pinned to the
         // transcript's top-right corner. On by default; turning it off returns
@@ -30852,7 +31155,8 @@ private void pollButtonSuggestionRequest()
             foreach (runtime; _conversationRuntimes)
                 if (runtime.eventScratch.length || runtime.client.hasPendingEvents() ||
                     (runtime.compactionClient !is null && runtime.compactionClient.hasPendingEvents()) ||
-                    (runtime.titleClient !is null && runtime.titleClient.hasPendingEvents()))
+                    (runtime.titleClient !is null && runtime.titleClient.hasPendingEvents()) ||
+                    (runtime.suggestionClient !is null && runtime.suggestionClient.hasPendingEvents()))
                 {
                     auto wake = _window.serviceWake();
                     if (wake !is null) wake();
@@ -30891,7 +31195,9 @@ private void pollButtonSuggestionRequest()
             {
                 auto runtime = runtimeForSession(cast(int) runtimeIndex);
                 if (!runtime.busy() && !runtime.titlePending &&
-                    runtime.titleClient is null && !runtime.client.hasPendingEvents() &&
+                    runtime.titleClient is null &&
+                    !runtime.suggestionPending && runtime.suggestionClient is null &&
+                    !runtime.client.hasPendingEvents() &&
                     runtime.eventScratch.length == 0 &&
                     runtime.autoContinuePendingSession < 0 &&
                     !(runtime.autoResendPending && runtime.autoResendSession == cast(int) runtimeIndex) &&
@@ -30903,6 +31209,8 @@ private void pollButtonSuggestionRequest()
         pollModelCompaction(cast(int) runtimeIndex);
         pollQuickTitle(cast(int) runtimeIndex);
         retryQuickTitle(cast(int) runtimeIndex);
+        pollComposerSuggestion(cast(int) runtimeIndex);
+        tryComposerSuggestion(cast(int) runtimeIndex);
         if (!_eventScratch.length) _client.drain(_eventScratch, 64, 256 * 1024);
         _batchingToolResults = true;
         size_t eventIndex;
@@ -31036,14 +31344,26 @@ private void pollButtonSuggestionRequest()
                 case OpenCodeEventKind.done:
                     if (!event.cancelled && toolsEnabledForSession(_sessions[runtimeIndex]) &&
                         !completionHandoffPending(_sessions[runtimeIndex]) &&
-                        (taskAuditStalled(_sessions[runtimeIndex]) ||
-                         (!explanationOnlyRequest(latestActualUserRequest(_sessions[runtimeIndex])) &&
-                          (answerReplayed(_sessions[runtimeIndex]) || goalAuditStalled(_sessions[runtimeIndex])))))
+                        !auditStallSuppressed(_sessions[runtimeIndex].id))
                     {
-                        auto failure = *event;
-                        failure.outputIssue = "replayed_prose";
-                        handleOutputFailure(failure);
-                        break;
+                        const explanationOnly = explanationOnlyRequest(
+                            latestActualUserRequest(_sessions[runtimeIndex]));
+                        string issue;
+                        if (taskAuditStalled(_sessions[runtimeIndex]))
+                            issue = "task_audit_stalled";
+                        else if (!explanationOnly &&
+                            answerReplayed(_sessions[runtimeIndex]))
+                            issue = "replayed_prose";
+                        else if (!explanationOnly &&
+                            goalAuditStalled(_sessions[runtimeIndex]))
+                            issue = "goal_audit_stalled";
+                        if (issue.length > 0)
+                        {
+                            auto failure = *event;
+                            failure.outputIssue = issue;
+                            handleOutputFailure(failure);
+                            break;
+                        }
                     }
                     if (!event.cancelled)
                     {
@@ -31476,6 +31796,13 @@ private void pollButtonSuggestionRequest()
         // >>> pet:begin (its own low-frequency, budgeted check)
         runPetObservation(deltaSeconds);
         // <<< pet:end
+
+        // A suggestion belongs to an empty, idle composer for the reply it was
+        // generated from; anything else drops it so Tab cannot insert stale text.
+        if (_input !is null &&
+            (!_settings.composerSuggestion || _turnInFlight ||
+             _input.textUtf8().strip().length > 0))
+            _input.setSuggestion("");
 
         updateSendButton();
         // Project transitions made during this tick before returning to paint.
@@ -32896,6 +33223,16 @@ private void pollButtonSuggestionRequest()
     {
         if (_current < 0) return 0;
         return cast(int) _sessions[_current].messages.length;
+    }
+
+    /// Test-only: failed messages saved in the current session.
+    public int failedMessageCountForTesting()
+    {
+        if (_current < 0) return 0;
+        int count;
+        foreach (message; _sessions[_current].messages)
+            if (message.failed) ++count;
+        return count;
     }
 
     /// Test-only: number of sibling versions of the message at physical

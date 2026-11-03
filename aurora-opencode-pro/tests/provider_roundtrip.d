@@ -15,6 +15,7 @@ import std.file : mkdirRecurse, readText;
 import std.path : buildPath, absolutePath;
 import std.process : environment;
 import std.stdio : writeln;
+import std.string : startsWith;
 
 int main()
 {
@@ -35,7 +36,8 @@ int main()
     settings.legacyTools = false;
     settings.quickTitle = true;
     const stalledGoal = environment.get("AURORA_CONTRACT_GOAL_STALL", "") == "1";
-    settings.autoGoalFromFirstMessage = stalledGoal;
+    const auditStall = environment.get("AURORA_CONTRACT_GOAL_AUDIT_STALL", "") == "1";
+    settings.autoGoalFromFirstMessage = stalledGoal || auditStall;
     saveSettings(settings);
     WindowOptions options;
     options.width = 1200;
@@ -61,16 +63,28 @@ int main()
         window.onNativeTick(0.02);
         root.projectTranscriptForTesting();
         assert(driver.paint());
-        if (!root.turnBusyForTesting() && root.lastAssistantContentForTesting() == "READY")
+        if (!root.turnBusyForTesting() &&
+            (auditStall ? root.failedMessageCountForTesting() > 0
+                        : root.lastAssistantContentForTesting() == "READY"))
             break;
         Thread.sleep(10.msecs);
     }
-    assert(!root.turnBusyForTesting() && root.lastAssistantContentForTesting() == "READY",
+    assert(!root.turnBusyForTesting() &&
+        (auditStall ? root.failedMessageCountForTesting() > 0
+                    : root.lastAssistantContentForTesting() == "READY"),
         "Round trip did not settle: " ~ root.lastAssistantContentForTesting());
+    if (auditStall)
+    {
+        assert(root.failedMessageCountForTesting() == 1,
+            "One audit-stall episode must surface one failure row");
+        assert(root.goalStatusForTesting() == "active",
+            "An audit stall must preserve the active goal");
+    }
     assert(readText(buildPath(workspace, "out.txt")) == "success");
     assert(root.verificationStatusForTesting() == "passed");
-    assert(root.taskStatusForTesting() == (stalledGoal ? "blocked" : "completed"));
-    if (stalledGoal)
+    assert(root.taskStatusForTesting() ==
+        (stalledGoal || auditStall ? "blocked" : "completed"));
+    if (stalledGoal || auditStall)
         assert(root.goalStatusForTesting() == "active", "Provider failure must preserve the authorized goal");
     const latency = root.latencyPaintForTesting();
     assert(latency.microseconds[LatencyStage.firstToken] >= 0 &&
@@ -88,7 +102,9 @@ int main()
         "Deferred optional title did not run after foreground work completed");
     root.persistForTesting();
     root.reloadSessionsForTesting();
-    assert(root.lastAssistantContentForTesting() == "READY");
+    assert(auditStall
+        ? root.lastAssistantContentForTesting().startsWith("READY")
+        : root.lastAssistantContentForTesting() == "READY");
     writeln("PASS composer -> HTTP/SSE -> plan/write/run -> verification -> final UI -> persisted reload");
     auto budget = new WorkerBudget(2);
     long worstCancelMs;

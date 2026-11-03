@@ -25,6 +25,15 @@ cap. Output recovery preserves the active goal; it does not silently convert
 provider failure into a user pause. A new human instruction opens a fresh
 recovery boundary. These changes are not yet deployed.
 
+Goal and task continuation audits are reported as their own stall issues, not
+as repeated prose: the provider may write different text each time while still
+never taking an action. These audits do not start output recovery because the
+continuation prompts that triggered them remain in the transcript; a recovery
+request would be rejected again and append another failure row. Aurora reports
+one failure for the episode and keeps the saved work available for Continue or
+Retry. A surfaced failure also ends its audit interval, so the next attempt is
+judged on fresh continuations instead of stale ones.
+
 Provider outage recovery and terminal resend now share typed policy decisions.
 The configured outage budget also bounds backoff; an exhausted provider attempt
 cannot restart through UI resend. Explicit reset-time waits and manual Retry
