@@ -49,7 +49,7 @@ int main()
             "What would you change?", "Which files could you remove?", "Why did it stop?",
             "Explain why, and don't implement anything."])
         assert(answerOnlyRequest(text), text);
-    foreach (text; ["do it", "Do that.", "Please do it.", "Yes, do it."])
+    foreach (text; ["do it", "Do that.", "Please do it.", "Yes, do it.", "so fix it", "just fix it", "i said to move to the new tab page each."])
         assert(requestIntent(text) == RequestIntent.implementation, text);
     foreach (text; ["Stop asking and just do the work.",
             "Be proactive and figure it out.",
@@ -85,6 +85,14 @@ int main()
     ChatSession casual;
     request(casual, "Continue in this chat while I open another.");
     assert(!unfinishedTask(casual), "Casual continuation manufactured an action task");
+    ChatSession legacy;
+    request(legacy,"Ensure 1 on 1 exactness to mockup");
+    legacy.goal="Ensure 1 on 1 exactness to mockup";legacy.goalStatus="paused";
+    request(legacy,"so fix it");
+    assert(legacy.contract.intent=="implementation" && legacy.contract.currentIntent=="implementation");
+    append(legacy,"assistant","The fix is not yet implemented.");
+    assert(taskContinuation(legacy,true).action==TaskContinuationAction.continueWork,
+        "The reported short correction settled as conversation without doing the requested work");
 
     ChatSession s;
     request(s, "Fix browser rendering.");

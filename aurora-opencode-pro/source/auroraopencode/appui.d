@@ -17009,7 +17009,8 @@ private string _suggestExcludeId;
         const taskState = durableTaskPrompt(session, nestedEnabled);
         if (taskState.length == 0) return false;
         const state = taskState ~ promptVerbosityDirective(_settings.verbosity);
-        if (controlHistoryCompactionNeeded(session))
+        const contextLimit = requestContextBudget(session.model);
+        if (controlHistoryCompactionNeeded(session, contextLimit > 0 && contextLimit <= 32_768))
         {
             ChatMessage boundary;
             boundary.role = "user";
@@ -20223,6 +20224,16 @@ private void pollButtonSuggestionRequest()
             _sessions[sessionIndex].messages[$ - 1].id == _sessions[sessionIndex].activeLeafId)
         {
             auto message = &_sessions[sessionIndex].messages[$ - 1];
+            if (!cancelled && !message.toolCalls.length)
+            {
+                import auroraopencode.answercontract : normalizedJsonAnswer;
+                const normalized = normalizedJsonAnswer(latestActualUserRequest(_sessions[sessionIndex]), message.content);
+                if (normalized != message.content)
+                {
+                    message.providerContent = message.content;
+                    message.content = normalized;
+                }
+            }
             if (message.time.length == 0) message.time = currentTimestamp();
             message.finishReason = cancelled ? "cancelled" : finishReason;
             if (completionTokens > 0 || totalTokens > 0)
@@ -20359,6 +20370,17 @@ private void pollButtonSuggestionRequest()
             startNextQueuedFollowUp(sessionIndex);
             return;
         }
+        if (!decision.continues())
+        {
+            // finishAssistantMessage keeps the clock alive while a continuation
+            // is expected. When the final decision is to settle (or wait for
+            // input), finish that lifecycle here or the missing-operation
+            // watchdog fails a turn that has already stopped.
+            setTurnInFlight(false);
+            freezeTurnTiming();
+            refreshTurnActiveMarker(sessionIndex);
+            clearActivity();
+        }
         if (decision.continues())
         {
             setTurnActiveMarker(true, session.id);
@@ -20374,7 +20396,6 @@ private void pollButtonSuggestionRequest()
             session.messages[$ - 1].taskStateJson = activeTaskStateJson(*session);
             publishMessageEvent(AgentEventKind.itemUpdated, *session, session.messages[$ - 1]);
         }
-        maybeAutoContinue(sessionIndex);
         startNextQueuedFollowUp(sessionIndex);
     }
 
@@ -23159,6 +23180,8 @@ private void pollButtonSuggestionRequest()
             "checkpoint in plain text, under 1200 words. Use Goal, Constraints, Decisions and rejected hypotheses, " ~
             "Remaining outcomes with acceptance conditions, Evidence, Blocker, and Next action. " ~
             "Keep task IDs and evidence references; omit narration and repeated tool output.";
+        import auroraopencode.contextpolicy : compactionSummarySizeInstruction;
+        instruction.content ~= compactionSummarySizeInstruction(byteBudget);
         ChatRequestMessage sourceMessage;
         sourceMessage.role = "user";
         sourceMessage.content = source;
@@ -24440,145 +24463,6 @@ private void pollButtonSuggestionRequest()
         startChatRequest(sessionIndex);
     }
 
-    /// Experimental computer use: when a turn ends with no tool call, the agent
-    /// has gone idle mid-task - exactly the "it's doing nothing" stall seen while
-    /// driving the desktop. Resume it automatically, bounded per user turn so a
-    /// model that only emits prose cannot loop forever; a Stop or a new user
-    /// message ends the courtesy. No-op unless computer use is enabled, and
-    /// skipped when a queued follow-up or guidance already continues the turn.
-    /// Diagnostics for the auto-continue path. The stall bug was invisible
-    /// otherwise: this records why a resume did or did not happen.
-    private void logAutoContinue(string message)
-    {
-        logInfo("auto-continue [" ~ _loadedRuntimeId ~ "]: " ~ message);
-    }
-
-    private void maybeAutoContinue(int sessionIndex)
-    {
-        if (!experimentalComputerUseEnabled())
-        {
-            logAutoContinue("skip: computer use off");
-            return;
-        }
-        // The human pressed the kill switch: do not resurrect the turn. The
-        // abort latch is only cleared by a new user message (sendMessage), so
-        // the agent stays stopped instead of auto-resuming past the stop.
-        if (computerUseAbortActive())
-        {
-            _autoContinuePendingSession = -1;
-            logAutoContinue("skip: kill switch pressed");
-            return;
-        }
-        // Resume the session that OWNS the finished turn, not only the one the
-        // user happens to be viewing: requiring `sessionIndex == _current` was
-        // what silently dropped the resume and produced the "stuck" stall
-        // (see the log line "skip: not the viewed session").
-        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
-        {
-            logAutoContinue("skip: invalid session index " ~
-                to!string(sessionIndex));
-            return;
-        }
-        auto session = &_sessions[sessionIndex];
-        if (session.messages.length == 0) return;
-        if (taskAwaitingInput(*session))
-        {
-            _autoContinuePendingSession = -1;
-            logAutoContinue("skip: task needs attention");
-            return;
-        }
-        const path = activeMessagePath(*session);
-        if (path.length > 0 &&
-            session.messages[path[$ - 1]].error.startsWith(outputFailurePrefix))
-        {
-            _autoContinuePendingSession = -1;
-            logAutoContinue("skip: agent output recovery exhausted");
-            return;
-        }
-        if (answerOnlyRequest(latestActualUserRequest(*session)) || taskInvestigation(*session))
-        {
-            _autoContinuePendingSession = -1;
-            logAutoContinue("skip: latest request asks for an explanation");
-            return;
-        }
-        if (session.queuedFollowUps.length > 0 ||
-            session.queuedGuidance.length > 0)
-        {
-            logAutoContinue("skip: a queued follow-up already continues");
-            return;
-        }
-        // Only rescue a turn that is genuinely mid-task. A completed answer is
-        // the user's turn to speak, not a stall, so it must never auto-continue.
-        const midTask = session.taskStatus == "active" ||
-            session.taskStatus == "blocked" ||
-            session.taskStatus == "reviewing" ||
-            session.taskStatus == "verifying" ||
-            session.verificationStatus == "required" ||
-            hasIncompleteTaskSteps(*session);
-        if (!midTask)
-        {
-            logAutoContinue("skip: turn looks finished (taskStatus=" ~
-                session.taskStatus ~ ")");
-            return;
-        }
-        const last = session.messages[$ - 1];
-        if (last.role != "assistant" || last.failed ||
-            last.toolCalls.length > 0)
-        {
-            logAutoContinue("skip: last message is not a plain reply");
-            return;
-        }
-        const streak = _autoContinueStreak;
-        if (streak >= autoContinueLimit)
-        {
-            logAutoContinue("skip: auto-continue budget exhausted (" ~
-                to!string(streak) ~ ")");
-            return;
-        }
-        if (!prepareContinue(sessionIndex,
-            cast(int) session.messages.length - 1))
-        {
-            // The client may still be busy finishing the previous turn, or a
-            // tool may still be draining. Retry from the UI tick a few times
-            // before giving up, so a momentary refusal does not leave the
-            // agent idle (the stall the user sees as a freeze).
-            if (_autoContinueRetries < autoContinueRetryLimit)
-            {
-                ++_autoContinueRetries;
-                _autoContinuePendingSession = sessionIndex;
-                _autoContinueRetryAt =
-                    MonoTime.currTime + msecs(autoContinueRetryDelayMs);
-                logAutoContinue("defer: prepareContinue refused (busy=" ~
-                    to!string(_client.busy()) ~ " timing=" ~
-                    to!string(_turnTiming) ~ "), retry " ~
-                    to!string(_autoContinueRetries) ~ "/" ~
-                    to!string(autoContinueRetryLimit));
-            }
-            else
-                logAutoContinue("skip: prepareContinue refused and retries " ~
-                    "exhausted (busy=" ~ to!string(_client.busy()) ~
-                    " timing=" ~ to!string(_turnTiming) ~ ")");
-            return;
-        }
-        _autoContinuePendingSession = -1;
-        _autoContinueRetries = 0;
-        _autoContinueStreak = streak + 1;
-        logAutoContinue("fired: resuming (streak " ~
-            to!string(streak + 1) ~ ")");
-        startChatRequest(sessionIndex);
-    }
-
-    /// Drive a deferred auto-continue retry from the UI tick. A no-op unless a
-    /// refusal scheduled one and its short delay has elapsed.
-    private void pumpAutoContinue()
-    {
-        if (_autoContinuePendingSession < 0) return;
-        if (MonoTime.currTime < _autoContinueRetryAt) return;
-        const pending = _autoContinuePendingSession;
-        _autoContinuePendingSession = -1;
-        maybeAutoContinue(pending);
-    }
-
     private bool prepareContinue(int sessionIndex, int messageIndex)
     {
         if (_client.busy() || _turnTiming ||
@@ -24614,6 +24498,10 @@ private void pollButtonSuggestionRequest()
         if (!onActivePath) return false;
 
         if (session.turnStatus == "interrupted") recordInterruptedReads(*session);
+        // A paused goal must not be resumed by an automatic or continuation
+        // turn. The durable checkpoint preserves it until the user resumes it;
+        // continuing here was producing repeated, near-identical status turns.
+        if (session.goalStatus == "paused") return false;
 
         ChatMessage continuation;
         continuation.role = "user";
@@ -31484,7 +31372,6 @@ private void pollButtonSuggestionRequest()
 
         // Send a turn that failed for a reason waiting will fix, on its own.
         tickAutoResend();
-        pumpAutoContinue();
 
         // The client replays a transient upstream failure (429 "the model
         // provider is temporarily unavailable") until it is answered, which can

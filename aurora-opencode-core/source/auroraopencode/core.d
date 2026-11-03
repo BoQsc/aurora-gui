@@ -758,6 +758,7 @@ public struct ChatMessage
     string role;       // "user" | "assistant" | "tool"
     string content;
     string reasoning;
+    string providerContent; // Original provider text when exact-format delivery removes wrappers.
     string time;       // "HH:MM" local wall-clock, empty when unknown
     bool failed;       // assistant reply that ended in an error
     string error;      // display-only failure; never replayed as assistant prose

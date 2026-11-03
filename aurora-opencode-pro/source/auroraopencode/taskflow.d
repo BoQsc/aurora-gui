@@ -192,7 +192,8 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
         session.contract.requestedOutcome = session.objective;
         session.contract.intent = originalIntent == RequestIntent.continuation ? "implementation" : requestIntentName(originalIntent);
     }
-    if (intent == RequestIntent.implementation && session.contract.intent == "analysis")
+    if (intent == RequestIntent.implementation &&
+        (session.contract.intent == "analysis" || session.contract.intent == "conversation"))
         session.contract.intent = "implementation";
     session.contract.currentIntent = name;
     session.contract.blocker = "";

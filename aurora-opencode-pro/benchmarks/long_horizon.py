@@ -92,10 +92,11 @@ prompts = [
 ]
 saved = json.loads((Path(os.environ['APPDATA'])/'Aurora OpenCode/settings.json').read_text(encoding='utf-8-sig'))
 settings = {key:saved[key] for key in ('baseUrl','apiKey','model')}
+console_models = {saved['model'], 'deepseek/deepseek-v4.1-flash-fast', 'deepseek/deepseek-v4.1-flash'}
 settings.update(workspace=str(workspace), toolsEnabled=True, legacyTools=False, quickTitle=False,
                 verbosity='concise', thinking=False, autoGoalFromFirstMessage=True,
-                contextBudgets=[dict(baseUrl=saved['baseUrl'],model=saved['model'],tokens=args.context)],
-                contextCompactions=[dict(baseUrl=saved['baseUrl'],model=saved['model'])])
+                contextBudgets=[dict(baseUrl=saved['baseUrl'],model=model,tokens=args.context) for model in sorted(console_models)],
+                contextCompactions=[dict(baseUrl=saved['baseUrl'],model=model) for model in sorted(console_models)])
 settings_path = state/'settings.json'
 settings_path.write_text(json.dumps(settings), encoding='utf-8')
 report = dict(status='failed', binarySha256=hashlib.sha256(args.exe.read_bytes()).hexdigest(),
@@ -133,6 +134,7 @@ try:
     headers = json.loads((state/'threads.index.json').read_text(encoding='utf-8'))['sessions']
     header = next(h for h in headers if h.get('goal'))
     thread = {**header, 'messages': next(h['messages'] for h in histories if h['messages'])}
+    report.update(model=header.get('model'),thinking=header.get('thinking'))
     messages = thread['messages']
     calls = [dict(index=i,**c) for i,m in enumerate(messages) for c in m.get('toolCalls',[])]
     plans = [c for c in calls if c['name']=='update_plan']

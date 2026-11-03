@@ -48,8 +48,12 @@ class Provider(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        requests.append(request)
         messages = request["messages"]
+        if any(m.get("role")=="system" and isinstance(m.get("content"),str) and
+               m["content"].startswith("You suggest what the user might send next") for m in messages):
+            self.send_body(json.dumps({"choices":[{"message":{"role":"assistant","content":"Check the next step."},"finish_reason":"stop"}]}), "application/json")
+            return
+        requests.append(request)
         prefixes = ("CHAT:", "CORRECTION:", "SAVE:", "REPAIR:", "RECAP:", "SLOW:", "NEW:", "OTHER:")
         prompts = [m["content"] for m in messages if m["role"] == "user"
                    and isinstance(m.get("content"), str) and m["content"].startswith(prefixes)]

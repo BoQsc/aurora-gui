@@ -8,6 +8,41 @@ import auroraopencode.goalmode : goalActive;
 import auroraopencode.taskpolicy : diagnosticToolAllowed;
 import auroraopencode.completionhandoff : completionHandoffInstruction;
 import auroraopencode.orchestrator : experimentalOrchestratorFilterTools;
+import std.json : JSONValue, JSONType, parseJSON;
+
+// Small contexts need room for the files the tools return. Keep the complete
+// schema contract (fields/types/enums/requirements), reducing prose only.
+private void compactSchemaDescriptions(ref JSONValue value)
+{
+    if (value.type == JSONType.object)
+    {
+        auto object = value.object;
+        object.remove("description");
+        foreach (key, ref child; object)
+            compactSchemaDescriptions(child);
+        value = JSONValue(object);
+    }
+    else if (value.type == JSONType.array)
+    {
+        auto items = value.array;
+        foreach (ref child; items) compactSchemaDescriptions(child);
+        value = JSONValue(items);
+    }
+}
+
+OpenCodeToolDef compactContextTool(OpenCodeToolDef tool, int contextLimit)
+{
+    if (contextLimit <= 0 || contextLimit > 32_768) return tool;
+    tool.description = checkpointSnippet(tool.description, 600);
+    try
+    {
+        auto schema = parseJSON(tool.parametersJson);
+        compactSchemaDescriptions(schema);
+        tool.parametersJson = schema.toString();
+    }
+    catch (Exception) {} // A malformed schema retains its original data.
+    return tool;
+}
 
 /// Capabilities and prompt configuration are captured at command admission.
 /// Preparation reads neither application globals nor widgets/provider clients.
@@ -92,7 +127,7 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
             if (policy.diagnosticReview && !diagnosticToolAllowed(tool.name)) continue;
             if (!policy.nestedPlans && tool.name == "update_subplan") continue;
             if (!goalActive(session) && tool.name == "goal_complete") continue;
-            result.tools ~= tool;
+            result.tools ~= compactContextTool(tool, policy.contextLimit);
         }
     if (policy.orchestratorEnabled)
         result.tools = experimentalOrchestratorFilterTools(result.tools, policy.orchestratorRouter);

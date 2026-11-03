@@ -20,7 +20,7 @@ bool supersededControlState(const ref ChatMessage message)
 
 /// Compact only at a new human turn, and only after a bounded batch of control
 /// messages. Live tool rounds retain an identical prefix for provider caching.
-bool controlHistoryCompactionNeeded(const ref ChatSession session)
+bool controlHistoryCompactionNeeded(const ref ChatSession session, bool constrainedWindow = false)
 {
     size_t count;
     bool humanAfterBoundary;
@@ -36,6 +36,7 @@ bool controlHistoryCompactionNeeded(const ref ChatSession session)
             humanAfterBoundary = true;
         else if (supersededControlState(message)) ++count;
     }
+    if (constrainedWindow) return count >= 2;
     if (!humanAfterBoundary || count < controlHistoryLimit) return false;
     // A boundary belongs immediately after a real request, before any of that
     // request's tools/control state. Never change projection mid-turn.

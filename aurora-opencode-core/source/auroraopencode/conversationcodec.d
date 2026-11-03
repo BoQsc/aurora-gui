@@ -144,6 +144,8 @@ public void applyMessageFields(JSONValue messageValue, ref ChatMessage message)
         message.content = f.str;
     if (auto f = "reasoning" in messageValue.object)
         message.reasoning = f.str;
+    if (auto f = "providerContent" in messageValue.object)
+        message.providerContent = f.str;
     if (auto f = "time" in messageValue.object)
         message.time = f.str;
     if (auto f = "failed" in messageValue.object)

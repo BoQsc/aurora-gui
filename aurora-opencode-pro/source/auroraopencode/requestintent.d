@@ -40,7 +40,8 @@ private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
     if (i >= 2 && words[i - 1] == "to" && ["me", "you", "need", "want"].canFind(words[i - 2])) return true;
     if (i >= 2 && words[i - 1] == "me" && words[i - 2] == "help") return true;
     if (i >= 2 && words[0] == "i" && ["want", "need"].canFind(words[1])) return true;
-    if (i && ["please", "now", "instead"].canFind(words[0])) return true;
+    if (i && ["please", "now", "instead", "so", "just"].canFind(words[0])) return true;
+    if (i >= 3 && words[0] == "i" && words[1] == "said" && words[2] == "to") return true;
     return false;
 }
 

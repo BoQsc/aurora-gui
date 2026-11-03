@@ -307,7 +307,10 @@ public size_t compactionBudgetBytes(int contextLimit)
     const size_t proportionalReserve = contextTokens / 10;
     size_t reserveTokens = proportionalReserve > 20_000
         ? proportionalReserve : 20_000;
-    const size_t maximumReserve = contextTokens * 4 / 10;
+    // A 32K window previously reserved 12.8K tokens for output while native
+    // schemas used most of the input remainder. Keep 20% output headroom in
+    // small windows, plus the conservative three-byte input-token estimate.
+    const size_t maximumReserve = contextTokens * (contextLimit <= 32_768 ? 2 : 4) / 10;
     if (reserveTokens > maximumReserve) reserveTokens = maximumReserve;
     // Code and tool JSON often tokenize at fewer than four UTF-8 bytes per
     // token. Leave room for that difference before the server rejects the
@@ -533,6 +536,15 @@ public size_t compactionSummaryCapacity(int contextLimit, size_t fixedRequestByt
     size_t capacity = maximum < 24_000 ? maximum : 24_000;
     if (capacity > (budget - fixedRequestBytes) / 4) capacity = (budget - fixedRequestBytes) / 4;
     return capacity;
+}
+
+public string compactionSummarySizeInstruction(size_t byteBudget)
+{
+    if (!byteBudget) return "";
+    return " The checkpoint text must be under " ~ to!string(max(cast(size_t)256,byteBudget/3)) ~
+        " UTF-8 bytes so the authoritative task state and recent tool results also fit. " ~
+        "Prioritize original behavioral rules, units, supplied user decisions and the exact next action. " ~
+        "Do not restate identical objective/goal/request fields or recursively quote earlier checkpoints.";
 }
 
 private string recentUserDecisions(const ref ChatSession session, size_t budget)

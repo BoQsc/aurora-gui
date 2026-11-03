@@ -20,6 +20,8 @@ public JSONValue messageToJson(const ref ChatMessage message)
     if (message.retiredImages.length) messageJson["retiredImages"] = message.retiredImages;
     if (message.reasoning.length > 0)
         messageJson["reasoning"] = message.reasoning;
+    if (message.providerContent.length > 0)
+        messageJson["providerContent"] = message.providerContent;
     if (message.time.length > 0)
         messageJson["time"] = message.time;
     if (message.failed)
@@ -307,6 +309,8 @@ public string runtimeMessagePayload(const ref ChatMessage message)
     payload["parentId"] = message.parentId;
     if (message.reasoning.length > 0)
         payload["reasoning"] = message.reasoning;
+    if (message.providerContent.length > 0)
+        payload["providerContent"] = message.providerContent;
     if (message.time.length > 0) payload["time"] = message.time;
     if (message.failed) payload["failed"] = true;
     if (message.error.length > 0) payload["error"] = message.error;
