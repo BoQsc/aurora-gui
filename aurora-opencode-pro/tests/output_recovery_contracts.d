@@ -100,6 +100,19 @@ int main()
     }
     add("user", "Explain the result"); add("assistant", "Done");
     assert(!taskAuditStalled(session));
+    session.goal="Deliver after obtaining the customer rate";session.goalStatus="active";
+    foreach (_;0..2)
+    {
+        add("user",taskContinuationMarker~"still pending",true);
+        add("user","Persistent goal continuation: awaiting useful action",true);
+        add("assistant","The customer rate is missing.");
+    }
+    assert(taskAuditStalled(session) && goalAuditStalled(session));
+    add("tool","Required customer rate",false,"request_input");
+    session.messages[$-1].toolArgs=`{"required_fact":"Billing rate","reason":"Customer-owned rate absent from local configuration","question":"What billing rate applies?","checked":["README and inputs"],"independent_work_complete":true}`;
+    session.taskStatus="waiting_input";
+    add("assistant","What billing rate applies?");
+    assert(!taskAuditStalled(session) && !goalAuditStalled(session),"A validated input wait inherited an earlier prose-stall counter");
     writeln("PASS bounded unusable output, varied goal chatter, useful long-horizon work and new-user boundaries");
     return 0;
 }

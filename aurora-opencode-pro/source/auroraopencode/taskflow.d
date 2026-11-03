@@ -5,6 +5,7 @@ import auroraopencode.requestintent;
 import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.planhistory : recordPlanHistory;
 import auroraopencode.verification : verificationCheck;
+import auroraopencode.inputcontract : inputRequestStep;
 import auroraopencode.workevidence : observedResultKey;
 import std.algorithm : canFind, min;
 import std.array : appender;
@@ -319,6 +320,7 @@ string evidenceKind(const ref ChatMessage message)
         }
         catch (Exception) {}
     if (message.role != "tool") return "";
+    if (["request_input", "task_blocker", "ask_user"].canFind(message.toolName)) return "input";
     if (["calculate", "read", "grep", "glob", "checksum", "view_image", "webfetch", "websearch"].canFind(message.toolName)) return "research";
     if (message.toolName == "dshell") return message.toolArgs.canFind("\"list\"") || message.toolArgs.canFind("\"info\"") ? "research" : "";
     if (["write", "edit", "apply_patch", "copy", "move", "rename", "remove", "download", "create_folder"].canFind(message.toolName)) return "edit";
@@ -386,6 +388,7 @@ bool compatibleEvidence(string kind, string proof, bool allowHistorical)
 
 bool compatibleEvidence(const ref TaskStep step, string proof, bool allowHistorical)
 {
+    if (proof == "input") return inputRequestStep(step);
     if (!compatibleEvidence(step.kind, proof, allowHistorical)) return false;
     if (step.kind == "verify" && matchFirst(step.done.toLower(), `\b(tests?|assertions?|pytest|unittest)\b`))
         return proof.canFind("tests") || proof.canFind("pytest") || proof.canFind("unittest") ||

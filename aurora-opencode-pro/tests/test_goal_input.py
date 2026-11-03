@@ -38,20 +38,26 @@ class Provider(http.server.BaseHTTPRequestHandler):
         results = {m["tool_call_id"]: m["content"] for m in messages if m["role"] == "tool"}
         supplied = any(m["role"] == "user" and m.get("content") == "Use staging." for m in messages)
         content, tool = "", None
-        if len(requests) > 7:
+        if len(requests) > 9:
             failures.append("Goal did not wait or settle")
             content = "FIXTURE_FAILED"
+        elif not supplied and "input-plan" not in results:
+            tool=("input-plan","update_plan",{"plan":[
+                {"id":"ask","step":"Request environment via request_input","kind":"other","status":"in_progress"},
+                {"id":"deliver","step":"Write the deployment note once the environment is supplied","kind":"edit","status":"pending"}]})
         elif not supplied and "missing-fact" not in results:
             tool = ("missing-fact", "request_input", {
                 "reason": "The deployment environment name is absent from available configuration",
                 "required_fact": "Deployment environment name", "question": "Which environment should the note name?",
-                "checked": ["Workspace configuration"], "independent_work_complete": True,
+                "checked": ["Workspace configuration"], "independent_work_complete": True,"blocked_steps":["deliver"],
             })
         elif not supplied:
             content = "Which environment should the note name?"
         elif "save-note" not in results:
             assert "goal_complete" in {t["function"]["name"] for t in request["tools"]}, "Reply left the goal paused"
             tool = ("save-note", "write", {"filePath": "deployment.md", "content": "Environment: staging"})
+        elif "complete-plan" not in results:
+            tool=("complete-plan","update_plan",{"plan_mode":"patch","plan":[{"id":"deliver","status":"completed","evidence":["save-note"]}]})
         elif "complete-goal" not in results:
             tool = ("complete-goal", "goal_complete", {"summary": "Saved the staging deployment note", "evidence": ["save-note"]})
         else:
@@ -98,16 +104,19 @@ try:
     replies = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{"')]
     assert len(replies) == 2 and replies[0]["taskStatus"] == "waiting_input", replies
     assert replies[1]["reply"] == "Saved deployment.md for staging.", replies
-    assert not failures and len(requests) == 5, (failures, len(requests))
+    assert not failures and len(requests) == 7, (failures, len(requests))
     assert (workspace / "deployment.md").read_text() == "Environment: staging"
     index = json.loads((state / "threads.index.json").read_text(encoding="utf-8"))
     assert any(s.get("goalStatus") == "completed" for s in index["sessions"]), index
+    completed=next(s for s in index["sessions"] if s.get("goalStatus")=="completed")
+    asked=next(row for row in completed['taskSteps'] if row['id']=='ask')
+    assert asked['status']=='completed' and asked['evidence']==['missing-fact'],asked
     (directory / "result.json").write_text(json.dumps({
         "status": "passed", "binarySha256": hashlib.sha256(args.executable.read_bytes()).hexdigest(),
         "seconds": time.monotonic() - started, "requests": len(requests),
         "goalCompletedAfterReply": True,
     }, indent=2), encoding="utf-8")
-    print("PASS active goal waits, resumes on a reply and completes in five HTTP requests; ARTIFACTS", directory)
+    print("PASS input-request plan step settles from its own receipt; active goal waits, resumes and completes in seven HTTP requests; ARTIFACTS", directory)
 finally:
     server.shutdown()
     server.server_close()

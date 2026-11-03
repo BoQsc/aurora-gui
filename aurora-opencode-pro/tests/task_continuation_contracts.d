@@ -217,6 +217,24 @@ int main()
     assert(taskBlockerError(`{"kind":"input","reason":"Deployment address missing"}`).length);
     assert(taskBlockerError(`{"kind":"external","reason":""}`).length);
     assert(taskBlockerError("broken").length);
+    import auroraopencode.inputcontract : settleInputRequestSteps;
+    import auroraopencode.taskflow : supportedStep, compatibleEvidence;
+    ChatSession rate;
+    rate.taskStatus="active";
+    rate.taskSteps=[TaskStep("Request billing rate via request_input","in_progress","ask","other"),
+                    TaskStep("Generate real invoice.json once rate known","pending","invoice","edit")];
+    const question=`{"required_fact":"Billing rate (currency per unit)","reason":"Invoice totals depend on the customer-owned rate, absent from every local source.","question":"What billing rate should the invoice use?","checked":["README.md: no value given","events.jsonl: events only"],"independent_work_complete":true,"blocked_steps":["invoice"]}`;
+    assert(!taskInputError(rate,question).length,"Request-input bookkeeping blocked its own input operation");
+    append(rate,"tool","Required billing rate",false,"request_input",question);
+    rate.messages[$-1].toolCallId="input-receipt";
+    settleInputRequestSteps(rate,"input-receipt");
+    assert(rate.taskSteps[0].status=="completed" && supportedStep(rate,rate.taskSteps[0]));
+    assert(rate.taskSteps[1].status=="pending" && !compatibleEvidence(rate.taskSteps[1],"input",false));
+    rate.taskSteps~=TaskStep("Independent README usage","pending","readme","edit");
+    assert(taskInputError(rate,question).length,"Asking for a fact hid independent implementation work");
+    rate.taskSteps[0]=TaskStep("Request billing rate via request_input and implement package","pending","mixed","other");
+    settleInputRequestSteps(rate,"input-receipt");
+    assert(rate.taskSteps[0].status=="pending","A mixed implementation outcome was completed as input bookkeeping");
     writeln("PASS recurring recovery, focused required input, verification/questions and Stop boundaries");
     return 0;
 }

@@ -3,7 +3,7 @@ module auroraopencode.outputrecovery;
 import auroraopencode.core : ChatMessage, ChatSession, activeMessagePath;
 import auroraopencode.outputguard : outputFailurePrefix, outputRecoveryMarker;
 import auroraopencode.goalmode : goalActive;
-import auroraopencode.taskcontinuation : taskContinuationMarker;
+import auroraopencode.taskcontinuation : taskContinuationMarker, taskAwaitingInput;
 import std.string : startsWith, strip;
 
 /// This bounds consecutive unusable provider responses, never useful task work.
@@ -88,7 +88,7 @@ bool answerReplayed(const ref ChatSession session)
 /// alone cannot make an endless succession of final answers useful.
 bool goalAuditStalled(const ref ChatSession session)
 {
-    if (!goalActive(session)) return false;
+    if (!goalActive(session) || taskAwaitingInput(session)) return false;
     int audits;
     foreach_reverse (index; activeMessagePath(session))
     {
@@ -106,6 +106,7 @@ bool goalAuditStalled(const ref ChatSession session)
 /// interval. Productive long work has no global turn limit.
 bool taskAuditStalled(const ref ChatSession session)
 {
+    if (taskAwaitingInput(session)) return false;
     int continuations;
     foreach_reverse (index; activeMessagePath(session))
     {

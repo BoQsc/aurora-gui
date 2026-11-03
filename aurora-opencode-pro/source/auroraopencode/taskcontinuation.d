@@ -7,6 +7,7 @@ import auroraopencode.requestintent : RequestIntent, actionApprovalRequest, answ
 import auroraopencode.taskflow : supportedStep, taskHasActionEvidence, taskEvidenceIndex, taskRequiresPlan, taskInvestigation;
 import auroraopencode.workevidence : observedResultKey;
 import auroraopencode.planmode : experimentalStrictPlanEnabled;
+import auroraopencode.inputcontract : inputRequestStep;
 import std.digest.sha : sha256Of;
 import std.digest : toHexString;
 import std.json : JSONValue, JSONType, parseJSON;
@@ -299,9 +300,9 @@ string taskInputError(const ref ChatSession session, string arguments)
     if (error.length) return error;
     const value = parseJSON(arguments);
     string[] remaining;
-    foreach (step; session.taskSteps) if (step.status != "completed") remaining ~= step.id.length ? step.id : step.text;
-    foreach (item; session.contract.workItems) if (item.required && item.step.status != "completed") remaining ~= item.step.id;
-    foreach (plan; session.nestedPlans) foreach (step; plan.steps) if (step.status != "completed") remaining ~= step.id.length ? step.id : step.text;
+    foreach (step; session.taskSteps) if (step.status != "completed" && !inputRequestStep(step)) remaining ~= step.id.length ? step.id : step.text;
+    foreach (item; session.contract.workItems) if (item.required && item.step.status != "completed" && !inputRequestStep(item.step)) remaining ~= item.step.id;
+    foreach (plan; session.nestedPlans) foreach (step; plan.steps) if (step.status != "completed" && !inputRequestStep(step)) remaining ~= step.id.length ? step.id : step.text;
     if (remaining.length > 1)
     {
         string[] blocked;

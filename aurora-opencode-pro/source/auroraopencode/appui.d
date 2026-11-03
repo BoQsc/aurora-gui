@@ -21613,6 +21613,8 @@ private void pollButtonSuggestionRequest()
 
         if (!toolFailed && (event.toolName == "task_blocker" || event.toolName == "request_input"))
         {
+            import auroraopencode.inputcontract : settleInputRequestSteps;
+            settleInputRequestSteps(*session, event.toolCallId);
             session.taskStatus = "waiting_input";
             try session.contract.blocker = parseJSON(toolArgs)["reason"].str;
             catch (Exception) {}

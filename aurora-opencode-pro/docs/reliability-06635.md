@@ -1,4 +1,4 @@
-# Focused reliability repair: 0.66.35–0.66.37
+# Focused reliability repair: 0.66.35–0.66.38
 
 The reported repeated replies were separate automatic turns, not merely duplicate
 rendering. Recent saved chats showed repeated hidden `Continuation request:`
@@ -86,3 +86,18 @@ admission from about 1.8 seconds until the first provider token, with about 1 ms
 from first token to application. That sample does not establish sustained decode
 speed or a general latency improvement. Large histories, provider load and
 reasoning can affect throughput; this repair makes no provider-speed claim.
+
+The first full 0.66.37 production run passed all four stages at an actual 32K,
+within every request budget. A repeat on the final provenance image then exposed
+a separate planner deadlock: it recorded an unfinished outcome `Request billing
+rate via request_input`; input validation treated that bookkeeping outcome as
+independent work that had to finish before request_input could run. The model
+correctly named only the dependent invoice outcome and was repeatedly rejected.
+That repeat is retained as failed. 0.66.38 treats a narrow, explicit input-request
+step as fulfilled by the successful input operation itself. Its input receipt
+can prove only such a step, never an edit, check or other delivery. Mixed outcomes
+and actual independent work remain guarded. Both a pure contract and the real
+HTTP goal wait/resume test cover this exact self-dependency.
+Validated waits also take precedence over prior no-action audit counters, so a
+successful question cannot inherit a stale prose-stall error after reaching the
+correct input boundary.
