@@ -85,7 +85,7 @@ state = directory / "appdata" / "Aurora OpenCode"
 state.mkdir(parents=True)
 (state / "settings.json").write_text(json.dumps({
     "baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "apiKey": "fixture", "model": "goal-input-fixture",
-    "workspace": str(workspace), "toolsEnabled": True, "quickTitle": False, "legacyTools": False,
+    "workspace": str(workspace), "toolsEnabled": True, "quickTitle": False, "composerSuggestion": False, "legacyTools": False,
 }), encoding="utf-8")
 started = time.monotonic()
 try:

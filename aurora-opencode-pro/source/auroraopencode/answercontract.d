@@ -8,7 +8,7 @@ bool jsonOnlyRequest(string request)
 {
     const lower = request.toLower();
     const requested = cast(bool) matchFirst(lower,
-        `(?:^|[.!?\n]\s*|\bthen\s+|\band\s+)(?:please\s+)?(?:return|respond|reply|output)\s+(?:(?:only|exactly|just|one|a|an|single|valid|in|with|as)\s+)*json\b`);
+        `(?:^|[.!?:;\n]\s*|\bthen\s+|\band\s+)(?:please\s+)?(?:return|respond|reply|output)\s+(?:(?:only|exactly|just|one|a|an|single|valid|in|with|as)\s+)*json\b`);
     return requested && lower.indexOf("followed by") < 0 && lower.indexOf("and explain") < 0 &&
         lower.indexOf("with an explanation") < 0 && lower.indexOf("and an explanation") < 0;
 }

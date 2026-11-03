@@ -7,7 +7,7 @@ import std.stdio : writeln;
 
 int main()
 {
-    foreach (request; ["Return one JSON object with keys x and y.", "Please respond in JSON.",
+    foreach (request; ["Return one JSON object with keys x and y.", "Please respond in JSON.", "Answer only: return one JSON object.",
             "Analyze the source. Then return a single JSON object."])
         assert(answerContract(request, "").indexOf("JSON value alone") >= 0, request);
     foreach (request; ["Explain how to return JSON.", "Why does the output contain JSON?",
@@ -35,6 +35,7 @@ int main()
     const instruction="Return one JSON object.";
     const exact=`{"reference":"RECON-Q7-8162","alice":"0.06","bob":"0.09","refund_month":"2026-04"}`;
     assert(normalizedJsonAnswer(instruction,"The refund changes April.\n\n"~exact)==exact);
+    assert(normalizedJsonAnswer("Answer only: return one JSON object.","The refund changes April.\n\n"~exact)==exact);
     assert(normalizedJsonAnswer(instruction,"```json\n"~exact~"\n```")==exact);
     assert(normalizedJsonAnswer(instruction,`A value: {"text":"braces } and escaped \"quote\"","array":[1,2]}`)==`{"text":"braces } and escaped \"quote\"","array":[1,2]}`);
     foreach (unchanged; [`{"a":1} or {"a":2}`, `{"a":`, `{"a":invalid}`, "Unavailable"])

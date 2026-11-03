@@ -117,7 +117,7 @@ state.mkdir(parents=True)
 endpoint = f"http://127.0.0.1:{server.server_port}/v1"
 (state / "settings.json").write_text(json.dumps({
     "baseUrl": endpoint, "apiKey": "local-fixture", "model": "history-fixture",
-    "workspace": str(workspace), "toolsEnabled": True, "legacyTools": False, "quickTitle": False,
+    "workspace": str(workspace), "toolsEnabled": True, "legacyTools": False, "quickTitle": False, "composerSuggestion": False,
     "autoGoalFromFirstMessage": True,
     "contextBudgets": [{"baseUrl": endpoint, "model": "history-fixture", "tokens": 32000}],
     "contextCompactions": [{"baseUrl": endpoint, "model": "history-fixture"}],

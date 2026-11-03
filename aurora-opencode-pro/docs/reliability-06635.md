@@ -1,4 +1,4 @@
-# Focused reliability repair: 0.66.35
+# Focused reliability repair: 0.66.35–0.66.36
 
 The reported repeated replies were separate automatic turns, not merely duplicate
 rendering. Recent saved chats showed repeated hidden `Continuation request:`
@@ -32,6 +32,10 @@ future model context contain the requested JSON. Mixed prose/JSON requests retai
 their requested format. This applies to the actual desktop completion path and
 survives save/reload. It fixes the prior observed preface-before-correct-JSON case
 without an extra model request.
+The production replay additionally exposed a missing colon boundary in
+`Answer only: return one JSON object`; 0.66.36 includes that classifier fix and
+its regression. Initial replay attempts used a nonstreaming fixture response
+which this client rejected; those are fixture failures and are excluded.
 
 At 32K, the old preflight reserved 40% of the window for output. Native tool
 definitions consumed 35,696 bytes before the system prompt and history. The
