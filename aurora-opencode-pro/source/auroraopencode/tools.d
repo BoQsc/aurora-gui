@@ -555,8 +555,8 @@ private OpenCodeToolDef goalCompleteToolDefinition()
 /// Record the visible plan, with at most one step in progress.
 private OpenCodeToolDef readPlanToolDefinition()
 {
-    return OpenCodeToolDef("read_plan", "Read this task without changing it. Summary shows objective, position and outstanding work. Details defaults to outcomes when a plan exists, otherwise actions. Outcome IDs belong in update_plan.plan. Set collection=actions (or parent_id) for action IDs: update those in update_plan.work_items. Recover exact acceptance, discoveries and follow-ups after compaction.",
-        `{"type":"object","properties":{"view":{"type":"string","enum":["summary","details"]},"collection":{"type":"string","enum":["outcomes","actions"]},"parent_id":{"type":"string"},"include_completed":{"type":"boolean"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}`);
+    return OpenCodeToolDef("read_plan", "Read task state without changing or activating it. Omit task_id for current work; supply a background task ID to recover exact earlier requirements after compaction. Summary shows objective, position and outstanding work. Details defaults to outcomes when a plan exists, otherwise actions. Outcome IDs belong in update_plan.plan. Set collection=actions (or parent_id) for action IDs: update those in update_plan.work_items.",
+        `{"type":"object","properties":{"task_id":{"type":"string"},"view":{"type":"string","enum":["summary","details"]},"collection":{"type":"string","enum":["outcomes","actions"]},"parent_id":{"type":"string"},"include_completed":{"type":"boolean"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}`);
 }
 
 private OpenCodeToolDef readHistoryToolDefinition()

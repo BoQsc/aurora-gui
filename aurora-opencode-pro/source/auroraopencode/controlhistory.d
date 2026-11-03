@@ -18,6 +18,18 @@ bool supersededControlState(const ref ChatMessage message)
          message.content.startsWith("Progress guidance:"));
 }
 
+bool turnControlState(const ref ChatMessage message)
+{
+    if (!message.internal || message.images.length) return false;
+    if (supersededControlState(message)) return true;
+    foreach (prefix; ["Persistent goal continuation:", "Continuation request:",
+        "Proactive action checkpoint:", "Agent output recovery:",
+        "Execution diagnosis checkpoint:", "Completion handoff requested:",
+        "The user resumed the", "The user started the", "The user updated the"])
+        if (message.content.startsWith(prefix)) return true;
+    return false;
+}
+
 /// Compact only at a new human turn, and only after a bounded batch of control
 /// messages. Live tool rounds retain an identical prefix for provider caching.
 bool controlHistoryCompactionNeeded(const ref ChatSession session, bool constrainedWindow = false)

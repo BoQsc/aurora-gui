@@ -8,7 +8,7 @@ import std.conv : to;
 import auroraopencode.outputguard : outputFailurePrefix;
 import std.string : startsWith;
 import auroraopencode.grepformat : compactGrepHistory;
-import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState;
+import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState, turnControlState;
 import auroraopencode.completionhandoff : completionHandoffMarker;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
@@ -54,9 +54,11 @@ public ChatRequestMessage[] projectRequestMessages(
                 ++slot;
                 continue;
             }
-            // History remains in the durable graph. Only superseded internal
-            // control state before a recorded turn boundary leaves the wire.
+            // Earlier-turn controls cannot govern a new request. Preserve the
+            // live turn's prefix for provider caching; constrained windows use
+            // the explicit control boundary to retire its superseded states.
             if ((slot < controlBoundary && supersededControlState(message)) ||
+                (slot < instructionBoundary && turnControlState(message)) ||
                 (message.internal && message.content.startsWith(controlHistoryBoundary)))
             {
                 ++slot;

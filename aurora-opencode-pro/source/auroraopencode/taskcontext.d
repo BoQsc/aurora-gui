@@ -122,6 +122,18 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     foreach_reverse (decision; session.contract.decisions)
         if (decision.startsWith("Plan change: ") && changes++ < 4) line("Decision: ", decision, 240);
     line("Blocker: ", session.contract.blocker, 320);
+    // Background is recoverable context, not a second checklist. Keep a small
+    // index across compaction; read_plan can retrieve each exact saved task.
+    size_t background;
+    foreach_reverse (snapshot; session.taskArchive)
+    {
+        if (background++ == 2) break;
+        ChatSession saved; restoreActiveTaskState(saved, snapshot);
+        line("Background task (inactive; read_plan task_id=" ~ saved.contract.id ~ "): ",
+            saved.objective, 480);
+        foreach (constraint; saved.contract.constraints)
+            line("Background constraint (apply only if relevant to this request): ", constraint, 240);
+    }
     line("", "Full task records and earlier plan-change reasons remain saved; this is the bounded working context.", 128);
     return output.data;
 }

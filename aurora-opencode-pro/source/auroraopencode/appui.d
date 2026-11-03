@@ -21775,7 +21775,7 @@ private void pollButtonSuggestionRequest()
             guidance.content = text;
             guidance.time = currentTimestamp();
             appendMessage(session, guidance);
-            acceptTaskRequest(session, text, session.activeLeafId);
+            acceptTaskRequest(session, text, session.activeLeafId, true);
         }
         session.queuedGuidance.length = 0;
         session.taskStatus = "active";
@@ -22432,6 +22432,7 @@ private void pollButtonSuggestionRequest()
             if (_goalBar !is null) _goalBar.beginEdit();
             return;
         }
+        goalMutation.restoreGoalTask(*session);
         session.goalStatus = "active";
         const now = Clock.currTime.toUnixTime();
         if (session.goalStartedAt == 0) session.goalStartedAt = now;
@@ -22697,14 +22698,7 @@ private void pollButtonSuggestionRequest()
         // The conversation owns its route; the model picker already mirrors a
         // change into this session, so a saved default must not overwrite it.
         if (session.model.length == 0) session.model = _settings.model;
-        // The objective describes the thread's durable purpose. Short
-        // follow-ups such as "launch it" or "check the log" refine that work;
-        // replacing the objective with them made compaction erase why the work
-        // existed. A completed/blocked turn still gets a fresh checklist and
-        // verification state, while the original objective remains stable.
-        // Seeding here is only a provisional fallback: the model rewrites the
-        // objective into a concise goal through `update_plan`, so the plan card
-        // does not just echo the raw message that became the chat title.
+        // acceptTaskRequest assigns current work; previous tasks remain archived.
         session.turnStatus = "running";
         publishThreadUpdated(*session);
 

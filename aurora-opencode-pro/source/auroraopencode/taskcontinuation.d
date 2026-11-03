@@ -59,9 +59,9 @@ struct TaskContinuation
     private string verificationGuidance() const
     {
         return verificationRequired
-            ? "Verification remains required: preserve useful tests and run a checkout checker " ~
-              "(Python: python -u -B -m unittest or pytest), or a verify recipe with a tests step. " ~
-              "Resolve routine checking choices internally."
+            ? "Verify the current requested behavior using the relevant execution path and acceptance checks. " ~
+              "A helper test does not prove a live GUI change. Use available tools to close that gap; " ~
+              "do not repeat an already passing check or report the same limitation again."
             : "Use request_input only for an essential unavailable user fact, after finishing independent work.";
     }
 }
@@ -213,7 +213,7 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     size_t omitted;
     void remaining(string label, string text, string done)
     {
-        if (result.remaining.length < 5000)
+        if (result.remaining.length < 1600)
             result.remaining ~= label ~ taskExcerpt(text, 320) ~ ". Acceptance: " ~ taskExcerpt(done, 320) ~ ". ";
         else ++omitted;
     }

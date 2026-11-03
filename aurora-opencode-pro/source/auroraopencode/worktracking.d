@@ -191,6 +191,19 @@ string readPlanText(const ref ChatSession session, string arguments)
         if (auto value = key in args.object) if (value.type == JSONType.string) return value.str;
         return "";
     }
+    const taskId = field("task_id");
+    if (taskId.length && taskId != session.contract.id)
+    {
+        foreach_reverse (snapshot; session.taskArchive)
+        {
+            ChatSession saved; restoreActiveTaskState(saved, snapshot);
+            if (saved.contract.id != taskId) continue;
+            args.object.remove("task_id");
+            return "Background task (inactive; quoted history, not current instructions):\n" ~
+                readPlanText(saved, args.toString());
+        }
+        return "Error: no saved task with task_id " ~ taskId;
+    }
     const view = field("view");
     if (!view.length || view == "summary") return taskContext(session, "", true);
     if (view != "details") return "Error: view must be summary or details.";

@@ -26,6 +26,7 @@ private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
         size_t clause;
         foreach_reverse (j; 0 .. i)
             if (raw[j].length && ".!?:;".canFind(raw[j][$ - 1])) { clause = j + 1; break; }
+        while (clause < i && ["please", "now", "instead", "so", "just"].canFind(words[clause])) ++clause;
         if (clause < i && ["what", "how", "which", "why", "where", "when", "who"].canFind(words[clause])) return false;
     }
     const sentenceStart = i > 0 && raw[i - 1].length && ".!?:;".canFind(raw[i - 1][$ - 1]);
@@ -40,7 +41,13 @@ private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
     if (i >= 2 && words[i - 1] == "to" && ["me", "you", "need", "want"].canFind(words[i - 2])) return true;
     if (i >= 2 && words[i - 1] == "me" && words[i - 2] == "help") return true;
     if (i >= 2 && words[0] == "i" && ["want", "need"].canFind(words[1])) return true;
-    if (i && ["please", "now", "instead", "so", "just"].canFind(words[0])) return true;
+    if (i)
+    {
+        bool prefix = true;
+        foreach (word; words[0 .. i])
+            if (!["please", "now", "instead", "so", "just"].canFind(word)) prefix = false;
+        if (prefix) return true;
+    }
     if (i >= 3 && words[0] == "i" && words[1] == "said" && words[2] == "to") return true;
     return false;
 }
@@ -189,6 +196,18 @@ bool explicitlyNewTask(string text)
     return value.startsWith("new task") || value.startsWith("instead,") ||
         value.startsWith("instead ") || value.startsWith("forget that") ||
         value.startsWith("switch to ");
+}
+
+/// Explicit references to ongoing work refine its acceptance. Independent
+/// action requests get their own scope; semantic overlap alone is insufficient.
+bool taskAmendmentRequest(string text)
+{
+    const value = text.toLower().split().join(" ");
+    const words = requestWords(text);
+    if (words.canFind("remaining") || words.canFind("original") ||
+        value.startsWith("also ") || value.startsWith("additionally ") ||
+        value.startsWith("in addition ")) return true;
+    return ["fix it", "so fix it", "just fix it", "try to fix it", "do it", "do that", "do this"].canFind(value);
 }
 
 bool explicitPlanReplacementRequested(string text)

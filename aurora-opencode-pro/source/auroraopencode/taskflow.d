@@ -110,9 +110,13 @@ bool initializeLegacyTask(ref ChatSession session)
     return true;
 }
 
-void acceptTaskRequest(ref ChatSession session, string text, string messageId)
+void acceptTaskRequest(ref ChatSession session, string text, string messageId, bool steering = false)
 {
     initializeLegacyTask(session);
+    // Migrate the old implicit association before moving work to the archive.
+    if (!session.contract.goal.length && session.goal.length &&
+        (session.contract.requestedOutcome == session.goal || session.objective == session.goal ||
+         session.goalStatus == "active")) session.contract.goal = session.goal;
     const intent = requestIntent(text);
     const name = requestIntentName(intent);
     if (intent == RequestIntent.conversation)
@@ -130,7 +134,7 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
             session.contract.blocker = "";
             return;
         }
-        session.contract.currentIntent = session.contract.intent.length ? session.contract.intent : name;
+        session.contract.currentIntent = name;
         return;
     }
     if (intent == RequestIntent.clarification)
@@ -138,38 +142,39 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
         session.contract.currentIntent = name;
         return;
     }
-    if (intent == RequestIntent.continuation && session.taskStatus == "completed")
-        foreach_reverse (snapshot; session.taskArchive)
-            try
-            {
-                auto state = parseJSON(snapshot);
-                if (state["taskStatus"].str == "completed") continue;
-                const previousCurrent = activeTaskStateJson(session);
-                session.objective = state["objective"].str;
-                session.taskStatus = state["taskStatus"].str;
-                session.verificationStatus = state["verificationStatus"].str;
-                auto archive = session.taskArchive;
-                archive ~= previousCurrent;
-                readTaskContract(session, state);
-                session.taskArchive = archive;
-                break;
-            }
-            catch (Exception) {}
     if (intent == RequestIntent.continuation &&
         (session.taskStatus == "completed" || !session.objective.length))
     {
         session.contract.currentIntent = "conversation";
         return;
     }
-    const fresh = session.objective.length == 0 || session.taskStatus == "completed" || explicitlyNewTask(text);
+    // A persistent active goal and in-flight steering own a multi-turn task.
+    // Otherwise a new action owns a new task. An unfinished checklist from an
+    // older request is background history, never implicit authorization.
+    const suppliedFact = session.taskStatus == "waiting_input" && !explicitlyNewTask(text) &&
+        (session.goalStatus == "active" || (intent != RequestIntent.implementation && intent != RequestIntent.analysis));
+    const approval = actionApprovalRequest(text);
+    const pausedOwner = session.goalStatus == "paused" && session.contract.goal == session.goal && session.goal.length;
+    const amendment = taskAmendmentRequest(text) && !pausedOwner;
+    const fresh = session.objective.length == 0 ||
+        (intent != RequestIntent.continuation && !approval && !suppliedFact && !steering &&
+         (session.taskStatus == "completed" || explicitlyNewTask(text) ||
+          (intent == RequestIntent.implementation && session.goalStatus != "active" && !amendment)));
     if (fresh)
     {
         if (session.objective.length)
         {
             session.taskArchive ~= activeTaskStateJson(session);
         }
+        if (explicitlyNewTask(text) && session.goalStatus == "active")
+        {
+            import auroraopencode.goalmode : recordGoalOutcome;
+            session.goalStatus = "paused";
+            recordGoalOutcome(session, "paused", session.updatedAt);
+        }
         session.objective = text;
         session.contract = TaskContract();
+        if (session.goalStatus == "active" && !explicitlyNewTask(text)) session.contract.goal = session.goal;
         session.taskSteps = null; session.nestedPlans = null;
         session.verificationStatus = "not_required";
     }
@@ -197,6 +202,7 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId)
         (session.contract.intent == "analysis" || session.contract.intent == "conversation"))
         session.contract.intent = "implementation";
     session.contract.currentIntent = name;
+    if (suppliedFact || approval) session.contract.currentIntent = "continuation";
     session.contract.blocker = "";
     session.taskStatus = "active";
 }

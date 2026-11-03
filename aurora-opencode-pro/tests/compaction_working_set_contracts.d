@@ -64,6 +64,10 @@ int main()
     assert(wire.length==4 && wire[0].content=="Keep the original rule.");
     assert(wire[1].toolCalls[0].id=="live" && wire[2].toolCallId=="live" && wire[2].content=="Exact latest file contents");
     assert(wire[3].content=="Internal agent-control instruction:\n"~control.content && controls.messages.length==8,"Retiring internal state changed saved history or current evidence");
+    control.id="new-human";control.internal=false;control.content="Fix fullscreen instead.";add(controls,control);
+    const nextTurn=projectRequestMessages(controls);
+    assert(nextTurn.length==4 && nextTurn[$-1].content==control.content,
+        "An earlier task checkpoint was promoted into a system instruction on a new request");
     ChatSession s; s.id = "working-set";
     ChatMessage user; user.id = "request"; user.role = "user";
     user.content = "Implement the package without losing the original goal."; add(s,user);

@@ -48,9 +48,14 @@ public string durableTaskPrompt(const ref ChatSession session,
             "evidence; do not resume desktop actions or reconcile the older checklist. " ~
             "Preserve the parent objective, current step and return point. The unfinished work remains recorded for resume.\n");
     else
-        prompt.put("Treat this state as authoritative. Update the plan as work " ~
-            "changes. Do not claim completion while verification is required " ~
-            "or a checklist item remains pending/in_progress.\n");
+        prompt.put("The latest user request defines the current deliverable. Background tasks and paused goals " ~
+            "are context, not additional work. Resolve references using saved history; use read_plan task_id " ~
+            "for exact earlier requirements. For an active goal, preserve unaffected requirements across amendments. " ~
+            "Use a short outcome plan for complex work; execute simple requests directly. " ~
+            "Verify the requested behavior in its real execution path: helper or headless checks alone do not prove GUI behavior. " ~
+            "Complete authorized execution and relevant verification before replying. State the result, useful evidence " ~
+            "and any concrete unresolved limitation briefly. Do not substitute repeated status summaries, permission " ~
+            "questions or offers to continue for available useful work.\n");
     return prompt.data;
 }
 

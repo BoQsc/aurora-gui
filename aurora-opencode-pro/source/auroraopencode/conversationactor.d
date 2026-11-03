@@ -38,7 +38,7 @@ import auroraopencode.taskmutation : applyTaskPlan, applyTaskSubplan;
 import auroraopencode.taskpolicy : verificationScope;
 import auroraopencode.goalmode : goalActive, recordGoalSet, recordGoalOutcome, clampGoalText, goalContinuationInstruction;
 import auroraopencode.planhistory : recordPlanHistory;
-import auroraopencode.goalmutation : resetTaskForNewGoal;
+import auroraopencode.goalmutation : resetTaskForNewGoal, restoreGoalTask;
 import auroraopencode.outputrecovery : answerReplayed, goalAuditStalled, taskAuditStalled, outputRecoveryCount, maxOutputRecoveries;
 import auroraopencode.outputguard : outputRecoveryMarker;
 import auroraopencode.imagehistory : pruneHistoryImages, completedReplyImageIds;
@@ -549,13 +549,13 @@ public final class ConversationActor
         foreach (ref image; context.images) image.base64Data = "";
         queuePrompt(session, command.text, context, steering); metadata();
     }
-    private void appendUser(string text, ChatPromptContext context = ChatPromptContext.init)
+    private void appendUser(string text, ChatPromptContext context = ChatPromptContext.init, bool steering = false)
     {
         diagnosticRemaining = 0; diagnosticActive = false; diagnosticUsed = false;
         ChatMessage message; message.role = "user"; message.content = text; message.images = context.images;
         message.inputId = context.inputId;
         message.inputCommitted = context.inputCommitted;
-        append(message); acceptTaskRequest(session, text, session.activeLeafId);
+        append(message); acceptTaskRequest(session, text, session.activeLeafId, steering);
         if (context.text.length)
         {
             ChatMessage detail; detail.role = "user"; detail.internal = true; detail.content = context.text;
@@ -883,6 +883,7 @@ public final class ConversationActor
                 break;
             case ActorCommandKind.resumeGoal:
                 if (!session.goal.length) { emit(ActorChangeKind.notice, "There is no saved goal to resume"); break; }
+                restoreGoalTask(session);
                 session.goalStatus = "active"; recordGoalOutcome(session, "active", frameUnix); metadata();
                 if (!preserveInputs)
                 {
@@ -1234,7 +1235,7 @@ public final class ConversationActor
     {
         if (!session.queuedGuidance.length) return;
         while (session.queuedGuidance.length)
-        { auto next = takeQueuedPrompt(session, true); appendUser(next.text, next.context); }
+        { auto next = takeQueuedPrompt(session, true); appendUser(next.text, next.context, true); }
         metadata();
     }
     private void completed(const ref OpenCodeEvent event)

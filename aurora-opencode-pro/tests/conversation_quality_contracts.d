@@ -47,7 +47,7 @@ int main()
         assert(requestIntent(text) == RequestIntent.implementation, text);
     foreach (text; ["Answer only: what is left?", "What is left?", "How would we fix it?", "How would you fix it?",
             "What would you change?", "Which files could you remove?", "Why did it stop?",
-            "Explain why, and don't implement anything."])
+            "Explain why, and don't implement anything.", "So how would you fix it?", "Now what would you change?"])
         assert(answerOnlyRequest(text), text);
     foreach (text; ["do it", "Do that.", "Please do it.", "Yes, do it.", "so fix it", "just fix it", "i said to move to the new tab page each."])
         assert(requestIntent(text) == RequestIntent.implementation, text);
