@@ -69,6 +69,40 @@ int main()
     assert(("reasoning_effort" in none.object) is null, none.toString);
     writeln("PASS: an unconfigured non-DeepSeek route still sends no reasoning_effort");
 
+    // The same model can be named by its bare id or its `vendor/` form (and a
+    // provider catalog may vary the case). A saved effort must follow that
+    // identity: comparing raw strings dropped the user's `high` and sent the
+    // model default instead, which is `low` for every non-Flash model.
+    Settings spelling;
+    setReasoningControlForModel(spelling, commandCode, "openai/gpt-5.1", "high", 0);
+    assert(reasoningControlForModel(spelling, commandCode, "openai/gpt-5.1").effort ==
+        "high", "the recorded spelling must keep its own effort");
+    assert(reasoningControlForModel(spelling, commandCode, "gpt-5.1").effort == "high",
+        "an equivalent bare model id must resolve the same effort");
+    assert(reasoningControlForModel(spelling, commandCode, "GPT-5.1").effort == "high",
+        "model id case must not drop the saved effort");
+    const spelledOn = parseJSON(buildChatBody(null, null, "gpt-5.1", true, commandCode,
+        false, reasoningControlForModel(spelling, commandCode, "gpt-5.1").effort));
+    assert(spelledOn["reasoning_effort"].str == "high",
+        "an equivalent model id must still send the chosen high effort: " ~
+            spelledOn.toString);
+    // Updating through either spelling rewrites that one record rather than
+    // adding a second, contradictory one.
+    setReasoningControlForModel(spelling, commandCode, "gpt-5.1", "medium", 0);
+    assert(spelling.reasoningControls.length == 1,
+        "an equivalent model id must update the existing route record");
+    assert(reasoningControlForModel(spelling, commandCode, "openai/gpt-5.1").effort ==
+        "medium", "the update must be visible under both spellings");
+    // An explicit Off saved under one spelling must still suppress DeepSeek 4.1
+    // Flash's high default under the other.
+    Settings flashSpelling;
+    setReasoningControlForModel(flashSpelling, commandCode, "deepseek-v4.1-flash",
+        "off", 0);
+    assert(!effectiveThinkingForModel(flashSpelling, commandCode,
+        "deepseek/deepseek-v4.1-flash"),
+        "an explicit Off must follow the model across id spellings");
+    writeln("PASS: a saved effort follows the model across id spellings");
+
     // The explicit choice survives a Settings round trip.
     const stateDir = buildPath(tempDir, "aurora-reasoning-default");
     if (exists(stateDir)) rmdirRecurse(stateDir);

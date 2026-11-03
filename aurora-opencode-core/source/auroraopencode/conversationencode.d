@@ -116,6 +116,11 @@ public JSONValue sessionMetaToJson(const ref ChatSession session, bool includePl
     if (session.titleAttempts) root["titleAttempts"] = cast(long) session.titleAttempts;
     root["model"] = session.model;
     root["thinking"] = session.thinking;
+    // Persist the conversation's own provider so reopening it later sends
+    // through the endpoint it was configured for instead of whichever provider
+    // the global settings currently point at.
+    if (session.providerBaseUrl.length > 0)
+        root["providerBaseUrl"] = session.providerBaseUrl;
     if (session.instructions.length > 0)
         root["instructions"] = session.instructions;
     if (session.toolsMode >= 0)

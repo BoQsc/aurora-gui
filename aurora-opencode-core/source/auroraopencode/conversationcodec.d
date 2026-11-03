@@ -21,6 +21,9 @@ public void decodeSessionMetadata(JSONValue sessionValue,
         session.model = field.str;
     if (auto field = "thinking" in sessionValue.object)
         session.thinking = field.type == JSONType.true_;
+    if (auto field = "providerBaseUrl" in sessionValue.object)
+        if (field.type == JSONType.string)
+            session.providerBaseUrl = field.str;
     if (auto field = "instructions" in sessionValue.object)
         if (field.type == JSONType.string)
             session.instructions = field.str;

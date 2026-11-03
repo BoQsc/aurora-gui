@@ -12353,6 +12353,59 @@ private string _suggestExcludeId;
     private int _agentRebuildCountdown;
     private static immutable int agentRebuildDelayTicks = 4;
 
+    /// The provider endpoint a conversation sends to. An empty session value
+    /// inherits the saved Settings endpoint (conversations written before
+    /// providers were per-conversation), so legacy chats keep their route.
+    private string providerForSession(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
+            return _settings.baseUrl;
+        const own = _sessions[sessionIndex].providerBaseUrl;
+        return own.length > 0 ? own : _settings.baseUrl;
+    }
+
+    private string providerForThread(string threadId)
+    {
+        foreach (index, session; _sessions)
+            if (session.id == threadId)
+                return providerForSession(cast(int) index);
+        return _settings.baseUrl;
+    }
+
+    /// The credential stored for one endpoint: that provider's active key, or
+    /// the live credential when the endpoint is the configured one.
+    private string credentialForProvider(string endpoint)
+    {
+        if (auto keys = findProviderApiKeys(_settings, endpoint))
+            return activeKeyOf(*keys);
+        return endpoint == _settings.baseUrl ? activeApiKey(_settings) : "";
+    }
+
+    /// Make the selected conversation's provider the live connection so the
+    /// catalog, key badge and toolbar describe the route it actually uses.
+    /// Deliberately does not persist Settings: the saved endpoint stays the
+    /// default for new conversations until the user changes it.
+    private void adoptSessionProvider(int sessionIndex)
+    {
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        const endpoint = providerForSession(sessionIndex);
+        if (endpoint != _settings.baseUrl)
+        {
+            // Read the credential before the endpoint moves: the fallback
+            // branch resolves the key for the configured endpoint.
+            const credential = credentialForProvider(endpoint);
+            _settings.baseUrl = endpoint;
+            _settings.apiKey = credential;
+            if (_client !is null)
+                _client.setCredentials(endpoint, _settings.apiKey);
+            // The cached catalog belongs to the previous endpoint.
+            _models = defaultModels.dup;
+            _modelsFetched = false;
+            if (_client !is null) _client.fetchModels();
+        }
+        updateKeyBadge();
+    }
+
     private ConversationRuntime runtimeForSession(int sessionIndex)
     {
         if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length)
@@ -12360,8 +12413,9 @@ private string _suggestExcludeId;
         const id = _sessions[sessionIndex].id;
         if (auto existing = id in _conversationRuntimes)
             return *existing;
-        auto created = new ConversationRuntime(_settings.baseUrl,
-            activeApiKey(_settings));
+        const endpoint = providerForSession(sessionIndex);
+        auto created = new ConversationRuntime(endpoint,
+            credentialForProvider(endpoint));
         created.threadId = id;
         created.client.setEventWake(_window.serviceWake());
         // The headless harness can pause automatic continuations globally;
@@ -12382,8 +12436,9 @@ private string _suggestExcludeId;
         if (found is null) return _client;
         auto rt = *found;
         if (auto existing = agentId in rt.agentClients) return *existing;
-        auto created = new OpenCodeClient(_settings.baseUrl,
-            activeApiKey(_settings));
+        const endpoint = providerForSession(_current);
+        auto created = new OpenCodeClient(endpoint,
+            credentialForProvider(endpoint));
         created.setEventWake(_window.serviceWake());
         rt.agentClients[agentId] = created;
         return created;
@@ -16676,6 +16731,7 @@ private string _suggestExcludeId;
         const consoleModel = _consoleDefaultModel.length > 0;
         session.model = consoleModel ? _consoleDefaultModel : _settings.model;
         session.thinking = consoleModel ? _consoleDefaultThinking : _settings.thinking;
+        session.providerBaseUrl = _settings.baseUrl;
         session.projectId = activeProjectId();
         session.updatedAt = Clock.currTime.toUnixTime();
         _sessions ~= session;
@@ -16762,6 +16818,7 @@ private string _suggestExcludeId;
         }
         followNewestMessage();
         rebuildMessageColumn();
+        adoptSessionProvider(index);
         _settings.model = resolveAvailableModel(_sessions[index].model);
         _sessions[index].model = _settings.model;
         _settings.thinking = _sessions[index].thinking;
@@ -22489,8 +22546,9 @@ private void pollButtonSuggestionRequest()
             updateSessionList();
         }
         maybeAdoptFirstMessageGoal(*session, baseText);
-        session.model = _settings.model;
-        session.thinking = _settings.thinking;
+        // The conversation owns its route; the model picker already mirrors a
+        // change into this session, so a saved default must not overwrite it.
+        if (session.model.length == 0) session.model = _settings.model;
         // The objective describes the thread's durable purpose. Short
         // follow-ups such as "launch it" or "check the log" refine that work;
         // replacing the objective with them made compaction erase why the work
@@ -22954,8 +23012,9 @@ private void pollButtonSuggestionRequest()
         if (source.length == 0) return false;
         auto runtime = runtimeForSession(sessionIndex);
         if (runtime.compactionClient !is null) return false;
-        runtime.compactionClient = new OpenCodeClient(_settings.baseUrl,
-            activeApiKey(_settings));
+        const compactEndpoint = providerForSession(sessionIndex);
+        runtime.compactionClient = new OpenCodeClient(compactEndpoint,
+            credentialForProvider(compactEndpoint));
         runtime.compactionClient.setEventWake(_window.serviceWake());
         runtime.compactionClient.setOpenCodeSession(sessionRoutingKey(*session));
         runtime.compactionOutput = "";
@@ -23209,8 +23268,9 @@ private void pollButtonSuggestionRequest()
         }
         import auroraopencode.titlepolicy : titlePrefix;
         seed = titlePrefix(seed, quickTitleSeedChars);
-        runtime.titleClient = new OpenCodeClient(_settings.baseUrl,
-            activeApiKey(_settings));
+        const titleEndpoint = providerForSession(sessionIndex);
+        runtime.titleClient = new OpenCodeClient(titleEndpoint,
+            credentialForProvider(titleEndpoint));
         runtime.titleClient.setEventWake(_window.serviceWake());
         runtime.titleClient.setOpenCodeSession(
             sessionRoutingKey(*session) ~ "-title");
@@ -23654,7 +23714,7 @@ private void pollButtonSuggestionRequest()
         policy.orchestratorEnabled = experimentalOrchestratorEnabled();
         policy.orchestratorRouter = orchestratorRouter;
         policy.compactionEnabled = diagnosticReview || contextCompactionForModel(_settings,
-            _settings.baseUrl, session.model);
+            providerForSession(sessionIndex), session.model);
         policy.forceCompact = _forceCompactNextRequest;
         _forceCompactNextRequest = false;
         const normalContextLimit = requestContextBudget(orchestratorModel);
@@ -24634,6 +24694,10 @@ private void pollButtonSuggestionRequest()
             _settings.apiKey = activeKeyOf(*keys);
         else
             _settings.apiKey = readProviderKey(preset.id);
+        // The provider belongs to the conversation that is open now; every
+        // other conversation keeps the endpoint it was configured for.
+        if (_current >= 0 && _current < cast(int) _sessions.length)
+            _sessions[_current].providerBaseUrl = preset.baseUrl;
         // The generic llama.cpp preset has no preferred alias: discovery picks
         // whatever the server has loaded.
         if (preset.model.length > 0)
@@ -26897,6 +26961,8 @@ private void pollButtonSuggestionRequest()
             const model = modelField.textUtf8().strip();
             const workspace = workspaceField.textUtf8().strip();
             if (baseUrl.length > 0) _settings.baseUrl = baseUrl;
+            if (baseUrl.length > 0 && _current >= 0)
+                _sessions[_current].providerBaseUrl = baseUrl;
             // Reads both key fields plus the active-key toggle, pushes the
             // resulting credential to the live clients, and persists it.
             commitApiKeysFromFields();
@@ -27170,8 +27236,16 @@ private void pollButtonSuggestionRequest()
     private void applyApiKeyToClient()
     {
         const key = activeApiKey(_settings);
-        foreach (rt; _conversationRuntimes)
-            rt.client.setCredentials(_settings.baseUrl, key);
+        // Each conversation keeps its own endpoint and credential; only a
+        // conversation with no stored provider follows the saved Settings.
+        foreach (id, rt; _conversationRuntimes)
+        {
+            const endpoint = providerForThread(id);
+            const endpointKey = credentialForProvider(endpoint);
+            rt.client.setCredentials(endpoint, endpointKey);
+            foreach (agentId, client; rt.agentClients)
+                client.setCredentials(endpoint, endpointKey);
+        }
         if (_client !is null)
             _client.setCredentials(_settings.baseUrl, key);
         saveSettingsNow();
@@ -30088,6 +30162,7 @@ private void pollButtonSuggestionRequest()
             {
                 if (_current < 0 || _current >= cast(int) _sessions.length)
                     _current = 0;
+                adoptSessionProvider(_current);
                 _settings.model = _sessions[_current].model;
                 _settings.thinking = _sessions[_current].thinking;
                 _modelButton.setText(_settings.model);
@@ -30221,6 +30296,7 @@ private void pollButtonSuggestionRequest()
             // access after a reload.
             if (_current < 0 || _current >= cast(int) _sessions.length)
                 _current = 0;
+            adoptSessionProvider(_current);
             _settings.model = _sessions[_current].model;
             _settings.thinking = _sessions[_current].thinking;
             _modelButton.setText(_settings.model);

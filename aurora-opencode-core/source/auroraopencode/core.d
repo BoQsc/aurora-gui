@@ -1292,6 +1292,10 @@ public struct ChatSession
     uint titleAttempts;
     string model;
     bool thinking;
+    // The provider endpoint this conversation is configured for. Empty
+    // inherits the saved Settings endpoint, so conversations written before
+    // providers were per-conversation keep their route.
+    string providerBaseUrl;
     string projectId;  // owning project; empty/unknown maps to the sandbox
     string objective;
     // Persistent user goal (Claude Code / Codex style). A goal is separate from
@@ -1876,13 +1880,37 @@ public struct ModelReasoningControl
     int budgetTokens;
 }
 
+/// Index of this route's saved Thinking record, or -1 when it has none.
+///
+/// An exact model id wins so an existing record keeps its own spelling, but
+/// the `vendor/`-normalized form matches too: the catalog (or a conversation
+/// saved under another provider) may name the very same model
+/// `deepseek/deepseek-v4.1-flash` where Settings recorded
+/// `deepseek-v4.1-flash`, or report it with different letter case. Comparing
+/// the raw strings dropped the user's chosen effort and fell back to the
+/// model's default (`low` for everything except DeepSeek 4.1 Flash), which
+/// looked like Thinking silently resetting itself.
+private ptrdiff_t reasoningControlIndex(const ref Settings settings,
+    string endpoint, string model)
+{
+    const wanted = normalizedModelId(model);
+    ptrdiff_t normalizedMatch = -1;
+    foreach (i, control; settings.reasoningControls)
+    {
+        if (control.baseUrl != endpoint) continue;
+        if (control.model == model) return cast(ptrdiff_t) i;
+        if (normalizedMatch < 0 && normalizedModelId(control.model) == wanted)
+            normalizedMatch = cast(ptrdiff_t) i;
+    }
+    return normalizedMatch;
+}
+
 public ModelReasoningControl reasoningControlForModel(const ref Settings settings,
     string baseUrl, string model)
 {
     const endpoint = normalizedBaseUrl(baseUrl);
-    foreach (control; settings.reasoningControls)
-        if (control.baseUrl == endpoint && control.model == model)
-            return control;
+    const index = reasoningControlIndex(settings, endpoint, model);
+    if (index >= 0) return settings.reasoningControls[cast(size_t) index];
     return ModelReasoningControl(endpoint, model, "", 0);
 }
 
@@ -1909,18 +1937,19 @@ public void setReasoningControlForModel(ref Settings settings,
         (effort.length > 0 && effort != "low" && effort != "medium" &&
             effort != "high" && effort != "off") || budgetTokens < 0 ||
         budgetTokens > 32_768) return;
-    foreach (i, control; settings.reasoningControls)
-        if (control.baseUrl == endpoint && control.model == model)
+    const existing = reasoningControlIndex(settings, endpoint, model);
+    if (existing >= 0)
+    {
+        const i = cast(size_t) existing;
+        if (effort.length > 0 || budgetTokens > 0)
         {
-            if (effort.length > 0 || budgetTokens > 0)
-            {
-                settings.reasoningControls[i].effort = effort;
-                settings.reasoningControls[i].budgetTokens = budgetTokens;
-            }
-            else settings.reasoningControls = settings.reasoningControls[0 .. i] ~
-                settings.reasoningControls[i + 1 .. $];
-            return;
+            settings.reasoningControls[i].effort = effort;
+            settings.reasoningControls[i].budgetTokens = budgetTokens;
         }
+        else settings.reasoningControls = settings.reasoningControls[0 .. i] ~
+            settings.reasoningControls[i + 1 .. $];
+        return;
+    }
     if (effort.length > 0 || budgetTokens > 0)
         settings.reasoningControls ~= ModelReasoningControl(endpoint, model,
             effort, budgetTokens);
