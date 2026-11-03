@@ -121,8 +121,10 @@ endpoint = f"http://127.0.0.1:{server.server_port}/v1"
     "baseUrl": endpoint, "apiKey": "local-fixture", "model": "history-fixture",
     "workspace": str(workspace), "toolsEnabled": True, "legacyTools": False, "quickTitle": False, "composerSuggestion": False,
     "autoGoalFromFirstMessage": True,
-    "contextBudgets": [{"baseUrl": endpoint, "model": "history-fixture", "tokens": 32000}],
-    "contextCompactions": [{"baseUrl": endpoint, "model": "history-fixture"}],
+    "contextBudgets": [{"baseUrl": endpoint, "model": model, "tokens": 32000}
+                       for model in ("history-fixture", "deepseek/deepseek-v4.1-flash-fast", "deepseek/deepseek-v4.1-flash")],
+    "contextCompactions": [{"baseUrl": endpoint, "model": model}
+                          for model in ("history-fixture", "deepseek/deepseek-v4.1-flash-fast", "deepseek/deepseek-v4.1-flash")],
 }), encoding="utf-8")
 started = time.monotonic()
 try:
