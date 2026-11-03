@@ -514,6 +514,28 @@ public ChatRequestMessage[] compactRequestMessages(
         }
         result = compacted;
     }
+    // Keeping the latest human message verbatim is impossible when that one
+    // attachment/paste exceeds the entire window. Bound its wire projection
+    // rather than silently sending beyond the configured context. The exact
+    // message stays saved and is recoverable with read_history. Never modify
+    // structured tool arguments or break a tool-call/result envelope.
+    total = fixedRequestBytes + requestMessageBytes(result);
+    while (total > budget)
+    {
+        size_t largest = result.length;
+        foreach (i, message; result)
+            if (!message.toolCalls.length && message.content.length > 2048 &&
+                (message.role == "user" || message.role == "tool") &&
+                (largest == result.length || message.content.length > result[largest].content.length))
+                largest = i;
+        if (largest == result.length) break;
+        const originalLength = result[largest].content.length;
+        const excess = total - budget;
+        const target = excess + 1024 < originalLength ? originalLength - excess : cast(size_t)1024;
+        enum note = "[Context-sized excerpt; exact omitted text remains saved. Use read_history for missing instructions or facts.]\n";
+        result[largest].content = note ~ checkpointEdges(result[largest].content, target - note.length);
+        total = fixedRequestBytes + requestMessageBytes(result);
+    }
     return result;
 }
 

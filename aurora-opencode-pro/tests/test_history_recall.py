@@ -19,7 +19,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--executable", type=Path, default=package / "aurora-opencode-pro.exe")
 args = parser.parse_args()
 requests, summaries, failures = [], [], []
-reference = "REFERENCE_RECORD " + "historical padding " * 400 + "CRITICAL_REFERENCE_VALUE=Q9-7316 " + "historical padding " * 400
+# This record alone must exceed the input window: the newer small-context
+# budget legitimately retains the older 15KB fixture intact.
+reference = "REFERENCE_RECORD " + "historical padding " * 4000 + "CRITICAL_REFERENCE_VALUE=Q9-7316 " + "historical padding " * 4000
 prompts = [
     "Remember this reference for later questions and reply RECORDED: " + reference,
     "Remember this additional context and reply RECORDED: " + "unrelated context " * 7000,

@@ -110,6 +110,14 @@ int main()
         "Goal: finish the original implementation. Evidence: earlier observations remain saved. Next: act on the current source and run checks.",
         32000,false,compactionSummaryCapacity(32000,fixed)));
     assert(s.compactionSummary.indexOf("0.0175")>=0,"Model refinement erased the authoritative customer decision");
+    ChatSession pasted;
+    user.id="large-user";user.content="Keep rate 0.0175 and original reference.\n"~"Read-only audit row. ".replicate(10000)~"\nFinish with CSV and JSON.";
+    const fullPaste=user.content;add(pasted,user);
+    bool pastedCheckpoint,pastedFallback;
+    const pastedWire=prepareCompactedRequest(pasted,32000,35_000,pastedCheckpoint,pastedFallback);
+    assert(requestMessageBytes(pastedWire)+35_000<=compactionBudgetBytes(32000),"One large user paste bypassed the configured context budget");
+    assert(pasted.messages[0].content==fullPaste,"Bounding the request erased original user instructions");
+    assert(pastedWire[$-1].content.indexOf("0.0175")>=0 && pastedWire[$-1].content.indexOf("CSV and JSON")>=0);
     writeln("PASS constrained windows retain the complete current tool batch within the actual remaining budget");
     return 0;
 }

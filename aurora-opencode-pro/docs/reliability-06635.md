@@ -1,4 +1,4 @@
-# Focused reliability repair: 0.66.35–0.66.36
+# Focused reliability repair: 0.66.35–0.66.37
 
 The reported repeated replies were separate automatic turns, not merely duplicate
 rendering. Recent saved chats showed repeated hidden `Continuation request:`
@@ -36,6 +36,8 @@ The production replay additionally exposed a missing colon boundary in
 `Answer only: return one JSON object`; 0.66.36 includes that classifier fix and
 its regression. Initial replay attempts used a nonstreaming fixture response
 which this client rejected; those are fixture failures and are excluded.
+That production SSE replay passes after the classifier correction: one provider
+request, exact JSON delivery, and the complete original provider response saved.
 
 At 32K, the old preflight reserved 40% of the window for output. Native tool
 definitions consumed 35,696 bytes before the system prompt and history. The
@@ -52,6 +54,13 @@ from requests during the tool turn, rather than accumulating until the next
 human message. Only synthetic control state is retired; the human instructions,
 current tool batch, current state and full saved graph remain intact. This trades
 some prefix-cache continuity for usable working memory in a constrained window.
+0.66.37 also bounds a single oversized pasted human message on the wire. Keeping
+the latest message verbatim previously bypassed the configured limit when the
+audit attachment alone exceeded the whole window. Its head/tail and an explicit
+history-recovery notice remain in the request; the full original text remains
+saved. Structured call arguments are never truncated. The exact-history fixture
+now uses a record larger than the window, since the improved budget correctly
+retained its previous 15KB record without losing the middle fact.
 
 The live benchmark had a configuration flaw: after the selected GUI model
 changed, a 32K override could be assigned to that GUI model while the console
