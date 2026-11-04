@@ -576,10 +576,11 @@ private OpenCodeToolDef updatePlanToolDefinition()
 {
     if (!experimentalStrictPlanEnabled())
         return OpenCodeToolDef("update_plan",
-            "Updates the task plan. Provide the complete current list of steps, " ~
-            "with at most one step in_progress. Use a short plan for multi-step " ~
-            "work; update it when progress or new evidence changes the next action. " ~
-            "Skip planning for simple requests. An optional explanation describes a change.",
+            "Updates the task plan. Before editing files, running commands or starting " ~
+            "multi-step work, record the concrete outcomes as steps with at most one " ~
+            "in_progress. Follow the steps in order until each is completed or blocked; " ~
+            "update the list when a step completes or evidence changes the next step. " ~
+            "Skip planning for a direct answer. An optional explanation describes a change.",
             `{"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`);
     return OpenCodeToolDef(
         "update_plan",

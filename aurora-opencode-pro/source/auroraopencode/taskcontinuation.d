@@ -15,7 +15,6 @@ import std.string : startsWith, indexOf, strip, toLower, split, join;
 import std.regex : matchFirst;
 
 enum taskContinuationMarker = "Continuation: unfinished authorized work\n";
-enum proactiveActionMarker = "Proactive action checkpoint: ";
 enum taskStallLimit = 3;
 
 enum TaskContinuationAction { settle, continueWork, replan }
@@ -45,14 +44,14 @@ struct TaskContinuation
         state["evidence"] = JSONValue(evidence);
         if (action == TaskContinuationAction.replan)
             return taskContinuationMarker ~ state.toString() ~ "\n" ~
-                "No supported outcome advanced. Change the diagnosis: compare expected behavior with the " ~
+                "No planned step advanced. Change the diagnosis: compare expected behavior with the " ~
                 "recorded failure, reject the unsupported hypothesis, and test a smaller case or different source. " ~
-                "Do useful tool work now; avoid another summary or permission question. " ~
+                "Do useful tool work now; do not answer or ask permission. " ~
                 remaining ~ verificationGuidance();
         return taskContinuationMarker ~ state.toString() ~ "\n" ~
-            "Continue the specific unfinished outcomes below with tools. Use existing successful evidence; " ~
+            "Follow the plan: finish the specific unfinished planned outcomes below with tools. Use existing successful evidence; " ~
             "do not repeat passing checks without a new reason or ask permission to continue. " ~
-            "Report delivery only when the requested outcomes and required checks are complete. " ~
+            "Answer only when the planned outcomes and required checks are complete. " ~
             remaining ~ verificationGuidance();
     }
 
@@ -335,47 +334,4 @@ bool taskAwaitingInput(const ref ChatSession session)
     return false;
 }
 
-/// A permission question is not an answer when the user already gave a clear
-/// action request and work remains. Return bounded guidance that asks the model
-/// to make the routine decision and continue; return empty when the turn is
-/// genuinely complete, awaiting real input, or has already retried twice.
-string proactiveActionGuidance(const ref ChatSession session)
-{
-    if (session.contract.intent != "implementation" ||
-        session.contract.currentIntent == "analysis" ||
-        taskAwaitingInput(session) || taskInvestigation(session) ||
-        session.queuedFollowUps.length || session.queuedGuidance.length)
-        return "";
-    string latestRequest;
-    string lastAssistant;
-    int attempts;
-    foreach_reverse (index; activeMessagePath(session))
-    {
-        const ref message = session.messages[index];
-        if (message.internal && message.content.startsWith(proactiveActionMarker))
-        {
-            ++attempts;
-            continue;
-        }
-        if (message.role == "user" && !message.internal)
-        {
-            latestRequest = message.content;
-            break;
-        }
-        if (!lastAssistant.length && message.role == "assistant" &&
-            !message.internal && !message.failed && message.toolCalls.length == 0)
-            lastAssistant = message.content;
-    }
-    if (!latestRequest.length || attempts >= 2) return "";
-    const intent = requestIntent(latestRequest);
-    if (intent != RequestIntent.implementation &&
-        intent != RequestIntent.continuation) return "";
-    if (!permissionQuestionReply(lastAssistant)) return "";
-    if (!unfinishedTask(session) && taskHasActionEvidence(session)) return "";
-    return proactiveActionMarker ~
-        "The latest request already authorizes the obvious next step. " ~
-        "Do not ask for permission or present a clarification question. " ~
-        "Choose a reasonable, reversible default, use tools now, and complete " ~
-        "the requested outcome. If a genuinely essential user-owned fact is " ~
-        "missing, finish every independent outcome first and then use request_input.";
-}
+

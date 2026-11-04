@@ -2,12 +2,12 @@ module auroraopencode.turnpolicy;
 
 import auroraopencode.core : ChatSession;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction,
-    taskAwaitingInput, proactiveActionGuidance;
+    taskAwaitingInput;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
 import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
-    completionHandoffMarker, completionHandoffInstruction, recordedCompletionHandoff;
+    recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
 import auroraopencode.contextpolicy : latestActualUserRequest;
 import auroraopencode.requestintent : answerOnlyRequest;
@@ -77,7 +77,6 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     }
     const continuation = taskContinuation(session, policy.toolsEnabled, policy.strictPlan);
     const settled = continuation.action == TaskContinuationAction.settle;
-    const proactive = policy.toolsEnabled ? proactiveActionGuidance(session) : "";
     void request(string guidance, string status, bool active = true)
     {
         result.action = TurnAction.request;
@@ -86,20 +85,12 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         result.guidance = guidance;
         result.status = status;
     }
-    if (settled && proactive.length)
-    {
-        request(proactive, "Choosing a reasonable default and continuing…");
-        return result;
-    }
-    if (!goalActive(session) && settled && completionHandoffNeeded(session, policy.finishReason))
-    {
-        if (completionHandoffPending(session)) result.recordedSummary = recordedCompletionHandoff(session);
-        else
-        {
-            request(completionHandoffMarker ~ completionHandoffInstruction, "Summarizing completed work…", false);
-            return result;
-        }
-    }
+    // A handoff saved by an older build is completed from recorded evidence;
+    // new summary rounds and permission-repair rounds are never started. Work
+    // continues only by following the remaining plan steps.
+    if (!goalActive(session) && settled && completionHandoffPending(session) &&
+        completionHandoffNeeded(session, policy.finishReason))
+        result.recordedSummary = recordedCompletionHandoff(session);
     if (policy.orchestratorEnabled && session.agents.length &&
         !(session.parentSessionId.length && !settled))
     {
@@ -140,7 +131,7 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     if (!settled)
     {
         const replan = continuation.action == TaskContinuationAction.replan;
-        request(continuation.guidance(), replan ? "Changing diagnosis for the unfinished outcome…" : "Continuing unfinished work…");
+        request(continuation.guidance(), replan ? "Revising the plan for the blocked step…" : "Following the plan…");
         if (replan && policy.diagnosticAvailable) result.diagnosticRequests = 4;
         return result;
     }

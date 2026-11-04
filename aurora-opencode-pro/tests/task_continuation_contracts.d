@@ -195,21 +195,6 @@ int main()
             "I can apply the patch. Do you want me to proceed?"])
         assert(permissionQuestionReply(reply), reply);
     assert(!permissionQuestionReply("The parser is fixed; tests pass."));
-    ChatSession asking;
-    append(asking, "user", "Fix the parser.");
-    acceptTaskRequest(asking, asking.messages[$ - 1].content,
-        asking.messages[$ - 1].id);
-    append(asking, "assistant", "Would you like me to proceed?");
-    auto proactive = proactiveActionGuidance(asking);
-    assert(proactive.length, "A permission question settled an unfinished task");
-    append(asking, "user", proactive, true);
-    append(asking, "assistant", "Should I start now?");
-    proactive = proactiveActionGuidance(asking);
-    assert(proactive.length, "The first proactive retry did not permit a second");
-    append(asking, "user", proactive, true);
-    append(asking, "assistant", "May I continue?");
-    assert(!proactiveActionGuidance(asking).length,
-        "Proactive retries were not bounded");
 
     foreach (question; ["What is left?", "How would we fix it?", "Why did it stop?"])
         assert(answerOnlyRequest(question));
