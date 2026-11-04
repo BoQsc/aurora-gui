@@ -50,6 +50,13 @@ int main()
         "verify:tests,compile");
     assert(root.verificationStatusForTesting() == "passed", "Current evidence was rejected");
 
+    // A later checker attempt that cannot be scoped to the current workspace
+    // must not erase the current accepted verification.
+    root.injectToolResultForTesting("verify", "stale checker", false, `{}`, 0, 0, "", null,
+        "verify:tests", checkedRevision);
+    assert(root.verificationStatusForTesting() == "passed",
+        "A stale checker attempt cleared a current accepted verification");
+
     // No intervening service tick: completion itself must revalidate the receipt.
     invalidateToolWorkspace(workspace);
     root.injectToolResultForTesting("goal_complete", "Done", false,

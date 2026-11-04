@@ -16,6 +16,18 @@ private string[] requestWords(string text)
     return words;
 }
 
+private bool leadingQuestion(const(string)[] words)
+{
+    size_t i;
+    while (i < words.length &&
+        ["so", "now", "then", "please", "instead", "just"].canFind(words[i])) ++i;
+    return i < words.length &&
+        ["what", "how", "why", "when", "where", "who", "which", "is", "are",
+         "does", "did", "do", "can", "could", "would", "should", "shall", "will",
+         "may", "might", "explain", "describe", "summarize", "summarise",
+         "status", "recap", "hello", "hi", "thanks"].canFind(words[i]);
+}
+
 private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
 {
     // A modal question about an approach is advice, not a command. Restrict
@@ -86,10 +98,7 @@ RequestIntent requestIntent(string text)
     if (analysis) return RequestIntent.analysis;
     if (correctiveActionRequest(text)) return RequestIntent.implementation;
     if (clarification) return RequestIntent.clarification;
-    if (words.length && (["what", "how", "why", "when", "where", "who", "which", "is", "are",
-            "does", "did", "do", "can", "could", "would", "should", "shall", "will", "may", "might", "explain", "describe", "summarize",
-            "summarise", "status", "recap", "hello", "hi", "thanks"].canFind(words[0]) ||
-            words.canFind("explanation"))) return RequestIntent.clarification;
+    if (leadingQuestion(words) || words.canFind("explanation")) return RequestIntent.clarification;
     return RequestIntent.conversation;
 }
 

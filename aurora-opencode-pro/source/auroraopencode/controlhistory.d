@@ -8,14 +8,29 @@ enum durableTaskCheckpointPrefix =
     "Durable task-state checkpoint. This supersedes earlier task-state " ~
     "checkpoints; keep the transcript and tool results in their original order.";
 enum controlHistoryBoundary = "Internal control-history boundary.\n";
+enum progressGuidancePrefix = "Progress guidance: ";
 enum controlHistoryLimit = 32;
+
+/// Reusable control records that are explicitly superseded by a newer record
+/// of the same kind. Only the newest of each kind needs to reach the provider;
+/// keeping the whole streak sent thousands of stale copies.
+enum ControlStateKind { none, checkpoint, continuation, progress }
+
+ControlStateKind controlStateKind(const ref ChatMessage message)
+{
+    if (!message.internal || message.images.length) return ControlStateKind.none;
+    if (message.content.startsWith(durableTaskCheckpointPrefix))
+        return ControlStateKind.checkpoint;
+    if (message.content.startsWith(taskContinuationMarker))
+        return ControlStateKind.continuation;
+    if (message.content.startsWith(progressGuidancePrefix))
+        return ControlStateKind.progress;
+    return ControlStateKind.none;
+}
 
 bool supersededControlState(const ref ChatMessage message)
 {
-    return message.internal && message.images.length == 0 &&
-        (message.content.startsWith(durableTaskCheckpointPrefix) ||
-         message.content.startsWith(taskContinuationMarker) ||
-         message.content.startsWith("Progress guidance:"));
+    return controlStateKind(message) != ControlStateKind.none;
 }
 
 bool turnControlState(const ref ChatMessage message)

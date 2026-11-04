@@ -123,6 +123,14 @@ public final class WorkScheduler
         }
     }
 
+    /// True while at least one worker is executing. A queued tool uses this
+    /// to distinguish a legitimate resource wait from a scheduler that has
+    /// made no progress at all.
+    bool active()
+    {
+        synchronized (_mutex) return _running.length > 0;
+    }
+
     /// Drain accepted work, then release the worker threads. The caller must
     /// cancel/release effects it owns before joining this standalone scheduler.
     void close()

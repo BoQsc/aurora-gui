@@ -11,7 +11,7 @@ import auroraopencode.runtime : readAgentRuntimeEvents, projectAgentRuntimeEvent
 import core.sync.mutex : Mutex;
 import core.sync.condition : Condition;
 import core.time : MonoTime, msecs, seconds;
-import std.file : exists, mkdirRecurse, write;
+import std.file : exists, mkdirRecurse, write, tempDir;
 import std.path : absolutePath, buildPath;
 import std.conv : to;
 import std.json : parseJSON;
@@ -37,22 +37,24 @@ private final class HeldWorker : WorkItem
 
 int main()
 {
-    const directory = absolutePath("tool-resources-" ~ to!string(MonoTime.currTime.ticks));
+    const directory = buildPath(tempDir(), "tool-resources-" ~ to!string(MonoTime.currTime.ticks));
     mkdirRecurse(directory); setOpencodeStateDirectoryForTesting(directory);
     auto client = new OpenCodeClient("", "");
     auto scheduler = new WorkScheduler(1, 1);
     auto gate = new HeldWorker(directory);
     scope (exit) { gate.release(); scheduler.close(); client.closeSession(); }
     assert(scheduler.submit(gate)); gate.waitEntered();
-    ToolBatch start(string id, ToolCancellation cancellation, long deadline = 30_000)
+    ToolBatch start(string id, ToolCancellation cancellation, long deadline = 30_000,
+        bool forceDeadline = false)
     {
         auto batch = new ToolBatch(client, 1,
             [OpenCodeToolCall(id, "write", `{"filePath":"` ~ id ~ `.txt","content":"effect"}`)],
             directory, cancellation, ChangeContext.init);
         batch.workspaceLane = scheduler; batch.controlLane = scheduler;
-        batch.queueTimeoutMs = deadline; batch.start(); return batch;
+        batch.queueTimeoutMs = deadline; batch.queueDeadlineWhileActive = forceDeadline;
+        batch.start(); return batch;
     }
-    auto expired = start("expired", new ToolCancellation(), 25);
+    auto expired = start("expired", new ToolCancellation(), 25, true);
     auto saturated = start("saturated", new ToolCancellation());
     saturated.wait(); expired.wait();
     auto cancellation = new ToolCancellation();
@@ -90,17 +92,43 @@ int main()
     auto replayed = projectAgentRuntimeEvents(readAgentRuntimeEvents(journal));
     assert(replayed.length == 1 && replayed[0].messages[0].toolState == ToolState.resourceBlocked);
 
+    // A queued tool with a short deadline must wait for the active worker and
+    // then run; the forced-deadline case above covers the no-progress guard.
+    auto waited = start("waited", new ToolCancellation(), 30_000, false);
+    assert(!exists(buildPath(directory, "waited.txt")), "A queued tool ran before its worker was free");
     gate.release();
+    waited.wait();
     auto success = start("success", new ToolCancellation()); success.wait();
     client.drain(events);
     bool running, completed;
     foreach (event; events)
     {
-        if (event.toolStarted) { running = true; assert(event.toolState == ToolState.running); }
-        if (!event.toolRunning)
-        { completed = true; assert(event.toolState == ToolState.completed && !event.toolFailed); }
+        if (event.toolRunning)
+        {
+            if (event.toolStarted)
+            {
+                running = true;
+                assert(event.toolState == ToolState.running);
+            }
+            else
+            {
+                assert(event.toolState == ToolState.queued);
+                queued = true;
+            }
+        }
+        else terminal[event.toolCallId] = event;
+        if (!event.toolRunning && (event.toolCallId == "waited" || event.toolCallId == "success"))
+            completed = true;
     }
-    assert(running && completed && exists(buildPath(directory, "success.txt")));
+    assert(terminal["waited"].toolState == ToolState.completed,
+        "waited state=" ~ to!string(terminal["waited"].toolState) ~
+        " failed=" ~ to!string(terminal["waited"].toolFailed) ~
+        " text=" ~ terminal["waited"].text ~
+        " file=" ~ to!string(exists(buildPath(directory, "waited.txt"))));
+    assert(terminal["success"].toolState == ToolState.completed);
+    assert(running && completed && exists(buildPath(directory, "waited.txt")) &&
+        exists(buildPath(directory, "success.txt")));
+    assert(scheduler.status().length == 0, "Completed tools retained a worker");
     scheduler.close();
     auto closed = start("closed", new ToolCancellation()); closed.wait();
     client.drain(events);

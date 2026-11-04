@@ -18673,6 +18673,21 @@ private void pollButtonSuggestionRequest()
                 void inspect(Widget row)
                 {
                     if (auto group = cast(ToolGroupBubble) row) group.setFlat(true);
+                    if (auto deferred = cast(DeferredTranscriptRow) row)
+                    {
+                        if (deferred.toolFailed)
+                        {
+                            ++failures;
+                            failureTitle = humanToolTitle(deferred.toolName) ~ " failed";
+                            const index = cast(int) deferred.messageIndex;
+                            if (index >= 0 && index < session.messages.length &&
+                                session.messages[cast(size_t) index].id in recoveredResults)
+                                ++recovered;
+                        }
+                        else if (deferred.toolName.length > 0)
+                            names ~= deferred.toolName;
+                        return;
+                    }
                     if (auto bubble = cast(MessageBubble) row)
                     {
                         reasoning |= bubble.hasThinking();
@@ -21538,7 +21553,9 @@ private void pollButtonSuggestionRequest()
         invalidateChangedWorkspaceEvidence();
         const receiptWorkspace = workspaceForSession(sessionIndex);
         const currentScope = verificationScope(receiptWorkspace, toolWorkspaceRevision(receiptWorkspace));
-        if (session.verificationStatus == "passed" && session.verificationScope != currentScope)
+        const priorVerificationStatus = session.verificationStatus;
+        const priorVerificationScope = session.verificationScope;
+        if (priorVerificationStatus == "passed" && priorVerificationScope != currentScope)
         {
             session.verificationStatus = "required";
             session.taskStatus = "active";
@@ -21586,9 +21603,17 @@ private void pollButtonSuggestionRequest()
         }
         else if (checkerAttempt && !scopedVerification)
         {
-            session.verificationStatus = "required";
-            if (session.taskStatus != "waiting_input") session.taskStatus = "active";
-            publishThreadUpdated(*session);
+            // A checker that cannot be scoped to this workspace must not erase a
+            // still-current accepted receipt. Only a mutation or a changed
+            // scope revokes it.
+            const priorPassStillApplies = priorVerificationStatus == "passed" &&
+                priorVerificationScope == currentScope;
+            if (!priorPassStillApplies)
+            {
+                session.verificationStatus = "required";
+                if (session.taskStatus != "waiting_input") session.taskStatus = "active";
+                publishThreadUpdated(*session);
+            }
         }
         else if (acceptedVerification)
         {

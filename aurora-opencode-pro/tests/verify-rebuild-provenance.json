@@ -1,0 +1,20 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/aurora-opencode-pro.exe",
+    "aurora-opencode-pro/build-source-aurora-opencode-pro.exe.json",
+    "aurora-opencode-pro/source/auroraopencode/controlhistory.d",
+    "aurora-opencode-pro/source/auroraopencode/requestbuilder.d",
+    "aurora-opencode-pro/tools/build_provenance.py"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-c", "import hashlib, importlib.util, json, pathlib\np = pathlib.Path.cwd()\nspec = importlib.util.spec_from_file_location('prov', p / 'tools/build_provenance.py')\nm = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(m)\ncurrent = m.source_inputs(p)\nrecorded = json.loads((p / 'build-source-aurora-opencode-pro.exe.json').read_text())\nexe = p / 'aurora-opencode-pro.exe'\nassert hashlib.sha256(exe.read_bytes()).hexdigest() == recorded['binary_sha256'], 'live executable changed after build'\nassert current['source_fingerprint'] == recorded['source_fingerprint'], 'source changed after build'\nassert current['source_commit'] == recorded['source_commit'], 'source commit changed after build'\nfor rel in ['source/auroraopencode/controlhistory.d', 'source/auroraopencode/requestbuilder.d']:\n    assert exe.stat().st_mtime > (p / rel).stat().st_mtime, 'binary is older than ' + rel\nprint('PASS live executable hash matches build provenance for the current source fingerprint and is newer than the fixed sources')"],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 120000
+      }
+    }
+  ]
+}

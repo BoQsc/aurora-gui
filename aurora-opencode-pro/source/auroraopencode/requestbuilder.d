@@ -8,7 +8,8 @@ import std.conv : to;
 import auroraopencode.outputguard : outputFailurePrefix;
 import std.string : startsWith;
 import auroraopencode.grepformat : compactGrepHistory;
-import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState, turnControlState;
+import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState, turnControlState,
+    controlStateKind, ControlStateKind;
 import auroraopencode.completionhandoff : completionHandoffMarker;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
@@ -40,12 +41,36 @@ public ChatRequestMessage[] projectRequestMessages(
                     slot = i + 1;
                     break;
                 }
+        // Checkpoints, continuation notes and progress notes each replace the
+        // previous one of the same kind. Within the current instruction window
+        // keep only the newest of each, otherwise a long-running turn sends
+        // every superseded copy (observed: 62 checkpoints / 189 KB in one turn).
+        size_t latestCheckpoint = size_t.max, latestContinuation = size_t.max, latestProgress = size_t.max;
+        foreach (i, index; path)
+        {
+            if (i < instructionBoundary) continue;
+            final switch (controlStateKind(session.messages[index]))
+            {
+                case ControlStateKind.checkpoint: latestCheckpoint = i; break;
+                case ControlStateKind.continuation: latestContinuation = i; break;
+                case ControlStateKind.progress: latestProgress = i; break;
+                case ControlStateKind.none: break;
+            }
+        }
         auto historyImages = requestHistoryImageIndices(session, path, slot,
             imageLimit);
         const retired = retiredImageIds(session, path);
         while (slot < path.length)
         {
             const message = session.messages[path[slot]];
+            const controlKind = controlStateKind(message);
+            if ((controlKind == ControlStateKind.checkpoint && slot < latestCheckpoint) ||
+                (controlKind == ControlStateKind.continuation && slot < latestContinuation) ||
+                (controlKind == ControlStateKind.progress && slot < latestProgress))
+            {
+                ++slot;
+                continue;
+            }
             // A summary-only repair belongs to its original instruction. Keep
             // it saved, without disabling tools on a later human/agent task.
             if (slot < instructionBoundary && message.internal &&

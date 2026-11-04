@@ -139,6 +139,10 @@ public final class ToolBatch
     size_t cursor, remaining;
     WorkScheduler workspaceLane, controlLane;
     long queueTimeoutMs = 30_000;
+    // Test hook: force the stale-scheduler deadline even while a worker is
+    // active. Production waits for the active worker instead of turning a
+    // legitimate long-running command into a 30-second failure.
+    bool queueDeadlineWhileActive;
 
     this(OpenCodeClient client, ulong requestId, const(OpenCodeToolCall)[] calls,
         string workspace, ToolCancellation cancellation, ChangeContext context)
@@ -191,6 +195,7 @@ public final class ToolBatch
             auto lane = controlTool(job.call.name)
                 ? (controlLane is null ? processScheduler() : controlLane)
                 : (workspaceLane is null ? scheduler() : workspaceLane);
+            job.lane = lane;
             const admission = lane.admit(job);
             if (admission != WorkAdmission.accepted)
             {
@@ -228,6 +233,7 @@ private final class ToolJob : WorkItem
     ToolBatch batch;
     OpenCodeToolCall call;
     ToolExecution result;
+    WorkScheduler lane;
     MonoTime queueDeadline;
     MonoTime queuedAt, startedAt, lastDiagnosticAt;
     this(ToolBatch batch, const ref OpenCodeToolCall call)
@@ -244,7 +250,18 @@ private final class ToolJob : WorkItem
 
     override bool abandonQueued()
     {
-        return batch.cancellation.cancelled() || MonoTime.currTime >= queueDeadline;
+        if (batch.cancellation.cancelled()) return true;
+        if (batch.queueDeadlineWhileActive)
+            return MonoTime.currTime >= queueDeadline;
+        // A tool queued behind a running command is waiting on that command's
+        // progress, not on a deadlock. Keep the no-progress guard fresh while
+        // a worker is active; only an idle scheduler may expire the wait.
+        if (lane !is null && lane.active())
+        {
+            queueDeadline = MonoTime.currTime + batch.queueTimeoutMs.msecs;
+            return false;
+        }
+        return MonoTime.currTime >= queueDeadline;
     }
 
     override void queueAbandoned()
@@ -252,10 +269,10 @@ private final class ToolJob : WorkItem
         diagnostic(batch.cancellation.cancelled() ? "tool.cancelled_before_start" : "tool.queue_deadline");
         result = ToolExecution(call.name, batch.cancellation.cancelled()
             ? "Stopped: queued tool cancelled before it started."
-            : "Resource blocked: the tool could not acquire a worker or workspace lease before its queue deadline; " ~
+            : "Resource blocked: the tool scheduler made no progress for this tool before its queue deadline; " ~
               "it was not executed. Use tool_status to inspect active native tools and " ~
-              "process to inspect commands. Stop the owning turn before retrying; " ~
-              "removing finished process records does not release an active tool's lease.", true);
+              "process to inspect commands. A worker that is actively running is allowed to finish " ~
+              "before a queued tool starts.", true);
         result.state = batch.cancellation.cancelled() ? ToolState.cancelled : ToolState.resourceBlocked;
     }
 

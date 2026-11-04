@@ -91,7 +91,10 @@ public final class CheckoutLease
             const name = "Local\\AuroraCheckout-" ~ toHexString(sha256Of(identity));
             handle = CreateMutexW(null, false, toUTF16z(name));
             enforce(handle !is null, "Could not create the Aurora checkout lock.");
-            const deadline = MonoTime.currTime + seconds(timeoutSeconds);
+            // A negative timeout waits until the lease is released or the
+            // caller cancels. Zero keeps its existing immediate-expiry meaning.
+            const hasDeadline = timeoutSeconds >= 0;
+            const deadline = hasDeadline ? MonoTime.currTime + seconds(timeoutSeconds) : MonoTime.init;
             auto nextNotice = MonoTime.currTime;
             while (true)
             {
@@ -108,7 +111,7 @@ public final class CheckoutLease
                         ". No files are being searched yet; another source operation owns the lock.");
                     nextNotice = MonoTime.currTime + msecs(200);
                 }
-                if (state == WAIT_FAILED || MonoTime.currTime >= deadline)
+                if (state == WAIT_FAILED || (hasDeadline && MonoTime.currTime >= deadline))
                 {
                     CloseHandle(handle); handle = null;
                     throw new Exception("Source checkout is still in use. Wait for its active tools before retrying.");

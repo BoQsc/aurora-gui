@@ -1,0 +1,1 @@
+{"schema":1,"sequence":1,"type":"item.added","threadId":"chat","itemId":"result","payload":{"id":"result","role":"tool","toolName":"write","failed":true,"toolState":"resource_blocked","content":"Not executed"}}

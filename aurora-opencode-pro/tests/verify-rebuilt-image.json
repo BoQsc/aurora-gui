@@ -1,0 +1,20 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/aurora-opencode-pro.exe",
+    "aurora-opencode-pro/source/auroraopencode/controlhistory.d",
+    "aurora-opencode-pro/source/auroraopencode/requestbuilder.d",
+    "aurora-opencode-pro/tests/test_provider_roundtrip.py",
+    "aurora-opencode-pro/tests/control_state_projection_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["tests/test_provider_roundtrip.py", "--production"],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 240000
+      }
+    }
+  ]
+}
