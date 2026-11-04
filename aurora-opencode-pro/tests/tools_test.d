@@ -1133,6 +1133,9 @@ int main(string[] args)
     assert(toolSteeringPrompt(false).indexOf("# Execution loop") >= 0,
         "Steering prompt must define the execution loop");
     assert(toolSteeringPrompt(false).indexOf(
+        "Pure why = explain") >= 0,
+        "Steering prompt must enforce action-intent why requests");
+    assert(toolSteeringPrompt(false).indexOf(
         "name the remaining unknown") >= 0,
         "Steering prompt must guide exploration from evidence");
     assert(toolSteeringPrompt(false).indexOf(
@@ -1463,6 +1466,30 @@ int main(string[] args)
         assert(result.additions > 0 && result.deletions > 0,
             "apply_patch must report a diff: " ~ result.output);
         writeln("apply_patch adds, updates and deletes files in one call");
+    }
+
+    // The apply_patch contract is Codex-format; a unified diff header is not a
+    // valid hunk. The rejection must say what format is accepted and must not
+    // mutate the file.
+    {
+        const hintPath = buildPath(dir, "patch-hint.txt");
+        write(hintPath, "alpha\nbeta\n");
+        auto malformed = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: patch-hint.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+changed\n*** End Patch"}`),
+            dir);
+        assert(malformed.failed, "unified-diff apply_patch must be rejected");
+        assert(malformed.output.indexOf("Hint: apply_patch uses Codex patch format") >= 0,
+            "apply_patch validation error missing format hint: " ~ malformed.output);
+        assert(readText(hintPath) == "alpha\nbeta\n",
+            "rejected patch changed the file");
+
+        auto valid = executeTool(makeCall("apply_patch",
+            `{"patch":"*** Begin Patch\n*** Update File: patch-hint.txt\n@@\n alpha\n-beta\n+changed\n*** End Patch"}`),
+            dir);
+        assert(!valid.failed, "valid Codex patch failed: " ~ valid.output);
+        assert(readText(hintPath) == "alpha\nchanged\n",
+            "valid Codex patch did not apply");
+        writeln("apply_patch rejects unified-diff headers with a Codex-format hint and still applies valid patches");
     }
 
     // Patch context is logical text, not a line-ending contract. A model emits

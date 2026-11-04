@@ -1,0 +1,43 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/tests/headless_pro_smoke.d",
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-core/source/auroraopencode/core.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-version=AuroraHeadless",
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/headless_pro_smoke.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/audit-stall-smoke.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/audit-stall-smoke.exe",
+        "args": ["--audit-stall-only"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    }
+  ]
+}

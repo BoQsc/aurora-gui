@@ -63,7 +63,12 @@ private string fingerprint(string workspace, JSONValue inputs, bool delegate() c
     {
         enforce(cancelled is null || !cancelled(), "Verification cancelled.");
         enforce(++entries <= 20_000 && depth <= 64 && !isSymlink(path), "Verification inputs exceed the traversal bound or include a link.");
-        enforce(checkoutIdentity(path) == checkoutIdentity(workspace), "Verification input leaves the task checkout.");
+        const inputCheckout = checkoutIdentity(path);
+        const taskCheckout = checkoutIdentity(workspace);
+        enforce(inputCheckout == taskCheckout,
+            "Verification input " ~ path ~ " belongs to checkout " ~ inputCheckout ~
+            ", but the task checkout is " ~ taskCheckout ~
+            ". Move the input into the task checkout or run verify from its checkout.");
         if (isDir(path))
         {
             foreach (entry; dirEntries(path, SpanMode.shallow))
@@ -181,7 +186,12 @@ RecipeResult runVerificationRecipe(string arguments, string workspace,
     {
         const args = parseJSON(arguments);
         const path = absolutePath(args["recipe"].str, workspace);
-        enforce(checkoutIdentity(path) == checkoutIdentity(workspace), "Recipe must belong to the task checkout.");
+        const recipeCheckout = checkoutIdentity(path);
+        const taskCheckout = checkoutIdentity(workspace);
+        enforce(recipeCheckout == taskCheckout,
+            "Recipe " ~ path ~ " belongs to checkout " ~ recipeCheckout ~
+            ", but the task checkout is " ~ taskCheckout ~
+            ". Run verify from the recipe's checkout or move the recipe into the task checkout.");
         enforce(getSize(path) <= 64 * 1024, "Recipe exceeds 64 KiB.");
         const text = readText(path);
         const recipeHash = sha256Of(text).toHexString().idup;

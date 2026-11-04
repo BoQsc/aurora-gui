@@ -503,8 +503,10 @@ private OpenCodeToolDef applyPatchToolDefinition()
         "and may contain `*** Add File:`, `*** Update File:` and `*** Delete " ~
         "File:` sections. An update may be followed by `*** Move to:` to " ~
         "rename or relocate that file in the same transaction. Inside an " ~
-        "update, unchanged context lines start " ~
-        "with a space, removed lines with `-` and added lines with `+`. " ~
+        "update, hunks start with `@@` plus an optional context label; every " ~
+        "body line starts with a space for unchanged context, `-` for removed, " ~
+        "or `+` for added. Do not use unified-diff hunk headers such as " ~
+        "`@@ -1,2 +1,2 @@` or unprefixed context lines. " ~
         "Prefer this over several `edit` calls when a change touches " ~
         "multiple files or places. Put related changes in one call; unique " ~
         "context permits hunks in any order. Repeated Update File sections " ~
@@ -4476,6 +4478,11 @@ private bool isPatchDirective(string line)
 /// `*** Delete File:` sections wrapped in `*** Begin Patch` / `*** End
 /// Patch`. This is the multi-file editing workflow: many hunks across many
 /// files cost one round instead of one round per edit.
+private enum applyPatchFormatHint =
+    "\nHint: apply_patch uses Codex patch format: hunks start with `@@` " ~
+    "plus an optional context label, and every body line starts with ' ', '+', or '-'. " ~
+    "Unified-diff headers such as `@@ -1,2 +1,2 @@` and unprefixed context lines are rejected.";
+
 private ToolExecution runApplyPatch(string args, string workspace)
 {
     import std.string : splitLines;
@@ -4795,8 +4802,15 @@ private ToolExecution runApplyPatch(string args, string workspace)
             {
                 const raw = lines[cursor];
                 if (isPatchDirective(raw)) break;
-                if (strip(raw).length >= 2 && strip(raw)[0 .. 2] == "@@")
+                const header = strip(raw);
+                if (header.length >= 2 && header[0 .. 2] == "@@")
                 {
+                    if (header.length >= 4 && header[0 .. 4] == "@@ -")
+                    {
+                        hunkFailed = true;
+                        failReason = "unified-diff hunk header is not accepted; use Codex '@@' with an optional context label.";
+                        break;
+                    }
                     flushHunk();
                     if (hunkFailed) break;
                     ++cursor;
@@ -4873,6 +4887,7 @@ private ToolExecution runApplyPatch(string args, string workspace)
         rejected.put("Patch not applied; validation failed and no files were changed:");
         foreach (failure; failures)
             rejected.put("\n- " ~ failure);
+        rejected.put(applyPatchFormatHint);
         return ToolExecution("apply_patch", rejected.data, true);
     }
 

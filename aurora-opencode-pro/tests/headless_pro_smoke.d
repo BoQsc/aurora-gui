@@ -692,6 +692,118 @@ private void verifyRetryPill(OpenCodeRoot root, UiTestDriver driver)
     assert(root.goalStatusForTesting() == "active", "A provider outage silently paused the user's goal");
     assert(root.lastBubbleActionForTesting() == "Retry");
     writeln("PASS unified retry exhaustion, retained goal, explicit retry and stop controls");
+
+    // An audit stall must not surface the visible failure or stop the active
+    // goal. The hidden continuation is the next model round.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["continue the work", "I will."]);
+    root.setGoalForTesting("continue the work", "active");
+    root.setTaskStateForTesting("continue the work", "active", "required");
+    root.pauseToolContinuationForTesting();
+    root.startTurnClockForTesting();
+    root.injectOutputFailureForTesting("task_audit_stalled");
+    bool auditVisible, auditContinuation;
+    foreach (i; 0 .. root.totalMessageCountForTesting())
+    {
+        const text = root.messageContentForTesting(i);
+        if (text.indexOf("Agent output stalled") >= 0) auditVisible = true;
+        if (text.indexOf("Agent output recovery:") >= 0) auditContinuation = true;
+    }
+    assert(!auditVisible, "audit stall leaked into the transcript");
+    assert(auditContinuation, "audit stall did not append a hidden continuation");
+    assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
+    assert(root.goalStatusForTesting() == "active", "audit stall stopped the goal");
+    assert(root.turnStatusForTesting() == "running", "audit stall did not continue the turn");
+    assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
+    writeln("PASS audit stall is hidden and keeps the goal active");
+
+    // Provider/transport failures still use the visible failure path.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["continue the work", "I will."]);
+    root.setGoalForTesting("continue the work", "active");
+    root.setTaskStateForTesting("continue the work", "active", "required");
+    root.pauseToolContinuationForTesting();
+    root.startTurnClockForTesting();
+    root.injectOutputFailureForTesting("provider_error");
+    assert(root.failedMessageCountForTesting() > 0, "normal output failure was hidden");
+    writeln("PASS normal output failure remains visible");
+}
+
+private void verifyAuditStallOnly(OpenCodeRoot root)
+{
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["continue the work", "I will."]);
+    root.setGoalForTesting("continue the work", "active");
+    root.setTaskStateForTesting("continue the work", "active", "required");
+    root.pauseToolContinuationForTesting();
+    root.startTurnClockForTesting();
+    root.injectOutputFailureForTesting("task_audit_stalled");
+    bool auditVisible, auditContinuation;
+    foreach (i; 0 .. root.totalMessageCountForTesting())
+    {
+        const text = root.messageContentForTesting(i);
+        if (text.indexOf("Agent output stalled") >= 0) auditVisible = true;
+        if (text.indexOf("Agent output recovery:") >= 0) auditContinuation = true;
+    }
+    assert(!auditVisible, "audit stall leaked into the transcript");
+    assert(auditContinuation, "audit stall did not append a hidden continuation");
+    assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
+    assert(root.goalStatusForTesting() == "active", "audit stall stopped the goal");
+    assert(root.turnStatusForTesting() == "running", "audit stall did not continue the turn");
+    assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
+
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["continue the work", "I will."]);
+    root.setGoalForTesting("continue the work", "active");
+    root.setTaskStateForTesting("continue the work", "active", "required");
+    root.pauseToolContinuationForTesting();
+    root.startTurnClockForTesting();
+    root.injectOutputFailureForTesting("goal_audit_stalled");
+    bool goalAuditVisible, goalAuditContinuation;
+    foreach (i; 0 .. root.totalMessageCountForTesting())
+    {
+        const text = root.messageContentForTesting(i);
+        if (text.indexOf("Agent output stalled") >= 0) goalAuditVisible = true;
+        if (text.indexOf("Agent output recovery:") >= 0) goalAuditContinuation = true;
+    }
+    assert(!goalAuditVisible, "goal audit stall leaked into the transcript");
+    assert(goalAuditContinuation, "goal audit stall did not append a hidden continuation");
+    assert(root.taskStatusForTesting() == "active", "goal audit stall stopped the task");
+    assert(root.goalStatusForTesting() == "active", "goal audit stall stopped the goal");
+    assert(root.turnStatusForTesting() == "running", "goal audit stall did not continue the turn");
+    assert(root.failedMessageCountForTesting() == 0, "goal audit stall marked a visible failure");
+    writeln("PASS goal audit stall is hidden and keeps the goal active");
+
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["continue the work", "I will."]);
+    root.setGoalForTesting("continue the work", "active");
+    root.setTaskStateForTesting("continue the work", "active", "required");
+    root.pauseToolContinuationForTesting();
+    root.startTurnClockForTesting();
+    root.injectOutputFailureForTesting("provider_error");
+    assert(root.failedMessageCountForTesting() > 0, "normal output failure was hidden");
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["old turn", "I will."]);
+    root.failAssistantMessageForTesting(
+        "Agent output stalled: the provider kept answering without advancing the unfinished work or taking an action. Saved work is unchanged; continue when you want another attempt.");
+    root.tickTree(0.02);
+    const auditHistoryIndex = root.totalMessageCountForTesting() - 1;
+    assert(root.messageHiddenForTesting(auditHistoryIndex),
+        "legacy audit failure row is still visible");
+    root.failAssistantMessageForTesting(
+        "Agent output stalled: the provider could not be reached.");
+    root.tickTree(0.02);
+    const normalHistoryIndex = root.totalMessageCountForTesting() - 1;
+    assert(!root.messageHiddenForTesting(normalHistoryIndex),
+        "normal historical failure row was hidden");
+    writeln("PASS legacy audit failure row hidden; normal failure row visible");
+    writeln("PASS audit stall hidden; normal output failure visible");
 }
 
 private void verifyTitleTooltipLeavesWindow(OpenCodeRoot root, UiTestDriver driver,
@@ -858,6 +970,11 @@ int main(string[] args)
     assert(paintProjection(root, driver), "Second pro paint failed");
     writeln("[marker] smoke main entered");
     writeln("[marker] args: ", args);
+    if (args.length > 1 && args[$ - 1] == "--audit-stall-only")
+    {
+        verifyAuditStallOnly(root);
+        return 0;
+    }
     if (args.length > 1 && args[$ - 1] == "--group-only")
     {
         // Focused run for the same-action grouping change: read+grep must fold

@@ -98,7 +98,8 @@ RequestIntent requestIntent(string text)
     if (analysis) return RequestIntent.analysis;
     if (correctiveActionRequest(text)) return RequestIntent.implementation;
     if (clarification) return RequestIntent.clarification;
-    if (leadingQuestion(words) || words.canFind("explanation")) return RequestIntent.clarification;
+    if (leadingQuestion(words) || words.canFind("why") ||
+        words.canFind("explanation")) return RequestIntent.clarification;
     return RequestIntent.conversation;
 }
 

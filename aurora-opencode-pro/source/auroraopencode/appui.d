@@ -18000,7 +18000,9 @@ private string _suggestExcludeId;
             preview.setMessageIndex(cast(int) index);
             preview.setWorkspace(workspaceForSession(_current));
             preview.setContent(message.content);
-            if (message.failed && message.error.length)
+            if (message.failed && legacyAuditStallFailure(message.error))
+                preview.setHidden(true);
+            else if (message.failed && message.error.length)
                 preview.setContent(message.content ~ "\n\nRequest failed:\n\n```text\n" ~
                     message.error.replace("```", "`` `") ~ "\n```");
             if (message.reasoning.length) preview.setThinking(message.reasoning);
@@ -19410,6 +19412,13 @@ private void pollButtonSuggestionRequest()
     /// Build the retained bubble for one message, wiring its context menu,
     /// collapse callback and usage footer. Shared by the plain and grouped
     /// paths in rebuildMessageColumn.
+    private static bool legacyAuditStallFailure(string error)
+    {
+        return error.canFind("Agent output stalled:") &&
+            (error.canFind("without advancing the unfinished work") ||
+             error.canFind("Saved work is unchanged"));
+    }
+
     private BubbleVersion bubblePresentation(size_t index, ref const ChatMessage message,
         int latestAssistantIndex, size_t[] versionPositions, size_t[] versionTotals,
         string thinkingText)
@@ -19590,7 +19599,9 @@ private void pollButtonSuggestionRequest()
         if (message.failed)
         {
             bubble.setFailed("");
-            if (message.error.length > 0)
+            if (legacyAuditStallFailure(message.error))
+                bubble.setHidden(true);
+            else if (message.error.length > 0)
                 bubble.setContent(message.content ~
                     (message.content.length > 0 ? "\n\n" : "") ~
                     "Request failed:\n\n```text\n" ~
@@ -20850,9 +20861,60 @@ private void pollButtonSuggestionRequest()
                 event.completionTokens, event.requestId);
         }
         const auditStall = auditStallIssue(event.outputIssue);
-        if (auditStall) _auditSuppressed[session.id] = true;
-        const exhausted = !auditStall &&
-            outputRecoveryCount(*session) >= maxOutputRecoveries;
+        if (auditStall)
+        {
+            const auditExhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
+            if (auditExhausted)
+            {
+                _auditSuppressed[session.id] = true;
+                _suppressDoneStatus = true;
+                finishAssistantMessage(false);
+                dropAutoResendSchedule();
+                _autoContinuePendingSession = -1;
+                _autoContinueRetries = 0;
+                _activeRequestId = 0;
+                _activeRequestSession = -1;
+                session.turnStatus = "idle";
+                session.taskStatus = "active";
+                publishThreadUpdated(*session);
+                markDirty();
+                updateStatus("Active goal preserved; waiting for a usable action.");
+                updateGoalBar();
+                refreshBubbleActions();
+                return;
+            }
+            _auditSuppressed.remove(session.id);
+            logInfo("agent-output request=" ~ to!string(event.requestId) ~
+                " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
+                " recovery=continuing audit");
+            _suppressDoneStatus = true;
+            finishAssistantMessage(false);
+            dropAutoResendSchedule();
+            _autoContinuePendingSession = -1;
+            _autoContinueRetries = 0;
+            _activeRequestId = 0;
+            _activeRequestSession = -1;
+            ChatMessage guidance;
+            guidance.role = "user";
+            guidance.internal = true;
+            guidance.content = outputRecoveryMarker ~
+                " the previous response did not advance the active goal or unfinished work. " ~
+                "Continue now with a concrete tool action that adds evidence, or give a supported " ~
+                "completion or blocked result. Do not restate the plan, repeat the same prose, or " ~
+                "ask the user to retry; saved work is intact.";
+            appendMessage(*session, guidance);
+            session.turnStatus = "running";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            markDirty();
+            rebuildMessageColumn();
+            updateStatus("Continuing active goal…");
+            updateGoalBar();
+            if (!_toolContinuationPaused && !_stopPending && !computerUseAbortActive())
+                startChatRequest(sessionIndex);
+            return;
+        }
+        const exhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
         const recover = outputRecoveryAllowed(event.outputIssue, exhausted,
             toolsEnabledForSession(*session), _stopPending,
             computerUseAbortActive(),
@@ -20861,11 +20923,9 @@ private void pollButtonSuggestionRequest()
             " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
             " recovery=" ~ (recover ? "continuing" : "stopped"));
         failAssistantMessage(outputFailurePrefix ~ outputIssueDescription(event.outputIssue) ~
-            (auditStall
-                ? " Saved work is unchanged; continue when you want another attempt."
-                : exhausted
-                    ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue."
-                    : ""), true);
+            (exhausted
+                ? " Recovery requests also produced no useful action. Work and the active goal are saved; retry with a working provider to continue."
+                : ""), true);
         dropAutoResendSchedule();
         _autoContinuePendingSession = -1;
         _autoContinueRetries = 0;
@@ -20873,9 +20933,7 @@ private void pollButtonSuggestionRequest()
         _activeRequestSession = -1;
         if (!recover)
         {
-            updateStatus(auditStall
-                ? "Stopped a stalled agent continuation. See the conversation for details."
-                : "Stopped repeated agent output. See the conversation for details.");
+            updateStatus("Stopped repeated agent output. See the conversation for details.");
             refreshBubbleActions();
             startNextQueuedFollowUp(sessionIndex);
             return;
@@ -21252,16 +21310,22 @@ private void pollButtonSuggestionRequest()
             return;
         }
 
-        // Suppress only a currently requested exact call that has already run
-        // excessively. This prevents a hot loop without limiting the number of
-        // distinct, productive calls a difficult task may need.
-        if (hasExhaustedRepeatedCall(*session, calls))
+        // Suppress an exact call that has already run excessively, and also
+        // collapse an immediately repeated successful read-only/control batch.
+        const exhausted = hasExhaustedRepeatedCall(*session, calls);
+        const readOnlyRepeat = !exhausted &&
+            toolProgressPolicy.isReadOnlyOrControlBatch(calls) &&
+            toolProgressPolicy.isConsecutiveSuccessfulRepeat(*session, calls);
+        if (exhausted || readOnlyRepeat)
         {
-            appendSkippedToolResults(*session, calls,
-                "Tool call skipped: this exact call has already run " ~
-                to!string(cumulativeRepeatLimit) ~ " times in this " ~
-                "unchanged task state. Tool access remains available for a different " ~
-                "action that can add new evidence.");
+            const reason = exhausted
+                ? "Tool call skipped: this exact call has already run " ~
+                    to!string(cumulativeRepeatLimit) ~ " times in this " ~
+                    "unchanged task state. Tool access remains available for a different " ~
+                    "action that can add new evidence."
+                : "Tool call skipped: this exact read-only/control batch just succeeded. " ~
+                    "Use the existing result or choose a different action that can add new evidence.";
+            appendSkippedToolResults(*session, calls, reason);
             OpenCodeEvent failure;
             failure.kind = OpenCodeEventKind.error;
             failure.requestId = event.requestId;
@@ -33133,6 +33197,20 @@ private void pollButtonSuggestionRequest()
         return cast(int) _sessions[_current].messages.length;
     }
 
+    /// Test-only: drive the actual output-failure handler with an audit issue.
+    public void injectOutputFailureForTesting(string issue)
+    {
+        const sessionIndex = _current;
+        if (sessionIndex < 0 || sessionIndex >= cast(int) _sessions.length) return;
+        _activeRequestSession = sessionIndex;
+        _turnSessionIndex = sessionIndex;
+        OpenCodeEvent event;
+        event.kind = OpenCodeEventKind.error;
+        event.outputIssue = issue;
+        event.requestId = _activeRequestId;
+        handleOutputFailure(event);
+    }
+
     /// Test-only: failed messages saved in the current session.
     public int failedMessageCountForTesting()
     {
@@ -34296,6 +34374,16 @@ private void pollButtonSuggestionRequest()
             rows ~= line;
         }
         return rows;
+    }
+
+    /// Test-only: whether the transcript bubble for a message is hidden.
+    public bool messageHiddenForTesting(int index)
+    {
+        foreach (child; messageColumnVisuals())
+            if (auto bubble = cast(MessageBubble) child)
+                if (bubble.messageIndex() == index)
+                    return bubble.hiddenForTesting();
+        return false;
     }
 
     /// Test-only: the phase text currently shown in the live activity row

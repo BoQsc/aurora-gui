@@ -16,6 +16,9 @@ int main(string[] args)
         "Explain why and fix it", "Why is it slow? Please test the API.",
         "Can you inspect why it failed?", "I want you to continue and explain why"])
         assert(!explanationOnlyRequest(text), text);
+    assert(!explanationOnlyRequest(
+        "Why do we still get stalled reports? Stop it, fix it, and make sure this is enforced."));
+    assert(explanationOnlyRequest("Why does the provider stall?"));
 
     enum w = 384, h = 216;
     auto rgb = new ubyte[w * h * 3];

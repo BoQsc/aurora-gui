@@ -1,0 +1,26 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/tools.d",
+    "aurora-opencode-pro/tests/tools_test.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "C:\\D\\dmd2\\windows\\bin64\\dmd.exe",
+        "args": ["-i", "-verrors=20", "-Isource", "-Ishared", "-Itests", "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source", "-Jassets", "-ofbuild/verify-apply-patch-hint.exe", "tests/tools_test.d", "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib"],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\verify-apply-patch-hint.exe",
+        "args": [],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 600000
+      }
+    }
+  ]
+}

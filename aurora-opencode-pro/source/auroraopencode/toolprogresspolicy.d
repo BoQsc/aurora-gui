@@ -4,7 +4,7 @@ import auroraopencode.core;
 import auroraopencode.tools : partialStringArg;
 import std.json : JSONValue, JSONType, parseJSON;
 import std.path : extension;
-import std.string : strip, splitLines, toLower;
+import std.string : startsWith, strip, splitLines, toLower;
 import std.array : appender;
 import std.conv : to;
 
@@ -77,6 +77,85 @@ public bool isVerificationTool(string name, string arguments)
         return verificationCheck(program.str, args).length > 0;
     }
     catch (Exception) { return false; }
+}
+
+private bool isReadOnlyOrControlCall(const OpenCodeToolCall call)
+{
+    switch (call.name)
+    {
+        case "read":
+        case "grep":
+        case "glob":
+        case "read_plan":
+        case "read_history":
+        case "tool_status":
+        case "calculate":
+        case "view_image":
+        case "webfetch":
+        case "checksum":
+        case "update_plan":
+        case "update_subplan":
+            return true;
+        case "dshell":
+            try
+            {
+                const value = parseJSON(call.arguments);
+                if (value.type != JSONType.object) return false;
+                auto command = "command" in value.object;
+                return command !is null && command.type == JSONType.string &&
+                    (command.str == "where" || command.str == "list" ||
+                     command.str == "info");
+            }
+            catch (Exception) { return false; }
+        default:
+            return false;
+    }
+}
+
+public bool isReadOnlyOrControlBatch(const(OpenCodeToolCall)[] calls)
+{
+    if (calls.length == 0) return false;
+    foreach (call; calls)
+        if (!isReadOnlyOrControlCall(call)) return false;
+    return true;
+}
+
+/// The immediately preceding assistant tool batch must have the same
+/// signature and every result must have succeeded. A skipped result is neutral:
+/// it means the duplicate was already suppressed, so continue suppressing it.
+public bool isConsecutiveSuccessfulRepeat(
+    const ref ChatSession session, const(OpenCodeToolCall)[] calls)
+{
+    const signature = toolCallSignature(calls);
+    if (signature.length == 0) return false;
+
+    size_t lastAssistant = size_t.max;
+    foreach (index; activeMessagePath(session))
+    {
+        const message = session.messages[index];
+        if (message.role == "assistant" && message.toolCalls.length)
+            lastAssistant = index;
+    }
+    if (lastAssistant == size_t.max) return false;
+    if (toolCallSignature(session.messages[lastAssistant].toolCalls) != signature)
+        return false;
+
+    bool sawResult;
+    for (auto index = lastAssistant + 1; index < session.messages.length; ++index)
+    {
+        const message = session.messages[index];
+        if (message.role == "tool")
+        {
+            sawResult = true;
+            if (message.failed && !message.content.startsWith("Tool call skipped:"))
+                return false;
+        }
+        else if (message.role == "user")
+            return false;
+        else if (message.role == "assistant")
+            break;
+    }
+    return sawResult;
 }
 
 public int toolCallRunCount(const ref ChatSession session,
