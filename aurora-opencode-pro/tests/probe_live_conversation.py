@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +13,8 @@ import time
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--live", action="store_true", required=True,
                     help="Use the configured provider; makes paid model requests")
-parser.parse_args()
+parser.add_argument("--executable", type=Path)
+args = parser.parse_args()
 package = Path(__file__).resolve().parents[1]
 source = json.loads((Path(os.environ["APPDATA"])/"Aurora OpenCode/settings.json").read_text(encoding="utf-8-sig"))
 directory = Path(tempfile.mkdtemp(prefix="live-conversation-", dir=package/"build"))
@@ -48,7 +50,7 @@ prompts = [
 ]
 (directory/"prompts.json").write_text(json.dumps(prompts, indent=2), encoding="utf-8")
 original_test = (workspace/"test_guest_count.py").read_bytes()
-executable = package/"aurora-opencode-pro.exe"
+executable = args.executable.resolve(strict=True) if args.executable else package/"aurora-opencode-pro.exe"
 evidence = {"model": settings["model"], "binarySha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
 print("ARTIFACTS", directory, flush=True)
 started = time.monotonic()
@@ -79,7 +81,10 @@ try:
     note_write = next(json.loads(c["arguments"])["content"] for c in document_calls if c["name"] == "write")
     note = (workspace/"dinner-plan.md").read_text(encoding="utf-8")
     assert note == note_write, "Code repair modified the preserved dinner plan"
-    assert all(word in note.lower() for word in ("vegetarian", "mushroom", "gluten", "45"))
+    assert all(word in note.lower() for word in ("vegetarian", "mushroom", "gluten"))
+    cooking_times = [int(value) for value in re.findall(r"\b(\d+)\s*minutes?\b", note.lower())]
+    assert cooking_times and all(0 < value <= 45 for value in cooking_times), \
+        "Saved dinner exceeds the user's 45-minute limit or omits cooking time"
     assert "4" in note or "four" in note.lower(), "Saved plan lost corrected guest count"
     repair_results = [m for m in turns[3] if m["role"] == "tool" and m.get("toolName") == "run"]
     assert any(m.get("failed") for m in repair_results), "Agent skipped reproducing the failing test"

@@ -123,34 +123,38 @@ public bool isReadOnlyOrControlBatch(const(OpenCodeToolCall)[] calls)
 /// The immediately preceding assistant tool batch must have the same
 /// signature and every result must have succeeded. A skipped result is neutral:
 /// it means the duplicate was already suppressed, so continue suppressing it.
+/// Only the active branch is judged: an edited or regenerated run stays in the
+/// message store but is not part of the conversation, so its results must not
+/// decide whether this duplicate is safe to collapse.
 public bool isConsecutiveSuccessfulRepeat(
     const ref ChatSession session, const(OpenCodeToolCall)[] calls)
 {
     const signature = toolCallSignature(calls);
     if (signature.length == 0) return false;
 
+    const path = activeMessagePath(session);
     size_t lastAssistant = size_t.max;
-    foreach (index; activeMessagePath(session))
+    foreach (position, index; path)
     {
         const message = session.messages[index];
         if (message.role == "assistant" && message.toolCalls.length)
-            lastAssistant = index;
+            lastAssistant = position;
     }
     if (lastAssistant == size_t.max) return false;
-    if (toolCallSignature(session.messages[lastAssistant].toolCalls) != signature)
+    if (toolCallSignature(session.messages[path[lastAssistant]].toolCalls) != signature)
         return false;
 
     bool sawResult;
-    for (auto index = lastAssistant + 1; index < session.messages.length; ++index)
+    foreach (position; lastAssistant + 1 .. path.length)
     {
-        const message = session.messages[index];
+        const message = session.messages[path[position]];
         if (message.role == "tool")
         {
             sawResult = true;
             if (message.failed && !message.content.startsWith("Tool call skipped:"))
                 return false;
         }
-        else if (message.role == "user")
+        else if (message.role == "user" && !message.internal)
             return false;
         else if (message.role == "assistant")
             break;

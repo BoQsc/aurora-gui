@@ -9,7 +9,7 @@ import auroraopencode.outputguard : outputFailurePrefix;
 import std.string : startsWith;
 import auroraopencode.grepformat : compactGrepHistory;
 import auroraopencode.controlhistory : controlHistoryBoundary, supersededControlState, turnControlState,
-    controlStateKind, ControlStateKind;
+    controlStateKind, ControlStateKind, controlHistoryLimit;
 import auroraopencode.completionhandoff : completionHandoffMarker;
 
 // Wire projection is independent of widgets, settings, and provider I/O.
@@ -42,20 +42,33 @@ public ChatRequestMessage[] projectRequestMessages(
                     break;
                 }
         // Checkpoints, continuation notes and progress notes each replace the
-        // previous one of the same kind. Within the current instruction window
-        // keep only the newest of each, otherwise a long-running turn sends
-        // every superseded copy (observed: 62 checkpoints / 189 KB in one turn).
-        size_t latestCheckpoint = size_t.max, latestContinuation = size_t.max, latestProgress = size_t.max;
-        foreach (i, index; path)
+        // previous one of the same kind, but only once a single instruction
+        // window has stacked a pathological streak (observed: 62 checkpoints /
+        // 189 KB in one turn). Collapsing earlier copies shifts every following
+        // message, so a live tool round would rewrite the prefix it already sent
+        // and lose the provider's prompt cache. Ordinary rounds stay append-only;
+        // bounded windows retire superseded state with controlHistoryBoundary
+        // instead (see controlHistoryCompactionNeeded).
+        // A retire index of 0 means "keep every record of this kind": the drop
+        // test is `slot < retireIndex`, which stays false for an ordinary slot.
+        size_t retireCheckpoint, retireContinuation, retireProgress;
         {
-            if (i < instructionBoundary) continue;
-            final switch (controlStateKind(session.messages[index]))
+            size_t checkpoints, continuations, progressNotes;
+            size_t lastCheckpoint, lastContinuation, lastProgress;
+            foreach (i, index; path)
             {
-                case ControlStateKind.checkpoint: latestCheckpoint = i; break;
-                case ControlStateKind.continuation: latestContinuation = i; break;
-                case ControlStateKind.progress: latestProgress = i; break;
-                case ControlStateKind.none: break;
+                if (i < instructionBoundary) continue;
+                final switch (controlStateKind(session.messages[index]))
+                {
+                    case ControlStateKind.checkpoint: ++checkpoints; lastCheckpoint = i; break;
+                    case ControlStateKind.continuation: ++continuations; lastContinuation = i; break;
+                    case ControlStateKind.progress: ++progressNotes; lastProgress = i; break;
+                    case ControlStateKind.none: break;
+                }
             }
+            if (checkpoints > controlHistoryLimit) retireCheckpoint = lastCheckpoint;
+            if (continuations > controlHistoryLimit) retireContinuation = lastContinuation;
+            if (progressNotes > controlHistoryLimit) retireProgress = lastProgress;
         }
         auto historyImages = requestHistoryImageIndices(session, path, slot,
             imageLimit);
@@ -64,9 +77,9 @@ public ChatRequestMessage[] projectRequestMessages(
         {
             const message = session.messages[path[slot]];
             const controlKind = controlStateKind(message);
-            if ((controlKind == ControlStateKind.checkpoint && slot < latestCheckpoint) ||
-                (controlKind == ControlStateKind.continuation && slot < latestContinuation) ||
-                (controlKind == ControlStateKind.progress && slot < latestProgress))
+            if ((controlKind == ControlStateKind.checkpoint && slot < retireCheckpoint) ||
+                (controlKind == ControlStateKind.continuation && slot < retireContinuation) ||
+                (controlKind == ControlStateKind.progress && slot < retireProgress))
             {
                 ++slot;
                 continue;

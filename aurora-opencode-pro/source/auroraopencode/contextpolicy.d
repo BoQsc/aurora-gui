@@ -27,7 +27,7 @@ public string latestActualUserRequest(const ref ChatSession session)
 /// Machine-readable task state supplied on every request. Compaction and
 /// restarts retain the objective without overriding the latest user intent.
 public string durableTaskPrompt(const ref ChatSession session,
-    bool nestedEnabled)
+    bool nestedEnabled, bool includeRecentEvidence = true)
 {
     if (session.objective.length == 0 && session.taskSteps.length == 0 &&
         session.verificationStatus.length == 0 && session.goal.length == 0)
@@ -35,7 +35,8 @@ public string durableTaskPrompt(const ref ChatSession session,
     auto prompt = appender!string();
     const currentRequest = latestActualUserRequest(session);
     prompt.put(goalPromptBlock(session));
-    prompt.put("\n\n# Durable Task State\n" ~ taskContext(session, currentRequest, nestedEnabled));
+    prompt.put("\n\n# Durable Task State\n" ~ taskContext(session, currentRequest,
+        nestedEnabled, 12_000, includeRecentEvidence));
     const evidence = requiredEvidence(session);
     if (evidence.length)
     {

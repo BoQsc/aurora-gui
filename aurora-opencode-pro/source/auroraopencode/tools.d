@@ -1,4 +1,5 @@
 module auroraopencode.tools;
+import auroraopencode.planmode : experimentalStrictPlanEnabled;
 import auroraopencode.toolstate : ToolState;
 import auroraopencode.inputcontract : requestInputSchema;
 import auroraopencode.verificationrecipe : verificationToolDefinition;
@@ -557,7 +558,10 @@ private OpenCodeToolDef goalCompleteToolDefinition()
 /// Record the visible plan, with at most one step in progress.
 private OpenCodeToolDef readPlanToolDefinition()
 {
-    return OpenCodeToolDef("read_plan", "Read task state without changing or activating it. Omit task_id for current work; supply a background task ID to recover exact earlier requirements after compaction. Summary shows objective, position and outstanding work. Details defaults to outcomes when a plan exists, otherwise actions. Outcome IDs belong in update_plan.plan. Set collection=actions (or parent_id) for action IDs: update those in update_plan.work_items.",
+    const description = experimentalStrictPlanEnabled()
+        ? "Read task state without changing or activating it. Omit task_id for current work; supply a background task ID to recover exact earlier requirements after compaction. Summary shows objective, position and outstanding work. Details defaults to outcomes when a plan exists, otherwise actions. Outcome IDs belong in update_plan.plan. Set collection=actions (or parent_id) for action IDs: update those in update_plan.work_items."
+        : "Read the saved objective, current checklist and remaining work without changing them. Use details for the full steps or to recover requirements after compaction. Use update_plan with the complete list of step text and status to revise the checklist.";
+    return OpenCodeToolDef("read_plan", description,
         `{"type":"object","properties":{"task_id":{"type":"string"},"view":{"type":"string","enum":["summary","details"]},"collection":{"type":"string","enum":["outcomes","actions"]},"parent_id":{"type":"string"},"include_completed":{"type":"boolean"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}`);
 }
 
@@ -570,6 +574,13 @@ private OpenCodeToolDef readHistoryToolDefinition()
 
 private OpenCodeToolDef updatePlanToolDefinition()
 {
+    if (!experimentalStrictPlanEnabled())
+        return OpenCodeToolDef("update_plan",
+            "Updates the task plan. Provide the complete current list of steps, " ~
+            "with at most one step in_progress. Use a short plan for multi-step " ~
+            "work; update it when progress or new evidence changes the next action. " ~
+            "Skip planning for simple requests. An optional explanation describes a change.",
+            `{"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`);
     return OpenCodeToolDef(
         "update_plan",
         "Track the objective, outcomes and small work incrementally. Use work_items for meaningful discoveries, recovery actions and optional follow-ups; record their reason, parent and completion condition. Omit plan when only recording small work or work_context. Required actions remain accountable; optional follow-ups must not expand the current scope. Update the task plan with a list of steps, each carrying a status " ~
@@ -5046,6 +5057,8 @@ private ToolExecution runUpdatePlan(string args, string workspace)
     if (auto field = "plan" in value.object)
         if (field.type == JSONType.array)
             plan = field.array;
+    if (plan.length == 0 && !experimentalStrictPlanEnabled())
+        return ToolExecution("update_plan", "Plan updated", false);
     if (plan.length == 0)
         return ToolExecution("update_plan",
             "Error: `plan` must be a non-empty array of steps.", true);

@@ -132,7 +132,13 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     if (policy.orchestratorEnabled)
         result.tools = experimentalOrchestratorFilterTools(result.tools, policy.orchestratorRouter);
 
-    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + responseContract.length + 64;
+    // The answer contract is fixed for this user request. Keep it ahead of
+    // append-only tool history: the single-system compatibility projection
+    // otherwise inserts each new checkpoint before it and rewrites the prefix.
+    ChatRequestMessage contract;
+    contract.role = "system"; contract.content = responseContract;
+    result.messages ~= contract;
+    const fixedBytes = requestMessageBytes(result.messages) + requestToolDefinitionBytes(result.tools) + 64;
     result.summaryByteBudget = compactionSummaryCapacity(policy.contextLimit, fixedBytes);
     result.oldAnchor = checkpointOnActivePath(session) ? session.compactedThroughMessageId : "";
     result.oldSummary = result.oldAnchor.length ? session.compactionSummary : "";
@@ -151,8 +157,5 @@ PreparedRequest prepareAgentRequest(ref ChatSession session, const ref RequestPo
     result.contextCompacted = policy.compactionEnabled &&
         (checkpointOnActivePath(session) || result.fallbackCompacted);
     result.messages ~= history;
-    ChatRequestMessage contract;
-    contract.role = "system"; contract.content = responseContract;
-    result.messages ~= contract;
     return result;
 }

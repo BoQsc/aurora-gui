@@ -1,5 +1,6 @@
-"""Check per-response plan guidance in the built app against a local provider."""
+"""Check conventional plan snapshots and execution in the built app against a local provider."""
 import hashlib
+import argparse
 import http.server
 import json
 import os
@@ -10,6 +11,9 @@ import threading
 import time
 
 package = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--executable", type=Path, default=package / "aurora-opencode-pro.exe")
+args = parser.parse_args()
 requests = []
 failures = []
 
@@ -20,18 +24,11 @@ def call(identity, name, arguments):
 
 
 def plan(status):
-    if status != "in_progress":
-        return {"plan_mode": "patch", "plan": (
-            [{"id": "write", "status": "completed"}, {"id": "verify", "status": "in_progress"}]
-            if status == "checking" else
-            [{"id": "verify", "status": "completed", "evidence": ["write-output", "check"]}])}
-    return {"objective": "Write and verify a fixture",
-            "plan": [{"id": "write", "step": "Write out.txt and its test",
-                      "status": "in_progress" if status == "in_progress" else "completed",
-                      **({"evidence": ["write-output", "check"]} if status == "completed" else {})},
-                     {"id": "verify", "step": "Run unittest checks for out.txt",
-                      "status": "pending" if status == "in_progress" else "in_progress" if status == "checking" else "completed",
-                      **({"evidence": ["write-output", "check"]} if status == "completed" else {})}]}
+    return {"plan": [
+        {"step": "Write out.txt and its test",
+         "status": "in_progress" if status == "in_progress" else "completed"},
+        {"step": "Run unittest checks for out.txt",
+         "status": "pending" if status == "in_progress" else "in_progress" if status == "checking" else "completed"}]}
 
 
 class Provider(http.server.BaseHTTPRequestHandler):
@@ -57,13 +54,20 @@ class Provider(http.server.BaseHTTPRequestHandler):
         requests.append(request)
         system = "\n".join(message.get("content", "") for message in request["messages"]
                            if message["role"] == "system")
-        if system.count("# Plan review on every response") != 1:
-            failures.append("Missing or duplicated plan-review hint")
-        for instruction in ("Before every response, reassess the plan using current intent and evidence",
-                            "Update changed steps/statuses/next actions via update_plan when available",
-                            "Review silently; skip redundant updates", "Report unfinished work accurately"):
+        if system.count("# Work progress") != 1:
+            failures.append("Missing or duplicated work-progress instruction")
+        for instruction in ("Update the plan when an outcome completes",
+                            "Continue implementation and necessary verification after planning",
+                            "Skip redundant checklist calls", "report unfinished work accurately"):
             if instruction not in system:
                 failures.append("Missing instruction: " + instruction)
+        if "Before every response, reassess the plan" in system:
+            failures.append("Per-response planning ritual is still enabled")
+        for tool in request.get("tools", []):
+            function = tool.get("function", {})
+            if function.get("name") == "update_plan":
+                if set(function["parameters"]["properties"]) != {"explanation", "plan"}:
+                    failures.append("Custom bookkeeping remains in the default plan schema")
         tools = []
         for message in request["messages"]:
             if message["role"] == "tool" and message.get("content", "").startswith("Error:"):
@@ -98,7 +102,7 @@ try:
     settings = {"baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "apiKey": "local-fixture",
                 "model": "plan-review-fixture", "workspace": str(workspace),
                 "legacyTools": False, "quickTitle": False}
-    executable = package / "aurora-opencode-pro.exe"
+    executable = args.executable.resolve(strict=True)
     env = dict(os.environ, APPDATA=str(directory / "appdata"))
     durations = []
     for enabled in (True, False):
@@ -127,17 +131,16 @@ try:
                if message.get("toolName") == "update_plan"]
     assert len(updates) == 3 and not any(message.get("failed") for message in updates), \
         "Plan progress was rejected in the production tool loop"
-    assert "2. [>] Run unittest checks" in updates[1]["content"]
-    assert "2. [x] Run unittest checks" in updates[2]["content"]
+    assert all(message["content"] == "Plan updated" for message in updates)
     assert sum(any(message.get("content") == "READY" for message in history["messages"])
                for history in histories) == 2, "Responses did not complete and persist"
-    assert not any("# Plan review on every response" in message.get("content", "")
+    assert not any("# Work progress" in message.get("content", "")
                    for history in histories for message in history["messages"]), \
         "Per-response reminders accumulated in the conversation history"
     (directory / "result.json").write_text(json.dumps({"status": "passed", "requests": len(requests),
         "binarySha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
         "localProviderSeconds": durations}, indent=2), encoding="utf-8")
-    print("PASS plan-review hints on every response; actual phase updates and mixed check receipts accepted; stable prefix; no extra requests")
+    print("PASS conventional plan -> write -> check -> complete; five requests, zero tool errors, stable prefix, no extra completion rounds")
 finally:
     server.shutdown()
     server.server_close()

@@ -46,6 +46,7 @@ int main()
     }
     add("user", "Persistent goal continuation: audit the result", true);
     add("assistant", "Finished the work");
+    assert(goalAuditStalled(session), "A no-action automatic continuation must stop immediately");
     add("user", "Persistent goal continuation: audit the result", true);
     add("assistant", "Everything looks good");
     assert(goalAuditStalled(session), "Varying prose must not create an endless goal audit");
@@ -93,8 +94,8 @@ int main()
     assert(!taskAuditStalled(session), "A surfaced failure must end its task audit interval");
     foreach (_; 0 .. 100)
     {
-        add("tool", "A concrete attempt or observation", false, "read");
         add("user", taskContinuationMarker ~ "continue useful work", true);
+        add("tool", "A concrete attempt or observation", false, "read");
         add("assistant", "Continuing");
         assert(!taskAuditStalled(session), "Useful long-horizon work hit a total-turn cap");
     }

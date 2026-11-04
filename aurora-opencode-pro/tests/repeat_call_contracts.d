@@ -81,6 +81,31 @@ int main()
     auto newTurn = sessionWith([user, assistant, success, secondUser]);
     assert(!isConsecutiveSuccessfulRepeat(newTurn, [readCall]));
 
+    // Editing or regenerating leaves the abandoned run in the flat message
+    // store. Only the active branch may decide suppression, so an off-path user
+    // message or failed tool result must not cancel a genuine duplicate.
+    {
+        auto branched = sessionWith([user, assistant, success]);
+        ChatMessage abandonedUser;
+        abandonedUser.id = "branch-user";
+        abandonedUser.parentId = branched.messages[0].id;
+        abandonedUser.role = "user";
+        abandonedUser.content = "edited earlier turn";
+        branched.messages ~= abandonedUser;
+        ChatMessage abandonedTool;
+        abandonedTool.id = "branch-tool";
+        abandonedTool.parentId = abandonedUser.id;
+        abandonedTool.role = "tool";
+        abandonedTool.toolName = "read";
+        abandonedTool.toolArgs = readArgs;
+        abandonedTool.content = "Error: abandoned run";
+        abandonedTool.failed = true;
+        branched.messages ~= abandonedTool;
+        assert(branched.activeLeafId == branched.messages[2].id);
+        assert(isConsecutiveSuccessfulRepeat(branched, [readCall]),
+            "an abandoned branch changed the duplicate verdict");
+    }
+
     writeln("PASS repeat guard skips only consecutive successful read-only/control batches");
     return 0;
 }

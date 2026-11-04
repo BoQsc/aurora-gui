@@ -405,6 +405,9 @@ bool compatibleEvidence(const ref TaskStep step, string proof, bool allowHistori
 bool supportedStep(const ref ChatSession session, const ref TaskStep step, const ref string[string] index)
 {
     if (step.status != "completed") return false;
+    // A checklist records the agent's work position. Verification is tracked
+    // independently; receipt bookkeeping must not reopen a completed plan.
+    if (!experimentalStrictPlanEnabled()) return true;
     foreach (id; step.evidence)
         if (auto proof = id in index)
             if (compatibleEvidence(step, *proof, true)) return true;
@@ -614,7 +617,8 @@ string planShapeError(JSONValue root)
             if (key in root.object) return "";
         return "Error: patch mode requires plan, action or task metadata updates.";
     }
-    if (plan.type != JSONType.array || !plan.array.length) return "Error: plan must be a non-empty array.";
+    if (plan.type != JSONType.array || (experimentalStrictPlanEnabled() && !plan.array.length))
+        return "Error: plan must be an array of steps.";
     bool[string] seen;
     foreach (row; plan.array)
     {
@@ -651,6 +655,7 @@ string planShapeError(JSONValue root)
 TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(TaskStep)[] previous,
     bool retainCompleted = true, bool patch = false)
 {
+    if (!experimentalStrictPlanEnabled()) retainCompleted = false;
     if (patch)
     {
         auto merged = taskStepsToJson(previous);
@@ -704,7 +709,7 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
         if (!step.id.length) step.id = "step-" ~ sha256Of(session.contract.id ~ "\n" ~ step.text).toHexString()[0 .. 16].idup;
         if (!step.kind.length) step.kind = inferredPlanKind(step.text);
         if (!step.done.length) step.done = step.text;
-        if (step.status == "completed" && !step.evidence.length)
+        if (experimentalStrictPlanEnabled() && step.status == "completed" && !step.evidence.length)
         {
             if (!indexed) { index = taskEvidenceIndex(session); path = taskMessagePath(session); indexed = true; }
             foreach_reverse (slot; path)
@@ -734,6 +739,7 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
 
 string planUpdateText(const ref ChatSession session, string arguments)
 {
+    if (!experimentalStrictPlanEnabled()) return "Plan updated";
     const root = parseJSON(arguments);
     const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
     const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps;
@@ -902,6 +908,20 @@ string planUpdateError(const ref ChatSession session, string arguments, const(Ta
     if (root.type != JSONType.object) return "Error: update_plan requires an object.";
     const shapeError = planShapeError(root);
     if (shapeError.length) return shapeError;
+    if (!experimentalStrictPlanEnabled())
+    {
+        if (auto explanation = "explanation" in root.object)
+            if (explanation.type != JSONType.string) return "Error: explanation must be a string.";
+        if (auto plan = "plan" in root.object)
+        {
+            const steps = normalizedPlan(session, *plan, previous, false, incrementalPlan(root));
+            int active;
+            foreach (step; steps)
+                if (step.status == "in_progress" && ++active > 1)
+                    return "Error: at most one plan outcome may be in_progress.";
+        }
+        return "";
+    }
     if (auto rows = "plan" in root.object)
         foreach (row; rows.array)
             if (auto id = "id" in row.object)

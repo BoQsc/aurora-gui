@@ -50,8 +50,8 @@ int main()
     require(toUTF32(clamped).length == maxGoalLength,
         "goal clamp split or exceeded the character budget");
     Settings defaults;
-    require(defaults.autoGoalFromFirstMessage,
-        "first-message goal adoption must be enabled by default");
+    require(!defaults.autoGoalFromFirstMessage,
+        "ordinary action requests must not become persistent goals by default");
     writeln("PASS goal commands set/show/pause/resume/clear");
 
     ChatSession session;

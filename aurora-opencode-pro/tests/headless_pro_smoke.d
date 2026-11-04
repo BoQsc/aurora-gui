@@ -693,8 +693,8 @@ private void verifyRetryPill(OpenCodeRoot root, UiTestDriver driver)
     assert(root.lastBubbleActionForTesting() == "Retry");
     writeln("PASS unified retry exhaustion, retained goal, explicit retry and stop controls");
 
-    // An audit stall must not surface the visible failure or stop the active
-    // goal. The hidden continuation is the next model round.
+    // A no-action continuation settles without another recovery request.
+    // Keep unfinished work and the goal available without a failure bubble.
     root.newChatForTesting();
     root.addConversationForTesting(["user", "assistant"],
         ["continue the work", "I will."]);
@@ -711,10 +711,10 @@ private void verifyRetryPill(OpenCodeRoot root, UiTestDriver driver)
         if (text.indexOf("Agent output recovery:") >= 0) auditContinuation = true;
     }
     assert(!auditVisible, "audit stall leaked into the transcript");
-    assert(auditContinuation, "audit stall did not append a hidden continuation");
+    assert(!auditContinuation, "audit stall launched another no-action recovery round");
     assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
     assert(root.goalStatusForTesting() == "active", "audit stall stopped the goal");
-    assert(root.turnStatusForTesting() == "running", "audit stall did not continue the turn");
+    assert(root.turnStatusForTesting() == "idle", "audit stall left a phantom running turn");
     assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
     writeln("PASS audit stall is hidden and keeps the goal active");
 
@@ -749,10 +749,10 @@ private void verifyAuditStallOnly(OpenCodeRoot root)
         if (text.indexOf("Agent output recovery:") >= 0) auditContinuation = true;
     }
     assert(!auditVisible, "audit stall leaked into the transcript");
-    assert(auditContinuation, "audit stall did not append a hidden continuation");
+    assert(!auditContinuation, "audit stall launched another no-action recovery round");
     assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
     assert(root.goalStatusForTesting() == "active", "audit stall stopped the goal");
-    assert(root.turnStatusForTesting() == "running", "audit stall did not continue the turn");
+    assert(root.turnStatusForTesting() == "idle", "audit stall left a phantom running turn");
     assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
 
     root.newChatForTesting();
@@ -771,10 +771,10 @@ private void verifyAuditStallOnly(OpenCodeRoot root)
         if (text.indexOf("Agent output recovery:") >= 0) goalAuditContinuation = true;
     }
     assert(!goalAuditVisible, "goal audit stall leaked into the transcript");
-    assert(goalAuditContinuation, "goal audit stall did not append a hidden continuation");
+    assert(!goalAuditContinuation, "goal audit stall launched another no-action recovery round");
     assert(root.taskStatusForTesting() == "active", "goal audit stall stopped the task");
     assert(root.goalStatusForTesting() == "active", "goal audit stall stopped the goal");
-    assert(root.turnStatusForTesting() == "running", "goal audit stall did not continue the turn");
+    assert(root.turnStatusForTesting() == "idle", "goal audit stall left a phantom running turn");
     assert(root.failedMessageCountForTesting() == 0, "goal audit stall marked a visible failure");
     writeln("PASS goal audit stall is hidden and keeps the goal active");
 
@@ -1939,6 +1939,8 @@ int main(string[] args)
     root.appendToolRequestTurnForTesting("Inspect the request.",
         "call_cache", "read", `{}`);
     root.appendToolReplyForTesting("call_cache", "request body");
+    assert(!root.ensureDurableTaskCheckpointForTesting(),
+        "A read-only result appended a redundant full task checkpoint");
     root.applyPlanForTesting(
         `{"plan":[{"step":"Verify prefix stability","status":"in_progress"}]}`);
     assert(root.ensureDurableTaskCheckpointForTesting(),
@@ -6913,6 +6915,8 @@ int main(string[] args)
 
     // A working subplan must not silently replace a long parent checklist.
     {
+        root.setStrictPlanEnabledForTesting(true);
+        scope(exit) root.setStrictPlanEnabledForTesting(false);
         root.newChatForTesting();
         root.addConversationForTesting(["user", "assistant"],
             ["Carry out the long plan", "Starting the first part."]);

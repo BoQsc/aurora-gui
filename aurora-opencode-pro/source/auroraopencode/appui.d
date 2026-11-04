@@ -648,13 +648,6 @@ private string formatTokenRate(int tenths)
     return to!string(tenths / 10) ~ "." ~ to!string(tenths % 10) ~ " t/s";
 }
 
-/// Window for the LIVE decode-speed readout while a reply streams. The settled
-/// figure stored on the turn stays the whole-turn mean (the honest, benchmark-
-/// comparable throughput); this window only drives the running readout, so a
-/// single stall cannot pin it low for the rest of the turn and fast stretches
-/// (e.g. 400 t/s) are visible as they happen.
-private enum int liveTokenRateWindowMs = 1_000;
-
 /// Compact wall-clock duration for a tool run: `340ms`, `1.5s`, `2m03s`.
 /// Negative or zero durations return "" so an unknown/instant time shows
 /// nothing rather than a misleading `0ms`.
@@ -11737,8 +11730,6 @@ public final class OpenCodeRoot : VBox
     @property private ref inout(long) _tokenRateBaseTokens() inout { return _execution.tokenRateBaseTokens; }
     @property private ref inout(MonoTime) _tokenRateStartedAt() inout { return _execution.tokenRateStartedAt; }
     @property private ref inout(bool) _tokenRateStarted() inout { return _execution.tokenRateStarted; }
-    @property private ref inout(MonoTime) _rateWindowStartedAt() inout { return _execution.rateWindowStartedAt; }
-    @property private ref inout(long) _rateWindowBaseTokens() inout { return _execution.rateWindowBaseTokens; }
     @property private ref inout(int) _turnTokenRateTenths() inout { return _execution.turnTokenRateTenths; }
     @property private ref inout(int) _liveTotalTokens() inout { return _execution.liveTotalTokens; }
     @property private ref inout(bool) _suppressDoneStatus() inout { return _execution.suppressDoneStatus; }
@@ -17006,7 +16997,10 @@ private string _suggestExcludeId;
     private bool ensureDurableTaskCheckpoint(ref ChatSession session,
         bool nestedEnabled)
     {
-        const taskState = durableTaskPrompt(session, nestedEnabled);
+        // Tool results are already in chronological history. Repeating their
+        // changing evidence brief here would append a full task checkpoint on
+        // every lookup even though the durable task itself did not change.
+        const taskState = durableTaskPrompt(session, nestedEnabled, false);
         if (taskState.length == 0) return false;
         const state = taskState ~ promptVerbosityDirective(_settings.verbosity);
         const contextLimit = requestContextBudget(session.model);
@@ -19984,7 +19978,7 @@ private void pollButtonSuggestionRequest()
         _liveTokenRateTenths = 0;
         _tokenRateBaseTokens = 0;
         _tokenRateStarted = false;
-        _rateWindowBaseTokens = 0;
+        _execution.rateWindow = typeof(_execution.rateWindow).init;
         _turnTokenRateTenths = 0;
         _liveTotalTokens = 0;
         auto session = &_sessions[sessionIndex];
@@ -20151,32 +20145,21 @@ private void pollButtonSuggestionRequest()
     private void updateLiveTokenRate()
     {
         const now = MonoTime.currTime;
+        _execution.rateUpdatedAt = now;
         if (!_tokenRateStarted)
         {
             _tokenRateStarted = true;
             _tokenRateStartedAt = now;
             _tokenRateBaseTokens = _liveOutputTokens;
-            _rateWindowStartedAt = now;
-            _rateWindowBaseTokens = _liveOutputTokens;
+            _liveTokenRateTenths = _execution.rateWindow.observe(_liveOutputTokens, 0);
             return;
         }
         const turnElapsedMs = (now - _tokenRateStartedAt).total!"msecs";
+        _liveTokenRateTenths = _execution.rateWindow.observe(_liveOutputTokens, turnElapsedMs);
         const turnProduced = _liveOutputTokens - _tokenRateBaseTokens;
         if (turnElapsedMs >= 100 && turnProduced > 0)
             _turnTokenRateTenths = cast(int)
                 ((turnProduced * 10_000 + turnElapsedMs / 2) / turnElapsedMs);
-        const winElapsedMs = (now - _rateWindowStartedAt).total!"msecs";
-        const winProduced = _liveOutputTokens - _rateWindowBaseTokens;
-        if (winElapsedMs >= 100 && winProduced > 0)
-            _liveTokenRateTenths = cast(int)
-                ((winProduced * 10_000 + winElapsedMs / 2) / winElapsedMs);
-        // Once the window is full, drop everything older than it so no past
-        // stall keeps pulling the live readout down.
-        if (winElapsedMs >= liveTokenRateWindowMs)
-        {
-            _rateWindowStartedAt = now;
-            _rateWindowBaseTokens = _liveOutputTokens;
-        }
     }
 
     private string liveTokenStatsText() const
@@ -20863,30 +20846,13 @@ private void pollButtonSuggestionRequest()
         const auditStall = auditStallIssue(event.outputIssue);
         if (auditStall)
         {
-            const auditExhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
-            if (auditExhausted)
-            {
-                _auditSuppressed[session.id] = true;
-                _suppressDoneStatus = true;
-                finishAssistantMessage(false);
-                dropAutoResendSchedule();
-                _autoContinuePendingSession = -1;
-                _autoContinueRetries = 0;
-                _activeRequestId = 0;
-                _activeRequestSession = -1;
-                session.turnStatus = "idle";
-                session.taskStatus = "active";
-                publishThreadUpdated(*session);
-                markDirty();
-                updateStatus("Active goal preserved; waiting for a usable action.");
-                updateGoalBar();
-                refreshBubbleActions();
-                return;
-            }
-            _auditSuppressed.remove(session.id);
+            // A no-action automatic continuation is a stop boundary, not a
+            // provider-format error. Re-sending the same history only produces
+            // more prose and nested recovery requests.
+            _auditSuppressed[session.id] = true;
             logInfo("agent-output request=" ~ to!string(event.requestId) ~
                 " thread=" ~ session.id ~ " issue=" ~ event.outputIssue ~
-                " recovery=continuing audit");
+                " recovery=stopped no-action continuation");
             _suppressDoneStatus = true;
             finishAssistantMessage(false);
             dropAutoResendSchedule();
@@ -20894,24 +20860,14 @@ private void pollButtonSuggestionRequest()
             _autoContinueRetries = 0;
             _activeRequestId = 0;
             _activeRequestSession = -1;
-            ChatMessage guidance;
-            guidance.role = "user";
-            guidance.internal = true;
-            guidance.content = outputRecoveryMarker ~
-                " the previous response did not advance the active goal or unfinished work. " ~
-                "Continue now with a concrete tool action that adds evidence, or give a supported " ~
-                "completion or blocked result. Do not restate the plan, repeat the same prose, or " ~
-                "ask the user to retry; saved work is intact.";
-            appendMessage(*session, guidance);
-            session.turnStatus = "running";
+            session.turnStatus = "idle";
             session.taskStatus = "active";
             publishThreadUpdated(*session);
             markDirty();
             rebuildMessageColumn();
-            updateStatus("Continuing active goal…");
+            updateStatus("Work remains; the agent returned without further actions.");
             updateGoalBar();
-            if (!_toolContinuationPaused && !_stopPending && !computerUseAbortActive())
-                startChatRequest(sessionIndex);
+            refreshBubbleActions();
             return;
         }
         const exhausted = outputRecoveryCount(*session) >= maxOutputRecoveries;
@@ -21226,6 +21182,13 @@ private void pollButtonSuggestionRequest()
             return;
         }
 
+        // Compare the previous settled batch before storing this request.
+        // Otherwise the repeat check finds this new, result-less batch itself.
+        const exhausted = hasExhaustedRepeatedCall(*session, calls);
+        const readOnlyRepeat = !exhausted &&
+            _lastToolRepeatCount >= repeatGuidanceThreshold &&
+            toolProgressPolicy.isReadOnlyOrControlBatch(calls) &&
+            toolProgressPolicy.isConsecutiveSuccessfulRepeat(*session, calls);
         message.toolCalls = calls.dup;
         // The tool request ends this assistant reply (reasoning phase included)
         // but the user turn continues, so `finishAssistantMessage` never runs
@@ -21310,12 +21273,7 @@ private void pollButtonSuggestionRequest()
             return;
         }
 
-        // Suppress an exact call that has already run excessively, and also
-        // collapse an immediately repeated successful read-only/control batch.
-        const exhausted = hasExhaustedRepeatedCall(*session, calls);
-        const readOnlyRepeat = !exhausted &&
-            toolProgressPolicy.isReadOnlyOrControlBatch(calls) &&
-            toolProgressPolicy.isConsecutiveSuccessfulRepeat(*session, calls);
+        // Suppress exhausted exact calls and pathological successful read/control streaks.
         if (exhausted || readOnlyRepeat)
         {
             const reason = exhausted
@@ -21323,7 +21281,7 @@ private void pollButtonSuggestionRequest()
                     to!string(cumulativeRepeatLimit) ~ " times in this " ~
                     "unchanged task state. Tool access remains available for a different " ~
                     "action that can add new evidence."
-                : "Tool call skipped: this exact read-only/control batch just succeeded. " ~
+                : "Tool call skipped: this exact read-only/control batch has succeeded repeatedly. " ~
                     "Use the existing result or choose a different action that can add new evidence.";
             appendSkippedToolResults(*session, calls, reason);
             OpenCodeEvent failure;
@@ -21347,7 +21305,8 @@ private void pollButtonSuggestionRequest()
         const explorationExhausted = readOnlyExplorationCount(*session) +
             pendingInspection >= earlyPlanExplorationCalls;
         const substantialMutation = mutatingPending && calls.length > 1;
-        const goalAcceptanceMissing = goalActive(*session) && mutatingPending &&
+        const goalAcceptanceMissing = experimentalStrictPlanEnabled() &&
+            goalActive(*session) && mutatingPending &&
             (substantialMutation || explorationExhausted || session.taskSteps.length >= 3) &&
             (!session.taskSteps.length || !session.contract.constraints.length);
         const strictPlanMissing = experimentalStrictPlanEnabled() &&
@@ -31325,11 +31284,11 @@ private void pollButtonSuggestionRequest()
                         if (taskAuditStalled(_sessions[runtimeIndex]))
                             issue = "task_audit_stalled";
                         else if (!explanationOnly &&
-                            answerReplayed(_sessions[runtimeIndex]))
-                            issue = "replayed_prose";
-                        else if (!explanationOnly &&
                             goalAuditStalled(_sessions[runtimeIndex]))
                             issue = "goal_audit_stalled";
+                        else if (!explanationOnly &&
+                            answerReplayed(_sessions[runtimeIndex]))
+                            issue = "replayed_prose";
                         if (issue.length > 0)
                         {
                             auto failure = *event;
@@ -31547,6 +31506,16 @@ private void pollButtonSuggestionRequest()
             }
         }
 
+        // Refresh at 10 Hz even when the provider has stopped emitting bytes.
+        // Only the active decode phase owns this readout; tools have their own
+        // progress rows and must not keep a frozen streaming rate alive.
+        if (_tokenRateStarted && _streamBubble !is null &&
+            (MonoTime.currTime - _execution.rateUpdatedAt).total!"msecs" >= 100)
+        {
+            updateLiveTokenRate();
+            _streamBubble.setTokenRate(_liveTokenRateTenths);
+            refreshLiveUsageFooter();
+        }
         refreshExecutionActivity();
 
         // Animate the pulsing "Thinking…" indicator while reasoning streams.

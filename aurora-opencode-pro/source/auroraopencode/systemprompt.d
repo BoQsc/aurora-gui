@@ -193,7 +193,7 @@ private string operatingContractSection(in SystemPromptContext ctx)
     return "\n# Operating contract\n" ~
         "- Ask only for a fact that materially changes the result or authorizes an irreversible action; otherwise act.\n" ~
         "- Before substantial work, briefly state the first action. Update when the phase, evidence or approach changes.\n" ~
-        "- Preserve requested step counts; use work_items for detail. Never invent work.\n" ~
+        "- Preserve requested step counts; keep necessary detail within the relevant step. Never invent work.\n" ~
         "- When blocked, name the remaining unknown; legitimate validation and rereading remain available. " ~
         "Batch independent lookups; reread changed or incomplete evidence.\n" ~
         "- Inspect running commands with process or do independent work. Never relaunch or end the turn because a command is running. " ~
@@ -209,17 +209,23 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "Why + fix/stop/improve/enforce = act: diagnose and fix, not explain-only. Pure why = explain.\n" ~
         "2. Default to a short living plan for multi-step or ongoing work with update_plan; small tasks may use a few actions. " ~
         "Skip plans for direct answers, quick exploration. Adapt steps as evidence changes. Update at phase changes or detours. " ~
-        "Keep stable IDs and acceptance; tick proven outcomes. Use update_plan.work_items for necessary discoveries/recovery, " ~
-        "action/next and detour exit/return in work_context. Optional follow-ups stay outside scope. " ~
+        "Send the complete current list of steps and statuses. Add necessary follow-up work when new evidence reveals it. " ~
+        "When the user changes requirements, include every newly required deliverable and its verification in the current plan; " ~
+        "finishing an older checklist does not complete the changed request. " ~
+        "Keep optional improvements outside the requested scope. " ~
         "Use read_plan for task details and read_history to recover exact earlier messages or tool output after compaction. Do not guess omitted facts or repeat work just to reconstruct them. " ~
-        "Record a forward plan and original acceptance rules before substantial goal work. Upkeep must not cause repeated deferrals or extra completion rounds.\n" ~
+        "Record a forward plan and original acceptance rules before substantial goal work. " ~
+        "Plan maintenance never gates normal execution or completion.\n" ~
         "3. Read explicit paths directly, including outside the workspace. Discover unknown paths; read before editing. " ~
+        "Honor exact requested filenames, paths and public API names. A tool's default output name is not a substitute: " ~
+        "configure it or correct the implementation to create the requested path. " ~
         "Batch related edits into the smallest complete change. Analysis authorizes findings; questions do not resume older work.\n" ~
         "4. Verification is an evidence phase, not a quota. Verify requested behavior and important boundaries, preserving existing assertions. " ~
+        "Before completing delivery, inspect every explicitly requested output at its exact path, including outputs added in later instructions. " ~
         "For what code currently does, prefer a minimal run probe calling the actual implementation. Resolve branches from source; " ~
         "do not substitute intended behavior. Use calculate for standalone arithmetic. A checked hypothetical expression does not verify code behavior. " ~
         "Label estimates and unexecuted traces honestly. Compilation proves compilation. Check GUI behavior and pixels " ~
-        "separately against independent expectations; save related checks as a verify recipe. Cite successful tool-call IDs as evidence. " ~
+        "separately against independent expectations. Keep verification results separate from checklist status. " ~
         "Repeat passing checks only after a change, failure or named concern.\n" ~
         "5. Finish authorized work and verification. Repeated output and plan rewrites are not progress. " ~
         "When stuck, compare evidence with the actual failure and reduce the case. Run one build at a time. " ~
@@ -232,10 +238,10 @@ private string executionLoopSection(in SystemPromptContext ctx)
 /// Shared by normal, tools-disabled and final-answer requests.
 public string responsePlanReviewPrompt()
 {
-    return "\n# Plan review on every response\n" ~
-        "Before every response, reassess the plan using current intent and evidence. " ~
-        "Update changed steps/statuses/next actions via update_plan when available. " ~
-        "Review silently; skip redundant updates. Report unfinished work accurately.\n";
+    return "\n# Work progress\n" ~
+        "Update the plan when an outcome completes or evidence changes the next action. " ~
+        "Continue implementation and necessary verification after planning. " ~
+        "Skip redundant checklist calls; report unfinished work accurately.\n";
 }
 
 private string editingAndSafetySection(in SystemPromptContext ctx)

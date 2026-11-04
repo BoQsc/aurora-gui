@@ -236,7 +236,8 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
                         if (entry.type == JSONType.string && entry.str == id) known = true;
                     if (!known) newEvidence = true;
                 }
-        const progressed = newEvidence || (result.verified && !previous["verified"].boolean);
+        const progressed = newEvidence || result.completed > previous["completed"].integer ||
+            (result.verified && !previous["verified"].boolean);
         result.stalled = progressed ? 0 : cast(int) previous["stalled"].integer + 1;
         if (!progressed)
             if (auto value = "replans" in previous.object)

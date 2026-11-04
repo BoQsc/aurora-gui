@@ -16,6 +16,9 @@ void append(ref ChatSession s, string id, string role, string text, string tool 
 
 int main()
 {
+    import auroraopencode.planmode : setStrictPlanSetting;
+    setStrictPlanSetting(true);
+    scope(exit) setStrictPlanSetting(false);
     ChatSession s;
     append(s, "request", "user", "Implement two document outcomes.");
     acceptTaskRequest(s, s.messages[0].content, "request");

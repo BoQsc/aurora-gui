@@ -22,6 +22,9 @@ void append(ref ChatSession s, string id, string tool, bool failed = false, stri
 
 int main()
 {
+    import auroraopencode.planmode : setStrictPlanSetting;
+    setStrictPlanSetting(true);
+    scope(exit) setStrictPlanSetting(false);
     {
         ChatSession p;
         p.taskSteps = [TaskStep("Inspect inputs", "in_progress", "inspect", "research", "Inputs understood"),

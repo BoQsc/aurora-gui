@@ -29,6 +29,14 @@ ChatSession pending()
 
 int main()
 {
+    {
+        auto progress = pending();
+        const checkpoint = taskContinuation(progress, true);
+        append(progress, "user", checkpoint.guidance(), true);
+        progress.taskSteps[0].status = "completed";
+        assert(taskContinuation(progress, true).stalled == 0,
+            "Completed outcome progress was ignored when the normal checklist carried no receipt IDs");
+    }
     auto session = pending();
     auto decision = taskContinuation(session, true);
     assert(decision.action == TaskContinuationAction.continueWork);

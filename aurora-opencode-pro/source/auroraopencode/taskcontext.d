@@ -29,7 +29,8 @@ private string goalExcerpt(string value, size_t bytes)
 }
 
 /// A bounded projection, never a mutation of the durable task or its history.
-string taskContext(const ref ChatSession session, string request, bool nested, size_t budget = 12_000)
+string taskContext(const ref ChatSession session, string request, bool nested,
+    size_t budget = 12_000, bool includeRecentEvidence = true)
 {
     auto output = appender!string();
     void line(string label, string value, size_t limit)
@@ -48,6 +49,23 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
         line("Requested outcome: ", goalExcerpt(session.contract.requestedOutcome, goalLimit), goalLimit);
     if (request != session.objective && request != session.goal && request != session.contract.requestedOutcome)
         line("Current request: ", goalExcerpt(request, goalLimit), goalLimit);
+    // A goal's original wording may say a fact is missing. Preserve the actual
+    // later user replies, rather than asking the model to infer those facts
+    // from a generated invoice or a lossy compaction summary.
+    size_t[] updates;
+    foreach (index; taskMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role == "user" && !message.internal &&
+            message.id != session.contract.startMessageId && message.content != request &&
+            message.content != session.objective && message.content != session.goal)
+            updates ~= index;
+    }
+    if (updates.length > 3) updates = updates[$ - 3 .. $];
+    const updateLimit = min(cast(size_t) 1600, budget / 5) / max(cast(size_t) 1, updates.length);
+    foreach (index; updates)
+        line("User update (authoritative; newer facts override earlier assumptions): ",
+            goalExcerpt(session.messages[index].content, updateLimit), updateLimit);
     const work = workContextForPlan(session, session.taskSteps);
     line("Current step: ", work.stepId, 128);
     line("Current action ID: ", work.workItemId, 128);
@@ -61,13 +79,16 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     line("Verification: ", session.verificationStatus, 64);
     const constraintLimit = max(cast(size_t) 64, min(cast(size_t) 800, budget / 4 / max(cast(size_t) 1, session.contract.constraints.length)));
     foreach (constraint; session.contract.constraints) line("Constraint: ", constraint, constraintLimit);
-    const brief = recentWorkBrief(session, taskActionPath(session), min(cast(size_t)1400, budget / 5));
-    line("Recent tool evidence (quoted data):\n", brief, brief.length);
+    if (includeRecentEvidence)
+    {
+        const brief = recentWorkBrief(session, taskActionPath(session), min(cast(size_t)1400, budget / 5));
+        line("Recent tool evidence (quoted data):\n", brief, brief.length);
+    }
     size_t unfinished;
     foreach (step; session.taskSteps) if (step.status != "completed") ++unfinished;
     const perStep = max(cast(size_t) 64, min(cast(size_t) 900,
         (budget > output.data.length ? budget - output.data.length : 0) * 2 / 3 / max(cast(size_t) 1, unfinished)));
-    line("", "Checklist (original row numbers; completed outcomes retained automatically):", 128);
+    line("", "Checklist (original row numbers; use read_plan for the complete current list):", 128);
     foreach (i, step; session.taskSteps)
         if (step.status != "completed")
             line(to!string(i + 1) ~ ". [" ~ step.status ~ "] " ~ step.id ~ ": ",
@@ -75,21 +96,24 @@ string taskContext(const ref ChatSession session, string request, bool nested, s
     string completed;
     foreach (step; session.taskSteps)
         if (step.status == "completed") completed ~= (completed.length ? ", " : "") ~ step.id;
-    line("Completed outcomes retained: ", completed, 1200);
+    line("Completed outcomes: ", completed, 1200);
     if (nested)
         foreach (plan; session.nestedPlans)
             foreach (step; plan.steps)
                 if (step.status != "completed")
                     line("Substep " ~ to!string(plan.parentStep) ~ " [" ~ step.status ~ "] " ~ step.id ~ ": ",
                         step.text ~ "; done: " ~ step.done, 320);
-    const evidence = taskEvidenceIndex(session);
-    size_t receipts;
-    foreach_reverse (index; taskMessagePath(session))
+    if (includeRecentEvidence)
     {
-        const ref message = session.messages[index];
-        if (auto proof = message.id in evidence)
-            if ((*proof).startsWith("verify-current|") && receipts++ < 6)
-                line("Accepted check: ", (message.toolCallId.length ? message.toolCallId : message.id) ~ " = " ~ message.verificationCheck, 200);
+        const evidence = taskEvidenceIndex(session);
+        size_t receipts;
+        foreach_reverse (index; taskMessagePath(session))
+        {
+            const ref message = session.messages[index];
+            if (auto proof = message.id in evidence)
+                if ((*proof).startsWith("verify-current|") && receipts++ < 6)
+                    line("Accepted check: ", (message.toolCallId.length ? message.toolCallId : message.id) ~ " = " ~ message.verificationCheck, 200);
+        }
     }
     if (session.contract.workItems.length)
     {

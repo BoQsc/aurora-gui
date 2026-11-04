@@ -95,10 +95,11 @@ bool goalAuditStalled(const ref ChatSession session)
         const ref message = session.messages[index];
         if (endsAuditInterval(message)) break;
         if ((message.role == "user" && !message.internal) ||
-            (message.role == "tool" && !message.failed && usefulTool(message.toolName))) break;
+            (message.role == "tool" && usefulTool(message.toolName) &&
+                !message.content.startsWith("Tool call skipped:"))) break;
         if (message.internal && message.content.startsWith("Persistent goal continuation:")) ++audits;
     }
-    return audits >= 2;
+    return audits >= 1;
 }
 
 /// Bound consecutive no-action continuations, including short or varied prose.
@@ -116,5 +117,5 @@ bool taskAuditStalled(const ref ChatSession session)
             (message.role == "tool" && usefulTool(message.toolName))) break;
         if (message.internal && message.content.startsWith(taskContinuationMarker)) ++continuations;
     }
-    return continuations >= 2;
+    return continuations >= 1;
 }

@@ -8,6 +8,7 @@ import auroraopencode.projectioncache : RequestProjectionCache;
 import auroraopencode.orchestrator : OrchestrationBatch;
 import auroraopencode.retrypolicy : ProviderRetryPolicy, configuredProviderRetryPolicy;
 import core.time : MonoTime, msecs;
+import auroraopencode.tokenrate : TokenRateWindow;
 import core.sync.mutex : Mutex;
 import auroraopencode.lifecyclediagnostics : logAgentLifecycle, lifecycleErrorCategory;
 import std.json : JSONValue;
@@ -117,8 +118,8 @@ public class ThreadEngine
     long tokenRateBaseTokens;
     MonoTime tokenRateStartedAt;
     bool tokenRateStarted;
-    MonoTime rateWindowStartedAt;
-    long rateWindowBaseTokens;
+    TokenRateWindow rateWindow;
+    MonoTime rateUpdatedAt;
     int turnTokenRateTenths;
     int liveTotalTokens;
     bool suppressDoneStatus;

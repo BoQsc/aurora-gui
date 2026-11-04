@@ -45,12 +45,8 @@ int main()
     fresh("Implement and verify the two-module package.");
     const first=buildPath(directory,"first.txt"), second=buildPath(directory,"second.txt");
     run([writeCall("first",first),writeCall("second",second)]);
-    assert(!exists(first) && !exists(second),"Complex goal mutations ran before the acceptance preflight");
-    assert(root.lastUserMessageForTesting().indexOf("constraints")>=0);
-    // A provider that ignores the one preflight cannot trap the user in a loop.
-    run([writeCall("first-repeat",first),writeCall("second-repeat",second)]);
-    assert(exists(first) && exists(second),"Planning preflight repeated instead of allowing progress");
+    assert(exists(first) && exists(second),"Normal goal work was deferred for custom planning bookkeeping");
     assert(readText(first)=="valid output");
-    writeln("PASS small goals execute directly; complex mutations receive one bounded forward-plan/acceptance preflight");
+    writeln("PASS small and multi-file goal mutations execute without synthetic planning preflights");
     return 0;
 }

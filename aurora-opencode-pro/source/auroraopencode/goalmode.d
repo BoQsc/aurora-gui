@@ -175,6 +175,8 @@ public string goalPromptBlock(const ref ChatSession session)
     output.put("\n\n# Persistent goal\n");
     output.put("Status: " ~ status ~ "\n");
     output.put("Goal: " ~ session.goal ~ "\n");
+    output.put("Later user-supplied facts and corrections supersede outdated assumptions in the original goal wording. " ~
+        "Use those supplied values; do not ask the user to confirm an already supplied fact.\n");
     switch (status)
     {
         case "active":
@@ -189,7 +191,7 @@ public string goalPromptBlock(const ref ChatSession session)
                 "with required_fact, checked sources and the dependent blocked_steps. This records a wait while " ~
                 "keeping the goal active. A question or Remaining note in prose does not record that wait; " ~
                 "do not guess the fact, repeat completed checks or keep issuing final summaries instead. " ~
-                "Before changing referenced specifications, capture their behavioral rules and boundary expectations in update_plan constraints, not just file names and API signatures. " ~
+                "Before changing referenced specifications, identify their behavioral rules and boundary expectations, including exact file names and API signatures. " ~
                 "Reconcile the exact changed rule while preserving all unaffected rules; recover original read results with read_history if uncertain. " ~
                 "Passing generated tests does not prove those rules were implemented correctly.\n");
             break;

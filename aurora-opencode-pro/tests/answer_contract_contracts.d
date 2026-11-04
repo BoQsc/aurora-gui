@@ -26,10 +26,11 @@ int main()
     {
         policy.toolsEnabled = tools;
         const prepared = prepareAgentRequest(session, policy);
-        assert(prepared.messages[$-1].role == "system");
-        assert(prepared.messages[$-1].content.indexOf("JSON value alone") >= 0,
+        const contractIndex = tools ? 1 : 0;
+        assert(prepared.messages[contractIndex].role == "system");
+        assert(prepared.messages[contractIndex].content.indexOf("JSON value alone") >= 0,
             "An internal checkpoint superseded the human's answer format");
-        assert(prepared.messages[$-1].content.indexOf(checkpoint.content) < 0);
+        assert(prepared.messages[contractIndex].content.indexOf(checkpoint.content) < 0);
     }
     assert(session.messages.length == 2, "Per-request guidance accumulated in saved history");
     const instruction="Return one JSON object.";

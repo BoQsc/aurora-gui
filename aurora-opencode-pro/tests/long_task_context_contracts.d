@@ -20,6 +20,36 @@ void receipt(ref ChatSession s, string id, string check, bool failed = false)
 }
 int main()
 {
+    {
+        ChatSession facts;
+        facts.objective = "Produce an invoice; the customer rate has not been supplied yet.";
+        facts.goal = facts.objective;
+        facts.goalStatus = "active";
+        facts.contract.id = "goal";
+        facts.contract.startMessageId = "goal";
+        void user(string id, string text)
+        {
+            ChatMessage message;
+            message.id = id; message.parentId = facts.activeLeafId;
+            message.role = "user"; message.content = text;
+            facts.messages ~= message; facts.activeLeafId = id;
+        }
+        user("goal", facts.objective);
+        user("rate", "The customer rate is 0.0175 per unit. Preserve the original API.");
+        const current = "The cap is 0.04. Deliver invoice.csv alongside invoice.json. " ~
+            "Irrelevant historical audit row. ".replicate(1100) ~ "Finish the invoice.";
+        user("cap", current);
+        ChatMessage abandoned;
+        abandoned.id = "other-branch"; abandoned.parentId = "goal";
+        abandoned.role = "user"; abandoned.content = "The rate is 0.99 on an abandoned branch.";
+        facts.messages ~= abandoned;
+        const context = taskContext(facts, current, true, 6000, false);
+        assert(context.indexOf("0.0175") >= 0 && context.indexOf("0.04") >= 0 &&
+            context.indexOf("invoice.csv") >= 0,
+            "Earlier supplied facts or newly requested deliverables were lost behind stale goal wording");
+        assert(context.indexOf("0.99") < 0 && context.length <= 6000,
+            "Fact retention escaped its active branch or context budget");
+    }
     ChatSession s;
     ChatMessage request; request.id = "request"; request.role = "user";
     request.content = "Improve browser rendering and interaction.";

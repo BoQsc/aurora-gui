@@ -1827,7 +1827,7 @@ public struct Settings
     // Write the persistent goal from an actionable first user message. On by
     // default; later messages never replace it unless the user explicitly uses
     // /goal, Set goal, or Edit.
-    bool autoGoalFromFirstMessage = true;
+    bool autoGoalFromFirstMessage = false;
     // Hide the `@@ -old,+new @@` hunk headers in rendered diffs: they carry no
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
