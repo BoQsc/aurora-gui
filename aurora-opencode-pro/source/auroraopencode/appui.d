@@ -5002,7 +5002,7 @@ private final class ViewedImagesRow : Widget
     private static immutable int titleHeight = 18;
     private static immutable int detailHeight = 14;
     private static immutable int gap = 4;
-    private static immutable int compactPadH = 14;
+    private static immutable int compactPadH = 28;
 
     private ImagePreviewStrip _preview;
     private string _title;

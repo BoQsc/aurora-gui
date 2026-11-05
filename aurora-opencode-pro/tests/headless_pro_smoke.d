@@ -1078,7 +1078,7 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
     assert(paintProjection(root, driver), "Viewed-image preview did not paint");
     assert(root.lastViewedImageRowHeightForTesting() <= imagePreviewHeight + 6,
         "compact viewed-image row still reserves card height");
-    assert(root.lastViewedImagePreviewBoundsForTesting().x >= 10,
+    assert(root.lastViewedImagePreviewBoundsForTesting().x >= 24,
         "compact viewed-image listing has no left padding");
 
     auto compactViewedCheck = root.compactViewedImagesCheckboxForTesting();
