@@ -225,16 +225,15 @@ The user's saved settings had no experimentalChatRedesign opt-in at relaunch.
 
 ## Planning pauses and ordinary reads
 
-Normal mode does not defer tools because an inspection batch crosses a read
-count: independent reads run directly, and a brief lookup or small edit needs
-no plan. Planning stays advisory, but a turn that spends its read-only
-exploration budget without recording a plan now gets a reminder to call
-update_plan, so a long investigation can no longer run on forever with no
-checklist. Explicit strict plan mode is stronger: it retains its bounded,
-blocking plan gate before the first mutation and after only a few reads. Owned
-planning-deferral protocol records are preserved in history but render as one
-neutral pause per batch, without per-call output cards or an Explored action
-count. This also cleans up existing owned deferral batches.
+Normal mode runs independent reads directly and does not require a plan for a
+single quick lookup or edit. A turn that explores for a few calls without a plan
+gets an advisory reminder; after the exploration checkpoint (ten read-only
+calls), a batch without any recorded plan is deferred once for a plan.
+Substantial multi-call mutations also require a plan first. Explicit strict plan
+mode keeps its earlier, bounded gate before the first mutation and after only a
+few reads. Owned planning-deferral protocol records are preserved in history but
+render as one neutral pause per batch, without per-call output cards or an
+Explored action count. This also cleans up existing owned deferral batches.
 
 `early_plan_contracts` verifies seven real reads, the advisory no-plan reminder,
 strict-mode pairing, one visible pause, bounded retry, plan refresh and

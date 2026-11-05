@@ -4,6 +4,11 @@ This release follows live failures in the active desktop assistant. The scope is
 answering, durable goals, planning and compaction; the standalone actor migration
 remains deferred.
 
+> **Superseded 2026-11-05:** the agent plans every request and every first
+> message becomes a persistent goal. See
+> [agent-continuity.md](agent-continuity.md). The notes below remain the record of
+> the 0.66.33/0.66.34 releases.
+
 ## What changed
 
 - Compaction reserves history space after accounting for the system prompt and

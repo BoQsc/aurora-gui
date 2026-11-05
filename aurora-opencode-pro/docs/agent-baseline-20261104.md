@@ -25,6 +25,11 @@ application or claim parity with private implementations.
 
 ## Resulting behavior
 
+> **Superseded 2026-11-05:** every first message now creates a persistent goal
+> and the agent plans every request. The plan/goal bullets below record the
+> 2026-11-04 revision. See [agent-continuity.md](agent-continuity.md) for the
+> current defaults.
+
 - Normal `update_plan` uses the same basic argument structure and acknowledgement
   as Codex. Full snapshots can revise order, add necessary follow-up work, remove
   obsolete rows and complete steps without receipt-management errors. Empty plans

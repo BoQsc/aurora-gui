@@ -1,5 +1,10 @@
 # Answering quality checkpoint: 0.66.31
 
+> **Superseded 2026-11-05:** every first message, including a question, now
+> creates a persistent goal. A question's goal is answer-only: it settles
+> without resuming an implementation task and can complete from the answer. See
+> [agent-continuity.md](agent-continuity.md).
+
 This bounded pass addresses a demonstrated failure in the active desktop path.
 The actor migration remains deferred. Further feature work waits for human review.
 

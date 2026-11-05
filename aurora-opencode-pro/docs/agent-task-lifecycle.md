@@ -3,6 +3,9 @@
 Each chat retains its messages, selected branch, task archive and persistent goal.
 Only the current task owns its checklist, acceptance and continuation. Earlier
 unfinished work is recoverable context, not an instruction to keep running it.
+The first message of a new chat becomes its persistent goal by default. A
+question or analysis creates an answer goal that settles after the reply instead
+of resuming unrelated implementation work.
 
 | Input | Transition |
 | --- | --- |

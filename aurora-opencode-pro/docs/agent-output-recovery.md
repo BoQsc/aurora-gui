@@ -39,7 +39,9 @@ The configured outage budget also bounds backoff; an exhausted provider attempt
 cannot restart through UI resend. Explicit reset-time waits and manual Retry
 remain available. Provider failures retain the persistent goal. Verification-only
 work changes diagnosis after stalled attempts instead of silently settling with
-checks outstanding. Goal completion rejects invented and failed evidence IDs.
+checks outstanding. Action-goal completion rejects invented and failed evidence
+IDs; answer and analysis goals may complete from their reply. A goal does not keep
+auto-continuing when the request offers no tools.
 
 A local HTTP fixture reproduced 68 requests when its provider wrote and checked
 the requested artifact but kept answering `READY` without `goal_complete`.

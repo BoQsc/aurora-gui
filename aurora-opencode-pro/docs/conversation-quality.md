@@ -11,12 +11,14 @@ Plans keep stable IDs, acceptance conditions (`done`), categories, evidence and
 blockers. Updates preserve omitted metadata, restore omitted completed steps in their original relative order, and reject dropped unfinished
 outcomes at every plan size. Completed steps need compatible successful tool
 evidence. Verification steps additionally need an accepted current check.
-Unfinished substeps prevent parent/task completion. A short living plan is the
-default for meaningful multi-step or ongoing work. Steps adapt at phase changes
-and detours while preserving objectives and completed outcomes. Direct answers,
-quick exploration and single edits need no plan. Plan maintenance is advisory:
-missing a plan never pauses normal tools or adds a completion round. Strict
-checklist enforcement requires an explicit opt-in.
+Unfinished substeps prevent parent/task completion. The agent records a short
+living plan for every request; a direct answer gets a one-step answer outcome.
+Steps adapt in the same turn at phase changes, detours, new evidence and
+requirement changes while preserving objectives and completed outcomes. The
+default plan-first gate covers substantial or multi-call work, so a single quick
+action proceeds without a planning round. Plan maintenance never adds a
+completion round. Strict checklist and evidence enforcement remains an explicit
+opt-in.
 New outcomes are appended after existing items automatically, even when the
 model submits them at the beginning or in the middle. Their relative order is
 preserved. Tool feedback reports the applied order. Explicit user-directed plan

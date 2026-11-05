@@ -137,7 +137,8 @@ The menu also exposes an optional diagnostic review:
 Checklist reminders follow a missing work position or a phase mismatch, rather
 than elapsed tool counts, and remain advisory. Identical durable checkpoints
 are coalesced. Bounded task-state projections keep rolling checkpoint headers
-within their budget even after many plan revisions. Full history is kept.
+within their budget even after many plan revisions. Full history is kept, and
+`read_plan view=history` recovers earlier plans with their stated reasons.
 
 ## Network inactivity and checks
 

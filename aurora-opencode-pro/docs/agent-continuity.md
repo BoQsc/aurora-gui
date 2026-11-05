@@ -18,6 +18,9 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   agent revises the plan in the same turn as evidence changes. Every revision,
   including replaced and completed outcomes, is kept in plan history, and
   `read_plan view=history` recovers earlier plans and reasons.
+- Automatic goal continuation requires tool access and an action goal. Answer
+  and analysis goals settle after their reply, and a goal that cannot call
+  `goal_complete` does not keep issuing continuation turns.
 - A goal waits only at the same validated `request_input` boundary used by task
   continuation. Phrases such as “please confirm” in assistant prose no longer
   silently pause it. Waiting retains the active goal; replying with the missing
