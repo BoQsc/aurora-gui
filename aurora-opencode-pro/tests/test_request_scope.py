@@ -124,7 +124,7 @@ endpoint = f'http://127.0.0.1:{server.server_port}/v1'
 settings = {
     'baseUrl': endpoint, 'apiKey': 'fixture', 'model': 'scope-fixture',
     'workspace': str(workspace), 'toolsEnabled': True, 'quickTitle': False, 'composerSuggestion': False,
-    'autoGoalFromFirstMessage': False, 'legacyTools': False,
+    'settingsVersion': 3, 'autoGoalFromFirstMessage': False, 'legacyTools': False,
 }
 if args.compaction:
     models = ('scope-fixture', 'deepseek/deepseek-v4.1-flash-fast', 'deepseek/deepseek-v4.1-flash')

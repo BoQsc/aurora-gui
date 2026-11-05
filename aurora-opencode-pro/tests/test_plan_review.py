@@ -100,7 +100,9 @@ try:
     state.mkdir(parents=True)
     settings = {"baseUrl": f"http://127.0.0.1:{server.server_port}/v1", "apiKey": "local-fixture",
                 "model": "plan-review-fixture", "workspace": str(workspace),
-                "legacyTools": False, "quickTitle": False}
+                "legacyTools": False, "quickTitle": False, "settingsVersion": 3,
+                # This fixture verifies the plan loop, not persistent goals.
+                "autoGoalFromFirstMessage": False}
     executable = args.executable.resolve(strict=True)
     env = dict(os.environ, APPDATA=str(directory / "appdata"))
     durations = []

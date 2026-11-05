@@ -5,7 +5,8 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
     taskAwaitingInput;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
-import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction;
+import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction,
+    goalIsAnswerTurn;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
@@ -135,7 +136,12 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         if (replan && policy.diagnosticAvailable) result.diagnosticRequests = 4;
         return result;
     }
-    if (goalActive(session) && !session.queuedFollowUps.length &&
+    // A goal that needs tools cannot progress through a request that offers
+    // none, and an answer/analysis goal is finished by its reply. Both settle
+    // instead of auto-continuing into a loop the model cannot break.
+    if (goalActive(session) && policy.toolsEnabled &&
+        !goalIsAnswerTurn(session.goal) &&
+        !session.queuedFollowUps.length &&
         !answerOnlyRequest(latestActualUserRequest(session)) && !taskInvestigation(session))
     {
         result.advanceGoal = true;

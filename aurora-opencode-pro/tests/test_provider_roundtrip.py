@@ -159,7 +159,8 @@ try:
         (state / "settings.json").write_text(json.dumps({
             "baseUrl": env["AURORA_CONTRACT_PROVIDER_BASE"], "apiKey": "local-fixture",
             "model": "fixture", "workspace": str(workspace), "toolsEnabled": True,
-            "legacyTools": False, "quickTitle": False, "autoGoalFromFirstMessage": False,
+            "legacyTools": False, "quickTitle": False, "settingsVersion": 3,
+            "autoGoalFromFirstMessage": False,
         }), encoding="utf-8")
         env["APPDATA"] = str(directory / "appdata")
         executable = (Path(sys.argv[sys.argv.index("--executable") + 1]).resolve()

@@ -56,7 +56,17 @@ int main()
     session.goalStatus = "active";
     session.goalTurns = 100;
     append(session, "user", "Continue the task.");
+    turn.toolsEnabled = true;
     assert(decideTurn(session, turn).advanceGoal, "Useful long goals inherited a turn cap");
+    turn.toolsEnabled = false;
+    assert(!decideTurn(session, turn).advanceGoal,
+        "A goal without tool access started an unusable continuation");
+    turn.toolsEnabled = true;
+    session.goal = "Review the current plan";
+    append(session, "user", "Review the current plan and reply READY.");
+    assert(!decideTurn(session, turn).advanceGoal,
+        "An analysis goal auto-continued after its answer");
+    session.goal = "Deliver every requested outcome";
     append(session, "user", "Answer only: what is the current status?");
     assert(!decideTurn(session, turn).advanceGoal, "An answer-only question resumed the active goal");
     append(session, "user", "Finish the requested task.");

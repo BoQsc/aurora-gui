@@ -35,8 +35,18 @@ public bool automaticGoalRequest(string text)
 /// artifact, so completion does not need a tool receipt.
 public bool goalIsAnswerOnly(string goal)
 {
+    const intent = requestIntent(goal);
+    return answerOnlyRequest(goal) || intent == RequestIntent.conversation ||
+        intent == RequestIntent.analysis;
+}
+
+/// Goals whose completion is the reply itself must not acquire automatic work
+/// turns. A conversation-shaped action goal ("deliver the requested files")
+/// still continues while tools are available.
+public bool goalIsAnswerTurn(string goal)
+{
     return answerOnlyRequest(goal) ||
-        requestIntent(goal) == RequestIntent.conversation;
+        requestIntent(goal) == RequestIntent.analysis;
 }
 
 /// Bound the goal by characters without splitting a UTF-8 sequence.
@@ -233,11 +243,15 @@ public string goalPromptBlock(const ref ChatSession session)
 /// Text appended as a hidden user turn when an active goal needs another turn.
 public string goalContinuationInstruction(const ref ChatSession session)
 {
+    const answerGoal = goalIsAnswerOnly(session.goal);
     return "Persistent goal continuation: " ~ session.goal ~ "\n" ~
         "Continue from the recorded work and current evidence. Do work rather than " ~
         "restating the goal. Reconcile update_plan with the remaining work before " ~
         "continuing, explaining any changed path. If the goal is now demonstrably complete, call " ~
-        "`goal_complete` with a concise summary and concrete evidence; otherwise keep " ~
+        "`goal_complete` with a concise summary" ~
+        (answerGoal
+            ? "; no tool receipt is required for this answer goal. Otherwise keep "
+            : " and concrete evidence; otherwise keep ") ~
         "advancing the unfinished outcomes. If only an essential user-owned fact prevents completion, " ~
         "call request_input now with the missing fact and blocked_steps; a prose question does not pause " ~
         "the goal. Keep the goal active while waiting. Do not repeat completed work just to avoid this boundary. " ~
