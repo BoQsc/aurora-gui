@@ -20053,7 +20053,10 @@ private void pollButtonSuggestionRequest()
     ///  - the whole-turn mean, stored on the settled message (fair, comparable
     ///    to an independent measurement of the turn's decode rate);
     ///  - the recent-window mean, shown only in the live readout while the
-    ///    reply streams, so the running number reflects the current speed.
+    ///    reply streams, so the running number reflects the current speed. The
+    ///    window is deliberately short (see TokenRateWindow.windowMs) and the
+    ///    readout is re-sampled every tick, because a speed change that took a
+    ///    full second to appear read as a stalled counter.
     private void updateLiveTokenRate()
     {
         const now = MonoTime.currTime;
@@ -31408,11 +31411,13 @@ private void pollButtonSuggestionRequest()
             }
         }
 
-        // Refresh at 10 Hz even when the provider has stopped emitting bytes.
+        // Re-sample the readout every 50 ms (20 Hz), including while the
+        // provider is between bytes, so the throughput figure tracks the live
+        // decode speed instead of stepping in 100 ms jumps.
         // Only the active decode phase owns this readout; tools have their own
         // progress rows and must not keep a frozen streaming rate alive.
         if (_tokenRateStarted && _streamBubble !is null &&
-            (MonoTime.currTime - _execution.rateUpdatedAt).total!"msecs" >= 100)
+            (MonoTime.currTime - _execution.rateUpdatedAt).total!"msecs" >= 50)
         {
             updateLiveTokenRate();
             _streamBubble.setTokenRate(_liveTokenRateTenths);

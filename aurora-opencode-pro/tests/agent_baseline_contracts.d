@@ -31,6 +31,25 @@ int main()
     assert(rate.observe(490, 6000) == 0, "Silent output retained a stale rate");
     assert(rate.observe(30, 6100) == 0, "Authoritative token correction produced a negative rate");
     assert(rate.observe(40, 6200) == 1000);
+    // The live figure must follow the current decode speed instead of dragging
+    // a whole second of older samples behind it: a step from 100 to 400 t/s
+    // has to read as the new speed within one window (400 ms).
+    assert(TokenRateWindow.init.windowMs == 400,
+        "the reset window lost its live span");
+    TokenRateWindow step;
+    assert(step.windowMs == 400);
+    assert(step.observe(0, 0) == 0);
+    foreach (i; 1 .. 11) step.observe(i * 10, i * 100);
+    assert(step.observe(100, 1000) == 1000);
+    int blending;
+    foreach (i; 1 .. 4) blending = step.observe(100 + i * 40, 1000 + i * 100);
+    assert(blending > 1000 && blending < 4000,
+        "the live figure jumped instead of blending the speed change: " ~
+        to!string(blending));
+    const int settledStep = step.observe(260, 1400);
+    assert(settledStep == 4000,
+        "the live figure lagged the current decode speed: " ~
+        to!string(settledStep));
     ChatSession session;
     session.contract.id = "request";
     session.verificationStatus = "required";
@@ -145,6 +164,6 @@ int main()
     window.saveScreenshot("agent-baseline-throughput.bmp");
     root.finishStreamForTesting();
     assert(root.turnTokenRateTenthsForTesting() > 0);
-    writeln("PASS 10 Hz throughput refresh expires stalled rates, recovers and retains the final mean");
+    writeln("PASS 20 Hz throughput refresh expires stalled rates, recovers and retains the final mean");
     return 0;
 }

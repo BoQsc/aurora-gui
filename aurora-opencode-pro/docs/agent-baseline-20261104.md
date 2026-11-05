@@ -62,11 +62,15 @@ application or claim parity with private implementations.
   branch. Supplied values and corrections override outdated assumptions in the
   original goal. Input requests explicitly require checking earlier user replies
   before declaring a fact missing; evidence is not invented from generated files.
-- Live throughput uses a bounded trailing window, refreshes every 100 ms during
-  silence, expires stalled rates and restarts on fresh output. Window boundaries
-  do not produce periodic zero-rate flicker. Final messages retain the whole
-  response mean. Token counts still use a local estimate when the provider has
-  not supplied completion usage; this is not an exact provider tokenizer.
+- Live throughput uses a 400 ms trailing window re-sampled every 50 ms, including
+  during provider silence, so a change in decode speed reaches the readout in
+  about a third of a second instead of lagging a full second. A slow decode
+  extends the window (up to one second) until it holds enough tokens to measure,
+  so the number does not jump by whole-token steps. Stalled rates still expire
+  and restart on fresh output, and window boundaries do not produce periodic
+  zero-rate flicker. Final messages retain the whole response mean. Token counts
+  still use a local estimate when the provider has not supplied completion usage;
+  this is not an exact provider tokenizer.
 
 ## Verification
 
