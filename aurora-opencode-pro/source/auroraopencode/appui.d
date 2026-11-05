@@ -5002,6 +5002,7 @@ private final class ViewedImagesRow : Widget
     private static immutable int titleHeight = 18;
     private static immutable int detailHeight = 14;
     private static immutable int gap = 4;
+    private static immutable int compactPadH = 14;
 
     private ImagePreviewStrip _preview;
     private string _title;
@@ -5047,6 +5048,11 @@ private final class ViewedImagesRow : Widget
         return _compact;
     }
 
+    Rect previewBoundsForTesting() const
+    {
+        return _preview is null ? Rect.init : _preview.bounds();
+    }
+
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
@@ -5068,8 +5074,9 @@ private final class ViewedImagesRow : Widget
     {
         if (_compact)
         {
-            _preview.setBounds(Rect(2, 2,
-                maxInt(1, bounds().width - 4), imagePreviewHeight));
+            _preview.setBounds(Rect(compactPadH, 2,
+                maxInt(1, bounds().width - 2 * compactPadH),
+                imagePreviewHeight));
             return;
         }
         const detailRows = _detail.length > 0 ? detailHeight : 0;
@@ -33381,6 +33388,15 @@ private void pollButtonSuggestionRequest()
             if (auto row = cast(ViewedImagesRow) child)
                 return row.bounds().height;
         return 0;
+    }
+
+    public Rect lastViewedImagePreviewBoundsForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+            if (auto row = cast(ViewedImagesRow) child)
+                return row.previewBoundsForTesting();
+        return Rect.init;
     }
 
     /// Test-only: like `addConversationForTesting` but with optional reasoning
