@@ -54,14 +54,23 @@ class Provider(http.server.BaseHTTPRequestHandler):
         requests.append(request)
         system = "\n".join(message.get("content", "") for message in request["messages"]
                            if message["role"] == "system")
-        if system.count("# Work progress") != 1:
-            failures.append("Missing or duplicated work-progress instruction")
-        for instruction in ("Recheck it before each response",
-                            "update it whenever an outcome completes",
-                            "Continue implementation and necessary verification after planning",
-                            "explain plan changes", "report unfinished steps accurately"):
-            if instruction not in system:
-                failures.append("Missing instruction: " + instruction)
+        if request.get("tools"):
+            if "# Plan" not in system:
+                failures.append("Missing planning contract")
+            for instruction in ("Replan as you work", "Keep planning history"):
+                if instruction not in system:
+                    failures.append("Missing instruction: " + instruction)
+            if "# Work progress" in system:
+                failures.append("Tool-loop prompt duplicated the response reminder")
+        else:
+            if system.count("# Work progress") != 1:
+                failures.append("Missing or duplicated work-progress instruction")
+            for instruction in ("Recheck it before each response",
+                                "update it whenever an outcome completes",
+                                "Continue implementation and necessary verification after planning",
+                                "explain plan changes", "report unfinished steps accurately"):
+                if instruction not in system:
+                    failures.append("Missing instruction: " + instruction)
         for tool in request.get("tools", []):
             function = tool.get("function", {})
             if function.get("name") == "update_plan":
