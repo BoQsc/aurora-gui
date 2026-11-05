@@ -206,8 +206,9 @@ string readPlanText(const ref ChatSession session, string arguments)
     }
     const view = field("view");
     if (!view.length || view == "summary") return taskContext(session, "", true);
-    if (view != "details") return "Error: view must be summary or details.";
-    size_t offset, limit = 12;
+    if (view != "details" && view != "history")
+        return "Error: view must be summary, details or history.";
+    size_t offset, limit = view == "history" ? 8 : 12;
     if (auto value = "offset" in args.object)
     {
         if (value.type != JSONType.integer || value.integer < 0) return "Error: offset must be nonnegative.";
@@ -217,6 +218,25 @@ string readPlanText(const ref ChatSession session, string arguments)
     {
         if (value.type != JSONType.integer || value.integer < 1 || value.integer > 50) return "Error: limit must be 1..50.";
         limit = cast(size_t) value.integer;
+    }
+    if (view == "history")
+    {
+        if (!session.planHistory.length)
+            return "No plan revisions are recorded for this conversation yet.";
+        JSONValue result;
+        result["objective"] = session.objective;
+        result["total"] = cast(long) session.planHistory.length;
+        JSONValue[] page;
+        if (offset < session.planHistory.length)
+        {
+            const end = offset + (limit < session.planHistory.length - offset
+                ? limit : session.planHistory.length - offset);
+            page = planHistoryToJson(session.planHistory[offset .. end]).array;
+            if (end < session.planHistory.length)
+                result["nextOffset"] = cast(long) end;
+        }
+        result["items"] = page;
+        return result.toPrettyString();
     }
     const completed = "include_completed" in args.object && args["include_completed"].type == JSONType.true_;
     auto rows = JSONValue(string[].init);

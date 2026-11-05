@@ -256,10 +256,15 @@ int main()
     driver.pressKey(Key.escape);
     root.tickTree(0.02);
     assert(driver.paint(), "first-message goal settings paint failed");
-    root.newChatForTesting();
     foreach (promptText; ["Hello", "What is the current status?", "Remember this reference for later.", "Explain how the renderer works"])
-        assert(!root.adoptFirstMessageGoalForTesting(promptText), "non-action request adopted a goal: " ~ promptText);
-    assert(root.goalForTesting().length == 0);
+    {
+        root.newChatForTesting();
+        assert(root.adoptFirstMessageGoalForTesting(promptText),
+            "first message did not adopt a goal: " ~ promptText);
+        assert(root.goalForTesting() == promptText,
+            "adopted goal text was not saved: " ~ promptText);
+    }
+    root.newChatForTesting();
     assert(root.adoptFirstMessageGoalForTesting("Ship the first-message goal"),
         "first message did not become the goal");
     assert(root.goalForTesting() == "Ship the first-message goal",

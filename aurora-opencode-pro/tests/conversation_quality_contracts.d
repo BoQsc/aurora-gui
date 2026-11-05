@@ -107,7 +107,8 @@ int main()
         assert(taskContinuation(s, true).action == TaskContinuationAction.settle,
             "Advice resumed unfinished implementation");
         import auroraopencode.goalmode : automaticGoalRequest;
-        assert(!automaticGoalRequest(question), "Advice manufactured an automatic goal");
+        assert(automaticGoalRequest(question),
+            "Automatic goal adoption must not depend on request intent");
     }
     request(s, "What remains?");
     assert(s.contract.id == visual && s.taskSteps.length == 1 && s.verificationStatus == "required");

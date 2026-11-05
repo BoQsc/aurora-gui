@@ -559,10 +559,10 @@ private OpenCodeToolDef goalCompleteToolDefinition()
 private OpenCodeToolDef readPlanToolDefinition()
 {
     const description = experimentalStrictPlanEnabled()
-        ? "Read task state without changing or activating it. Omit task_id for current work; supply a background task ID to recover exact earlier requirements after compaction. Summary shows objective, position and outstanding work. Details defaults to outcomes when a plan exists, otherwise actions. Outcome IDs belong in update_plan.plan. Set collection=actions (or parent_id) for action IDs: update those in update_plan.work_items."
-        : "Read the saved objective, current checklist and remaining work without changing them. Use details for the full steps or to recover requirements after compaction. Use update_plan with the complete list of step text and status to revise the checklist.";
+        ? "Read task state without changing or activating it. Omit task_id for current work; supply a background task ID to recover exact earlier requirements after compaction. Summary shows objective, position and outstanding work. Details defaults to outcomes when a plan exists, otherwise actions. Set view=history to recover retained plan revisions with their reasons. Outcome IDs belong in update_plan.plan. Set collection=actions (or parent_id) for action IDs: update those in update_plan.work_items."
+        : "Read the saved objective, current checklist and remaining work without changing them. Use details for the full steps or to recover requirements after compaction. Set view=history to recover retained plan revisions with their reasons. Use update_plan with the complete list of step text and status to revise the checklist.";
     return OpenCodeToolDef("read_plan", description,
-        `{"type":"object","properties":{"task_id":{"type":"string"},"view":{"type":"string","enum":["summary","details"]},"collection":{"type":"string","enum":["outcomes","actions"]},"parent_id":{"type":"string"},"include_completed":{"type":"boolean"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}`);
+        `{"type":"object","properties":{"task_id":{"type":"string"},"view":{"type":"string","enum":["summary","details","history"]},"collection":{"type":"string","enum":["outcomes","actions"]},"parent_id":{"type":"string"},"include_completed":{"type":"boolean"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}}`);
 }
 
 private OpenCodeToolDef readHistoryToolDefinition()
@@ -576,15 +576,16 @@ private OpenCodeToolDef updatePlanToolDefinition()
 {
     if (!experimentalStrictPlanEnabled())
         return OpenCodeToolDef("update_plan",
-            "Updates the task plan. Before editing files, running commands or starting " ~
-            "multi-step work, record the concrete outcomes as steps with at most one " ~
-            "in_progress. Follow the steps in order until each is completed or blocked; " ~
-            "update the list when a step completes or evidence changes the next step. " ~
-            "Skip planning for a direct answer. An optional explanation describes a change.",
+            "Updates the task plan and keeps its history. Call it before the first " ~
+            "substantive action on every request; a one-step plan is fine for a direct " ~
+            "answer. Record outcomes with at most one in_progress. Follow the steps in " ~
+            "order until each is completed or blocked; revise the plan whenever a step " ~
+            "completes, evidence changes the path, requirements change or the step stalls. " ~
+            "Explain changes; read_plan view=history recovers revisions.",
             `{"type":"object","properties":{"explanation":{"type":"string"},"plan":{"type":"array","items":{"type":"object","properties":{"step":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}`);
     return OpenCodeToolDef(
         "update_plan",
-        "Track the objective, outcomes and small work incrementally. Use work_items for meaningful discoveries, recovery actions and optional follow-ups; record their reason, parent and completion condition. Omit plan when only recording small work or work_context. Required actions remain accountable; optional follow-ups must not expand the current scope. Update the task plan with a list of steps, each carrying a status " ~
+        "Track the objective, outcomes and small work incrementally. Record a plan for every request; one step is enough for a small request, and a direct answer gets an answer step. Use work_items for meaningful discoveries, recovery actions and optional follow-ups; record their reason, parent and completion condition. Omit plan when only recording small work or work_context. Required actions remain accountable; optional follow-ups must not expand the current scope. Update the task plan with a list of steps, each carrying a status " ~
         "of `pending`, `in_progress` or `completed`. Record the plan before " ~
         "starting a multi-step task, before substantial inspection or edits: " ~
         "include investigation when needed, list known steps up front, mark the current " ~
@@ -595,7 +596,9 @@ private OpenCodeToolDef updatePlanToolDefinition()
         "at a time. Use a few concrete outcomes. Keep evidence citations and routine plan maintenance inside their outcome, without separate checklist rows. Use accepted check toolCallId receipts as evidence even while other verification categories remain outstanding. Append new outcomes at the end; Aurora normalizes insertions automatically. Prefer plan_mode patch for routine progress: send only changed outcomes by id, with status or other changed fields. All omitted outcomes and fields persist. Update finished and next active outcomes together. Use full mode to create or extend the checklist; omitted completed outcomes are retained automatically. Keep the " ~
         "original checklist when working through one of its steps; put " ~
         "temporary substeps in the conversation or use update_subplan when " ~
-        "available. Set replace_entire_plan " ~
+        "available. Revise the plan in the same turn whenever evidence changes the path, " ~
+        "a requirement changes or the current step stalls; explain each revision, because " ~
+        "revisions are retained and read_plan view=history can recover them. Set replace_entire_plan " ~
         "only when the user explicitly asks to discard the existing plan. " ~
         "Also set `objective` to a concise, rewritten one-line goal for the " ~
         "task in your own words, not a copy of the user's message or the " ~

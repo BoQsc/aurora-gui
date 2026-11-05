@@ -12156,10 +12156,12 @@ private string _suggestExcludeId;
     // may legitimately need far more inspection than ordinary tasks.
     private static immutable int explorationCheckpointCalls = 10;
     private static immutable int earlyPlanExplorationCalls = 3;
-    // A normal-mode turn that spends its read-only exploration budget without
-    // recording a plan gets an advisory reminder to call update_plan, so a long
-    // investigation no longer runs on forever with no checklist. Tied to the
-    // exploration checkpoint so the checkpoint and the reminder line up.
+    // A turn that explores for a few calls without recording a plan gets an
+    // advisory reminder to call update_plan, so planning starts early instead
+    // of only after the whole investigation budget is spent. The hard gate
+    // waits for the full exploration checkpoint; strict plan mode gates at the
+    // earlier threshold.
+    private static immutable int planNudgeExplorationCalls = earlyPlanExplorationCalls;
     private static immutable int planGateExplorationCalls = explorationCheckpointCalls;
     // A recorded plan only helps while it stays current. When a plan still has
     // unfinished steps and the model runs this many tool results without an
@@ -21008,21 +21010,22 @@ private void pollButtonSuggestionRequest()
                     (phase >= 2 && step.kind != "verify");
         const recordDue = !hasIncompleteTaskSteps(session) &&
             !planRecordedThisTurn(session) &&
-            readOnlyExplorationCount(session) >= planGateExplorationCalls;
+            readOnlyExplorationCount(session) >= planNudgeExplorationCalls;
         if (!refreshDue && !recordDue && !phaseDue) return false;
         _planNudgedAt[session.id] = since;
         _planNudgedPhase[session.id] = phase;
         if (_pendingProgressGuidance.length == 0)
             _pendingProgressGuidance = phaseDue
-                ? "Work has moved into editing or verification. Reconcile the existing outcomes: tick only work proven complete, " ~
-                    "keep unfinished outcomes visible, and explain a focus change or detour. Continue useful work without asking permission."
+                ? "Work has moved into editing or verification. Replan now: tick only work proven complete, " ~
+                    "keep unfinished outcomes visible, add newly discovered outcomes, and explain a focus change, " ~
+                    "detour or replaced step. Continue useful work without asking permission."
                 : refreshDue
-                ? "The plan has unfinished outcomes without a current work position. Record the active outcome or an explained pause; keep completed work accurate and continue useful work."
+                ? "The plan has unfinished outcomes without a current work position. Update it now with the active " ~
+                    "outcome or an explained pause; keep completed work accurate and continue useful work."
                 : "No durable plan is recorded for this turn after " ~
                     to!string(readOnlyExplorationCount(session)) ~ " read-only " ~
-                    "inspections. Consider a short update_plan if it helps track " ~
-                    "remaining outcomes and the current investigation. Planning " ~
-                    "must not delay useful work or completion.";
+                    "inspections. Record a short update_plan now with the goal and the " ~
+                    "remaining outcomes. Planning must not delay useful work or completion.";
         return true;
     }
 
@@ -21032,12 +21035,12 @@ private void pollButtonSuggestionRequest()
         checkpoint.role = "user";
         checkpoint.internal = true;
         checkpoint.content = explorationGuidance(session);
-        // Offer tracking for a long investigation without making a plan a
-        // prerequisite to editing or finishing. Steps stay model-owned.
+        // Prompt a plan for a long investigation. Steps stay model-owned and a
+        // plan is not a prerequisite to editing or finishing.
         if (session.taskSteps.length == 0 && !answerOnlyRequest(latestActualUserRequest(session)) && !taskInvestigation(session) &&
             session.contract.currentIntent != "analysis")
-            checkpoint.content ~= "\n\nIf tracking remaining outcomes would help, " ~
-                "record a short update_plan with the current action. Continue " ~
+            checkpoint.content ~= "\n\nRecord a short update_plan now with the goal and " ~
+                "the current investigation. Continue " ~
                 "useful work without waiting for a plan.";
         appendMessage(session, checkpoint);
         publishThreadUpdated(session);
@@ -21212,18 +21215,22 @@ private void pollButtonSuggestionRequest()
             if (call.name == "update_plan") recordingPlan = true;
             if (isReadOnlyExplorationTool(call.name)) ++pendingInspection;
         }
+        const explorationGate = experimentalStrictPlanEnabled()
+            ? earlyPlanExplorationCalls : planGateExplorationCalls;
         const explorationExhausted = readOnlyExplorationCount(*session) +
-            pendingInspection >= earlyPlanExplorationCalls;
+            pendingInspection >= explorationGate;
         const substantialMutation = mutatingPending && calls.length > 1;
         const goalAcceptanceMissing = experimentalStrictPlanEnabled() &&
             goalActive(*session) && mutatingPending &&
             (substantialMutation || explorationExhausted || session.taskSteps.length >= 3) &&
             (!session.taskSteps.length || !session.contract.constraints.length);
-        const strictPlanMissing = experimentalStrictPlanEnabled() &&
-            (explorationExhausted || substantialMutation) && !hasIncompleteTaskSteps(*session) &&
-            !planRecordedThisTurn(*session);
+        // Planning is the default path, not an experimental mode: substantial
+        // or multi-call work needs a current plan from this turn. Quick single
+        // actions and a plan that already tracks unfinished outcomes proceed.
+        const planFirstMissing = (explorationExhausted || substantialMutation) &&
+            !hasIncompleteTaskSteps(*session) && !planRecordedThisTurn(*session);
         const planGateKey = session.id ~ ":" ~ session.contract.id;
-        if ((goalAcceptanceMissing || strictPlanMissing) && !recordingPlan &&
+        if ((goalAcceptanceMissing || planFirstMissing) && !recordingPlan &&
             !(planGateKey in _planGateFired ? _planGateFired[planGateKey] : false))
         {
             _planGateFired[planGateKey] = true;
@@ -21246,11 +21253,14 @@ private void pollButtonSuggestionRequest()
                     "Reconcile these constraints when the user changes requirements; keep optional improvements out of scope."
                 : mutatingPending
                 ? "Plan-first gate: record the durable plan with one " ~
-                    "update_plan call (the concrete remaining steps and their " ~
-                    "statuses) before making changes. The edit call will then run."
+                    "update_plan call (the goal-oriented outcomes, their " ~
+                    "statuses and the user's acceptance constraints) before making " ~
+                    "changes. Explain any change from an earlier plan. The edit " ~
+                    "calls will then run."
                 : "Plan-first gate: this request has grown beyond a quick lookup. " ~
                     "Record a concise plan now, including the investigation " ~
                     "still underway and the other outcomes this request needs. " ~
+                    "Name the user's goal and acceptance constraints. " ~
                     "Include implementation and validation only when relevant. " ~
                     "Mark the current step in_progress and later work " ~
                     "pending. Update it as phases finish; do not wait until the " ~
@@ -22223,9 +22233,9 @@ private void pollButtonSuggestionRequest()
         return false;
     }
 
-    /// Optional default behavior: an actionable first message becomes the durable
-    /// goal. Questions, reference notes and analysis do not open a persistent task.
-    /// Later messages never replace it; only an explicit /goal or the
+    /// Default behavior: the first message becomes the durable goal, so every
+    /// conversation starts goal-oriented. Later messages never replace it;
+    /// only an explicit /goal or the
     /// goal-row Set/Edit controls change the goal after this point.
     private bool maybeAdoptFirstMessageGoal(ref ChatSession session, string text)
     {
@@ -26722,11 +26732,11 @@ private void pollButtonSuggestionRequest()
         titleRow.add(titleCheck);
         optionsBody.add(titleRow);
 
-        // Optional: adopt the first user message as the conversation's durable
-        // goal. On by default; later messages never replace it.
+        // Adopt the first user message as the conversation's durable goal.
+        // On by default; later messages never replace it.
         auto autoGoalRow = new HBox(8);
         autoGoalRow.layoutHints().preferredHeight = 32;
-        auto autoGoalCheck = new CheckBox("Goal from first action request");
+        auto autoGoalCheck = new CheckBox("Goal from first message");
         autoGoalCheck.setId("oc-autogoal");
         autoGoalCheck.setChecked(_settings.autoGoalFromFirstMessage, false);
         autoGoalCheck.onChanged = delegate(bool value)

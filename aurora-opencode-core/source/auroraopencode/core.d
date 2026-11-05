@@ -1824,10 +1824,10 @@ public struct Settings
     // request (a few tokens) instead of the raw first message. On by default;
     // an existing OpenCode settings file can turn it off.
     bool quickTitle = true;
-    // Write the persistent goal from an actionable first user message. On by
-    // default; later messages never replace it unless the user explicitly uses
-    // /goal, Set goal, or Edit.
-    bool autoGoalFromFirstMessage = false;
+    // Write the persistent goal from the first user message. On by default so
+    // every conversation starts goal-oriented; later messages never replace it
+    // unless the user explicitly uses /goal, Set goal, or Edit.
+    bool autoGoalFromFirstMessage = true;
     // Hide the `@@ -old,+new @@` hunk headers in rendered diffs: they carry no
     // information for a reader, only for the patch parser. On by default; set
     // false to restore the full unified diff.
@@ -2467,6 +2467,13 @@ public Settings loadSettings()
                 // from Settings after this one-time migration.
                 if (settingsVersion < 2)
                     settings.legacyTools = false;
+                // Version 3 adopts a persistent goal from the first message of
+                // every conversation so planning is goal-oriented from turn
+                // one. Older builds persisted the previous off default, so the
+                // behavior needs this one-time migration. Users can opt out
+                // from Settings afterwards.
+                if (settingsVersion < 3)
+                    settings.autoGoalFromFirstMessage = true;
             }
         }
         catch (Exception error)
@@ -2530,7 +2537,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
 {
     ensureStateDirectory();
     JSONValue root;
-    root["settingsVersion"] = 2;
+    root["settingsVersion"] = 3;
     root["baseUrl"] = settings.baseUrl;
     root["apiKey"] = settings.apiKey;
     JSONValue providerKeys = JSONValue(string[].init);

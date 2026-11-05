@@ -28,6 +28,10 @@ int main()
         if (tool.name == "update_plan")
             assert(tool.description.indexOf("Follow the steps in order") >= 0,
                 "update_plan does not require following the planned steps");
+    foreach (tool; builtinToolDefinitions())
+        if (tool.name == "read_plan")
+            assert(tool.description.indexOf("view=history") >= 0,
+                "read_plan does not expose retained plan history");
 
     const state = absolutePath(buildPath(tempDir(), "aurora-plan-ui-" ~ to!string(MonoTime.currTime.ticks)));
     mkdirRecurse(state); setOpencodeStateDirectoryForTesting(state);
@@ -49,6 +53,10 @@ int main()
         "Plan section does not lead the working sections");
     assert(prompt.indexOf("never by follow-up rounds") >= 0,
         "The no-follow-up planning rule is missing");
+    assert(prompt.indexOf("Replan as you work") >= 0,
+        "The adaptive replanning rule is missing");
+    assert(prompt.indexOf("Keep planning history") >= 0,
+        "The retained planning-history rule is missing");
     assert(prompt.indexOf("Never end with a question, an offer") >= 0,
         "The closing-offer prohibition is missing");
 

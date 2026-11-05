@@ -56,13 +56,12 @@ class Provider(http.server.BaseHTTPRequestHandler):
                            if message["role"] == "system")
         if system.count("# Work progress") != 1:
             failures.append("Missing or duplicated work-progress instruction")
-        for instruction in ("Update the plan when an outcome completes",
+        for instruction in ("Recheck it before each response",
+                            "update it whenever an outcome completes",
                             "Continue implementation and necessary verification after planning",
-                            "Skip redundant checklist calls", "report unfinished work accurately"):
+                            "explain plan changes", "report unfinished steps accurately"):
             if instruction not in system:
                 failures.append("Missing instruction: " + instruction)
-        if "Before every response, reassess the plan" in system:
-            failures.append("Per-response planning ritual is still enabled")
         for tool in request.get("tools", []):
             function = tool.get("function", {})
             if function.get("name") == "update_plan":
@@ -131,7 +130,7 @@ try:
                if message.get("toolName") == "update_plan"]
     assert len(updates) == 3 and not any(message.get("failed") for message in updates), \
         "Plan progress was rejected in the production tool loop"
-    assert all(message["content"] == "Plan updated" for message in updates)
+    assert all(message["content"].startswith("Plan updated") for message in updates)
     assert sum(any(message.get("content") == "READY" for message in history["messages"])
                for history in histories) == 2, "Responses did not complete and persist"
     assert not any("# Work progress" in message.get("content", "")

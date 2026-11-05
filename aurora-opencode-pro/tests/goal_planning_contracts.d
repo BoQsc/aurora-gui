@@ -41,12 +41,19 @@ int main()
     { return OpenCodeToolCall(id,"write",`{"filePath":`~JSONValue(path).toString~`,"content":"valid output"}`); }
     fresh("Write one small note.");
     const simple=buildPath(directory,"simple.txt"); run([writeCall("simple",simple)]);
-    assert(exists(simple),"A small goal acquired a planning round");
+    assert(exists(simple),"A single small mutation was blocked for planning");
     fresh("Implement and verify the two-module package.");
     const first=buildPath(directory,"first.txt"), second=buildPath(directory,"second.txt");
     run([writeCall("first",first),writeCall("second",second)]);
-    assert(exists(first) && exists(second),"Normal goal work was deferred for custom planning bookkeeping");
+    assert(!exists(first) && !exists(second),
+        "A multi-file goal change ran before its plan was recorded");
+    run([OpenCodeToolCall("plan","update_plan",
+        `{"explanation":"Plan before the multi-file change.","plan":[`~
+        `{"step":"Write both outputs","status":"in_progress"},`~
+        `{"step":"Verify both outputs","status":"pending"}]}`)]);
+    run([writeCall("first-retry",first),writeCall("second-retry",second)]);
+    assert(exists(first) && exists(second),"Planned goal work was deferred again");
     assert(readText(first)=="valid output");
-    writeln("PASS small and multi-file goal mutations execute without synthetic planning preflights");
+    writeln("PASS multi-file goal work records the plan first, then executes; a single small mutation stays direct");
     return 0;
 }

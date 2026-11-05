@@ -94,11 +94,19 @@ int main()
     fresh("Write two requested files.");
     root.setGoalForTesting("Write two requested files.", "active");
     const first = buildPath(state, "first.txt"), second = buildPath(state, "second.txt");
-    run([OpenCodeToolCall("first", "write", `{"filePath":` ~ JSONValue(first).toString ~ `,"content":"first"}`),
-         OpenCodeToolCall("second", "write", `{"filePath":` ~ JSONValue(second).toString ~ `,"content":"second"}`)]);
-    assert(exists(first) && exists(second), "Goal tool work was replaced by a synthetic planning deferral");
+    auto writes = [OpenCodeToolCall("first", "write", `{"filePath":` ~ JSONValue(first).toString ~ `,"content":"first"}`),
+         OpenCodeToolCall("second", "write", `{"filePath":` ~ JSONValue(second).toString ~ `,"content":"second"}`)];
+    run(writes);
+    assert(!exists(first) && !exists(second),
+        "Goal mutations ran before the plan was recorded");
+    run([OpenCodeToolCall("plan", "update_plan",
+        `{"explanation":"Record the plan before the two-file change.","plan":[` ~
+        `{"step":"Write both requested files","status":"in_progress"}]}`)]);
+    run([OpenCodeToolCall("first-retry", "write", `{"filePath":` ~ JSONValue(first).toString ~ `,"content":"first"}`),
+         OpenCodeToolCall("second-retry", "write", `{"filePath":` ~ JSONValue(second).toString ~ `,"content":"second"}`)]);
+    assert(exists(first) && exists(second), "Planned goal work was deferred again");
     assert(readText(first) == "first" && readText(second) == "second");
-    writeln("PASS a goal executes its first mutation batch without a planning round");
+    writeln("PASS a goal records its plan before the first multi-file mutation batch, then executes");
 
     fresh("Read the requested file.");
     root.setTaskStateForTesting("Read the requested file", "active", "not_required");

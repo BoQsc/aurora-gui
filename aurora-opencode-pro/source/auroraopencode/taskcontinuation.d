@@ -46,6 +46,7 @@ struct TaskContinuation
             return taskContinuationMarker ~ state.toString() ~ "\n" ~
                 "No planned step advanced. Change the diagnosis: compare expected behavior with the " ~
                 "recorded failure, reject the unsupported hypothesis, and test a smaller case or different source. " ~
+                "Record the revised plan with update_plan, explaining what changed and preserving completed outcomes. " ~
                 "Do useful tool work now; do not answer or ask permission. " ~
                 remaining ~ verificationGuidance();
         return taskContinuationMarker ~ state.toString() ~ "\n" ~

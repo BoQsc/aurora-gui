@@ -48,15 +48,18 @@ public string trackedPlanPromptBlock()
 {
     if (!experimentalStrictPlanEnabled()) return "";
     return "\n# Tracked plan mode\n" ~
-        "Before substantial work, record a plan with update_plan; skip " ~
-        "planning for a one-step request. Derive the steps from THIS task - " ~
+        "Record a plan with update_plan for every request; one step is enough " ~
+        "for a small request, and a direct answer gets an answer step. Derive " ~
+        "the steps from THIS task - " ~
         "never a fixed template, and never assume a research or investigation " ~
         "step is required. The first step is the smallest action that reduces " ~
         "the most uncertainty (a read, a search, a quick edit, or a question " ~
         "to the user). Each step is a concrete outcome with a stable ID and " ~
         "`done` naming how completion is proven. Cite successful tool-call IDs " ~
         "as evidence before marking outcomes completed. Keep at most one step " ~
-        "in_progress, and reconcile the plan before the final answer: mark " ~
+        "in_progress, and revise the plan whenever evidence changes the path. " ~
+        "Revisions and their explanations are retained as plan history. " ~
+        "Reconcile the plan before the final answer: mark " ~
         "finished steps completed, rewrite obsolete or mixed steps, and never " ~
         "mark unfinished work completed.\n";
 }

@@ -1,6 +1,8 @@
 module auroraopencode.goalmode;
 
 import auroraopencode.core : ChatSession, GoalHistoryEntry, activeMessagePath;
+import auroraopencode.requestintent : answerOnlyRequest, requestIntent,
+    RequestIntent;
 import std.array : appender, join, split;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.string : indexOf, startsWith, strip, toLower;
@@ -21,12 +23,20 @@ public bool goalNeedsHumanInput(const ref ChatSession session)
         taskAwaitingInput(session);
 }
 
-/// Automatic goal adoption is for actionable first requests. Explicit /goal
-/// remains available for any completion condition, including research.
+/// Every first message becomes the conversation's durable goal, so planning is
+/// goal-oriented from the first turn. Explicit /goal remains available for
+/// changing that completion condition later.
 public bool automaticGoalRequest(string text)
 {
-    import auroraopencode.requestintent : requestIntent, RequestIntent;
-    return requestIntent(text) == RequestIntent.implementation;
+    return text.strip().length > 0;
+}
+
+/// True when a goal asks for an answer or acknowledgement rather than an
+/// artifact, so completion does not need a tool receipt.
+public bool goalIsAnswerOnly(string goal)
+{
+    return answerOnlyRequest(goal) ||
+        requestIntent(goal) == RequestIntent.conversation;
 }
 
 /// Bound the goal by characters without splitting a UTF-8 sequence.
@@ -171,6 +181,7 @@ public string goalPromptBlock(const ref ChatSession session)
 {
     if (session.goal.length == 0) return "";
     const status = session.goalStatus.length ? session.goalStatus : "active";
+    const answerGoal = goalIsAnswerOnly(session.goal);
     auto output = appender!string();
     output.put("\n\n# Persistent goal\n");
     output.put("Status: " ~ status ~ "\n");
@@ -183,10 +194,19 @@ public string goalPromptBlock(const ref ChatSession session)
             output.put("Keep working toward this goal across turns. After each turn " ~
                 "audit the actual result and continue with useful tool work until the " ~
                 "completion condition is demonstrably true. Do not ask permission for " ~
-                "routine execution or verification. When every outcome is complete and " ~
+                "routine execution or verification. Treat the goal as the outcome, not " ~
+                "as a fixed step template, and keep it aligned with the current plan. " ~
+                "Record the first plan with update_plan before substantive work and " ~
+                "revise that plan whenever evidence changes the path; earlier revisions " ~
+                "are retained. When every outcome is complete and " ~
                 "checks pass, call `goal_complete` with a short summary and concrete " ~
                 "evidence (successful tool-call IDs or check receipts). Never call it " ~
                 "for prose, an attempted action, or unfinished work. " ~
+                (answerGoal
+                    ? "This goal asks for an answer rather than an artifact. Deliver the " ~
+                        "accurate answer, then call goal_complete with the summary; tool " ~
+                        "evidence is optional when no tool work was needed. "
+                    : "") ~
                 "If an essential user-owned fact is missing, finish independent work, then call request_input " ~
                 "with required_fact, checked sources and the dependent blocked_steps. This records a wait while " ~
                 "keeping the goal active. A question or Remaining note in prose does not record that wait; " ~
@@ -215,7 +235,8 @@ public string goalContinuationInstruction(const ref ChatSession session)
 {
     return "Persistent goal continuation: " ~ session.goal ~ "\n" ~
         "Continue from the recorded work and current evidence. Do work rather than " ~
-        "restating the goal. If the goal is now demonstrably complete, call " ~
+        "restating the goal. Reconcile update_plan with the remaining work before " ~
+        "continuing, explaining any changed path. If the goal is now demonstrably complete, call " ~
         "`goal_complete` with a concise summary and concrete evidence; otherwise keep " ~
         "advancing the unfinished outcomes. If only an essential user-owned fact prevents completion, " ~
         "call request_input now with the missing fact and blocked_steps; a prose question does not pause " ~
@@ -245,23 +266,31 @@ public string goalCompletionError(const ref ChatSession session, string argument
     }
     if (!field("summary").length)
         return "goal_complete requires a concise summary of the verified result.";
-    auto evidence = "evidence" in value.object;
-    if (evidence is null || evidence.type != JSONType.array || !evidence.array.length)
-        return "goal_complete requires concrete evidence: successful tool-call IDs or check receipts.";
-    import auroraopencode.taskflow : taskEvidenceIndex;
-    const recorded = taskEvidenceIndex(session, false);
-    size_t usable;
-    foreach (entry; evidence.array)
+    // An answer-only goal is proved by the answer itself. Action goals still
+    // need real receipts so prose cannot stand in for completed work.
+    if (!goalIsAnswerOnly(session.goal))
     {
-        if (entry.type != JSONType.string || !entry.str.strip().length)
-            return "goal_complete evidence must contain successful recorded tool-call IDs.";
-        const id = entry.str.strip();
-        if ((id in recorded) is null)
-            return "goal_complete evidence '" ~ id ~ "' is not a successful recorded result on the active task. " ~
-                "Use the toolCallId from the actual result; do not invent a receipt.";
-        ++usable;
+        auto evidence = "evidence" in value.object;
+        if (evidence is null || evidence.type != JSONType.array || !evidence.array.length)
+            return "goal_complete requires concrete evidence: successful tool-call IDs or check receipts.";
+        import auroraopencode.taskflow : taskEvidenceIndex;
+        const recorded = taskEvidenceIndex(session, false);
+        size_t usable;
+        foreach (entry; evidence.array)
+        {
+            if (entry.type != JSONType.string || !entry.str.strip().length)
+                return "goal_complete evidence must contain successful recorded tool-call IDs.";
+            const id = entry.str.strip();
+            if ((id in recorded) is null)
+                return "goal_complete evidence '" ~ id ~ "' is not a successful recorded result on the active task. " ~
+                    "Use the toolCallId from the actual result; do not invent a receipt.";
+            ++usable;
+        }
+        if (!usable) return "goal_complete evidence must contain non-empty tool-call IDs or check receipts.";
     }
-    if (!usable) return "goal_complete evidence must contain non-empty tool-call IDs or check receipts.";
+    else if (auto evidence = "evidence" in value.object)
+        if (evidence.type != JSONType.array)
+            return "goal_complete evidence must be an array of tool-call IDs.";
     if (session.verificationStatus == "required" || session.verificationStatus == "failed")
         return "Verification is still outstanding. Run the required check, then call goal_complete.";
     foreach (step; session.taskSteps)

@@ -9,10 +9,14 @@ import auroraopencode.runtime : AgentEventKind, AgentRuntimeEvent,
     projectAgentRuntimeEvents;
 import auroraopencode.tools : builtinToolDefinitions, executeTool,
     nativeOnlyToolDefinitions;
-import auroraopencode.core : OpenCodeToolCall;
+import auroraopencode.core : OpenCodeToolCall, loadSettings,
+    setOpencodeStateDirectoryForTesting;
+import std.file : mkdirRecurse, rmdirRecurse, tempDir, write;
+import std.path : buildPath;
 import std.stdio : writeln;
 import std.string : indexOf;
 import std.utf : toUTF32;
+import std.uuid : randomUUID;
 
 void require(bool condition, string message)
 {
@@ -50,8 +54,25 @@ int main()
     require(toUTF32(clamped).length == maxGoalLength,
         "goal clamp split or exceeded the character budget");
     Settings defaults;
-    require(!defaults.autoGoalFromFirstMessage,
-        "ordinary action requests must not become persistent goals by default");
+    require(defaults.autoGoalFromFirstMessage,
+        "the first message must become a persistent goal by default");
+    // The previous release persisted the old off default, so the settings
+    // migration must turn first-message goals on once. An explicit opt-out
+    // saved by the current version stays off.
+    const migrationDir = buildPath(tempDir(),
+        "aurora-goal-settings-" ~ randomUUID().toString());
+    mkdirRecurse(migrationDir);
+    scope (exit) rmdirRecurse(migrationDir);
+    setOpencodeStateDirectoryForTesting(migrationDir);
+    const settingsPath = buildPath(migrationDir, "settings.json");
+    write(settingsPath,
+        `{"settingsVersion":2,"autoGoalFromFirstMessage":false}`);
+    require(loadSettings().autoGoalFromFirstMessage,
+        "an older settings file did not migrate to first-message goals");
+    write(settingsPath,
+        `{"settingsVersion":3,"autoGoalFromFirstMessage":false}`);
+    require(!loadSettings().autoGoalFromFirstMessage,
+        "an explicit opt-out was overwritten");
     writeln("PASS goal commands set/show/pause/resume/clear");
 
     ChatSession session;
@@ -99,6 +120,20 @@ int main()
         "completion with outstanding verification was accepted");
     session.verificationStatus = "not_required";
     writeln("PASS goal completion requires evidence and finished checks");
+
+    // An answer-only goal is proved by its answer. No receipt is required for a
+    // question that never needed tool work.
+    ChatSession answerGoal;
+    answerGoal.goal = "What is compaction?";
+    answerGoal.goalStatus = "active";
+    require(goalCompletionError(answerGoal,
+        `{"summary":"Compaction summarizes older context."}`).length == 0,
+        "an answer-only goal was blocked for lacking a tool receipt");
+    answerGoal.goal = "Remember this reference for later.";
+    require(goalCompletionError(answerGoal,
+        `{"summary":"Noted for this conversation."}`).length == 0,
+        "a conversational goal was blocked for lacking a tool receipt");
+    writeln("PASS answer-only goals complete from their answer");
 
     ChatSession history;
     history.goal = "first durable goal";
@@ -175,11 +210,14 @@ int main()
     ensureMessageGraph(humanHelp);
     require(!goalNeedsHumanInput(humanHelp), "a user reply did not release the input boundary");
     require(humanHelp.goalStatus == "active", "waiting for input altered the user's goal");
-    foreach (text; ["Hello", "What is compaction?", "Remember this reference for later.", "Explain how the renderer works", "Plan the migration without changing files"])
-        require(!automaticGoalRequest(text), "ordinary answer became a persistent goal: " ~ text);
-    foreach (text; ["Ship the first-message goal", "Implement the migration", "Fix the broken renderer"])
-        require(automaticGoalRequest(text), "action request lost automatic goal adoption: " ~ text);
-    writeln("PASS automatic goals require action; validated input suspends continuation and a reply releases it");
+    foreach (text; ["Hello", "What is compaction?", "Remember this reference for later.",
+            "Explain how the renderer works", "Plan the migration without changing files",
+            "Ship the first-message goal", "Implement the migration",
+            "Fix the broken renderer"])
+        require(automaticGoalRequest(text),
+            "first message lost automatic goal adoption: " ~ text);
+    require(!automaticGoalRequest("   "), "an empty first message became a goal");
+    writeln("PASS every first message becomes the goal; validated input suspends continuation and a reply releases it");
 
     foreach (definitions; [nativeOnlyToolDefinitions(), builtinToolDefinitions()])
     {

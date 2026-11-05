@@ -159,5 +159,8 @@ string taskContext(const ref ChatSession session, string request, bool nested,
             line("Background constraint (apply only if relevant to this request): ", constraint, 240);
     }
     line("", "Full task records and earlier plan-change reasons remain saved; this is the bounded working context.", 128);
+    if (session.planHistory.length)
+        line("Plan history: ", to!string(session.planHistory.length) ~
+            " revisions retained; read_plan view=history recovers earlier plans, outcomes and reasons.", 240);
     return output.data;
 }

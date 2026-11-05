@@ -2,6 +2,7 @@ module plan_history_contracts;
 
 import auroraopencode.core;
 import auroraopencode.planhistory;
+import auroraopencode.worktracking : readPlanText;
 import std.conv : to;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.stdio : writeln;
@@ -88,6 +89,16 @@ int main()
     }
     auto historyJson = planHistoryToJson(session.planHistory);
     assert(planHistoryFromJson(historyJson) == session.planHistory);
+
+    // The model can recover retained revisions through read_plan, paging from
+    // the oldest revision and keeping the stated reason.
+    auto historyView = parseJSON(readPlanText(session,
+        `{"view":"history","limit":2}`));
+    assert(historyView["total"].integer == session.planHistory.length);
+    assert(historyView["items"].array.length == 2);
+    assert(historyView["nextOffset"].integer == 2);
+    assert(historyView["items"][0]["explanation"].str == "Initial plan");
+    assert(historyView["items"][1]["steps"][0]["status"].str == "completed");
 
     // A background writer receives independent arrays.
     auto snapshot = snapshotChatSessions([session])[0];

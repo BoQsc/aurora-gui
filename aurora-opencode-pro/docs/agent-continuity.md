@@ -7,9 +7,17 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
 
 ## Behavior
 
-- Automatic first-message goals now require an action request. Greetings,
-  questions, reference notes and analysis do not create a persistent goal.
-  Explicit `/goal` and the goal controls still accept any completion condition.
+- Every first message becomes the conversation's persistent goal, including
+  greetings, questions and analysis, so planning is goal-oriented from the
+  first turn. The behavior is on by default and migrated for existing settings;
+  users can still turn it off. Explicit `/goal` and the goal controls accept any
+  completion condition.
+- Planning is the default path: the agent records a plan for every request
+  (one step is enough for a direct answer), the plan-first gate covers
+  substantial or multi-call work, and stale-plan reminders fire earlier. The
+  agent revises the plan in the same turn as evidence changes. Every revision,
+  including replaced and completed outcomes, is kept in plan history, and
+  `read_plan view=history` recovers earlier plans and reasons.
 - A goal waits only at the same validated `request_input` boundary used by task
   continuation. Phrases such as “please confirm” in assistant prose no longer
   silently pause it. Waiting retains the active goal; replying with the missing
