@@ -156,7 +156,7 @@ import auroraopencode.attachments :
     attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
     attachmentStripHeight, attachmentVisibleSummary, imagePreviewHeight,
     attachmentsContainImage, experimentalAttachmentsEnabled,
-    setImagePreviewContextMenuHandler;
+    setImagePreviewContextMenuHandler, setImagePreviewOpenHandler;
 import auroraopencode.imagenormalization : ImageCrop;
 // experimental: checkpoint - save/return file/folder state. Delete with
 // source/auroraopencode/checkpoint.d (see its header for the full removal list).
@@ -11884,6 +11884,11 @@ public final class OpenCodeRoot : VBox
     private Settings _settings;
     private ChatSession[] _sessions;
     private int _current = -1;
+    // Test hook: record the image/path a click would open without launching a
+    // desktop viewer during the headless suite.
+    private bool _captureImagePreviewOpen;
+    private ChatImageAttachment _lastOpenedImage;
+    private string _lastOpenedImagePath;
     // Rebuilding every bubble in a runaway transcript can allocate hundreds of
     // megabytes and was the trigger shared by the recent layout/markdown access
     // violations. Keep the full graph in storage, but materialize it in pages.
@@ -12956,6 +12961,8 @@ private string _suggestExcludeId;
             {
                 showImagePreviewContextMenu(image, globalPosition);
             });
+        setImagePreviewOpenHandler(
+            delegate(ChatImageAttachment image) { openImagePreview(image); });
         phase("buildUi");
         updateProjectRail();
         phase("project rail");
@@ -29282,6 +29289,80 @@ private void pollButtonSuggestionRequest()
         showContextMenu(_messageColumn, globalPosition, items);
     }
 
+    /// A preview click opens the original file when it is still there. An
+    /// archived, pasted, or since-deleted source is materialized from the
+    /// retained image bytes, so every preview remains openable.
+    private void openImagePreview(ChatImageAttachment image)
+    {
+        string path;
+        if (image.sourcePath.length)
+        {
+            const source = resolveDisplayedPath(image.sourcePath,
+                workspaceForSession(_current));
+            if (source.length && exists(source) && isFile(source)) path = source;
+        }
+        if (path.length == 0) path = materializeImagePreview(image);
+        if (path.length == 0)
+        {
+            updateStatus("Could not open image.");
+            return;
+        }
+        _lastOpenedImage = image;
+        _lastOpenedImagePath = path;
+        if (_captureImagePreviewOpen) return;
+        version (Windows) openPathWithShell(path);
+        updateStatus("Opened " ~ baseName(path));
+    }
+
+    private string materializeImagePreview(const ref ChatImageAttachment image)
+    {
+        import std.base64 : Base64;
+        string payload;
+        auto store = AttachmentStore(buildPath(opencodeStateDirectory(),
+            "attachments"));
+        if (image.originalBlob.length) payload = store.get(image.originalBlob);
+        if (payload.length == 0) payload = image.base64Data;
+        if (payload.length == 0 && image.blob.length)
+            payload = store.get(image.blob);
+        if (payload.length == 0) return "";
+        ubyte[] bytes;
+        try bytes = Base64.decode(payload);
+        catch (Exception) return "";
+        if (bytes.length == 0) return "";
+        const directory = buildPath(opencodeStateDirectory(), "image-previews");
+        if (!exists(directory)) mkdirRecurse(directory);
+        const digest = toLower(toHexString(
+            sha256Of(cast(const(ubyte)[]) payload))).idup;
+        const shortDigest = digest.length > 16 ? digest[0 .. 16] : digest;
+        const path = buildPath(directory,
+            "preview-" ~ shortDigest ~ imagePreviewExtension(image));
+        if (!exists(path))
+        {
+            try write(path, bytes);
+            catch (Exception error)
+            {
+                logError("failed to materialize image preview: " ~ error.msg);
+                return "";
+            }
+        }
+        return path;
+    }
+
+    private static string imagePreviewExtension(const ref ChatImageAttachment image)
+    {
+        auto source = image.name.length > 0 ? image.name : image.sourcePath;
+        const ext = extension(source);
+        if (ext.length > 0) return ext;
+        switch (image.mimeType)
+        {
+            case "image/png": return ".png";
+            case "image/jpeg": return ".jpg";
+            case "image/gif": return ".gif";
+            case "image/webp": return ".webp";
+            default: return ".img";
+        }
+    }
+
     private void showSessionContextMenu(int row, Point globalPosition)
     {
         if (row < 0 || row >= cast(int) _sessionIndices.length) return;
@@ -33196,6 +33277,21 @@ private void pollButtonSuggestionRequest()
                 return bubble.sentImageHoverPreviewLabelForTesting();
         }
         return "";
+    }
+
+    public void captureImagePreviewOpenForTesting(bool capture)
+    {
+        _captureImagePreviewOpen = capture;
+    }
+
+    public ChatImageAttachment lastOpenedImageForTesting() const
+    {
+        return _lastOpenedImage;
+    }
+
+    public string lastOpenedImagePathForTesting() const
+    {
+        return _lastOpenedImagePath;
     }
 
     /// Test-only: explicit "viewed image" rows currently in the transcript.

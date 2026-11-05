@@ -1025,6 +1025,29 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
     dismissContextMenus(root);
     root.tickTree(0.02);
 
+    // A left click opens the source file when it still exists. A pasted or
+    // archived image with no source is materialized from its retained bytes.
+    root.captureImagePreviewOpenForTesting(true);
+    driver.click(imageCell);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Image open click did not paint");
+    assert(root.lastOpenedImagePathForTesting() == imagePath,
+        "clicking the preview did not open its source image");
+    root.addImageMessageForTesting("Review a pasted image", "pasted.png");
+    assert(paintProjection(root, driver), "Pasted image preview did not paint");
+    const pastedCell = root.lastUserImagePreviewCellCenterForTesting(0);
+    driver.click(pastedCell);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Pasted image click did not paint");
+    const materializedPath = root.lastOpenedImagePathForTesting();
+    assert(materializedPath.length > 0 && materializedPath != imagePath &&
+        exists(materializedPath), "pasted image was not materialized for opening");
+    import std.file : getSize;
+    assert(getSize(materializedPath) > 0,
+        "materialized pasted image is empty");
+    root.captureImagePreviewOpenForTesting(false);
+    writeln("Clicking previews opens source files or materialized image copies");
+
     // Execute the real view_image tool, then feed its exact result through the
     // app's tool-result path. The tool result stays adjacent to the call and the
     // model still receives its hidden multimodal evidence message.

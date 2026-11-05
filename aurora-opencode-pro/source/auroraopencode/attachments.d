@@ -61,11 +61,18 @@ public enum int imagePreviewHeight = 28;
 public alias ImagePreviewContextMenuHandler =
     void delegate(ChatImageAttachment image, Point globalPosition);
 private ImagePreviewContextMenuHandler imagePreviewContextMenuHandler;
+public alias ImagePreviewOpenHandler = void delegate(ChatImageAttachment image);
+private ImagePreviewOpenHandler imagePreviewOpenHandler;
 
 public void setImagePreviewContextMenuHandler(
     ImagePreviewContextMenuHandler handler)
 {
     imagePreviewContextMenuHandler = handler;
+}
+
+public void setImagePreviewOpenHandler(ImagePreviewOpenHandler handler)
+{
+    imagePreviewOpenHandler = handler;
 }
 
 // Decoding a full image and resizing it takes far longer than a frame. Doing
@@ -752,6 +759,17 @@ public final class ImagePreviewStrip : Widget
                 hideHoverPreview();
                 imagePreviewContextMenuHandler(_images[index],
                     localToGlobal(event.position));
+                return true;
+            }
+        }
+        if (event.button == MouseButton.left)
+        {
+            const index = indexAt(event.position);
+            if (index >= 0 && index < cast(int) _images.length &&
+                imagePreviewOpenHandler !is null)
+            {
+                hideHoverPreview();
+                imagePreviewOpenHandler(_images[index]);
                 return true;
             }
         }
