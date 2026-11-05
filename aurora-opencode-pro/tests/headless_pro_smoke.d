@@ -942,9 +942,10 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
 {
     import auroraopencode.attachmentstore : AttachmentStore;
     import aurora.image : RgbaImage, encodePng;
-    import auroraopencode.attachments : base64Encode,
+    import auroraopencode.attachments : base64Encode, imagePreviewHeight,
         resetThumbnailDecodeCountForTesting, thumbnailDecodeCountForTesting;
-    import auroraopencode.core : opencodeStateDirectory;
+    import auroraopencode.core : ChatImageAttachment, imageAttachmentFromJson,
+        imageAttachmentToJson, opencodeStateDirectory;
     import auroraopencode.tools : executeTool;
     import std.base64 : Base64;
 
@@ -966,7 +967,7 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
     const blob = store.put(base64Encode(png));
     root.newChatForTesting();
     root.addArchivedImageMessageForTesting("Review this archived image",
-        "screenshot.png", blob);
+        "screenshot.png", blob, imagePath);
     assert(paintProjection(root, driver), "Archived image preview did not paint");
     assert(root.lastUserAttachmentPillCountForTesting() == 1,
         "Archived sent image did not render its preview cell");
@@ -977,6 +978,53 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
         "Archived sent image preview lost its name");
     window.saveScreenshot(buildPath(shotDir, "sent-image-preview.ppm"));
 
+    // The preview row stays one compact line and opens a floating card on
+    // hover; it must not grow the transcript or push following rows down.
+    auto sentStrip = requireWidget!Widget(root, "oc-sent-attachments");
+    assert(sentStrip.bounds().height <= imagePreviewHeight,
+        "image preview row is not collapsed");
+    const imageCell = root.lastUserImagePreviewCellCenterForTesting(0);
+    assert(imageCell.x >= 0 && imageCell.y >= 0,
+        "image preview cell has no hit area");
+    driver.moveTo(imageCell);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Hover preview did not paint");
+    assert(root.lastUserImageHoverPreviewOpenForTesting(),
+        "hovering an image preview did not open the floating preview");
+    assert(root.lastUserImageHoverPreviewLabelForTesting() == "screenshot.png",
+        "floating preview lost the image name");
+    assert(sentStrip.bounds().height <= imagePreviewHeight,
+        "hovering expanded the transcript instead of floating");
+    window.saveScreenshot(buildPath(shotDir, "image-hover-preview.ppm"));
+    driver.moveTo(Point(4, 4));
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Hover leave did not paint");
+    assert(!root.lastUserImageHoverPreviewOpenForTesting(),
+        "floating preview stayed open after the pointer left");
+
+    ChatImageAttachment pathImage;
+    pathImage.sourcePath = imagePath;
+    auto pathJson = imageAttachmentToJson(pathImage);
+    assert(imageAttachmentFromJson(pathJson).sourcePath == imagePath,
+        "image source path did not survive persistence");
+
+    driver.click(imageCell, MouseButton.right);
+    root.tickTree(0.02);
+    assert(paintProjection(root, driver), "Image context menu did not paint");
+    auto imageMenu = cast(ContextMenu) currentTransientPopup(root);
+    assert(imageMenu !is null, "right-clicking an image preview opened no menu");
+    bool sawImageFile, sawImageFolder;
+    foreach (item; imageMenu.items())
+    {
+        if (item.label == toUTF32("Open file")) sawImageFile = true;
+        if (item.label == toUTF32("Open folder")) sawImageFolder = true;
+    }
+    assert(sawImageFile && sawImageFolder,
+        "image context menu is missing Open file / Open folder");
+    window.saveScreenshot(buildPath(shotDir, "image-preview-menu.ppm"));
+    dismissContextMenus(root);
+    root.tickTree(0.02);
+
     // Execute the real view_image tool, then feed its exact result through the
     // app's tool-result path. The tool result stays adjacent to the call and the
     // model still receives its hidden multimodal evidence message.
@@ -985,6 +1033,8 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
         args), workspaceDir);
     assert(!viewed.failed && viewed.images.length == 1,
         "focused view_image failed: " ~ viewed.output);
+    assert(viewed.images[0].sourcePath == imagePath,
+        "view_image did not retain the source file path");
     root.newChatForTesting();
     root.addConversationForTesting(["user", "assistant"],
         ["Inspect viewed.png", ""]);

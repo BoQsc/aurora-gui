@@ -4096,7 +4096,7 @@ private ToolExecution runViewImage(string args, string workspace)
     JSONValue value;
     try value = parseJSON(args);
     catch (Exception) value = JSONValue.init;
-    string filePath, attachmentBlob, detail = "auto";
+    string filePath, attachmentBlob, detail = "auto", sourcePath;
     ImageCrop crop;
     if (value.type != JSONType.object)
         return ToolExecution("view_image", "Error: expected image arguments.", true);
@@ -4145,11 +4145,13 @@ private ToolExecution runViewImage(string args, string workspace)
                 return ToolExecution("view_image", "Error: image input must be between 1 byte and 32 MiB.", true);
             data = cast(ubyte[]) read(path);
             label = path;
+            sourcePath = path;
         }
         const mimeType = attachmentImageKindForBytes(data);
         if (!mimeType.length)
             return ToolExecution("view_image", "Error: unsupported image format. Expected PNG, JPEG, WebP, or GIF.", true);
-        auto image = attachmentImageForInlineData(mimeType, baseName(label), data, detail == "original", crop);
+        auto image = attachmentImageForInlineData(mimeType, baseName(label),
+            data, detail == "original", crop, sourcePath);
         ToolExecution result;
         result.name = "view_image";
         result.output = "Loaded image for visual inspection: " ~ label ~ " (original " ~

@@ -155,7 +155,9 @@ import auroraopencode.attachments :
     attachmentForText, attachmentImageForInlineData, attachmentImageMaxBytes, attachmentImageInputMaxBytes,
     attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
     attachmentStripHeight, attachmentVisibleSummary, imagePreviewHeight,
-    attachmentsContainImage, experimentalAttachmentsEnabled;
+    attachmentsContainImage, experimentalAttachmentsEnabled,
+    setImagePreviewContextMenuHandler;
+import auroraopencode.imagenormalization : ImageCrop;
 // experimental: checkpoint - save/return file/folder state. Delete with
 // source/auroraopencode/checkpoint.d (see its header for the full removal list).
 import auroraopencode.checkpoint : checkpointAge, checkpointFeatureEnabled,
@@ -1556,6 +1558,24 @@ private final class MessageBubble : Widget
     {
         return _sentAttachments is null ? "" :
             _sentAttachments.labelForTesting(index);
+    }
+
+    public Point sentImageCellCenterForTesting(size_t index)
+    {
+        return _sentAttachments is null ? Point(-1, -1) :
+            _sentAttachments.cellCenterForTesting(index);
+    }
+
+    public bool sentImageHoverPreviewOpenForTesting()
+    {
+        return _sentAttachments !is null &&
+            _sentAttachments.hoverPreviewOpenForTesting();
+    }
+
+    public string sentImageHoverPreviewLabelForTesting()
+    {
+        return _sentAttachments is null ? "" :
+            _sentAttachments.hoverPreviewLabelForTesting();
     }
 
     void appendThinking(string chunk)
@@ -12931,6 +12951,11 @@ private string _suggestExcludeId;
             ensureProjectDirectory(project);
         phase("settings/projects");
         buildUi();
+        setImagePreviewContextMenuHandler(
+            delegate(ChatImageAttachment image, Point globalPosition)
+            {
+                showImagePreviewContextMenu(image, globalPosition);
+            });
         phase("buildUi");
         updateProjectRail();
         phase("project rail");
@@ -17275,7 +17300,8 @@ private string _suggestExcludeId;
                     try
                     {
                         auto upgraded = attachmentImageForInlineData(image.mimeType, image.name,
-                            Base64.decode(image.base64Data));
+                            Base64.decode(image.base64Data), false,
+                            ImageCrop.init, image.sourcePath);
                         image = upgraded;
                         changed = true;
                     }
@@ -29224,6 +29250,38 @@ private void pollButtonSuggestionRequest()
         showContextMenu(_messageColumn, globalPosition, items);
     }
 
+    /// Right-click menu for a transcript thumbnail. The source path is carried
+    /// by the attachment itself, so it still works after a reload and for a
+    /// tool-viewed image that lives outside the workspace.
+    private void showImagePreviewContextMenu(ChatImageAttachment image,
+        Point globalPosition)
+    {
+        ContextMenuItem[] items;
+        const workspace = workspaceForSession(_current);
+        const path = image.sourcePath.length
+            ? resolveDisplayedPath(image.sourcePath, workspace) : "";
+        if (path.length > 0 && exists(path))
+        {
+            if (isFile(path))
+                items ~= ContextMenuItem.command("Open file", IconKind.open,
+                    delegate()
+                    {
+                        version (Windows) openPathWithShell(path);
+                    });
+            const folder = isDir(path) ? path : directoryOf(path);
+            if (folder.length > 0 && exists(folder) && isDir(folder))
+                items ~= ContextMenuItem.command("Open folder", IconKind.folder,
+                    delegate()
+                    {
+                        version (Windows) openFolderInExplorer(folder);
+                    });
+        }
+        if (items.length == 0)
+            items ~= ContextMenuItem.command("Image source unavailable",
+                delegate() {}, "", false);
+        showContextMenu(_messageColumn, globalPosition, items);
+    }
+
     private void showSessionContextMenu(int row, Point globalPosition)
     {
         if (row < 0 || row >= cast(int) _sessionIndices.length) return;
@@ -33023,7 +33081,8 @@ private void pollButtonSuggestionRequest()
 
     /// Test-only: append a user turn carrying one durable image attachment,
     /// without starting a provider request.
-    public void addImageMessageForTesting(string content, string name)
+    public void addImageMessageForTesting(string content, string name,
+        string sourcePath = "")
     {
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
@@ -33035,6 +33094,7 @@ private void pollButtonSuggestionRequest()
         image.mimeType = "image/png";
         image.base64Data =
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+        image.sourcePath = sourcePath;
         message.images ~= image;
         appendMessage(*session, message);
         rebuildMessageColumn();
@@ -33044,7 +33104,7 @@ private void pollButtonSuggestionRequest()
     /// Test-only: add a user turn whose image exists only as an archived blob,
     /// matching a reloaded conversation where transient pixels are stripped.
     public void addArchivedImageMessageForTesting(string content, string name,
-        string blob)
+        string blob, string sourcePath = "")
     {
         if (_current < 0) newChat();
         auto session = &_sessions[_current];
@@ -33055,6 +33115,7 @@ private void pollButtonSuggestionRequest()
         image.name = name;
         image.mimeType = "image/png";
         image.blob = blob;
+        image.sourcePath = sourcePath;
         message.images ~= image;
         appendMessage(*session, message);
         rebuildMessageColumn();
@@ -33097,6 +33158,42 @@ private void pollButtonSuggestionRequest()
             auto bubble = cast(MessageBubble) child;
             if (bubble !is null && bubble.roleForTesting() == "user")
                 return bubble.sentImageLabelForTesting(index);
+        }
+        return "";
+    }
+
+    public Point lastUserImagePreviewCellCenterForTesting(size_t index)
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble !is null && bubble.roleForTesting() == "user")
+                return bubble.sentImageCellCenterForTesting(index);
+        }
+        return Point(-1, -1);
+    }
+
+    public bool lastUserImageHoverPreviewOpenForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble !is null && bubble.roleForTesting() == "user")
+                return bubble.sentImageHoverPreviewOpenForTesting();
+        }
+        return false;
+    }
+
+    public string lastUserImageHoverPreviewLabelForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble !is null && bubble.roleForTesting() == "user")
+                return bubble.sentImageHoverPreviewLabelForTesting();
         }
         return "";
     }

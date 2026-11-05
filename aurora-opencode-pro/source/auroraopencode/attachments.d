@@ -33,7 +33,7 @@ import aurora.image : ImageResample, RgbaImage, decodeImage, fitImage;
 import auroraopencode.imagenormalization;
 import auroraopencode.attachmentstore : AttachmentStore;
 import auroraopencode.core : ChatImageAttachment, opencodeStateDirectory;
-import std.algorithm : canFind;
+import std.algorithm : canFind, min;
 import std.array : appender;
 import std.base64 : Base64;
 import std.conv : to;
@@ -53,10 +53,20 @@ private enum disableValues = ["0", "off", "false", "no", "disabled", "disable"];
 /// Height the composer reserves for the chip row when it is showing.
 public enum int attachmentStripHeight = 34;
 
-/// Height of the transcript image preview row. It carries a thumbnail and a
-/// filename for each visible image, so sent and tool-viewed images are actually
-/// previewable instead of appearing only as text labels.
-public enum int imagePreviewHeight = 82;
+/// Collapsed transcript image row. Keeping it to one small thumbnail line
+/// avoids spending vertical space on every image-bearing turn; hovering a cell
+/// opens a larger floating preview instead of reflowing the transcript.
+public enum int imagePreviewHeight = 28;
+
+public alias ImagePreviewContextMenuHandler =
+    void delegate(ChatImageAttachment image, Point globalPosition);
+private ImagePreviewContextMenuHandler imagePreviewContextMenuHandler;
+
+public void setImagePreviewContextMenuHandler(
+    ImagePreviewContextMenuHandler handler)
+{
+    imagePreviewContextMenuHandler = handler;
+}
 
 // Decoding a full image and resizing it takes far longer than a frame. Doing
 // that lazily from onPaint made the first scroll through image-bearing turns
@@ -223,6 +233,7 @@ public Attachment attachmentForFile(string path)
             attachment.isImage = true;
             attachment.image = attachmentImageForInlineData(kind,
                 attachment.name, cast(ubyte[]) read(path));
+            attachment.image.sourcePath = path;
             attachment.body = "";
             return attachment;
         }
@@ -362,7 +373,8 @@ public ChatImageAttachment attachmentImageForData(string mimeType, string name,
 public immutable size_t attachmentImageInlineBytes = 512 * 1024;
 public ChatImageAttachment attachmentImageForInlineData(string mimeType,
     string name, in ubyte[] data, bool original = false,
-    auroraopencode.imagenormalization.ImageCrop crop = auroraopencode.imagenormalization.ImageCrop.init)
+    auroraopencode.imagenormalization.ImageCrop crop = auroraopencode.imagenormalization.ImageCrop.init,
+    string sourcePath = "")
 {
     import auroraopencode.attachmentstore : AttachmentStore;
     import auroraopencode.core : opencodeStateDirectory;
@@ -379,6 +391,7 @@ public ChatImageAttachment attachmentImageForInlineData(string mimeType,
     image.height = normalized.height;
     image.originalWidth = normalized.originalWidth;
     image.originalHeight = normalized.originalHeight;
+    image.sourcePath = sourcePath;
     return image;
 }
 
@@ -578,21 +591,23 @@ public final class AttachmentStrip : HBox
     }
 }
 
-/// Inline, display-only thumbnails for images already attached to a transcript
-/// message. Decoding is lazy and each payload is decoded once per strip; a
-/// missing archived payload becomes a labelled placeholder rather than failing
-/// the transcript. The strip never mutates the message or its request payload.
+/// A compact line of thumbnails. The row stays collapsed; hovering a cell
+/// opens a larger floating card above it, and right-clicking a cell exposes the
+/// source file actions. Decoding is prepared when the strip is built, never
+/// from paint, so scrolling remains smooth.
 public final class ImagePreviewStrip : Widget
 {
-    private enum int cellWidth = 120;
-    private enum int thumbHeight = 62;
-    private enum int labelHeight = 16;
-    private enum int gap = 6;
-    private enum int visibleLimit = 8;
+    private enum int cellWidth = 40;
+    private enum int cellHeight = 22;
+    private enum int gap = 5;
+    private enum int visibleLimit = 16;
+    private enum int cellTop = (imagePreviewHeight - cellHeight) / 2;
 
     private ChatImageAttachment[] _images;
     private RgbaImage[] _thumbnails;
     private bool[] _attempted;
+    private int _hoverIndex = -1;
+    private ImageHoverPreview _hoverPreview;
 
     public this()
     {
@@ -603,6 +618,7 @@ public final class ImagePreviewStrip : Widget
     public void setImages(const(ChatImageAttachment)[] images)
     {
         if (sameImages(images)) return;
+        hideHoverPreview();
         _images = images.dup;
         _thumbnails = new RgbaImage[images.length];
         _attempted = new bool[images.length];
@@ -631,6 +647,24 @@ public final class ImagePreviewStrip : Widget
         return index < _images.length ? previewLabel(_images[index]) : "";
     }
 
+    public Point cellCenterForTesting(size_t index)
+    {
+        const cell = cellRect(index);
+        return localToGlobal(Point(cell.x + cell.width / 2,
+            cell.y + cell.height / 2));
+    }
+
+    public bool hoverPreviewOpenForTesting()
+    {
+        return _hoverPreview !is null && _hoverPreview.parent() !is null &&
+            _hoverPreview.visible();
+    }
+
+    public string hoverPreviewLabelForTesting() const
+    {
+        return _hoverPreview is null ? "" : _hoverPreview.labelForTesting();
+    }
+
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
@@ -648,13 +682,12 @@ public final class ImagePreviewStrip : Widget
         const shown = _images.length < limit ? _images.length : limit;
         foreach (index; 0 .. shown)
         {
-            const cell = Rect(cast(int) index * (cellWidth + gap), 0,
-                cellWidth, imagePreviewHeight);
-            canvas.drawRoundedRect(cell, 7, palette.fieldBackground,
-                palette.border, 1);
-            const imageRect = Rect(cell.x + 4, cell.y + 3,
-                cell.width - 8, thumbHeight - 5);
-            canvas.fillRoundedRect(imageRect, 5, palette.windowBackground);
+            const cell = cellRect(index);
+            const hovered = cast(int) index == _hoverIndex;
+            canvas.drawRoundedRect(cell, 5, palette.fieldBackground,
+                hovered ? palette.accent : palette.border, 1);
+            const imageRect = Rect(cell.x + 2, cell.y + 2,
+                cell.width - 4, cell.height - 4);
             auto preview = thumbnail(index);
             if (preview !is null)
             {
@@ -664,26 +697,118 @@ public final class ImagePreviewStrip : Widget
             }
             else
             {
-                canvas.drawTextInRect(imageRect, toUTF32("no preview"),
+                canvas.drawTextInRect(imageRect, toUTF32("?"),
                     palette.textMuted, 1, HorizontalAlign.center,
                     VerticalAlign.middle, true);
             }
-            canvas.drawTextInRect(Rect(cell.x + 4, cell.y + thumbHeight + 1,
-                    cell.width - 8, labelHeight), toUTF32(previewLabel(_images[index])),
-                palette.textMuted, 1, HorizontalAlign.left,
-                VerticalAlign.middle, true);
         }
         if (_images.length > shown)
         {
-            const cell = Rect(cast(int) shown * (cellWidth + gap), 0, cellWidth,
-                imagePreviewHeight);
-            canvas.drawRoundedRect(cell, 7, palette.fieldBackground,
+            const cell = cellRect(shown);
+            canvas.drawRoundedRect(cell, 5, palette.fieldBackground,
                 palette.border, 1);
             canvas.drawTextInRect(cell,
                 toUTF32("+" ~ to!string(_images.length - shown)),
-                palette.text, 2, HorizontalAlign.center,
+                palette.text, 1, HorizontalAlign.center,
                 VerticalAlign.middle, true);
         }
+    }
+
+    protected override void onMouseEnter()
+    {
+        setCursor(CursorKind.hand);
+    }
+
+    protected override void onMouseLeave()
+    {
+        setCursor(CursorKind.arrow);
+        hideHoverPreview();
+        if (_hoverIndex >= 0)
+        {
+            _hoverIndex = -1;
+            invalidate();
+        }
+    }
+
+    override bool onMouseMove(ref Event event)
+    {
+        const next = indexAt(event.position);
+        if (next == _hoverIndex) return false;
+        _hoverIndex = next;
+        if (next >= 0) showHoverPreview(next);
+        else hideHoverPreview();
+        invalidate();
+        return false;
+    }
+
+    override bool onMouseDown(ref Event event)
+    {
+        if (event.button == MouseButton.right)
+        {
+            const index = indexAt(event.position);
+            if (index >= 0 && index < cast(int) _images.length &&
+                imagePreviewContextMenuHandler !is null)
+            {
+                hideHoverPreview();
+                imagePreviewContextMenuHandler(_images[index],
+                    localToGlobal(event.position));
+                return true;
+            }
+        }
+        return super.onMouseDown(event);
+    }
+
+    private Rect cellRect(size_t index)
+    {
+        return Rect(cast(int) index * (cellWidth + gap), cellTop,
+            cellWidth, cellHeight);
+    }
+
+    private int indexAt(Point point)
+    {
+        if (point.y < cellTop || point.y >= cellTop + cellHeight) return -1;
+        const fit = maxInt(1, (bounds().width + gap) / (cellWidth + gap));
+        const limit = fit < visibleLimit ? fit : visibleLimit;
+        const shown = _images.length < limit ? _images.length : limit;
+        const column = point.x / (cellWidth + gap);
+        if (column < 0 || column >= cast(int) shown) return -1;
+        if (point.x - column * (cellWidth + gap) >= cellWidth) return -1;
+        return cast(int) column;
+    }
+
+    private void showHoverPreview(int index)
+    {
+        auto root = popupRoot(this);
+        auto preview = thumbnail(index);
+        if (root is null || preview is null)
+        {
+            hideHoverPreview();
+            return;
+        }
+        if (_hoverPreview is null) _hoverPreview = new ImageHoverPreview(this);
+        if (_hoverPreview.parent() is null)
+        {
+            root.add(_hoverPreview);
+            root.bringChildToFront(_hoverPreview);
+        }
+        _hoverPreview.setContent(preview, previewTitle(_images[index]));
+        const size = _hoverPreview.measure(Size(int.max, int.max));
+        const cell = cellRect(index);
+        const origin = localToGlobal(Point(cell.x + cell.width / 2, cell.y));
+        const rootSize = root.bounds();
+        int x = origin.x - size.width / 2;
+        int y = origin.y - size.height - 6;
+        if (y < 4) y = origin.y + imagePreviewHeight + 6;
+        x = clampInt(x, 4, maxInt(4, rootSize.width - size.width - 4));
+        y = clampInt(y, 4, maxInt(4, rootSize.height - size.height - 4));
+        _hoverPreview.setBounds(Rect(x, y, size.width, size.height));
+        _hoverPreview.setVisible(true);
+    }
+
+    private void hideHoverPreview()
+    {
+        if (_hoverPreview !is null && _hoverPreview.parent() !is null)
+            _hoverPreview.parent().remove(_hoverPreview);
     }
 
     private RgbaImage thumbnail(size_t index)
@@ -716,10 +841,16 @@ public final class ImagePreviewStrip : Widget
             fittedHeight);
     }
 
-    private static string previewLabel(const ref ChatImageAttachment image)
+    private static string previewTitle(const ref ChatImageAttachment image)
     {
         auto label = image.name.length > 0 ? image.name : "image";
         if (image.error.length > 0) label ~= " · unavailable";
+        return label;
+    }
+
+    private static string previewLabel(const ref ChatImageAttachment image)
+    {
+        auto label = previewTitle(image);
         if (label.length > 24) label = label[0 .. 24] ~ "…";
         return label;
     }
@@ -734,10 +865,103 @@ public final class ImagePreviewStrip : Widget
                 image.blob != current.blob ||
                 image.originalBlob != current.originalBlob ||
                 image.error != current.error ||
+                image.sourcePath != current.sourcePath ||
                 image.base64Data != current.base64Data)
                 return false;
         }
         return true;
+    }
+}
+
+/// Floating hover card for one preview cell. It belongs to the preview strip and
+/// reports the strip as its hit target, so moving onto the card keeps the hover
+/// open without stealing selection or scrolling.
+private final class ImageHoverPreview : Widget
+{
+    private enum int maxWidth = 420;
+    private enum int maxHeight = 320;
+    private enum int pad = 10;
+    private enum int labelHeight = 20;
+
+    private Widget _owner;
+    private RgbaImage _image;
+    private string _label;
+
+    this(Widget owner)
+    {
+        _owner = owner;
+        setComposited(true);
+        layoutHints().excludeFromLayout = true;
+        setVisible(false);
+    }
+
+    void setContent(RgbaImage image, string label)
+    {
+        _image = image;
+        _label = label;
+        invalidate();
+    }
+
+    string labelForTesting() const
+    {
+        return _label;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        int width = 120, height = 80;
+        if (_image !is null && _image.width() > 0 && _image.height() > 0)
+        {
+            const sourceWidth = _image.width();
+            const sourceHeight = _image.height();
+            double scale = min(1.0, min(
+                cast(double) (maxWidth - 2 * pad) / sourceWidth,
+                cast(double) (maxHeight - 2 * pad - labelHeight) / sourceHeight));
+            // Tiny source images would otherwise open a nearly invisible card.
+            // Upscaling makes the hover useful without changing the source.
+            if (sourceWidth < 160 && sourceHeight < 160)
+                scale = min(160.0 / maxInt(sourceWidth, sourceHeight),
+                    cast(double) maxWidth / sourceWidth);
+            width = maxInt(1, cast(int) (sourceWidth * scale));
+            height = maxInt(1, cast(int) (sourceHeight * scale));
+        }
+        const result = Size(width + 2 * pad, height + 2 * pad + labelHeight);
+        layoutHints().preferredWidth = result.width;
+        layoutHints().preferredHeight = result.height;
+        return result;
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        if (_image is null) return;
+        const width = bounds().width;
+        const height = bounds().height;
+        if (width <= 0 || height <= 0) return;
+        const palette = theme();
+        canvas.drawRoundedRect(Rect(0, 0, width, height), 10,
+            palette.panelElevated, palette.border, 1);
+        const imageArea = Rect(pad, pad, maxInt(1, width - 2 * pad),
+            maxInt(1, height - 2 * pad - labelHeight));
+        canvas.fillRoundedRect(imageArea, 6, palette.windowBackground);
+        auto clipped = canvas.clipped(imageArea);
+        clipped.drawImage(ImagePreviewStrip.fittedRect(imageArea,
+            _image.width(), _image.height()), _image);
+        canvas.drawTextInRect(Rect(pad, height - labelHeight + 2,
+                width - 2 * pad, labelHeight - 4), toUTF32(_label),
+            palette.textMuted, 1, HorizontalAlign.left,
+            VerticalAlign.middle, true);
+    }
+
+    override Widget hitTest(Point globalPoint)
+    {
+        if (!visible() || !enabled()) return null;
+        return containsLocal(globalToLocal(globalPoint)) ? _owner : null;
+    }
+
+    protected override void onTick(double deltaSeconds)
+    {
+        if (_owner is null || _owner.parent() is null)
+            if (parent() !is null) parent().remove(this);
     }
 }
 

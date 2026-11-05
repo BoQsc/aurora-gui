@@ -670,6 +670,10 @@ public struct ChatImageAttachment
     uint normalizationVersion;
     bool originalDetail;
     int width, height, originalWidth, originalHeight;
+    // Local image file this attachment came from, when known. Archived and
+    // pasted images may have no path; the preview menu simply omits file
+    // actions for those. This is display metadata, never sent to the model.
+    string sourcePath;
 }
 
 public JSONValue imageAttachmentToJson(const ref ChatImageAttachment image)
@@ -688,6 +692,7 @@ public JSONValue imageAttachmentToJson(const ref ChatImageAttachment image)
     if (image.height > 0) value["height"] = image.height;
     if (image.originalWidth > 0) value["originalWidth"] = image.originalWidth;
     if (image.originalHeight > 0) value["originalHeight"] = image.originalHeight;
+    if (image.sourcePath.length) value["sourcePath"] = image.sourcePath;
     return value;
 }
 
@@ -696,7 +701,7 @@ public ChatImageAttachment imageAttachmentFromJson(const ref JSONValue value)
     ChatImageAttachment image;
     if (value.type != JSONType.object) return image;
     foreach (key; ["mimeType", "base64Data", "name", "blob", "attachmentError",
-            "originalBlob", "originalMimeType"])
+            "originalBlob", "originalMimeType", "sourcePath"])
         if (auto field = key in value.object)
             if (field.type == JSONType.string)
             {
@@ -709,6 +714,7 @@ public ChatImageAttachment imageAttachmentFromJson(const ref JSONValue value)
                     case "attachmentError": image.error = field.str; break;
                     case "originalBlob": image.originalBlob = field.str; break;
                     case "originalMimeType": image.originalMimeType = field.str; break;
+                    case "sourcePath": image.sourcePath = field.str; break;
                     default: break;
                 }
             }
