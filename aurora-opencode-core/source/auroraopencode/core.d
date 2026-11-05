@@ -1844,6 +1844,9 @@ public struct Settings
     bool composerSuggestion = true;
     string diagnosticModel; // opt-in, same-provider read-only review of stalled tasks
     bool hideHunkHeaders = true;
+    // Render assistant-viewed images as a compact image-only row instead of a
+    // titled card. On by default; the Settings dialog owns the switch.
+    bool compactViewedImages = true;
     // Split a tool round into runs of the same kind of action, so each run
     // gets its own header ("Explored a file", then "Edited a file") instead of
     // one header for the whole round. On by default; set false to keep the
@@ -2214,6 +2217,9 @@ public Settings loadSettings()
                 if (auto found = "hideHunkHeaders" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.hideHunkHeaders = found.type == JSONType.true_;
+                if (auto found = "compactViewedImages" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.compactViewedImages = found.type == JSONType.true_;
                 if (auto found = "groupSameAction" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.groupSameAction = found.type == JSONType.true_;
@@ -2573,6 +2579,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
     root["composerSuggestion"] = settings.composerSuggestion;
     root["diagnosticModel"] = settings.diagnosticModel;
     root["hideHunkHeaders"] = settings.hideHunkHeaders;
+    root["compactViewedImages"] = settings.compactViewedImages;
     root["groupSameAction"] = settings.groupSameAction;
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;

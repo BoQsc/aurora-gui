@@ -5007,9 +5007,12 @@ private final class ViewedImagesRow : Widget
     private string _title;
     private string _detail;
     private string _time;
+    private bool _compact;
 
-    this(const(ChatImageAttachment)[] images, string time = "")
+    this(const(ChatImageAttachment)[] images, string time = "",
+        bool compact = false)
     {
+        _compact = compact;
         _time = time;
         _title = images.length == 1 ? "Assistant viewed an image" :
             "Assistant viewed " ~ to!string(images.length) ~ " images";
@@ -5036,12 +5039,24 @@ private final class ViewedImagesRow : Widget
 
     string titleForTesting() const
     {
-        return _title;
+        return _compact ? "" : _title;
+    }
+
+    bool compactForTesting() const
+    {
+        return _compact;
     }
 
     protected override Size onMeasure(Size available)
     {
         const width = maxInt(0, available.width);
+        if (_compact)
+        {
+            const height = imagePreviewHeight + 4;
+            layoutHints().preferredWidth = width;
+            layoutHints().preferredHeight = height;
+            return Size(width, height);
+        }
         const height = 2 * padV + titleHeight +
             (_detail.length > 0 ? detailHeight : 0) + gap + imagePreviewHeight;
         layoutHints().preferredWidth = width;
@@ -5051,6 +5066,12 @@ private final class ViewedImagesRow : Widget
 
     protected override void onLayout()
     {
+        if (_compact)
+        {
+            _preview.setBounds(Rect(2, 2,
+                maxInt(1, bounds().width - 4), imagePreviewHeight));
+            return;
+        }
         const detailRows = _detail.length > 0 ? detailHeight : 0;
         _preview.setBounds(Rect(padH, padV + titleHeight + detailRows + gap,
             maxInt(1, bounds().width - 2 * padH), imagePreviewHeight));
@@ -5058,6 +5079,7 @@ private final class ViewedImagesRow : Widget
 
     protected override void onPaint(ref Canvas canvas)
     {
+        if (_compact) return;
         const width = bounds().width;
         const height = bounds().height;
         if (width <= 0 || height <= 0) return;
@@ -17779,7 +17801,7 @@ private string _suggestExcludeId;
                 if (message.images.length > 0)
                 {
                     auto viewed = new ViewedImagesRow(message.images,
-                        message.time);
+                        message.time, _settings.compactViewedImages);
                     viewed.setId("oc-viewed-image-row");
                     _messageColumn.add(viewed);
                 }
@@ -26920,6 +26942,26 @@ private void pollButtonSuggestionRequest()
         fileContextHint.setColor(opencodeMuted);
         // <<< filecontext:end
 
+        auto compactViewedImagesRow = new HBox(8);
+        compactViewedImagesRow.layoutHints().preferredHeight = 32;
+        auto compactViewedImagesCheck =
+            new CheckBox("Image-only viewed-image rows");
+        compactViewedImagesCheck.setId("oc-compact-viewed-images");
+        compactViewedImagesCheck.setChecked(_settings.compactViewedImages, false);
+        compactViewedImagesCheck.onChanged = delegate(bool value)
+        {
+            _settings.compactViewedImages = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        compactViewedImagesRow.add(compactViewedImagesCheck);
+        optionsBody.add(compactViewedImagesRow);
+        auto compactViewedImagesHint = optionsBody.add(new Label(
+            "Show images the assistant viewed as compact image-only rows, " ~
+            "without the title, filenames or timestamp."));
+        compactViewedImagesHint.setScale(1);
+        compactViewedImagesHint.setColor(opencodeMuted);
+
         auto retireRow = new HBox(8);
         retireRow.layoutHints().preferredHeight = 32;
         auto retireCheck = new CheckBox("Retire images after a successful answer");
@@ -33323,6 +33365,24 @@ private void pollButtonSuggestionRequest()
         return "";
     }
 
+    public bool lastViewedImageCompactForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+            if (auto row = cast(ViewedImagesRow) child)
+                return row.compactForTesting();
+        return false;
+    }
+
+    public int lastViewedImageRowHeightForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+            if (auto row = cast(ViewedImagesRow) child)
+                return row.bounds().height;
+        return 0;
+    }
+
     /// Test-only: like `addConversationForTesting` but with optional reasoning
     /// text per message (used to exercise the thinking block).
     public void addConversationForTestingWithReasoning(const(string)[] roles,
@@ -35256,6 +35316,20 @@ private void pollButtonSuggestionRequest()
     {
         _settings.showWorkedFor = value;
         if (_current >= 0) rebuildMessageColumn();
+    }
+
+    public void setCompactViewedImagesForTesting(bool value)
+    {
+        _settings.compactViewedImages = value;
+        saveSettingsNow();
+        if (_current >= 0) rebuildMessageColumn();
+    }
+
+    public CheckBox compactViewedImagesCheckboxForTesting()
+    {
+        showSettingsDialog();
+        return cast(CheckBox) findWidgetById(this,
+            "oc-compact-viewed-images");
     }
 
     /// Test-only: open the settings dialog and return the "Detached plan

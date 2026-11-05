@@ -1063,19 +1063,46 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
         ["Inspect viewed.png", ""]);
     root.appendToolRequestTurnForTesting("", "call_focused_view", "view_image",
         args);
+    auto viewedImages = [viewed.images[0], viewed.images[0]];
     root.injectToolResultForTesting("view_image", viewed.output, false, args,
-        0, 0, "", viewed.images);
+        0, 0, "", viewedImages);
     root.rebuildForTesting();
     assert(root.viewedImageRowCountForTesting() == 1,
         "assistant viewed-image row is missing from the transcript");
-    assert(root.lastViewedImageTitleForTesting().indexOf(
-        "Assistant viewed an image") >= 0,
-        "assistant viewed-image row has no explicit title");
-    assert(root.viewedImageLoadedPreviewCountForTesting() == 1,
+    assert(root.lastViewedImageCompactForTesting(),
+        "viewed images should use the compact image-only row by default");
+    assert(root.lastViewedImageTitleForTesting().length == 0,
+        "compact viewed-image row still renders title text");
+    assert(root.viewedImageLoadedPreviewCountForTesting() == 2,
         "assistant viewed-image preview did not decode the tool pixels");
     assert(paintProjection(root, driver), "Viewed-image preview did not paint");
+    assert(root.lastViewedImageRowHeightForTesting() <= imagePreviewHeight + 6,
+        "compact viewed-image row still reserves card height");
 
+    auto compactViewedCheck = root.compactViewedImagesCheckboxForTesting();
+    assert(compactViewedCheck !is null,
+        "Settings dialog is missing the image-only viewed-image toggle");
+    assert(compactViewedCheck.checked(),
+        "image-only viewed-image rows should be on by default");
+    root.dismissPopupForTesting();
+
+    root.setCompactViewedImagesForTesting(false);
+    assert(!root.lastViewedImageCompactForTesting(),
+        "disabling the toggle did not restore the labeled card");
+    assert(root.lastViewedImageTitleForTesting().indexOf(
+        "Assistant viewed 2 images") >= 0,
+        "labeled viewed-image row lost its title");
+    assert(paintProjection(root, driver), "Labeled viewed-image card did not paint");
+    assert(root.lastViewedImageRowHeightForTesting() > imagePreviewHeight + 6,
+        "labeled viewed-image row did not restore card height");
+    window.saveScreenshot(buildPath(shotDir, "image-previews-labeled.ppm"));
+
+    root.setCompactViewedImagesForTesting(true);
+    assert(root.lastViewedImageCompactForTesting(),
+        "re-enabling the toggle did not restore the compact row");
+    assert(paintProjection(root, driver), "Compact viewed-image row did not paint");
     window.saveScreenshot(buildPath(shotDir, "image-previews.ppm"));
+    writeln("Viewed images default to compact image-only rows; labels remain optional");
 
     // Thumbnail preparation must be finished when the strip is built. Decoding
     // from onPaint made the first scroll through image rows hitch; this scroll
@@ -4563,9 +4590,10 @@ int main(string[] args)
         root.rebuildForTesting();
         assert(root.viewedImageRowCountForTesting() == 1,
             "the assistant's viewed image was not made explicit in the transcript");
-        assert(root.lastViewedImageTitleForTesting().indexOf(
-            "Assistant viewed an image") >= 0,
-            "the viewed-image row does not say the assistant viewed an image");
+        assert(root.lastViewedImageCompactForTesting(),
+            "viewed images should default to the compact image-only row");
+        assert(root.lastViewedImageTitleForTesting().length == 0,
+            "compact viewed-image row should not render assistant-viewed text");
         assert(root.viewedImageLoadedPreviewCountForTesting() == 1,
             "the viewed-image row did not decode a preview of the pixels");
         assert(paintProjection(root, driver),
@@ -7265,16 +7293,29 @@ int main(string[] args)
         assert(root.queuedPromptBubbleCountForTesting() == 1,
             "consuming steering also consumed the distinct follow-up queue");
         root.addConversationForTesting(["assistant"],
-            ["The current plan is recorded; your requested review remains queued."]);
+            ["The current plan is recorded; your requested review waits until the agent stops."]);
+        // The queued follow-up must not end the authorized work early: while the
+        // checklist is unfinished the agent continues, and the queue stays put.
+        assert(root.completionWouldContinueForTesting(),
+            "a queued follow-up settled unfinished work instead of continuing it");
+        assert(root.queuedFollowUpCountForTesting() == 1,
+            "the queued follow-up was sent while the agent still had work");
+        // Finishing the checklist is the real chat stop; only then does the
+        // queued follow-up open as the next turn.
+        root.applyPlanForTesting(
+            `{"plan":[{"step":"Persist objective","status":"completed"},` ~
+            `{"step":"Verify recovery","status":"completed"}]}`);
+        root.setTaskStateForTesting("Build durable recovery", "completed",
+            "passed");
         assert(!root.completionWouldContinueForTesting(),
-            "an unfinished checklist manufactured another model request");
+            "completed checklist plus successful verification stayed open");
         root.settleTaskAfterDoneForTesting();
         assert(root.taskStatusForTesting() == "active" &&
             root.turnStatusForTesting() == "running" &&
             root.turnBusyForTesting() &&
             root.queuedFollowUpCountForTesting() == 0 &&
             root.lastSubmittedUserMessageForTesting() == "Run one final review",
-            "an explicit follow-up did not start as a distinct next turn: " ~
+            "an explicit follow-up did not start after the agent stopped: " ~
             root.taskStatusForTesting() ~ "/" ~ root.turnStatusForTesting() ~
             " busy=" ~ to!string(root.turnBusyForTesting()) ~
             " queue=" ~ to!string(root.queuedFollowUpCountForTesting()) ~
@@ -7291,7 +7332,6 @@ int main(string[] args)
         root.applyPlanForTesting(
             `{"plan":[{"step":"Persist objective","status":"completed"},` ~
             `{"step":"Verify recovery","status":"completed"}]}`);
-
         // Mutation/verification transitions are exercised above in isolation;
         // settle the integration fixture so journal replay can assert the final
         // durable state without a live queued-follow-up request racing it.
