@@ -4802,6 +4802,11 @@ int main(string[] args)
         assert(afterContent > afterReasoning,
             "Token count did not grow with the answer: " ~
             to!string(afterReasoning) ~ " -> " ~ to!string(afterContent));
+        // The header withholds a throughput figure until the trailing window
+        // holds a full sample, so let a window's worth of output accumulate.
+        Thread.sleep(520.msecs);
+        root.streamContentForTesting("More of the explanation arrives here.");
+        root.tickTree(0.02);
         assert(root.streamThinkingHeaderTextForTesting().indexOf("t/s") >= 0,
             "Thinking header lacks live token throughput: " ~
             root.streamThinkingHeaderTextForTesting());
@@ -4919,6 +4924,8 @@ int main(string[] args)
             "I need enough streamed reasoning to establish a token sample.");
         Thread.sleep(120.msecs);
         root.streamContentForTesting("I will inspect the target now.");
+        Thread.sleep(520.msecs);
+        root.streamContentForTesting("The sample window is full before the tool call.");
         assert(root.streamThinkingHeaderTextForTesting().indexOf("t/s") >= 0,
             "Tool-bound round never established live throughput");
         OpenCodeToolCall transition;
@@ -4954,7 +4961,13 @@ int main(string[] args)
         // down, while the recent window is reset and next sees only the burst.
         Thread.sleep(1400.msecs);
         root.streamContentForTesting("fast");
-        Thread.sleep(140.msecs);
+        // The recent window restarts here, so it needs a full span again before
+        // it publishes the burst that follows the stall.
+        Thread.sleep(200.msecs);
+        root.streamContentForTesting("burst burst burst burst");
+        Thread.sleep(200.msecs);
+        root.streamContentForTesting("burst burst burst burst burst burst");
+        Thread.sleep(200.msecs);
         root.streamContentForTesting("burst burst burst burst burst burst");
         const int live = root.liveTokenRateTenthsForTesting();
         const int turnBeforeFinish = root.turnTokenRateTenthsForTesting();

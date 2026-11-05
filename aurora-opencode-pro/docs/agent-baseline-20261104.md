@@ -71,6 +71,12 @@ application or claim parity with private implementations.
   zero-rate flicker. Final messages retain the whole response mean. Token counts
   still use a local estimate when the provider has not supplied completion usage;
   this is not an exact provider tokenizer.
+- No throughput figure is published until the window holds a full sample, so the
+  header shows the climbing token count alone for roughly the first half second
+  of a reply. A partial sample was misleading: a buffered opening chunk or four
+  unevenly spaced tokens once read 30 or 120 t/s for a 40 t/s stream. Restarting
+  after a stall likewise withholds the figure until the window refills. The
+  settled whole-turn mean is unaffected.
 
 ## Verification
 

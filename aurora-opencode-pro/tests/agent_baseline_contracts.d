@@ -25,12 +25,24 @@ int main()
     setStrictPlanSetting(false);
     TokenRateWindow rate;
     assert(rate.observe(0, 0) == 0);
+    // The first three samples are too short to publish: a 100 ms reading over a
+    // handful of tokens is the premature figure this contract forbids.
     foreach (i; 1 .. 50)
-        assert(rate.observe(i * 10, i * 100) == 1000,
+        assert(rate.observe(i * 10, i * 100) == (i < 4 ? 0 : 1000),
             "Constant streaming flickered at a sampling-window boundary");
+    // One buffered opening chunk must not read as throughput.
+    TokenRateWindow opening;
+    assert(opening.observe(0, 0) == 0);
+    assert(opening.observe(12, 100) == 0,
+        "A buffered opening chunk published a premature rate");
     assert(rate.observe(490, 6000) == 0, "Silent output retained a stale rate");
     assert(rate.observe(30, 6100) == 0, "Authoritative token correction produced a negative rate");
-    assert(rate.observe(40, 6200) == 1000);
+    // Restart needs a full window again before it publishes anything.
+    assert(rate.observe(40, 6200) == 0, "A single fresh sample published a rate");
+    assert(rate.observe(50, 6300) == 0);
+    assert(rate.observe(60, 6400) == 0);
+    assert(rate.observe(70, 6500) == 1000,
+        "Throughput did not return once the window refilled");
     // The live figure must follow the current decode speed instead of dragging
     // a whole second of older samples behind it: a step from 100 to 400 t/s
     // has to read as the new speed within one window (400 ms).
@@ -149,7 +161,11 @@ int main()
     root.streamReasoningForTesting("Starting the stream clock");
     Thread.sleep(140.msecs);
     root.streamContentForTesting("A growing stream of output tokens establishes a visible decode rate.");
-    assert(root.liveTokenRateTenthsForTesting() > 0);
+    assert(root.liveTokenRateTenthsForTesting() == 0,
+        "The header published a throughput figure from a partial window");
+    Thread.sleep(520.msecs);
+    root.streamContentForTesting("A full window of output now exists.");
+    assert(root.liveTokenRateTenthsForTesting() > 0, "Live throughput never appeared");
     const deadline = MonoTime.currTime + 1400.msecs;
     while (MonoTime.currTime < deadline) pump();
     assert(root.liveTokenRateTenthsForTesting() == 0,
@@ -157,6 +173,10 @@ int main()
     root.streamContentForTesting("The stream resumes with fresh output.");
     Thread.sleep(140.msecs);
     root.streamContentForTesting("And continues at the current speed.");
+    assert(root.liveTokenRateTenthsForTesting() == 0,
+        "A resumed stream published a rate before its window refilled");
+    Thread.sleep(520.msecs);
+    root.streamContentForTesting("More output refills the window.");
     assert(root.liveTokenRateTenthsForTesting() > 0, "Live throughput did not recover after a stall");
     root.projectTranscriptForTesting();
     auto driver = new UiTestDriver(window);

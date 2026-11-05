@@ -47,7 +47,13 @@ struct TokenRateWindow
         }
         const elapsed = nowMs - samples[0].at;
         const produced = tokens - samples[0].tokens;
-        const rate = elapsed >= 100 && produced > 0 &&
+        // Publish nothing until the figure is measured over a full window (or
+        // the longest span the silence rule allows, for a very slow decode).
+        // A reading taken 100 ms in covers a handful of tokens, where one
+        // buffered opening chunk can read 120 t/s for a 40 t/s stream.
+        const complete = elapsed >= windowMs &&
+            (produced >= minWindowTokens || elapsed >= silenceResetMs);
+        const rate = complete && produced > 0 &&
             nowMs - lastOutputAt < silenceResetMs
             ? cast(int)((produced * 10_000 + elapsed / 2) / elapsed) : 0;
         // At most 21 samples cover a second at this cadence. No allocation is
