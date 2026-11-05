@@ -1,0 +1,33 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/tests/plan_agent_ui_contracts.d",
+    "aurora-opencode-pro/tests/task_continuation_contracts.d",
+    "aurora-opencode-pro/tests/engine_policy_contracts.d",
+    "aurora-opencode-pro/tests/run_architecture_checks.py",
+    "aurora-opencode-pro/tests/architecture_retention.py",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": ["-o-", "-Isource", "-Ishared", "-I../vendor/aurora-d-0.4.5/source", "-I../aurora-opencode-core/source", "-Jassets", "-i", "source/app.d"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["tests/run_architecture_checks.py", "plan_agent_ui_contracts", "task_continuation_contracts", "engine_policy_contracts"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 1200000
+      }
+    }
+  ]
+}

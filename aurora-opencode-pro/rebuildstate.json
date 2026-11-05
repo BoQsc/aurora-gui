@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "Deploy the verified legacy audit-stall failure-row hiding while preserving normal failure visibility.",
+  "reason": "",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-04 07:29:25.294288 UTC",
-  "finishedAt": "2026-11-04 07:30:22.0350434 UTC",
-  "durationMs": 56740,
+  "startedAt": "2026-11-05 06:34:06.4070672 UTC",
+  "finishedAt": "2026-11-05 06:35:04.7297989 UTC",
+  "durationMs": 58322,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "failed",
-  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
+  "publishStatus": "published",
+  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (778e230449d4).",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

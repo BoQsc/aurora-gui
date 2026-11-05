@@ -1,0 +1,27 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/requestbuilder.d",
+    "aurora-opencode-pro/source/auroraopencode/controlhistory.d",
+    "aurora-opencode-pro/tests/control_state_projection_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "C:\\D\\dmd2\\windows\\bin64\\dmd.exe",
+        "args": ["-i", "-verrors=20", "-Isource", "-Ishared", "-Itests", "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source", "-Jassets", "-ofbuild/verify-projection-prefix-controls.exe", "tests/control_state_projection_contracts.d", "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib"],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 600000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\verify-projection-prefix-controls.exe",
+        "args": [],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 120000
+      }
+    }
+  ]
+}
