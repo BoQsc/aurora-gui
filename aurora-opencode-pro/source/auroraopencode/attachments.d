@@ -37,6 +37,8 @@ import std.algorithm : canFind;
 import std.array : appender;
 import std.base64 : Base64;
 import std.conv : to;
+import std.digest : toHexString;
+import std.digest.sha : sha256Of;
 import std.file : exists, getSize, isFile, read, readText;
 import std.path : baseName, extension, buildPath;
 import std.process : environment;
@@ -55,6 +57,35 @@ public enum int attachmentStripHeight = 34;
 /// filename for each visible image, so sent and tool-viewed images are actually
 /// previewable instead of appearing only as text labels.
 public enum int imagePreviewHeight = 82;
+
+// Decoding a full image and resizing it takes far longer than a frame. Doing
+// that lazily from onPaint made the first scroll through image-bearing turns
+// hitch (measured at ~18 ms/frame versus ~6 ms before previews). Prepare the
+// thumbnail when the strip is built instead, and retain it process-wide so a
+// rebuild or a second view of the same attachment never decodes it again.
+private final class ThumbnailCacheEntry
+{
+    RgbaImage image;
+    size_t bytes;
+}
+
+private ThumbnailCacheEntry[string] thumbnailCache;
+private string[] thumbnailCacheOrder;
+private size_t thumbnailCacheBytes;
+private size_t thumbnailDecodes;
+private enum size_t thumbnailCacheBudget = 24 * 1024 * 1024;
+
+/// Test-only decode counter: scroll/paint must not increase this after the
+/// strips have been prepared.
+public size_t thumbnailDecodeCountForTesting()
+{
+    return thumbnailDecodes;
+}
+
+public void resetThumbnailDecodeCountForTesting()
+{
+    thumbnailDecodes = 0;
+}
 
 /// A paste at or above this many characters becomes a text attachment.
 public enum size_t attachmentPasteCharThreshold = 1500;
@@ -562,7 +593,6 @@ public final class ImagePreviewStrip : Widget
     private ChatImageAttachment[] _images;
     private RgbaImage[] _thumbnails;
     private bool[] _attempted;
-    private AttachmentStore _store;
 
     public this()
     {
@@ -577,6 +607,9 @@ public final class ImagePreviewStrip : Widget
         _thumbnails = new RgbaImage[images.length];
         _attempted = new bool[images.length];
         setVisible(images.length > 0);
+        // Do this while the turn is being built, never from onPaint: decoding
+        // and resizing on a newly exposed scroll row was the measured hitch.
+        foreach (index; 0 .. _images.length) thumbnail(index);
         invalidate();
     }
 
@@ -658,29 +691,7 @@ public final class ImagePreviewStrip : Widget
         if (index >= _images.length) return null;
         if (_attempted[index]) return _thumbnails[index];
         _attempted[index] = true;
-        auto image = _images[index];
-        string payload = image.base64Data;
-        try
-        {
-            if (payload.length == 0)
-            {
-                if (_store.directory.length == 0)
-                    _store = AttachmentStore(buildPath(opencodeStateDirectory(),
-                        "attachments"));
-                if (image.blob.length) payload = _store.get(image.blob);
-                else if (image.originalBlob.length)
-                    payload = _store.get(image.originalBlob);
-            }
-            if (payload.length == 0) return null;
-            const bytes = Base64.decode(payload);
-            if (bytes.length == 0) return null;
-            _thumbnails[index] = fitImage(decodeImage(bytes,
-                previewLabel(image)), 192, ImageResample.box);
-        }
-        catch (Exception)
-        {
-            _thumbnails[index] = null;
-        }
+        _thumbnails[index] = cachedThumbnail(_images[index]);
         return _thumbnails[index];
     }
 
@@ -728,6 +739,69 @@ public final class ImagePreviewStrip : Widget
         }
         return true;
     }
+}
+
+private string thumbnailKey(const ref ChatImageAttachment image)
+{
+    if (image.blob.length) return "blob:" ~ image.blob;
+    if (image.originalBlob.length) return "original:" ~ image.originalBlob;
+    if (image.base64Data.length)
+        return "inline:" ~ sha256Of(image.base64Data).toHexString().idup;
+    return "unavailable:" ~ image.name ~ ":" ~ image.mimeType;
+}
+
+private RgbaImage cachedThumbnail(const ref ChatImageAttachment image)
+{
+    const key = thumbnailKey(image);
+    if (auto found = key in thumbnailCache) return found.image;
+
+    ++thumbnailDecodes;
+    auto entry = new ThumbnailCacheEntry();
+    string payload = image.base64Data;
+    try
+    {
+        if (payload.length == 0)
+        {
+            auto store = AttachmentStore(buildPath(opencodeStateDirectory(),
+                "attachments"));
+            if (image.blob.length) payload = store.get(image.blob);
+            else if (image.originalBlob.length)
+                payload = store.get(image.originalBlob);
+        }
+        if (payload.length > 0)
+        {
+            const bytes = Base64.decode(payload);
+            if (bytes.length > 0)
+                entry.image = fitImage(decodeImage(bytes,
+                    image.name.length > 0 ? image.name : "image"), 192,
+                    ImageResample.box);
+        }
+    }
+    catch (Exception)
+    {
+        return null;
+    }
+    if (entry.image is null) return null;
+    entry.bytes = key.length + 128 +
+        cast(size_t) entry.image.width() * entry.image.height() * 4;
+
+    thumbnailCache[key] = entry;
+    thumbnailCacheOrder ~= key;
+    thumbnailCacheBytes += entry.bytes;
+    // Drop the oldest decoded image when the budget is exceeded. A strip still
+    // displaying one keeps its own reference, so eviction never blanks a row.
+    while (thumbnailCacheBytes > thumbnailCacheBudget &&
+        thumbnailCacheOrder.length > 1)
+    {
+        const oldest = thumbnailCacheOrder[0];
+        thumbnailCacheOrder = thumbnailCacheOrder[1 .. $];
+        if (auto evicted = oldest in thumbnailCache)
+        {
+            thumbnailCacheBytes -= evicted.bytes;
+            thumbnailCache.remove(oldest);
+        }
+    }
+    return entry.image;
 }
 
 // ---------------------------------------------------------------------------

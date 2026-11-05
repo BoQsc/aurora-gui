@@ -941,7 +941,9 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
     string stateDir, GuiWindow window)
 {
     import auroraopencode.attachmentstore : AttachmentStore;
-    import auroraopencode.attachments : base64Encode;
+    import aurora.image : RgbaImage, encodePng;
+    import auroraopencode.attachments : base64Encode,
+        resetThumbnailDecodeCountForTesting, thumbnailDecodeCountForTesting;
     import auroraopencode.core : opencodeStateDirectory;
     import auroraopencode.tools : executeTool;
     import std.base64 : Base64;
@@ -1001,6 +1003,41 @@ private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
     assert(paintProjection(root, driver), "Viewed-image preview did not paint");
 
     window.saveScreenshot(buildPath(shotDir, "image-previews.ppm"));
+
+    // Thumbnail preparation must be finished when the strip is built. Decoding
+    // from onPaint made the first scroll through image rows hitch; this scroll
+    // pass may repaint but must not add a single decode. The same blob repeated
+    // across twenty turns must also decode only once.
+    auto uniquePixels = new ubyte[32 * 32 * 4];
+    foreach (index; 0 .. 32 * 32)
+    {
+        uniquePixels[index * 4] = cast(ubyte) (index * 7);
+        uniquePixels[index * 4 + 1] = cast(ubyte) (index * 3);
+        uniquePixels[index * 4 + 2] = cast(ubyte) (index * 5);
+        uniquePixels[index * 4 + 3] = 255;
+    }
+    const uniqueBlob = store.put(base64Encode(
+        encodePng(new RgbaImage(32, 32, uniquePixels))));
+    root.newChatForTesting();
+    resetThumbnailDecodeCountForTesting();
+    foreach (index; 0 .. 20)
+        root.addArchivedImageMessageForTesting("Scroll image turn",
+            "scroll-" ~ to!string(index) ~ ".png", uniqueBlob);
+    assert(paintProjection(root, driver), "Image scroll fixture did not paint");
+    const preparedDecodes = thumbnailDecodeCountForTesting();
+    assert(preparedDecodes == 1,
+        "the same preview blob decoded " ~ to!string(preparedDecodes) ~
+        " times instead of once");
+    root.scrollToForTesting(int.max);
+    assert(paintProjection(root, driver), "Image scroll bottom did not paint");
+    foreach (index; 0 .. 20)
+    {
+        root.scrollToForTesting(index % 2 == 0 ? 0 : int.max);
+        assert(paintProjection(root, driver), "Image scroll frame did not paint");
+    }
+    assert(thumbnailDecodeCountForTesting() == preparedDecodes,
+        "image scrolling decoded thumbnails on the paint path");
+    writeln("Prepared thumbnails keep image scrolling free of decode work");
     writeln("Image previews: archived attachments and viewed image evidence render");
 }
 
