@@ -151,10 +151,10 @@ import auroraopencode.filecontext : FileContextStore, fileReferenceSpans,
 // <<< filecontext:end
 // experimental: attachments - drop a file or large paste as an attachment.
 import auroraopencode.attachments :
-    Attachment, AttachmentStrip, attachmentContextBlock, attachmentForFile,
+    Attachment, AttachmentStrip, ImagePreviewStrip, attachmentContextBlock, attachmentForFile,
     attachmentForText, attachmentImageForInlineData, attachmentImageMaxBytes, attachmentImageInputMaxBytes,
     attachmentImages, attachmentInsertedText, attachmentIsLargePaste,
-    attachmentStripHeight, attachmentVisibleSummary,
+    attachmentStripHeight, attachmentVisibleSummary, imagePreviewHeight,
     attachmentsContainImage, experimentalAttachmentsEnabled;
 // experimental: checkpoint - save/return file/folder state. Delete with
 // source/auroraopencode/checkpoint.d (see its header for the full removal list).
@@ -878,11 +878,9 @@ private final class MessageBubble : Widget
     // queued bubble renders dimmed with a "queued" footer instead — the prompt
     // stays visible instead of looking like it silently vanished.
     private bool _queued;
-    // Images already sent with this user turn. Reuse the composer's attachment
-    // strip in display-only mode; a future thumbnail renderer can replace this
-    // child without changing the persisted message data.
-    private AttachmentStrip _sentAttachments;
-    private static immutable int sentAttachmentHeight = 26;
+    // Images already sent with this user turn, rendered as real thumbnails.
+    // The persisted message data is unchanged; this child is display-only.
+    private ImagePreviewStrip _sentAttachments;
 
     // Chat-quality actions (Pro): regenerate/retry the last reply, edit &
     // resend a user message.
@@ -1531,25 +1529,14 @@ private final class MessageBubble : Widget
 
     void setImages(const(ChatImageAttachment)[] images)
     {
-        Attachment[] attachments;
-        foreach (image; images)
+        if (_sentAttachments is null && images.length > 0)
         {
-            Attachment attachment;
-            attachment.isFile = true;
-            attachment.isImage = true;
-            attachment.name = (image.name.length > 0 ? image.name : "image") ~
-                (image.error.length ? " (unavailable)" : "");
-            attachment.image = image;
-            attachments ~= attachment;
-        }
-        if (_sentAttachments is null && attachments.length > 0)
-        {
-            _sentAttachments = new AttachmentStrip(false);
+            _sentAttachments = new ImagePreviewStrip();
             _sentAttachments.setId("oc-sent-attachments");
             add(_sentAttachments);
         }
         if (_sentAttachments !is null)
-            _sentAttachments.setAttachments(attachments);
+            _sentAttachments.setImages(images);
         invalidate();
     }
 
@@ -1557,6 +1544,18 @@ private final class MessageBubble : Widget
     {
         return _sentAttachments is null ? 0 :
             _sentAttachments.countForTesting();
+    }
+
+    public size_t sentImagePreviewLoadedForTesting()
+    {
+        return _sentAttachments is null ? 0 :
+            _sentAttachments.loadedPreviewCountForTesting();
+    }
+
+    public string sentImageLabelForTesting(size_t index)
+    {
+        return _sentAttachments is null ? "" :
+            _sentAttachments.labelForTesting(index);
     }
 
     void appendThinking(string chunk)
@@ -2351,9 +2350,9 @@ private final class MessageBubble : Widget
                 _sentAttachments.visible())
             {
                 _sentAttachments.measure(Size(wrapWidth,
-                    sentAttachmentHeight));
+                    imagePreviewHeight));
                 if (_content.length > 0) height += gap;
-                height += sentAttachmentHeight;
+                height += imagePreviewHeight;
             }
         }
         if (_failed)
@@ -2395,7 +2394,7 @@ private final class MessageBubble : Widget
                 y += contentLayout.measuredSize().height + gap;
         }
         _sentAttachments.setBounds(Rect(maxInt(0, bounds().width - panelW) +
-            padH, y, stripWidth, sentAttachmentHeight));
+            padH, y, stripWidth, imagePreviewHeight));
     }
 
     protected override void onPaint(ref Canvas canvas)
@@ -4968,6 +4967,109 @@ private string formatTurnDuration(double seconds)
     const remainder = total % 60;
     return to!string(total / 60) ~ "m " ~
         (remainder < 10 ? "0" : "") ~ to!string(remainder) ~ "s";
+}
+
+/// The transcript's explicit evidence of what the assistant looked at. Tool
+/// results are normally folded into an action group, and the image-bearing
+/// user message that carries the pixels is an internal control message, so
+/// without this row the viewer would only see an implicit "Inspected an image".
+/// Rendering the archived images here makes both the event and its pixels
+/// reviewable after the turn settles or the conversation is reloaded.
+private final class ViewedImagesRow : Widget
+{
+    private static immutable int padH = 10;
+    private static immutable int padV = 6;
+    private static immutable int titleHeight = 18;
+    private static immutable int detailHeight = 14;
+    private static immutable int gap = 4;
+
+    private ImagePreviewStrip _preview;
+    private string _title;
+    private string _detail;
+    private string _time;
+
+    this(const(ChatImageAttachment)[] images, string time = "")
+    {
+        _time = time;
+        _title = images.length == 1 ? "Assistant viewed an image" :
+            "Assistant viewed " ~ to!string(images.length) ~ " images";
+        string[] names;
+        foreach (image; images)
+            names ~= image.name.length > 0 ? image.name : "image";
+        _detail = names.join(", ");
+        if (_detail.length > 96) _detail = _detail[0 .. 96] ~ "…";
+        _preview = new ImagePreviewStrip();
+        _preview.setId("oc-viewed-image-preview");
+        _preview.setImages(images);
+        add(_preview);
+    }
+
+    size_t imageCountForTesting() const
+    {
+        return _preview is null ? 0 : _preview.countForTesting();
+    }
+
+    size_t loadedPreviewCountForTesting()
+    {
+        return _preview is null ? 0 : _preview.loadedPreviewCountForTesting();
+    }
+
+    string titleForTesting() const
+    {
+        return _title;
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        const height = 2 * padV + titleHeight +
+            (_detail.length > 0 ? detailHeight : 0) + gap + imagePreviewHeight;
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = height;
+        return Size(width, height);
+    }
+
+    protected override void onLayout()
+    {
+        const detailRows = _detail.length > 0 ? detailHeight : 0;
+        _preview.setBounds(Rect(padH, padV + titleHeight + detailRows + gap,
+            maxInt(1, bounds().width - 2 * padH), imagePreviewHeight));
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        const width = bounds().width;
+        const height = bounds().height;
+        if (width <= 0 || height <= 0) return;
+        canvas.drawRoundedRect(Rect(0, 0, width, height), 8, opencodePanel,
+            opencodeBorder, 1);
+        canvas.fillCircle(Point(padH + 5, padV + titleHeight / 2), 3,
+            opencodeAccent);
+        const palette = theme();
+        const timeWidth = _time.length > 0 ? 90 : 0;
+        const textWidth = maxInt(1, width - padH * 2 - 18 - timeWidth);
+        auto title = canvas.layoutText(toUTF32(_title), 1, FontRole.ui,
+            cast(FontFace) palette.uiFont, textWidth, false);
+        canvas.drawLayout(Point(padH + 16,
+            padV + maxInt(0, (titleHeight - cast(int) title.height) / 2)),
+            title, opencodeText);
+        if (_detail.length > 0)
+        {
+            auto detail = canvas.layoutText(toUTF32(_detail), 1, FontRole.ui,
+                cast(FontFace) palette.uiFont, textWidth, false);
+            canvas.drawLayout(Point(padH + 16, padV + titleHeight), detail,
+                opencodeMuted);
+        }
+        if (_time.length > 0)
+        {
+            auto time = canvas.layoutText(toUTF32(_time), 1, FontRole.ui,
+                cast(FontFace) palette.uiFont, timeWidth, false);
+            canvas.drawLayout(Point(maxInt(padH, width - padH -
+                cast(int) time.width), padV + maxInt(0,
+                (titleHeight - cast(int) time.height) / 2)), time,
+                opencodeMuted);
+        }
+    }
 }
 
 /// A vertical container that nests an assistant turn's tool results beneath it.
@@ -17636,9 +17738,18 @@ private string _suggestExcludeId;
             // Synthetic control turns (max-rounds / loop recovery) steer the
             // model but are not the user's words: keep them out of the
             // transcript so the UI does not show a fake user prompt at the
-            // point the agent hit a limit.
+            // point the agent hit a limit. Image evidence is the exception:
+            // show what the assistant viewed instead of leaving the pixels in
+            // a hidden message that only the model can see.
             if (message.internal)
             {
+                if (message.images.length > 0)
+                {
+                    auto viewed = new ViewedImagesRow(message.images,
+                        message.time);
+                    viewed.setId("oc-viewed-image-row");
+                    _messageColumn.add(viewed);
+                }
                 ++slot;
                 continue;
             }
@@ -21653,6 +21764,11 @@ private void pollButtonSuggestionRequest()
                 imageMessage.time = currentTimestamp();
                 appendMessage(*session, imageMessage);
                 _pendingToolImages.length = 0;
+                // The tool rows were flushed before this evidence message was
+                // appended. Mark the transcript dirty again so the explicit
+                // viewed-image row appears in the same UI update.
+                _toolTranscriptDirty = true;
+                if (!_batchingToolResults) flushToolTranscriptChanges();
             }
             // experimental: orchestrator - consume the routing request from the
             // routing tools. assign dispatches a batch of participants;
@@ -32917,7 +33033,28 @@ private void pollButtonSuggestionRequest()
         ChatImageAttachment image;
         image.name = name;
         image.mimeType = "image/png";
-        image.base64Data = "TWFu";
+        image.base64Data =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+        message.images ~= image;
+        appendMessage(*session, message);
+        rebuildMessageColumn();
+        markDirty();
+    }
+
+    /// Test-only: add a user turn whose image exists only as an archived blob,
+    /// matching a reloaded conversation where transient pixels are stripped.
+    public void addArchivedImageMessageForTesting(string content, string name,
+        string blob)
+    {
+        if (_current < 0) newChat();
+        auto session = &_sessions[_current];
+        ChatMessage message;
+        message.role = "user";
+        message.content = content;
+        ChatImageAttachment image;
+        image.name = name;
+        image.mimeType = "image/png";
+        image.blob = blob;
         message.images ~= image;
         appendMessage(*session, message);
         rebuildMessageColumn();
@@ -32936,6 +33073,61 @@ private void pollButtonSuggestionRequest()
                 return bubble.sentAttachmentCountForTesting();
         }
         return 0;
+    }
+
+    /// Test-only: how many thumbnails on the newest user bubble have decoded.
+    public size_t lastUserImagePreviewLoadedForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble !is null && bubble.roleForTesting() == "user")
+                return bubble.sentImagePreviewLoadedForTesting();
+        }
+        return 0;
+    }
+
+    /// Test-only: the label of one preview on the newest user bubble.
+    public string lastUserImagePreviewLabelForTesting(size_t index)
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+        {
+            auto bubble = cast(MessageBubble) child;
+            if (bubble !is null && bubble.roleForTesting() == "user")
+                return bubble.sentImageLabelForTesting(index);
+        }
+        return "";
+    }
+
+    /// Test-only: explicit "viewed image" rows currently in the transcript.
+    public size_t viewedImageRowCountForTesting()
+    {
+        size_t count;
+        foreach (child; messageColumnVisuals())
+            if (cast(ViewedImagesRow) child !is null) ++count;
+        return count;
+    }
+
+    /// Test-only: decoded previews carried by the visible viewed-image rows.
+    public size_t viewedImageLoadedPreviewCountForTesting()
+    {
+        size_t count;
+        foreach (child; messageColumnVisuals())
+            if (auto row = cast(ViewedImagesRow) child)
+                count += row.loadedPreviewCountForTesting();
+        return count;
+    }
+
+    /// Test-only: the explicit row title ("Assistant viewed an image").
+    public string lastViewedImageTitleForTesting()
+    {
+        const children = messageColumnVisuals();
+        foreach_reverse (child; children)
+            if (auto row = cast(ViewedImagesRow) child)
+                return row.titleForTesting();
+        return "";
     }
 
     /// Test-only: like `addConversationForTesting` but with optional reasoning

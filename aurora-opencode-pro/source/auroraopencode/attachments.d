@@ -29,16 +29,20 @@ module auroraopencode.attachments;
 // ===========================================================================
 
 import aurora;
+import aurora.image : ImageResample, RgbaImage, decodeImage, fitImage;
 import auroraopencode.imagenormalization;
-import auroraopencode.core : ChatImageAttachment;
+import auroraopencode.attachmentstore : AttachmentStore;
+import auroraopencode.core : ChatImageAttachment, opencodeStateDirectory;
 import std.algorithm : canFind;
 import std.array : appender;
+import std.base64 : Base64;
 import std.conv : to;
 import std.file : exists, getSize, isFile, read, readText;
 import std.path : baseName, extension, buildPath;
 import std.process : environment;
 import std.stdio : File;
 import std.string : splitLines, strip, toLower;
+import std.utf : toUTF32;
 
 /// Env switch. Anything other than the values below leaves the feature enabled,
 /// so an unset variable means "on".
@@ -46,6 +50,11 @@ private enum disableValues = ["0", "off", "false", "no", "disabled", "disable"];
 
 /// Height the composer reserves for the chip row when it is showing.
 public enum int attachmentStripHeight = 34;
+
+/// Height of the transcript image preview row. It carries a thumbnail and a
+/// filename for each visible image, so sent and tool-viewed images are actually
+/// previewable instead of appearing only as text labels.
+public enum int imagePreviewHeight = 82;
 
 /// A paste at or above this many characters becomes a text attachment.
 public enum size_t attachmentPasteCharThreshold = 1500;
@@ -532,6 +541,189 @@ public final class AttachmentStrip : HBox
                 attachment.isImage != current.isImage ||
                 attachment.name != current.name ||
                 attachment.body != current.body)
+                return false;
+        }
+        return true;
+    }
+}
+
+/// Inline, display-only thumbnails for images already attached to a transcript
+/// message. Decoding is lazy and each payload is decoded once per strip; a
+/// missing archived payload becomes a labelled placeholder rather than failing
+/// the transcript. The strip never mutates the message or its request payload.
+public final class ImagePreviewStrip : Widget
+{
+    private enum int cellWidth = 120;
+    private enum int thumbHeight = 62;
+    private enum int labelHeight = 16;
+    private enum int gap = 6;
+    private enum int visibleLimit = 8;
+
+    private ChatImageAttachment[] _images;
+    private RgbaImage[] _thumbnails;
+    private bool[] _attempted;
+    private AttachmentStore _store;
+
+    public this()
+    {
+        setId("oc-image-previews");
+        setVisible(false);
+    }
+
+    public void setImages(const(ChatImageAttachment)[] images)
+    {
+        if (sameImages(images)) return;
+        _images = images.dup;
+        _thumbnails = new RgbaImage[images.length];
+        _attempted = new bool[images.length];
+        setVisible(images.length > 0);
+        invalidate();
+    }
+
+    public size_t countForTesting() const
+    {
+        return _images.length;
+    }
+
+    public size_t loadedPreviewCountForTesting()
+    {
+        size_t loaded;
+        foreach (index; 0 .. _images.length)
+            if (thumbnail(index) !is null) ++loaded;
+        return loaded;
+    }
+
+    public string labelForTesting(size_t index)
+    {
+        return index < _images.length ? previewLabel(_images[index]) : "";
+    }
+
+    protected override Size onMeasure(Size available)
+    {
+        const width = maxInt(0, available.width);
+        layoutHints().preferredWidth = width;
+        layoutHints().preferredHeight = imagePreviewHeight;
+        return Size(width, imagePreviewHeight);
+    }
+
+    protected override void onPaint(ref Canvas canvas)
+    {
+        if (_images.length == 0) return;
+        const palette = theme();
+        const fit = maxInt(1, (bounds().width + gap) / (cellWidth + gap));
+        const limit = fit < visibleLimit ? fit : visibleLimit;
+        const shown = _images.length < limit ? _images.length : limit;
+        foreach (index; 0 .. shown)
+        {
+            const cell = Rect(cast(int) index * (cellWidth + gap), 0,
+                cellWidth, imagePreviewHeight);
+            canvas.drawRoundedRect(cell, 7, palette.fieldBackground,
+                palette.border, 1);
+            const imageRect = Rect(cell.x + 4, cell.y + 3,
+                cell.width - 8, thumbHeight - 5);
+            canvas.fillRoundedRect(imageRect, 5, palette.windowBackground);
+            auto preview = thumbnail(index);
+            if (preview !is null)
+            {
+                auto clipped = canvas.clipped(imageRect);
+                clipped.drawImage(fittedRect(imageRect, preview.width(),
+                    preview.height()), preview);
+            }
+            else
+            {
+                canvas.drawTextInRect(imageRect, toUTF32("no preview"),
+                    palette.textMuted, 1, HorizontalAlign.center,
+                    VerticalAlign.middle, true);
+            }
+            canvas.drawTextInRect(Rect(cell.x + 4, cell.y + thumbHeight + 1,
+                    cell.width - 8, labelHeight), toUTF32(previewLabel(_images[index])),
+                palette.textMuted, 1, HorizontalAlign.left,
+                VerticalAlign.middle, true);
+        }
+        if (_images.length > shown)
+        {
+            const cell = Rect(cast(int) shown * (cellWidth + gap), 0, cellWidth,
+                imagePreviewHeight);
+            canvas.drawRoundedRect(cell, 7, palette.fieldBackground,
+                palette.border, 1);
+            canvas.drawTextInRect(cell,
+                toUTF32("+" ~ to!string(_images.length - shown)),
+                palette.text, 2, HorizontalAlign.center,
+                VerticalAlign.middle, true);
+        }
+    }
+
+    private RgbaImage thumbnail(size_t index)
+    {
+        if (index >= _images.length) return null;
+        if (_attempted[index]) return _thumbnails[index];
+        _attempted[index] = true;
+        auto image = _images[index];
+        string payload = image.base64Data;
+        try
+        {
+            if (payload.length == 0)
+            {
+                if (_store.directory.length == 0)
+                    _store = AttachmentStore(buildPath(opencodeStateDirectory(),
+                        "attachments"));
+                if (image.blob.length) payload = _store.get(image.blob);
+                else if (image.originalBlob.length)
+                    payload = _store.get(image.originalBlob);
+            }
+            if (payload.length == 0) return null;
+            const bytes = Base64.decode(payload);
+            if (bytes.length == 0) return null;
+            _thumbnails[index] = fitImage(decodeImage(bytes,
+                previewLabel(image)), 192, ImageResample.box);
+        }
+        catch (Exception)
+        {
+            _thumbnails[index] = null;
+        }
+        return _thumbnails[index];
+    }
+
+    private static Rect fittedRect(Rect area, int width, int height)
+    {
+        if (width <= 0 || height <= 0) return area;
+        int fittedWidth, fittedHeight;
+        if (cast(long) width * area.height >= cast(long) height * area.width)
+        {
+            fittedWidth = area.width;
+            fittedHeight = maxInt(1, cast(int) (cast(long) height * area.width /
+                width));
+        }
+        else
+        {
+            fittedHeight = area.height;
+            fittedWidth = maxInt(1, cast(int) (cast(long) width * area.height /
+                height));
+        }
+        return Rect(area.x + (area.width - fittedWidth) / 2,
+            area.y + (area.height - fittedHeight) / 2, fittedWidth,
+            fittedHeight);
+    }
+
+    private static string previewLabel(const ref ChatImageAttachment image)
+    {
+        auto label = image.name.length > 0 ? image.name : "image";
+        if (image.error.length > 0) label ~= " · unavailable";
+        if (label.length > 24) label = label[0 .. 24] ~ "…";
+        return label;
+    }
+
+    private bool sameImages(const(ChatImageAttachment)[] images)
+    {
+        if (images.length != _images.length) return false;
+        foreach (index, image; images)
+        {
+            const current = _images[index];
+            if (image.name != current.name || image.mimeType != current.mimeType ||
+                image.blob != current.blob ||
+                image.originalBlob != current.originalBlob ||
+                image.error != current.error ||
+                image.base64Data != current.base64Data)
                 return false;
         }
         return true;

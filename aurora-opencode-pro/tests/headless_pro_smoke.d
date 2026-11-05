@@ -933,6 +933,77 @@ private void verifyTitleTooltipLeavesWindow(OpenCodeRoot root, UiTestDriver driv
     writeln("Title tooltip closes when the pointer leaves the window");
 }
 
+/// Focused run for the image-preview feature. It covers both sides of the
+/// contract: a sent attachment whose pixels persist only as an archived blob,
+/// and the assistant's view_image evidence row with the actual pixels the
+/// model received. The screenshot is written for independent pixel inspection.
+private void verifyImagePreviews(OpenCodeRoot root, UiTestDriver driver,
+    string stateDir, GuiWindow window)
+{
+    import auroraopencode.attachmentstore : AttachmentStore;
+    import auroraopencode.attachments : base64Encode;
+    import auroraopencode.core : opencodeStateDirectory;
+    import auroraopencode.tools : executeTool;
+    import std.base64 : Base64;
+
+    const workspaceDir = buildPath(stateDir, "image-preview-workspace");
+    mkdirRecurse(workspaceDir);
+    const png = Base64.decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==");
+    const imagePath = buildPath(workspaceDir, "viewed.png");
+    write(imagePath, png);
+    root.enableToolsForTesting(workspaceDir);
+    root.pauseToolContinuationForTesting();
+    const shotDir = buildPath(tempDir(), "aurora-opencode-image-preview-shots");
+    mkdirRecurse(shotDir);
+
+    // A reloaded conversation keeps the archived blob and drops transient
+    // base64 pixels. The preview must still resolve the image from the store.
+    auto store = AttachmentStore(buildPath(opencodeStateDirectory(),
+        "attachments"));
+    const blob = store.put(base64Encode(png));
+    root.newChatForTesting();
+    root.addArchivedImageMessageForTesting("Review this archived image",
+        "screenshot.png", blob);
+    assert(paintProjection(root, driver), "Archived image preview did not paint");
+    assert(root.lastUserAttachmentPillCountForTesting() == 1,
+        "Archived sent image did not render its preview cell");
+    assert(root.lastUserImagePreviewLoadedForTesting() == 1,
+        "Archived sent image preview did not reload from the attachment store");
+    assert(root.lastUserImagePreviewLabelForTesting(0).indexOf(
+        "screenshot.png") >= 0,
+        "Archived sent image preview lost its name");
+    window.saveScreenshot(buildPath(shotDir, "sent-image-preview.ppm"));
+
+    // Execute the real view_image tool, then feed its exact result through the
+    // app's tool-result path. The tool result stays adjacent to the call and the
+    // model still receives its hidden multimodal evidence message.
+    const args = `{"filePath":"viewed.png"}`;
+    auto viewed = executeTool(OpenCodeToolCall("focused-view", "view_image",
+        args), workspaceDir);
+    assert(!viewed.failed && viewed.images.length == 1,
+        "focused view_image failed: " ~ viewed.output);
+    root.newChatForTesting();
+    root.addConversationForTesting(["user", "assistant"],
+        ["Inspect viewed.png", ""]);
+    root.appendToolRequestTurnForTesting("", "call_focused_view", "view_image",
+        args);
+    root.injectToolResultForTesting("view_image", viewed.output, false, args,
+        0, 0, "", viewed.images);
+    root.rebuildForTesting();
+    assert(root.viewedImageRowCountForTesting() == 1,
+        "assistant viewed-image row is missing from the transcript");
+    assert(root.lastViewedImageTitleForTesting().indexOf(
+        "Assistant viewed an image") >= 0,
+        "assistant viewed-image row has no explicit title");
+    assert(root.viewedImageLoadedPreviewCountForTesting() == 1,
+        "assistant viewed-image preview did not decode the tool pixels");
+    assert(paintProjection(root, driver), "Viewed-image preview did not paint");
+
+    window.saveScreenshot(buildPath(shotDir, "image-previews.ppm"));
+    writeln("Image previews: archived attachments and viewed image evidence render");
+}
+
 int main(string[] args)
 {
     import auroraopencode.tools : runFilesystemHelperMode;
@@ -970,6 +1041,11 @@ int main(string[] args)
     assert(paintProjection(root, driver), "Second pro paint failed");
     writeln("[marker] smoke main entered");
     writeln("[marker] args: ", args);
+    if (args.length > 1 && args[$ - 1] == "--image-preview-only")
+    {
+        verifyImagePreviews(root, driver, stateDir, window);
+        return 0;
+    }
     if (args.length > 1 && args[$ - 1] == "--audit-stall-only")
     {
         verifyAuditStallOnly(root);
@@ -1593,23 +1669,24 @@ int main(string[] args)
         "Original reply was not reachable after regenerating an edit");
     writeln("Chat-quality pill stays on the latest assistant reply");
 
-    // Once sent, an image keeps a display-only filename pill in its user
-    // bubble. The payload is intentionally not rendered as an image yet. This
-    // test owns a fresh chat because the regeneration check above deliberately
-    // depends on the edit history built earlier in the smoke flow.
+    // Once sent, an image keeps an actual thumbnail and filename in its user
+    // bubble, so the transcript shows what was attached. This test owns a
+    // fresh chat because the regeneration check above deliberately depends on
+    // the edit history built earlier in the smoke flow.
     root.newChatForTesting();
     root.addImageMessageForTesting("Review this image", "screenshot.png");
-    assert(paintProjection(root, driver), "Sent attachment pill did not repaint");
+    assert(paintProjection(root, driver), "Sent image preview did not repaint");
     assert(root.lastUserAttachmentPillCountForTesting() == 1,
-        "Sent image did not retain an attachment pill");
+        "Sent image did not retain its transcript preview");
     auto sentStrip = requireWidget!Widget(root, "oc-sent-attachments");
-    auto sentChip = requireWidget!Button(root, "oc-sent-attachment");
     assert(sentStrip.visible() && sentStrip.bounds().height > 0,
-        "Sent attachment strip is not visible in the user bubble");
-    assert(to!string(sentChip.text()).indexOf("screenshot.png") >= 0 &&
-        to!string(sentChip.text()).indexOf("×") < 0,
-        "Sent attachment pill should show the name without a remove action");
-    writeln("Sent image remains visible as a display-only attachment pill");
+        "Sent image preview strip is not visible in the user bubble");
+    assert(root.lastUserImagePreviewLoadedForTesting() == 1,
+        "Sent image thumbnail did not decode for the transcript preview");
+    assert(root.lastUserImagePreviewLabelForTesting(0).indexOf(
+        "screenshot.png") >= 0,
+        "Sent image preview does not name the attachment");
+    writeln("Sent image renders as a decodable thumbnail in the user bubble");
 
     // --- Message edit + regenerate keep their runs (branch history) -------
     // Regenerating keeps the replaced reply stored and flips between runs with
@@ -4373,7 +4450,17 @@ int main(string[] args)
             imageRequest[$ - 1].images[0].name == "pixel.png" &&
             imageRequest[$ - 1].images[0].base64Data.length > 0,
             "view_image pixels did not reach a user-role multimodal message");
-        writeln("view_image loads a path into the next multimodal model turn");
+        root.rebuildForTesting();
+        assert(root.viewedImageRowCountForTesting() == 1,
+            "the assistant's viewed image was not made explicit in the transcript");
+        assert(root.lastViewedImageTitleForTesting().indexOf(
+            "Assistant viewed an image") >= 0,
+            "the viewed-image row does not say the assistant viewed an image");
+        assert(root.viewedImageLoadedPreviewCountForTesting() == 1,
+            "the viewed-image row did not decode a preview of the pixels");
+        assert(paintProjection(root, driver),
+            "the explicit viewed-image preview did not paint");
+        writeln("view_image is explicit in chat and previews the pixels the model saw");
     }
 
     // Turn timer: Codex renders "Worked for …" as a horizontal completion
