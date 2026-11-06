@@ -713,10 +713,11 @@ private void verifyRetryPill(OpenCodeRoot root, UiTestDriver driver)
     assert(!auditVisible, "audit stall leaked into the transcript");
     assert(!auditContinuation, "audit stall launched another no-action recovery round");
     assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
-    assert(root.goalStatusForTesting() == "active", "audit stall stopped the goal");
+    assert(root.goalStatusForTesting() == "paused",
+        "an audit hold left the goal claiming to be active while nothing ran");
     assert(root.turnStatusForTesting() == "idle", "audit stall left a phantom running turn");
     assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
-    writeln("PASS audit stall is hidden and keeps the goal active");
+    writeln("PASS audit stall is hidden, keeps the work and pauses the active goal");
 
     // Provider/transport failures still use the visible failure path.
     root.newChatForTesting();
@@ -751,7 +752,8 @@ private void verifyAuditStallOnly(OpenCodeRoot root)
     assert(!auditVisible, "audit stall leaked into the transcript");
     assert(!auditContinuation, "audit stall launched another no-action recovery round");
     assert(root.taskStatusForTesting() == "active", "audit stall stopped the task");
-    assert(root.goalStatusForTesting() == "active", "audit stall stopped the goal");
+    assert(root.goalStatusForTesting() == "paused",
+        "an audit hold left the goal claiming to be active while nothing ran");
     assert(root.turnStatusForTesting() == "idle", "audit stall left a phantom running turn");
     assert(root.failedMessageCountForTesting() == 0, "audit stall marked a visible failure");
 
@@ -773,10 +775,11 @@ private void verifyAuditStallOnly(OpenCodeRoot root)
     assert(!goalAuditVisible, "goal audit stall leaked into the transcript");
     assert(!goalAuditContinuation, "goal audit stall launched another no-action recovery round");
     assert(root.taskStatusForTesting() == "active", "goal audit stall stopped the task");
-    assert(root.goalStatusForTesting() == "active", "goal audit stall stopped the goal");
+    assert(root.goalStatusForTesting() == "paused",
+        "a goal audit hold left the goal claiming to be active while nothing ran");
     assert(root.turnStatusForTesting() == "idle", "goal audit stall left a phantom running turn");
     assert(root.failedMessageCountForTesting() == 0, "goal audit stall marked a visible failure");
-    writeln("PASS goal audit stall is hidden and keeps the goal active");
+    writeln("PASS goal audit stall is hidden, keeps the work and pauses the active goal");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user", "assistant"],

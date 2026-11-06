@@ -34,6 +34,14 @@ one failure for the episode and keeps the saved work available for Continue or
 Retry. A surfaced failure also ends its audit interval, so the next attempt is
 judged on fresh continuations instead of stale ones.
 
+An audit hold ends automatic continuation, so it also pauses the persistent goal
+instead of leaving it marked active while no turn runs. That pair of states -
+goal active, chat stopped - is what the goal bar misreported. The unfinished
+work and the paused goal are saved; Start (or any new message) continues, and an
+explicit goal start also clears the hold. The hold is evaluated against the
+current interval, so a later turn that recorded useful tool evidence continues
+normally rather than being vetoed by an earlier episode.
+
 Provider outage recovery and terminal resend now share typed policy decisions.
 The configured outage budget also bounds backoff; an exhausted provider attempt
 cannot restart through UI resend. Explicit reset-time waits and manual Retry

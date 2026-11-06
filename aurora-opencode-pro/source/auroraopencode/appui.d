@@ -110,7 +110,7 @@ import auroraopencode.planhistory : recordPlanHistory;
 import auroraopencode.taskcontext : taskContext;
 import auroraopencode.worktracking : normalizedWorkItems, requiredWorkRemaining, readPlanText, workTracksPhase;
 import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationAction,
-    taskBlockerError, taskInputError, taskAwaitingInput;
+    taskBlockerError, taskInputError, taskAwaitingInput, unfinishedTask;
 import auroraopencode.goalmode : GoalCommand, GoalCommandKind, goalActive,
     clampGoalText, goalCompletionError, goalContinuationInstruction,
     goalNeedsHumanInput, automaticGoalRequest, goalPromptBlock, maxGoalLength,
@@ -13323,8 +13323,9 @@ private string _suggestExcludeId;
         // Judge the unbalanced note per conversation, not once overall: a stale
         // note about an already-finished chat must not veto continuing OTHER
         // chats the restart genuinely interrupted.
-        _resumeNoteAlreadyHandled = target >= 0 &&
-            _sessions[target].turnStatus != "running";
+        // A settled turn does not end an active goal: the rebuild interrupted the
+        // goal's continuation, not the objective. That case is decided below,
+        // after the rebuild stamp has finalized the durable task state.
         // A rebuild that fails to compile relaunches the PREVIOUS binary. The
         // helper records the lifecycle in `rebuildstate.json` (package root);
         // the app is the reader. `ok` means the edits are live, so the run is
@@ -13365,6 +13366,15 @@ private string _suggestExcludeId;
             publishThreadUpdated(*session);
             markDirty();
         }
+        // Only now is the note judged "already handled": the rebuild stamp above
+        // may have completed the compile/relaunch outcomes and recomputed the
+        // durable status. An active goal that still has unfinished work overrides
+        // the settled turn, so a rebuild continues the goal instead of silently
+        // ending it; a paused goal, a validated input wait and completed work
+        // stay stopped.
+        _resumeNoteAlreadyHandled = target >= 0 &&
+            _sessions[target].turnStatus != "running" &&
+            !resumeGoalWorkRemaining(target);
         _resumePrompt = resumePromptFor(cause, reason, rebuildReport,
             buildStamp);
         _resumeOwnerId = noteSession;
@@ -13463,6 +13473,23 @@ private string _suggestExcludeId;
             _sessions[_current].messages.length > 0)
             return _current;
         return -1;
+    }
+
+    /// Whether a restart must still continue this conversation's active goal.
+    /// A rebuild ends the transport turn of a goal, not the objective, so the
+    /// note cannot be dismissed merely because `turnStatus` is no longer
+    /// `running`. Paused or completed goals, a validated input wait and finished
+    /// work are left exactly as the user and the agent left them.
+    private bool resumeGoalWorkRemaining(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return false;
+        const ref session = _sessions[cast(size_t) index];
+        if (!goalActive(session) || taskAwaitingInput(session)) return false;
+        // The evidence-backed unfinished check needs the transcript, which the
+        // lazy per-thread store leaves on disk for a conversation that was not
+        // the running one at shutdown.
+        if (session.messages.length == 0) ensureThreadLoaded(index);
+        return unfinishedTask(session);
     }
 
     /// Open the conversation a resume selected and make it the visible view.
@@ -17325,7 +17352,7 @@ private string _suggestExcludeId;
     }
 
     /// Whether an audit stop is pausing automatic continuation for this chat.
-    private bool auditStallSuppressed(string sessionId)
+    private bool auditStallSuppressed(string sessionId) const
     {
         return (sessionId in _auditSuppressed) !is null;
     }
@@ -20425,8 +20452,12 @@ private void pollButtonSuggestionRequest()
         const decision = decideTurn(*session, turnPolicy(sessionIndex, cancelled));
         // An audit stop pauses only automatic continuation. Queued guidance is
         // explicit user intent and still applies.
+        // The hold is judged against the CURRENT interval: a turn that recorded
+        // new useful tool evidence has already left the stalled interval, so its
+        // continuation must run even though an earlier episode set the hold.
         const suppressContinue = suppressAuditContinuation(
-            auditStallSuppressed(session.id),
+            auditStallSuppressed(session.id) &&
+                (goalAuditStalled(*session) || taskAuditStalled(*session)),
             decision.action == TurnAction.request);
         if (decision.recordedSummary.length)
         {
@@ -20465,6 +20496,12 @@ private void pollButtonSuggestionRequest()
         {
             session.turnStatus = "completed";
             session.taskStatus = "blocked";
+            // Never leave a goal claiming to be active while automatic
+            // continuation is held: an idle chat with an "active" goal is the
+            // state a user reads as "the goal did not continue". Pausing keeps
+            // the goal resumable and makes Start the explicit way back.
+            const goalHeld = session.goal.length > 0 && session.goalStatus == "active";
+            pauseActiveGoal(*session);
             // finishAssistantMessage kept the clock alive because it expected a
             // continuation. This branch starts none, so settle the turn or the
             // missing-operation watchdog fails it five seconds later.
@@ -20474,7 +20511,10 @@ private void pollButtonSuggestionRequest()
             clearActivity();
             publishThreadUpdated(*session);
             markDirty();
-            updateStatus("Paused automatic continuation after an audit stall. Continue when ready.");
+            updateGoalBar();
+            updateStatus(goalHeld
+                ? "Paused automatic continuation after an audit stall. The goal is paused — press Start to continue it."
+                : "Paused automatic continuation after an audit stall. Continue when ready.");
             markUnreadIfBackground(sessionIndex);
             refreshBubbleActions();
             updateSendButton();
@@ -20968,10 +21008,18 @@ private void pollButtonSuggestionRequest()
             _activeRequestSession = -1;
             session.turnStatus = "idle";
             session.taskStatus = "active";
+            // The hold ends automatic continuation until the user acts, so the
+            // persistent goal must not keep advertising itself as active: an
+            // idle turn with an active goal is exactly "goal active but the
+            // chat was not continued". Pause it and let Start resume the work.
+            const goalHeld = session.goal.length > 0 && session.goalStatus == "active";
+            pauseActiveGoal(*session);
             publishThreadUpdated(*session);
             markDirty();
             rebuildMessageColumn();
-            updateStatus("Work remains; the agent returned without further actions.");
+            updateStatus(goalHeld
+                ? "Work remains; automatic continuation is held. The goal is paused — press Start to continue it."
+                : "Work remains; the agent returned without further actions.");
             updateGoalBar();
             refreshBubbleActions();
             return;
@@ -22530,6 +22578,10 @@ private void pollButtonSuggestionRequest()
         if (_current < 0 || _current >= cast(int) _sessions.length) return;
         auto session = &_sessions[_current];
         if (!goalActive(*session)) return;
+        // Starting or resuming the goal is explicit user intent, exactly like a
+        // typed message. An earlier audit hold must not veto this continuation
+        // and re-record the work as blocked one settle later.
+        _auditSuppressed.remove(session.id);
         if (turnIsBusy())
         {
             if (_current != turnOwnerSessionIndex())
@@ -32488,6 +32540,20 @@ private void pollButtonSuggestionRequest()
     public string goalStatusForTesting() const
     {
         return _current < 0 ? "" : _sessions[_current].goalStatus;
+    }
+
+    /// Test-only: whether an audit hold is suppressing automatic continuation
+    /// for the viewed conversation.
+    public bool auditHoldForTesting() const
+    {
+        return _current >= 0 && _current < cast(int) _sessions.length &&
+            auditStallSuppressed(_sessions[_current].id);
+    }
+
+    /// Test-only: the goal bar's Start action for the viewed conversation.
+    public void resumeGoalForTesting()
+    {
+        resumeGoal();
     }
 
     public string[] goalHistoryTextsForTesting() const

@@ -1,0 +1,146 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/source/auroraopencode/outputrecovery.d",
+    "aurora-opencode-pro/source/auroraopencode/turnpolicy.d",
+    "aurora-opencode-pro/source/auroraopencode/goalmode.d",
+    "aurora-opencode-pro/tests/goal_hold_contracts.d",
+    "aurora-opencode-pro/tests/goal_rebuild_contracts.d",
+    "aurora-opencode-pro/tests/goal_ui_smoke.d",
+    "aurora-opencode-pro/tests/headless_pro_smoke.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/goal_rebuild_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/goal-hold-check/goal_rebuild_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/goal-hold-check/goal_rebuild_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/goal_hold_contracts.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/goal-hold-check/goal_hold_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/goal-hold-check/goal_hold_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/goal_ui_smoke.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/goal-hold-check/goal_ui_smoke.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/goal-hold-check/goal_ui_smoke.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i",
+          "-verrors=20",
+          "-Isource",
+          "-Ishared",
+          "-I../aurora-opencode-core/source",
+          "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets",
+          "tests/headless_pro_smoke.d",
+          "user32.lib",
+          "gdi32.lib",
+          "shell32.lib",
+          "wininet.lib",
+          "winmm.lib",
+          "-ofbuild/goal-hold-check/headless_pro_smoke.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 1800000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "build/goal-hold-check/headless_pro_smoke.exe",
+        "args": ["--audit-stall-only"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    }
+  ]
+}

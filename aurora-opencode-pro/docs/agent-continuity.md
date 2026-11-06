@@ -25,6 +25,10 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   continuation. Phrases such as “please confirm” in assistant prose no longer
   silently pause it. Waiting retains the active goal; replying with the missing
   information releases the wait. Explicit Stop still pauses the goal.
+- A rebuild or restart resumes an active goal whose turn had already settled, not
+  only a `running` transport turn: the rebuild ended the turn, not the objective.
+  Paused and completed goals, a validated input wait, finished work and a plain
+  relaunch without a rebuild/crash note still stay stopped.
 - Shared tool schedulers now join their workers and watchdogs before runtime
   teardown. A post-rebuild multi-turn test exposed an intermittent shutdown
   access violation; the minidump identified a still-running queue watchdog.
