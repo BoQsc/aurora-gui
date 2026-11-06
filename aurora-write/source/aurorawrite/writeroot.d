@@ -10,8 +10,8 @@
 module aurorawrite.writeroot;
 
 import aurora;
-import aurorawrite.concision : Analysis, analyzeInstant, countWords, sentenceAround,
-    wordCount;
+import aurorawrite.concision : Analysis, analyzeInstant, countWords,
+    isWordCharacter, sentenceAround, wordCount;
 import aurorawrite.llmclient : RefinementJob, RefinementRequest, RefinementResult,
     refinementSupported;
 import aurorawrite.settings : WriteSettings, loadSettings, saveSettings;
@@ -35,6 +35,10 @@ enum int columnMinWidth = 360;
 enum int editorPadding = 40;
 /// Typing pause before the model is asked for a better rewrite.
 enum int refineDebounceMs = 450;
+/// Typing pause used when the analysis already knows the word is finished.
+enum int refineImmediateMs = 0;
+/// Minimum gap between the cheap wake-up frames that observe deferred work.
+private enum double pumpIntervalSeconds = 0.1;
 
 /// TextArea whose keys can be pre-empted by the suggestion card and shortcuts.
 final class WritingSurface : TextArea
@@ -86,6 +90,14 @@ final class WriteRoot : Widget
     private size_t _generation;
     private bool _debounceActive;
     private MonoTime _debounceDeadline;
+    // `onChanged` and `onCursorMoved` both fire for one keystroke; the analysis
+    // only depends on the text window around the caret, so an unchanged
+    // signature means there is nothing to recompute.
+    private ulong _suggestionSignature;
+    private bool _hasSuggestionSignature;
+    // Accumulated time between wake-up frames. Initialised: D floats default
+    // to NaN, and `NaN >= interval` is always false, silencing the pump.
+    private double _pumpElapsed = pumpIntervalSeconds;
     private int _savedWords;
     private string _currentPath;
     private bool _dirty;
@@ -170,7 +182,7 @@ final class WriteRoot : Widget
     {
         _editor.setText(text, false);
         _editor.setCursorIndex(text.length > 0 ? text.length - 1 : 0);
-        refreshSuggestions();
+        refreshSuggestions(true);
     }
 
     // --- Optimizer -------------------------------------------------------
@@ -183,8 +195,15 @@ final class WriteRoot : Widget
 
     /// Recompute the instant pass for the word at the caret, then queue a model
     /// pass when the writer pauses.
-    void refreshSuggestions()
+    void refreshSuggestions(bool force = false)
     {
+        const text = _editor.textView;
+        const caret = _editor.cursorIndex();
+        const signature = suggestionSignature(text, caret);
+        if (!force && _hasSuggestionSignature && signature == _suggestionSignature)
+            return;
+        _suggestionSignature = signature;
+        _hasSuggestionSignature = true;
         ++diagnosticRefreshCount;
         // Any edit or caret move retires an answer that is already in flight.
         ++_generation;
@@ -196,8 +215,6 @@ final class WriteRoot : Widget
             return;
         }
 
-        const text = _editor.textView;
-        const caret = _editor.cursorIndex();
         ++diagnosticAnalysisCount;
         _analysis = analyzeInstant(text, caret);
 
@@ -215,6 +232,22 @@ final class WriteRoot : Widget
         updateStatus();
     }
 
+    /// Hash of everything the instant pass can read, plus the caret and length.
+    private static ulong suggestionSignature(const(dchar)[] text, size_t caret)
+        @safe pure nothrow @nogc
+    {
+        enum window = 240; // the analyzer's own reach around the caret
+        const start = caret > window ? caret - window : 0;
+        const finish = text.length < caret + window ? text.length : caret + window;
+        ulong hash = 1469598103934665603UL;
+        foreach (value; text[start .. finish])
+        {
+            hash ^= cast(ulong) value;
+            hash *= 1099511628211UL;
+        }
+        return hash ^ (cast(ulong) caret << 3) ^ (cast(ulong) text.length << 37);
+    }
+
     private void scheduleRefinement()
     {
         _debounceActive = false;
@@ -224,8 +257,16 @@ final class WriteRoot : Widget
         // One request at a time: a newer pause supersedes the running job when
         // its answer arrives, so typing cannot open a request pile-up.
         if (_job !is null) return;
-        _debounceDeadline = MonoTime.currTime + refineDebounceMs.msecs;
+        // A word that is already closed ("utilize ") needs no pause: the writer
+        // has moved on, so ask straight away and let the answer arrive while
+        // they read the instant card. Mid-word typing keeps the pause.
+        const text = _editor.textView;
+        const wordComplete = _analysis.end < text.length &&
+            !isWordCharacter(text[_analysis.end]);
+        _debounceDeadline = MonoTime.currTime + (wordComplete
+            ? refineImmediateMs.msecs : refineDebounceMs.msecs);
         _debounceActive = true;
+        _pumpElapsed = pumpIntervalSeconds;
     }
 
     private void startRefinement()
@@ -251,6 +292,7 @@ final class WriteRoot : Widget
         _job.start(request);
         _modelStatus = "refining…";
         _card.setStatus(_modelStatus);
+        _pumpElapsed = pumpIntervalSeconds;
         updateStatus();
     }
 
@@ -304,7 +346,7 @@ final class WriteRoot : Widget
         _modelStatus = "";
         _dirty = true;
         _editor.requestFocus();
-        refreshSuggestions();
+        refreshSuggestions(true);
     }
 
     /// Choose the next / previous choice from the card (Tab / Shift+Tab).
@@ -318,7 +360,7 @@ final class WriteRoot : Widget
     {
         _settings.optimizer = !_settings.optimizer;
         saveSettings(_settings);
-        refreshSuggestions();
+        refreshSuggestions(true);
     }
 
     void toggleThinking()
@@ -459,6 +501,7 @@ final class WriteRoot : Widget
         anchorCard();
     }
 
+
     /// Place the card just above the caret's line, clamped inside the window.
     private void anchorCard()
     {
@@ -485,8 +528,22 @@ final class WriteRoot : Widget
         }
         // A debounce or an in-flight request needs frames to observe; without
         // this the deadline would only be noticed at the next pointer event.
-        if (_debounceActive || _job !is null)
+        // Each wake-up costs a whole-window rebuild, so pace them: a debounce
+        // and a model reply both tolerate 100 ms of latency, and unbounded
+        // per-frame rebuilds made typing feel heavy.
+        if (!(_pumpElapsed >= 0.0)) _pumpElapsed = pumpIntervalSeconds;
+        const pending = _debounceActive || _job !is null;
+        if (!pending)
         {
+            _pumpElapsed = pumpIntervalSeconds;
+            return;
+        }
+        const step = deltaSeconds > 0.0 && deltaSeconds < 0.5
+            ? deltaSeconds : 1.0 / 60.0;
+        _pumpElapsed += step;
+        if (_pumpElapsed >= pumpIntervalSeconds)
+        {
+            _pumpElapsed = 0.0;
             ++diagnosticPumpCount;
             invalidate();
         }
@@ -575,7 +632,7 @@ final class WriteRoot : Widget
         saveSettings(_settings);
         hideSettings();
         _modelStatus = "";
-        refreshSuggestions();
+        refreshSuggestions(true);
     }
 
     // --- Documents -------------------------------------------------------
@@ -586,7 +643,7 @@ final class WriteRoot : Widget
         _currentPath = "";
         _dirty = false;
         _editor.requestFocus();
-        refreshSuggestions();
+        refreshSuggestions(true);
     }
 
     private void openDocument()
@@ -613,7 +670,7 @@ final class WriteRoot : Widget
             _currentPath = path;
             _dirty = false;
             _editor.requestFocus();
-            refreshSuggestions();
+            refreshSuggestions(true);
         }
         catch (Exception error)
         {

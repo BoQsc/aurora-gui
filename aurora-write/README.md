@@ -75,16 +75,47 @@ VERIFY-WINDOWS.bat
 ```
 
 1. Unit tests for the concision engine and reply parser (`dmd -unittest`).
-2. `tests/headless_smoke.d` — 60 checks through real event dispatch: instant
+2. `tests/headless_smoke.d` — 66 checks through real event dispatch: instant
    analysis, card placement above/below the caret, `Tab` cycling, `Ctrl+Enter`
    apply, undo, word savings, offline switch, focus retention on chip clicks,
-   and the debounce → worker → apply wiring against a closed port (a failed
-   refinement keeps the instant choices, reports the error and never edits the
-   document).
-3. Offline screenshot: `aurora-write --screenshot` writes Netpbm P6 (the
+   the suggestion that survives the space that ends a word, and the debounce →
+   worker → apply wiring driven through `onNativeTick` against a closed port (a
+   failed refinement keeps the instant choices, reports the error and never
+   edits the document).
+3. `tests/interaction_probe.d` — interaction budgets on the real frame path:
+   input handling, frame cost, analyses and card re-layouts per keystroke,
+   dispatch latency, and whole-window rebuilds per second while a refinement is
+   pending.
+4. Offline screenshot: `aurora-write --screenshot` writes Netpbm P6 (the
    software renderer's own format), so `tools/ppm-to-png.py` converts it to
    `artifacts/aurora-write-suggestions.png` next to a `.txt` report of the card
    and the status line.
+
+### Why the first version felt heavy (measured, then fixed)
+
+`tests/interaction_probe.d` exists because the first build lagged. It measures
+through `onNativeTick` + paint, exactly as the native loop drives the window
+(`UiTestDriver.paint()` alone never ticks, which had hidden the problem).
+
+| Measure | Before | After |
+| --- | --- | --- |
+| suggestion analyses per keystroke | 2.00 (`onChanged` + `onCursorMoved`) | 1.00 |
+| card re-layouts per keystroke | 1.12 (`present` + `anchorAt`) | 0.03 |
+| whole-window rebuilds per second while a request is pending | ~60 (one per frame) | 8 |
+| dispatch after the last keystroke | 450 ms pause, and a trailing space lost the span entirely | 56 ms (immediate once a word is finished) |
+| frame cost, warm | 31–43 ms spikes | median 3 ms, worst 4–9 ms |
+
+The remaining 31 ms appears once per process, on the first card that opens
+(glyph atlas and heap warm-up); every later card costs single-digit
+milliseconds.
+
+Fixes, in order of impact: the caret span now resolves the word before a single
+trailing space (without this, suggestions vanished as soon as you typed the
+space after a word); the analysis is keyed on a hash of the text window plus the
+caret so the duplicate `onChanged`/`onCursorMoved` call is free; the deferred
+work pump is paced at 10 Hz instead of once per frame; a finished word dispatches
+the model request immediately instead of waiting out the 450 ms pause; and the
+card stops re-measuring its text when only its position changed.
 
 The live provider path is probed separately, on purpose:
 

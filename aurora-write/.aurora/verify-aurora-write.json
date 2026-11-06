@@ -63,6 +63,28 @@
         "program": "dub",
         "args": [
           "build",
+          "--config=probe",
+          "--build=release"
+        ],
+        "workdir": "aurora-write",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "aurora-write-probe.exe",
+        "args": [],
+        "workdir": "aurora-write",
+        "timeout": 240000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dub",
+        "args": [
+          "build",
           "--config=default",
           "--build=release"
         ],

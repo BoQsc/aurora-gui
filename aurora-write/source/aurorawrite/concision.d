@@ -561,6 +561,12 @@ private bool isWordChar(dchar value) @safe pure nothrow @nogc
         (value >= '0' && value <= '9') || value == '\'' || value == '-';
 }
 
+/// True for the characters the analyzer treats as part of a word.
+bool isWordCharacter(dchar value) @safe pure nothrow @nogc
+{
+    return isWordChar(value);
+}
+
 /// Lowercased UTF-8 view of a UTF-32 slice, for table keys.
 private string loweredKey(const(dchar)[] slice) @safe pure
 {
@@ -751,6 +757,20 @@ private bool wordSpan(const(dchar)[] window, size_t caretLocal,
         ++end;
     while (start > 0 && isWordChar(window[start - 1])) --start;
     while (end < window.length && isWordChar(window[end])) ++end;
+    if (end > start) return true;
+
+    // "utilize |": exactly one space after a word still means the writer just
+    // finished that word, and that is the moment suggestions are useful. Two
+    // spaces, a punctuation mark, or a newline means they moved on.
+    if (caretLocal == 0) return false;
+    const before = window[caretLocal - 1];
+    if (before != ' ' && before != '\t') return false;
+    size_t probe = caretLocal - 1;
+    if (probe == 0 || !isWordChar(window[probe - 1])) return false;
+    start = probe;
+    end = probe;
+    while (start > 0 && isWordChar(window[start - 1])) --start;
+    while (end < window.length && isWordChar(window[end])) ++end;
     return end > start;
 }
 
@@ -923,6 +943,23 @@ unittest
     const analysis = analyzeInstant(document, document.length);
     assert(analysis.target == "utilize");
     assert(analysis.choices[0].text == "use");
+}
+
+unittest
+{
+    // Typing the space that ends the word must not lose the suggestion: this
+    // is the most common state while writing prose.
+    const document = "We utilize ".toUTF32;
+    const afterSpace = analyzeInstant(document, document.length);
+    assert(afterSpace.target == "utilize",
+        "word before a single trailing space: '" ~ afterSpace.target ~ "'");
+    assert(afterSpace.choices[0].text == "use");
+
+    // Moving on ends the suggestion: a second space, a period, or a newline
+    // means the writer is no longer working on that word.
+    assert(!analyzeInstant("We utilize  ".toUTF32, 12).valid());
+    assert(!analyzeInstant("We utilize.".toUTF32, 11).valid());
+    assert(!analyzeInstant("We utilize\n".toUTF32, 11).valid());
 }
 
 unittest

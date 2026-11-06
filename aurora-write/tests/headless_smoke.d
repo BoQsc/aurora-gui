@@ -19,6 +19,14 @@ import std.utf : toUTF32;
 private int failures;
 private int checks;
 
+/// One production frame: the native loop ticks widgets, then paints.
+private bool frame(GuiWindow window, UiTestDriver driver, ref double delta)
+{
+    window.onNativeTick(delta);
+    delta = 1.0 / 60.0;
+    return driver.paint();
+}
+
 private void check(bool condition, string what)
 {
     ++checks;
@@ -138,6 +146,19 @@ private int run()
     check(editor.textUtf8() == "We utilize", "undo restores the original: " ~
         editor.textUtf8());
 
+    // Finishing a word with a space must keep the suggestion. This was the bug
+    // that hid suggestions during ordinary prose: the span search found nothing
+    // once the caret sat after the trailing space.
+    editor.setText("", false);
+    driver.text("We utilize ".toUTF32);
+    check(driver.paint(), "paint after a word plus its space");
+    check(root.analysis.target == "utilize", "word before a single space: " ~
+        root.analysis.target);
+    check(card.open(), "card stays open while the finished word is current");
+    driver.text(" ".toUTF32);
+    check(driver.paint(), "paint after the second space");
+    check(!card.open(), "card closes once the writer moves on");
+
     // --- A wordy phrase spans the whole phrase and saves words ---------
     editor.setText("", false);
     driver.text("It failed due to the fact that".toUTF32);
@@ -224,31 +245,38 @@ private void checkLiveWiring(WindowOptions baseOptions)
     window.setRoot(root);
     auto driver = new UiTestDriver(window);
     driver.resize(Size(options.width, options.height));
-    check(driver.paint(), "live: initial paint");
+    double delta = 1.0 / 60.0;
+    check(frame(window, driver, delta), "live: initial paint");
+    root.editor().requestFocus();
     check(root.settings().configured() && !root.settings().offline,
         "live: test settings name a provider and are online");
 
     driver.text("We utilize".toUTF32);
-    check(driver.paint(), "live: paint after typing");
+    check(frame(window, driver, delta), "live: paint after typing");
     check(root.cardOpen(), "live: instant card shows before any model reply");
     const instantChoices = root.card().choiceCount();
 
-    // Wait out the typing pause, then let the frame pump start and finish the
-    // request. The port is closed, so the answer is an immediate failure.
-    Thread.sleep(520.msecs);
-    bool finished;
-    foreach (attempt; 0 .. 40)
+    // Frames must be driven through onNativeTick: `UiTestDriver.paint()` alone
+    // never ticks widgets, so an earlier version of this check passed without
+    // a request ever starting. Require seeing the pending state first.
+    bool sawRefining;
+    bool settled;
+    foreach (attempt; 0 .. 120)
     {
-        driver.paint();
-        Thread.sleep(150.msecs);
+        frame(window, driver, delta);
         const status = root.card().status();
-        if (status.length > 0 && status != "refining…")
+        if (root.statusRightText().indexOf("refining") >= 0 ||
+            status == "refining…")
+            sawRefining = true;
+        if (sawRefining && status.length > 0 && status != "refining…")
         {
-            finished = true;
+            settled = true;
             break;
         }
+        Thread.sleep(20.msecs);
     }
-    check(finished, "live: refinement settled instead of hanging on refining…");
+    check(sawRefining, "live: the provider request actually started");
+    check(settled, "live: refinement settled instead of hanging on refining…");
     check(root.card().status() != "refining…", "live: card left the refining state");
     check(root.card().choiceCount() == instantChoices,
         "live: instant choices survive a failed refinement");

@@ -106,14 +106,32 @@ final class SuggestionCard : Widget
     /// Show the analysis for the current word, keeping the caret anchor.
     void present(Analysis analysis, string status)
     {
+        // Re-measuring identical content (for example after a failed model
+        // reply) would only cost layout time.
+        const unchanged = _open && status == _status &&
+            sameContent(analysis, _analysis);
         _analysis = analysis;
         _status = status;
         _selected = -1;
         _hover = -1;
         _open = analysis.choices.length > 0;
         setVisible(_open);
-        relayout();
+        if (unchanged && _panel.width > 0)
+            setBounds(panelRect());
+        else
+            relayout();
         invalidate();
+    }
+
+    private static bool sameContent(ref const Analysis left,
+        ref const Analysis right) @safe pure nothrow
+    {
+        if (left.target != right.target) return false;
+        if (left.definition != right.definition) return false;
+        if (left.choices.length != right.choices.length) return false;
+        foreach (index, ref choice; left.choices)
+            if (choice.text != right.choices[index].text) return false;
+        return true;
     }
 
     /// Replace the status line without disturbing the choices (e.g. progress).
@@ -124,14 +142,27 @@ final class SuggestionCard : Widget
         if (_open) invalidate();
     }
 
-    /// Remember where the caret is and place the panel above it.
+    /**
+     * Remember where the caret is and place the panel above it.
+     *
+     * This runs on every keystroke right after `present`, so it only re-measures
+     * when the anchor change can alter the layout (a new window width); moving
+     * the panel is otherwise a bounds update.
+     */
     void anchorAt(Rect caretInParent, int parentWidth, int parentHeight)
     {
+        const widthChanged = _availableWidth != parentWidth;
+        const moved = !_hasAnchor || _anchorCaret != caretInParent;
         _anchorCaret = caretInParent;
         _hasAnchor = true;
         _availableWidth = parentWidth;
         _availableHeight = parentHeight;
-        relayout();
+        if (widthChanged || _panel.width == 0)
+        {
+            relayout();
+            return;
+        }
+        if (moved) setBounds(panelRect());
     }
 
     void moveSelection(int delta)
