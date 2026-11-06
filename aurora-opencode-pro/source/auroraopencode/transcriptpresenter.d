@@ -100,6 +100,10 @@ public final class TranscriptPresenter : VBox
     private Widget[] _projectedRows;
     private enum size_t virtualThreshold = transcriptVirtualThreshold;
     private enum int overscan = 700;
+    // Height corrections above the viewport move the measuring window upward,
+    // so a single measure can need a few settled passes. A real transcript
+    // settles in one or two; the cap only bounds a pathological oscillation.
+    private enum size_t maximumMeasurePasses = 4;
     bool delegate() following;
     void delegate(int) onAnchorCorrection;
 
@@ -195,65 +199,98 @@ public final class TranscriptPresenter : VBox
         const pad = padding();
         const width = maxInt(0, available.width - pad.left - pad.right);
         const page = view !is null ? maxInt(1, view.bounds().height) : 700;
-        int top = viewportTop(view);
+        const measuredTop = viewportTop(view);
         const follow = following !is null && following();
-        _measuredTop = top;
-        int estimatedBottom = pad.top + pad.bottom;
-        int estimatedCursor = pad.top;
-        bool anchored;
-        foreach (row; children())
-        {
-            if (row is _insertAnchor)
-            {
-                top = estimatedCursor - _insertAnchorScreenY;
-                anchored = true;
-            }
-            if (!row.visible() && row !in _virtualHidden) continue;
-            auto indexed = row in _heights;
-            const pixels = indexed is null ? 64 : indexed.pixels;
-            estimatedBottom += pixels + (pixels > 0 ? spacing() : 0);
-            estimatedCursor += pixels + (pixels > 0 ? spacing() : 0);
-        }
-        const lower = follow ? maxInt(0, estimatedBottom - page - overscan) : maxInt(0, top - overscan);
-        const upper = follow ? int.max : top + page + overscan;
-        _rowHeights.length = children().length;
-        int cursor = pad.top;
-        int correction;
+        // Correcting the height of a row above the viewport shifts the offset
+        // the ScrollView is about to apply, which moves the measuring window up
+        // and exposes the next band of rows that still carry estimates. Settle
+        // that inside this measure instead of one band per layout: every late
+        // band moved the scrollbar again after the reader had stopped scrolling,
+        // and left "jump to latest" one step short of the end.
+        int top = measuredTop;
+        int totalCorrection;
         int anchorTop;
-        foreach (i, row; children())
+        bool anchored;
+        foreach (pass; 0 .. maximumMeasurePasses)
         {
-            if (anchored && row is _insertAnchor)
-                anchorTop = cursor - _insertAnchorScreenY;
-            auto old = row in _heights;
-            Height height = old is null ? Height.init : *old;
-            const before = height.pixels;
-            const intrinsicallyVisible = row.visible() || row in _virtualHidden;
-            if (!intrinsicallyVisible) height.pixels = 0;
-            else if (cursor + before >= lower && cursor <= upper)
+            int passTop = top;
+            int estimatedBottom = pad.top + pad.bottom;
+            int estimatedCursor = pad.top;
+            bool passAnchored;
+            foreach (row; children())
             {
-                row.setVisible(true);
-                _virtualHidden.remove(row);
-                if (!height.known || height.width != width || height.revision != row.layoutRevision())
+                if (row is _insertAnchor)
                 {
-                    height.pixels = row.measure(Size(width, int.max)).height;
-                    height.width = width;
-                    height.revision = row.layoutRevision();
-                    height.known = true;
+                    passTop = estimatedCursor - _insertAnchorScreenY;
+                    passAnchored = true;
                 }
-                if (!follow && !anchored && cursor + before <= top) correction += height.pixels - before;
+                if (!row.visible() && row !in _virtualHidden) continue;
+                auto indexed = row in _heights;
+                const pixels = indexed is null ? 64 : indexed.pixels;
+                estimatedBottom += pixels + (pixels > 0 ? spacing() : 0);
+                estimatedCursor += pixels + (pixels > 0 ? spacing() : 0);
             }
-            _heights[row] = height;
-            _rowHeights[i] = height.pixels;
-            cursor += height.pixels + (height.pixels > 0 ? spacing() : 0);
+            const lower = follow ? maxInt(0, estimatedBottom - page - overscan) :
+                maxInt(0, passTop - overscan);
+            const upper = follow ? int.max : passTop + page + overscan;
+            _rowHeights.length = children().length;
+            int cursor = pad.top;
+            int correction;
+            int passAnchorTop;
+            foreach (i, row; children())
+            {
+                if (passAnchored && row is _insertAnchor)
+                    passAnchorTop = cursor - _insertAnchorScreenY;
+                auto old = row in _heights;
+                Height height = old is null ? Height.init : *old;
+                const before = height.pixels;
+                const intrinsicallyVisible = row.visible() || row in _virtualHidden;
+                if (!intrinsicallyVisible) height.pixels = 0;
+                else if (cursor + before >= lower && cursor <= upper)
+                {
+                    row.setVisible(true);
+                    _virtualHidden.remove(row);
+                    if (!height.known || height.width != width ||
+                        height.revision != row.layoutRevision())
+                    {
+                        height.pixels = row.measure(Size(width, int.max)).height;
+                        height.width = width;
+                        height.revision = row.layoutRevision();
+                        height.known = true;
+                    }
+                    if (!follow && !passAnchored && cursor + before <= passTop)
+                        correction += height.pixels - before;
+                }
+                _heights[row] = height;
+                _rowHeights[i] = height.pixels;
+                cursor += height.pixels + (height.pixels > 0 ? spacing() : 0);
+            }
+            _totalHeight = cursor + pad.bottom;
+            anchored = passAnchored;
+            if (anchored)
+            {
+                // Older history was inserted above a retained row the reader is
+                // looking at: move the offset by exactly the shift of that row.
+                anchorTop = passAnchorTop;
+                totalCorrection += anchorTop - _insertAnchorTop;
+                break;
+            }
+            // Following pins the viewport to the measured bottom, so the
+            // position of the rows above it does not matter.
+            if (follow) break;
+            totalCorrection += correction;
+            if (correction == 0) break;
+            top += correction;
         }
-        _totalHeight = cursor + pad.bottom;
         if (anchored)
         {
-            correction = anchorTop - _insertAnchorTop;
             _insertAnchorTop = anchorTop;
             _measuredTop = anchorTop;
         }
-        if (correction && onAnchorCorrection !is null) onAnchorCorrection(correction);
+        else
+            _measuredTop = top;
+        if (totalCorrection != 0 && onAnchorCorrection !is null)
+            onAnchorCorrection(totalCorrection);
         return Size(available.width, _totalHeight);
     }
 

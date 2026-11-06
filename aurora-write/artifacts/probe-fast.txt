@@ -1,0 +1,16 @@
+provider: own
+base url: https://api.commandcode.ai/provider/v1
+model: deepseek/deepseek-v4.1-flash
+thinking: false
+instant target: 'utilize' (1 words)
+  instant 1: 'use' (1 words)
+  instant 2: 'apply' (1 words)
+  instant 3: 'employ' (1 words)
+  instant 4: 'exercise' (1 words)
+model ok: true
+model error: ''
+model ms: 1616
+model definition: 'To put something to practical use.'
+  model 1: 'use' (1 words) — Put something into service.
+  model 2: 'apply' (1 words) — Put something to a purpose.
+  model 3: 'employ' (1 words) — Make use of something.

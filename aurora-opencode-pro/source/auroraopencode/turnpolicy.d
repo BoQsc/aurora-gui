@@ -138,10 +138,10 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     }
     // A goal that needs tools cannot progress through a request that offers
     // none, and an answer/analysis goal is finished by its reply. Both settle
-    // instead of auto-continuing into a loop the model cannot break.
+    // instead of auto-continuing into a loop the model cannot break. A queued
+    // follow-up does not end goal work early; it opens once the agent stops.
     if (goalActive(session) && policy.toolsEnabled &&
         !goalIsAnswerTurn(session.goal) &&
-        !session.queuedFollowUps.length &&
         !answerOnlyRequest(latestActualUserRequest(session)) && !taskInvestigation(session))
     {
         result.advanceGoal = true;

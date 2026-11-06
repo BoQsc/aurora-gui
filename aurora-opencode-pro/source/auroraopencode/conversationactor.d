@@ -1281,8 +1281,11 @@ public final class ConversationActor
         { session.messages[$ - 1].taskStateJson = activeTaskStateJson(session); updateLast(); }
         publish(AgentEventKind.turnCompleted, "{}"); metadata();
         reportAssignment();
-        if (decision.action == TurnAction.settle && session.queuedFollowUps.length)
+        if ((decision.action == TurnAction.settle || decision.action == TurnAction.waitInput) &&
+            session.queuedFollowUps.length)
         {
+            // A queued follow-up opens only now that the agent has stopped; it
+            // never ends scheduled work early.
             auto next = takeQueuedPrompt(session, false); userRequest(next.text, next.context);
         }
     }

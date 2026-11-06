@@ -25,6 +25,9 @@ int main(string[] argv)
     const helper = runFilesystemHelperMode(argv); if (helper >= 0) return helper;
     const permission = `{"required_fact":"Whether I may close the running window, or the user will close it","reason":"The release link step cannot overwrite a mapped image","question":"A running window maps the executable. Do you want me to close it, or will you close it yourself?","checked":["Process and output inspected"],"independent_work_complete":true}`;
     assert(taskBlockerError(permission).indexOf("Recover internally") >= 0);
+    const deliveryPermission = `{"blocked_steps":["step-publish-release"],"checked":["publish.log","tools/publish-forge.py","git status","AGENTS.md"],"independent_work_complete":true,"question":"The computer-use fix is live locally. To publish the update, the whole source tree must be committed and pushed to the maintainer branch, and this worktree also contains unrelated uncommitted work (the queued follow-up changes). Should I commit and publish those queued follow-up edits together with this fix, or leave the release local-only for now?","reason":"The release upload is rejected while the source tree is dirty, and only you can decide whether another session's uncommitted queued follow-up work may be committed and pushed publicly as part of this release.","required_fact":"Whether the unrelated uncommitted queued follow-up edits in this worktree may be committed and pushed to the maintainer branch when publishing this computer-use fix"}`;
+    assert(taskBlockerError(deliveryPermission).indexOf("authorized work") >= 0,
+        "A delivery-permission question was accepted as an essential missing fact");
     const essential = `{"required_fact":"Deployment destination","reason":"Destination absent from local configuration","question":"Which deployment server should I use?","checked":["Local deployment configuration"],"independent_work_complete":true}`;
     assert(!taskBlockerError(essential).length, taskBlockerError(essential));
     ChatSession waiting;
@@ -35,6 +38,10 @@ int main(string[] argv)
     waiting.messages[$-1].toolArgs=permission;
     assert(!taskAwaitingInput(waiting));
     assert(taskContinuation(waiting,true).action != TaskContinuationAction.settle);
+    waiting.messages[$-1].toolArgs=deliveryPermission;
+    assert(!taskAwaitingInput(waiting));
+    assert(taskContinuation(waiting,true).action != TaskContinuationAction.settle,
+        "A saved delivery-permission pause left the active goal idle");
     waiting.messages[$-1].toolArgs=essential;
     assert(taskAwaitingInput(waiting));
     assert(taskContinuation(waiting,true).action == TaskContinuationAction.settle);

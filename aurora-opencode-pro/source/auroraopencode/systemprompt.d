@@ -354,7 +354,16 @@ private string toolPolicySection(in SystemPromptContext ctx)
             "then `webfetch` to read a chosen result URL.\n";
     // experimental: computer use - delete with source/auroraopencode/computeruse.d
     if (experimentalComputerUseEnabled())
-        text ~= "Computer use is enabled: drive the desktop with the " ~
+        text ~= "Computer use is enabled, but it is a last resort: use the " ~
+            "`computer` tool only when the outcome genuinely requires the desktop - " ~
+            "verifying rendered GUI behavior or pixels, or driving an application " ~
+            "that has no CLI, API or file-based route. When code, files or a program " ~
+            "can establish the same fact, use `read`, `edit`, `run` (a minimal probe " ~
+            "or test) or `webfetch` instead: writing a small check and running it " ~
+            "is cheaper and more reliable than driving the desktop, so do not " ~
+            "reach for `computer` just to try something out. State the " ~
+            "desktop-only reason before the first `computer` call. When it is " ~
+            "needed, drive the desktop with the " ~
             "`computer` tool (screen, click, type, key, scroll). Each call " ~
             "costs a full model turn, so batch a short sequence with `steps` " ~
             "and take one screenshot at the end instead of a screen -> act -> " ~

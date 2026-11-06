@@ -1,0 +1,100 @@
+{
+  "name": "aurora-write",
+  "description": "Aurora Write — a plain English writing surface with an inline, caret-anchored concision optimizer that answers instantly and refines with a language model",
+  "authors": [
+    "aurora-gui contributors"
+  ],
+  "copyright": "Copyright (C) 2026 aurora-gui contributors",
+  "license": "0BSD",
+  "targetType": "executable",
+  "targetName": "aurora-write",
+  "mainSourceFile": "source/app.d",
+  "sourcePaths": [
+    "source",
+    "../vendor/aurora-d-0.4.5/source"
+  ],
+  "libs-windows": [
+    "user32",
+    "gdi32",
+    "shell32",
+    "wininet"
+  ],
+  "libs-linux": [
+    "X11",
+    "dl"
+  ],
+  "lflags-osx": [
+    "-framework",
+    "AppKit",
+    "-framework",
+    "CoreGraphics",
+    "-framework",
+    "CoreFoundation",
+    "-framework",
+    "QuartzCore",
+    "-lobjc"
+  ],
+  "configurations": [
+    {
+      "name": "default",
+      "targetType": "executable",
+      "targetName": "aurora-write",
+      "mainSourceFile": "source/app.d",
+      "lflags-windows": [
+        "/SUBSYSTEM:WINDOWS",
+        "/ENTRY:mainCRTStartup"
+      ]
+    },
+    {
+      "name": "smoke",
+      "targetType": "executable",
+      "targetName": "aurora-write-smoke",
+      "mainSourceFile": "tests/headless_smoke.d",
+      "sourcePaths": [
+        "source",
+        "tests",
+        "../vendor/aurora-d-0.4.5/source"
+      ],
+      "excludedSourceFiles": [
+        "source/app.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE"
+      ]
+    },
+    {
+      "name": "probe",
+      "targetType": "executable",
+      "targetName": "aurora-write-probe",
+      "mainSourceFile": "tests/interaction_probe.d",
+      "sourcePaths": [
+        "source",
+        "tests",
+        "../vendor/aurora-d-0.4.5/source"
+      ],
+      "excludedSourceFiles": [
+        "source/app.d",
+        "tests/headless_smoke.d"
+      ],
+      "lflags-windows": [
+        "/SUBSYSTEM:CONSOLE"
+      ]
+    }
+  ],
+  "buildTypes": {
+    "portable-release": {
+      "buildOptions": [
+        "releaseMode",
+        "optimize",
+        "inline"
+      ],
+      "dflags-windows-dmd": [
+        "-mscrtlib=libcmt"
+      ],
+      "dflags-windows-ldc": [
+        "-mscrtlib=libcmt"
+      ]
+    }
+  },
+  "version": "0.1.0"
+}

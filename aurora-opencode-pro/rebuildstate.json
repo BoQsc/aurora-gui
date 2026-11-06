@@ -1,16 +1,16 @@
 {
   "status": "ok",
   "phase": "relaunching",
-  "reason": "",
+  "reason": "Settled virtualized transcript measurement and an exact one-step jump to latest, plus the new scroll/follow regression fixture.",
   "command": "dub build --build=release",
   "exe": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\aurora-opencode-pro.exe",
   "dir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
-  "startedAt": "2026-11-05 06:34:06.4070672 UTC",
-  "finishedAt": "2026-11-05 06:35:04.7297989 UTC",
-  "durationMs": 58322,
+  "startedAt": "2026-11-05 18:11:33.2497821 UTC",
+  "finishedAt": "2026-11-05 18:12:49.9785027 UTC",
+  "durationMs": 76729,
   "exitCode": 0,
   "errors": [],
-  "publishStatus": "published",
-  "publishDetail": "Published and publicly verified aurora-opencode-pro.exe to Forge project fg_698edca9f4704bcc (778e230449d4).",
+  "publishStatus": "failed",
+  "publishDetail": "Publishing with installed runtime required: MSVCR120.dll",
   "publishLog": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\publish.log"
 }

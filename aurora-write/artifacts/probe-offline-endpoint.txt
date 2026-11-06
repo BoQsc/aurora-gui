@@ -1,0 +1,13 @@
+provider: aurora-opencode
+base url: http://127.0.0.1:8080/v1
+model: spark-dspark
+thinking: false
+instant target: 'utilize' (1 words)
+  instant 1: 'use' (1 words)
+  instant 2: 'apply' (1 words)
+  instant 3: 'employ' (1 words)
+  instant 4: 'exercise' (1 words)
+model ok: false
+model error: 'Request failed (12029).'
+model ms: 0
+model definition: ''

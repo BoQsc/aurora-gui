@@ -739,7 +739,6 @@ TaskStep[] normalizedPlan(const ref ChatSession session, JSONValue value, const(
 
 string planUpdateText(const ref ChatSession session, string arguments)
 {
-    if (!experimentalStrictPlanEnabled()) return "Plan updated";
     const root = parseJSON(arguments);
     const replacement = "replace_entire_plan" in root.object && root["replace_entire_plan"].type == JSONType.true_;
     const(TaskStep)[] steps = "plan" in root.object ? normalizedPlan(session, root["plan"], session.taskSteps, !replacement, incrementalPlan(root)) : session.taskSteps;
@@ -748,7 +747,14 @@ string planUpdateText(const ref ChatSession session, string arguments)
     if (auto reason = "explanation" in root.object)
         if (reason.type == JSONType.string && reason.str.length) output.put(" (" ~ reason.str ~ ")");
     output.put(":");
-    if ("plan" in root.object) foreach (i, step; steps)
+    if ("plan" in root.object)
+    {
+        const changes = planChangeLines(session.taskSteps, steps);
+        if (changes.length > 0)
+            foreach (change; changes) output.put("\n- " ~ change);
+        else output.put("\n- No checklist changes.");
+    }
+    if (experimentalStrictPlanEnabled() && "plan" in root.object) foreach (i, step; steps)
     {
         const marker = step.status == "completed" ? "[x]" : step.status == "in_progress" ? "[>]" : "[ ]";
         output.put("\n" ~ to!string(i + 1) ~ ". " ~ marker ~ " " ~ step.text);
@@ -770,6 +776,63 @@ string planUpdateText(const ref ChatSession session, string arguments)
                 }
     }
     return output.data;
+}
+
+private string planStatusLabel(string status)
+{
+    return status == "in_progress" ? "in progress" : status;
+}
+
+/// Name the deltas between the live checklist and the submitted one. This is
+/// the tool result's content, so it explains what a plan update changed even
+/// when experimental strict-plan formatting is disabled.
+private string[] planChangeLines(const(TaskStep)[] previous,
+    const(TaskStep)[] steps)
+{
+    string[] changes;
+    bool[] matched;
+    matched.length = previous.length;
+    size_t lastIndex = size_t.max;
+    int matchedCount;
+    bool reordered;
+    foreach (step; steps)
+    {
+        size_t oldIndex = size_t.max;
+        foreach (i, old; previous)
+            if (samePlanStep(old, step))
+            {
+                oldIndex = i;
+                break;
+            }
+        if (oldIndex == size_t.max)
+        {
+            changes ~= "Added \"" ~ step.text ~ "\" (" ~
+                planStatusLabel(step.status) ~ ")";
+            continue;
+        }
+        matched[oldIndex] = true;
+        if (matchedCount > 0 && oldIndex < lastIndex) reordered = true;
+        lastIndex = oldIndex;
+        ++matchedCount;
+        const old = previous[oldIndex];
+        if (old.status != step.status)
+            changes ~= "\"" ~ step.text ~ "\": " ~
+                planStatusLabel(old.status) ~ " -> " ~
+                planStatusLabel(step.status);
+        if (old.text != step.text)
+            changes ~= "Renamed \"" ~ old.text ~ "\" to \"" ~ step.text ~ "\"";
+        if (old.done != step.done)
+            changes ~= "Acceptance updated for \"" ~ step.text ~ "\"";
+        if (old.blocker != step.blocker)
+            changes ~= step.blocker.length
+                ? "Blocker for \"" ~ step.text ~ "\": " ~ step.blocker
+                : "Blocker cleared for \"" ~ step.text ~ "\"";
+    }
+    foreach (i, old; previous)
+        if (!matched[i] && old.status != "completed")
+            changes ~= "Removed \"" ~ old.text ~ "\"";
+    if (reordered) changes ~= "Reordered outcomes";
+    return changes;
 }
 
 TaskWorkContext workContextForPlan(const ref ChatSession session, const(TaskStep)[] steps, JSONValue root = JSONValue.init)

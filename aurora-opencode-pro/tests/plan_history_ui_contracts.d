@@ -1,6 +1,7 @@
 module plan_history_ui_contracts;
 
 import aurora;
+import aurora.testing : UiTestDriver;
 import auroraopencode.appui : OpenCodeRoot;
 import auroraopencode.core : Settings, saveSettings,
     setOpencodeStateDirectoryForTesting, opencodeTheme;
@@ -10,6 +11,7 @@ import std.file : mkdirRecurse, rmdirRecurse, tempDir;
 import std.json : JSONType, JSONValue, parseJSON;
 import std.path : buildPath;
 import std.stdio : writeln;
+import std.string : indexOf;
 import std.uuid : randomUUID;
 
 private OpenCodeRoot startRoot(ref GuiWindow window)
@@ -93,6 +95,81 @@ int main()
         assert(restored["planHistory"][0]["explanation"].str == "Initial plan");
         assert(restored["planHistory"][0]["source"].str == "update_plan");
         assert(restored["planHistory"][1]["steps"][0]["status"].str == "in_progress");
+
+        // The action-group header stays generic; the settled tool result's
+        // content must say what changed.
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Show the plan change"]);
+        const initial = `{"explanation":"Initial plan",` ~
+            `"plan":[{"step":"Inspect inputs","id":"inspect","status":"pending"},` ~
+            `{"step":"Patch parser","id":"patch","status":"pending"}]}`;
+        root.injectToolResultForTesting("update_plan", "", false, initial);
+        auto headers = root.toolGroupHeaderTextsForTesting();
+        assert(headers.length == 1 &&
+            headers[0].indexOf("Updated the plan") >= 0 &&
+            headers[0].indexOf("Initial plan") < 0,
+            "Plan details leaked into the action-group header: " ~
+            (headers.length ? headers[0] : "(none)"));
+        auto content = root.toolResultForTesting(0);
+        assert(content.indexOf("Initial plan") >= 0 &&
+            content.indexOf("Added \"Inspect inputs\" (pending)") >= 0 &&
+            content.indexOf("Added \"Patch parser\" (pending)") >= 0,
+            "Plan content omitted the initial change: " ~ content);
+
+        // Patch updates carry only stable IDs, so resolve them against the
+        // current checklist and name the step whose status changed.
+        const patched = `{"plan_mode":"patch","plan":[{"id":"inspect","status":"in_progress"}]}`;
+        root.injectToolResultForTesting("update_plan", "", false, patched);
+        headers = root.toolGroupHeaderTextsForTesting();
+        assert(headers.length == 1 &&
+            headers[0].indexOf("Updated the plan") >= 0 &&
+            headers[0].indexOf("Inspect inputs") < 0,
+            "Plan patch detail leaked into the action-group header: " ~
+            (headers.length ? headers[0] : "(none)"));
+        content = root.lastToolResultForTesting();
+        assert(content.indexOf(
+            "\"Inspect inputs\": pending -> in progress") >= 0,
+            "Plan content omitted the patched status change: " ~ content);
+
+        // A routine full-plan progress update has no explanation. Its content
+        // names both status transitions.
+        const progressed = `{"plan":[` ~
+            `{"step":"Inspect inputs","id":"inspect","status":"completed"},` ~
+            `{"step":"Patch parser","id":"patch","status":"in_progress"}]}`;
+        root.injectToolResultForTesting("update_plan", "", false, progressed);
+        headers = root.toolGroupHeaderTextsForTesting();
+        assert(headers.length == 1 &&
+            headers[0].indexOf("Updated the plan") >= 0 &&
+            headers[0].indexOf("Patch parser") < 0,
+            "Routine progress leaked into the action-group header: " ~
+            (headers.length ? headers[0] : "(none)"));
+        content = root.lastToolResultForTesting();
+        assert(content.indexOf(
+            "\"Inspect inputs\": in progress -> completed") >= 0 &&
+            content.indexOf(
+                "\"Patch parser\": pending -> in progress") >= 0,
+            "Plan content omitted routine progress: " ~ content);
+
+        // A single-update fixture keeps the rendered content easy to inspect:
+        // expand the action group and its tool row before capturing it.
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Render plan content"]);
+        root.applyPlanForTesting(initial);
+        const rendered = `{"plan_mode":"patch","plan":[` ~
+            `{"id":"inspect","status":"completed"},` ~
+            `{"id":"patch","status":"in_progress"}]}`;
+        root.injectToolResultForTesting("update_plan", "", false, rendered);
+        root.projectTranscriptForTesting();
+        root.toggleFirstToolGroupForTesting();
+        root.toggleFirstToolBubbleForTesting();
+        root.scrollToForTesting(int.max);
+        auto driver = new UiTestDriver(window);
+        assert(driver.paint(), "Expanded plan update content did not paint");
+        assert(!root.firstToolGroupCollapsedForTesting() &&
+            !root.firstToolBubbleCollapsedForTesting(),
+            "The plan update content fixture did not stay expanded");
+        window.saveScreenshot("build/plan-action-content.ppm");
+
         root.shutdownClient();
         window.close();
     }

@@ -1,0 +1,19 @@
+provider: own
+base url: https://api.commandcode.ai/provider/v1
+model: deepseek/deepseek-v4.1-flash
+thinking: true
+instant target: 'due to the fact that' (5 words)
+  instant 1: 'because' (1 words)
+model ok: true
+model error: ''
+model ms: 9195
+model definition: 'Because of the fact that follows.'
+  model 1: 'because' (1 words) — For the reason that.
+  model 2: 'since' (1 words) — For the reason that.
+  model 3: 'as' (1 words) — For the reason that.
+  model 4: 'seeing that' (2 words) — Because it is true that.
+  model 5: 'given that' (2 words) — Because it is true that.
+  model 6: 'considering that' (2 words) — Because it is true that.
+  model 7: 'inasmuch as' (2 words) — Because of the fact that.
+  model 8: 'being that' (2 words) — Because of the fact that.
+raw answer: {"definition":"Because of the fact that follows.","choices":[{"text":"because","gloss":"For the reason that."},{"text":"since","gloss":"For the reason that."},{"text":"as","gloss":"For the reason that."},{"text":"seeing that","gloss":"Because it is true that."},{"text":"given that","gloss":"Because it is true that."},{"text":"considering that","gloss":"Because it is true that."},{"text":"inasmuch 

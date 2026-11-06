@@ -1,0 +1,24 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/dub.json",
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/assets",
+    "aurora-opencode-pro/tests/recovery_quality_contracts.d",
+    "aurora-opencode-pro/tests/input_recovery_ui_contracts.d",
+    "aurora-opencode-pro/tests/test_input_recovery.py",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "python",
+        "args": ["-B", "tests/test_input_recovery.py"],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 300000
+      }
+    }
+  ]
+}

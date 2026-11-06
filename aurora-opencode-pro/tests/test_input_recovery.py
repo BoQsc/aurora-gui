@@ -13,9 +13,9 @@ class Provider(http.server.BaseHTTPRequestHandler):
   self.send_response(200);self.send_header("Content-Length",str(len(body)));self.send_header("Connection","close");self.end_headers();self.wfile.write(body)
  def do_POST(self):
   messages=json.loads(self.rfile.read(int(self.headers["Content-Length"])))["messages"]
-  prompt=next((m["content"] for m in reversed(messages) if m["role"]=="user" and m.get("content") in ["Resume the paused fixture.","Resolve the technical input fixture."]),None)
+  prompt=next((m["content"] for m in reversed(messages) if m["role"]=="user" and m.get("content") in ["Resume the paused fixture.","Resume the goal fixture.","Resolve the technical input fixture."]),None)
   if prompt is None:failures.append("A genuine input pause or Stop started a model request");self.send_error(500);return
-  scenario="resume" if prompt.startswith("Resume") else "trap";rounds[scenario]+=1
+  scenario="goal" if prompt.endswith("goal fixture.") else "resume" if prompt.startswith("Resume") else "trap";rounds[scenario]+=1
   owners=set();results={}
   for m in messages:
    for t in m.get("tool_calls",[]):owners.add(t["id"])
@@ -23,8 +23,13 @@ class Provider(http.server.BaseHTTPRequestHandler):
     identity=m["tool_call_id"]
     if identity not in owners or identity in results:failures.append("Unpaired tool result")
     results[identity]=m["content"]
-  tools=[];content="";writer=scenario+"-write";planner=scenario+"-plan"
+  tools=[];content="";writer=scenario+"-write";planner=scenario+"-plan";goalComplete=scenario+"-goal"
   if scenario=="trap" and "false-input" not in results:tools=[call("false-input","request_input",permission)]
+  elif scenario=="goal":
+   if "goal-read" not in results:tools=[call("goal-read","read",{"filePath":"resumed.md"})]
+   elif planner not in results:tools=[call(planner,"update_plan",{"plan":[{"id":"goal","step":"Recover goal fixture","kind":"other","status":"completed","evidence":["goal-read"]}]})]
+   elif goalComplete not in results:tools=[call(goalComplete,"goal_complete",{"summary":"Goal fixture recovered.","evidence":["goal-read"]})]
+   else:content="Goal fixture completed."
   elif writer not in results:
    if scenario=="trap" and "Recover internally" not in results["false-input"]:failures.append("Technical permission question was accepted")
    tools=[call(writer,"write",{"filePath":"resumed.md" if scenario=="resume" else "resolved.md","content":"Recovered" if scenario=="resume" else "Resolved"})]
@@ -52,7 +57,7 @@ try:
   assert rounds=={"trap":4},rounds
  else:
   subprocess.run([sys.executable,str(package/"tests/run_architecture_checks.py"),"recovery_quality_contracts","input_recovery_ui_contracts"],env=env,check=True,timeout=180)
-  assert rounds=={"resume":3,"trap":4},rounds
+  assert rounds=={"resume":3,"goal":4,"trap":4},rounds
  assert not failures,failures
  print("PASS automatic false-pause recovery; genuine input and Stop preserved",dict(rounds))
 finally:server.shutdown();server.server_close()

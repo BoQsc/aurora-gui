@@ -97,8 +97,11 @@ int main()
     append(session, "user", "Continue and complete the task.");
     assert(taskContinuation(session, true).stalled == 0, "New human turn did not reset retries");
     assert(taskContinuation(session, false).action == TaskContinuationAction.settle);
+    // A queued follow-up waits for the agent to stop working; it never ends
+    // authorized work early.
     session.queuedFollowUps = ["Next request"];
-    assert(taskContinuation(session, true).action == TaskContinuationAction.settle);
+    assert(taskContinuation(session, true).action != TaskContinuationAction.settle,
+        "a queued follow-up settled unfinished work");
     session.queuedFollowUps = null;
     session.taskStatus = "waiting_input";
     append(session, "tool", "Essential destination missing", false, "request_input",

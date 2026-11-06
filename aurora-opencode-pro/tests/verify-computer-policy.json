@@ -1,0 +1,28 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/systemprompt.d",
+    "aurora-opencode-pro/source/auroraopencode/computeruse.d",
+    "aurora-opencode-pro/source/auroraopencode/tools.d",
+    "aurora-opencode-pro/tests/computer_policy_probe.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "C:\\D\\dmd2\\windows\\bin64\\dmd.exe",
+        "args": ["-i", "-verrors=20", "-Isource", "-Ishared", "-Itests", "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source", "-Jassets", "-ofbuild/verify-computer-policy.exe", "tests/computer_policy_probe.d", "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib"],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro\\build\\verify-computer-policy.exe",
+        "args": [],
+        "workdir": "C:\\Users\\windows10\\Documents\\github_repositories\\aurora-gui\\aurora-opencode-pro",
+        "timeout": 300000
+      }
+    }
+  ]
+}

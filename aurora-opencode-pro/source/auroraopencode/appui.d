@@ -9733,6 +9733,12 @@ private final class ChatScrollView : ScrollView
         _holdPending = false;
         _anchorGrow = 0;
         follow = true;
+        // A virtualized transcript has only measured the rows around the
+        // reader's old offset, so maxScroll() is an estimate until the content
+        // is laid out again. Lay it out now and pin to the bottom that
+        // measurement found: snapping first landed short of the newest content
+        // and moved again on the next layout.
+        if (bounds().height > 0) layoutTree();
         _layoutScrollChange = true;
         setScrollY(maxScroll());
         _layoutScrollChange = false;
@@ -13239,6 +13245,7 @@ private string _suggestExcludeId;
         if (_current < 0 || _current >= cast(int) _sessions.length || !ensureThreadLoaded(_current)) return false;
         auto session = &_sessions[_current];
         if (initializeLegacyTask(*session)) { publishThreadUpdated(*session); markDirty(); }
+        if (turnIsBusy()) return false;
         if (session.taskStatus != "waiting_input" || session.turnStatus != "completed" || taskAwaitingInput(*session) ||
             !toolsEnabledForSession(*session) || !_settings.apiKey.length) return false;
         session.taskStatus = "active"; session.contract.blocker = "";
@@ -13246,10 +13253,12 @@ private string _suggestExcludeId;
         if (!_resumeCountdown)
         {
             _resumeTargets = [_current]; _resumeTarget = _current; _resumeOwnerId = session.id;
-            _resumePrompt = "Continuation request: the previous request_input paused this task for a recoverable technical obstacle, without an essential missing user fact. " ~
-                "Resume the authorized objective and unfinished outcomes now. Keep the user's running applications intact. " ~
-                "Use verify to isolate locked compiler outputs, or use a separate output path. Preserve completed work and current recipe evidence; " ~
-                "routine process inspection does not invalidate unchanged verification inputs. Continue with useful actions; do not ask permission or repeat a delivery summary while work remains.";
+            _resumePrompt = "Continuation request: the previous request_input paused this task without an essential missing user fact. " ~
+                "Resume the authorized objective and unfinished outcomes now. Keep completed work and current evidence, and make routine execution and delivery choices yourself. " ~
+                "Do not ask permission to continue, do not commit or publish unrelated work without authorization, and report any genuine limitation instead of pausing again. " ~
+                "Keep the user's running applications intact. Use verify to isolate locked compiler outputs, or use a separate output path. " ~
+                "Preserve current recipe evidence; routine process inspection does not invalidate unchanged verification inputs. " ~
+                "Continue with useful actions; do not repeat a delivery summary while work remains.";
             _resumeCountdown = resumeDelayTicks;
         }
         else if (!_resumeTargets.canFind(_current)) _resumeTargets ~= _current;
@@ -17061,6 +17070,11 @@ private string _suggestExcludeId;
         refreshUsageBadge();
         refreshTimerBadge(true);
         updateGoalBar();
+        // A saved input pause that no longer names an essential fact must not
+        // leave an active goal looking idle. Retry the startup recovery now
+        // that this conversation is visible; lazy history retries it in
+        // drainHistoryResults once the messages are available.
+        recoverInvalidInputPause();
         // Re-list only when the unread dot cleared; opening a conversation does
         // not reorder a recency list.
         if (clearedUnread) updateSessionList();
@@ -20487,7 +20501,11 @@ private void pollButtonSuggestionRequest()
         }
         markUnreadIfBackground(sessionIndex);
         if (decision.action == TurnAction.waitInput) updateGoalBar();
-        if (decision.action != TurnAction.settle) return;
+        // A queued follow-up opens only once the agent has stopped: the turn
+        // settled or paused for required input. It never ends scheduled
+        // continuation work early.
+        if (decision.action != TurnAction.settle &&
+            decision.action != TurnAction.waitInput) return;
         if (session.messages.length && session.messages[$ - 1].id == session.activeLeafId)
         {
             session.messages[$ - 1].taskStateJson = activeTaskStateJson(*session);
@@ -30391,6 +30409,7 @@ private void pollButtonSuggestionRequest()
                         rebuildMessageColumn();
                         refreshUsageBadge();
                         updateStatus("Conversation loaded.");
+                        recoverInvalidInputPause();
                     }
                     break;
                 }

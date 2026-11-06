@@ -973,6 +973,24 @@ int main(string[] args)
         assert(enabledInNative, "native toolset must expose computer");
         assert(toolSteeringPrompt(true).indexOf("`computer`") >= 0,
             "enabled computer use must appear in the steering prompt");
+        // Enabling the tool must not read as "drive the desktop". Both the tool
+        // policy and the tool schema have to state that the desktop is a last
+        // resort, so a model prefers code/file/run probes when they can prove
+        // the same fact.
+        const computerSteering = toolSteeringPrompt(true);
+        assert(computerSteering.indexOf("last resort") >= 0,
+            "the steering prompt must make computer use a last resort");
+        assert(computerSteering.indexOf("`run` (a minimal probe") >= 0,
+            "the steering prompt must name the programmatic alternative");
+        string computerDescription;
+        foreach (tool; builtinToolDefinitions())
+            if (tool.name == "computer") computerDescription = tool.description;
+        assert(computerDescription.indexOf("Last resort") >= 0,
+            "the computer tool description must state the necessity rule: " ~
+            computerDescription);
+        assert(computerDescription.indexOf("running a probe or test") >= 0,
+            "the computer tool description must prefer code checks: " ~
+            computerDescription);
 
         // A call with no action fails deterministically before any desktop use.
         auto noAction = executeTool(makeCall("computer", `{}`), dir);

@@ -13,6 +13,7 @@
         "program": "dmd",
         "args": [
           "-i",
+          "-lowmem",
           "-verrors=20",
           "-Isource",
           "-Ishared",

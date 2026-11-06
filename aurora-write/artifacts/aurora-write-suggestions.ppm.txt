@@ -1,0 +1,13 @@
+card open: true
+panel: 560x122
+choices: 4
+  choice 1: 'use' (1 words)
+  choice 2: 'apply' (1 words)
+  choice 3: 'employ' (1 words)
+  choice 4: 'exercise' (1 words)
+target: 'utilize'
+definition: 'To put something to practical use.'
+status left: 41 words · 232 characters · 0 saved
+status right: deepseek/deepseek-v4.1-flash · Think off
+provider: own (https://api.commandcode.ai/provider/v1)
+model: deepseek/deepseek-v4.1-flash

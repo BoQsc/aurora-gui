@@ -218,6 +218,30 @@ class TextEditor : Widget
     }
     size_t selectionAnchor() const @safe pure nothrow @nogc { return _anchor; }
     bool hasSelection() const @safe pure nothrow @nogc { return _cursor != _anchor; }
+
+    /**
+     * The insertion caret's rectangle in widget-local logical coordinates.
+     *
+     * Completion, spell-check and selection UI anchors to the caret. Rebuilding
+     * that geometry from the font and line index in the application drifts as
+     * soon as the field scrolls or centres single-line content, so the editor
+     * reports the rectangle it paints: content origin (padding, scroll,
+     * alignment) plus the layout caret, with the painted caret's 2 px trim so a
+     * caller can sit a panel immediately above the glyph row.
+     */
+    Rect caretRect()
+    {
+        auto layout = ensureLayout();
+        const originX = contentOriginX(layout);
+        const originY = _padding - cast(int) floor(scrollOriginY(layout));
+        if (layout.lines.length == 0)
+            return Rect(originX, originY, 1, maxInt(2, layout.measuredSize().height));
+        const caret = layout.caretPosition(_cursor, _caretAffinity);
+        return Rect(originX + cast(int) floor(caret.x + 0.5),
+            originY + cast(int) floor(caret.y + 1.0), 1,
+            maxInt(2, cast(int) ceil(caret.height) - 2));
+    }
+
     Scrollbar verticalScrollbar() @safe pure nothrow @nogc
     {
         return _verticalScrollbar;

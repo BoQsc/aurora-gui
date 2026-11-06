@@ -117,9 +117,12 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     bool strictPlan = experimentalStrictPlanEnabled())
 {
     TaskContinuation result;
+    // A queued follow-up never ends authorized work early: the turn keeps
+    // following unfinished plan steps and the queue opens only once the agent
+    // has actually stopped (see the turn settlement dispatch sites).
     if (!toolsEnabled || taskAwaitingInput(session) || taskInvestigation(session) ||
         (session.contract.currentIntent == "analysis" && verificationOnly(session)) ||
-        session.queuedFollowUps.length || !unfinishedTask(session, strictPlan)) return result;
+        !unfinishedTask(session, strictPlan)) return result;
     auto path = activeMessagePath(session);
     size_t begin;
     string request;
@@ -266,11 +269,19 @@ string taskBlockerError(string arguments)
         if (!field("reason").length || !field("question").length || !field("required_fact").length)
             return "request_input requires reason, question and the essential user-owned required_fact. Routine tool, testing and planning choices are yours to resolve.";
         const question = field("question").toLower().split().join(" ");
-        foreach (phrase; ["may i ", "can i ", "should i ", "shall i ", "would you like", "do you want", "permission", "say continue"])
+        foreach (phrase; ["may i ", "may we ", "can i ", "can we ", "should i ", "should we ",
+                "shall i ", "shall we ", "would you like", "do you want", "permission", "say continue"])
             if (question.startsWith(phrase))
                 return "Continue the authorized work. Do not ask permission for routine execution or verification.";
         const need = field("required_fact").toLower().split().join(" ");
         const context = (field("reason") ~ " " ~ need ~ " " ~ field("question")).toLower().split().join(" ");
+        // Committing and publishing a completed delivery is authorized work,
+        // not an essential missing fact. A dirty worktree is a delivery
+        // constraint to handle or report, so do not let a permission question
+        // leave the goal active but idle behind waiting_input.
+        if (matchFirst(question, `\b(?:may|should|shall|can|could) (?:i|we) (?:also )?(?:commit|push|publish|merge|release|ship|deliver)\b`) ||
+            matchFirst(need, `\bwhether\b.*\b(?:may|can|should|could)\b.*\b(?:commit|push|publish|merge|release|ship|deliver)\b`))
+            return "Recover internally: committing and publishing this task's completed delivery is authorized work, not missing user information. Commit or publish only the work this task changed; if that is not possible, report the local-only limitation instead of pausing for permission. Do not commit unrelated work without authorization.";
         if (matchFirst(need, `\b(permission|approval|consent|whether i|whether we|may i|can i|allowed to|close .*window|close .*process)\b`) ||
             matchFirst(question, `\b(do you want me to|will you .*yourself|(?:may|should) i (?:close|stop|kill|run|test|continue)|permission to|say continue)\b`))
             return "Recover internally: this asks for permission for a routine workaround, not missing user information. Preserve the running application; build and test a unique output instead of closing its window.";

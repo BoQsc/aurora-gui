@@ -44,6 +44,23 @@ int main()
     assert(root.taskStatusForTesting()=="completed"&&readText(buildPath(workspace,"resumed.md"))=="Recovered");
     writeln("PASS the visible saved false pause resumes without another user message");
 
+    const deliveryPermission = `{"blocked_steps":["publish"],"checked":["publish log","git status"],"independent_work_complete":true,"question":"The fix is live locally. To publish the update the whole source tree must be committed, and this worktree also contains unrelated changes. Should I commit and publish those unrelated changes together with this fix, or leave the release local-only for now?","reason":"The release upload is rejected while the source tree is dirty.","required_fact":"Whether the unrelated uncommitted changes may be committed and pushed to the maintainer branch when publishing this fix"}`;
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"],["Resume the goal fixture."]);
+    root.setGoalForTesting("Deliver the recovered fixture.","active");
+    root.setTaskStateForTesting("Resume the goal fixture.","waiting_input","not_required");
+    root.appendToolMessageForTesting("request_input","Required information: delivery permission",
+        deliveryPermission,0,0,"");
+    const pausedIndex=root.currentSessionForTesting();
+    root.setSessionTurnStatusForTesting(pausedIndex,"completed");
+    root.newChatForTesting();
+    root.selectSessionForTesting(pausedIndex);
+    until(delegate(){return root.currentSessionForTesting()==pausedIndex&&
+        root.lastAssistantContentForTesting()=="Goal fixture completed."&&!root.turnBusyForTesting();});
+    assert(root.taskStatusForTesting()=="completed"&&root.goalStatusForTesting()=="completed",
+        "Opening a delivery-permission pause did not resume and complete the goal");
+    writeln("PASS opening a saved delivery-permission pause resumes the active goal");
+
     root.newChatForTesting(); root.setInputForTesting("Resolve the technical input fixture."); root.sendForTesting();
     until(delegate(){return root.lastAssistantContentForTesting()=="Technical obstacle recovered."&&!root.turnBusyForTesting();});
     assert(root.taskStatusForTesting()=="completed"&&readText(buildPath(workspace,"resolved.md"))=="Resolved");

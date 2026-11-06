@@ -310,6 +310,10 @@ public OpenCodeToolDef[] experimentalComputerUseTools()
     return [
         OpenCodeToolDef(
             "computer",
+            "Last resort: use this only when the outcome genuinely requires " ~
+            "the desktop (GUI-only application, rendered pixels, no CLI, API " ~
+            "or file route); prefer reading/editing code and running a probe " ~
+            "or test to establish the same fact. " ~
             "Drive the local desktop like a person at the keyboard: `screen` " ~
             "returns a screenshot, and `click`, `double_click`, `right_click`, " ~
             "`mouse_move`, `drag`, `type`, `key`, `key_down`, `key_up`, " ~

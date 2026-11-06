@@ -68,10 +68,15 @@ permission questions, implementation/file/test choices and locked-build
 obstacles are rejected with recovery guidance. A supplied fact or short approval
 such as "go ahead" resumes the same objective; unrelated conversational
 follow-ups still stop. The legacy `task_blocker` name follows these same rules.
+Commit/publish permission questions are also rejected: completed delivery is
+authorized work, and a dirty worktree is handled by committing only this task's
+changes or by reporting the local-only limitation.
 
 The waiting state must correspond to an accepted essential-information request
 on the active branch after the latest user message. On startup, a completed
 false pause in the visible chat resumes the unfinished objective automatically.
+Opening a conversation retries that recovery after its lazy history loads, so a
+saved false pause cannot leave an active goal looking permanently idle.
 Genuine missing facts and an explicit Stop remain respected. Legacy plans gain
 a durable identity anchored before their first matching task snapshot, so a
 later question or short confirmation does not hide earlier task evidence.

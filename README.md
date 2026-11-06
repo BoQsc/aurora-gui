@@ -197,6 +197,22 @@ Launch with `aurora-notepad\RUN-WINDOWS.bat`; the software-renderer variant is
 caption buttons, maximize, drag-snap, preview transparency, and title updates
 through the real `UiTestDriver` dispatch path.
 
+## Aurora Write
+
+A plain English writing surface with a concision optimizer (`aurora-write/`).
+Typing resolves one span at the caret — the longest known wordy phrase covering
+it, else the word with its regular inflections — and a caret card offers six to
+eight shorter rewrites plus a one-sentence definition, instantly and offline.
+After a 450 ms pause the same span is refined by any OpenAI-compatible
+`/chat/completions` endpoint on a worker thread; `Ctrl+T` sends
+`reasoning_effort: high` for the deliberate pass, so results appear without
+thinking first.
+
+Launch with `aurora-write\RUN-WINDOWS.bat`; verify with
+`aurora-write\VERIFY-WINDOWS.bat` (unit tests, a 60-check headless contract test,
+and a screenshot). Applying a choice is one ordinary edit, so `Ctrl+Z` restores
+the original words. See `aurora-write/README.md`.
+
 ## Aurora RustDesk
 
 A RustDesk-style remote desktop (`aurora-rustdesk/`). Each computer has a
