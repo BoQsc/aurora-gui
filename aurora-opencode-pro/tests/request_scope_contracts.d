@@ -51,7 +51,9 @@ int main()
         "The rewrite stopped enforcing useful action on the current request");
     const current = s.contract.id;
     request(s, "Why is it still not switching immediately?");
-    assert(s.contract.id == current && taskContinuation(s, true).action == TaskContinuationAction.settle);
+    assert(s.contract.id == current && s.contract.currentIntent == "diagnosis");
+    assert(taskContinuation(s, true).action == TaskContinuationAction.continueWork,
+        "A why-question settled instead of investigating and resolving the failure");
     request(s, "continue");
     assert(s.contract.id == current && taskContinuation(s, true).action != TaskContinuationAction.settle);
     ChatSession restored; restoreActiveTaskState(restored, activeTaskStateJson(s));

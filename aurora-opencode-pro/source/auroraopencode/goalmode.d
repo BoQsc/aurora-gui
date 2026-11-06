@@ -37,7 +37,7 @@ public bool goalIsAnswerOnly(string goal)
 {
     const intent = requestIntent(goal);
     return answerOnlyRequest(goal) || intent == RequestIntent.conversation ||
-        intent == RequestIntent.analysis;
+        intent == RequestIntent.analysis || intent == RequestIntent.diagnosis;
 }
 
 /// Goals whose completion is the reply itself must not acquire automatic work
@@ -46,7 +46,8 @@ public bool goalIsAnswerOnly(string goal)
 public bool goalIsAnswerTurn(string goal)
 {
     return answerOnlyRequest(goal) ||
-        requestIntent(goal) == RequestIntent.analysis;
+        requestIntent(goal) == RequestIntent.analysis ||
+        requestIntent(goal) == RequestIntent.diagnosis;
 }
 
 /// Bound the goal by characters without splitting a UTF-8 sequence.

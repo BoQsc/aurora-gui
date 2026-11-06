@@ -48,7 +48,7 @@ int main()
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
         `{"plan":[{"step":"Select squad","status":"in_progress"},{"step":"Finish tutorial","status":"pending"}]}`);
     root.addConversationForTesting(["user", "assistant"],
-        ["why you couldn't complete", "The tutorial dialogue still needed Continue."]);
+        ["Explain why you couldn't complete", "The tutorial dialogue still needed Continue."]);
     assert(root.ensureDurableTaskCheckpointForTesting());
     assert(root.lastUserMessageForTesting().indexOf("latest request asks for an explanation") >= 0);
     root.addConversationForTesting(["assistant"], ["Here is the explanation."]);
@@ -68,10 +68,10 @@ int main()
     assert(computerUseAbortActive(), "A diagnostic message lifted the kill switch");
     clearComputerUseAbort();
     auto rejected = experimentalComputerUseExecute(`{"action":"click","x":-100,"y":-100,"screenshot":false}`, "");
-    assert(rejected.failed && rejected.output.indexOf("latest user request asks for an explanation") >= 0,
+    assert(rejected.failed && rejected.output.indexOf("asks for an explanation or diagnosis") >= 0,
         "Diagnostic intent allowed desktop input");
     rejected = experimentalComputerUseExecute(`{"steps":[{"action":"key","name":"space"}]}`, "");
-    assert(rejected.failed && rejected.output.indexOf("latest user request asks for an explanation") >= 0,
+    assert(rejected.failed && rejected.output.indexOf("asks for an explanation or diagnosis") >= 0,
         "A batch bypassed diagnostic intent");
     requestComputerUseAbort();
     beginComputerUseUserRequest("continue");

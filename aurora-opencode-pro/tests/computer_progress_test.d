@@ -7,18 +7,30 @@ import std.stdio : writeln;
 
 int main(string[] args)
 {
+    foreach (text; ["Explain why the game didn't run.", "Explain why and how to fix it."])
+        assert(explanationOnlyRequest(text), text);
+    // A why-question seeks a cause and authorizes resolution; it is not an
+    // answer-only explanation request, but it must not resume desktop input.
     foreach (text; ["why you couldn't complete",
         "I did killswitch because you didn't progress, I want to know why you didn't progress",
-        "Explain why the game didn't run.", "Why couldn't you play the tutorial?",
-        "Explain why and how to fix it."])
-        assert(explanationOnlyRequest(text), text);
+        "Why couldn't you play the tutorial?", "Why does the provider stall?"])
+    {
+        assert(requestIntent(text) == RequestIntent.diagnosis, text);
+        assert(!explanationOnlyRequest(text), text);
+        assert(!answerOnlyRequest(text), text);
+        assert(diagnosticFollowUpRequest(text), text);
+    }
     foreach (text; ["yes", "continue", "try to play the tutorial",
         "Explain why and fix it", "Why is it slow? Please test the API.",
         "Can you inspect why it failed?", "I want you to continue and explain why"])
         assert(!explanationOnlyRequest(text), text);
     assert(!explanationOnlyRequest(
         "Why do we still get stalled reports? Stop it, fix it, and make sure this is enforced."));
-    assert(explanationOnlyRequest("Why does the provider stall?"));
+    assert(requestIntent("Why did it stop? Just explain.") == RequestIntent.clarification,
+        "An explicit explain-only instruction became an action request");
+    assert(requestIntent("Explain why, and don't implement anything.") == RequestIntent.clarification);
+    assert(requestIntent("Why did it stop? Fix it.") == RequestIntent.implementation);
+    assert(requestIntent("Why is it still not switching immediately?") == RequestIntent.diagnosis);
 
     enum w = 384, h = 216;
     auto rgb = new ubyte[w * h * 3];

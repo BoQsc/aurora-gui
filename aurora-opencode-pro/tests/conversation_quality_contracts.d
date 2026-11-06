@@ -46,9 +46,12 @@ int main()
             "Can you fix it?", "Could you remove the obsolete file?"])
         assert(requestIntent(text) == RequestIntent.implementation, text);
     foreach (text; ["Answer only: what is left?", "What is left?", "How would we fix it?", "How would you fix it?",
-            "What would you change?", "Which files could you remove?", "Why did it stop?",
+            "What would you change?", "Which files could you remove?",
             "Explain why, and don't implement anything.", "So how would you fix it?", "Now what would you change?"])
         assert(answerOnlyRequest(text), text);
+    assert(requestIntent("Why did it stop?") == RequestIntent.diagnosis);
+    assert(!answerOnlyRequest("Why did it stop?"),
+        "A why-question was treated as an answer-only explanation");
     foreach (text; ["do it", "Do that.", "Please do it.", "Yes, do it.", "so fix it", "just fix it", "i said to move to the new tab page each."])
         assert(requestIntent(text) == RequestIntent.implementation, text);
     foreach (text; ["Stop asking and just do the work.",
@@ -115,7 +118,11 @@ int main()
     assert(taskContinuation(s, true).action == TaskContinuationAction.settle);
     s.taskStatus = "blocked";
     request(s, "Why did it stop?");
-    assert(s.taskStatus == "blocked" && s.taskSteps.length == 1);
+    assert(s.taskStatus == "active" && s.taskSteps.length == 1 &&
+        s.contract.currentIntent == "diagnosis",
+        "A why-question stopped instead of investigating and resolving the failure");
+    assert(taskContinuation(s, true).action == TaskContinuationAction.continueWork,
+        "A why-question did not continue the unfinished fix");
     request(s, "New task: fix the backend parser.");
     assert(s.contract.id != visual && s.taskArchive.length == 1);
     assert(requiredEvidence(s).length == 0 && s.taskSteps.length == 0);

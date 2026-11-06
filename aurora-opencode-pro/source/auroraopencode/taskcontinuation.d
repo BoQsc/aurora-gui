@@ -79,8 +79,11 @@ bool unfinishedTask(const ref ChatSession session, bool strictPlan = experimenta
     foreach (item; session.contract.workItems)
         if (item.required && (item.step.status != "completed" ||
             (session.contract.id.length && !supportedStep(session, item.step, evidenceIndex)))) return true;
-    if (session.contract.id.length && session.taskSteps.length == 0 &&
-        (session.contract.currentIntent == "implementation" || session.contract.currentIntent == "continuation") &&
+    const workIntent = session.contract.currentIntent == "implementation" ||
+        session.contract.currentIntent == "continuation" ||
+        (session.contract.currentIntent == "diagnosis" &&
+            session.contract.intent == "implementation");
+    if (session.contract.id.length && session.taskSteps.length == 0 && workIntent &&
         (!taskHasActionEvidence(session) || taskRequiresPlan(session, strictPlan))) return true;
     return session.verificationStatus == "required" ||
         session.verificationStatus == "failed";
@@ -211,7 +214,8 @@ TaskContinuation taskContinuation(const ref ChatSession session, bool toolsEnabl
     if (!session.taskSteps.length && taskRequiresPlan(session, strictPlan))
         result.remaining ~= "This task now requires an outcome checklist. Record the already requested outcomes " ~
             "with update_plan and cite successful tool-call IDs for completed work; do not invent extra work. ";
-    if (!taskHasActionEvidence(session) && session.contract.intent != "analysis")
+    const diagnosisContract = session.contract.intent == "diagnosis";
+    if (!taskHasActionEvidence(session, diagnosisContract) && session.contract.intent != "analysis")
         result.remaining ~= "Actual requested action evidence is still missing; prose or a check of unchanged code is insufficient. ";
     size_t omitted;
     void remaining(string label, string text, string done)

@@ -33,7 +33,7 @@ import auroraopencode.screenshotimage : encodeScreenshotJpeg;
 import aurora.platform.gdi : ScreenCapture;
 import auroraopencode.computerprogress : DesktopClickProgress, DesktopDragProgress,
     observeDesktop, desktopVisiblyChanged, cropDesktop;
-import auroraopencode.requestintent : explanationOnlyRequest;
+import auroraopencode.requestintent : diagnosticFollowUpRequest;
 import auroraopencode.attachments : attachmentImageForData;
 // experimental: reactive paragraph - a loop that repeats the same click on a
 // frozen frame burns a round and moves nothing, so the reply says when the
@@ -175,7 +175,7 @@ private __gshared bool computerUseHasLastFrame;
 public void beginComputerUseUserRequest(string text)
 {
     if (text.strip().length == 0) return;
-    computerUseExplanationOnly = explanationOnlyRequest(text);
+    computerUseExplanationOnly = diagnosticFollowUpRequest(text);
     ++computerUseRequestGeneration;
     computerUseHasLastFrame = false;
     if (!computerUseExplanationOnly) clearComputerUseAbort();
@@ -2700,8 +2700,8 @@ version (Windows)
         if (targetWindow.length == 0) targetWindow = jsonString(value, "title");
 
         if ((_threadComputerContext.present ? _threadComputerContext.explanationOnly : computerUseExplanationOnly) && action != "screen")
-            return failedResult("Error: the latest user request asks for an explanation. " ~
-                "Desktop input is paused; answer that request without resuming the old task.");
+            return failedResult("Error: the latest user request asks for an explanation or diagnosis. " ~
+                "Desktop input is paused; investigate the cause without resuming the old desktop task.");
         const lockedError = validateNestedAction(value);
         if (lockedError.length) return failedResult(lockedError);
         if (action == "drag") desktopClickProgress.reset();

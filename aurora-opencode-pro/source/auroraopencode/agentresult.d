@@ -41,7 +41,8 @@ ChatMessage subagentResult(ref ChatSession child)
         if (child.messages[index].workspaceChanged && !child.messages[index].failed)
             note.workspaceChanged = true;
     auto receipt = parseJSON(activeTaskStateJson(child));
-    receipt["taskActionEvidence"] = !note.failed && taskHasActionEvidence(child, child.contract.intent == "analysis");
+    receipt["taskActionEvidence"] = !note.failed && taskHasActionEvidence(child,
+        child.contract.intent == "analysis" || child.contract.intent == "diagnosis");
     note.taskStateJson = receipt.toString();
     note.content = "Subagent \"" ~ child.title ~ "\" (" ~ child.subagentId ~
         ") reported " ~ child.taskStatus ~ "." ~ (summary.length ? "\n" ~ summary : " (no output)");

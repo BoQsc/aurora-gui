@@ -54,7 +54,7 @@ size_t[] taskActionPath(const ref ChatSession session)
         const ref message = session.messages[index];
         if (!taskInstruction(session, message)) continue;
         const intent = requestIntent(message.content);
-        if (intent == RequestIntent.implementation ||
+        if (intent == RequestIntent.implementation || intent == RequestIntent.diagnosis ||
             (intent == RequestIntent.analysis && session.contract.intent == "analysis")) begin = i + 1;
     }
     return path[begin .. $];
@@ -152,7 +152,8 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
     // Otherwise a new action owns a new task. An unfinished checklist from an
     // older request is background history, never implicit authorization.
     const suppliedFact = session.taskStatus == "waiting_input" && !explicitlyNewTask(text) &&
-        (session.goalStatus == "active" || (intent != RequestIntent.implementation && intent != RequestIntent.analysis));
+        (session.goalStatus == "active" || (intent != RequestIntent.implementation &&
+            intent != RequestIntent.analysis && intent != RequestIntent.diagnosis));
     const approval = actionApprovalRequest(text);
     const pausedOwner = session.goalStatus == "paused" && session.contract.goal == session.goal && session.goal.length;
     const amendment = taskAmendmentRequest(text) && !pausedOwner;
@@ -199,7 +200,8 @@ void acceptTaskRequest(ref ChatSession session, string text, string messageId, b
         session.contract.intent = originalIntent == RequestIntent.continuation ? "implementation" : requestIntentName(originalIntent);
     }
     if (intent == RequestIntent.implementation &&
-        (session.contract.intent == "analysis" || session.contract.intent == "conversation"))
+        (session.contract.intent == "analysis" || session.contract.intent == "conversation" ||
+            session.contract.intent == "diagnosis"))
         session.contract.intent = "implementation";
     session.contract.currentIntent = name;
     if (suppliedFact || approval) session.contract.currentIntent = "continuation";
@@ -322,7 +324,10 @@ string evidenceKind(const ref ChatMessage message)
             if (auto proof = "taskActionEvidence" in state.object)
                 if (proof.type == JSONType.true_ && state["taskStatus"].str == "completed" &&
                     !["required", "failed"].canFind(state["verificationStatus"].str))
-                    return state["taskContract"]["intent"].str == "analysis" ? "research" : "action";
+                {
+                    const taskIntent = state["taskContract"]["intent"].str;
+                    return taskIntent == "analysis" || taskIntent == "diagnosis" ? "research" : "action";
+                }
         }
         catch (Exception) {}
     if (message.role != "tool") return "";
@@ -475,7 +480,8 @@ private string legacyPlanKind(string text)
     text = text.toLower();
     if (text.startsWith("verify") || text.startsWith("test") || text.startsWith("check")) return "verify";
     if (requestIntent(text) == RequestIntent.implementation) return "edit";
-    if (requestIntent(text) == RequestIntent.analysis) return "research";
+    if (requestIntent(text) == RequestIntent.analysis ||
+        requestIntent(text) == RequestIntent.diagnosis) return "research";
     return "other";
 }
 

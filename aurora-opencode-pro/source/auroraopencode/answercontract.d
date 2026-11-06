@@ -3,6 +3,7 @@ module auroraopencode.answercontract;
 import std.string : toLower, indexOf, strip;
 import std.regex : matchFirst;
 import std.json : parseJSON;
+import auroraopencode.requestintent : RequestIntent, requestIntent;
 
 bool jsonOnlyRequest(string request)
 {
@@ -78,6 +79,9 @@ string answerContract(string request, string verbosity)
         "Use enough internal reasoning to check each claim; keep the visible answer appropriately brief.\n";
     if (jsonOnlyRequest(request))
         result ~= "The user requests JSON output. Return the requested JSON value alone, with no Markdown fence, preface, explanation or trailing prose.\n";
+    else if (requestIntent(request) == RequestIntent.diagnosis)
+        result ~= "This request asks for a cause: investigate it from evidence and resolve it when the cause is within reach. " ~
+            "Do not stop at an explanation; state the cause and the fix that was applied, or name the concrete blocker.\n";
     else if (verbosity.indexOf("Target 40 words") >= 0)
         result ~= "Use at most three short bullets or sentences unless the user explicitly needs a detailed treatment. " ~
             "A request for tradeoffs does not require an exhaustive catalogue. Omit hypothetical future requirements.\n";

@@ -1151,8 +1151,8 @@ int main(string[] args)
     assert(toolSteeringPrompt(false).indexOf("# Execution loop") >= 0,
         "Steering prompt must define the execution loop");
     assert(toolSteeringPrompt(false).indexOf(
-        "Pure why = explain") >= 0,
-        "Steering prompt must enforce action-intent why requests");
+        "Why = diagnose the cause and resolve it") >= 0,
+        "Steering prompt must require why requests to resolve the cause");
     assert(toolSteeringPrompt(false).indexOf(
         "name the remaining unknown") >= 0,
         "Steering prompt must guide exploration from evidence");

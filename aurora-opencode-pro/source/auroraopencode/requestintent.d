@@ -3,7 +3,7 @@ module auroraopencode.requestintent;
 import std.algorithm : canFind;
 import std.string : toLower, split, join, startsWith;
 
-enum RequestIntent { conversation, clarification, analysis, implementation, continuation }
+enum RequestIntent { conversation, clarification, diagnosis, analysis, implementation, continuation }
 
 private string[] requestWords(string text)
 {
@@ -26,6 +26,21 @@ private bool leadingQuestion(const(string)[] words)
          "does", "did", "do", "can", "could", "would", "should", "shall", "will",
          "may", "might", "explain", "describe", "summarize", "summarise",
          "status", "recap", "hello", "hi", "thanks"].canFind(words[i]);
+}
+
+/// The user asked to be told the cause without authorizing any repair. The
+/// guard is explicit so a bare "why" is a diagnosis request, not an answer-only
+/// question that leaves a failure unresolved.
+private bool explicitExplanationOnly(string text)
+{
+    const normalized = text.toLower.split().join(" ");
+    foreach (phrase; ["answer only", "explain only", "explanation only",
+            "just explain", "only explain", "just answer", "just tell me",
+            "do not edit", "don't edit", "do not change", "don't change",
+            "do not implement", "don't implement", "do not fix", "don't fix",
+            "without changing", "no changes", "make no changes"])
+        if (normalized.canFind(phrase)) return true;
+    return false;
 }
 
 private bool requestedVerb(const(string)[] words, const(string)[] raw, size_t i)
@@ -98,8 +113,13 @@ RequestIntent requestIntent(string text)
     if (analysis) return RequestIntent.analysis;
     if (correctiveActionRequest(text)) return RequestIntent.implementation;
     if (clarification) return RequestIntent.clarification;
-    if (leadingQuestion(words) || words.canFind("why") ||
-        words.canFind("explanation")) return RequestIntent.clarification;
+    if (explicitExplanationOnly(text)) return RequestIntent.clarification;
+    // A question about a cause authorizes investigation and correction. It is
+    // not a request to stop at an explanation; only an explicit explain-only
+    // instruction above remains answer-only.
+    if (words.canFind("why")) return RequestIntent.diagnosis;
+    if (leadingQuestion(words) || words.canFind("explanation"))
+        return RequestIntent.clarification;
     return RequestIntent.conversation;
 }
 
@@ -109,6 +129,7 @@ string requestIntentName(RequestIntent intent)
     {
         case RequestIntent.conversation: return "conversation";
         case RequestIntent.clarification: return "clarification";
+        case RequestIntent.diagnosis: return "diagnosis";
         case RequestIntent.analysis: return "analysis";
         case RequestIntent.implementation: return "implementation";
         case RequestIntent.continuation: return "continuation";
@@ -119,10 +140,20 @@ bool explanationOnlyRequest(string text)
 {
     if (requestIntent(text) != RequestIntent.clarification) return false;
     const words = requestWords(text);
-    return words.canFind("why") || words.canFind("explain") || words.canFind("explanation");
+    return words.canFind("explain") || words.canFind("explanation") ||
+        words.canFind("describe") || words.canFind("summarize") ||
+        words.canFind("summarise") || words.canFind("recap");
 }
 
 bool answerOnlyRequest(string text) { return requestIntent(text) == RequestIntent.clarification; }
+
+/// A cause-seeking follow-up must not resume desktop input, even though it does
+/// authorize code and tool investigation. This keeps a kill-switch stop intact
+/// while the agent works on the cause through non-desktop tools.
+bool diagnosticFollowUpRequest(string text)
+{
+    return explanationOnlyRequest(text) || requestIntent(text) == RequestIntent.diagnosis;
+}
 
 /// A short approval authorizes the work the agent already described. It is not
 /// a new objective and must not be mistaken for casual conversation, which

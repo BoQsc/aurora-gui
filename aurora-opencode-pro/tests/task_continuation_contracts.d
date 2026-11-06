@@ -199,8 +199,11 @@ int main()
         assert(permissionQuestionReply(reply), reply);
     assert(!permissionQuestionReply("The parser is fixed; tests pass."));
 
-    foreach (question; ["What is left?", "How would we fix it?", "Why did it stop?"])
+    foreach (question; ["What is left?", "How would we fix it?"])
         assert(answerOnlyRequest(question));
+    assert(requestIntent("Why did it stop?") == RequestIntent.diagnosis);
+    assert(!answerOnlyRequest("Why did it stop?"),
+        "A why-question was treated as an answer-only explanation");
     foreach (request; ["Can you fix the remaining work?", "Could you implement it?",
             "What happened? Please finish the task.", "Why did it stop? Fix it.",
             "Why is it stopping? Let's resolve it."])

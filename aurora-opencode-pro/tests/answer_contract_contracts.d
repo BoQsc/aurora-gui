@@ -13,6 +13,10 @@ int main()
     foreach (request; ["Explain how to return JSON.", "Why does the output contain JSON?",
             "Return JSON followed by an explanation.", "Return JSON and explain the schema."])
         assert(answerContract(request, "").indexOf("JSON value alone") < 0, request);
+    assert(answerContract("Why does the provider stall?", "").indexOf("Do not stop at an explanation") >= 0,
+        "A why-question did not authorize resolution");
+    assert(answerContract("Explain why the provider stalls.", "").indexOf("Do not stop at an explanation") < 0,
+        "An explicit explanation request became a repair instruction");
     ChatSession session;
     ChatMessage user; user.id = "human"; user.role = "user";
     user.content = "Return one JSON object.";

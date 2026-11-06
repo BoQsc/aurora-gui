@@ -159,10 +159,13 @@ attempt; a full-frame screenshot alone does not reset the guard. Changed visible
 state, a different mouse button/input action/area/target/mode, or a real new user request also
 permits recovery.
 
-Explanation-only follow-ups such as "why you couldn't complete" preserve the
-unfinished checklist, skip plan reconciliation and automatic continuation, and
-refuse desktop input. They do not clear a kill-switch stop. Explicit resume or
-combined diagnosis-and-action requests permit work again. Intent recognition is
+Explanation-only follow-ups such as "just explain why you couldn't complete"
+preserve the unfinished checklist, skip plan reconciliation and automatic
+continuation, and refuse desktop input. A plain "why you couldn't complete" is
+a diagnosis request: it keeps the unfinished work and automatic continuation so
+the agent can investigate and resolve the cause, but it still refuses desktop
+input and does not clear a kill-switch stop. Explicit resume or combined
+diagnosis-and-action requests permit desktop work again. Intent recognition is
 conservative English phrase matching, not a general natural-language classifier.
 
 The progress test can also replay a 1920x1080 RGB frame before the stalled click

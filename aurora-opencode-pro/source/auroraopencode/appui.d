@@ -60,7 +60,8 @@ import auroraopencode.usage_limits : UsageLimitWindow, UsageLimitsResult,
 import auroraopencode.tools : buildSystemPrompt, builtinToolDefinitions,
     changeRecordDiff, clearFinishedSupervisedProcesses, executeTool,
     listChangeRecords, listSupervisedProcesses, stopAppBoundSupervisedProcesses,
-    nativeOnlyToolDefinitions, partialStringArg, previewToolDiff,
+    nativeOnlyToolDefinitions, partialStringArg, patchDiffSection,
+    previewToolDiff,
     previewToolDiffText, removeSupervisedProcess,
     requestAllSupervisedProcessKills, requestSupervisedProcessKill,
     SupervisedProcessInfo,
@@ -102,7 +103,7 @@ import auroraopencode.orchestrator : setOrchestratorSetting,
 // experimental: planmode - delete with source/auroraopencode/planmode.d
 import auroraopencode.planmode : experimentalStrictPlanEnabled,
     setStrictPlanSetting, trackedPlanPromptBlock;
-import auroraopencode.requestintent : explanationOnlyRequest, answerOnlyRequest;
+import auroraopencode.requestintent : diagnosticFollowUpRequest, explanationOnlyRequest, answerOnlyRequest;
 import auroraopencode.taskflow : acceptTaskRequest, normalizedPlan, planUpdateError, incrementalPlan,
     explorationGuidance, supportedStep, remapTaskContract, stalledExecutionTools, executionDiagnosisMarker, executionRecoveryDue,
     restoreBranchTask, initializeLegacyTask, taskHasActionEvidence, taskInvestigation, workContextForPlan, retainNestedWork, rememberPlanRevision, planUpdateText;
@@ -1110,7 +1111,7 @@ private final class MessageBubble : Widget
 
     /// One rendered line of an expanded tool body. `kind` selects the row tint
     /// and text colour; line numbers are 0 when the column does not apply.
-    private enum ToolLineKind : ubyte { context, add, del, hunk, plain }
+    private enum ToolLineKind : ubyte { context, add, del, hunk, plain, section }
     private struct ToolLine
     {
         ToolLineKind kind;
@@ -1123,8 +1124,16 @@ private final class MessageBubble : Widget
         // so expanding a huge output stays instant.
         string gutter;
         string body;
+        // Patch sections (`apply_patch`) name the file and what happened to it,
+        // with that file's own change counts.
+        string action;
+        int additions;
+        int deletions;
         TextLayout gutterLayout;
         TextLayout bodyLayout;
+        TextLayout actionLayout;
+        TextLayout addLayout;
+        TextLayout delLayout;
     }
     private ToolLine[] _toolLines;
     private size_t _toolLinesGen;
@@ -2907,13 +2916,33 @@ private final class MessageBubble : Widget
 
         int oldNo, newNo, plainNo;
         size_t emitted;
-        foreach (raw; source)
+        foreach (index, raw; source)
         {
             if (emitted >= maxRenderedToolLines) break;
             ToolLine line;
             if (_hasDiff)
             {
-                if (raw.length > 0 && raw[0] == '@')
+                string action, sectionPath;
+                if (patchDiffSection(raw, action, sectionPath))
+                {
+                    // A new file's block: list it as its own row and count only
+                    // its lines, so a multi-file patch reads as one entry per
+                    // patched file instead of a single run of hunks.
+                    oldNo = 0;
+                    newNo = 0;
+                    line.kind = ToolLineKind.section;
+                    line.body = sectionPath;
+                    line.action = action;
+                    foreach (next; source[index + 1 .. $])
+                    {
+                        string nextAction, nextPath;
+                        if (patchDiffSection(next, nextAction, nextPath)) break;
+                        if (next.length == 0) continue;
+                        if (next[0] == '+') ++line.additions;
+                        else if (next[0] == '-') ++line.deletions;
+                    }
+                }
+                else if (raw.length > 0 && raw[0] == '@')
                 {
                     if (_hideHunkHeaders) continue;
                     line.kind = ToolLineKind.hunk;
@@ -2948,7 +2977,8 @@ private final class MessageBubble : Widget
                 line.body = raw;
             }
 
-            line.gutter = line.kind == ToolLineKind.hunk ? ""
+            line.gutter = line.kind == ToolLineKind.hunk ||
+                line.kind == ToolLineKind.section ? ""
                 : diffGutter(line.oldNo, line.newNo);
             _toolLines ~= line;
             ++emitted;
@@ -24308,7 +24338,7 @@ private void pollButtonSuggestionRequest()
         // conversation route id so its frames hit the gateway's cache instead
         // of a cold, slow route on every step.
         setComputerUseSession(sessionRoutingKey(*session));
-        setComputerUseExplanationOnly(explanationOnlyRequest(latestActualUserRequest(*session)));
+        setComputerUseExplanationOnly(diagnosticFollowUpRequest(latestActualUserRequest(*session)));
         // A user-initiated request opens the turn before a possible summary
         // request, so Stop and queued guidance work while compaction runs.
         if (userTurn)

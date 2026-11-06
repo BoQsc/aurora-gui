@@ -13,6 +13,7 @@ of resuming unrelated implementation work.
 | Amendment to ongoing work, live steering, or answer to required input | Keep the task and its acceptance |
 | New requirements during an active persistent goal | Keep the goal and unaffected requirements |
 | Explanation or status question | Answer without resuming implementation |
+| Why-question (diagnosis) | Keep the current task and continue investigating and resolving the cause |
 | Continue unfinished current work | Resume that task |
 | Continue after current work completed | Do not choose an arbitrary archived task |
 | Explicitly resume a paused goal | Restore the task associated with that goal |
