@@ -1,0 +1,33 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-core/source/auroraopencode/core.d",
+    "aurora-opencode-pro/tests/plan_strip_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i", "-verrors=20", "-Isource", "-Ishared",
+          "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets", "tests/plan_strip_contracts.d",
+          "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-plan-strip-verify\\plan_strip_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-plan-strip-verify\\plan_strip_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 300000
+      }
+    }
+  ]
+}

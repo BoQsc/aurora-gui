@@ -5066,6 +5066,62 @@ int main(string[] args)
         writeln("Live token count grows on the Thinking header and stays");
     }
 
+    // Merged stream chunks must not freeze the header between bursts. The client
+    // queue and the transcript both merge a tick's fragments into one chunk, so
+    // a thinking-mode reply that arrives in sentence-sized pieces used to leave
+    // the printed count still and then jump by the whole phrase. The measured
+    // count stays exact; the printed one paces up to it on later ticks.
+    {
+        root.newChatForTesting();
+        root.addConversationForTesting(["user"], ["Pace the counter"]);
+        root.startTurnClockForTesting();
+        root.beginStreamForTesting();
+        root.streamReasoningForTesting(
+            "A whole sentence of reasoning arrives as one merged chunk.");
+        const long measured = root.streamLiveTokensForTesting();
+        assert(measured > 2,
+            "the fixture did not produce a multi-token chunk: " ~
+            to!string(measured));
+        const long atArrival = root.streamShownTokensForTesting();
+        assert(atArrival < measured,
+            "the header jumped straight to the whole merged chunk: " ~
+            to!string(atArrival) ~ "/" ~ to!string(measured));
+        long previous = atArrival;
+        int risingTicks;
+        foreach (i; 0 .. 60)
+        {
+            root.tickTree(0.02);
+            const long shown = root.streamShownTokensForTesting();
+            assert(shown >= previous,
+                "the paced count went backwards while tokens only arrived");
+            assert(shown <= measured,
+                "the paced count ran past the measured tokens: " ~
+                to!string(shown) ~ "/" ~ to!string(measured));
+            if (shown > previous) ++risingTicks;
+            previous = shown;
+            if (shown == measured) break;
+        }
+        assert(previous == measured,
+            "the paced count never caught up to the measured tokens: " ~
+            to!string(previous) ~ "/" ~ to!string(measured));
+        assert(risingTicks >= 3,
+            "the count reached the chunk in one jump instead of climbing: " ~
+            to!string(risingTicks) ~ " rising ticks");
+        assert(root.streamThinkingHeaderTextForTesting().indexOf(
+            to!string(measured)) >= 0,
+            "the paced header did not print the measured count: " ~
+            root.streamThinkingHeaderTextForTesting());
+        root.finishStreamForTesting();
+        root.tickTree(0.02);
+        assert(root.lastAssistantLiveTokensForTesting() == measured,
+            "settling did not keep the measured count");
+        assert(root.lastAssistantThinkingHeaderTextForTesting().indexOf(
+            to!string(measured)) >= 0,
+            "the settled header did not print the final count: " ~
+            root.lastAssistantThinkingHeaderTextForTesting());
+        writeln("Thinking token count paces between merged stream chunks");
+    }
+
     // Monthly per-provider usage ledger: a finished turn adds its usage to the
     // current month's total for the active provider, and the Profile dialog
     // lists that total.
@@ -6115,8 +6171,9 @@ int main(string[] args)
         writeln("Tracked plan mode gates exploration that ran without a plan");
     }
 
-    // Healthy inspection does not require checklist maintenance solely because
-    // a tool count grew. Actual completed outcomes still need action evidence.
+    // A plan that runs a full upkeep window without being refreshed is stale:
+    // the agent is told to check it off, and a refresh clears the reminder.
+    // Actual completed outcomes still need action evidence.
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Refactor and verify"]);
     root.applyPlanForTesting(
@@ -6135,8 +6192,10 @@ int main(string[] args)
     assert(root.toolResultsSincePlanUpdateForTesting() == 16,
         "tool results since the last update_plan were miscounted: " ~
         to!string(root.toolResultsSincePlanUpdateForTesting()));
-    assert(root.userMessageCountForTesting() == beforePlanInspection && !root.planNeedsUpdateForTesting(),
-        "healthy inspection forced checklist maintenance");
+    assert(root.userMessageCountForTesting() == beforePlanInspection + 1 &&
+        root.lastUserMessageForTesting().indexOf("Plan upkeep") >= 0,
+        "a plan that ran a full upkeep window without a refresh received no reminder: " ~
+        root.lastUserMessageForTesting());
     root.injectToolResultForTesting("edit", "Change implemented", false,
         `{"filePath":"app.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
     root.injectToolResultForTesting("update_plan", "Plan updated", false,
@@ -6146,7 +6205,7 @@ int main(string[] args)
         "an update_plan call did not clear plan staleness");
     assert(root.taskStepStatusForTesting(0) == "completed",
         "update_plan did not update the durable checklist");
-    writeln("Healthy inspection avoids count-based plan maintenance; completion retains action evidence");
+    writeln("Plan upkeep reminds after a full window; a refresh clears it and completion retains action evidence");
 
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["Make and verify a change"]);

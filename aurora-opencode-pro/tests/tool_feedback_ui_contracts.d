@@ -57,6 +57,14 @@ int main()
     foreach (_; 0 .. 8) root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
     pump(); assert(!root.planNeedsUpdateForTesting(), "Useful inspection made an active plan stale merely by call count");
     assert(!root.queueStalePlanGuidanceForTesting(), "Same-phase guidance interrupted useful work");
+    root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
+    root.injectToolResultForTesting("read", "source evidence", false, `{"filePath":"source.d"}`);
+    pump(); assert(root.planNeedsUpdateForTesting(),
+        "A plan unrefreshed for a full upkeep window was not marked stale");
+    assert(root.lastUserMessageForTesting().indexOf("Plan upkeep") >= 0,
+        "A plan unrefreshed for a full upkeep window received no reminder: " ~
+        root.lastUserMessageForTesting());
+    assert(!root.queueStalePlanGuidanceForTesting(), "Plan upkeep repeated inside its window");
     root.injectToolResultForTesting("edit", "Edited source", false, `{"filePath":"source.d"}`, 1, 1, "@@ -1 +1 @@\n-old\n+new\n");
     pump(); assert(root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0,
         "Moving from inspection to editing did not reissue the stale-plan reminder");

@@ -1,0 +1,112 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/source/auroraopencode/turnpolicy.d",
+    "aurora-opencode-pro/source/auroraopencode/goalmode.d",
+    "aurora-opencode-pro/source/auroraopencode/contextpolicy.d",
+    "aurora-opencode-pro/source/auroraopencode/requestintent.d",
+    "aurora-opencode-pro/source/auroraopencode/appui.d",
+    "aurora-opencode-pro/source/auroraopencode/conversationactor.d",
+    "aurora-opencode-pro/tests/goal_settle_contracts.d",
+    "aurora-opencode-pro/tests/goal_settle_ui_contracts.d",
+    "aurora-opencode-pro/tests/goal_hold_contracts.d",
+    "aurora-opencode-pro/tests/goal_mode_contracts.d"
+  ],
+  "steps": [
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i", "-verrors=20", "-Isource", "-Ishared",
+          "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets", "tests/goal_settle_contracts.d",
+          "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_settle_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_settle_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i", "-verrors=20", "-Isource", "-Ishared",
+          "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets", "tests/goal_settle_ui_contracts.d",
+          "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_settle_ui_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_settle_ui_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i", "-verrors=20", "-Isource", "-Ishared",
+          "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets", "tests/goal_hold_contracts.d",
+          "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_hold_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_hold_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 300000
+      }
+    },
+    {
+      "kind": "compile",
+      "command": {
+        "program": "dmd",
+        "args": [
+          "-i", "-verrors=20", "-Isource", "-Ishared",
+          "-I../aurora-opencode-core/source", "-I../vendor/aurora-d-0.4.5/source",
+          "-Jassets", "tests/goal_mode_contracts.d",
+          "user32.lib", "gdi32.lib", "shell32.lib", "wininet.lib", "winmm.lib",
+          "-of=C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_mode_contracts.exe"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    },
+    {
+      "kind": "tests",
+      "command": {
+        "program": "C:\\Users\\windows10\\AppData\\Local\\Temp\\aurora-goal-verify\\goal_mode_contracts.exe",
+        "args": [],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 180000
+      }
+    }
+  ]
+}

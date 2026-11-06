@@ -1,9 +1,12 @@
 module goal_rebuild_contracts;
 
 // A rebuild ends the transport turn, not the persistent goal. The restart note
-// is written for the requesting conversation either way, but the resume used to
-// require `turnStatus == "running"`; a goal whose turn had already settled was
-// therefore reopened and dropped ("the goal does not continue after rebuild").
+// is written for the requesting conversation, and the shutdown then cancels the
+// turn; the saved status is therefore `interrupted` (or `completed` when the
+// cancellation was processed before the snapshot), not proof the agent finished.
+// The note must continue its chat unless the user paused the goal or the task is
+// waiting for a required answer. Before this, a settled or cancelled turn was
+// reopened and dropped ("the chat did not continue after rebuild").
 
 import aurora;
 import auroraopencode.appui : OpenCodeRoot;
@@ -101,15 +104,42 @@ int main()
         "the resume reactivated a paused goal");
     writeln("PASS a rebuild leaves a paused goal stopped");
 
-    // A completed goal stays completed even when the checklist is still open.
+    // The live failure: the shutdown cancelled the turn, so it is saved as
+    // `interrupted` while the durable checklist has nothing pending. The chat
+    // still continues; the turn was cut short, not finished.
+    root.newChatForTesting();
+    root.addConversationForTesting(["user"], ["Deploy the rebuilt binary."]);
+    root.setGoalForTesting("Deploy the rebuilt binary.", "active");
+    root.setTaskStateForTesting("Deploy the rebuilt binary.", "active",
+        "not_required");
+    root.setSessionTurnStatusForTesting(root.currentSessionForTesting(),
+        "interrupted");
+    noteForCurrent("deploy the rebuilt binary");
+    const interruptedBefore = root.totalMessageCountForTesting();
+    root.prepareResumeForTesting();
+    pump();
+    assert(root.totalMessageCountForTesting() > interruptedBefore,
+        "a rebuild dropped the cancelled chat that requested it");
+    assert(root.turnBusyForTesting(),
+        "the cancelled rebuild chat did not continue");
+    root.stopActiveTurnForTesting();
+    pump();
+    writeln("PASS a rebuild continues a cancelled chat with no pending checklist item");
+
+    // The note is authoritative for its named chat even when the turn was
+    // recorded as completed before the app exited.
     settleIdleGoal("completed");
     noteForCurrent("apply the fix");
     const completedBefore = root.totalMessageCountForTesting();
     root.prepareResumeForTesting();
     pump();
-    assert(root.totalMessageCountForTesting() == completedBefore,
-        "a rebuild restarted a completed goal");
-    writeln("PASS a rebuild leaves a completed goal stopped");
+    assert(root.totalMessageCountForTesting() > completedBefore,
+        "a rebuild dropped the chat that requested it after its goal completed");
+    assert(root.turnBusyForTesting(),
+        "the completed rebuild chat did not continue");
+    root.stopActiveTurnForTesting();
+    pump();
+    writeln("PASS a rebuild continues the requesting chat after its goal completed");
 
     // Without a note (a plain relaunch) nothing is replayed.
     settleIdleGoal("active");

@@ -1273,6 +1273,13 @@ public final class ConversationActor
         if (decision.clearNextSpeaker) session.nextSpeakerId = "";
         if (decision.nextSpeaker.length) session.activeAgentId = decision.nextSpeaker;
         session.taskStatus = decision.taskStatus; session.turnStatus = decision.turnStatus;
+        // The settle starts no further request, so an active goal must not stay
+        // "active" with nothing running. The actor has no goal bar to refresh; it
+        // records the same outcome the UI applies.
+        if (decision.settleGoal == "completed")
+        { session.goalStatus = "completed"; recordGoalOutcome(session, "completed", frameUnix); }
+        else if (decision.settleGoal == "paused" && goalActive(session))
+        { session.goalStatus = "paused"; recordGoalOutcome(session, "paused", frameUnix); }
         if (decision.action == TurnAction.reportChild) session.turnStatus = "completed";
         if (decision.continues()) { metadata(); request(); return; }
         running = false; engine.activeRequestId = 0;

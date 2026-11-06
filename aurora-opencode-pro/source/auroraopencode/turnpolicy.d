@@ -6,12 +6,12 @@ import auroraopencode.taskcontinuation : taskContinuation, TaskContinuationActio
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.worktracking : requiredWorkRemaining;
 import auroraopencode.goalmode : goalActive, goalNeedsHumanInput, goalContinuationInstruction,
-    goalIsAnswerTurn;
+    goalIsAnswerTurn, goalAnswerDelivered;
 import auroraopencode.completionhandoff : completionHandoffNeeded, completionHandoffPending,
     recordedCompletionHandoff;
 import auroraopencode.orchestrator : experimentalOrchestratorIsRouter, experimentalOrchestratorAgentName;
 import auroraopencode.contextpolicy : latestActualUserRequest;
-import auroraopencode.requestintent : answerOnlyRequest;
+import auroraopencode.requestintent : workRestrictionRequest;
 
 enum TurnAction { settle, interrupted, applySteering, request, waitInput, waitChildren, reportChild }
 
@@ -30,6 +30,10 @@ struct TurnDecision
 {
     TurnAction action;
     string turnStatus, taskStatus, guidance, recordedSummary, status, nextSpeaker;
+    /// Outcome an active goal takes when this settle starts no further turn:
+    /// "completed" for an answer goal whose reply is delivered, otherwise
+    /// "paused" so an idle chat never keeps claiming an active goal.
+    string settleGoal;
     bool advanceHop, clearNextSpeaker, clearDiagnostic, clearBlocker, advanceGoal;
     int diagnosticRequests;
 
@@ -140,9 +144,14 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
     // none, and an answer/analysis goal is finished by its reply. Both settle
     // instead of auto-continuing into a loop the model cannot break. A queued
     // follow-up does not end goal work early; it opens once the agent stops.
+    // A question or side investigation answered inside a goal thread does not
+    // end the goal either: its reply is already delivered and the objective
+    // still owns the work. Only an explicit restriction ("just explain", "do not
+    // edit") holds the continuation until the user lifts it. Leaving the goal
+    // active but idle was the reported "goal stopped and does nothing" state.
     if (goalActive(session) && policy.toolsEnabled &&
         !goalIsAnswerTurn(session.goal) &&
-        !answerOnlyRequest(latestActualUserRequest(session)) && !taskInvestigation(session))
+        !workRestrictionRequest(latestActualUserRequest(session)))
     {
         result.advanceGoal = true;
         request(goalContinuationInstruction(session), "Continuing toward the goal…");
@@ -168,5 +177,20 @@ TurnDecision decideTurn(const ref ChatSession session, const TurnPolicy policy)
         result.status = "Answer complete · verification is still required.";
     }
     else result.taskStatus = "completed";
+    // This settle starts no further turn, so an active goal must not survive it
+    // as "active": an idle chat advertising a running goal is exactly the state
+    // the user reads as "the goal is active but does nothing". An answer goal
+    // finished by its delivered reply is complete; every other blocked goal is
+    // paused, which keeps its work and makes Start the explicit way back.
+    // A queued follow-up opens the next turn immediately, so that chat is not
+    // idle and the goal keeps owning the follow-up's work.
+    if (goalActive(session) && !session.queuedFollowUps.length)
+    {
+        const outstanding = hasIncompleteTaskSteps(session) ||
+            session.verificationStatus == "required" ||
+            session.verificationStatus == "failed";
+        result.settleGoal = goalIsAnswerTurn(session.goal) && !outstanding &&
+            goalAnswerDelivered(session) ? "completed" : "paused";
+    }
     return result;
 }

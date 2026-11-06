@@ -202,6 +202,10 @@ private string planningSection(in SystemPromptContext ctx)
         "record the outcomes the user asked for and how completion is proven.\n" ~
         "- Follow the plan in order. Keep one step in_progress, finish it, cite the tool evidence that proved it, " ~
         "mark it completed, and start the next step. Do not restate the plan in prose.\n" ~
+        "- Check the plan off while you work, not only at the end. When a stretch of tool results has run since " ~
+        "the checklist was refreshed, tick the outcomes they prove, move the work position and explain any new " ~
+        "outcome. A checklist that stays stale receives a reminder and then defers further edits until it is " ~
+        "current.\n" ~
         "- Replan as you work, in the same turn. Change steps, add discovered outcomes, reorder, pause " ~
         "or reopen work whenever a step completes, evidence changes the path, a required outcome " ~
         "appears, an approach is rejected or the current step stalls. State the reason in explanation. " ~
@@ -241,7 +245,8 @@ private string executionLoopSection(in SystemPromptContext ctx)
         "deliverable and its verification in the current plan; finishing an older checklist does not complete the changed request. " ~
         "Keep optional improvements outside the requested scope. " ~
         "Use read_plan for task details and plan history, and read_history to recover exact earlier messages or tool output after compaction. Do not guess omitted facts or repeat work just to reconstruct them. " ~
-        "Record original acceptance rules before substantial goal work. Plan maintenance never gates normal execution or completion.\n" ~
+        "Record original acceptance rules before substantial goal work. Plan upkeep is bounded: a stale checklist " ~
+        "is reconciled before further edits, never blocking inspection, verification or completion.\n" ~
         "3. Read explicit paths directly, including outside the workspace. Discover unknown paths; read before editing. " ~
         "Honor exact requested filenames, paths and public API names. A tool's default output name is not a substitute: " ~
         "configure it or correct the implementation to create the requested path. " ~

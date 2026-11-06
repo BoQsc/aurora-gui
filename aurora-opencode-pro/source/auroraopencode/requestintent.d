@@ -147,6 +147,15 @@ bool explanationOnlyRequest(string text)
 
 bool answerOnlyRequest(string text) { return requestIntent(text) == RequestIntent.clarification; }
 
+/// The current request explicitly limits work: an explanation was asked for, or
+/// the user said not to edit/implement/fix. An active goal waits for the user to
+/// lift that restriction. A plain question ("what is left?") is not a
+/// restriction: its answer is delivered and the goal keeps owning the work.
+bool workRestrictionRequest(string text)
+{
+    return explicitExplanationOnly(text) || explanationOnlyRequest(text);
+}
+
 /// A cause-seeking follow-up must not resume desktop input, even though it does
 /// authorize code and tool investigation. This keeps a kill-switch stop intact
 /// while the agent works on the cause through non-desktop tools.

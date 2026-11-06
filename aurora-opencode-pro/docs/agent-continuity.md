@@ -18,9 +18,13 @@ owners. It is not a complete actor-engine rewrite or a guarantee of model qualit
   agent revises the plan in the same turn as evidence changes. Every revision,
   including replaced and completed outcomes, is kept in plan history, and
   `read_plan view=history` recovers earlier plans and reasons.
-- Automatic goal continuation requires tool access and an action goal. Answer
-  and analysis goals settle after their reply, and a goal that cannot call
-  `goal_complete` does not keep issuing continuation turns.
+- Automatic goal continuation requires tool access and an action goal. A question
+  or side investigation answered inside a goal thread no longer ends the goal:
+  its reply is delivered and the objective resumes. Only an explicit restriction
+  ("just explain", "do not edit") holds the continuation. Answer and analysis
+  goals settle after their reply and are recorded completed; every other settle
+  that starts no further turn pauses the goal, so an idle chat never advertises
+  an active goal. A queued follow-up keeps the goal active for its own turn.
 - A goal waits only at the same validated `request_input` boundary used by task
   continuation. Phrases such as “please confirm” in assistant prose no longer
   silently pause it. Waiting retains the active goal; replying with the missing
@@ -63,6 +67,7 @@ provider. They do not contact a hosted model or use real user chats as fixtures.
 | --- | --- |
 | Fact in the middle of omitted history | Exact fact recovered through search and message paging; five main HTTP requests, one summary request; original accepted text retained |
 | Active goal needs an unavailable fact | Waits, resumes on an ordinary reply, writes the requested artifact and completes; five HTTP requests |
+| Settle of an active goal | An answered question continues an action goal; an explicit explain-only request, a tool-free request and an answered answer-goal complete or pause it, so no settle leaves the goal active with no running turn |
 | Truncated, oversized, timed-out or stale summary | Existing checkpoint retained; successful summary retains constraints, current outcome and goal |
 | UTF-8 paging, branch and internal-message isolation | Exact byte reconstruction and inaccessible-message rejection pass |
 | Context selection across budgets and tool envelopes | Same cutoff as the previous algorithm, including complete and incomplete tool groups |
@@ -80,7 +85,7 @@ exercise that feature and its default setting.
 Reproduce from the repository root:
 
 ```text
-python aurora-opencode-pro/tests/run_architecture_checks.py goal_mode_contracts goal_ui_smoke compaction_validation long_task_context_contracts context_continuity_contracts history_preservation_contracts agent_workflow_contracts task_continuation_contracts scheduler_shutdown_contracts
+python aurora-opencode-pro/tests/run_architecture_checks.py goal_mode_contracts goal_ui_smoke goal_hold_contracts goal_rebuild_contracts goal_settle_contracts goal_settle_ui_contracts compaction_validation long_task_context_contracts context_continuity_contracts history_preservation_contracts agent_workflow_contracts task_continuation_contracts scheduler_shutdown_contracts
 python aurora-opencode-pro/tests/run_architecture_checks.py --release context_continuity_contracts
 python aurora-opencode-pro/tests/test_history_recall.py
 python aurora-opencode-pro/tests/test_goal_input.py

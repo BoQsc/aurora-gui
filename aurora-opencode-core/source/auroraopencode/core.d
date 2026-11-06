@@ -1748,6 +1748,9 @@ public struct Settings
     // Show the durable plan as a floating panel in the transcript's top-right
     // corner, detached from the message flow; on by default.
     bool detachedPlan = true;
+    // Small rectangles under the plan card, one per retained plan revision;
+    // hovering one previews that revision in the card. On by default.
+    bool planHistoryStrip = true;
     bool experimentalChatRedesign; // highly experimental presentation, off by default
     bool experimentalFollowUpDivider = true; // collapsible automatic follow-up UI, on by default
     bool experimentalNestedPlans; // opt-in one-level substeps in the plan panel
@@ -2230,6 +2233,9 @@ public Settings loadSettings()
                 if (auto found = "detachedPlan" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.detachedPlan = found.type == JSONType.true_;
+                if (auto found = "planHistoryStrip" in value.object)
+                    if (found.type == JSONType.true_ || found.type == JSONType.false_)
+                        settings.planHistoryStrip = found.type == JSONType.true_;
                 if (auto found = "experimentalChatRedesign" in value.object)
                     if (found.type == JSONType.true_ || found.type == JSONType.false_)
                         settings.experimentalChatRedesign = found.type == JSONType.true_;
@@ -2583,6 +2589,7 @@ public void saveSettings(const ref Settings settings, bool strictIO = false)
     root["groupSameAction"] = settings.groupSameAction;
     root["sortSessionsByRecency"] = settings.sortSessionsByRecency;
     root["detachedPlan"] = settings.detachedPlan;
+    root["planHistoryStrip"] = settings.planHistoryStrip;
     root["experimentalChatRedesign"] = settings.experimentalChatRedesign;
     root["experimentalFollowUpDivider"] = settings.experimentalFollowUpDivider;
     root["experimentalNestedPlans"] = settings.experimentalNestedPlans;

@@ -77,6 +77,14 @@ application or claim parity with private implementations.
   unevenly spaced tokens once read 30 or 120 t/s for a 40 t/s stream. Restarting
   after a stall likewise withholds the figure until the window refills. The
   settled whole-turn mean is unaffected.
+- The counted token figure paces instead of stepping. Measured tokens still come
+  only from streamed text (a local estimate until the provider reports usage),
+  but the number printed on the Thinking header climbs toward that measurement on
+  each UI tick, because the client queue and the transcript both merge a tick's
+  fragments into one chunk and a thinking-mode reply would otherwise freeze the
+  count and then jump by a whole phrase. The printed value never exceeds the
+  measured count, a provider total that corrects it downward snaps immediately,
+  and completion settles on the exact figure.
 
 ## Verification
 

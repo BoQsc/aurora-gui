@@ -8,7 +8,7 @@ import auroraopencode.tools : buildSystemPrompt;
 import core.thread : Thread;
 import core.time : MonoTime, msecs, seconds;
 import std.conv : to;
-import std.file : mkdirRecurse, write, readText, tempDir;
+import std.file : mkdirRecurse, write, readText, exists, tempDir;
 import std.json : JSONValue, parseJSON;
 import std.path : absolutePath, buildPath;
 import std.process : environment;
@@ -66,6 +66,11 @@ int main()
         const deadline = MonoTime.currTime + 5.seconds;
         while ((root.toolMessageCountForTesting() < target || root.pendingToolResultsForTesting() > 0)
             && MonoTime.currTime < deadline) pump();
+        if (root.toolMessageCountForTesting() != target)
+            writeln("run mismatch: target=", target, " got=", root.toolMessageCountForTesting(),
+                " pending=", root.pendingToolResultsForTesting(),
+                " last user=", root.lastUserMessageForTesting(),
+                " last tool=", root.lastToolResultForTesting());
         assert(root.toolMessageCountForTesting() == target, "Expected " ~ to!string(target) ~
             " tool messages, got " ~ to!string(root.toolMessageCountForTesting()) ~
             "; last result: " ~ root.lastToolResultForTesting());
@@ -114,14 +119,17 @@ int main()
     fresh(); context(12);
     assert(root.lastUserMessageForTesting().indexOf("Progress guidance") >= 0 &&
         root.lastUserMessageForTesting().indexOf("update_plan") >= 0,
-        "A long investigation without a plan received no advisory reminder: " ~
+        "A long investigation without a plan received no planning reminder: " ~
         root.lastUserMessageForTesting());
     run([readCall()]);
-    assert(root.lastToolResultForTesting().indexOf("actual evidence") >= 0,
-        "The advisory planning reminder blocked exploration");
+    assert(root.lastToolResultForTesting().indexOf("deferred for planning") >= 0,
+        "A long unplanned investigation ran another call before the plan was recorded");
     record(plan);
     assert(root.taskStepCountForTesting() == 3);
-    writeln("PASS a long investigation without a plan gets an advisory reminder, not a pause");
+    run([readCall()]);
+    assert(root.lastToolResultForTesting().indexOf("actual evidence") >= 0,
+        "Recording the plan did not release the deferred exploration");
+    writeln("PASS a long investigation without a plan is asked for one, then continues after the plan is recorded");
 
     root.setStrictPlanEnabledForTesting(true);
     scope(exit) root.setStrictPlanEnabledForTesting(false);
@@ -164,18 +172,58 @@ int main()
     window.saveScreenshot("early-plan-progress.bmp");
     writeln("PASS a batch recording its plan executes; investigation and implementation render progressively");
 
+    // A plan that runs a full upkeep window without being refreshed is stale:
+    // the reminder repeats once per window while the drift lasts and a refresh
+    // clears it. Work does not wait for the plan. (The detached-plan card's
+    // stale badge is covered by tool_feedback_ui_contracts, which runs with the
+    // panel enabled.)
     const usersBefore = root.userMessageCountForTesting();
     context(4);
     assert(root.userMessageCountForTesting() == usersBefore, "A short healthy phase still forced plan maintenance");
-    context(40);
+    context(5);
     assert(root.userMessageCountForTesting() == usersBefore,
-        "Healthy work was interrupted by count-based plan maintenance");
-    assert(!root.planNeedsUpdateForTesting(), "Healthy work was mislabeled stale");
+        "Plan upkeep arrived before its window");
+    context(1);
+    assert(root.userMessageCountForTesting() == usersBefore + 1 &&
+        root.lastUserMessageForTesting().indexOf("Plan upkeep") >= 0,
+        "A plan that ran a full upkeep window without a refresh received no reminder: " ~
+        root.lastUserMessageForTesting());
+    context(9);
+    assert(root.userMessageCountForTesting() == usersBefore + 1, "Plan upkeep repeated inside its window");
+    context(1);
+    assert(root.userMessageCountForTesting() == usersBefore + 2,
+        "A still-stale plan stopped receiving upkeep reminders");
     record(advanced);
+    assert(root.toolResultsSincePlanUpdateForTesting() == 0,
+        "A refreshed plan kept its stale tool-result count");
     const usersAfterRefresh = root.userMessageCountForTesting();
-    context(16);
-    assert(root.userMessageCountForTesting() == usersAfterRefresh);
-    writeln("PASS healthy phases avoid plan maintenance and stale badges regardless of tool count");
+    context(9);
+    assert(root.userMessageCountForTesting() == usersAfterRefresh,
+        "A refreshed plan was reminded again too soon");
+    context(1);
+    assert(root.userMessageCountForTesting() == usersAfterRefresh + 1,
+        "A refreshed plan should be reminded again after a full window");
+    writeln("PASS a long phase reissues plan upkeep once per window and a refresh clears it");
+
+    // A checklist that stays stale past the second window no longer waits for a
+    // reminder alone: the next edit batch is deferred once so the plan is
+    // checked off before more work, and the retried call then runs.
+    context(10);
+    assert(root.toolResultsSincePlanUpdateForTesting() == 20,
+        "the upkeep gate fixture did not reach the second window");
+    const gateFile = buildPath(state, "upkeep-gate.md");
+    run([OpenCodeToolCall("upkeep_gate_write", "write",
+        `{"filePath":` ~ JSONValue(gateFile).toString ~ `,"content":"gate"}`)]);
+    assert(root.lastToolResultForTesting().indexOf("deferred for plan upkeep") >= 0,
+        "A stale checklist did not defer the next edit: " ~ root.lastToolResultForTesting());
+    assert(!exists(gateFile), "The deferred edit ran anyway");
+    assert(root.lastUserMessageForTesting().indexOf("Plan upkeep gate") >= 0,
+        "The deferral did not require the plan to be reconciled");
+    record(advanced);
+    run([OpenCodeToolCall("upkeep_gate_retry", "write",
+        `{"filePath":` ~ JSONValue(gateFile).toString ~ `,"content":"gate"}`)]);
+    assert(exists(gateFile), "The retried edit did not run after the plan was refreshed");
+    writeln("PASS a checklist that stays stale defers one edit batch until the plan is reconciled");
 
     fresh();
     root.injectToolResultForTesting("update_plan", "invalid plan", true, "{}");
@@ -207,10 +255,14 @@ int main()
     phaseAdvanced["plan"][0]["status"] = "completed";
     phaseAdvanced["plan"][1]["status"] = "in_progress";
     record(phaseAdvanced.toString());
-    write(buildPath(state, "test_phase.py"), "import unittest\nfrom pathlib import Path\nclass Phase(unittest.TestCase):\n def test_document(self): self.assertEqual(Path('phase.md').read_text(), 'phase complete')\n");
     const beforeCheck = root.userMessageCountForTesting();
     assert(root.verificationStatusForTesting() == "not_required");
-    run([OpenCodeToolCall("phase_check", "run", `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`)]);
+    // The check receipt is injected: this fixture covers the plan reconciliation
+    // around an accepted verification, while process execution itself is
+    // covered by tools_test and the live application.
+    root.injectToolResultForTesting("run", "OK", false,
+        `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`,
+        0, 0, "", null, "unittest");
     assert(root.verificationStatusForTesting() == "passed", "An accepted optional check could not satisfy a recorded verification outcome");
     assert(root.userMessageCountForTesting() == beforeCheck + 1 &&
         root.lastUserMessageForTesting().indexOf("Work has moved into editing or verification") >= 0);
@@ -224,7 +276,14 @@ int main()
     run([OpenCodeToolCall("current-phase-write", "write", `{"filePath":` ~ JSONValue(phaseFile).toString ~ `,"content":"phase complete"}`)]);
     record(`{"work_items":[{"id":"child-check","step":"Verify document","kind":"verify","status":"in_progress","done":"Regression tests pass"}]}`);
     const beforeChildCheck = root.userMessageCountForTesting();
-    run([OpenCodeToolCall("child-check-receipt", "run", `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`)]);
+    // Same receipt, injected: this fixture covers the plan/work tracking around
+    // an accepted check, not process execution.
+    root.seedPendingToolBatchForTesting([
+        OpenCodeToolCall("child-check-receipt", "run",
+            `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`)]);
+    root.injectToolResultForTesting("run", "OK", false,
+        `{"program":"python","args":["-u","-B","-m","unittest","test_phase"]}`,
+        0, 0, "", null, "unittest");
     assert(root.userMessageCountForTesting() == beforeChildCheck && !root.planNeedsUpdateForTesting(),
         "A tracked verification action incorrectly made its broader outcome stale");
     record(`{"work_items":[{"id":"child-check","status":"completed","evidence":["child-check-receipt"]}]}`);
@@ -232,11 +291,10 @@ int main()
     writeln("PASS detailed work tracks a phase within a broader outcome without forcing a checklist rewrite");
 
     auto prompt = buildSystemPrompt(true, state, "win32");
-    assert(prompt.indexOf("Default to a short living plan for multi-step or ongoing work") >= 0);
-    assert(prompt.indexOf("Plan maintenance never gates normal execution or completion") >= 0);
-    assert(prompt.indexOf("Update at phase changes or detours") >= 0);
-    assert(prompt.indexOf("Adapt steps as evidence changes") >= 0);
-    assert(prompt.indexOf("small tasks may use a few actions") >= 0);
+    assert(prompt.indexOf("Call update_plan before the first substantive action on every request") >= 0);
+    assert(prompt.indexOf("Check the plan off while you work, not only at the end") >= 0);
+    assert(prompt.indexOf("A checklist that stays stale receives a reminder and then defers further edits") >= 0);
+    assert(prompt.indexOf("Plan upkeep is bounded: a stale checklist is reconciled before further edits") >= 0);
     window.close();
     return 0;
 }

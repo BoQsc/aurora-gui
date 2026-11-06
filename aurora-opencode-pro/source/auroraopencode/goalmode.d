@@ -40,6 +40,23 @@ public bool goalIsAnswerOnly(string goal)
         intent == RequestIntent.analysis || intent == RequestIntent.diagnosis;
 }
 
+/// The reply the user asked for is already delivered on the active branch, so an
+/// answer-shaped goal is finished rather than interrupted. A tool-call turn or a
+/// failed reply is not a delivered answer.
+public bool goalAnswerDelivered(const ref ChatSession session)
+{
+    foreach_reverse (index; activeMessagePath(session))
+    {
+        const ref message = session.messages[index];
+        if (message.role == "assistant")
+            return !message.failed && !message.toolCalls.length &&
+                message.content.strip.length > 0;
+        if (message.role == "tool") return false;
+        if (message.role == "user" && !message.internal) return false;
+    }
+    return false;
+}
+
 /// Goals whose completion is the reply itself must not acquire automatic work
 /// turns. A conversation-shaped action goal ("deliver the requested files")
 /// still continues while tools are available.

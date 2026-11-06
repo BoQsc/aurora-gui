@@ -871,6 +871,20 @@ private final class MessageBubble : Widget
     // increases instead of a phase word that vanishes and reads like a file
     // write.
     private long _liveTokens;
+    // Displayed value the header actually prints. `_liveTokens` is the measured
+    // count, but it only moves when a whole streamed chunk lands (the client and
+    // the transcript both merge a tick's fragments), so a thinking-mode reply
+    // that arrives in sentence-sized bursts would freeze the header and then
+    // jump by dozens of tokens. Pacing the shown number toward `_liveTokens` on
+    // each tick keeps it climbing while text is arriving, without ever printing
+    // more tokens than have actually been measured.
+    // Explicitly 0: D's `.init` for a float is NaN, and a NaN here would leave
+    // every comparison false and freeze the printed count.
+    private double _shownTokens = 0.0;
+    /// Time in seconds the paced count takes to close its whole gap to the
+    /// measured value; a bigger burst is consumed faster, so the number visibly
+    /// rolls instead of stepping, and reaches the truth within a few frames.
+    private enum double tokenPaceSeconds = 0.15;
     private int _tokenRateTenths;
     private bool _tokensLive;
     private int _messageIndex;
@@ -1389,13 +1403,11 @@ private final class MessageBubble : Widget
     /// behind one aggregate "+N -M" header.
     void expandMultiFilePatch()
     {
-        import std.string : splitLines;
-
         if (_collapsed && patchSectionCount(_diffText) > 1) setCollapsed(false);
     }
 
-    /// Test-only: one entry per patched file in the rendered body, e.g.
-    /// `sub/new.txt added +2 -0`.
+    /// Test-only: the patched-file rows this card's body renders, each as
+    /// `path action +N -M`. The card draws these same rows.
     public string[] patchSectionRowsForTesting()
     {
         ensureToolLines(maxInt(1, bounds().width));
@@ -1448,7 +1460,22 @@ private final class MessageBubble : Widget
         const phase = cast(int) (_thinkingElapsed * 2);
         _thinkingElapsed += deltaSeconds;
         const next = cast(int) (_thinkingElapsed * 2);
-        if (next != phase) invalidate();
+        const shownBefore = cast(long) _shownTokens;
+        if (_tokensLive && _shownTokens < cast(double) _liveTokens)
+        {
+            // Close the gap between the shown and the measured count over the
+            // next few frames, at no less than one token per tick, so arriving
+            // chunks read as a rolling counter instead of a jump.
+            const gap = cast(double) (_liveTokens - cast(long) _shownTokens);
+            double step = gap * (deltaSeconds / tokenPaceSeconds);
+            if (step < 1.0) step = 1.0;
+            _shownTokens += step;
+            if (_shownTokens > cast(double) _liveTokens)
+                _shownTokens = cast(double) _liveTokens;
+        }
+        // Repaint for the pulse phase or for a changed visible number; a tick
+        // that only moves the fractional part costs no frame.
+        if (next != phase || cast(long) _shownTokens != shownBefore) invalidate();
     }
 
     /// Test-only: current thinking collapsed state.
@@ -1682,8 +1709,14 @@ private final class MessageBubble : Widget
     void setLiveTokens(long tokens, bool live)
     {
         if (_liveTokens == tokens && _tokensLive == live) return;
+        const previousTarget = _liveTokens;
         _liveTokens = tokens;
         _tokensLive = live;
+        // A settled count is exact, and a correction that lowers the estimate
+        // (the provider reported the real total) must not count backwards. Both
+        // cases snap; only growth while live is paced by `tickThinking`.
+        if (!live || tokens < previousTarget || _shownTokens > cast(double) tokens)
+            _shownTokens = cast(double) tokens;
         invalidate();
     }
 
@@ -1698,6 +1731,12 @@ private final class MessageBubble : Widget
     public long liveTokensForTesting() const
     {
         return _liveTokens;
+    }
+
+    /// Test-only: the paced number currently printed on the Thinking header.
+    public long shownTokensForTesting() const
+    {
+        return cast(long) _shownTokens;
     }
 
     void setAction(string label, void delegate() callback)
@@ -2942,6 +2981,10 @@ private final class MessageBubble : Widget
 
         int oldNo, newNo, plainNo;
         size_t emitted;
+        // The per-file rows this diff declares, counted once for the whole
+        // body; each section marker below consumes the next one.
+        const sections = _hasDiff ? patchSectionRows(_diffText) : null;
+        size_t sectionIndex;
         foreach (index, raw; source)
         {
             if (emitted >= maxRenderedToolLines) break;
@@ -2951,22 +2994,19 @@ private final class MessageBubble : Widget
                 string action, sectionPath;
                 if (patchDiffSection(raw, action, sectionPath))
                 {
-                    // A new file's block: list it as its own row and count only
-                    // its lines, so a multi-file patch reads as one entry per
-                    // patched file instead of a single run of hunks.
+                    // A new file's block: list it as its own row with that
+                    // file's own counts, so a multi-file patch reads as one
+                    // entry per patched file instead of a single run of hunks.
+                    const section = sectionIndex < sections.length
+                        ? sections[sectionIndex] : PatchSectionRow.init;
+                    ++sectionIndex;
                     oldNo = 0;
                     newNo = 0;
                     line.kind = ToolLineKind.section;
                     line.body = sectionPath;
                     line.action = action;
-                    foreach (next; source[index + 1 .. $])
-                    {
-                        string nextAction, nextPath;
-                        if (patchDiffSection(next, nextAction, nextPath)) break;
-                        if (next.length == 0) continue;
-                        if (next[0] == '+') ++line.additions;
-                        else if (next[0] == '-') ++line.deletions;
-                    }
+                    line.additions = section.additions;
+                    line.deletions = section.deletions;
                 }
                 else if (raw.length > 0 && raw[0] == '@')
                 {
@@ -3238,7 +3278,13 @@ private final class MessageBubble : Widget
         const toggle = _thinkingCollapsed ? "▸" : "▾";
         string text = toggle ~ " Thinking";
         if (_liveTokens > 0)
-            text ~= "  " ~ formatThousands(cast(int) _liveTokens) ~ " tokens";
+        {
+            // The paced value trails the measured one only by a few frames, but
+            // never shows 0 while at least one token has arrived.
+            const shown = cast(long) _shownTokens;
+            text ~= "  " ~ formatThousands(cast(int) (shown > 0 ? shown : 1)) ~
+                " tokens";
+        }
         if (_tokenRateTenths > 0)
             text ~= "  " ~ formatTokenRate(_tokenRateTenths);
         if (_thinkingLive || _tokensLive)
@@ -4860,6 +4906,44 @@ private int patchSectionCount(string diff)
     return count;
 }
 
+/// One patched file as the transcript lists it: the path, what happened to it
+/// and that file's own change counts. The tool card and the patch-section
+/// contract test share this definition, so what a test proves is what the card
+/// draws (one labelled row per file instead of one run of hunks).
+public struct PatchSectionRow
+{
+    string path;
+    string action;
+    int additions;
+    int deletions;
+}
+
+/// The per-file rows a stored `apply_patch` diff renders, in patch order.
+public PatchSectionRow[] patchSectionRows(string diff)
+{
+    auto lines = splitLines(diff);
+    PatchSectionRow[] rows;
+    foreach (index, raw; lines)
+    {
+        string action, path;
+        if (!patchDiffSection(raw, action, path)) continue;
+        PatchSectionRow row;
+        row.path = path;
+        row.action = action;
+        // Count only this file's lines: the next file's marker ends the section.
+        foreach (next; lines[index + 1 .. $])
+        {
+            string nextAction, nextPath;
+            if (patchDiffSection(next, nextAction, nextPath)) break;
+            if (next.length == 0) continue;
+            if (next[0] == '+') ++row.additions;
+            else if (next[0] == '-') ++row.deletions;
+        }
+        rows ~= row;
+    }
+    return rows;
+}
+
 /// Basenames of the files a Codex-format patch touches, in patch order and
 /// without repeats, so the action row can name them instead of counting them.
 private string[] patchFileNames(string patch)
@@ -5960,6 +6044,16 @@ private final class PlanCard : Widget
     private static immutable int progressH = 6;
     private static immutable int progressTopGap = 4;
     private static immutable int progressBottomGap = 6;
+    // Plan history strip: small rectangles under the steps, one per
+    // conversation plan, filling from the left. Hovering one previews that plan.
+    private static immutable int stripH = 20;
+    private static immutable int stripBarW = 14;
+    private static immutable int stripBarH = 10;
+    private static immutable int stripGap = 4;
+    // Extra room below the strip while it is shown. Without it the rectangles
+    // sit flush with the card's bottom edge, so aiming at one slips out of the
+    // card and un-expands the panel under the pointer.
+    private static immutable int stripBottomPad = 10;
     // The bent-arrow hide button parked in the card's bottom-right corner.
     // `hideIconReserve` keeps the step text clear of it on the last rows.
     private static immutable int hideIconSize = 14;
@@ -5999,6 +6093,29 @@ private final class PlanCard : Widget
     // freezes this while the pointer is on it: growing the card there would
     // slide the border out from under the pointer that is trying to click it.
     private bool _expandWanted;
+    // Live plan values, kept apart from the rendered ones so a hovered history
+    // rectangle can preview an earlier revision without losing the live plan.
+    private string _liveObjective;
+    private string _liveStatus;
+    private string _liveAcceptanceDetail;
+    private string[] _liveTexts;
+    private string[] _liveStatuses;
+    // Conversation plans, oldest first: one snapshot per plan, not per
+    // revision. The live plan is the last entry.
+    private PlanHistoryEntry[] _plans;
+    private bool _showHistory;
+    // Index into `_plans` while a strip rectangle is hovered; -1 is live.
+    private int _previewIndex = -1;
+    // Rectangles painted for the history strip and the history index each one
+    // stands for, recorded by the last paint so hover hit testing matches pixels.
+    private Rect[] _stripRects;
+    private int[] _stripEntries;
+    // The whole strip row. Hovering it never asks for the card's expansion, so
+    // the rectangles stay put while the pointer aims at them.
+    private Rect _stripRowRect;
+    // The listed step rows. Hover expansion is limited to the step rows and the
+    // objective row, where clipped text actually needs the wider card.
+    private Rect _stepsRect;
 
     /// Notified when the pointer enters or leaves the card, so the detached
     /// panel can expand the card while the user reads it.
@@ -6031,7 +6148,8 @@ private final class PlanCard : Widget
     /// it copies the steps into its own arrays and repaints only on a change.
     void update(string objective, const(TaskStep)[] steps, string status,
         const(NestedPlan)[] nestedPlans = null, bool showNested = false,
-        bool checklistStale = false, const(SubagentEntry)[] subagents = null)
+        bool checklistStale = false, const(SubagentEntry)[] subagents = null,
+        const(PlanHistoryEntry)[] plans = null, bool showHistory = false)
     {
         string[] texts;
         string[] statuses;
@@ -6046,27 +6164,136 @@ private final class PlanCard : Widget
         }
         SubagentEntry[] subagentCopy;
         foreach (entry; subagents) subagentCopy ~= entry;
-        if (!showNested && !_showNested && objective == _objective &&
-            status == _status &&
-            texts == _texts && statuses == _statuses &&
-            acceptanceDetail == _acceptanceDetail &&
+        PlanHistoryEntry[] planCopy = copyPlanHistory(plans);
+        if (!showNested && !_showNested && objective == _liveObjective &&
+            status == _liveStatus &&
+            texts == _liveTexts && statuses == _liveStatuses &&
+            acceptanceDetail == _liveAcceptanceDetail &&
             checklistStale == _checklistStale &&
-            subagentCopy == _subagents) return;
+            subagentCopy == _subagents && showHistory == _showHistory &&
+            samePlanList(planCopy, _plans)) return;
         _checklistStale = checklistStale;
-        _objective = objective;
-        _acceptanceDetail = acceptanceDetail;
-        _status = status;
-        _texts = texts;
-        _statuses = statuses;
+        _liveObjective = objective;
+        _liveAcceptanceDetail = acceptanceDetail;
+        _liveStatus = status;
+        _liveTexts = texts;
+        _liveStatuses = statuses;
+        _plans = planCopy;
+        _showHistory = showHistory;
         _nestedPlans = nestedPlans;
         _showNested = showNested;
         _subagents = subagentCopy;
+        if (_previewIndex >= cast(int) _plans.length) clearHistoryPreview();
+        else if (previewing()) applyHistoryPreview();
+        else applyLivePlan();
+        invalidate();
+    }
+
+    private static PlanHistoryEntry[] copyPlanHistory(const(PlanHistoryEntry)[] history)
+    {
+        PlanHistoryEntry[] result;
+        foreach (entry; history)
+        {
+            TaskStep[] steps;
+            foreach (step; entry.steps)
+                steps ~= TaskStep(step.text, step.status, step.id, step.kind,
+                    step.done, step.evidence.dup, step.blocker);
+            NestedPlan[] nested;
+            foreach (plan; entry.nestedPlans)
+            {
+                NestedPlan copy;
+                copy.parentStep = plan.parentStep;
+                copy.expanded = plan.expanded;
+                foreach (child; plan.steps)
+                    copy.steps ~= TaskStep(child.text, child.status, child.id,
+                        child.kind, child.done, child.evidence.dup, child.blocker);
+                nested ~= copy;
+            }
+            PlanHistoryEntry copy;
+            copy.at = entry.at;
+            copy.source = entry.source;
+            copy.explanation = entry.explanation;
+            copy.objective = entry.objective;
+            copy.status = entry.status;
+            copy.steps = steps;
+            copy.nestedPlans = nested;
+            result ~= copy;
+        }
+        return result;
+    }
+
+    /// Cheap change test: a different plan count, or a plan with different
+    /// contents, means the strip and previews must be rebuilt.
+    private static bool samePlanList(const(PlanHistoryEntry)[] a,
+        const(PlanHistoryEntry)[] b)
+    {
+        if (a.length != b.length) return false;
+        foreach (i; 0 .. a.length)
+            if (a[i].objective != b[i].objective ||
+                a[i].steps.length != b[i].steps.length)
+                return false;
+        return true;
+    }
+
+    /// Render the live plan, unless a history preview is showing.
+    private void applyLivePlan()
+    {
+        _objective = _liveObjective;
+        _status = _liveStatus;
+        _acceptanceDetail = _liveAcceptanceDetail;
+        _texts = _liveTexts;
+        _statuses = _liveStatuses;
+    }
+
+    private bool previewing() const
+    {
+        return _previewIndex >= 0 && _previewIndex < cast(int) _plans.length;
+    }
+
+    /// Render one earlier revision in place of the live plan. Only the rendered
+    /// fields change: nesting and subagent rows stay live and are hidden while
+    /// a preview is showing.
+    private void applyHistoryPreview()
+    {
+        if (!previewing())
+        {
+            _previewIndex = -1;
+            applyLivePlan();
+            return;
+        }
+        const entry = _plans[_previewIndex];
+        string[] texts;
+        string[] statuses;
+        string acceptanceDetail;
+        foreach (step; entry.steps)
+        {
+            texts ~= step.text;
+            statuses ~= step.status;
+            if (step.status == "in_progress" && step.done.length && step.done != step.text)
+                acceptanceDetail = "\nDone when: " ~ step.done;
+            if (step.blocker.length) acceptanceDetail ~= "\nBlocked: " ~ step.blocker;
+        }
+        _objective = entry.objective;
+        _status = entry.status;
+        _acceptanceDetail = acceptanceDetail;
+        _texts = texts;
+        _statuses = statuses;
+    }
+
+    /// Drop the preview and show the live plan again. Called when the pointer
+    /// leaves the card, so hovering the card during a preview keeps it open.
+    void clearHistoryPreview()
+    {
+        if (_previewIndex < 0) return;
+        _previewIndex = -1;
+        applyLivePlan();
         invalidate();
     }
 
     private const(NestedPlan)* nestedFor(size_t index) const
     {
-        if (!_showNested) return null;
+        // A previewed revision shows its own steps only; nesting is live state.
+        if (!_showNested || previewing()) return null;
         foreach (ref plan; _nestedPlans)
             if (plan.parentStep == index + 1) return &plan;
         return null;
@@ -6093,7 +6320,7 @@ private final class PlanCard : Widget
     /// -1. Uses the rects recorded by the last paint.
     private int subagentAt(Point point) const
     {
-        if (_railOnly) return -1;
+        if (_railOnly || previewing()) return -1;
         foreach (i, row; _subagentRects)
             if (row.contains(point)) return cast(int) i;
         return -1;
@@ -6125,6 +6352,16 @@ private final class PlanCard : Widget
     {
         return index < _statuses.length ? _statuses[index] : "";
     }
+    /// Test-only: the history-strip rectangles last painted and which plan each
+    /// one shows. The preview index is -1 while the live plan is rendered.
+    int stripRectCountForTesting() const { return cast(int) _stripRects.length; }
+    Rect stripRectForTesting(size_t index) const
+    {
+        return index < _stripRects.length ? _stripRects[index] : Rect.init;
+    }
+    int previewIndexForTesting() const { return _previewIndex; }
+    Rect objectiveRectForTesting() const { return _objectiveRect; }
+    Rect stepsRectForTesting() const { return _stepsRect; }
 
     private bool hasObjective() const { return _objective.length > 0; }
 
@@ -6142,6 +6379,13 @@ private final class PlanCard : Widget
             to!string(_texts.length) ~ " done";
         if (_checklistStale) title ~= " · needs update";
         else if (_status.length > 0) title ~= "  -  " ~ _status;
+        if (previewing())
+        {
+            const current = _previewIndex == cast(int) _plans.length - 1;
+            title ~= current ? "  ·  current plan " : "  ·  earlier plan ";
+            title ~= to!string(_previewIndex + 1) ~ "/" ~
+                to!string(_plans.length);
+        }
         return title;
     }
 
@@ -6155,17 +6399,106 @@ private final class PlanCard : Widget
 
     private int totalHeight() const
     {
-        int rows = cast(int) _texts.length;
-        if (_showNested)
+        // While the strip is shown the card reserves the tallest plan's rows,
+        // so previewing a plan with a different step count cannot move the
+        // rectangles out from under the pointer.
+        int rows = cast(int) (historyStripVisible()
+            ? planStepRows() : _texts.length);
+        // A history preview shows only the revision's own steps, so live
+        // nesting and subagent rows are dropped while it is displayed.
+        if (_showNested && !previewing())
             foreach (plan; _nestedPlans)
                 if (plan.expanded && plan.parentStep >= 1 &&
                     plan.parentStep <= _texts.length)
                     rows += cast(int) plan.steps.length;
         int subagentRows;
-        if (_subagents.length > 0)
+        if (_subagents.length > 0 && !previewing())
             subagentRows = 1 + cast(int) _subagents.length;
         return 2 * padV + lineH * (1 + (hasObjective() ? 1 : 0) + rows +
-            subagentRows) + progressBlock();
+            subagentRows) + progressBlock() +
+            (historyStripVisible() ? stripH + stripBottomPad : 0);
+    }
+
+    /// The strip appears only for more than one conversation plan, and never
+    /// while the card is collapsed to its rail.
+    private bool historyStripVisible() const
+    {
+        return _showHistory && !_railOnly && _plans.length > 1;
+    }
+
+    /// The tallest plan in the strip, including the live one. Reserving its
+    /// rows keeps the card's height, and the strip's screen position, fixed
+    /// while the pointer moves between rectangles.
+    private size_t planStepRows() const
+    {
+        size_t rows = _texts.length;
+        foreach (plan; _plans)
+            if (plan.steps.length > rows) rows = plan.steps.length;
+        return rows;
+    }
+
+    /// One small rectangle per conversation plan, newest last, filling from the
+    /// left. The current plan is outlined and the hovered one is filled.
+    /// Rectangles are recorded so pointer moves map back to a history index.
+    private void paintHistoryStrip(ref Canvas canvas, int y, int width)
+    {
+        if (!historyStripVisible())
+        {
+            _stripRects = null;
+            _stripEntries = null;
+            _stripRowRect = Rect.init;
+            return;
+        }
+        const int rowY = y + (stripH - stripBarH) / 2;
+        const int maxX = width - padH - hideIconReserve;
+        // Clear the card's left collapse-handle hit strip; a rectangle under it
+        // would open the handle instead of previewing its plan.
+        const int startX = maxInt(padH, handleHitWidth + stripGap);
+        _stripRowRect = Rect(padH, y, maxInt(0, maxX - padH), stripH);
+        // Shrink the rectangles before dropping any plan, so every plan of the
+        // conversation stays represented while it fits.
+        const int total = cast(int) _plans.length;
+        int barWidth = stripBarW;
+        int gap = stripGap;
+        while (barWidth > 5 &&
+            startX + total * barWidth + (total - 1) * gap > maxX)
+            --barWidth;
+        while (gap > 2 &&
+            startX + total * barWidth + (total - 1) * gap > maxX)
+            --gap;
+        const int stride = barWidth + gap;
+        int fit;
+        int span = startX;
+        while (fit < total && span + barWidth <= maxX)
+        {
+            ++fit;
+            span += stride;
+        }
+        if (fit <= 0)
+        {
+            _stripRects = null;
+            _stripEntries = null;
+            return;
+        }
+        const size_t first = _plans.length - cast(size_t) fit;
+        Rect[] rects;
+        int[] entries;
+        int x = startX;
+        foreach (i; first .. _plans.length)
+        {
+            const bar = Rect(x, rowY, barWidth, stripBarH);
+            rects ~= bar;
+            entries ~= cast(int) i;
+            const hot = cast(int) i == _previewIndex;
+            const newest = i == _plans.length - 1;
+            if (hot) canvas.fillRoundedRect(bar, 2, opencodeAccent);
+            else canvas.drawRoundedRect(bar, 2,
+                newest ? opencodeAccent.withAlpha(40) : opencodeField,
+                newest ? opencodeAccent : opencodeMuted.withAlpha(160), 1);
+            x += stride;
+        }
+        _stripRects = rects;
+        _stripEntries = entries;
     }
 
     protected override Size onMeasure(Size available)
@@ -6185,6 +6518,7 @@ private final class PlanCard : Widget
         canvas.fillRoundedRect(Rect(0, 0, width, height), 8, opencodeField);
         if (_railOnly)
         {
+            _stepsRect = Rect.init;
             paintCollapsedRail(canvas, width, height);
             return;
         }
@@ -6236,6 +6570,7 @@ private final class PlanCard : Widget
             }
             y += progressH + progressBottomGap;
         }
+        const int stepsTop = y;
         foreach (index, text; _texts)
         {
             const status = index < _statuses.length
@@ -6275,9 +6610,11 @@ private final class PlanCard : Widget
                     y += lineH;
                 }
         }
+        _stepsRect = _texts.length > 0
+            ? Rect(padH, stepsTop, textWidth, y - stepsTop) : Rect.init;
         // experimental: orchestrator - named subagents under the plan. Clicking
         // a row opens that subagent's own nested chat.
-        if (_subagents.length > 0)
+        if (_subagents.length > 0 && !previewing())
         {
             y += lineH / 2;
             canvas.drawTextInRect(Rect(padH, y, textWidth, lineH),
@@ -6311,6 +6648,16 @@ private final class PlanCard : Widget
         {
             _subagentRects = null;
         }
+        // The strip sits below the tallest plan's rows, not below the preview's
+        // shorter ones, so its screen position is the same for every plan.
+        int stripY = y;
+        if (historyStripVisible())
+        {
+            const int reserved = padV + lineH * (1 + (hasObjective() ? 1 : 0)) +
+                progressBlock() + cast(int) planStepRows() * lineH;
+            stripY = maxInt(y, reserved);
+        }
+        paintHistoryStrip(canvas, stripY, width);
         drawHideIcon(canvas);
         // Painted last so the panel covers the progress bar and steps it
         // overlaps; gated on the hover flag so it disappears on unhover instead
@@ -6414,13 +6761,16 @@ private final class PlanCard : Widget
     protected override void onMouseLeave()
     {
         const changed = _handleHot || _expandWanted || _hideHot ||
-            _objectiveHot || _subagentHot >= 0;
+            _objectiveHot || _subagentHot >= 0 || _previewIndex >= 0;
         _handleHot = false;
         _expandWanted = false;
         _hideHot = false;
         _objectiveHot = false;
         _subagentHot = -1;
         _objectiveTipRect = Rect(0, 0, 0, 0);
+        // Leaving the card ends a history preview; hovering the card itself
+        // keeps it open so the previewed steps stay inspectable.
+        clearHistoryPreview();
         if (changed)
         {
             invalidate();
@@ -6433,6 +6783,11 @@ private final class PlanCard : Widget
     {
         const onHandle = _railOnly || (event.position.x >= 0 &&
             event.position.x < handleHitWidth);
+        // The strip is a stable dock: asking for the card's expansion here
+        // would widen the card and slide the rectangles out from under the
+        // pointer that is trying to reach them.
+        const onStripRow = !_railOnly && !_stripRowRect.empty() &&
+            _stripRowRect.contains(event.position);
         const hot = onHandle && !_railOnly;
         if (hot != _handleHot)
         {
@@ -6451,6 +6806,8 @@ private final class PlanCard : Widget
         // to decide the flag and the frame that follows sizes the panel.
         const overObjective = !_railOnly && !_objectiveRect.empty() &&
             _objectiveRect.contains(event.position);
+        const overSteps = !_railOnly && !_stepsRect.empty() &&
+            _stepsRect.contains(event.position);
         if (overObjective != _objectiveHot)
         {
             _objectiveHot = overObjective;
@@ -6462,14 +6819,38 @@ private final class PlanCard : Widget
             _subagentHot = hotSubagent;
             invalidate();
         }
-        setCursor(onHandle || overIcon || hotSubagent >= 0 ||
+        // History strip: hovering a rectangle previews that revision. The
+        // preview persists while the pointer stays on the card, so the card can
+        // be inspected; leaving the card clears it.
+        int hotEntry = -1;
+        if (historyStripVisible())
+            foreach (i, bar; _stripRects)
+                // The hit area is exactly the drawn rectangle: moving between
+                // two rectangles switches at their visible edges, and the gap
+                // between them keeps the current preview.
+                if (bar.contains(event.position))
+                {
+                    if (i < _stripEntries.length) hotEntry = _stripEntries[i];
+                    break;
+                }
+        if (hotEntry >= 0 && hotEntry != _previewIndex)
+        {
+            _previewIndex = hotEntry;
+            applyHistoryPreview();
+            invalidate();
+        }
+        setCursor(onHandle || overIcon || hotSubagent >= 0 || hotEntry >= 0 ||
             nestedParentAt(event.position.y) != size_t.max
             ? CursorKind.hand : CursorKind.arrow);
         // On the border the layout is frozen (the flag keeps its value), so the
         // border stays under the pointer and can be clicked; anywhere else in
         // the card the pointer asks for the expansion. The hide button is
         // excluded too: growing the card there would repaint it mid-click.
-        if (!onHandle && !overIcon && !_expandWanted)
+        // Only the listed steps and the clipped objective row ask for the
+        // wider card; the title, padding, strip and subagent rows keep it at
+        // its resting width.
+        if ((overObjective || overSteps) && !onHandle && !overIcon &&
+            !onStripRow && !_expandWanted)
         {
             _expandWanted = true;
             if (onHoverChanged !is null) onHoverChanged();
@@ -6624,10 +7005,11 @@ private final class DetachedPlanPanel : Widget
     /// Replace the rendered plan and show the panel only while steps exist.
     void update(string objective, const(TaskStep)[] steps, string status,
         const(NestedPlan)[] nestedPlans = null, bool showNested = false,
-        bool checklistStale = false, const(SubagentEntry)[] subagents = null)
+        bool checklistStale = false, const(SubagentEntry)[] subagents = null,
+        const(PlanHistoryEntry)[] history = null, bool showHistory = false)
     {
         _card.update(objective, steps, status, nestedPlans, showNested,
-            checklistStale, subagents);
+            checklistStale, subagents, history, showHistory);
         setVisible(steps.length > 0 || subagents.length > 0);
         invalidate();
     }
@@ -6687,6 +7069,36 @@ private final class DetachedPlanPanel : Widget
     string stepStatusForTesting(size_t index) const
     {
         return _card.stepStatusForTesting(index);
+    }
+    int stripRectCountForTesting() const
+    {
+        return _card.stripRectCountForTesting();
+    }
+    string stepTextForTesting(size_t index) const
+    {
+        return _card.stepTextForTesting(index);
+    }
+    Rect stripRectForTesting(size_t index) const
+    {
+        const local = _card.stripRectForTesting(index);
+        return Rect(_cardRect.x + local.x, _cardRect.y + local.y,
+            local.width, local.height);
+    }
+    int previewIndexForTesting() const
+    {
+        return _card.previewIndexForTesting();
+    }
+    Rect objectiveRectForTesting() const
+    {
+        const local = _card.objectiveRectForTesting();
+        return Rect(_cardRect.x + local.x, _cardRect.y + local.y,
+            local.width, local.height);
+    }
+    Rect stepsRectForTesting() const
+    {
+        const local = _card.stepsRectForTesting();
+        return Rect(_cardRect.x + local.x, _cardRect.y + local.y,
+            local.width, local.height);
     }
     /// Test-only: the card's rect relative to the transcript viewport.
     Rect cardBoundsForTesting() const { return _cardRect; }
@@ -12424,6 +12836,12 @@ private string _suggestExcludeId;
     // Strict mode additionally checks before the first mutation. Normal mode
     // only warns (see queueStalePlanGuidance) and never blocks the batch.
     private bool[string] _planGateFired;
+    // Plan upkeep enforcement: the tool-result position of the last deferred
+    // batch and how many deferrals this request received, so a checklist that
+    // stays stale is reconciled once per window instead of on every batch or
+    // not at all.
+    private int[string] _planUpkeepGatedAt;
+    private int[string] _planUpkeepGates;
     // Experimental computer use: a settled reply that requested no tools would
     // leave the agent idle mid-task (it looks "stuck"). We resume it
     // automatically, bounded per user turn, so a computer-use loop keeps acting
@@ -12454,10 +12872,17 @@ private string _suggestExcludeId;
     // earlier threshold.
     private static immutable int planNudgeExplorationCalls = earlyPlanExplorationCalls;
     private static immutable int planGateExplorationCalls = explorationCheckpointCalls;
-    // A recorded plan only helps while it stays current. When a plan still has
-    // unfinished steps and the model runs this many tool results without an
-    // update_plan call, the checklist has drifted from the actual work; nudge
-    // the model to refresh it before continuing.
+    // A recorded plan only helps while it stays current. A plan with unfinished
+    // steps that runs this many tool results without an update_plan call has
+    // drifted from the actual work: the reminder repeats once per window while
+    // the drift lasts and the plan card marks the checklist stale. After
+    // planUpkeepGateWindows windows a mutating batch is deferred once per window
+    // until the plan is reconciled, so a long run cannot leave a stale plan on
+    // screen for the rest of the turn. The deferral is bounded per request and
+    // never blocks inspection, verification or update_plan itself.
+    private static immutable int planUpkeepToolResults = 10;
+    private static immutable int planUpkeepGateWindows = 2;
+    private static immutable int planUpkeepGateLimit = 4;
     // Adaptive backstop for cross-turn repetition. The consecutive-batch
     // counter above only sees a run of identical calls: a model can evade it by
     // alternating calls, and every new user turn resets it. This cap counts how
@@ -13499,16 +13924,23 @@ private string _suggestExcludeId;
         // may have completed the compile/relaunch outcomes and recomputed the
         // durable status. An active goal that still has unfinished work overrides
         // the settled turn, so a rebuild continues the goal instead of silently
-        // ending it; a paused goal, a validated input wait and completed work
-        // stay stopped.
+        // ending it. A rebuild note that names its requesting conversation also
+        // overrides the settled turn: the shutdown that performs the rebuild
+        // cancels that turn, so its saved status is the cancellation artifact,
+        // not the agent's verdict. A paused goal and a validated input wait stay
+        // stopped because those are explicit user-owned states.
+        const rebuildNoteContinuation = cause == "rebuild" && target >= 0 &&
+            noteSession.length > 0 && _sessions[target].id == noteSession &&
+            rebuildNoteContinues(target);
         _resumeNoteAlreadyHandled = target >= 0 &&
             _sessions[target].turnStatus != "running" &&
-            !resumeGoalWorkRemaining(target);
+            !resumeGoalWorkRemaining(target) &&
+            !rebuildNoteContinuation;
         _resumePrompt = resumePromptFor(cause, reason, rebuildReport,
             buildStamp);
         _resumeOwnerId = noteSession;
         // Everything that must be picked back up: the noted conversation first
-        // (when its turn was still running), then every other conversation the
+        // (running, or a rebuild's own chat), then every other conversation the
         // restart left mid-turn. A rebuild that interrupted several working
         // chats continues all of them, not only the one that asked for it.
         // Only `running` counts: it is the honest "in flight when the process
@@ -13619,6 +14051,28 @@ private string _suggestExcludeId;
         // the running one at shutdown.
         if (session.messages.length == 0) ensureThreadLoaded(index);
         return unfinishedTask(session);
+    }
+
+    /// Whether a rebuild note must still continue the conversation it names.
+    ///
+    /// The note is written at the instant the rebuild starts, for the chat whose
+    /// turn asked for it, and the exit checkpoint then cancels that turn. Its
+    /// saved `interrupted` - or even `completed` when the shutdown processed the
+    /// cancellation before the snapshot - is a shutdown artifact, not the
+    /// agent's verdict that the work ended. Continue that chat unless the user
+    /// explicitly stopped it (a paused goal) or it is waiting for a required
+    /// answer. A chat with no transcript left nothing to continue.
+    private bool rebuildNoteContinues(int index)
+    {
+        if (index < 0 || index >= cast(int) _sessions.length) return false;
+        if (_sessions[cast(size_t) index].messages.length == 0)
+            ensureThreadLoaded(index);
+        const ref session = _sessions[cast(size_t) index];
+        if (session.messages.length == 0) return false;
+        if (session.goalStatus == "paused") return false;
+        if (session.taskStatus == "waiting_input" && taskAwaitingInput(session))
+            return false;
+        return true;
     }
 
     /// Open the conversation a resume selected and make it the visible view.
@@ -17839,7 +18293,8 @@ private string _suggestExcludeId;
             planCard.update(session.objective, session.taskSteps,
                 session.taskStatus, session.nestedPlans,
                 _settings.experimentalNestedPlans, checklistStale(*session),
-                subagentEntriesFor(*session));
+                subagentEntriesFor(*session), conversationPlans(*session),
+                _settings.planHistoryStrip);
             planCard.onToggleNested = delegate(size_t parent)
             {
                 toggleNestedPlan(parent);
@@ -18325,6 +18780,60 @@ private string _suggestExcludeId;
         return null;
     }
 
+    /// One entry per conversation plan: each archived task plan, then the live
+    /// plan. Plan history records every checklist revision, which is a stage of
+    /// a plan, not a separate plan.
+    private PlanHistoryEntry[] conversationPlans(const ref ChatSession session) const
+    {
+        PlanHistoryEntry[] plans;
+        foreach (snapshot; session.taskArchive)
+        {
+            ChatSession saved;
+            restoreActiveTaskState(saved, snapshot);
+            if (!saved.taskSteps.length) continue;
+            const objective = saved.objective.length
+                ? saved.objective : saved.goal;
+            if (!objective.length) continue;
+            if (plans.length && plans[$ - 1].objective == objective) continue;
+            PlanHistoryEntry entry;
+            entry.objective = objective;
+            entry.status = saved.taskStatus;
+            entry.steps = saved.taskSteps;
+            plans ~= entry;
+        }
+        if (session.objective.length || session.taskSteps.length)
+        {
+            PlanHistoryEntry live;
+            live.objective = session.objective;
+            live.status = session.taskStatus;
+            live.steps = copyTaskSteps(session.taskSteps);
+            plans ~= live;
+        }
+        return plans;
+    }
+
+    /// Copy steps out of a `const` plan: the struct holds a mutable evidence
+    /// array, so it cannot be assigned directly.
+    private static TaskStep[] copyTaskSteps(const(TaskStep)[] source)
+    {
+        TaskStep[] result;
+        foreach (step; source)
+        {
+            TaskStep copy;
+            copy.text = step.text;
+            copy.status = step.status;
+            copy.id = step.id;
+            copy.kind = step.kind;
+            copy.done = step.done;
+            copy.blocker = step.blocker;
+            string[] evidence;
+            foreach (item; step.evidence) evidence ~= item;
+            copy.evidence = evidence;
+            result ~= copy;
+        }
+        return result;
+    }
+
     /// Sync the detached plan panel with the active conversation's durable
     /// plan. Hidden unless `Settings.detachedPlan` is on and the conversation
     /// actually has checklist steps.
@@ -18340,7 +18849,8 @@ private string _suggestExcludeId;
         _planPanel.update(session.objective, session.taskSteps,
             session.taskStatus, session.nestedPlans,
             _settings.experimentalNestedPlans, checklistStale(*session),
-            subagentEntriesFor(*session));
+            subagentEntriesFor(*session), conversationPlans(*session),
+            _settings.planHistoryStrip);
     }
 
     private void toggleNestedPlan(size_t parent)
@@ -19799,6 +20309,10 @@ private void pollButtonSuggestionRequest()
                 : previewToolDiffText(message.toolName, message.toolArgs);
             bubble.setDiff(message.diffAdditions, message.diffDeletions,
                 diffText);
+            // A patch that changes several files lists them once per file, so
+            // open it instead of leaving one aggregate header that never says
+            // what happened to each file.
+            if (message.toolName == "apply_patch") bubble.expandMultiFilePatch();
             bubble.setHideHunkHeaders(_settings.hideHunkHeaders);
             bubble.setToolElapsed(message.toolElapsedMs);
             // Name the file or folder this row touched, resolved to an absolute
@@ -20620,7 +21134,21 @@ private void pollButtonSuggestionRequest()
         session.taskStatus = decision.taskStatus;
         publishThreadUpdated(*session);
         markDirty();
-        if (decision.status.length) updateStatus(decision.status);
+        // A settle that starts no further turn must not leave the goal looking
+        // active: complete an answer goal whose reply was delivered, otherwise
+        // pause the goal so its work is kept and Start resumes it.
+        if (decision.settleGoal == "completed")
+            applyGoalCompletion(*session, "");
+        else if (decision.settleGoal == "paused" && !suppressContinue)
+        {
+            pauseActiveGoal(*session);
+            updateGoalBar();
+        }
+        string statusText = decision.status;
+        if (decision.settleGoal == "paused" && !suppressContinue)
+            statusText = (statusText.length ? statusText ~ " " : "") ~
+                "Goal paused — press Start to continue it.";
+        if (statusText.length) updateStatus(statusText);
         if (suppressContinue)
         {
             session.turnStatus = "completed";
@@ -21314,19 +21842,29 @@ private void pollButtonSuggestionRequest()
         return true;
     }
 
-    /// Queue an advisory reminder to (re)record the plan. Two cases:
+    /// Queue a reminder to (re)record the plan. Three cases:
     /// - a recorded plan with unfinished steps that the model stopped
-    ///   refreshing: the checklist silently drifts, so finished steps stay
+    ///   refreshing for a full upkeep window: finished steps stay
     ///   pending/in_progress while the work has moved on;
+    /// - the plan names no work position, or its in_progress outcome no longer
+    ///   matches the work phase;
     /// - no plan recorded at all after the read-only exploration budget is
     ///   spent: a turn can otherwise investigate indefinitely without ever
     ///   calling update_plan.
-    /// The reminder is advisory. It fires once per phase (inspection, editing,
-    /// verification) until a fresh plan resets it, rather than every few calls.
+    /// The reminder repeats once per upkeep window and on a phase change until a
+    /// fresh plan resets it, so a long run is reconciled without per-round spam.
     /// Returns true when a reminder was queued.
     private static bool checklistStale(const ref ChatSession session)
     {
         if (!session.taskSteps.length || !hasIncompleteTaskSteps(session) || session.taskStatus == "waiting_input" || taskInvestigation(session)) return false;
+        if (toolResultsSincePlanUpdate(session) >= planUpkeepToolResults) return true;
+        return planWorkPositionMissing(session);
+    }
+
+    /// True when the recorded plan does not name a work position that matches
+    /// what the task is currently doing.
+    private static bool planWorkPositionMissing(const ref ChatSession session)
+    {
         const phase = planWorkPhase(session);
         if (workTracksPhase(session, phase)) return false;
         bool active;
@@ -21362,9 +21900,9 @@ private void pollButtonSuggestionRequest()
         const phase = planWorkPhase(session);
         int lastNudged = session.id in _planNudgedAt ? _planNudgedAt[session.id] : 0;
         // A refreshed plan drops the tool-result counter below the last nudge
-        // point; only that may re-arm the reminder. Otherwise it fires once per
-        // plan-refresh cycle instead of repeating every few results, which was
-        // the endless "your checklist is stale" spam while a long run continued.
+        // point; only that may re-arm the reminder. Otherwise it repeats once
+        // per upkeep window, which keeps a long run reconciled without
+        // returning to the guidance spam of a per-round reminder.
         if (since < lastNudged)
         {
             _planNudgedAt.remove(session.id);
@@ -21372,7 +21910,6 @@ private void pollButtonSuggestionRequest()
             lastNudged = 0;
         }
         const lastPhase = session.id in _planNudgedPhase ? _planNudgedPhase[session.id] : 0;
-        if (lastNudged > 0 && phase <= lastPhase) return false;
         const refreshDue = checklistStale(session);
         bool phaseDue;
         foreach (step; session.taskSteps)
@@ -21382,14 +21919,24 @@ private void pollButtonSuggestionRequest()
         const recordDue = !hasIncompleteTaskSteps(session) &&
             !planRecordedThisTurn(session) &&
             readOnlyExplorationCount(session) >= planNudgeExplorationCalls;
-        if (!refreshDue && !recordDue && !phaseDue) return false;
+        const firstDue = lastNudged == 0 && (refreshDue || recordDue);
+        const phaseAdvanced = phaseDue && phase > lastPhase;
+        const windowDue = refreshDue && since >= planUpkeepToolResults &&
+            (lastNudged == 0 || since - lastNudged >= planUpkeepToolResults);
+        if (!firstDue && !phaseAdvanced && !windowDue) return false;
         _planNudgedAt[session.id] = since;
         _planNudgedPhase[session.id] = phase;
         if (_pendingProgressGuidance.length == 0)
-            _pendingProgressGuidance = phaseDue
+            _pendingProgressGuidance = phaseAdvanced
                 ? "Work has moved into editing or verification. Replan now: tick only work proven complete, " ~
                     "keep unfinished outcomes visible, add newly discovered outcomes, and explain a focus change, " ~
                     "detour or replaced step. Continue useful work without asking permission."
+                : windowDue
+                ? "Plan upkeep: " ~ to!string(since) ~ " tool results have run since the checklist was last " ~
+                    "refreshed. Check it off now with update_plan: mark every finished outcome completed, " ~
+                    "keep exactly one unfinished outcome in_progress (or record an explained pause), " ~
+                    "add newly discovered outcomes, and explain the change. A checklist that stays stale " ~
+                    "defers further edits until it is refreshed."
                 : refreshDue
                 ? "The plan has unfinished outcomes without a current work position. Update it now with the active " ~
                     "outcome or an explained pause; keep completed work accurate and continue useful work."
@@ -21651,6 +22198,48 @@ private void pollButtonSuggestionRequest()
             return;
         }
 
+        // A plan that stays unreconciled while work continues is enforced, not
+        // only reminded. After the first upkeep window the model gets guidance;
+        // once the checklist has drifted for another full window, a mutating
+        // batch is deferred so the plan is checked off before more edits. The
+        // deferral is bounded: one per window, a few per request, and it never
+        // blocks inspection, verification or update_plan itself, so an
+        // uncooperative provider cannot deadlock the tool loop.
+        const planSince = toolResultsSincePlanUpdate(*session);
+        const upkeepGatedAt = session.id in _planUpkeepGatedAt ? _planUpkeepGatedAt[session.id] : 0;
+        const upkeepGates = session.id in _planUpkeepGates ? _planUpkeepGates[session.id] : 0;
+        if (mutatingPending && !recordingPlan && hasIncompleteTaskSteps(*session) &&
+            planSince >= planUpkeepToolResults * planUpkeepGateWindows &&
+            (upkeepGatedAt == 0 || planSince >= upkeepGatedAt + planUpkeepToolResults) &&
+            upkeepGates < planUpkeepGateLimit)
+        {
+            _planUpkeepGatedAt[session.id] = planSince;
+            _planUpkeepGates[session.id] = upkeepGates + 1;
+            appendSkippedToolResults(*session, calls,
+                "Tool call deferred for plan upkeep: the checklist has not been refreshed for " ~
+                to!string(planSince) ~ " tool results. No command ran or failed. " ~
+                "Call update_plan to check off the outcomes the recorded results prove, keep " ~
+                "exactly one unfinished outcome in_progress, then repeat the calls.");
+            ChatMessage upkeepGate;
+            upkeepGate.role = "user";
+            upkeepGate.internal = true;
+            upkeepGate.content = "Plan upkeep gate: the checklist is stale after " ~
+                to!string(planSince) ~ " tool results (" ~ to!string(upkeepGates + 1) ~
+                " of at most " ~ to!string(planUpkeepGateLimit) ~ " deferrals this request). " ~
+                "Reconcile it now with update_plan before further edits: mark finished outcomes " ~
+                "completed, keep exactly one unfinished outcome in_progress, keep the remaining " ~
+                "outcomes visible, and explain any new or reordered outcome. Then repeat the deferred calls.";
+            appendMessage(*session, upkeepGate);
+            session.turnStatus = "running";
+            session.taskStatus = "active";
+            publishThreadUpdated(*session);
+            markDirty();
+            if (_current == sessionIndex) rebuildMessageColumn();
+            updateStatus("Reconciling the plan before further edits…");
+            if (!_toolContinuationPaused) startChatRequest(sessionIndex, false);
+            return;
+        }
+
         ++_toolRounds;
 
         // Repeated calls still execute. On the third consecutive identical
@@ -21897,6 +22486,9 @@ private void pollButtonSuggestionRequest()
         if (!toolFailed && event.toolName == "update_plan")
         {
             _planNudgedAt.remove(session.id);
+            _planNudgedPhase.remove(session.id);
+            _planUpkeepGatedAt.remove(session.id);
+            _planUpkeepGates.remove(session.id);
             applyDurablePlan(*session, toolArgs);
         }
         if (!toolFailed && event.toolName == "update_subplan")
@@ -24275,6 +24867,8 @@ private void pollButtonSuggestionRequest()
         {
             // A fresh user request clears the once-per-turn plan-first nudge.
             _planGateFired[_sessions[sessionIndex].id] = false;
+            _planUpkeepGatedAt.remove(_sessions[sessionIndex].id);
+            _planUpkeepGates.remove(_sessions[sessionIndex].id);
         }
         // Continue, Regenerate and queued prompts also open user turns. Stop's
         // latch belongs to the old turn; leaving it set discards the new turn's
@@ -26829,6 +27423,22 @@ private void pollButtonSuggestionRequest()
         };
         planRow.add(planCheck);
         optionsBody.add(planRow);
+
+        // Plan history strip: small rectangles under the plan card, one per
+        // retained revision; hovering one previews it. On by default.
+        auto planHistoryRow = new HBox(8);
+        planHistoryRow.layoutHints().preferredHeight = 32;
+        auto planHistoryCheck = new CheckBox("Plan history strip");
+        planHistoryCheck.setId("oc-planhistorystrip");
+        planHistoryCheck.setChecked(_settings.planHistoryStrip, false);
+        planHistoryCheck.onChanged = delegate(bool value)
+        {
+            _settings.planHistoryStrip = value;
+            saveSettingsNow();
+            if (_current >= 0) rebuildMessageColumn();
+        };
+        planHistoryRow.add(planHistoryCheck);
+        optionsBody.add(planHistoryRow);
 
         auto chatRedesignRow = new HBox(8);
         chatRedesignRow.layoutHints().preferredHeight = 32;
@@ -35094,6 +35704,13 @@ private void pollButtonSuggestionRequest()
         return _streamBubble is null ? 0 : _streamBubble.liveTokensForTesting();
     }
 
+    /// Test-only: the number currently printed on the streaming reply's header,
+    /// which trails the measured count by a few frames while it paces.
+    public long streamShownTokensForTesting()
+    {
+        return _streamBubble is null ? 0 : _streamBubble.shownTokensForTesting();
+    }
+
     /// Test-only: the exact Thinking header line of the streaming reply.
     public string streamThinkingHeaderTextForTesting()
     {
@@ -35662,6 +36279,28 @@ private void pollButtonSuggestionRequest()
         return _planPanel is null ? "" : _planPanel.titleForTesting();
     }
 
+    public string detachedPlanObjectiveForTesting()
+    {
+        return _planPanel is null ? "" : _planPanel.objectiveForTesting();
+    }
+
+    public Rect detachedPlanObjectiveRectForTesting()
+    {
+        if (_planPanel is null || !_planPanel.visible()) return Rect.init;
+        return _planPanel.objectiveRectForTesting();
+    }
+
+    public Rect detachedPlanStepsRectForTesting()
+    {
+        if (_planPanel is null || !_planPanel.visible()) return Rect.init;
+        return _planPanel.stepsRectForTesting();
+    }
+
+    public string detachedPlanStepTextForTesting(size_t index)
+    {
+        return _planPanel is null ? "" : _planPanel.stepTextForTesting(index);
+    }
+
     /// Test-only: the detached plan panel's card rect relative to the
     /// transcript viewport (empty when hidden).
     public Rect detachedPlanRectForTesting()
@@ -35697,6 +36336,38 @@ private void pollButtonSuggestionRequest()
     {
         if (_planPanel is null || !_planPanel.visible()) return Rect.init;
         return _planPanel.hideIconRectForTesting();
+    }
+
+    /// Test-only: the plan-history strip rectangles (one per conversation
+    /// plan) in transcript coordinates, the hovered plan index (-1 is live),
+    /// and a direct archive so the strip can be exercised without a goal change.
+    public int detachedPlanStripCountForTesting()
+    {
+        return _planPanel is null ? 0 : _planPanel.stripRectCountForTesting();
+    }
+
+    public Rect detachedPlanStripRectForTesting(size_t index)
+    {
+        if (_planPanel is null || !_planPanel.visible()) return Rect.init;
+        return _planPanel.stripRectForTesting(index);
+    }
+
+    public int detachedPlanPreviewIndexForTesting()
+    {
+        return _planPanel is null ? -1 : _planPanel.previewIndexForTesting();
+    }
+
+    public void setArchivedPlansForTesting(const(string)[] snapshots)
+    {
+        if (_current < 0) return;
+        _sessions[_current].taskArchive = snapshots.dup;
+        rebuildMessageColumn();
+    }
+
+    public void setPlanHistoryStripForTesting(bool value)
+    {
+        _settings.planHistoryStrip = value;
+        if (_current >= 0) rebuildMessageColumn();
     }
 
 
@@ -36603,6 +37274,16 @@ private void pollButtonSuggestionRequest()
         if (n < 0 || n >= cast(int) bubbles.length) return false;
         return bubbles[cast(size_t) n].hasDiffForTesting();
     }
+
+    /// Test-only: the patched-file rows rendered by the `tool` bubble at `n`,
+    /// each as `path action +N -M`.
+    public string[] toolPatchSectionRowsForTesting(int n)
+    {
+        auto bubbles = toolBubblesForTesting();
+        if (n < 0 || n >= cast(int) bubbles.length) return null;
+        return bubbles[cast(size_t) n].patchSectionRowsForTesting();
+    }
+
 
     /// Test-only: the wall-clock duration shown for the `tool` bubble at `n`.
     public long toolElapsedMsForTesting(int n)

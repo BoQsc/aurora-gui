@@ -7,7 +7,7 @@ import auroraopencode.taskcontext : taskContext;
 import auroraopencode.taskpolicy : requiredEvidence;
 import auroraopencode.taskflow : taskInvestigation;
 import auroraopencode.requestintent : RequestIntent, answerOnlyRequest, requestIntent;
-import auroraopencode.goalmode : goalPromptBlock;
+import auroraopencode.goalmode : goalActive, goalAnswerDelivered, goalPromptBlock;
 import std.array : appender, join, split;
 import std.algorithm : canFind, min, max;
 import std.string : strip, startsWith, toLower, replace;
@@ -34,8 +34,13 @@ public string durableTaskPrompt(const ref ChatSession session,
         return "";
     auto prompt = appender!string();
     const currentRequest = latestActualUserRequest(session);
+    // A goal continuation runs after the human's last message was already
+    // answered. Re-presenting that message as the deliverable makes the model
+    // answer it again on every resume instead of advancing the goal.
+    const sideRequestAnswered = goalActive(session) && goalAnswerDelivered(session);
     prompt.put(goalPromptBlock(session));
-    prompt.put("\n\n# Durable Task State\n" ~ taskContext(session, currentRequest,
+    prompt.put("\n\n# Durable Task State\n" ~ taskContext(session,
+        sideRequestAnswered ? session.goal : currentRequest,
         nestedEnabled, 12_000, includeRecentEvidence));
     const evidence = requiredEvidence(session);
     if (evidence.length)
@@ -44,7 +49,12 @@ public string durableTaskPrompt(const ref ChatSession session,
         foreach (kind; evidence) prompt.put(" " ~ kind);
         prompt.put(". Use a saved verify recipe; a compiler check alone does not satisfy these outcomes.\n");
     }
-    if (answerOnlyRequest(currentRequest) || taskInvestigation(session))
+    if (sideRequestAnswered)
+        prompt.put("The user's latest request has already been answered in this conversation. " ~
+            "Do not repeat that answer. Continue the active goal's remaining outcomes from the " ~
+            "recorded evidence; if they are complete and verified, call goal_complete with a " ~
+            "concise summary and concrete evidence.\n");
+    else if (answerOnlyRequest(currentRequest) || taskInvestigation(session))
         prompt.put("The latest request asks for an explanation. Answer it from the " ~
             "evidence; do not resume desktop actions or reconcile the older checklist. " ~
             "Preserve the parent objective, current step and return point. The unfinished work remains recorded for resume.\n");

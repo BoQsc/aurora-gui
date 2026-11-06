@@ -1,0 +1,28 @@
+{
+  "inputs": [
+    "aurora-opencode-pro/dub.json",
+    "aurora-opencode-pro/source",
+    "aurora-opencode-pro/shared",
+    "aurora-opencode-pro/assets",
+    "aurora-opencode-pro/tests/goal_rebuild_contracts.d",
+    "aurora-opencode-pro/tests/run_architecture_checks.py",
+    "aurora-opencode-pro/tests/architecture_retention.py",
+    "aurora-opencode-core/source",
+    "vendor/aurora-d-0.4.5/source"
+  ],
+  "steps": [
+    {
+      "kind": "tests",
+      "command": {
+        "program": "powershell",
+        "args": [
+          "-NoProfile",
+          "-Command",
+          "$env:PATH='C:\\Users\\windows10\\AppData\\Local\\GitHubDesktop\\app-3.6.10\\resources\\app\\git\\cmd;'+$env:PATH; python tests/run_architecture_checks.py goal_rebuild_contracts"
+        ],
+        "workdir": "aurora-opencode-pro",
+        "timeout": 900000
+      }
+    }
+  ]
+}
