@@ -6399,11 +6399,7 @@ private final class PlanCard : Widget
 
     private int totalHeight() const
     {
-        // While the strip is shown the card reserves the tallest plan's rows,
-        // so previewing a plan with a different step count cannot move the
-        // rectangles out from under the pointer.
-        int rows = cast(int) (historyStripVisible()
-            ? planStepRows() : _texts.length);
+        int rows = cast(int) _texts.length;
         // A history preview shows only the revision's own steps, so live
         // nesting and subagent rows are dropped while it is displayed.
         if (_showNested && !previewing())
@@ -6426,16 +6422,28 @@ private final class PlanCard : Widget
         return _showHistory && !_railOnly && _plans.length > 1;
     }
 
-    /// The tallest plan in the strip, including the live one. Reserving its
-    /// rows keeps the card's height, and the strip's screen position, fixed
-    /// while the pointer moves between rectangles.
-    private size_t planStepRows() const
+    /// Height of the live plan's card. The panel anchors a preview's bottom
+    /// edge to it, so a shorter preview shrinks the card from the top and the
+    /// strip stays under the pointer.
+    int liveBaseHeight() const
     {
-        size_t rows = _texts.length;
-        foreach (plan; _plans)
-            if (plan.steps.length > rows) rows = plan.steps.length;
-        return rows;
+        const rows = cast(int) _liveTexts.length;
+        int nestedRows;
+        if (_showNested)
+            foreach (plan; _nestedPlans)
+                if (plan.expanded && plan.parentStep >= 1 &&
+                    plan.parentStep <= _liveTexts.length)
+                    nestedRows += cast(int) plan.steps.length;
+        const subagentRows = _subagents.length > 0
+            ? 1 + cast(int) _subagents.length : 0;
+        return 2 * padV + lineH * (1 + (_liveObjective.length ? 1 : 0) +
+            rows + nestedRows + subagentRows) +
+            (_liveTexts.length > 0
+                ? progressTopGap + progressH + progressBottomGap : 0) +
+            (historyStripVisible() ? stripH + stripBottomPad : 0);
     }
+
+    bool previewActive() const { return previewing(); }
 
     /// One small rectangle per conversation plan, newest last, filling from the
     /// left. The current plan is outlined and the hovered one is filled.
@@ -6648,16 +6656,7 @@ private final class PlanCard : Widget
         {
             _subagentRects = null;
         }
-        // The strip sits below the tallest plan's rows, not below the preview's
-        // shorter ones, so its screen position is the same for every plan.
-        int stripY = y;
-        if (historyStripVisible())
-        {
-            const int reserved = padV + lineH * (1 + (hasObjective() ? 1 : 0)) +
-                progressBlock() + cast(int) planStepRows() * lineH;
-            stripY = maxInt(y, reserved);
-        }
-        paintHistoryStrip(canvas, stripY, width);
+        paintHistoryStrip(canvas, y, width);
         drawHideIcon(canvas);
         // Painted last so the panel covers the progress bar and steps it
         // overlaps; gated on the hover flag so it disappears on unhover instead
@@ -7049,7 +7048,13 @@ private final class DetachedPlanPanel : Widget
             ? minInt(collapsedWidth, available)
             : minInt(_hoverExpanded ? hoverCardWidth : cardWidth, available);
         const height = _collapsed ? collapsedHeight : _card.totalHeight();
-        return Rect(maxInt(margin, bounds().width - rightMargin - width), margin,
+        // A preview's bottom edge stays where the live card's bottom edge is:
+        // the height adapts to the previewed plan, but the strip under it does
+        // not move out from under the pointer.
+        int top = margin;
+        if (!_collapsed && _card.previewActive())
+            top = maxInt(margin, margin + _card.liveBaseHeight() - height);
+        return Rect(maxInt(margin, bounds().width - rightMargin - width), top,
             width, height);
     }
 

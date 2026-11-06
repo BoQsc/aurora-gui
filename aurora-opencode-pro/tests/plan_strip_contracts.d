@@ -71,12 +71,12 @@ int main(string[] args)
     root.newChatForTesting();
     root.addConversationForTesting(["user"], ["First request"]);
     root.applyPlanForTesting(`{"objective":"Earlier plan","plan":[` ~
-        `{"step":"Earlier A","status":"completed"},` ~
-        `{"step":"Earlier B","status":"completed"}]}`);
+        `{"step":"Earlier A","status":"completed"}]}`);
     root.applyPlanForTesting(`{"objective":"Current plan","plan":[` ~
-        `{"step":"Current A","status":"in_progress"}]}`);
+        `{"step":"Current A","status":"in_progress"},` ~
+        `{"step":"Current B","status":"pending"}]}`);
     root.setArchivedPlansForTesting([planSnapshot("Earlier plan",
-        ["Earlier A", "Earlier B"])]);
+        ["Earlier A"])]);
     assert(paint(root, driver), "plan strip baseline did not paint");
 
     assert(root.detachedPlanStripCountForTesting() == 2,
@@ -88,14 +88,15 @@ int main(string[] args)
         "live objective missing: " ~ root.detachedPlanObjectiveForTesting());
 
     const panel = requireWidget!Widget(root, "oc-plan-panel");
+    const liveCard = root.detachedPlanRectForTesting();
     const first = root.detachedPlanStripRectForTesting(0);
     assert(first.width > 0 && first.height > 0,
         "history strip rectangle has no area");
     {
         // The strip keeps clear of the card's bottom edge, so aiming at a
         // rectangle cannot slip off the card and un-expand the panel.
-        const base = root.detachedPlanRectForTesting();
-        const gapBelow = base.y + base.height - (first.y + first.height);
+        const gapBelow = liveCard.y + liveCard.height -
+            (first.y + first.height);
         assert(gapBelow >= 8,
             "the strip sits too close to the card's bottom edge: " ~
             to!string(gapBelow) ~ " px");
@@ -124,6 +125,16 @@ int main(string[] args)
         assert(still.x == first.x && still.y == first.y &&
             still.width == first.width,
             "previewing a plan moved the rectangles");
+        // The card height follows the shorter previewed plan, and its bottom
+        // edge (and the strip) stays where the live card's bottom edge was.
+        const previewCard = root.detachedPlanRectForTesting();
+        assert(previewCard.height < liveCard.height,
+            "the card height did not adapt to the shorter previewed plan");
+        assert(previewCard.y > liveCard.y,
+            "the shorter preview did not shrink from the top");
+        assert(previewCard.y + previewCard.height ==
+            liveCard.y + liveCard.height,
+            "the previewed card's bottom edge moved");
     }
     // The neighbouring rectangle switches plans at its visible edge, without
     // moving the strip under the pointer.
@@ -140,6 +151,9 @@ int main(string[] args)
         const still = root.detachedPlanStripRectForTesting(0);
         assert(still.x == first.x && still.y == first.y,
             "switching plans moved the rectangles");
+        const currentCard = root.detachedPlanRectForTesting();
+        assert(currentCard.height == liveCard.height,
+            "the card did not return to the live plan's height");
     }
     driver.moveTo(panel.localToGlobal(Point(firstX, firstY)));
     assert(paint(root, driver), "returning to the earlier plan did not paint");
@@ -147,7 +161,7 @@ int main(string[] args)
         "returning to the earlier rectangle did not preview it");
     assert(root.detachedPlanObjectiveForTesting() == "Earlier plan",
         "preview objective is wrong: " ~ root.detachedPlanObjectiveForTesting());
-    assert(root.detachedPlanStepCountForTesting() == 2 &&
+    assert(root.detachedPlanStepCountForTesting() == 1 &&
         root.detachedPlanStepTextForTesting(0) == "Earlier A",
         "preview did not show the earlier plan's steps");
     assert(root.detachedPlanTitleForTesting().indexOf("earlier plan 1/2") >= 0,
@@ -202,7 +216,7 @@ int main(string[] args)
         "the preview survived after the pointer left the card");
     assert(root.detachedPlanObjectiveForTesting() == "Current plan",
         "the live plan did not return: " ~ root.detachedPlanObjectiveForTesting());
-    assert(root.detachedPlanStepCountForTesting() == 1,
+    assert(root.detachedPlanStepCountForTesting() == 2,
         "the live plan's steps did not return");
 
     // The strip is optional, on by default, and off hides it again.
